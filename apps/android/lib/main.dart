@@ -16,8 +16,12 @@ import 'export.dart';
 import 'attachments.dart';
 import 'composer_commands.dart';
 import 'session_models.dart';
+import 'session_model_projection.dart';
 import 'models.dart';
 import 'account.dart';
+import 'flclash/popup.dart';
+import 'automations.dart';
+import 'tool_activity.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -122,8 +126,8 @@ class _ChatPageState extends State<ChatPage> {
   final errors = <String, String>{};
   final submissions = <String>{};
   final commandDrafts = <String, Json>{};
+  final toolActivities = <String, ToolActivityProjection>{};
   late AttachmentDrafts attachments;
-  bool commandsOpen = false;
   String? lastRuntimePhase;
   final messageScroll = ScrollController();
   bool navigationScheduled = false;
@@ -152,6 +156,7 @@ class _ChatPageState extends State<ChatPage> {
   void didUpdateWidget(ChatPage oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.runtime != runtime) {
+      toolActivities.clear();
       oldWidget.runtime.removeListener(handleNavigation);
       attachments.removeListener(attachmentChanged);
       attachments.dispose();
@@ -227,7 +232,6 @@ class _ChatPageState extends State<ChatPage> {
     drafts[sessionId] = input.value;
     setState(() {
       sessionId = id;
-      commandsOpen = false;
       input.value = drafts[id] ?? TextEditingValue.empty;
     });
   }
@@ -235,10 +239,11 @@ class _ChatPageState extends State<ChatPage> {
   void newChat() => activateSession(runtime.newSession());
 
   void pickCommand(Json command) {
-    setState(() => commandsOpen = false);
     switch (builtinCommand(command) ?? command['clientAction']) {
       case 'file':
         unawaited(attachments.pick(sessionId));
+      case 'configure-models':
+        navigate(ModelsPage(runtime: runtime));
       case 'model':
         navigate(SessionModelPage(runtime: runtime, sessionId: sessionId));
       case 'permission':
@@ -410,6 +415,10 @@ class _ChatPageState extends State<ChatPage> {
 
   Future<void> selectSession(String id) async {
     Navigator.pop(context);
+    await loadConversation(id);
+  }
+
+  Future<void> loadConversation(String id) async {
     activateSession(id);
     try {
       await runtime.openSession(id);
@@ -456,6 +465,12 @@ class _ChatPageState extends State<ChatPage> {
     builder: (context, _) {
       final colors = Theme.of(context).colorScheme;
       final events = runtime.timelines[sessionId] ?? [];
+      final tools = toolActivities.putIfAbsent(
+        sessionId,
+        ToolActivityProjection.new,
+      )..reconcile(events);
+      final toolsByAnchor = tools.byAnchorSeq;
+      final consumedTools = tools.consumedSeqs;
       final commandRuns = {
         for (final event in events.where((e) => e['type'] == 'command/run'))
           event['data']['commandId']: event,
@@ -464,34 +479,22 @@ class _ChatPageState extends State<ChatPage> {
         for (final event in events.where((e) => e['type'] == 'command/done'))
           event['data']['commandId']: event['data'] as Json,
       };
-      final modelEvent = events.reversed
-          .where(
-            (event) =>
-                event['type'] == 'model/selection' ||
-                event['type'] == 'request/header',
-          )
-          .firstOrNull;
-      final modelLabel = modelEvent == null
-          ? runtime.model
-          : modelEvent['type'] == 'model/selection'
-          ? '${modelEvent['data']['model']}'
-          : '${modelEvent['data']['header']['config']['model']}';
-      final visible = events
-          .where(
-            (event) =>
-                [
-                  'user/message',
-                  'assistant/message',
-                  'tool/call',
-                  'tool/result',
-                  'turn/end',
-                  'command/run',
-                  'command/done',
-                ].contains(event['type']) &&
-                (event['type'] != 'command/done' ||
-                    !commandRuns.containsKey(event['data']['commandId'])),
-          )
-          .toList();
+      final modelLabel = nextSessionModel(events)?['model'] ?? runtime.model;
+      final visible = events.where((event) {
+        if (toolsByAnchor.containsKey(event['seq'])) return true;
+        if (consumedTools.contains(event['seq'])) return false;
+        return [
+              'user/message',
+              'assistant/message',
+              'tool/call',
+              'tool/result',
+              'turn/end',
+              'command/run',
+              'command/done',
+            ].contains(event['type']) &&
+            (event['type'] != 'command/done' ||
+                !commandRuns.containsKey(event['data']['commandId']));
+      }).toList();
       final streaming = runtime.streaming[sessionId];
       final sessionError = runtime.sessionErrors[sessionId];
       final running = runtime.statuses[sessionId] == 'running';
@@ -631,6 +634,31 @@ class _ChatPageState extends State<ChatPage> {
                         onTap: () {
                           Navigator.pop(context);
                           unawaited(openTasks());
+                        },
+                      ),
+                      PocketTile(
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 26,
+                        ),
+                        leading: const Icon(Icons.schedule_rounded, size: 22),
+                        title: const Text('自动化任务'),
+                        onTap: () {
+                          Navigator.pop(context);
+                          navigate(
+                            AutomationsPage(
+                              runtime: runtime,
+                              onNewTask: () {
+                                Navigator.of(context)
+                                    .popUntil((route) => route.isFirst);
+                                newChat();
+                              },
+                              onOpenSession: (id) {
+                                Navigator.of(context)
+                                    .popUntil((route) => route.isFirst);
+                                unawaited(loadConversation(id));
+                              },
+                            ),
+                          );
                         },
                       ),
                       if (runtime.sessions.any(
@@ -821,12 +849,18 @@ class _ChatPageState extends State<ChatPage> {
                 padding: const EdgeInsets.symmetric(horizontal: 24),
                 children: [
                   for (final event in visible)
-                    EventCard(
-                      event: event,
-                      commandResult: event['type'] == 'command/run'
-                          ? commandResults[event['data']['commandId']]
-                          : null,
-                    ),
+                    if (toolsByAnchor[event['seq']] case final activity?)
+                      ToolActivityCard(
+                        key: ValueKey('tool-$sessionId-${activity.identity}'),
+                        activity: activity,
+                      )
+                    else
+                      EventCard(
+                        event: event,
+                        commandResult: event['type'] == 'command/run'
+                            ? commandResults[event['data']['commandId']]
+                            : null,
+                      ),
                   if (streaming != null && streaming.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.symmetric(vertical: 16),
@@ -877,29 +911,13 @@ class _ChatPageState extends State<ChatPage> {
         bottom: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (commandsOpen)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 10),
-                child: ComposerCommands(
-                  maxHeight:
-                      ((MediaQuery.sizeOf(context).height -
-                                  MediaQuery.viewInsetsOf(context).bottom -
-                                  180) *
-                              .55)
-                          .clamp(100.0, 420.0),
-                  runtime: runtime,
-                  sessionId: sessionId,
-                  onPick: pickCommand,
-                ),
-              ),
-            if (!commandsOpen && commandDrafts[sessionId] != null)
+            if (commandDrafts[sessionId] != null)
               ComposerCommandChip(
                 command: commandDrafts[sessionId]!,
                 onRemove: () => setState(() => commandDrafts.remove(sessionId)),
               ),
-            if (!commandsOpen)
-              PocketAttachmentRail(drafts: attachments, sessionId: sessionId),
-            if (!commandsOpen && sessionRequests.isNotEmpty)
+            PocketAttachmentRail(drafts: attachments, sessionId: sessionId),
+            if (sessionRequests.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.only(bottom: 10),
                 child: GlassSurface(
@@ -928,7 +946,7 @@ class _ChatPageState extends State<ChatPage> {
                   ),
                 ),
               ),
-            if (!commandsOpen && submitError != null)
+            if (submitError != null)
               Padding(
                 padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
                 child: Text(
@@ -944,15 +962,27 @@ class _ChatPageState extends State<ChatPage> {
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.end,
                   children: [
-                    GlassButton(
-                      icon: Icons.add_rounded,
-                      label: commandsOpen ? '关闭会话菜单' : '添加与指令',
-                      onPressed: runtime.ready
-                          ? () {
-                              inputFocus.unfocus();
-                              setState(() => commandsOpen = !commandsOpen);
-                            }
-                          : null,
+                    CommonPopupBox(
+                      placement: PopupPlacement.overAnchorStart,
+                      onOpen: inputFocus.unfocus,
+                      popupBuilder: (popupContext) => ComposerCommands(
+                        runtime: runtime,
+                        sessionId: sessionId,
+                        maxHeight:
+                            (MediaQuery.sizeOf(popupContext).height -
+                                    MediaQuery.paddingOf(popupContext)
+                                        .vertical -
+                                    MediaQuery.viewInsetsOf(popupContext)
+                                        .bottom -
+                                    40)
+                                .clamp(100.0, 520.0),
+                        onPick: pickCommand,
+                      ),
+                      targetBuilder: (open) => GlassButton(
+                        icon: Icons.add_rounded,
+                        label: '添加与指令',
+                        onPressed: runtime.ready ? open : null,
+                      ),
                     ),
                     const SizedBox(width: 6),
                     Expanded(
@@ -960,7 +990,7 @@ class _ChatPageState extends State<ChatPage> {
                         controller: input,
                         focusNode: inputFocus,
                         minLines: 1,
-                        maxLines: commandsOpen ? 1 : 5,
+                        maxLines: 5,
                         decoration: InputDecoration(
                           hintText: commandDrafts[sessionId] == null
                               ? '交给 Pocket Harness'

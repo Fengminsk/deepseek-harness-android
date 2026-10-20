@@ -29,6 +29,7 @@ class AgentService : Service() {
     private lateinit var vault: CredentialVault
     private lateinit var webPreferences: WebPreferences
     private lateinit var approvals: ApprovalNotifications
+    private lateinit var documentSearch: DocumentSearchManager
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) = networkChanged()
         override fun onLost(network: Network) = networkChanged()
@@ -56,7 +57,8 @@ class AgentService : Service() {
             val raw = WirePayload.decode(message.data)
             val frame = JSONObject(raw)
             val id = frame.getString("id")
-            if (frame.getString("method") in setOf("api.subscribe", "api.ack", "api.unsubscribe")) {
+            if (frame.getString("method") in setOf("api.subscribe", "api.ack", "api.unsubscribe",
+                    "documents.search", "documents.search.cancel")) {
                 val owner = appClients[client]?.owner
                 if (owner == null) {
                     send(client, error(id, "App stream owner is disconnected"))
@@ -110,6 +112,7 @@ class AgentService : Service() {
         super.onCreate()
         vault = CredentialVault(this)
         webPreferences = WebPreferences(this)
+        documentSearch = DocumentSearchManager(this)
         approvals = ApprovalNotifications(this) { params, completion ->
             if (phase != "ready") {
                 completion(Result.failure(IllegalStateException("Agent service is unavailable")))
@@ -177,7 +180,13 @@ class AgentService : Service() {
                         "native.documents.roots" -> DocumentAccess(this).roots()
                         "native.documents.list" -> DocumentAccess(this).list(params.getString("root"), params.optString("path"))
                         "native.documents.read" -> DocumentAccess(this).read(params.getString("root"), params.getString("path"), params.optInt("offset", 0))
-                        "native.documents.revoke" -> DocumentAccess(this).revoke(params.getString("root"))
+                        "native.documents.revoke" -> {
+                            val root = params.getString("root")
+                            DocumentAccess(this).revoke(root).put("searchesStopped", documentSearch.revokeRoot(root))
+                        }
+                        "native.documents.search.prepare" -> documentSearch.prepare(params.getString("id"))
+                        "native.documents.search.run" -> documentSearch.run(params)
+                        "native.documents.search.cancel" -> documentSearch.cancel(params.getString("id"))
                         "native.exports.directory" -> DocumentExports.directory(this).canonicalPath
                         "native.attachments.directory" -> AttachmentTransfers.directory(this).canonicalPath
                         "native.storage.root" -> File(applicationInfo.dataDir).canonicalPath
@@ -227,6 +236,7 @@ class AgentService : Service() {
         .put("error", JSONObject().put("code", -32603).put("message", message))
     private fun fail(message: String) { main.post {
         phase = "failed"; failure = message
+        closeDocumentSearch()
         pending.entries.forEach { send(it.value, error(it.key, message)) }; pending.clear()
         nativePending.values.toList().forEach { it(Result.failure(IllegalStateException(message))) }
         nativePending.clear()
@@ -256,8 +266,17 @@ class AgentService : Service() {
             }
         }
     }
+    private fun closeDocumentSearch() {
+        // Provider cancellation and pipe close can block; never run either on
+        // the main thread. The search owner remains responsible for final close.
+        Thread({
+            try { documentSearch.close() }
+            catch (exception: InterruptedException) { Thread.currentThread().interrupt() }
+        }, "document-search-close").start()
+    }
     override fun onDestroy() {
         getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(networkCallback)
+        closeDocumentSearch()
         output?.close(); workers.shutdownNow()
         approvals.close()
         appClients.keys.toList().forEach { removeClient(it) }

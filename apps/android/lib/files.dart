@@ -4,6 +4,7 @@ import 'package:material_ui/material_ui.dart';
 
 import 'runtime.dart';
 import 'ui.dart';
+import 'document_search.dart';
 
 class FilesPage extends StatefulWidget {
   const FilesPage({
@@ -21,7 +22,7 @@ class FilesPage extends StatefulWidget {
 
 class _FilesPageState extends State<FilesPage> with WidgetsBindingObserver {
   List<Json>? items;
-  String? error, confirmRevoke;
+  String? error, confirmRevoke, notice;
   bool loading = false, choosing = false, revoking = false;
 
   @override
@@ -89,6 +90,9 @@ class _FilesPageState extends State<FilesPage> with WidgetsBindingObserver {
         items?.removeWhere((entry) => entry['id'] == id);
         confirmRevoke = null;
         error = null;
+        notice = result['searchesStopped'] == false
+            ? '授权已撤销，已请求停止相关搜索。文件提供方尚未确认释放读取资源；这些搜索不会继续返回结果。'
+            : null;
       });
       await load();
     } catch (failure) {
@@ -118,6 +122,19 @@ class _FilesPageState extends State<FilesPage> with WidgetsBindingObserver {
       ),
     );
     if (mounted) await load();
+  }
+
+  void search(String root, String path, String name) {
+    Navigator.of(context).push(
+      PocketRoute<void>(
+        builder: (_) => DocumentSearchPage(
+          runtime: widget.runtime,
+          root: root,
+          path: path,
+          name: name,
+        ),
+      ),
+    );
   }
 
   Widget grant(Json entry) {
@@ -164,6 +181,14 @@ class _FilesPageState extends State<FilesPage> with WidgetsBindingObserver {
                         ),
                       ]
                     : [
+                        if (available)
+                          PocketButton.tonal(
+                            key: ValueKey('search-$id'),
+                            onPressed: loading || revoking
+                                ? null
+                                : () => search(id, '', '${entry['name']}'),
+                            child: const Text('搜索文字'),
+                          ),
                         if (!available)
                           PocketButton.tonal(
                             onPressed: loading ? null : load,
@@ -224,6 +249,18 @@ class _FilesPageState extends State<FilesPage> with WidgetsBindingObserver {
     body: PocketList(
       padding: const EdgeInsets.all(16),
       children: [
+        if (notice != null)
+          Padding(
+            padding: const EdgeInsets.all(20),
+            child: SelectableText(notice!),
+          ),
+        if (widget.root != null)
+          PocketRow(
+            icon: Icons.search_rounded,
+            title: '搜索此目录的文字',
+            subtitle: '包括已授权范围内的子目录',
+            onTap: () => search(widget.root!, widget.path, '已授权目录'),
+          ),
         if (error != null)
           PocketSection(
             children: [
@@ -342,10 +379,29 @@ class _TextFilePageState extends State<TextFilePage> {
   @override
   Widget build(BuildContext context) => PocketScaffold(
     title: Text(widget.name ?? (widget.path.isEmpty ? '文件内容' : widget.path)),
-    trailing: GlassButton(
-      icon: Icons.refresh_rounded,
-      label: '重新从头读取',
-      onPressed: loading ? null : () => load(0, 0),
+    trailing: Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        GlassButton(
+          icon: Icons.search_rounded,
+          label: '搜索此文件的文字',
+          onPressed: () => Navigator.of(context).push(
+            PocketRoute<void>(
+              builder: (_) => DocumentSearchPage(
+                runtime: widget.runtime,
+                root: widget.root,
+                path: widget.path,
+                name: widget.name ?? '已授权文件',
+              ),
+            ),
+          ),
+        ),
+        GlassButton(
+          icon: Icons.refresh_rounded,
+          label: '重新从头读取',
+          onPressed: loading ? null : () => load(0, 0),
+        ),
+      ],
     ),
     bottom: text == null
         ? null

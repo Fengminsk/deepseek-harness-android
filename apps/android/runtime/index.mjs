@@ -1,11 +1,12 @@
 import Schema from '@deepseek-ai/schemastery'
+import { randomUUID } from 'node:crypto'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { establishAttachmentHome } from '@deepseek-ai/dsh-attachment-local'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { AndroidCredentials } from './credentials.mjs'
-import { runShell } from './shell.mjs'
+import { registerAndroidShell } from './tool-android-shell.mjs'
 import AndroidShell from './android-shell.mjs'
 import { WebAccess } from './web-access.mjs'
 import { AppSessions } from './sessions.mjs'
@@ -16,6 +17,7 @@ import { AppExports } from './exports.mjs'
 import AndroidAccountCallback from './account-callback.mjs'
 import { AppAttachments } from './attachments.mjs'
 import { createRuntimeTransport } from './transport.mjs'
+import { AppDocumentSearch } from './document-search.mjs'
 
 export const name = 'android-runtime'
 export const inject = ['agents', 'sessions', 'workingDirectory', 'settings', 'tools', 'appReady', 'sessionPersistence']
@@ -24,6 +26,15 @@ export const Config = Schema.object({
   shellOutputLimit: Schema.natural().min(1024).max(1048576).default(65536).volatile(),
   appStreamMaxSubscriptions: Schema.natural().min(1).max(128).default(32).volatile(),
   appStreamMaxFrameBytes: Schema.natural().min(4096).max(16777216).default(16777216).volatile(),
+  documentSearchFileBytes: Schema.natural().min(1024).max(67108864).default(8388608).volatile(),
+  documentSearchTotalBytes: Schema.natural().min(1024).max(268435456).default(67108864).volatile(),
+  documentSearchMaxEntries: Schema.natural().min(1).max(10000).default(2000).volatile(),
+  documentSearchMaxFiles: Schema.natural().min(1).max(10000).default(1000).volatile(),
+  documentSearchMaxDepth: Schema.natural().min(1).max(64).default(32).volatile(),
+  documentSearchMaxMatches: Schema.natural().min(1).max(1000).default(200).volatile(),
+  documentSearchPreviewChars: Schema.natural().min(512).max(2000).default(600).volatile(),
+  documentSearchMaxDurationMs: Schema.natural().min(100).max(300000).default(30000).volatile(),
+  documentSearchMaxRequests: Schema.natural().min(1).max(4).default(4).volatile(),
 })
 
 function requiredString(value, label) {
@@ -71,6 +82,15 @@ export function apply(ctx, config) {
   const live = new AppLiveState(ctx, transport)
   const interactions = new AppInteractions(ctx, transport)
   const exports = new AppExports(ctx, { directory: () => transport.request('native.exports.directory', {}) })
+  const documentSearch = new AppDocumentSearch(transport, {
+    maxRequests: () => config.documentSearchMaxRequests.get(),
+    limits: () => ({
+      fileBytes: config.documentSearchFileBytes.get(), totalBytes: config.documentSearchTotalBytes.get(),
+      maxEntries: config.documentSearchMaxEntries.get(), maxFiles: config.documentSearchMaxFiles.get(),
+      maxDepth: config.documentSearchMaxDepth.get(), maxMatches: config.documentSearchMaxMatches.get(),
+      previewChars: config.documentSearchPreviewChars.get(), maxDurationMs: config.documentSearchMaxDurationMs.get(),
+    }),
+  })
   const streams = new AppStreams(ctx, transport, peer, {
     maxSubscriptions: () => config.appStreamMaxSubscriptions.get(),
     maxFrameBytes: () => config.appStreamMaxFrameBytes.get(),
@@ -81,6 +101,7 @@ export function apply(ctx, config) {
     }
     if (method === 'native.appDisconnected') {
       void streams.closeOwner(params.owner).catch(error => console.error('App stream cleanup failed:', error))
+      void documentSearch.closeOwner(params.owner).catch(error => console.error('App file search cleanup failed:', error))
     }
   })
   const describe = () => ctx.settings.describe({ redactSecrets: true })
@@ -164,6 +185,8 @@ export function apply(ctx, config) {
       case 'documents.list': return transport.request('native.documents.list', params)
       case 'documents.read': return transport.request('native.documents.read', params)
       case 'documents.revoke': return transport.request('native.documents.revoke', params)
+      case 'documents.search': return documentSearch.run(params, { owner: params.owner })
+      case 'documents.search.cancel': return documentSearch.cancel(params, { owner: params.owner })
       default: throw new Error(`Unsupported App method: ${method}`)
     }
   })
@@ -172,21 +195,22 @@ export function apply(ctx, config) {
   })
   ctx.on('session/created', () => transport.notify('sessions.changed', {}))
   ctx.on('settings/document-updated', () => transport.notify('settings.changed'))
+  registerAndroidShell(ctx, config)
   ctx.effect(() => ctx.tools.register(defineTool({
-    name: 'android_shell', description: 'Run a non-interactive Android shell command as this app. No root or adb privileges. Working directory is the app workspace.',
-    parameters: { command: { type: 'string', required: true } },
+    name: 'android_files', description: 'List authorized Android document roots, list a relative directory, read UTF-8 text in chunks, or search literal text below an authorized root. Search is bounded and reports skipped files and incomplete results. content:// URIs are not shell paths.',
+    parameters: { action: { type: 'string', required: true }, root: { type: 'string' }, path: { type: 'string' }, offset: { type: 'integer' },
+      query: { type: 'string' }, caseSensitive: { type: 'boolean' } },
     output: { schema: { type: 'json' }, render: (_args, result) => [{ type: 'text', text: JSON.stringify(result) }] },
-    execute: (args, execution) => runShell(args.command, process.cwd(), {
-      timeoutMs: config.shellTimeoutMs.get(), outputLimit: config.shellOutputLimit.get(), signal: execution.signal,
-    }),
-  })))
-  ctx.effect(() => ctx.tools.register(defineTool({
-    name: 'android_files', description: 'List authorized Android document roots, list a relative directory, or read UTF-8 text in chunks. content:// URIs are not shell paths.',
-    parameters: { action: { type: 'string', required: true }, root: { type: 'string' }, path: { type: 'string' }, offset: { type: 'integer' } },
-    output: { schema: { type: 'json' }, render: (_args, result) => [{ type: 'text', text: JSON.stringify(result) }] },
-    async execute(args) {
+    async execute(args, execution) {
       if (args.action === 'roots') return transport.request('native.documents.roots', {})
-      if (args.action !== 'list' && args.action !== 'read') throw new Error('action must be roots, list or read')
+      if (args.action === 'search') {
+        if (!execution.agent) throw new Error('File search requires an Agent session')
+        return documentSearch.run({
+          requestId: randomUUID(), root: args.root, path: args.path ?? '', query: args.query,
+          caseSensitive: args.caseSensitive ?? false,
+        }, { owner: `tool:${execution.agent.session.id}:${execution.callId}`, signal: execution.signal })
+      }
+      if (args.action !== 'list' && args.action !== 'read') throw new Error('action must be roots, list, read or search')
       requiredString(args.root, 'root')
       return transport.request(`native.documents.${args.action}`, { root: args.root, path: args.path ?? '', offset: args.offset ?? 0 })
     },
@@ -204,7 +228,17 @@ export function apply(ctx, config) {
         transport.notify('runtime.status', { phase: 'failed', error: `运行时初始化失败：${error.message}` })
       })
     })
-    return async () => { remove(); await attachments.close(); await exports.close(); await streams.close(); await interactions.close(); await web.close(); await appPeer?.dispose() }
+    return async () => {
+      remove()
+      const results = await Promise.allSettled([
+        () => documentSearch.close(), () => attachments.close(), () => exports.close(),
+        () => streams.close(), () => interactions.close(), () => web.close(),
+      ].map(close => Promise.resolve().then(close)))
+      // Stream and interaction owners release their peer before the shared API peer.
+      results.push(...await Promise.allSettled([Promise.resolve().then(() => appPeer?.dispose())]))
+      const errors = results.filter(result => result.status === 'rejected').map(result => result.reason)
+      if (errors.length) throw new AggregateError(errors, 'Android runtime cleanup did not complete')
+    }
   })
   })
 }

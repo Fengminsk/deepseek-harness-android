@@ -3,6 +3,7 @@ package com.minnnng.dsh_android
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.CancellationSignal
 import android.provider.DocumentsContract
 import org.json.JSONArray
 import org.json.JSONObject
@@ -34,11 +35,11 @@ class DocumentAccess(private val context: Context) {
         }
     }
 
-    private fun grant(root: String): Uri = resolver.persistedUriPermissions.firstOrNull {
+    internal fun grant(root: String): Uri = resolver.persistedUriPermissions.firstOrNull {
         it.isReadPermission && id(it.uri) == root
     }?.uri ?: throw SecurityException("文件授权不存在或已撤销，请重新授权")
 
-    private fun hasGrant(root: String): Boolean = resolver.persistedUriPermissions.any {
+    internal fun hasGrant(root: String): Boolean = resolver.persistedUriPermissions.any {
         it.isReadPermission && id(it.uri) == root
     }
 
@@ -54,23 +55,27 @@ class DocumentAccess(private val context: Context) {
         return JSONObject().put("revoked", true)
     }
 
-    private fun document(root: String, path: String): Uri {
+    internal fun document(root: String, path: String, cancellation: CancellationSignal? = null): Uri {
         val uri = grant(root)
-        if (DocumentsContract.isTreeUri(uri)) return resolve(uri, path)
+        if (DocumentsContract.isTreeUri(uri)) return resolve(uri, path, cancellation)
         require(path.isEmpty()) { "单文件授权不能访问其他路径，请单独授权所需文件" }
         return uri
     }
-    private fun resolve(tree: Uri, path: String): Uri {
+    private fun resolve(tree: Uri, path: String, cancellation: CancellationSignal? = null): Uri {
         var document = DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree))
         if (path.isEmpty()) return document
         val segments = path.split('/')
         require(segments.none { it.isEmpty() || it == "." || it == ".." || it.contains('\\') }) { "Invalid relative path" }
         for (segment in segments) {
+            cancellation?.throwIfCanceled()
             val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, DocumentsContract.getDocumentId(document))
             var found: String? = null
-            resolver.query(children, arrayOf("document_id", "_display_name"), null, null, null)?.use { cursor ->
-                while (cursor.moveToNext()) if (cursor.getString(1) == segment) {
-                    check(found == null) { "Ambiguous document name" }; found = cursor.getString(0)
+            resolver.query(children, arrayOf("document_id", "_display_name"), null, null, null, cancellation)?.use { cursor ->
+                while (cursor.moveToNext()) {
+                    cancellation?.throwIfCanceled()
+                    if (cursor.getString(1) == segment) {
+                        check(found == null) { "Ambiguous document name" }; found = cursor.getString(0)
+                    }
                 }
             }
             document = DocumentsContract.buildDocumentUriUsingTree(tree, found ?: throw IllegalArgumentException("File not found: $segment"))

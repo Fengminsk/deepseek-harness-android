@@ -6,6 +6,8 @@ import { createServer } from 'node:http'
 import { once } from 'node:events'
 import { resolve, join } from 'node:path'
 import { createInterface } from 'node:readline'
+import { verifySchedule } from './smoke-schedule.mjs'
+import { SearchNativeFixture, verifyDocumentSearch } from './smoke-document-search.mjs'
 
 const root = resolve(import.meta.dirname, '../../..')
 const home = await mkdtemp(join(root, '.cache/android/interactions-'))
@@ -42,6 +44,7 @@ const child = spawn(process.execPath, ['--import', new URL('./interaction-smoke-
 const exited = once(child, 'exit')
 const records = new Map(), pending = new Map(), notices = [], waiters = []
 const send = frame => child.stdin.write(JSON.stringify({ jsonrpc: '2.0', ...frame }) + '\n')
+const nativeSearch = new SearchNativeFixture(send)
 let serial = 0
 const request = (method, params = {}) => {
   const id = `interaction-${++serial}`
@@ -70,6 +73,7 @@ lines.on('line', line => {
   else if (frame.method === 'native.exports.directory') send({ id: frame.id, result: join(home, 'native-export-cache') })
   else if (frame.method === 'native.attachments.directory') send({ id: frame.id, result: join(home, 'native-attachment-cache') })
   else if (frame.method === 'native.storage.root') send({ id: frame.id, result: home })
+  else if (nativeSearch.accept(frame)) return
   else if (pending.has(frame.id)) {
     const waiter = pending.get(frame.id)
     pending.delete(frame.id)
@@ -207,6 +211,14 @@ try {
     }
     const finish = sessionId => waitFor(frame => frame.method === 'session.event'
       && frame.params.sessionId === sessionId && frame.params.event.type === 'turn/end')
+    if (!process.argv.includes('--schedule-only')) {
+      await verifyDocumentSearch({ request, send, finish, modelSteps, nativeSearch })
+      checkpoint('document search App and tool routing complete')
+    }
+    if (process.argv.includes('--search-only')) return
+    await verifySchedule({ request, waitFor, finish, modelSteps, notices })
+    checkpoint('original schedule APIs and model tool complete')
+    if (process.argv.includes('--schedule-only')) return
     const question = await run('question-direct', { id: 'question-one', tool: 'ask_user_question',
       args: { timeout: -1, questions: [{ id: 'choice', question: 'Pick the fixture output', options: [{ label: 'Original label' }] }] } })
     assert.equal(question.kind, 'question')

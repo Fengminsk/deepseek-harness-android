@@ -4,7 +4,7 @@ import 'package:material_ui/material_ui.dart';
 
 import 'runtime.dart';
 import 'ui.dart';
-import 'models.dart';
+import 'flclash/popup.dart';
 
 const commandDefinitions = {
   'goal': '@deepseek-ai/dsh-command-goal',
@@ -155,14 +155,6 @@ class _ComposerCommandsState extends State<ComposerCommands> {
   List<Json>? rows;
   String? error;
   int generation = 0;
-  Future<void> configureModels() async {
-    await Navigator.push(
-      context,
-      PocketRoute<void>(builder: (_) => ModelsPage(runtime: widget.runtime)),
-    );
-    if (mounted) await load();
-  }
-
   @override
   void initState() {
     super.initState();
@@ -196,74 +188,58 @@ class _ComposerCommandsState extends State<ComposerCommands> {
   }
 
   @override
-  Widget build(BuildContext context) => GlassSurface(
-    radius: 26,
-    child: ConstrainedBox(
+  Widget build(BuildContext context) {
+    final menu = ConstrainedBox(
       constraints: BoxConstraints(maxHeight: widget.maxHeight),
-      child: ListView(
-        padding: const EdgeInsets.symmetric(vertical: 10),
-        shrinkWrap: true,
-        children: [
+      child: CommonPopupMenu(
+        items: [
           if (rows == null) ...[
-            Padding(
-              padding: const EdgeInsets.all(18),
-              child: Text(
-                error == null
-                    ? '正在读取会话菜单…'
-                    : error!.contains('Select an available model')
-                    ? '请先配置可用模型与凭据，再使用会话指令。'
-                    : error!,
-              ),
+            CommonPopupMenuItem(
+              label: error == null ? '正在读取会话菜单…' : '会话菜单暂不可用',
+              description: error?.contains('Select an available model') == true
+                  ? '请先配置可用模型与凭据，再使用会话指令。'
+                  : error,
             ),
-            if (error != null) ...[
-              PocketTile(
-                leading: const Icon(Icons.attach_file_rounded),
-                title: const Text('文件  file'),
-                subtitle: const Text('添加文件到当前消息'),
-                onTap: () =>
-                    widget.onPick({'name': 'file', 'clientAction': 'file'}),
-              ),
-              PocketTile(
-                leading: const Icon(Icons.hub_outlined),
-                title: const Text('配置模型与凭据'),
-                onTap: configureModels,
-              ),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 18),
-                child: PocketButton.tonal(
-                  onPressed: load,
-                  child: const Text('重新读取'),
-                ),
-              ),
-            ],
-          ],
-          for (var index = 0; index < (rows?.length ?? 0); index++) ...[
-            if (index == 0 ||
-                rows![index - 1]['section'] != rows![index]['section'])
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 8, 20, 5),
-                child: Text(
-                  rows![index]['section'] as String,
-                  style: Theme.of(context).textTheme.labelMedium,
-                ),
-              ),
-            PocketTile(
-              contentPadding: const EdgeInsets.symmetric(horizontal: 18),
-              leading: Icon(commandIcon(rows![index]), size: 21),
-              title: Text(
-                '${commandLabel(rows![index])}  ${rows![index]['name']}',
-              ),
-              subtitle: Text(
-                commandDescription(rows![index]),
-                style: const TextStyle(fontSize: 12),
-              ),
-              onTap: () => widget.onPick(rows![index]),
+            CommonPopupMenuItem(
+              label: '文件  file',
+              glyph: Icons.attach_file_rounded,
+              onPressed: () =>
+                  widget.onPick({'name': 'file', 'clientAction': 'file'}),
             ),
+            CommonPopupMenuItem(
+              label: '配置模型与凭据',
+              glyph: Icons.hub_outlined,
+              onPressed: () =>
+                  widget.onPick({'clientAction': 'configure-models'}),
+            ),
+            if (error != null)
+              CommonPopupMenuItem(
+                label: '重新读取',
+                glyph: Icons.refresh_rounded,
+                dismissOnSelect: false,
+                onPressed: load,
+              ),
           ],
+          for (final row in rows ?? <Json>[])
+            CommonPopupMenuItem(
+              label: '${commandLabel(row)}  ${row['name']}',
+              section: row['section'] as String,
+              description: commandDescription(row),
+              glyph: commandIcon(row),
+              onPressed: () => widget.onPick(row),
+            ),
         ],
       ),
-    ),
-  );
+    );
+    return MediaQuery.disableAnimationsOf(context)
+        ? menu
+        : AnimatedSize(
+            duration: const Duration(milliseconds: 300),
+            alignment: Alignment.bottomLeft,
+            curve: Curves.easeOutCubic,
+            child: menu,
+          );
+  }
 }
 
 class ComposerCommandChip extends StatelessWidget {

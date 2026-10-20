@@ -13,7 +13,7 @@ const schema = DEFAULT_SCHEMA.extend(new Type('tag:yaml.org,2002:js', {
   represent: expression => expression.source,
 }))
 
-/** Stage the Android preset with the original goal, planning, and compaction plugins. */
+/** Stage the Android preset with the original goal, planning, scheduling, and compaction plugins. */
 export async function stagePreset(root, destination) {
   const source = load(await readFile(join(root,
     'packages/bundle/web-app/presets/standard.patch.yml'), 'utf8'), { schema })
@@ -27,7 +27,7 @@ export async function stagePreset(root, destination) {
   }
   const original = pluginsFor(source, 'preset-standard')
   const android = pluginsFor(target, 'preset-android')
-  for (const id of ['command-goal', 'tool-goal', 'planning', 'compaction']) {
+  for (const id of ['command-goal', 'tool-goal', 'planning', 'compaction', 'tool-schedule']) {
     const entry = original.find(item => item.id === id)
     if (!entry) throw new Error(`Original preset is missing ${id}`)
     if (android.some(item => item.id === id)) {

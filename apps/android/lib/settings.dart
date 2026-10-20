@@ -133,7 +133,7 @@ class SettingsPage extends StatelessWidget {
                 const PocketRow(
                   icon: Icons.info_outline_rounded,
                   title: 'Pocket Harness',
-                  subtitle: '0.1.0 · 构建 9 · 开发预览',
+                  subtitle: '0.1.0 · 构建 11 · 开发预览',
                 ),
               ],
             ),

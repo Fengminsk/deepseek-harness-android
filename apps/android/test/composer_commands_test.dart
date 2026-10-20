@@ -38,6 +38,15 @@ class _Runtime extends RuntimeController {
   bool failCatalog = false;
   Completer<Json>? admission;
   int prompts = 0;
+  Json currentModel = {'provider': 'provider-fixture', 'model': 'one'};
+  int modelSeq = 4;
+  @override
+  Stream<Json> watchApi(
+    String namespace,
+    String method, {
+    Json args = const {},
+    Json Function()? resumeArgs,
+  }) => const Stream.empty();
   @override
   Future<Json> ensureSession(String id) async => {
     'sessionId': id,
@@ -89,6 +98,9 @@ class _Runtime extends RuntimeController {
           };
         case 'session.modelCatalog':
           return {
+            'default': {'provider': 'provider-fixture', 'model': 'one'},
+            'routableProviders': ['provider-fixture'],
+            'failures': <Json>[],
             'groups': [
               {
                 'id': 'provider-fixture',
@@ -103,18 +115,23 @@ class _Runtime extends RuntimeController {
         case 'session.projections':
           return {
             'kind': 'sequenced',
-            'asOfSeq': 4,
+            'asOfSeq': modelSeq,
             'values': {
               'permissions': {'currentValue': 'read-only'},
               'modelSelection': {
-                'next': {'provider': 'provider-fixture', 'model': 'one'},
+                'next': Json.of(currentModel),
+                'lastUsed': null,
               },
             },
           };
         case 'session.selectModel':
-          return {
-            'selected': {'provider': 'provider-fixture', 'model': 'two'},
+          final request = params['args']['request'] as Json;
+          currentModel = {
+            'provider': request['provider'],
+            'model': request['model'],
           };
+          modelSeq++;
+          return {'selected': Json.of(currentModel)};
       }
     }
     throw StateError('Unexpected $method $params');
@@ -463,14 +480,17 @@ void main() {
       await tester.pumpWidget(host(ChatPage(runtime: runtime)));
       runtime.timelines.values.single.addAll([
         {
+          'seq': 1,
           'type': 'command/run',
           'data': {'commandId': 'one', 'name': 'goal', 'args': ' 整理项目'},
         },
         {
+          'seq': 2,
           'type': 'command/done',
           'data': {'commandId': 'one', 'kind': 'success', 'text': '目标已保存'},
         },
         {
+          'seq': 3,
           'type': 'command/run',
           'data': {'commandId': 'two', 'name': 'feedback'},
         },
@@ -608,7 +628,7 @@ void main() {
   );
 
   testWidgets(
-    'menu and send remain below floating header with keyboard and enlarged text',
+    'modal menu stays inside safe area and preserves composer with keyboard and enlarged text',
     (tester) async {
       phone(tester);
       final runtime = _Runtime();
@@ -620,22 +640,28 @@ void main() {
       await tester.tap(find.byTooltip('添加与指令'));
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
-      expect(find.byTooltip('发送').hitTestable(), findsOneWidget);
+      // The popup owns taps until dismissed; the composer keeps its geometry.
       expect(
-        tester.getRect(find.byTooltip('发送')).bottom,
+        tester.getRect(find.byTooltip('发送', skipOffstage: false)).bottom,
         lessThanOrEqualTo(480),
       );
-      expect(find.byTooltip('打开侧栏').hitTestable(), findsOneWidget);
       expect(
         tester.getRect(find.byType(ComposerCommands)).top,
-        greaterThan(60),
+        greaterThanOrEqualTo(
+          tester.view.padding.top / tester.view.devicePixelRatio,
+        ),
       );
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('发送').hitTestable(), findsOneWidget);
+      expect(find.byTooltip('打开侧栏').hitTestable(), findsOneWidget);
     },
   );
 
   testWidgets(
     'session model applies its own session without changing the new-chat default',
     (tester) async {
+      phone(tester);
       final runtime = _Runtime();
       addTearDown(runtime.dispose);
       final defaultModel = runtime.model;
@@ -643,17 +669,28 @@ void main() {
         host(SessionModelPage(runtime: runtime, sessionId: 'session-A')),
       );
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Model two'));
-      await tester.tap(find.text('应用到当前会话'));
+      final modelTwo = find.byKey(
+        const ValueKey('session-model-provider-fixture-two'),
+      );
+      await tester.ensureVisible(modelTwo);
+      await tester.tap(modelTwo);
       await tester.pumpAndSettle();
-      final request = runtime.calls.last.params['args']['request'];
+      await tester.tap(find.byKey(const ValueKey('apply-session-model')));
+      await tester.pumpAndSettle();
+      final request = runtime.calls
+          .lastWhere(
+            (call) =>
+                call.method == 'api.call' &&
+                call.params['method'] == 'selectModel',
+          )
+          .params['args']['request'];
       expect(request, {
         'sessionId': 'session-A',
         'provider': 'provider-fixture',
         'model': 'two',
       });
       expect(runtime.model, defaultModel);
-      expect(find.text('已选择此会话后续请求使用的模型。'), findsOneWidget);
+      expect(find.textContaining('已应用。此会话的后续请求'), findsOneWidget);
     },
   );
 
