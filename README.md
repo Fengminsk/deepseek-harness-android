@@ -1,77 +1,77 @@
-# DeepSeek Harness
+# DSH for Android · 安卓版 DSH
 
 English | [中文](README.zh.md)
 
-DeepSeek Harness (`dsh`) is an open-source agent harness developed by [DeepSeek AI](https://deepseek.com).
+## Summary
 
-It is built on an **everything-is-a-plugin** architecture and powered by [Cordis](https://github.com/cordiverse/cordis), whose design is described in [_A Programming Paradigm for Spatiotemporal Composability_](https://arxiv.org/abs/2608.25512).
+DSH for Android is an Android adaptation of DeepSeek Harness for a personal agent on a rooted phone. The product goal is to connect conversations with local shell commands, root execution, files, and ADB device operations.
 
-Documentation: [https://deepseek-harness.github.io/deepseek-harness/](https://deepseek-harness.github.io/deepseek-harness/)
+This repository is at the initialization stage. It contains the existing Node.js/TypeScript harness; it does not yet contain an Android application, an APK, or verified Android root and ADB integration.
 
-## Developer preview
+## Table of Contents
 
-DeepSeek Harness is in _developer preview_ and iterating rapidly. **THERE WILL BE COMPATIBILITY-BREAKING CHANGES.**
+- [Repository](#repository-home)
+- [Development](#development-guide)
+- [License](#license-info)
+- [Dev Note: Android product brief](#android-product-brief)
 
-Review the [safety notice](SAFETY.md) before running the project.
+<a id="repository-home"></a>
 
-## Run
+## Repository
 
-### Run from `npm`
+The primary repository is [DSH for Android on Gitee](https://gitee.com/minnnng/deepseek-harness-android). The `android` branch owns Android development; `master` retains the imported baseline. The local `origin` remote points to Gitee, and `github` retains the source repository for comparison and fetching updates.
 
-Install `Node.js`, then run:
+The README describes the Android product. Existing package names and runtime versions still belong to the imported harness and do not identify an Android release.
 
-```sh
-npx @deepseek-ai/dsh web
-```
+<a id="run"></a>
 
-The command starts the Web UI at `http://127.0.0.1:3080` by default and opens it in the default browser for a local launch. An SSH launch only prints the host URL because the SSH client or editor owns the local forwarded address. Pass `--no-open` to run the server without opening a browser. See [Web UI guide](docs/user/guide/index.md).
+<a id="run-from-source"></a>
 
-### Run from source
-
-To run from a repository checkout:
-
-```sh
-git clone https://github.com/deepseek-ai/deepseek-harness.git
-cd deepseek-harness
-pnpm install
-pnpm run build
-pnpm dsh web
-```
-
-`pnpm run build` prepares the repository artifacts. `pnpm dsh web` uses those built artifacts without rebuilding.
-
-## Community and support
-
-- Submit feedback or bug reports through [GitHub Discussions](https://github.com/deepseek-ai/deepseek-harness/discussions).
-- Add the [`dsh-plugin`](https://github.com/topics/dsh-plugin) topic to your plugin repository for discoverability.
-- Join <a href="https://discord.gg/4MrtZUhpxg">DeepSeek Harness Discord community</a>.
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+<a id="development-guide"></a>
 
 ## Development
 
-Start with the [development guide](docs/development.md) and [architecture documentation](docs/architecture.md).
+The repository currently contains the following development areas:
 
-`pnpm run dev:web` builds, serves, and rebuilds client bundles on source edits in one terminal, and `make help` lists the matching Make targets for Web and Desktop; the guide's application commands section owns the full table.
+| Path | Purpose |
+| --- | --- |
+| `apps/` | Existing CLI, Web, and desktop applications |
+| `packages/` | Agent runtime, model access, sessions, shell execution, and other plugins |
+| `native/` | Native runtime support |
+| `docs/` | Runtime architecture and development documentation |
 
-For agents, follow [AGENTS.md](AGENTS.md).
+Read the [development guide](docs/development.md), [architecture](docs/architecture.md), and [repository instructions](AGENTS.md) when working on the existing harness. These documents describe the existing runtime, not an Android installation procedure.
 
-## Citation
+Android runtime packaging, background execution, and the native command bridge require implementation and device validation before an APK can be offered. No Android build or installation command is available in this branch yet.
 
-```bibtex
-@misc{deepseek-harness2026,
-  title={DeepSeek Harness: Everything is a Plugin},
-  author={DeepSeek-AI},
-  year={2026},
-  publisher={GitHub},
-  howpublished={\url{https://github.com/deepseek-ai/deepseek-harness}},
-}
-```
+<a id="license-info"></a>
 
 ## License
 
-[MIT](LICENSE)
+The imported harness retains its [MIT license](LICENSE). Existing dependency terms are recorded in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-Third-party dependencies and their licenses are disclosed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+No FlClash source has been copied into this branch. Its [GPL-3.0 license](https://github.com/chen08209/FlClash/blob/main/LICENSE) must be accounted for before incorporating its components and distributing the Android application; the current MIT license does not cover that future integration.
+
+<a id="android-product-brief"></a>
+
+## Dev Note: Android product brief
+
+The following is the development brief, not a list of implemented or device-tested features.
+
+### Local agent and devices
+
+- Run the agent and its tool execution on the phone. Local execution does not imply offline model inference; model API access remains a separate configuration.
+- Support ordinary shell and root commands through a native bridge, with command output, exit status, cancellation, and a persistent execution history.
+- Support ADB operations on explicitly selected, connected, and authorized devices. USB and wireless transport compatibility must be verified on real hardware; root access on the host phone does not grant access to every target device.
+- Keep workspaces, conversations, and file operations accessible from the application. Keep credentials, signing keys, ADB private keys, and personal session data out of Git.
+
+### Interface and navigation
+
+- Use Flutter as the intended Android UI foundation. Evaluate the latest released [FlClash](https://github.com/chen08209/FlClash) design and reusable components before implementation, then pin the selected source version and record any imported components and their licenses.
+- Use conversations as the main entry point, with a history sidebar, new conversation action, a persistent composer, streaming replies, and visible tool execution results, following the familiar ChatGPT mobile interaction pattern.
+- Provide dedicated pages for workspaces and files, device connections, and settings. Settings cover models, API access, appearance, and execution permissions.
+- Keep execution target and privilege level visible so that phone-local shell, phone-local root, and a selected ADB device are distinguishable.
+
+### First Android milestone
+
+The first device-tested milestone is one complete flow: open a conversation, select a model and execution target, run a local command, display its output and exit status, and reopen the saved conversation. Root execution and authorized ADB connections follow with their own device checks.

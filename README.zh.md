@@ -1,96 +1,77 @@
-# DeepSeek Harness
+# 安卓版 DSH
 
 [English](README.md) | 中文
 
-DeepSeek Harness（`dsh`）是由 [DeepSeek AI](https://deepseek.com) 开发的开源 agent harness（智能体框架）。
+## 概述
 
-它构建于**一切皆插件**的架构之上，由 [Cordis](https://github.com/cordiverse/cordis) 驱动，其设计参见论文 [_A Programming Paradigm for Spatiotemporal Composability_](https://arxiv.org/abs/2608.25512)。
+安卓版 DSH 面向已 Root 的安卓手机，将 DeepSeek Harness 适配为个人本地 agent（智能体）。产品目标是通过对话操作本机 shell、root 命令、文件以及 ADB 设备。
 
-文档：[https://deepseek-harness.github.io/deepseek-harness/](https://deepseek-harness.github.io/deepseek-harness/)
+当前仓库处于初始化阶段，包含现有的 Node.js/TypeScript harness，尚未包含 Android 应用、APK 或经过真机验证的 Android root 与 ADB 集成。
 
-## 开发者预览
+## 目录
 
-DeepSeek Harness 处于 _开发者预览_ 阶段，正在快速迭代。**未来将出现破坏兼容性的变更。**
+- [仓库](#repository-home)
+- [开发](#development-guide)
+- [许可证](#license-info)
+- [开发备注：Android 产品规划](#android-product-brief)
 
-运行本项目前，请阅读[安全说明](SAFETY.zh.md)。
+<a id="repository-home"></a>
+
+## 仓库
+
+主仓库为 [Gitee 上的安卓版 DSH](https://gitee.com/minnnng/deepseek-harness-android)。`android` 分支用于 Android 开发，`master` 保留导入的基线。本地 `origin` 远端指向 Gitee，`github` 保留源码仓库，用于比较和获取更新。
+
+本 README 介绍安卓版产品。现有包名与运行时版本仍属于导入的 harness，不代表 Android 发布版本。
 
 <a id="run"></a>
 
-## 运行
-
-### 通过 `npm` 运行
-
-安装 `Node.js`，然后运行：
-
-```sh
-npx @deepseek-ai/dsh web
-```
-
-该命令默认会在 `http://127.0.0.1:3080` 启动 Web UI，本机启动时还会用默认浏览器打开页面。通过 SSH 启动时只打印宿主机 URL，因为本地转发地址由 SSH 客户端或编辑器持有。传入 `--no-open` 可仅运行服务器而不打开浏览器。详见 [Web UI 指南](docs/user/guide/index.zh.md)。
-
 <a id="run-from-source"></a>
 
-### 从源码运行
-
-如需从仓库源码运行：
-
-```sh
-git clone https://github.com/deepseek-ai/deepseek-harness.git
-cd deepseek-harness
-pnpm install
-pnpm run build
-pnpm dsh web
-```
-
-`pnpm run build` 会准备仓库产物。`pnpm dsh web` 会直接使用这些已构建产物，不会重新构建。
-
-## 社区与支持
-
-- 通过 [GitHub Discussions](https://github.com/deepseek-ai/deepseek-harness/discussions) 提交反馈或 bug 报告。
-- 为你的插件仓库添加 [`dsh-plugin`](https://github.com/topics/dsh-plugin) 话题，便于被发现。
-- 欢迎加入 DeepSeek Harness 企微群！扫描下方二维码填写入群问卷，小助手会定期发送入群邀请。
-
-<table>
-  <thead>
-    <tr>
-      <th align="center">入群问卷</th>
-      <th align="center">微信公众号</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td align="center"><a href="https://trtgsjkv6r.feishu.cn/share/base/form/shrcnIt5twSVdLGD52KJBckGCgg"><img src="https://cdn.deepseek.com/harness/readme/community-wecom-survey.png" alt="DeepSeek Harness 入群问卷二维码" width="180" height="180"></a></td>
-      <td align="center"><img src="https://cdn.deepseek.com/harness/readme/community-wechat-official-account.png" alt="DeepSeek Harness 团队微信公众号二维码" width="180" height="180"></td>
-    </tr>
-  </tbody>
-</table>
-
-## 参与贡献
-
-参见 [CONTRIBUTING.md](CONTRIBUTING.zh.md)。
+<a id="development-guide"></a>
 
 ## 开发
 
-请先阅读[开发指南](docs/development.zh.md)与[架构文档](docs/architecture.zh.md)。
+当前仓库包含以下开发区域：
 
-`pnpm run dev:web` 会在一个终端里完成构建、启动，并在源码修改时重建 client bundle；`make help` 列出 Web 与 Desktop 对应的 Make target。完整表格见开发指南的「应用命令」一节。
+| 路径 | 用途 |
+| --- | --- |
+| `apps/` | 现有 CLI（命令行界面）、Web 和桌面应用 |
+| `packages/` | Agent 运行时、模型接入、会话、shell 执行及其他插件 |
+| `native/` | 原生运行时支持 |
+| `docs/` | 运行时架构与开发文档 |
 
-面向 agent：请遵循 [AGENTS.md](AGENTS.md)。
+修改现有 harness 时，请阅读[开发指南](docs/development.zh.md)、[架构文档](docs/architecture.zh.md)和[仓库约定](AGENTS.md)。这些文档描述现有运行时，不是 Android 安装教程。
 
-## 引用
+Android 运行时封装、后台执行和原生命令桥接仍需实现并经过真机验证，之后才能提供 APK。当前分支尚无 Android 构建或安装命令。
 
-```bibtex
-@misc{deepseek-harness2026,
-  title={DeepSeek Harness: Everything is a Plugin},
-  author={DeepSeek-AI},
-  year={2026},
-  publisher={GitHub},
-  howpublished={\url{https://github.com/deepseek-ai/deepseek-harness}},
-}
-```
+<a id="license-info"></a>
 
 ## 许可证
 
-[MIT](LICENSE)
+导入的 harness 保留 [MIT 许可证](LICENSE)。现有依赖的许可说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
-第三方依赖及其许可证见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+本分支尚未复制 FlClash 源码。引入其组件并分发 Android 应用前，需要落实其 [GPL-3.0 许可](https://github.com/chen08209/FlClash/blob/main/LICENSE)要求；当前 MIT 许可证不涵盖后续的组件集成。
+
+<a id="android-product-brief"></a>
+
+## 开发备注：Android 产品规划
+
+以下内容是开发规划，不代表功能已经实现或通过真机测试。
+
+### 本地 Agent 与设备
+
+- 在手机上运行 agent 并执行工具。本地执行不等于离线模型推理，模型 API 接入单独配置。
+- 通过原生桥接支持普通 shell 与 root 命令，提供命令输出、退出状态、取消执行和持久化执行记录。
+- 对明确选中、已连接且已授权的设备执行 ADB 操作。USB 与无线连接的兼容性需经过真机验证；主机手机拥有 root 权限不代表能访问任意目标设备。
+- 在应用内管理工作区、会话和文件操作。凭据、签名密钥、ADB 私钥和个人会话数据不进入 Git。
+
+### 界面与导航
+
+- 以 Flutter 作为 Android UI 的预定基础。实现前评估最新发布版 [FlClash](https://github.com/chen08209/FlClash) 的设计与可复用组件，再固定选用的源码版本，记录实际引入的组件及许可证。
+- 以对话为主入口，提供历史会话侧栏、新建对话、常驻输入框、流式回复和可见的工具执行结果，参照 ChatGPT 手机版的交互习惯。
+- 为工作区与文件、设备连接和设置提供独立页面。设置包含模型、API 接入、外观和执行权限。
+- 显示执行目标与权限级别，让本机 shell、本机 root 和选中的 ADB 设备可以明确区分。
+
+### 首个 Android 里程碑
+
+首个真机验收目标是一条完整流程：打开对话，选择模型与执行目标，执行一条本地命令，显示输出与退出状态，再重新打开已保存的会话。随后分别验证 root 执行与已授权设备的 ADB 连接。

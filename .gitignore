@@ -47,3 +47,23 @@ worktrees/
 .agents/worktrees/
 .typert-*/
 native/system/test/bin/
+
+# Android and Flutter local build state
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.gradle/
+.kotlin/
+**/android/**/build/
+**/android/captures/
+**/android/local.properties
+**/android/key.properties
+*.jks
+*.keystore
+
+# Local credentials and device authorization
+.env.*
+!.env.example
+!.env.sample
+adbkey
+adbkey.pub
