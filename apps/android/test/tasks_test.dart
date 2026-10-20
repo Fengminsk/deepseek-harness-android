@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/tasks.dart';
+import 'package:dsh_android/subagents.dart';
 import 'package:dsh_android/ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
@@ -40,6 +41,7 @@ class _TasksRuntime extends RuntimeController {
   int stops = 0;
   bool rejectStop = false;
   Completer<void>? stopResponse;
+  Json? inspectedChild;
 
   @override
   Future<void> refreshLive() async {}
@@ -51,6 +53,10 @@ class _TasksRuntime extends RuntimeController {
   Future<void> refreshTasks() async {}
   @override
   Future<dynamic> call(String method, [Json params = const {}]) async {
+    if (method == 'subagents.inspect') {
+      inspectedChild = params['address'] as Json;
+      throw StateError('Read unavailable in this navigation fixture');
+    }
     if (method != 'tasks.cancel' || params['sessionId'] != 'task-a') {
       throw StateError('Unexpected call');
     }
@@ -78,6 +84,53 @@ Widget _host(RuntimeController runtime) => MaterialApp(
 );
 
 void main() {
+  testWidgets('cold child without its parent address reports a visible error', (
+    tester,
+  ) async {
+    final runtime = _TasksRuntime()
+      ..taskState = {
+        'epoch': 'fixture',
+        'revision': 2,
+        'active': <Json>[],
+        'summary': {'backgroundJobs': 0},
+      };
+    runtime.taskSessions.first['subagent'] = null;
+    addTearDown(runtime.dispose);
+    await tester.pumpWidget(_host(runtime));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('整理文件'));
+    await tester.pumpAndSettle();
+    expect(find.text('子 Agent 的父级地址不可用，请从父会话查看。'), findsOneWidget);
+    expect(find.byType(TasksPage), findsOneWidget);
+    expect(find.byType(TaskHistoryPage), findsNothing);
+    expect(runtime.inspectedChild, isNull);
+    expect(runtime.stops, 0);
+  });
+
+  testWidgets('child tasks open addressed history without generic cancel', (
+    tester,
+  ) async {
+    final runtime = _TasksRuntime();
+    const address = {
+      'parentSessionId': 'parent',
+      'childSessionId': 'task-a',
+      'mode': 'unknown',
+    };
+    (runtime.taskState['active'] as List).first['subagent'] = address;
+    addTearDown(runtime.dispose);
+    await tester.pumpWidget(_host(runtime));
+    await tester.pumpAndSettle();
+    expect(find.text('停止任务'), findsNothing);
+    await tester.tap(find.text('查看子 Agent'));
+    await tester.pumpAndSettle();
+    expect(find.byType(SubagentConversationPage), findsOneWidget);
+    expect(runtime.inspectedChild, address);
+    expect(runtime.stops, 0);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpAndSettle();
+  });
+
   for (final count in <int?>[2, null]) {
     testWidgets('Agent idle does not imply background jobs idle: $count', (
       tester,

@@ -104,6 +104,23 @@ test('listing cache misses remain explicit and do not read histories or activate
   assert.equal(page.summary.running, 0)
 })
 
+test('child tasks retain their direct parent address without generic session routing or activation', async t => {
+  const h = await harness(t)
+  const header = { id: 'child', origin: 'subagent', parentSession: 'parent', createdAt: 2 }
+  h.context.sessionPersistence.list = async () => [
+    { header }, { header: { id: 'ordinary', createdAt: 1 } },
+  ]
+  const page = await h.tasks.list()
+  assert.deepEqual(page.sessions[0].subagent,
+    { parentSessionId: 'parent', childSessionId: 'child', mode: 'unknown' })
+  assert.equal(Object.hasOwn(page.sessions[1], 'subagent'), false)
+  const live = agent({ id: 'child', header })
+  h.agents.set(live.id, live)
+  assert.deepEqual(h.tasks.summary().active[0].subagent, page.sessions[0].subagent)
+  assert.equal(h.tasks.summary().summary.running, 1)
+  assert.deepEqual(h.calls, [])
+})
+
 test('cancellation and removal delegate separately to the original controller', async t => {
   const h = await harness(t)
   const a = agent(h.ctx.sessions.create(SessionId('queued')))

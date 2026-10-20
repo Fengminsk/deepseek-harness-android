@@ -1,4 +1,4 @@
-/** Compose portable command groups from the shipped preset without forking their policy text. */
+/** Compose portable commands and delegation from the shipped preset without forking their policy. */
 import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { load, dump, Type, DEFAULT_SCHEMA } from 'js-yaml'
@@ -13,7 +13,7 @@ const schema = DEFAULT_SCHEMA.extend(new Type('tag:yaml.org,2002:js', {
   represent: expression => expression.source,
 }))
 
-/** Stage the Android preset with the original goal, planning, scheduling, and compaction plugins. */
+/** Stage original portable command groups and local subagent tools; PTC workflows stay unavailable. */
 export async function stagePreset(root, destination) {
   const source = load(await readFile(join(root,
     'packages/bundle/web-app/presets/standard.patch.yml'), 'utf8'), { schema })
@@ -35,7 +35,25 @@ export async function stagePreset(root, destination) {
     }
     android.push(entry)
   }
+  if (android.some(item => item.id === 'delegation')) {
+    throw new Error('Android preset overrides original delegation')
+  }
+  const groups = original.filter(item => item.id === 'delegation')
+  if (groups.length !== 1 || !Array.isArray(groups[0].config)) {
+    throw new Error('Original preset must declare exactly one delegation group')
+  }
+  const delegation = groups[0]
+  // The in-process spawn/fork providers already belong to the shared host.
+  // Select their original tools, retaining configuration and group isolation;
+  // workflow-ptc/tool-workflow require the disabled Android PTC runtime.
+  const tools = ['tool-subagent-control', 'tool-subagent-list-agents', 'tool-subagent', 'tool-subagent-fork']
+    .map(id => {
+      const entries = delegation.config.filter(item => item.id === id)
+      if (entries.length !== 1) throw new Error(`Original delegation must contain exactly one ${id}`)
+      return entries[0]
+    })
+  android.push({ ...delegation, config: tools })
   await writeFile(join(destination, 'cordis.patch.yml'),
-    '# Generated with original standard preset command groups by stage-preset.mjs.\n'
+    '# Generated with original standard preset command groups and local delegation by stage-preset.mjs.\n'
     + dump(target, { schema, noRefs: true, lineWidth: -1 }))
 }

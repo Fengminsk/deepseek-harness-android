@@ -5,6 +5,7 @@ import 'package:material_ui/material_ui.dart';
 import 'approvals.dart';
 import 'jobs.dart';
 import 'runtime.dart';
+import 'subagents.dart';
 import 'ui.dart';
 
 String taskStatusLabel(String? status) => switch (status) {
@@ -121,6 +122,10 @@ class _TasksPageState extends State<TasksPage> with WidgetsBindingObserver {
   }
 
   Future<void> history(Json row) async {
+    if (row.containsKey('subagent')) {
+      await openConversation(row);
+      return;
+    }
     final id = await Navigator.push<String>(
       context,
       PocketRoute<String>(
@@ -132,6 +137,30 @@ class _TasksPageState extends State<TasksPage> with WidgetsBindingObserver {
       ),
     );
     if (mounted && id != null) Navigator.pop(context, id);
+  }
+
+  Future<void> openConversation(Json row) async {
+    if (!row.containsKey('subagent')) {
+      Navigator.pop(context, row['sessionId']);
+      return;
+    }
+    final address = row['subagent'];
+    if (address is! Json) {
+      setState(
+        () => errors[row['sessionId'] as String] = '子 Agent 的父级地址不可用，请从父会话查看。',
+      );
+      return;
+    }
+    await Navigator.push<void>(
+      context,
+      PocketRoute<void>(
+        builder: (_) => SubagentConversationPage(
+          runtime: widget.runtime,
+          address: SubagentAddress.fromJson(address),
+          label: title(row['sessionId'] as String),
+        ),
+      ),
+    );
   }
 
   @override
@@ -231,7 +260,7 @@ class _TasksPageState extends State<TasksPage> with WidgetsBindingObserver {
                         ? '正在停止'
                         : '${taskStatusLabel(row['status'] as String?)}'
                               '${(row['queued'] as int? ?? 0) > 0 ? ' · ${row['queued']} 条待处理' : ''}',
-                    onTap: () => Navigator.pop(context, row['sessionId']),
+                    onTap: () => openConversation(row),
                   ),
                   if (taskFailure(row).isNotEmpty)
                     Padding(
@@ -250,9 +279,10 @@ class _TasksPageState extends State<TasksPage> with WidgetsBindingObserver {
                       runSpacing: 8,
                       children: [
                         PocketButton.tonal(
-                          onPressed: () =>
-                              Navigator.pop(context, row['sessionId']),
-                          child: const Text('打开对话'),
+                          onPressed: () => openConversation(row),
+                          child: Text(
+                            row.containsKey('subagent') ? '查看子 Agent' : '打开对话',
+                          ),
                         ),
                         if ((row['blockingRequests'] as int? ?? 0) > 0)
                           PocketButton.tonal(
@@ -264,7 +294,8 @@ class _TasksPageState extends State<TasksPage> with WidgetsBindingObserver {
                             ),
                             child: const Text('处理请求'),
                           ),
-                        if (['running', 'waiting'].contains(row['status']))
+                        if (!row.containsKey('subagent') &&
+                            ['running', 'waiting'].contains(row['status']))
                           PocketButton.tonal(
                             onPressed:
                                 stopping.contains(row['sessionId']) ||
@@ -291,6 +322,19 @@ class _TasksPageState extends State<TasksPage> with WidgetsBindingObserver {
                               '${row['observation'] == 'cached' ? ' · 缓存记录' : ''}',
                     onTap: runtime.ready ? () => history(row) : null,
                   ),
+                  if (errors[row['sessionId']] != null &&
+                      !active.any(
+                        (item) => item['sessionId'] == row['sessionId'],
+                      ))
+                    Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Text(
+                        errors[row['sessionId']]!,
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.error,
+                        ),
+                      ),
+                    ),
                 ],
               ),
             if (runtime.tasksNextOffset != null)

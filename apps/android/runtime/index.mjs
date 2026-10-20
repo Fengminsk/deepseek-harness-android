@@ -20,6 +20,7 @@ import { createRuntimeTransport } from './transport.mjs'
 import { AppDocumentSearch } from './document-search.mjs'
 import { AppTasks } from './tasks.mjs'
 import { AppConfigurationTransfers } from './configuration-transfer.mjs'
+import { AppSubagents } from './subagents.mjs'
 
 export const name = 'android-runtime'
 export const inject = ['agents', 'sessions', 'workingDirectory', 'settings', 'tools', 'appReady', 'sessionPersistence']
@@ -58,7 +59,7 @@ export function apply(ctx, config) {
   })
   // Connection needs the Keystore provider before the shared Session controller can activate.
   ctx.inject(['sessionController', 'typertGateway', 'connection', 'accountCallback', 'fileUploads',
-    'pluginManager', 'jobs', 'sessionProjections'], ctx => {
+    'pluginManager', 'jobs', 'sessionProjections', 'subagents'], ctx => {
   // These Loader entries define the native carrier and App-controlled HTTP boundary.
   // The manager applies the same protection to App, Web, tools, and bundle overlays.
   const requiredEntries = new Set(['android-runtime', 'credentials', 'authorization', 'deepseek-account',
@@ -71,8 +72,8 @@ export function apply(ctx, config) {
   const web = new WebAccess(ctx, transport)
   let appPeer
   const peer = () => appPeer ??= ctx.connection.createPeer({ principal: { kind: 'owner' }, interactions: 'none' })
-  const invoke = (namespace, method, args) => {
-    return ctx.typertGateway.invoke({ namespace, method, args, peer: peer() })
+  const invoke = (namespace, method, args, signal) => {
+    return ctx.typertGateway.invoke({ namespace, method, args, peer: peer(), signal })
   }
   let attachments
   const sessions = new AppSessions(ctx, (method, request) => invoke('session', method, { request }),
@@ -93,6 +94,14 @@ export function apply(ctx, config) {
     },
   })
   tasks = new AppTasks(ctx, transport, { interactions: () => interactions.snapshot() })
+  const subagents = new AppSubagents(ctx, {
+    invoke,
+    follow: (request, signal) => ctx.typertGateway.stream({
+      namespace: 'session', method: 'follow', args: { request }, peer: peer(), signal,
+    }),
+    taskSession: params => tasks.session(params),
+    presentEvent: presentSessionEvent,
+  })
   const configurationTransfers = new AppConfigurationTransfers(ctx, { protectedNamespaces: requiredEntries })
   const exports = new AppExports(ctx, { directory: () => transport.request('native.exports.directory', {}) })
   const documentSearch = new AppDocumentSearch(transport, {
@@ -128,6 +137,11 @@ export function apply(ctx, config) {
       case 'tasks.session': return tasks.session(params)
       case 'tasks.cancel': return tasks.cancel(params)
       case 'tasks.removeQueued': return tasks.removeQueued(params)
+      case 'subagents.catalog': return subagents.call('catalog', params)
+      case 'subagents.inspect': return subagents.call('inspect', params)
+      case 'subagents.page': return subagents.call('page', params)
+      case 'subagents.send': return subagents.call('send', params)
+      case 'subagents.interrupt': return subagents.call('interrupt', params)
       case 'account.signIn': {
         const client = params.client
         if (typeof client !== 'object' || client === null || typeof client.version !== 'string'
@@ -183,7 +197,8 @@ export function apply(ctx, config) {
         await credentials.unset(credentialRef(requiredString(params.ref, 'ref')))
         return { configured: false }
       }
-      case 'sessions.list': return ctx.sessionPersistence.list()
+      // Child transcripts require their durable parent address and belong to the subagent/task entry points.
+      case 'sessions.list': return (await ctx.sessionPersistence.list()).filter(entry => entry.header.origin !== 'subagent')
       case 'session.read': {
         const sessionId = SessionId(requiredString(params.sessionId, 'sessionId'))
         const offset = params.offset ?? 0
@@ -253,7 +268,7 @@ export function apply(ctx, config) {
       remove()
       const results = await Promise.allSettled([
         () => documentSearch.close(), () => attachments.close(), () => exports.close(), () => tasks.close(),
-        () => configurationTransfers.close(),
+        () => configurationTransfers.close(), () => subagents.close(),
         () => live.close(),
         () => streams.close(), () => interactions.close(), () => web.close(),
       ].map(close => Promise.resolve().then(close)))

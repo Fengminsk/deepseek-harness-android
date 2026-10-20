@@ -22,6 +22,7 @@ import 'flclash/popup.dart';
 import 'automations.dart';
 import 'chat_projection.dart';
 import 'chat_messages.dart';
+import 'subagents.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -698,6 +699,29 @@ class _ChatPageState extends State<ChatPage> {
                           );
                         },
                       ),
+                      if (runtime.sessions.any(
+                        (item) => (item['header'] as Json)['id'] == sessionId,
+                      ))
+                        PocketTile(
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 26,
+                          ),
+                          leading: const Icon(
+                            Icons.account_tree_outlined,
+                            size: 22,
+                          ),
+                          title: const Text('子 Agent'),
+                          subtitle: const Text('当前会话的委派任务'),
+                          onTap: () {
+                            Navigator.pop(context);
+                            navigate(
+                              SubagentsPage(
+                                runtime: runtime,
+                                parentSessionId: sessionId,
+                              ),
+                            );
+                          },
+                        ),
                       if (runtime.sessions.any(
                         (item) => (item['header'] as Json)['id'] == sessionId,
                       ))

@@ -2,6 +2,7 @@ import 'package:dsh_android/chat_messages.dart';
 import 'package:dsh_android/main.dart';
 import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/tasks.dart';
+import 'package:dsh_android/subagents.dart';
 import 'package:dsh_android/ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
@@ -53,6 +54,13 @@ class _ChatRuntime extends RuntimeController {
         };
       case 'interactions.list':
         return {'revision': 1, 'requests': <Json>[]};
+      case 'subagents.catalog':
+        return {
+          'parentSessionId': params['parentSessionId'],
+          'parentAvailable': false,
+          'entries': <Json>[],
+          'nextOffset': null,
+        };
     }
     throw StateError('Unexpected $method');
   }
@@ -227,4 +235,30 @@ void main() {
       },
     );
   }
+
+  testWidgets('sidebar opens current parent catalog and retains its draft', (
+    tester,
+  ) async {
+    _phone(tester);
+    final runtime = _ChatRuntime([fixture.input(0, 'Question')]);
+    addTearDown(runtime.dispose);
+    await tester.pumpWidget(_host(runtime));
+    await _openHistory(tester);
+    await tester.enterText(find.byType(TextField), '父会话未发送的草稿');
+    await tester.tap(find.byTooltip('打开侧栏'));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('子 Agent'));
+    await tester.tap(find.text('子 Agent'));
+    await tester.pumpAndSettle();
+    expect(find.byType(SubagentsPage), findsOneWidget);
+    final call = runtime.calls.singleWhere(
+      (call) => call.method == 'subagents.catalog',
+    );
+    expect(call.params['parentSessionId'], 'history');
+    expect(runtime.calls.any((call) => call.method == 'session.send'), isFalse);
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    expect(find.text('父会话未发送的草稿'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 }

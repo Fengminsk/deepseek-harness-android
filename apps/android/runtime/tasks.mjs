@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { SessionId } from '@deepseek-ai/dsh-session'
+import { subagentAddressFromHeader } from './subagents.mjs'
 
 const reasonSchema = z.object({ kind: z.string() }).passthrough()
 const turnSchema = z.object({
@@ -141,6 +142,8 @@ export class AppTasks {
       ? blockingRequests > 0 ? 'waiting' : 'running'
       : queued > 0 ? 'queued' : failed ? 'failed' : 'idle'
     return { sessionId, status, queued, blockingRequests,
+      ...(agent.session.header.origin === 'subagent'
+        ? { subagent: subagentAddressFromHeader(agent.session.header) } : {}),
       ...(failed ? { error: this.errors.get(sessionId) } : {}) }
   }
 
@@ -169,10 +172,11 @@ export class AppTasks {
     }
   }
 
-  project(sessionId, snapshot, observation) {
+  project(sessionId, snapshot, observation, header) {
     const values = snapshot?.values ?? {}
     const tasks = values.pocketTasks
     const agent = this.ctx.agents.get(SessionId(sessionId))
+    header ??= agent?.session.header ?? this.ctx.sessions.get(SessionId(sessionId))?.header
     const live = agent ? this.liveRecord(agent) : undefined
     const open = tasks?.turns.at(-1)
     const turns = (tasks?.turns ?? []).map(turn => ({
@@ -200,6 +204,7 @@ export class AppTasks {
       cancellable: !!agent && observation === 'live',
     })))
     return { sessionId, title: values.title?.title ?? sessionId, observation,
+      ...(header?.origin === 'subagent' ? { subagent: subagentAddressFromHeader(header) } : {}),
       asOfSeq: snapshot?.asOfSeq ?? null, historyAvailable: tasks !== undefined,
       pending, history: [...turns, ...dropped, ...jobs].sort((a, b) => b.seq - a.seq),
       ...(live ? { live } : {}) }
@@ -220,7 +225,7 @@ export class AppTasks {
       const session = this.ctx.sessions.get(SessionId(id))
       const snapshot = session ? this.ctx.sessionProjections.snapshot(session, ['pocketTasks', 'inbox', 'title'])
         : this.ctx.get('sessionProjectionCache')?.cachedSnapshot(header, ['pocketTasks', 'inbox', 'title'])
-      const row = this.project(id, snapshot, session ? 'live' : snapshot ? 'cached' : 'unavailable')
+      const row = this.project(id, snapshot, session ? 'live' : snapshot ? 'cached' : 'unavailable', header)
       return { ...row, history: row.history.slice(0, 1) }
     })
     return { ...this.summary(), sessions, nextOffset: offset + limit < ordered.length ? offset + limit : null }
