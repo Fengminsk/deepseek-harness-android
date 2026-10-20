@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/services.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:material_ui/material_ui.dart';
@@ -145,11 +147,7 @@ class SettingsPage extends StatelessWidget {
                   subtitle: runtime.ready ? '本地服务已就绪' : '查看启动状态与错误',
                   onTap: () => open(DiagnosticsPage(runtime: runtime)),
                 ),
-                const PocketRow(
-                  icon: Icons.info_outline_rounded,
-                  title: 'Pocket Harness',
-                  subtitle: '0.1.0 · 构建 11 · 开发预览',
-                ),
+                const _InstalledVersionRow(),
               ],
             ),
           ],
@@ -157,6 +155,52 @@ class SettingsPage extends StatelessWidget {
       ),
     );
   }
+}
+
+class _InstalledVersionRow extends StatefulWidget {
+  const _InstalledVersionRow();
+
+  @override
+  State<_InstalledVersionRow> createState() => _InstalledVersionRowState();
+}
+
+class _InstalledVersionRowState extends State<_InstalledVersionRow> {
+  late Future<String> version = readVersion();
+
+  Future<String> readVersion() async {
+    final raw = await RuntimeController.channel
+        .invokeMethod<String>('app.metadata')
+        .timeout(const Duration(seconds: 10));
+    final metadata = raw == null ? null : jsonDecode(raw);
+    if (metadata is! Map<String, dynamic> ||
+        metadata['version'] is! String ||
+        (metadata['version'] as String).trim().isEmpty ||
+        metadata['build'] is! int ||
+        (metadata['build'] as int) < 0) {
+      throw const FormatException('Invalid installed application metadata');
+    }
+    return '${metadata['version']} · 构建 ${metadata['build']} · 开发预览';
+  }
+
+  @override
+  Widget build(BuildContext context) => FutureBuilder<String>(
+    future: version,
+    builder: (context, snapshot) => PocketRow(
+      key: const ValueKey('installed-app-version'),
+      icon: Icons.info_outline_rounded,
+      title: 'Pocket Harness',
+      subtitle: snapshot.connectionState != ConnectionState.done
+          ? '正在读取版本信息…'
+          : snapshot.hasError
+          ? '版本信息暂不可用 · 点按重试'
+          : snapshot.data,
+      onTap: snapshot.hasError
+          ? () => setState(() {
+              version = readVersion();
+            })
+          : null,
+    ),
+  );
 }
 
 class ConfigurationListPage extends StatelessWidget {
