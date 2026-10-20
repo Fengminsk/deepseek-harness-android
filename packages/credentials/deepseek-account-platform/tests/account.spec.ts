@@ -6,12 +6,12 @@ import { tmpdir } from 'node:os'
 import { createServer as createTcpServer, connect, Socket } from 'node:net'
 import { join } from 'node:path'
 import { createServer, IncomingMessage, ServerResponse } from 'node:http'
-import WebServer from '@deepseek-ai/dsh-host-webserver'
+import WebServer, { type WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import AuthorizationService from '@deepseek-ai/dsh-authorization'
 import type { AccountClientMetadata } from '@deepseek-ai/dsh-deepseek-account'
 import { LocalCredentialProvider } from '@deepseek-ai/dsh-credentials-local'
 import { credentialKey, credentialRef } from '@deepseek-ai/dsh-credentials'
-import { Config, PlatformAccount } from '../src/index.ts'
+import { AccountCallback, Config, PlatformAccount } from '../src/index.ts'
 import { browserUrl, platformHeaders, platformOrigin, loginOrigin } from '../src/protocol.ts'
 
 const cleanups: Array<() => Promise<unknown>> = []
@@ -272,6 +272,33 @@ it('stores a grant before redirecting, restores account presence, and signs out 
   expect((await f.account.getState()).status).toBe('signed-out')
   expect(await f.account.getPlatformSession()).toBeNull()
   expect((await f.ctx.credentials.describeRecord(credentialKey('deepseek-account-platform', 'device'))).configured).toBe(true)
+})
+
+it('uses an optional callback carrier without transferring PKCE or grant ownership', async () => {
+  const registrations: string[] = []
+  const removed = Promise.withResolvers<undefined>()
+  class Callback extends AccountCallback {
+    static inject = ['webServer']
+    register(origin: string, route: WebRoute) {
+      registrations.push(origin)
+      const dispose = this.ctx.webServer.register(route)
+      return () => { dispose(); removed.resolve(undefined) }
+    }
+  }
+  const f = await fixture(undefined, {}, false, {}, undefined, async (ctx) => {
+    const carrier = ctx.plugin(Callback)
+    await carrier
+    cleanups.push(() => carrier.dispose())
+  })
+  await f.account.startSignIn(clientMetadata(), f.callbackOrigin, 'desktop')
+  await f.wait('waiting-browser')
+  expect(registrations).toEqual([f.callbackOrigin])
+  expect((await fetch(f.callback('wrong'))).status).toBe(400)
+  expect((await f.account.getState()).status).toBe('signed-out')
+  expect((await fetch(f.callback(), { redirect: 'manual' })).status).toBe(302)
+  await removed.promise
+  expect((await f.account.getState()).status).toBe('credential-stored')
+  expect((await fetch(f.callback(), { redirect: 'manual' })).status).toBe(404)
 })
 
 it('does not persist a delayed exchange after cancellation or replace the next attempt', async () => {

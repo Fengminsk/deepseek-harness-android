@@ -6,7 +6,8 @@ import 'package:material_ui/material_ui.dart';
 import 'package:dsh_android/configuration_editor.dart';
 import 'package:dsh_android/configuration_edits.dart';
 import 'package:dsh_android/runtime.dart';
-import 'package:dsh_android/settings.dart';
+import 'package:dsh_android/models.dart';
+import 'package:dsh_android/models_data.dart';
 import 'package:dsh_android/ui.dart';
 
 class SettingsRuntime extends RuntimeController {
@@ -212,22 +213,33 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(
           theme: pocketTheme(Brightness.light),
-          home: ModelSettings(runtime: runtime),
+          home: DefaultModelPage(
+            runtime: runtime,
+            snapshot: ModelsSnapshot([], runtime.forms, {
+              'groups': [
+                {
+                  'id': 'deepseek-official',
+                  'name': 'DeepSeek',
+                  'models': [
+                    {'id': 'deepseek-flash', 'name': 'Flash'},
+                    {'id': 'deepseek-pro', 'name': 'Pro'},
+                  ],
+                },
+              ],
+            }),
+          ),
         ),
       );
       await tester.pumpAndSettle();
-      final model = find.byWidgetPredicate(
-        (widget) =>
-            widget is TextField && widget.decoration?.labelText == '模型 ID',
-      );
-      await tester.enterText(model, 'deepseek-pro');
-      await tester.ensureVisible(find.text('保存'));
-      await tester.tap(find.text('保存'));
+      await tester.tap(find.text('Pro'));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('保存默认模型'));
+      await tester.tap(find.text('保存默认模型'));
       await tester.pumpAndSettle();
       expect(runtime.writes.single['revision'], 4);
       expect(runtime.remote['value']['model'], 'deepseek-pro');
       expect(runtime.model, 'deepseek-pro');
-      expect(find.text('默认模型已保存；现有 API Key 未改变。'), findsOneWidget);
+      expect(find.text('已保存。'), findsOneWidget);
       await tester.pumpWidget(const SizedBox());
     },
   );

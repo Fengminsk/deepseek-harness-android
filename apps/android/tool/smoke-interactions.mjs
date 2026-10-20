@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdir, mkdtemp } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
 import { createServer } from 'node:http'
 import { once } from 'node:events'
 import { resolve, join } from 'node:path'
@@ -9,10 +10,13 @@ import { createInterface } from 'node:readline'
 const root = resolve(import.meta.dirname, '../../..')
 const home = await mkdtemp(join(root, '.cache/android/interactions-'))
 await mkdir(join(home, 'workspace'))
+await mkdir(join(home, 'native-attachment-cache'))
 const modelSteps = []
+let modelRequests = 0
 const model = createServer((request, response) => {
   void (async () => {
     const body = JSON.parse(Buffer.concat(await Array.fromAsync(request)).toString('utf8'))
+    modelRequests++
     const agent = body.tools?.some(tool => tool.name === 'smoke_approval')
     const step = agent ? modelSteps.shift() : undefined
     const block = step ? { type: 'tool_use', id: step.id, name: step.tool, input: step.args }
@@ -33,7 +37,7 @@ await once(model, 'listening')
 const child = spawn(process.execPath, ['--import', new URL('./interaction-smoke-loader.mjs', import.meta.url).href,
   join(root, '.cache/android/runtime-bundle/bootstrap.mjs')], {
   cwd: join(home, 'workspace'), env: { ...process.env, DSH_HOME: home,
-    DEEPSEEK_BASE_URL: `http://127.0.0.1:${model.address().port}` }, stdio: ['pipe', 'pipe', 'pipe'],
+    DSH_TELEMETRY_DISABLED: '1', DEEPSEEK_BASE_URL: `http://127.0.0.1:${model.address().port}` }, stdio: ['pipe', 'pipe', 'pipe'],
 })
 const exited = once(child, 'exit')
 const records = new Map(), pending = new Map(), notices = [], waiters = []
@@ -63,6 +67,8 @@ lines.on('line', line => {
   } else if (frame.method === 'native.web.preferences') send({ id: frame.id, result: { enabled: false, scope: 'local', port: 3080 } })
   else if (frame.method === 'native.web.save') send({ id: frame.id, result: true })
   else if (frame.method === 'native.network.addresses') send({ id: frame.id, result: { addresses: [] } })
+  else if (frame.method === 'native.exports.directory') send({ id: frame.id, result: join(home, 'native-export-cache') })
+  else if (frame.method === 'native.attachments.directory') send({ id: frame.id, result: join(home, 'native-attachment-cache') })
   else if (pending.has(frame.id)) {
     const waiter = pending.get(frame.id)
     pending.delete(frame.id)
@@ -77,11 +83,66 @@ lines.on('line', line => {
   }
 })
 let socket, deadline
+const started = performance.now()
+let phase = 'startup'
+const checkpoint = value => {
+  phase = value
+  console.error(`[interaction-smoke ${Math.round(performance.now() - started)}ms] ${phase}`)
+}
 try {
   await Promise.race([(async () => {
     await waitFor(frame => frame.method === 'runtime.ready')
+    checkpoint('runtime ready')
     assert.deepEqual((await request('interactions.list')).requests, [])
+    assert.ok(Array.isArray(await request('api.call', { namespace: 'llm', method: 'listProviders', args: {} })))
+    assert.ok(Array.isArray(await request('api.call', { namespace: 'llm', method: 'listConfigurableProviders', args: {} })))
+    assert.ok(Array.isArray((await request('api.call', { namespace: 'session', method: 'modelCatalog', args: {} })).groups))
+    const inventory = await request('api.call', { namespace: 'pluginInventory', method: 'list', args: {} })
+    assert.equal(inventory.managementAvailable, true)
+    assert.ok(inventory.entries.length > 0)
+    const plugins = await request('api.call', { namespace: 'pluginManager', method: 'listPlugins', args: {} })
+    assert.ok(Array.isArray(plugins))
+    for (const moduleName of ['@deepseek-ai/dsh-web-app/startup', '@minnnng/dsh-android-runtime']) {
+      const plugin = plugins.find(item => item.moduleName === moduleName)
+      assert.equal(plugin?.readOnlyReason, 'management-required')
+      const refused = await request('api.call', { namespace: 'pluginManager', method: 'setPluginEnabled',
+        args: { id: plugin.entryId, enabled: !plugin.enabled } })
+      assert.equal(refused.application, 'failed')
+      assert.equal(refused.error.code, 'management-required')
+    }
+    assert.equal((await request('web.status')).enabled, false)
+    assert.ok(Array.isArray(await request('api.call', { namespace: 'pluginManager', method: 'listBundles', args: {} })))
+    await assert.rejects(request('api.call', { namespace: 'llm', method: 'discoverModels',
+      args: { settingsNs: 'unregistered-fixture', request: { baseURL: `http://127.0.0.1:${model.address().port}` } } }), /no model discovery/i)
+    const observe = async (subscriptionId, namespace, method, args) => {
+      const admitted = await request('api.subscribe', { owner: 'fixture-activity', subscriptionId, namespace, method, args })
+      const notification = await waitFor(frame => frame.method === 'api.stream'
+        && frame.params.subscriptionId === subscriptionId && frame.params.generation === admitted.generation)
+      assert.equal(notification.params.type, 'item', notification.params.error?.message)
+      await request('api.ack', notification.params)
+      await request('api.unsubscribe', { owner: 'fixture-activity', ...admitted })
+      return notification.params.value
+    }
+    const account = await observe('account-baseline', 'account', 'watch', {})
+    assert.ok(account && typeof account === 'object')
     await request('credentials.set', { ref: 'DEEPSEEK_API_KEY', value: 'local-smoke-fixture-only' })
+    await request('session.ensure', { sessionId: 'command-session', provider: 'deepseek-official', model: 'deepseek-flash' })
+    checkpoint('command session ready')
+    const commands = await request('api.call', { namespace: 'commands', method: 'list', args: { agentId: 'command-session' } })
+    for (const name of ['goal', 'plan', 'feedback', 'compact']) assert.ok(commands.some(command => command.name === name),
+      `Missing ${name}; catalog=${JSON.stringify(commands)}; plugins=${JSON.stringify(inventory.entries.filter(entry =>
+        /goal|plan-mode|command|compaction/.test(entry.moduleName)))}`)
+    const beforeCommands = modelRequests
+    for (const line of ['/goal', '/plan', '/plan off', '/feedback local fixture feedback']) {
+      const command = await request('session.command', { sessionId: 'command-session', line, attachmentIds: [] })
+      assert.ok(command)
+      assert.notEqual(command.result.kind, 'error', command.result.text)
+    }
+    const commandHistory = await request('session.read', { sessionId: 'command-session' })
+    assert.equal(commandHistory.events.filter(event => event.type === 'command/done').length, 4)
+    assert.equal(commandHistory.events.filter(event => event.type === 'feedback/record').length, 1)
+    assert.equal(modelRequests, beforeCommands)
+    checkpoint('original commands complete')
     const run = async (sessionId, step) => {
       modelSteps.push(step)
       await request('session.send', { sessionId, requestId: sessionId, text: 'Run the fixture interaction.',
@@ -101,6 +162,36 @@ try {
     const answer = { answers: [{ id: 'choice', selected: [], custom: 'notification text' }] }
     assert.equal((await request('interactions.reply', { id: question.id, version: question.version, response: answer })).accepted, true)
     await finish('question-direct')
+    checkpoint('direct question complete')
+    const attachmentId = randomUUID()
+    const attachmentBytes = Buffer.from('Pocket Harness local attachment fixture')
+    await writeFile(join(home, 'native-attachment-cache', `${attachmentId}.bin`), attachmentBytes)
+    await writeFile(join(home, 'native-attachment-cache', `${attachmentId}.json`), JSON.stringify({
+      id: attachmentId, name: 'fixture.txt', bytes: attachmentBytes.length, mediaType: 'text/plain',
+    }))
+    const uploaded = await request('attachments.prepare', { sessionId: 'attachment-session', id: attachmentId })
+    assert.equal(typeof uploaded.receiptId, 'string')
+    await request('session.send', { sessionId: 'attachment-session', requestId: 'attachment-admission',
+      text: '', attachmentIds: [attachmentId], provider: 'deepseek-official', model: 'deepseek-flash' })
+    await finish('attachment-session')
+    const attachmentHistory = await request('session.read', { sessionId: 'attachment-session' })
+    assert.ok(attachmentHistory.events.some(event => JSON.stringify(event).includes('"type":"file"')))
+    await request('attachments.release', { sessionId: 'attachment-session', id: attachmentId })
+    checkpoint('real file attachment complete')
+    const jobs = await observe('job-baseline', 'job', 'list', { request: { sessionId: 'question-direct' } })
+    assert.deepEqual(jobs, { type: 'rows', jobs: [] })
+    const session = await observe('session-baseline', 'session', 'follow',
+      { request: { address: { kind: 'session', sessionId: 'question-direct' } } })
+    assert.equal(session.type, 'snapshot')
+    assert.ok(session.records.length > 0)
+    const exportId = randomUUID()
+    const exported = await request('session.export.prepare', { id: exportId, sessionId: 'question-direct' })
+    const exportedFile = join(home, 'native-export-cache', `${exportId}.zip`)
+    assert.equal((await stat(exportedFile)).size, exported.size)
+    assert.equal((await readFile(exportedFile)).subarray(0, 2).toString(), 'PK')
+    await request('session.export.release', { id: exportId })
+    await assert.rejects(stat(exportedFile), { code: 'ENOENT' })
+    checkpoint('stream baselines and export complete')
     assert.equal((await request('interactions.reply', { id: question.id, version: question.version, response: answer })).requestStillPending, false)
 
     const editable = await run('question-edit', { id: 'question-edit-call', tool: 'ask_user_question',
@@ -114,6 +205,7 @@ try {
     await request('interactions.reply', { id: editable.id, version: editable.version,
       response: { answers: [{ id: 'edit', selected: [], custom: 'edited answer' }] } })
     await finish('question-edit')
+    checkpoint('question edit complete')
     const timed = await run('question-timed', { id: 'question-timeout', tool: 'ask_user_question',
       args: { timeout: 1, questions: [{ id: 'late', question: 'This fixture can continue' }] } })
     await finish('question-timed')
@@ -125,6 +217,7 @@ try {
       response: { answers: [{ id: 'late', selected: [], custom: 'late original answer' }] } })).accepted, true)
     await waitFor(frame => frame.method === 'session.event' && frame.params.sessionId === late.sessionId
       && frame.params.event.type === 'turn/end' && frame.params.event.data.turn === 2)
+    checkpoint('timed and continued question complete')
 
     const approval = await run('approval-app', { id: 'approve-one', tool: 'smoke_approval', args: { command: 'fixture command' } })
     assert.equal(approval.kind, 'approval')
@@ -133,6 +226,7 @@ try {
     await finish('approval-app')
     const history = await request('session.read', { sessionId: 'approval-app' })
     assert.ok(history.events.some(event => event.type === 'approval/decided' && event.data.outcome === 'allowed-once'))
+    checkpoint('App approval complete')
 
     const web = await request('web.configure', { enabled: true, scope: 'local', port: 0 })
     const login = await fetch(web.url, { redirect: 'manual' })
@@ -158,6 +252,7 @@ try {
     assert.equal((await request('interactions.reply', { id: appFirst.id, version: appFirst.version, response: 'allowed-once' })).accepted, true)
     await browserWait(frame => frame.value?.type === 'cancel' && frame.value.eventId === appFirst.id)
     await finish(appFirst.sessionId)
+    checkpoint('App answer cancels Web request')
     const shared = await run('approval-web', { id: 'approve-web', tool: 'smoke_approval', args: { command: 'shared request' } })
     const forwarded = await browserWait(frame => frame.value?.type === 'waterfall' && frame.value.agentId === 'approval-web')
     assert.equal(shared.id, forwarded.value.eventId)
@@ -169,15 +264,35 @@ try {
     assert.equal((await browserReply.json()).result.ok, true)
     await finish('approval-web')
     assert.equal((await request('interactions.reply', { id: shared.id, version: shared.version, response: 'allowed-once' })).accepted, false)
+    checkpoint('Web answer wins')
     const cancelled = await run('approval-cancel', { id: 'cancel-one', tool: 'smoke_approval', args: { command: 'cancel this' } })
+    checkpoint('cancellation request pending')
     await request('session.cancel', { sessionId: cancelled.sessionId })
-    await finish(cancelled.sessionId)
+    checkpoint('cancellation acknowledged')
+    let cancelDeadline
+    try {
+      await Promise.race([finish(cancelled.sessionId), new Promise((_, reject) => {
+        cancelDeadline = setTimeout(() => reject(new Error('Cancel did not finish within 10 seconds')), 10000)
+      })])
+    } catch (error) {
+      const state = await request('runtime.live')
+      const pendingState = await request('interactions.list')
+      const current = await request('session.read', { sessionId: cancelled.sessionId })
+      console.error(JSON.stringify({ cancellationDiagnostic: {
+        state, pending: pendingState.requests.map(item => ({ id: item.id, sessionId: item.sessionId, kind: item.kind })),
+        events: current.events.slice(-8).map(event => ({ type: event.type, data: event.data })),
+      } }))
+      throw error
+    } finally { clearTimeout(cancelDeadline) }
+    checkpoint('cancelled turn complete')
     assert.equal((await request('interactions.list')).requests.some(item => item.id === cancelled.id), false)
     console.log(JSON.stringify({ questionTool: true, invalidAnswerPreserved: true, textAnswer: true,
       originalQuestionEditHold: true, originalTimeoutContinues: true, continuedAnswer: true,
       actualApprovalAudit: true, sharedWebRequestId: true, appAnswerCancelsWeb: true,
-      webFirstAnswerWins: true, turnCancellationWithdraws: true }))
-  })(), new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('Interaction smoke timed out')), 60000) })])
+      webFirstAnswerWins: true, turnCancellationWithdraws: true,
+      gatewayModelEndpoints: true, accountStream: true, jobStream: true, sessionStream: true,
+      pluginManagement: true, sessionExport: true, originalCommands: true, fileAttachmentAdmission: true }))
+  })(), new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error(`Interaction smoke timed out during ${phase}`)), 120000) })])
 } finally {
   clearTimeout(deadline)
   socket?.terminate()

@@ -1,7 +1,6 @@
 package com.minnnng.dsh_android
 
 import android.Manifest
-import android.app.Activity
 import android.content.*
 import android.os.*
 import android.net.Uri
@@ -16,9 +15,23 @@ import java.util.UUID
 class MainActivity : FlutterActivity() {
     private var service: Messenger? = null
     private var events: EventChannel.EventSink? = null
-    private var picker: MethodChannel.Result? = null
+    private val transfers by lazy { DocumentTransfers(this) }
+    private val exports by lazy { DocumentExports(this) }
+    private val attachments by lazy { AttachmentTransfers(this) }
     private var bound = false
     private var notificationPermission: MethodChannel.Result? = null
+    private val main = Handler(Looper.getMainLooper())
+    private var restarting: MethodChannel.Result? = null
+    private var restartBinder: IBinder? = null
+    private var restartDeath: IBinder.DeathRecipient? = null
+    private var restartAwaitingOldConnection = false
+    private val restartTimeout = Runnable {
+        val result = restarting ?: return@Runnable
+        clearRestartObserver()
+        restarting = null
+        restartAwaitingOldConnection = false
+        result.error("restart-timeout", "无法确认旧运行时已退出或新服务已连接，请稍后重试。未启动第二个运行时实例。", null)
+    }
     private val pending = mutableMapOf<String, MethodChannel.Result>()
     private val replies = Messenger(Handler(Looper.getMainLooper()) { message ->
         val raw = WirePayload.decode(message.data)
@@ -35,10 +48,24 @@ class MainActivity : FlutterActivity() {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             service = Messenger(binder)
             service!!.send(Message.obtain(null, 1).apply { replyTo = replies })
+            if (restartAwaitingOldConnection) {
+                restartAwaitingOldConnection = false
+                val result = restarting
+                restarting = null
+                clearRestartObserver()
+                if (result != null) restartRuntime(result)
+                return
+            }
+            if (restartBinder == null) {
+                restarting?.success(null)
+                restarting = null
+                main.removeCallbacks(restartTimeout)
+            }
         }
         override fun onServiceDisconnected(name: ComponentName?) {
             service = null
             pending.values.forEach { it.error("disconnected", "运行时连接中断", null) }; pending.clear()
+            if (restarting != null) return
             events?.success(JSONObject().put("method", "runtime.status").put("params",
                 JSONObject().put("phase", "failed").put("error", "运行时进程已停止，任务可能已中断")).toString())
         }
@@ -51,6 +78,19 @@ class MainActivity : FlutterActivity() {
         })
         MethodChannel(engine.dartExecutor.binaryMessenger, "dsh/runtime").setMethodCallHandler { call, result ->
             when (call.method) {
+                "app.metadata" -> result.success(AuthTabs.metadata(this))
+                "attachment.pick" -> attachments.pick(result)
+                "account.openPage" -> {
+                    try {
+                        AuthTabs.open(this, call.argument<String>("url") ?: "", call.argument<Boolean>("dark") ?: false)
+                        result.success(null)
+                    } catch (exception: Exception) { result.error("account-page", exception.message, null) }
+                }
+                "sessionExport.save" -> exports.save(call.argument<String>("id") ?: "", call.argument<String>("filename") ?: "", result)
+                "sessionExport.cancel" -> {
+                    exports.cancel(call.argument<String>("id") ?: "")
+                    result.success(null)
+                }
                 "notifications.status" -> result.success(ApprovalNotifications.status(this).toString())
                 "notifications.settings" -> {
                     startActivity(ApprovalNotifications.settingsIntent(this))
@@ -66,6 +106,7 @@ class MainActivity : FlutterActivity() {
                         }
                     } else result.success(null)
                 }
+                "restart" -> restartRuntime(result)
                 "appearance.load" -> result.success(getSharedPreferences("appearance", MODE_PRIVATE).getString("value", "{}"))
                 "appearance.save" -> {
                     try {
@@ -102,13 +143,8 @@ class MainActivity : FlutterActivity() {
                         } catch (exception: Exception) { pending.remove(id); result.error("disconnected", exception.message, null) }
                     }
                 }
-                "pickDirectory" -> {
-                    if (picker != null) result.error("busy", "文件选择器已经打开", null) else {
-                        picker = result
-                        startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).addFlags(
-                            Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION or Intent.FLAG_GRANT_PREFIX_URI_PERMISSION), 42)
-                    }
-                }
+                "pickDirectory" -> transfers.pickDirectory(result)
+                "pickDocument" -> transfers.pickDocument(result)
                 "openUrl" -> {
                     val uri = Uri.parse(call.arguments as String)
                     if (uri.scheme != "http" && uri.scheme != "https") result.error("url", "不支持的链接", null) else {
@@ -117,6 +153,67 @@ class MainActivity : FlutterActivity() {
                 }
                 else -> result.notImplemented()
             }
+        }
+    }
+    private fun clearRestartObserver() {
+        val binder = restartBinder
+        val death = restartDeath
+        if (binder != null && death != null && binder.isBinderAlive) binder.unlinkToDeath(death, 0)
+        restartBinder = null
+        restartDeath = null
+        main.removeCallbacks(restartTimeout)
+    }
+    private fun restartRuntime(result: MethodChannel.Result) {
+        if (restarting != null) { result.error("busy", "正在重启 Agent 服务", null); return }
+        restarting = result
+        main.postDelayed(restartTimeout, 10000)
+        val peer = service
+        if (peer == null) {
+            restartAwaitingOldConnection = true
+            startReplacement()
+            return
+        }
+        val binder = peer.binder
+        val death = IBinder.DeathRecipient { main.post {
+            if (restarting == null || restartBinder !== binder) return@post
+            clearRestartObserver()
+            main.postDelayed(restartTimeout, 10000)
+            startReplacement()
+        } }
+        restartBinder = binder
+        restartDeath = death
+        try {
+            binder.linkToDeath(death, 0)
+            peer.send(Message.obtain(null, 6).apply { replyTo = replies })
+        } catch (failure: RemoteException) {
+            if (!binder.isBinderAlive) {
+                clearRestartObserver()
+                main.postDelayed(restartTimeout, 10000)
+                startReplacement()
+            } else {
+                clearRestartObserver()
+                restarting = null
+                result.error("restart-failed", "未能请求旧服务退出，请稍后重试", null)
+            }
+        }
+    }
+    private fun startReplacement() {
+        if (bound) {
+            unbindService(connection)
+            bound = false
+        }
+        service = null
+        val intent = Intent(this, AgentService::class.java)
+        try {
+            startForegroundService(intent)
+            bound = bindService(intent, connection, Context.BIND_AUTO_CREATE)
+            check(bound) { "Cannot bind replacement Agent service" }
+        } catch (failure: Exception) {
+            val result = restarting
+            restarting = null
+            restartAwaitingOldConnection = false
+            clearRestartObserver()
+            result?.error("restart-failed", "Agent 服务重新启动失败：${failure.message}", null)
         }
     }
     override fun onNewIntent(intent: Intent) {
@@ -152,15 +249,9 @@ class MainActivity : FlutterActivity() {
     }
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode != 42) return
-        val result = picker ?: return
-        picker = null
-        val uri = data?.data
-        if (resultCode != Activity.RESULT_OK || uri == null) { result.success(false); return }
-        try {
-            contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            result.success(true)
-        } catch (exception: Exception) { result.error("permission", exception.message, null) }
+        if (exports.onActivityResult(requestCode, resultCode, data)) return
+        if (attachments.onActivityResult(requestCode, resultCode, data)) return
+        transfers.onActivityResult(requestCode, resultCode, data)
     }
     override fun onDestroy() {
         if (bound) {
@@ -170,6 +261,12 @@ class MainActivity : FlutterActivity() {
         pending.values.forEach { it.error("closed", "界面已关闭", null) }; pending.clear()
         notificationPermission?.error("closed", "界面已关闭", null)
         notificationPermission = null
+        transfers.close()
+        exports.close()
+        attachments.close()
+        restarting?.error("closed", "重启期间界面已关闭，请重新打开 App 查看运行时状态", null)
+        restarting = null
+        clearRestartObserver()
         super.onDestroy()
     }
 }

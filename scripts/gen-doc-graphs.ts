@@ -438,6 +438,15 @@ const SERVICE_ROLES: ServiceRole[] = [
     note: 'The Host owns browser authorization and local credentials; UI consumers receive state without tokens.',
   },
   {
+    key: 'accountCallback',
+    pkg: 'deepseek-account-platform',
+    title: 'Account callback carrier',
+    mode: 'seam',
+    implementations: [],
+    consumers: ['deepseek-account-platform'],
+    note: 'An optional Host carrier registers the account-owned callback at its browser origin; the provider retains PKCE validation, grant storage, and cancellation.',
+  },
+  {
     key: 'authorization',
     pkg: 'authorization',
     title: 'Authorization flow registry',

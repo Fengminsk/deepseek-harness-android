@@ -1,0 +1,484 @@
+import 'dart:async';
+import 'dart:convert';
+
+import 'package:dsh_android/composer_commands.dart';
+import 'package:dsh_android/main.dart';
+import 'package:dsh_android/runtime.dart';
+import 'package:dsh_android/session_models.dart';
+import 'package:dsh_android/ui.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:material_ui/material_ui.dart';
+
+final catalog = <Json>[
+  for (final name in [
+    'export',
+    'feedback',
+    'compact',
+    'goal',
+    'permission',
+    'plan',
+  ])
+    {
+      'name': name,
+      'definitionId': commandDefinitions[name],
+      'description': 'original $name',
+      if (name == 'goal' || name == 'plan') 'input': {'attachments': true},
+    },
+  {'name': 'plugin-command', 'description': 'Plugin contribution'},
+];
+
+class _Runtime extends RuntimeController {
+  _Runtime() {
+    phase = 'ready';
+  }
+  final calls = <({String method, Json params})>[];
+  bool failCommand = false;
+  bool failCatalog = false;
+  Completer<Json>? admission;
+  int prompts = 0;
+  @override
+  Future<Json> ensureSession(String id) async => {
+    'sessionId': id,
+    'created': false,
+  };
+  @override
+  Future<void> openSession(String id) async {}
+  @override
+  Future<void> send(String id, String text) async {
+    prompts++;
+  }
+
+  @override
+  Future<dynamic> call(String method, [Json params = const {}]) async {
+    calls.add((method: method, params: params));
+    if (method == 'session.command') {
+      if (admission != null) return admission!.future;
+      return {
+        'commandId': 'command-1',
+        'result': {
+          'kind': failCommand ? 'error' : 'success',
+          'text': failCommand ? '原命令拒绝了输入' : '原命令完成',
+        },
+      };
+    }
+    if (method == 'attachments.prepare') {
+      return {
+        'id': params['id'],
+        'receiptId': 'receipt',
+        'name': 'report.txt',
+        'bytes': 5,
+      };
+    }
+    if (method == 'attachments.release') return {'released': true};
+    if (method == 'api.call') {
+      switch ('${params['namespace']}.${params['method']}') {
+        case 'commands.list':
+          if (failCatalog) throw StateError('命令目录不可用');
+          if (!(params['args'] as Json).containsKey('agentId')) {
+            throw StateError('Gateway requires agentId');
+          }
+          return catalog;
+        case 'permissionPresets.catalog':
+          return {
+            'options': [
+              {'value': 'read-only', 'name': 'Read only'},
+              {'value': 'danger-full-access', 'name': 'Full access'},
+            ],
+          };
+        case 'session.modelCatalog':
+          return {
+            'groups': [
+              {
+                'id': 'provider-fixture',
+                'name': 'Fixture',
+                'models': [
+                  {'id': 'one', 'name': 'Model one'},
+                  {'id': 'two', 'name': 'Model two'},
+                ],
+              },
+            ],
+          };
+        case 'session.projections':
+          return {
+            'kind': 'sequenced',
+            'asOfSeq': 4,
+            'values': {
+              'permissions': {'currentValue': 'read-only'},
+              'modelSelection': {
+                'next': {'provider': 'provider-fixture', 'model': 'one'},
+              },
+            },
+          };
+        case 'session.selectModel':
+          return {
+            'selected': {'provider': 'provider-fixture', 'model': 'two'},
+          };
+      }
+    }
+    throw StateError('Unexpected $method $params');
+  }
+}
+
+Widget host(Widget child, {double scale = 1}) => MaterialApp(
+  theme: pocketTheme(Brightness.light),
+  builder: (context, child) => MediaQuery(
+    data: MediaQuery.of(
+      context,
+    ).copyWith(disableAnimations: true, textScaler: TextScaler.linear(scale)),
+    child: child!,
+  ),
+  home: child,
+);
+
+void phone(WidgetTester tester) {
+  tester.view.physicalSize = const Size(360, 800);
+  tester.view.devicePixelRatio = 1;
+  addTearDown(tester.view.resetPhysicalSize);
+  addTearDown(tester.view.resetDevicePixelRatio);
+  addTearDown(tester.view.resetViewInsets);
+}
+
+void main() {
+  test('typed aliases follow definition identity and bare-only commands do not claim arguments', () {
+    expect(typedComposerCommand('/计划 off', catalog)?.line, '/plan off');
+    expect(typedComposerCommand('/压缩', catalog)?.line, '/compact');
+    expect(typedComposerCommand('/compact explain this', catalog), isNull);
+    expect(typedComposerCommand('/unknown text', catalog), isNull);
+    expect(
+      typedComposerCommand('/目标 text', [
+        {'name': 'goal', 'definitionId': 'other/plugin', 'input': {}},
+      ]),
+      isNull,
+    );
+    expect(
+      typedComposerCommand('/goal text', [
+        {'name': 'goal', 'definitionId': 'other/plugin', 'input': {}},
+      ])?.line,
+      '/goal text',
+    );
+  });
+
+  testWidgets(
+    'typed commands execute canonically and an unavailable directory never silently prompts',
+    (tester) async {
+      final runtime = _Runtime();
+      addTearDown(runtime.dispose);
+      await tester.pumpWidget(host(ChatPage(runtime: runtime)));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), '/压缩');
+      await tester.tap(find.byTooltip('发送'));
+      await tester.pumpAndSettle();
+      expect(runtime.calls.last.params['line'], '/compact');
+      expect(runtime.prompts, 0);
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller!.text,
+        isEmpty,
+      );
+      runtime.failCatalog = true;
+      await tester.enterText(find.byType(TextField), '/计划 off');
+      await tester.tap(find.byTooltip('发送'));
+      await tester.pumpAndSettle();
+      expect(runtime.prompts, 0);
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller!.text,
+        '/计划 off',
+      );
+      expect(find.textContaining('命令目录不可用'), findsOneWidget);
+      runtime.failCatalog = false;
+      await tester.enterText(
+        find.byType(TextField),
+        '/not-a-command please explain',
+      );
+      await tester.tap(find.byTooltip('发送'));
+      await tester.pumpAndSettle();
+      expect(runtime.prompts, 1);
+    },
+  );
+
+  testWidgets(
+    'paired command history keeps recorded input without inventing omitted arguments',
+    (tester) async {
+      final runtime = _Runtime();
+      addTearDown(runtime.dispose);
+      await tester.pumpWidget(host(ChatPage(runtime: runtime)));
+      runtime.timelines.values.single.addAll([
+        {
+          'type': 'command/run',
+          'data': {'commandId': 'one', 'name': 'goal', 'args': ' 整理项目'},
+        },
+        {
+          'type': 'command/done',
+          'data': {'commandId': 'one', 'kind': 'success', 'text': '目标已保存'},
+        },
+        {
+          'type': 'command/run',
+          'data': {'commandId': 'two', 'name': 'feedback'},
+        },
+      ]);
+      runtime.notifyListeners();
+      await tester.pumpAndSettle();
+      expect(find.text('/goal 整理项目'), findsOneWidget);
+      expect(find.text('目标已保存'), findsOneWidget);
+      expect(find.text('/feedback'), findsOneWidget);
+      expect(find.text('指令执行中…'), findsOneWidget);
+      expect(find.text('会话指令'), findsNothing);
+    },
+  );
+
+  test('catalog ordering matches DSH while overridden commands keep their plugin face', () {
+    final rows = composerCommandRows(catalog);
+    expect(rows.map((row) => row['name']), [
+      'file',
+      'goal',
+      'plan',
+      'feedback',
+      'compact',
+      'permission',
+      'model',
+      'export',
+      'plugin-command',
+    ]);
+    expect(rows.take(4).map((row) => row['section']).toSet(), {'添加'});
+    expect(
+      commandLabel({'name': 'goal', 'definitionId': 'example/plugin'}),
+      'goal',
+    );
+    expect(
+      commandDescription({
+        'name': 'goal',
+        'definitionId': 'example/plugin',
+        'description': 'Plugin goal',
+      }),
+      'Plugin goal',
+    );
+    expect(
+      () => composerCommandRows([
+        {'name': 'file'},
+      ]),
+      throwsFormatException,
+    );
+  });
+
+  testWidgets(
+    'plus shows original commands and file opens the attachment picker',
+    (tester) async {
+      phone(tester);
+      final runtime = _Runtime();
+      addTearDown(runtime.dispose);
+      final native = <String>[];
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        RuntimeController.channel,
+        (call) async {
+          native.add(call.method);
+          return jsonEncode({
+            'items': [
+              {
+                'id': 'picked-1',
+                'name': 'report.txt',
+                'bytes': 5,
+                'mediaType': 'text/plain',
+              },
+            ],
+          });
+        },
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          RuntimeController.channel,
+          null,
+        ),
+      );
+      await tester.pumpWidget(host(ChatPage(runtime: runtime)));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('添加与指令'));
+      await tester.pumpAndSettle();
+      expect(find.text('目标  goal'), findsOneWidget);
+      expect(find.text('计划  plan'), findsOneWidget);
+      await tester.tap(find.text('文件  file'));
+      await tester.pumpAndSettle();
+      expect(native, ['attachment.pick']);
+      expect(
+        runtime.calls
+            .where((call) => call.method == 'attachments.prepare')
+            .single
+            .params['sessionId'],
+        runtime.timelines.keys.single,
+      );
+      expect(find.text('report.txt'), findsOneWidget);
+      expect(find.byType(ComposerCommands), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'goal uses the command handler and retains text and selection on failure',
+    (tester) async {
+      phone(tester);
+      final runtime = _Runtime()..failCommand = true;
+      addTearDown(runtime.dispose);
+      await tester.pumpWidget(host(ChatPage(runtime: runtime)));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('添加与指令'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('目标  goal'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), '整理当前项目');
+      runtime.statuses[runtime.timelines.keys.single] = 'running';
+      runtime.notifyListeners();
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('发送'));
+      await tester.pumpAndSettle();
+      expect(runtime.prompts, 0);
+      expect(runtime.calls.last.params['line'], '/goal 整理当前项目');
+      expect(find.text('原命令拒绝了输入'), findsOneWidget);
+      expect(find.text('目标 · /goal'), findsOneWidget);
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller!.text,
+        '整理当前项目',
+      );
+      runtime.failCommand = false;
+      await tester.tap(find.byTooltip('发送'));
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller!.text,
+        isEmpty,
+      );
+      expect(find.byType(ComposerCommandChip), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'menu and send remain below floating header with keyboard and enlarged text',
+    (tester) async {
+      phone(tester);
+      final runtime = _Runtime();
+      addTearDown(runtime.dispose);
+      await tester.pumpWidget(host(ChatPage(runtime: runtime), scale: 1.5));
+      await tester.enterText(find.byType(TextField), '一\n二\n三\n四\n五');
+      tester.view.viewInsets = const FakeViewPadding(bottom: 320);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('添加与指令'));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      expect(find.byTooltip('发送').hitTestable(), findsOneWidget);
+      expect(
+        tester.getRect(find.byTooltip('发送')).bottom,
+        lessThanOrEqualTo(480),
+      );
+      expect(find.byTooltip('打开侧栏').hitTestable(), findsOneWidget);
+      expect(
+        tester.getRect(find.byType(ComposerCommands)).top,
+        greaterThan(60),
+      );
+    },
+  );
+
+  testWidgets(
+    'session model applies its own session without changing the new-chat default',
+    (tester) async {
+      final runtime = _Runtime();
+      addTearDown(runtime.dispose);
+      final defaultModel = runtime.model;
+      await tester.pumpWidget(
+        host(SessionModelPage(runtime: runtime, sessionId: 'session-A')),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Model two'));
+      await tester.tap(find.text('应用到当前会话'));
+      await tester.pumpAndSettle();
+      final request = runtime.calls.last.params['args']['request'];
+      expect(request, {
+        'sessionId': 'session-A',
+        'provider': 'provider-fixture',
+        'model': 'two',
+      });
+      expect(runtime.model, defaultModel);
+      expect(find.text('已选择此会话后续请求使用的模型。'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'permission selection reads the current projection and retains the original full-access confirmation',
+    (tester) async {
+      final runtime = _Runtime();
+      addTearDown(runtime.dispose);
+      await tester.pumpWidget(
+        host(
+          SessionPermissionPage(
+            runtime: runtime,
+            sessionId: 'one',
+            command: catalog.firstWhere((row) => row['name'] == 'permission'),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byIcon(Icons.check_rounded), findsOneWidget);
+      await tester.tap(find.text('完全权限'));
+      await tester.pumpAndSettle();
+      expect(
+        runtime.calls.where((call) => call.method == 'session.command'),
+        isEmpty,
+      );
+      await tester.ensureVisible(find.text('我已了解风险，并愿意继续'));
+      await tester.tap(find.text('我已了解风险，并愿意继续'));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('启用'));
+      await tester.tap(find.text('启用'));
+      await tester.pumpAndSettle();
+      expect(
+        runtime.calls
+            .where((call) => call.method == 'session.command')
+            .single
+            .params['line'],
+        '/permission danger-full-access',
+      );
+      expect(runtime.prompts, 0);
+    },
+  );
+
+  testWidgets(
+    'saved file attachments and original command results remain visible in history',
+    (tester) async {
+      await tester.pumpWidget(
+        host(
+          const Scaffold(
+            body: Column(
+              children: [
+                EventCard(
+                  event: {
+                    'type': 'user/message',
+                    'data': {
+                      'content': [
+                        {
+                          'type': 'file',
+                          'attachment': {
+                            'attachmentId': 'hash',
+                            'name': 'report.txt',
+                            'bytes': 5,
+                          },
+                        },
+                      ],
+                    },
+                  },
+                ),
+                EventCard(
+                  event: {
+                    'type': 'command/done',
+                    'data': {
+                      'commandId': 'id',
+                      'kind': 'success',
+                      'text': '原命令的结果',
+                    },
+                  },
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+      expect(find.text('report.txt'), findsOneWidget);
+      expect(find.text('原命令的结果'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+}

@@ -83,6 +83,7 @@ export const SERVICE_PAGE: Record<string, string> = {
   cordisInspect: 'extensions.md',
   authorization: 'credentials.md',
   deepseekAccount: 'credentials.md',
+  accountCallback: 'credentials.md',
   credentials: 'credentials.md',
   credentialsController: 'credentials.md',
   settingsController: 'settings.md',

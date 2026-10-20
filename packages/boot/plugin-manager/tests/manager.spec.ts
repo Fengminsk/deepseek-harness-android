@@ -20,6 +20,7 @@ import Hmr from '@deepseek-ai/dsh-hmr'
 import Timer from '@deepseek-ai/cordis-plugin-timer'
 import type { PatchOptions } from '@deepseek-ai/cordis-plugin-include'
 import { Group } from '@deepseek-ai/cordis-plugin-loader'
+import { remoteMethods } from '@deepseek-ai/dsh-typert-protocol'
 import * as operations from '../src/operations.ts'
 import * as githubConnection from '../src/github-connection.ts'
 import { parse, parseDocument } from 'yaml'
@@ -581,7 +582,8 @@ it('retains approved policy and reports it as changed when the registry fails be
 })
 
 it('runs a real pnpm dependency script only after approval and retry', async () => {
-  const { manager, dir, profile } = await fixture('startup')
+  const pnpm = fileURLToPath(new URL('../../../../apps/desktop/node_modules/pnpm/bin/pnpm.mjs', import.meta.url))
+  const { manager, dir, profile } = await fixture('startup', false, undefined, {}, { command: process.execPath, args: ['--expose-internals', pnpm], env: {} })
   const addon = join(profile.cwd, 'addon')
   mkdirSync(addon)
   writeFileSync(join(addon, 'package.json'), JSON.stringify({ name: 'approval-fixture-addon', version: '1.0.0',
@@ -771,6 +773,113 @@ it('addresses children inside profile groups and marks ambiguous ids read-only',
   const duplicate = entries.find(row => row.id === 'managed')!
   writeFileSync(profile.patchPath, JSON.stringify([{ insert: [duplicate] }]))
   expect((await manager.listPlugins()).find(row => row.entryId === 'include:managed')?.readOnlyReason).toBe('unaddressable')
+})
+
+it('host reservations are additive, private to the host, and protect entries plus both bundle transitions', async () => {
+  const { manager, dir, profile } = await fixture('startup')
+  const initial = (await manager.listPlugins()).find(row => row.patchId === 'managed')!
+  const manifest = readFileSync(join(dir, 'package.json'), 'utf8')
+  const patch = readFileSync(profile.patchPath, 'utf8')
+  expect(remoteMethods(manager).some(method => method.method === 'listPlugins')).toBe(true)
+  expect(remoteMethods(manager).some(method => method.method === 'protectModules')).toBe(false)
+  manager.protectModules([initial.moduleName])
+  manager.protectModules([])
+  expect((await manager.listPlugins()).find(row => row.entryId === initial.entryId)).toMatchObject({ readOnlyReason: 'management-required' })
+  expect((await manager.listBundles()).find(row => row.name === 'extra')).toMatchObject({ removable: false, readOnlyReason: 'management-required' })
+  for (const enabled of [false, true]) {
+    expect(await manager.setPluginEnabled(initial.entryId, enabled)).toMatchObject({
+      application: 'failed', changed: false, error: { code: 'management-required' },
+    })
+    expect(await manager.setBundleEnabled('extra', enabled)).toMatchObject({
+      application: 'failed', changed: false, error: { code: 'management-required' },
+    })
+  }
+  expect(await manager.removeBundle('extra')).toMatchObject({ application: 'failed', changed: false, error: { code: 'management-required' } })
+  expect(readFileSync(join(dir, 'package.json'), 'utf8')).toBe(manifest)
+  expect(readFileSync(profile.patchPath, 'utf8')).toBe(patch)
+})
+
+it('host reservations block overrides of reserved children and ancestor groups without blocking unrelated layers', async () => {
+  const { ctx, manager, bundle, dir, profile } = await fixture('startup', false, (ctx) => { ctx.loader.builtins.group = Group })
+  bundle('extra', [{ id: 'platform', name: 'cordis:group', group: true, config: [
+    { id: 'web-start', name: 'android:web-start', disabled: true },
+  ] }])
+  await reconcileProfilePatches(ctx, readProfilePatches('test', profile), 'test')
+  manager.protectModules(['android:web-start'])
+  const child = (await manager.listPlugins()).find(row => row.moduleName === 'android:web-start')!
+  expect(child).toMatchObject({ readOnlyReason: 'management-required' })
+  expect(await manager.setPluginEnabled(child.entryId, true)).toMatchObject({ error: { code: 'management-required' } })
+  for (const id of ['web-start', 'platform']) {
+    const name = `override-${id}`
+    bundle(name, [])
+    writeFileSync(join(dir, 'node_modules', name, 'cordis.patch.yml'), JSON.stringify([{ id, disabled: false }]))
+    const manifest = readProfileManifest('test', dir)
+    manifest.dependencies = { ...manifest.dependencies, [name]: '1.0.0' }
+    writeFileSync(join(dir, 'package.json'), JSON.stringify(manifest))
+    expect((await manager.listBundles()).find(row => row.name === name)).toMatchObject({ readOnlyReason: 'management-required', removable: false })
+    for (const enabled of [true, false]) {
+      expect(await manager.setBundleEnabled(name, enabled)).toMatchObject({ application: 'failed', changed: false, error: { code: 'management-required' } })
+    }
+    expect(await manager.removeBundle(name)).toMatchObject({ error: { code: 'management-required' } })
+  }
+  bundle('ordinary', [{ id: 'ordinary', name: './plugin.mjs' }])
+  expect(await manager.setBundleEnabled('ordinary', true)).toMatchObject({ application: 'restart-required', changed: true })
+})
+
+it('host reservations retain a known bundle restriction when its files become unreadable', async () => {
+  const { manager, dir } = await fixture('startup')
+  manager.protectModules([(await manager.listPlugins()).find(row => row.patchId === 'managed')!.moduleName])
+  writeFileSync(join(dir, 'node_modules', 'extra', 'cordis.patch.yml'), '{ invalid:')
+  expect((await manager.listBundles()).find(row => row.name === 'extra')).toMatchObject({ removable: false, readOnlyReason: 'management-required' })
+  expect(await manager.setBundleEnabled('extra', false)).toMatchObject({ application: 'failed', error: { code: 'management-required' } })
+})
+
+it('host reservations refuse known package replacement before pnpm or script approval writes', async () => {
+  const { manager, dir } = await fixture('startup')
+  manager.protectModules([(await manager.listPlugins()).find(row => row.patchId === 'managed')!.moduleName, '@platform/runtime'])
+  const pnpm = vi.spyOn(operations, 'runProfilePnpm')
+  onTestFinished(() => { pnpm.mockRestore() })
+  const manifest = readFileSync(join(dir, 'package.json'), 'utf8')
+  const builds = readFileSync(join(dir, 'pnpm-workspace.yaml'), 'utf8')
+  for (const spec of ['extra@2', '@platform/runtime@latest']) {
+    expect(await manager.installBundle(spec, { approvedBuilds: ['native'] })).toMatchObject({
+      application: 'failed', changed: false, error: { code: 'management-required' },
+    })
+  }
+  expect(pnpm).not.toHaveBeenCalled()
+  expect(readFileSync(join(dir, 'package.json'), 'utf8')).toBe(manifest)
+  expect(readFileSync(join(dir, 'pnpm-workspace.yaml'), 'utf8')).toBe(builds)
+})
+
+it('host reservations restore an unknown downloaded bundle before it can override platform entries', async () => {
+  const { manager, dir, bundle } = await fixture('startup')
+  manager.protectModules([(await manager.listPlugins()).find(row => row.patchId === 'managed')!.moduleName])
+  const before = readFileSync(join(dir, 'package.json'), 'utf8')
+  const pnpm = vi.spyOn(operations, 'runProfilePnpm').mockImplementation(async () => {
+    bundle('downloaded', [])
+    writeFileSync(join(dir, 'node_modules', 'downloaded', 'cordis.patch.yml'), JSON.stringify([{ id: 'managed', disabled: true }]))
+    const manifest = readProfileManifest('test', dir)
+    manifest.dependencies = { ...manifest.dependencies, downloaded: '1.0.0' }
+    writeFileSync(join(dir, 'package.json'), JSON.stringify(manifest))
+    return { exitCode: 0, output: 'installed', truncated: false, logPath: join(dir, 'pnpm.log') }
+  })
+  onTestFinished(() => { pnpm.mockRestore() })
+  expect(await manager.installBundle('https://example.com/plugin.tgz', { enabled: false })).toMatchObject({
+    application: 'failed', changed: false, error: { code: 'management-required' },
+  })
+  expect(pnpm).toHaveBeenCalledTimes(1)
+  expect(readFileSync(join(dir, 'package.json'), 'utf8')).toBe(before)
+})
+
+it('management protection recognizes an override-only bundle targeting its original entry', async () => {
+  const { manager, dir, bundle } = await fixture('startup')
+  bundle('manager-override', [])
+  writeFileSync(join(dir, 'node_modules', 'manager-override', 'cordis.patch.yml'), JSON.stringify([{ id: 'manager', config: {} }]))
+  const manifest = readProfileManifest('test', dir)
+  manifest.dsh = { ...manifest.dsh, profile: { ...manifest.dsh?.profile, bundles: [...manifest.dsh!.profile!.bundles!, 'manager-override'] } }
+  writeFileSync(join(dir, 'package.json'), JSON.stringify(manifest))
+  expect((await manager.listBundles()).find(row => row.name === 'manager-override')).toMatchObject({ readOnlyReason: 'management-required' })
+  expect(await manager.setBundleEnabled('manager-override', false)).toMatchObject({ application: 'failed', changed: false, error: { code: 'management-required' } })
 })
 
 it.each(['', '-g'])('rejects an invalid installation spec before calling pnpm: %j', async (spec) => {

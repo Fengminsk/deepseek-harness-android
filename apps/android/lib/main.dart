@@ -11,6 +11,11 @@ import 'ui.dart';
 import 'appearance.dart';
 import 'approvals.dart';
 import 'tasks.dart';
+import 'diagnostics.dart';
+import 'export.dart';
+import 'attachments.dart';
+import 'composer_commands.dart';
+import 'session_models.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -114,6 +119,10 @@ class _ChatPageState extends State<ChatPage> {
   final drafts = <String, TextEditingValue>{};
   final errors = <String, String>{};
   final submissions = <String>{};
+  final commandDrafts = <String, Json>{};
+  late AttachmentDrafts attachments;
+  bool commandsOpen = false;
+  String? lastRuntimePhase;
   final messageScroll = ScrollController();
   bool navigationScheduled = false;
   (String, int, String?)? observedTimeline;
@@ -132,6 +141,8 @@ class _ChatPageState extends State<ChatPage> {
   void initState() {
     super.initState();
     runtime.addListener(handleNavigation);
+    attachments = AttachmentDrafts(runtime)..addListener(attachmentChanged);
+    lastRuntimePhase = runtime.phase;
     handleNavigation();
   }
 
@@ -140,12 +151,20 @@ class _ChatPageState extends State<ChatPage> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.runtime != runtime) {
       oldWidget.runtime.removeListener(handleNavigation);
+      attachments.removeListener(attachmentChanged);
+      attachments.dispose();
+      attachments = AttachmentDrafts(runtime)..addListener(attachmentChanged);
+      lastRuntimePhase = runtime.phase;
       runtime.addListener(handleNavigation);
       handleNavigation();
     }
   }
 
   void handleNavigation() {
+    if (lastRuntimePhase == 'ready' && !runtime.ready) {
+      attachments.invalidateReceipts();
+    }
+    lastRuntimePhase = runtime.phase;
     if (!mounted ||
         navigationScheduled ||
         !runtime.ready ||
@@ -179,6 +198,8 @@ class _ChatPageState extends State<ChatPage> {
   @override
   void dispose() {
     runtime.removeListener(handleNavigation);
+    attachments.removeListener(attachmentChanged);
+    attachments.dispose();
     input.dispose();
     inputFocus.dispose();
     messageScroll.dispose();
@@ -187,20 +208,89 @@ class _ChatPageState extends State<ChatPage> {
 
   void navigate(Widget page) =>
       Navigator.push(context, PocketRoute<void>(builder: (_) => page));
+  void attachmentChanged() {
+    if (mounted) setState(() {});
+  }
+
   void activateSession(String id) {
     drafts[sessionId] = input.value;
     setState(() {
       sessionId = id;
+      commandsOpen = false;
       input.value = drafts[id] ?? TextEditingValue.empty;
     });
   }
 
   void newChat() => activateSession(runtime.newSession());
 
+  void pickCommand(Json command) {
+    setState(() => commandsOpen = false);
+    switch (builtinCommand(command) ?? command['clientAction']) {
+      case 'file':
+        unawaited(attachments.pick(sessionId));
+      case 'model':
+        navigate(SessionModelPage(runtime: runtime, sessionId: sessionId));
+      case 'permission':
+        navigate(
+          SessionPermissionPage(
+            runtime: runtime,
+            sessionId: sessionId,
+            command: command,
+          ),
+        );
+      case 'export':
+        final session = runtime.sessions
+            .where((item) => (item['header'] as Json)['id'] == sessionId)
+            .firstOrNull;
+        navigate(
+          SessionExportPage(
+            runtime: runtime,
+            sessionId: sessionId,
+            sessionTitle: session == null ? '新对话' : sessionTitle(session),
+          ),
+        );
+      default:
+        if (command['input'] == null) {
+          unawaited(runDetached(command, sessionId));
+        } else {
+          setState(() => commandDrafts[sessionId] = command);
+          inputFocus.requestFocus();
+        }
+    }
+  }
+
+  Future<void> runDetached(Json command, String id) async {
+    if (submissions.contains(id)) {
+      setState(() => errors[id] = '当前提交尚未确认，请稍后再执行指令。');
+      return;
+    }
+    setState(() {
+      submissions.add(id);
+      errors.remove(id);
+    });
+    try {
+      final response = await runtime.call('session.command', {
+        'sessionId': id,
+        'line': '/${command['name']}',
+        'attachmentIds': [],
+      }) as Json?;
+      if (response == null) throw StateError('指令已不可用，请重新打开会话菜单。');
+      if (response['result']['kind'] == 'error' && mounted) {
+        setState(() => errors[id] = '${response['result']['text']}');
+      }
+    } catch (failure) {
+      if (mounted) setState(() => errors[id] = '指令执行结果未确认，请核对会话记录：$failure');
+    } finally {
+      if (mounted) setState(() => submissions.remove(id));
+    }
+  }
+
   Future<void> openTasks() async {
     final id = await Navigator.push<String>(
       context,
-      PocketRoute<String>(builder: (_) => TasksPage(runtime: runtime)),
+      PocketRoute<String>(
+        builder: (_) => TasksPage(runtime: runtime, sessionId: sessionId),
+      ),
     );
     if (!mounted || id == null) return;
     activateSession(id);
@@ -214,22 +304,94 @@ class _ChatPageState extends State<ChatPage> {
   Future<void> send() async {
     final text = input.text.trim();
     final sendingId = sessionId;
-    if (text.isEmpty || submissions.contains(sendingId)) return;
+    final pickedCommand = commandDrafts[sendingId];
+    var command = pickedCommand;
+    var commandLine = command == null
+        ? null
+        : '/${command['name']}${text.isEmpty ? '' : ' $text'}';
+    if (submissions.contains(sendingId)) return;
+    if (!attachments.ready(sendingId)) {
+      setState(() => errors[sendingId] = '附件尚未准备完成，请重试或移除失败项。');
+      return;
+    }
+    final attachedIds = attachments.snapshotIds(sendingId);
+    if (text.isEmpty && attachedIds.isEmpty && command == null) return;
+    if (command != null &&
+        attachedIds.isNotEmpty &&
+        command['input']?['attachments'] != true) {
+      final name = command['name'];
+      setState(() => errors[sendingId] = '/$name 不接受附件，请先移除附件。');
+      return;
+    }
     drafts[sendingId] = input.value;
     setState(() {
       submissions.add(sendingId);
       errors.remove(sendingId);
     });
     try {
-      await runtime.send(sendingId, text);
+      if (command == null && text.startsWith('/')) {
+        final catalog = await loadComposerCatalog(runtime, sendingId);
+        final typed = typedComposerCommand(text, catalog);
+        if (typed != null) {
+          command = typed.descriptor;
+          commandLine = typed.line;
+          final action = builtinCommand(command) ?? command['clientAction'];
+          if (typed.bare &&
+              ['file', 'model', 'permission', 'export'].contains(action)) {
+            if (attachedIds.isNotEmpty &&
+                (action == 'model' || action == 'permission')) {
+              throw StateError('/${command['name']} 不接受附件，请先移除附件。');
+            }
+            if (!mounted) return;
+            if (sessionId != sendingId) throw StateError('请返回原会话继续此操作，原草稿已保留。');
+            if (input.text.trim() == text) {
+              input.clear();
+              drafts.remove(sendingId);
+            }
+            pickCommand(command);
+            return;
+          }
+          if (attachedIds.isNotEmpty &&
+              command['input']?['attachments'] != true) {
+            throw StateError('/${command['name']} 不接受附件，请先移除附件。');
+          }
+        }
+      }
+      if (command != null) {
+        final response = await runtime.call('session.command', {
+          'sessionId': sendingId,
+          'line': commandLine,
+          'attachmentIds': attachedIds,
+        }) as Json?;
+        if (response == null) throw StateError('这条指令已不可用，请重新打开会话菜单。');
+        if (response['result']['kind'] == 'error') {
+          if (mounted) {
+            setState(() => errors[sendingId] = '${response['result']['text']}');
+          }
+          return;
+        }
+      } else if (attachedIds.isNotEmpty) {
+        await runtime.sendAttachments(sendingId, text, attachedIds);
+      } else {
+        await runtime.send(sendingId, text);
+      }
       if (!mounted) return;
       final draft = sendingId == sessionId ? input.value : drafts[sendingId];
-      if (draft?.text.trim() == text) {
+      if (draft?.text.trim() == text &&
+          identical(commandDrafts[sendingId], pickedCommand)) {
         drafts.remove(sendingId);
+        commandDrafts.remove(sendingId);
         if (sendingId == sessionId) input.clear();
       }
+      await attachments.consume(sendingId, attachedIds);
     } catch (error) {
-      if (mounted) setState(() => errors[sendingId] = '$error');
+      if (mounted) {
+        setState(
+          () => errors[sendingId] = command == null
+              ? '$error'
+              : '指令执行结果未确认，草稿已保留，请先核对会话记录。\n$error',
+        );
+      }
     } finally {
       if (mounted) setState(() => submissions.remove(sendingId));
     }
@@ -283,23 +445,49 @@ class _ChatPageState extends State<ChatPage> {
     builder: (context, _) {
       final colors = Theme.of(context).colorScheme;
       final events = runtime.timelines[sessionId] ?? [];
+      final commandRuns = {
+        for (final event in events.where((e) => e['type'] == 'command/run'))
+          event['data']['commandId']: event,
+      };
+      final commandResults = {
+        for (final event in events.where((e) => e['type'] == 'command/done'))
+          event['data']['commandId']: event['data'] as Json,
+      };
+      final modelEvent = events.reversed
+          .where(
+            (event) =>
+                event['type'] == 'model/selection' ||
+                event['type'] == 'request/header',
+          )
+          .firstOrNull;
+      final modelLabel = modelEvent == null
+          ? runtime.model
+          : modelEvent['type'] == 'model/selection'
+          ? '${modelEvent['data']['model']}'
+          : '${modelEvent['data']['header']['config']['model']}';
       final visible = events
           .where(
-            (event) => [
-              'user/message',
-              'assistant/message',
-              'tool/call',
-              'tool/result',
-              'turn/end',
-            ].contains(event['type']),
+            (event) =>
+                [
+                  'user/message',
+                  'assistant/message',
+                  'tool/call',
+                  'tool/result',
+                  'turn/end',
+                  'command/run',
+                  'command/done',
+                ].contains(event['type']) &&
+                (event['type'] != 'command/done' ||
+                    !commandRuns.containsKey(event['data']['commandId'])),
           )
           .toList();
       final streaming = runtime.streaming[sessionId];
       final running = runtime.statuses[sessionId] == 'running';
+      final stoppable = running && commandDrafts[sessionId] == null;
       final sessionRequests = runtime.interactions
           .where((request) => request['sessionId'] == sessionId)
           .toList();
-      followReply(visible.length, streaming);
+      followReply(events.length, streaming);
       return PocketScaffold(
         scaffoldKey: scaffold,
         leading: GlassButton(
@@ -310,7 +498,9 @@ class _ChatPageState extends State<ChatPage> {
         title: Semantics(
           button: true,
           child: GestureDetector(
-            onTap: () => navigate(ModelSettings(runtime: runtime)),
+            onTap: () => navigate(
+              SessionModelPage(runtime: runtime, sessionId: sessionId),
+            ),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -321,7 +511,7 @@ class _ChatPageState extends State<ChatPage> {
                 ),
                 Text(
                   runtime.ready
-                      ? runtime.model
+                      ? modelLabel
                       : runtime.phase == 'failed'
                       ? '服务需要处理'
                       : '正在启动',
@@ -431,6 +621,33 @@ class _ChatPageState extends State<ChatPage> {
                           unawaited(openTasks());
                         },
                       ),
+                      if (runtime.sessions.any(
+                        (item) => (item['header'] as Json)['id'] == sessionId,
+                      ))
+                        PocketTile(
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 26,
+                          ),
+                          leading: const Icon(
+                            Icons.ios_share_rounded,
+                            size: 22,
+                          ),
+                          title: const Text('导出当前对话'),
+                          onTap: () {
+                            Navigator.pop(context);
+                            final session = runtime.sessions.firstWhere(
+                              (item) =>
+                                  (item['header'] as Json)['id'] == sessionId,
+                            );
+                            navigate(
+                              SessionExportPage(
+                                runtime: runtime,
+                                sessionId: sessionId,
+                                sessionTitle: sessionTitle(session),
+                              ),
+                            );
+                          },
+                        ),
                       if (runtime.interactions.isNotEmpty)
                         PocketTile(
                           contentPadding: const EdgeInsets.symmetric(
@@ -591,7 +808,13 @@ class _ChatPageState extends State<ChatPage> {
                 controller: messageScroll,
                 padding: const EdgeInsets.symmetric(horizontal: 24),
                 children: [
-                  for (final event in visible) EventCard(event: event),
+                  for (final event in visible)
+                    EventCard(
+                      event: event,
+                      commandResult: event['type'] == 'command/run'
+                          ? commandResults[event['data']['commandId']]
+                          : null,
+                    ),
                   if (streaming != null && streaming.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.symmetric(vertical: 16),
@@ -605,7 +828,29 @@ class _ChatPageState extends State<ChatPage> {
         bottom: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (sessionRequests.isNotEmpty)
+            if (commandsOpen)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: ComposerCommands(
+                  maxHeight:
+                      ((MediaQuery.sizeOf(context).height -
+                                  MediaQuery.viewInsetsOf(context).bottom -
+                                  180) *
+                              .55)
+                          .clamp(100.0, 420.0),
+                  runtime: runtime,
+                  sessionId: sessionId,
+                  onPick: pickCommand,
+                ),
+              ),
+            if (!commandsOpen && commandDrafts[sessionId] != null)
+              ComposerCommandChip(
+                command: commandDrafts[sessionId]!,
+                onRemove: () => setState(() => commandDrafts.remove(sessionId)),
+              ),
+            if (!commandsOpen)
+              PocketAttachmentRail(drafts: attachments, sessionId: sessionId),
+            if (!commandsOpen && sessionRequests.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.only(bottom: 10),
                 child: GlassSurface(
@@ -634,7 +879,7 @@ class _ChatPageState extends State<ChatPage> {
                   ),
                 ),
               ),
-            if (submitError != null)
+            if (!commandsOpen && submitError != null)
               Padding(
                 padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
                 child: Text(
@@ -652,8 +897,13 @@ class _ChatPageState extends State<ChatPage> {
                   children: [
                     GlassButton(
                       icon: Icons.add_rounded,
-                      label: '授权文件',
-                      onPressed: () => navigate(FilesPage(runtime: runtime)),
+                      label: commandsOpen ? '关闭会话菜单' : '添加与指令',
+                      onPressed: runtime.ready
+                          ? () {
+                              inputFocus.unfocus();
+                              setState(() => commandsOpen = !commandsOpen);
+                            }
+                          : null,
                     ),
                     const SizedBox(width: 6),
                     Expanded(
@@ -661,15 +911,17 @@ class _ChatPageState extends State<ChatPage> {
                         controller: input,
                         focusNode: inputFocus,
                         minLines: 1,
-                        maxLines: 5,
-                        decoration: const InputDecoration(
-                          hintText: '交给 Pocket Harness',
-                          hintStyle: TextStyle(fontSize: 15),
+                        maxLines: commandsOpen ? 1 : 5,
+                        decoration: InputDecoration(
+                          hintText: commandDrafts[sessionId] == null
+                              ? '交给 Pocket Harness'
+                              : '${commandDrafts[sessionId]!['input']?['hint'] ?? commandDescription(commandDrafts[sessionId]!)}',
+                          hintStyle: const TextStyle(fontSize: 15),
                           filled: false,
                           border: InputBorder.none,
                           enabledBorder: InputBorder.none,
                           focusedBorder: InputBorder.none,
-                          contentPadding: EdgeInsets.symmetric(
+                          contentPadding: const EdgeInsets.symmetric(
                             vertical: 12,
                             horizontal: 2,
                           ),
@@ -680,14 +932,17 @@ class _ChatPageState extends State<ChatPage> {
                     GlassButton(
                       icon: submitting
                           ? Icons.more_horiz_rounded
-                          : running
+                          : stoppable
                           ? Icons.stop_rounded
                           : Icons.arrow_upward_rounded,
-                      label: running ? '停止任务' : '发送',
+                      label: stoppable ? '停止任务' : '发送',
                       solid: true,
-                      onPressed: !runtime.ready || submitting
+                      onPressed:
+                          !runtime.ready ||
+                              submitting ||
+                              (!stoppable && !attachments.ready(sessionId))
                           ? null
-                          : running
+                          : stoppable
                           ? () async {
                               try {
                                 await runtime.call('session.cancel', {
@@ -735,8 +990,9 @@ class _Suggestion extends StatelessWidget {
 }
 
 class EventCard extends StatelessWidget {
-  const EventCard({required this.event, super.key});
+  const EventCard({required this.event, this.commandResult, super.key});
   final Json event;
+  final Json? commandResult;
   static String textOf(dynamic content) => content is List
       ? content
             .whereType<Json>()
@@ -750,8 +1006,12 @@ class EventCard extends StatelessWidget {
     final type = event['type'];
     if (type == 'user/message' || type == 'assistant/message') {
       final user = type == 'user/message';
-      final text = textOf(
-        user ? data['content'] : (data['message'] as Json)['content'],
+      final content = user
+          ? data['content']
+          : (data['message'] as Json)['content'];
+      final text = textOf(content);
+      final attachments = (content as List).whereType<Json>().where(
+        (block) => block['type'] == 'file' || block['type'] == 'image',
       );
       return Align(
         alignment: user ? Alignment.centerRight : Alignment.centerLeft,
@@ -768,9 +1028,38 @@ class EventCard extends StatelessWidget {
             color: user ? Theme.of(context).colorScheme.surfaceContainer : null,
             borderRadius: BorderRadius.circular(24),
           ),
-          child: SelectableText(
-            text,
-            style: const TextStyle(fontSize: 16, height: 1.6),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (final block in attachments)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        block['type'] == 'image'
+                            ? Icons.image_outlined
+                            : Icons.attach_file_rounded,
+                        size: 18,
+                      ),
+                      const SizedBox(width: 6),
+                      Flexible(
+                        child: Text(
+                          '${block['attachment']?['name'] ?? (block['type'] == 'image' ? '图片附件' : '文件附件')}',
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              if (text.isNotEmpty)
+                SelectableText(
+                  text,
+                  style: const TextStyle(fontSize: 16, height: 1.6),
+                ),
+            ],
           ),
         ),
       );
@@ -781,6 +1070,34 @@ class EventCard extends StatelessWidget {
         child: Text(
           '任务状态：${data['reason']}',
           style: Theme.of(context).textTheme.labelSmall,
+        ),
+      );
+    }
+    if (type == 'command/done' || type == 'command/run') {
+      final result = type == 'command/done' ? data : commandResult;
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              type == 'command/run'
+                  ? '/${data['name']}${data['args'] ?? ''}'
+                  : '会话指令',
+              style: Theme.of(context).textTheme.labelMedium,
+            ),
+            const SizedBox(height: 8),
+            SelectableText(
+              result == null
+                  ? '指令执行中…'
+                  : '${result['text'] ?? (result['kind'] == 'error' ? '指令执行失败' : '指令已完成')}',
+              style: TextStyle(
+                color: result?['kind'] == 'error'
+                    ? Theme.of(context).colorScheme.error
+                    : null,
+              ),
+            ),
+          ],
         ),
       );
     }

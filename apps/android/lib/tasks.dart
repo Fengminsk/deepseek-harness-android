@@ -3,13 +3,15 @@ import 'dart:async';
 import 'package:material_ui/material_ui.dart';
 
 import 'approvals.dart';
+import 'jobs.dart';
 import 'runtime.dart';
 import 'ui.dart';
 
 /// A view of the shared Agent state; leaving this page does not stop a task.
 class TasksPage extends StatefulWidget {
-  const TasksPage({super.key, required this.runtime});
+  const TasksPage({super.key, required this.runtime, this.sessionId});
   final RuntimeController runtime;
+  final String? sessionId;
   @override
   State<TasksPage> createState() => _TasksPageState();
 }
@@ -103,6 +105,25 @@ class _TasksPageState extends State<TasksPage> with WidgetsBindingObserver {
         body: PocketList(
           padding: const EdgeInsets.fromLTRB(20, 12, 20, 28),
           children: [
+            if (widget.sessionId != null)
+              PocketSection(
+                children: [
+                  PocketRow(
+                    icon: Icons.terminal_rounded,
+                    title: '当前对话的子进程',
+                    subtitle: '查看后台命令状态与实时输出',
+                    onTap: () => Navigator.push(
+                      context,
+                      PocketRoute<void>(
+                        builder: (_) => JobsPage(
+                          runtime: runtime,
+                          sessionId: widget.sessionId!,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
             if (!runtime.ready)
               const PocketSection(
                 children: [

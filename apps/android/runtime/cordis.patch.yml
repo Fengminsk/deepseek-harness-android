@@ -79,14 +79,8 @@
             name: '@deepseek-ai/dsh-persona'
             config:
               prefix: You are Pocket Harness running locally inside an Android app. Use android_shell for ordinary app-UID shell commands and android_files for user-authorized documents. Root and adb are unavailable. Never interpret a content URI as a filesystem path.
-          - id: context-compaction
-            name: cordis:group
-            group: true
-            isolate:
-              compaction: true
-            config:
-              - id: compaction-basic
-                name: '@deepseek-ai/dsh-compaction-basic'
+          # stage-preset.mjs appends the original standard preset's goal,
+          # planning, and compaction groups, including their policy and isolation.
           - id: tool-fs
             name: '@deepseek-ai/dsh-tool-fs'
             config:

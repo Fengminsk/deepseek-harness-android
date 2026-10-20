@@ -8,9 +8,8 @@ import 'approvals_notifications.dart';
 import 'runtime.dart';
 import 'ui.dart';
 
-final _questionDrafts = Expando<QuestionDraftStore>('DSH question drafts');
 QuestionDraftStore _draftsFor(RuntimeController runtime) =>
-    _questionDrafts[runtime] ??= QuestionDraftStore();
+    runtime.questionDrafts;
 
 /// Both ordinary navigation and notification links open the same DSH requests.
 class ApprovalsPage extends StatelessWidget {

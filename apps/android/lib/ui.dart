@@ -307,7 +307,21 @@ class _PocketScaffoldState extends State<PocketScaffold> {
                     },
                     child: Padding(
                       padding: EdgeInsets.fromLTRB(16, 10, 16, safe.bottom + 8),
-                      child: widget.bottom,
+                      child: ConstrainedBox(
+                        constraints: BoxConstraints(
+                          maxHeight:
+                              (MediaQuery.sizeOf(context).height -
+                                      MediaQuery.viewInsetsOf(context).bottom -
+                                      top -
+                                      safe.bottom -
+                                      30)
+                                  .clamp(80.0, double.infinity),
+                        ),
+                        child: SingleChildScrollView(
+                          reverse: true,
+                          child: widget.bottom,
+                        ),
+                      ),
                     ),
                   ),
                 ),

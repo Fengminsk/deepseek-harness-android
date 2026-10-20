@@ -5,6 +5,10 @@ import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
+import 'api_streams.dart';
+import 'approvals_draft.dart';
+import 'plugins_data.dart';
+
 typedef Json = Map<String, dynamic>;
 
 class RuntimeController extends ChangeNotifier {
@@ -21,31 +25,48 @@ class RuntimeController extends ChangeNotifier {
   String? interactionsError;
   int _interactionsRevision = -1;
   Json? navigationRequest;
+  final questionDrafts = QuestionDraftStore();
+  PluginsController? _plugins;
+  PluginsController get plugins => _plugins ??= PluginsController(this);
+  final _remoteEvents = StreamController<Json>.broadcast(sync: true);
+  Stream<Json> get remoteEvents => _remoteEvents.stream;
+  late final AppApiStreams _apiStreams = AppApiStreams(
+    (method, params) => call(method, params),
+  );
   final Map<String, List<Json>> timelines = {};
   final Map<String, String> streaming = {};
   final Map<String, String> statuses = {};
   Future<void>? _liveRefresh;
   List<({String method, Json data})>? _liveBuffer;
-  String _provider = 'deepseek-official';
-  String _model = 'deepseek-flash';
-  bool _modelChanged = false;
-  final Map<String, ({String text, String id})> _submissions = {};
-  String get provider => _provider;
-  set provider(String value) {
-    if (_provider != value) _modelChanged = true;
-    _provider = value;
+  String provider = 'deepseek-official';
+  String model = 'deepseek-flash';
+  String? reasoningEffort;
+  final Map<String, ({String signature, String id})> _submissions = {};
+
+  void useModelSelection({
+    required String provider,
+    required String model,
+    String? reasoningEffort,
+  }) {
+    this.provider = provider;
+    this.model = model;
+    this.reasoningEffort = reasoningEffort;
+    notifyListeners();
   }
 
-  String get model => _model;
-  set model(String value) {
-    if (_model != value) _modelChanged = true;
-    _model = value;
-  }
+  Stream<Json> watchApi(
+    String namespace,
+    String method, {
+    Json args = const {},
+    Json Function()? resumeArgs,
+  }) =>
+      _apiStreams.watch(namespace, method, args: args, resumeArgs: resumeArgs);
 
   bool get ready => phase == 'ready';
   void fail(Object exception) {
     error = '$exception';
     phase = 'failed';
+    _apiStreams.setReady(false);
     notifyListeners();
   }
 
@@ -58,6 +79,7 @@ class RuntimeController extends ChangeNotifier {
           case 'runtime.status':
             phase = data['phase'] as String;
             error = data['error'] as String?;
+            _apiStreams.setReady(ready);
             if (phase == 'starting') {
               _interactionsRevision = -1;
             }
@@ -107,16 +129,35 @@ class RuntimeController extends ChangeNotifier {
             navigationRequest = data;
           case 'notifications.error':
             interactionsError = data['message'] as String?;
+          case 'api.stream':
+            _apiStreams.receive(data);
+          case 'api.event':
+            _remoteEvents.add(data);
         }
         notifyListeners();
       },
       onError: (Object exception) {
         phase = 'failed';
+        _apiStreams.setReady(false);
         error = '$exception';
         notifyListeners();
       },
     );
     await channel.invokeMethod<void>('start');
+  }
+
+  Future<void> restart() async {
+    phase = 'restarting';
+    error = null;
+    _interactionsRevision = -1;
+    _apiStreams.setReady(false);
+    notifyListeners();
+    try {
+      await channel.invokeMethod<void>('restart');
+    } catch (exception) {
+      fail(exception);
+      rethrow;
+    }
   }
 
   Future<dynamic> call(String method, [Json params = const {}]) async {
@@ -142,8 +183,9 @@ class RuntimeController extends ChangeNotifier {
       if (form['ns'] == 'agent-default-model' && form['value'] is Json) {
         final selected = form['value'] as Json;
         if (selected['provider'] is String && selected['model'] is String) {
-          _provider = selected['provider'] as String;
-          _model = selected['model'] as String;
+          provider = selected['provider'] as String;
+          model = selected['model'] as String;
+          reasoningEffort = selected['reasoningEffort'] as String?;
         }
       }
     }
@@ -267,14 +309,33 @@ class RuntimeController extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> send(String id, String text) async {
+  Future<Json> ensureSession(String id) async {
+    return await call('session.ensure', {
+      'sessionId': id,
+      'provider': provider,
+      'model': model,
+      if (reasoningEffort != null) 'reasoningEffort': reasoningEffort,
+    }) as Json;
+  }
+
+  Future<void> send(String id, String text) =>
+      sendAttachments(id, text, const []);
+
+  Future<void> sendAttachments(
+    String id,
+    String text,
+    List<String> attachmentIds,
+  ) async {
     final requestedProvider = provider;
     final requestedModel = model;
+    final requestedEffort = reasoningEffort;
+    final selectedAttachments = List<String>.of(attachmentIds);
+    final signature = jsonEncode([text, selectedAttachments]);
     final previous = _submissions[id];
-    final request = previous?.text == text
+    final request = previous?.signature == signature
         ? previous!
         : (
-            text: text,
+            signature: signature,
             id: 'app-${DateTime.now().microsecondsSinceEpoch}-${Random.secure().nextInt(1 << 30)}',
           );
     _submissions[id] = request;
@@ -282,13 +343,12 @@ class RuntimeController extends ChangeNotifier {
       'sessionId': id,
       'requestId': request.id,
       'text': text,
+      if (selectedAttachments.isNotEmpty) 'attachmentIds': selectedAttachments,
       'provider': requestedProvider,
       'model': requestedModel,
-      'selectModel': _modelChanged,
+      'reasoningEffort': ?requestedEffort,
+      'selectModel': false,
     });
-    if (provider == requestedProvider && model == requestedModel) {
-      _modelChanged = false;
-    }
     _submissions.remove(id);
     // Admission has succeeded; a list refresh failure must not invite resubmission.
     unawaited(
@@ -301,7 +361,10 @@ class RuntimeController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _plugins?.dispose();
     unawaited(_subscription?.cancel());
+    unawaited(_apiStreams.close());
+    unawaited(_remoteEvents.close());
     super.dispose();
   }
 }

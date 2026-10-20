@@ -70,6 +70,26 @@ AccountDetails.balance 将充值钱包投影为 value、赠送钱包投影为 bo
 
 Generated from source by `scripts/gen-cordis-catalog.ts` (verified fresh by `pnpm run verify-cordis-catalog` in doc-sync; regenerate with `pnpm run gen-cordis-catalog`) — the language sides differ only in locale-specific paired document paths. Signature blocks use a `ts cordis-catalog` fence and keep the original source JSDoc; dispatch modes are defined in the [primer](../cordis-primer.zh.md#dispatch-modes), and the framework-inherited `ctx` API lives in [cordis-api/inherited.md](../cordis-api/inherited.md).
 
+<a id="ctxaccountcallback--accountcallback-abstract-seam"></a>
+
+### `ctx.accountCallback` — `AccountCallback` (abstract seam)
+
+Optional host carrier for account callbacks; the account provider retains the complete PKCE lifecycle.
+
+```ts cordis-catalog
+/**
+ * Register the provider-owned callback route at the requested browser origin.
+ * @param origin - validated callback origin of this account attempt.
+ * @param route - route whose handler validates state and settles the account grant.
+ * @returns removal of this attempt's route and carrier resources.
+ */
+abstract register(origin: string, route: WebRoute): () => void | Promise<void>
+```
+
+Types: [WebRoute](web-server.zh.md)
+
+Source: [`packages/credentials/deepseek-account-platform/src/index.ts`](../../packages/credentials/deepseek-account-platform/src/index.ts)
+
 <a id="ctxauthorization--authorizationservice"></a>
 
 ### `ctx.authorization` — `AuthorizationService`

@@ -1,0 +1,201 @@
+import 'dart:convert';
+
+import 'package:flutter/services.dart';
+import 'package:material_ui/material_ui.dart';
+
+import 'runtime.dart';
+import 'ui.dart';
+
+class DiagnosticsPage extends StatefulWidget {
+  const DiagnosticsPage({required this.runtime, super.key});
+  final RuntimeController runtime;
+  @override
+  State<DiagnosticsPage> createState() => _DiagnosticsPageState();
+}
+
+class _DiagnosticsPageState extends State<DiagnosticsPage> {
+  bool confirming = false, dispatching = false, awaitingReady = false;
+  String? lastFailure, actionError, notice;
+  RuntimeController get runtime => widget.runtime;
+
+  @override
+  void initState() {
+    super.initState();
+    lastFailure = runtime.error;
+    runtime.addListener(changed);
+  }
+
+  void changed() {
+    if (!mounted) return;
+    setState(() {
+      if (runtime.error != null) lastFailure = runtime.error;
+      if (awaitingReady && runtime.ready) {
+        awaitingReady = false;
+        notice = '本地服务已重新就绪。';
+      } else if (awaitingReady && runtime.phase == 'failed') {
+        awaitingReady = false;
+        actionError = runtime.error ?? '服务恢复失败，请查看诊断详情后重试。';
+      }
+    });
+  }
+
+  Future<void> restart() async {
+    if (dispatching || awaitingReady) return;
+    setState(() {
+      dispatching = true;
+      awaitingReady = true;
+      confirming = false;
+      notice = null;
+      actionError = null;
+    });
+    try {
+      await runtime.restart();
+    } catch (failure) {
+      if (mounted) {
+        setState(() {
+          awaitingReady = false;
+          actionError = '未能恢复本地服务：$failure';
+        });
+      }
+    } finally {
+      if (mounted) setState(() => dispatching = false);
+    }
+  }
+
+  Future<void> copy() async {
+    try {
+      await Clipboard.setData(
+        ClipboardData(
+          text: const JsonEncoder.withIndent('  ').convert({
+            'phase': runtime.phase,
+            'error': runtime.error,
+            'lastFailure': lastFailure,
+            'environment': runtime.info,
+          }),
+        ),
+      );
+      if (mounted) setState(() => notice = '已复制运行诊断。');
+    } catch (failure) {
+      if (mounted) setState(() => actionError = '无法复制诊断：$failure');
+    }
+  }
+
+  @override
+  void dispose() {
+    runtime.removeListener(changed);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final busy = dispatching || awaitingReady || runtime.phase == 'restarting';
+    final phase = switch (runtime.phase) {
+      'ready' => '运行中',
+      'starting' => '正在启动',
+      'restarting' => '正在重启',
+      'failed' => '服务异常',
+      _ => runtime.phase,
+    };
+    return PocketScaffold(
+      title: const Text('运行状态'),
+      trailing: GlassButton(
+        icon: Icons.copy_rounded,
+        label: '复制运行诊断',
+        onPressed: copy,
+      ),
+      body: PocketList(
+        padding: const EdgeInsets.all(20),
+        children: [
+          PocketSection(
+            title: 'Pocket Harness',
+            children: [
+              PocketRow(
+                icon: Icons.memory_rounded,
+                title: '内嵌运行时',
+                subtitle: runtime.info['node'] as String? ?? '尚未就绪',
+                trailing: Text(phase),
+              ),
+              PocketRow(
+                icon: Icons.smartphone_rounded,
+                title: '应用权限',
+                subtitle: '普通应用 UID：${runtime.info['uid'] ?? '尚未就绪'}',
+              ),
+            ],
+          ),
+          PocketSection(
+            title: '恢复服务',
+            children: [
+              const Padding(
+                padding: EdgeInsets.fromLTRB(22, 18, 22, 8),
+                child: Text('重启会中断当前任务。已保存的会话、配置、凭据与文件授权会保留；Web 按已保存的设置恢复。'),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(22, 4, 22, 18),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (busy)
+                      const Text('正在恢复本地服务，等待内嵌运行时就绪……')
+                    else if (confirming) ...[
+                      const Text('确定中断当前任务并重启服务？'),
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 12,
+                        children: [
+                          PocketButton.tonal(
+                            onPressed: () => setState(() => confirming = false),
+                            child: const Text('取消'),
+                          ),
+                          PocketButton(
+                            onPressed: restart,
+                            child: const Text('确认重启'),
+                          ),
+                        ],
+                      ),
+                    ] else
+                      PocketButton.tonal(
+                        onPressed: () => setState(() => confirming = true),
+                        child: const Text('重启本地服务'),
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          for (final message in [actionError, notice])
+            if (message != null)
+              Padding(
+                padding: const EdgeInsets.all(12),
+                child: SelectableText(message),
+              ),
+          if (lastFailure != null)
+            PocketSection(
+              title: runtime.error != null ? '错误详情' : '上次错误',
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: SelectableText(
+                    lastFailure!,
+                    style: const TextStyle(fontSize: 13),
+                  ),
+                ),
+              ],
+            ),
+          if (runtime.info.isNotEmpty)
+            PocketSection(
+              title: runtime.ready ? '运行环境' : '上次运行环境',
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: SelectableText(
+                    const JsonEncoder.withIndent('  ').convert(runtime.info),
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                ),
+              ],
+            ),
+        ],
+      ),
+    );
+  }
+}

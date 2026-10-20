@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import 'package:flutter/services.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:material_ui/material_ui.dart';
@@ -9,9 +7,12 @@ import 'ui.dart';
 import 'files.dart';
 import 'appearance.dart';
 import 'configuration_editor.dart';
-import 'configuration_edits.dart';
+import 'models.dart';
+import 'diagnostics.dart';
 import 'approvals.dart';
 import 'approvals_notifications.dart';
+import 'account.dart';
+import 'plugins.dart';
 
 class SettingsPage extends StatelessWidget {
   const SettingsPage({required this.runtime, super.key});
@@ -62,10 +63,22 @@ class SettingsPage extends StatelessWidget {
                   onTap: () => open(ModelSettings(runtime: runtime)),
                 ),
                 PocketRow(
+                  icon: Icons.account_circle_outlined,
+                  title: 'DeepSeek 账号',
+                  subtitle: '登录、授权状态与退出',
+                  onTap: () => open(AccountPage(runtime: runtime)),
+                ),
+                PocketRow(
                   icon: Icons.tune_rounded,
                   title: 'Agent 与工具',
                   subtitle: '预设、Shell、联网搜索与插件',
                   onTap: () => open(ConfigurationListPage(runtime: runtime)),
+                ),
+                PocketRow(
+                  icon: Icons.extension_outlined,
+                  title: '插件管理',
+                  subtitle: '目录、启用、安装与移除',
+                  onTap: () => open(PluginsPage(runtime: runtime)),
                 ),
                 PocketRow(
                   icon: Icons.verified_user_outlined,
@@ -120,7 +133,7 @@ class SettingsPage extends StatelessWidget {
                 const PocketRow(
                   icon: Icons.info_outline_rounded,
                   title: 'Pocket Harness',
-                  subtitle: '0.1.0 · 构建 5 · 开发预览',
+                  subtitle: '0.1.0 · 构建 6 · 开发预览',
                 ),
               ],
             ),
@@ -173,239 +186,11 @@ class ConfigurationListPage extends StatelessWidget {
   );
 }
 
-class DiagnosticsPage extends StatelessWidget {
-  const DiagnosticsPage({required this.runtime, super.key});
-  final RuntimeController runtime;
-  @override
-  Widget build(BuildContext context) => PocketScaffold(
-    title: const Text('运行状态'),
-    body: ListenableBuilder(
-      listenable: runtime,
-      builder: (context, _) => PocketList(
-        padding: const EdgeInsets.all(20),
-        children: [
-          PocketSection(
-            title: 'Pocket Harness',
-            children: [
-              PocketRow(
-                icon: Icons.memory_rounded,
-                title: '内嵌运行时',
-                subtitle: runtime.info['node'] as String? ?? '尚未就绪',
-                trailing: Text(runtime.ready ? '运行中' : runtime.phase),
-              ),
-              PocketRow(
-                icon: Icons.smartphone_rounded,
-                title: '应用权限',
-                subtitle: '普通应用 UID：${runtime.info['uid'] ?? '尚未就绪'}',
-              ),
-            ],
-          ),
-          if (runtime.error != null)
-            PocketSection(
-              title: '错误详情',
-              children: [
-                Padding(
-                  padding: const EdgeInsets.all(20),
-                  child: SelectableText(
-                    runtime.error!,
-                    style: const TextStyle(fontSize: 13),
-                  ),
-                ),
-              ],
-            ),
-          if (runtime.info.isNotEmpty)
-            PocketSection(
-              title: '运行环境',
-              children: [
-                Padding(
-                  padding: const EdgeInsets.all(20),
-                  child: SelectableText(
-                    const JsonEncoder.withIndent('  ').convert(runtime.info),
-                    style: const TextStyle(fontSize: 12),
-                  ),
-                ),
-              ],
-            ),
-        ],
-      ),
-    ),
-  );
-}
-
-class ModelSettings extends StatefulWidget {
+class ModelSettings extends StatelessWidget {
   const ModelSettings({required this.runtime, super.key});
   final RuntimeController runtime;
   @override
-  State<ModelSettings> createState() => _ModelSettingsState();
-}
-
-class _ModelSettingsState extends State<ModelSettings> {
-  final keyInput = TextEditingController();
-  late final model = TextEditingController(text: widget.runtime.model);
-  Json? modelDescriptor;
-  bool configured = false, busy = false, reveal = false;
-  String? message;
-  @override
-  void initState() {
-    super.initState();
-    for (final form in widget.runtime.forms) {
-      if (form['ns'] == 'agent-default-model') {
-        modelDescriptor = cloneConfiguration(form);
-        break;
-      }
-    }
-    readStatus();
-  }
-
-  Future<void> readStatus() async {
-    try {
-      final result = await widget.runtime.call('credentials.describe', {
-        'ref': 'DEEPSEEK_API_KEY',
-      }) as Json;
-      if (mounted) setState(() => configured = result['configured'] == true);
-    } catch (error) {
-      if (mounted) setState(() => message = '$error');
-    }
-  }
-
-  Future<void> save() async {
-    setState(() {
-      busy = true;
-      message = null;
-    });
-    var credentialSaved = false;
-    try {
-      if (model.text.trim().isEmpty) throw const FormatException('请输入模型 ID');
-      if (modelDescriptor == null) {
-        throw const ConfigurationEditException('尚未读取默认模型配置。请等待本地服务就绪后重新打开此页。');
-      }
-      final descriptor = modelDescriptor!;
-      final value = configurationObject(descriptor['value']);
-      final next = cloneConfiguration(value)
-        ..['provider'] = widget.runtime.provider
-        ..['model'] = model.text.trim();
-      final operations = configurationEdits(descriptor, next);
-      if (keyInput.text.trim().isNotEmpty) {
-        await widget.runtime.call('credentials.set', {
-          'ref': 'DEEPSEEK_API_KEY',
-          'value': keyInput.text.trim(),
-        });
-        keyInput.clear();
-        configured = true;
-        credentialSaved = true;
-      }
-      if (operations.isNotEmpty) {
-        final saved = (await widget.runtime.call('settings.mutate', {
-          'ns': descriptor['ns'],
-          'revision': descriptor['revision'],
-          'ops': operations,
-        }) as List).cast<Json>();
-        modelDescriptor = cloneConfiguration(
-          saved.firstWhere((form) => form['ns'] == descriptor['ns']),
-        );
-      }
-      widget.runtime.model = model.text.trim();
-      if (mounted) {
-        setState(
-          () => message = credentialSaved
-              ? 'API Key 与默认模型已保存。'
-              : '默认模型已保存；现有 API Key 未改变。',
-        );
-      }
-      try {
-        await widget.runtime.refreshForms();
-      } catch (error) {
-        if (mounted) {
-          setState(() => message = '配置已保存，设置列表刷新失败：$error');
-        }
-      }
-    } catch (error) {
-      if (mounted) {
-        setState(
-          () => message =
-              '${credentialSaved ? 'API Key 已保存，但默认模型尚未保存。' : '未能保存。'}'
-              '\n$error\n模型输入已保留。',
-        );
-      }
-    } finally {
-      if (mounted) setState(() => busy = false);
-    }
-  }
-
-  @override
-  void dispose() {
-    keyInput.dispose();
-    model.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => PocketScaffold(
-    title: const Text('模型与连接'),
-    body: PocketList(
-      padding: const EdgeInsets.all(24),
-      children: [
-        const Text(
-          'DeepSeek',
-          style: TextStyle(fontSize: 26, fontWeight: FontWeight.w600),
-        ),
-        const SizedBox(height: 8),
-        Text(
-          configured
-              ? 'API Key 已配置；留空会保留现有凭据。'
-              : '配置 API Key 后，即可在手机上发起 Agent 任务。',
-        ),
-        const SizedBox(height: 24),
-        TextField(
-          controller: keyInput,
-          enabled: !busy,
-          obscureText: !reveal,
-          autocorrect: false,
-          enableSuggestions: false,
-          decoration: InputDecoration(
-            labelText: 'API Key',
-
-            suffixIcon: GlassButton(
-              label: reveal ? '隐藏' : '显示',
-              onPressed: () => setState(() => reveal = !reveal),
-              icon: reveal ? Icons.visibility_off : Icons.visibility,
-            ),
-          ),
-        ),
-        const SizedBox(height: 16),
-        TextField(
-          controller: model,
-          enabled: !busy,
-          decoration: const InputDecoration(labelText: '模型 ID'),
-        ),
-        const SizedBox(height: 24),
-        PocketButton(
-          onPressed: busy ? null : save,
-          child: Text(busy ? '正在保存' : '保存'),
-        ),
-        if (message != null)
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 16),
-            child: SelectableText(message!),
-          ),
-        for (final form in widget.runtime.forms.where(
-          (item) => '${item['ns']}'.startsWith('llm'),
-        ))
-          PocketTile(
-            contentPadding: EdgeInsets.zero,
-            title: const Text('服务地址与模型参数'),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => Navigator.push(
-              context,
-              PocketRoute<void>(
-                builder: (_) =>
-                    ConfigPage(runtime: widget.runtime, descriptor: form),
-              ),
-            ),
-          ),
-      ],
-    ),
-  );
+  Widget build(BuildContext context) => ModelsPage(runtime: runtime);
 }
 
 class WebSettingsPage extends StatefulWidget {

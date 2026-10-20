@@ -39,22 +39,19 @@ class _ReconnectRuntime extends RuntimeController {
 }
 
 void main() {
-  test(
-    'a model choice made during admission is applied to the next submission',
-    () async {
-      final runtime = _AdmissionRuntime();
-      addTearDown(runtime.dispose);
-      runtime.model = 'first-model';
-      final first = runtime.send('conversation', 'first message');
-      await runtime.entered.future;
-      runtime.model = 'newly-selected-model';
-      runtime.release.complete();
-      await first;
-      await runtime.send('conversation', 'second message');
-      expect(runtime.submissions.last['model'], 'newly-selected-model');
-      expect(runtime.submissions.last['selectModel'], isTrue);
-    },
-  );
+  test('updated defaults accompany the next submission without overriding an existing Session model', () async {
+    final runtime = _AdmissionRuntime();
+    addTearDown(runtime.dispose);
+    runtime.model = 'first-model';
+    final first = runtime.send('conversation', 'first message');
+    await runtime.entered.future;
+    runtime.model = 'newly-selected-model';
+    runtime.release.complete();
+    await first;
+    await runtime.send('conversation', 'second message');
+    expect(runtime.submissions.last['model'], 'newly-selected-model');
+    expect(runtime.submissions.last['selectModel'], isFalse);
+  });
 
   testWidgets(
     'reconnect restores a running task and only replays notifications newer than its baseline',

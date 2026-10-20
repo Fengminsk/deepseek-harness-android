@@ -26,6 +26,7 @@ import { officialBundleInstallTarget } from './official-install-target.ts'
 import { dependencySpec, InvalidInstallSpecError, parseInstallSpec, type ParsedInstallSpec } from './install-spec.ts'
 import { attributeFailure, normalizeRegistry, NPMMIRROR_REGISTRY, registryPlan } from './registry.ts'
 import { flatten, writePluginEnabled } from './patch.ts'
+import { affectsProtected, protectedIds } from './protection.ts'
 import { incompatiblePlugin, ManagementFailure } from './failure.ts'
 import { approveBuilds, recordPendingBuilds } from './build-approval.ts'
 import { checkGithubConnection } from './github-connection.ts'
@@ -218,6 +219,9 @@ export class PluginManager extends TypertRemoteService {
   })
   /** Management bundles remain protected if their files become unreadable. */
   private readonly managementBundles = new Set<string>()
+  /** Host reservations last for this manager instance, and cannot be changed by Remote callers. */
+  private readonly hostModules = new Set<string>()
+  private readonly hostBundles = new Set<string>()
   /**
    * The registry each package was last installed from by this manager in this process. pnpm verifies lockfile tarball
    * URLs against its default registry unless they belong to a named registry, so a later removal names it again.
@@ -260,6 +264,16 @@ export class PluginManager extends TypertRemoteService {
     }, 'plugin-manager: package cancellation')
   }
 
+  /** Reserve platform-owned modules before publishing this manager to clients.
+   * Reservations are additive for this manager's lifetime. This method is intentionally not Remote.
+   * @param modules Exact loader module names, including platform-controlled disabled entries.
+   */
+  protectModules(modules: readonly string[]): void {
+    if (modules.some(name => typeof name !== 'string' || name.trim() === '')) throw new TypeError('Module names must be nonempty strings')
+    for (const name of modules) this.hostModules.add(name)
+    for (const name of bundleSelection(readProfileManifest('dsh', this.profile.dir))) this.protectsHost(name)
+  }
+
   /** Read exact plugin-version exemptions saved in this profile.
    * @returns Accepted package-name@version keys with the runtime versions they may run on, and any
    * record or file problem the reader rejected, which the caller reports instead of failing.
@@ -291,12 +305,14 @@ export class PluginManager extends TypertRemoteService {
   @Remote
   async listPlugins(): Promise<PluginInfo[]> {
     const rows = flatten(composeEntries([readProfilePatches('dsh', this.profile)]))
+    const reserved = this.reservedIds(new Set([...protectedModules, ...this.hostModules]), true)
     const snapshot = await readPluginInventory(this.ctx)
     return snapshot.entries.map((entry) => {
       const actual = [...this.ctx.loader.entries()].find(row => row.id === entry.entryId)
       const candidates = rows.filter(row => row.id === actual?.options.id)
       const candidate = candidates[0]
-      if (protectedModules.has(entry.moduleName) || entry.entryId === this.ownerEntryId) {
+      if (protectedModules.has(entry.moduleName) || this.hostModules.has(entry.moduleName)
+        || entry.entryId === this.ownerEntryId || (actual !== undefined && reserved.has(actual.options.id))) {
         return { ...entry, readOnlyReason: 'management-required' as const }
       }
       if (candidate === undefined || candidates.length > 1 || candidate.name !== entry.moduleName
@@ -349,7 +365,7 @@ export class PluginManager extends TypertRemoteService {
       const removable = owned || (enabled && !installed && !shipped)
       const sourceOf = (packageName?: string): { source?: string } =>
         owned ? { source: dependencySpec(name, recorded[name] as string, this.profile.dir, packageName) } : {}
-      const readOnlyReason = this.protectsManager(name) ? 'management-required' as const : undefined
+      const readOnlyReason = this.protectsManager(name) || this.protectsHost(name) ? 'management-required' as const : undefined
       let availability: BundleInfo['availability'] = 'missing'
       let version: string | undefined
       try {
@@ -540,6 +556,7 @@ export class PluginManager extends TypertRemoteService {
       const before = readProfileManifest('dsh', this.profile.dir).dependencies ?? {}
       // With HMR, an installed package is removed before another version is installed, so its plugins stop first.
       const known = specPackageName(spec, before, this.profile.dir)
+      if (known !== undefined && this.protectsHost(known)) throw new ManagementFailure('management-required')
       if (this.ownerContext.get('hmr') !== undefined && known !== undefined && Object.hasOwn(before, known)) {
         throw new ManagementFailure('already-installed')
       }
@@ -624,6 +641,9 @@ export class PluginManager extends TypertRemoteService {
         const compatibility = evaluatePluginCompatibility(manifest, readProfileVersionExemptions(this.profile.dir))
         if (compatibility !== undefined && !compatibility.exempted) throw new ManagementFailure('incompatible-version', [incompatiblePlugin(compatibility)])
         for (const file of bundlePatchPaths(dir, manifest.dsh.bundle)) loadOverlayPatches('dsh', file)
+        // Git/tarball identity and patches may only be known after pnpm. Refuse before any activation;
+        // the catch below restores the saved manifest and lockfile.
+        if (this.protectsHost(name)) throw new ManagementFailure('management-required')
         version = manifest.version
         this.installedFrom.set(name, used)
       } catch (error) {
@@ -686,6 +706,7 @@ export class PluginManager extends TypertRemoteService {
   removeBundle(name: string): Promise<ChangeResult> {
     return this.change(async (result) => {
       const installed = await this.configure(async () => {
+        if (this.protectsHost(name)) throw new ManagementFailure('management-required')
         const bundle = (await this.listBundles()).find(item => item.name === name)
         if (bundle === undefined || !bundle.removable) throw new ManagementFailure('not-removable')
         if (this.ownerContext.get('hmr') === undefined && (this.profile.startedBundles.includes(name)
@@ -806,6 +827,7 @@ export class PluginManager extends TypertRemoteService {
   }
 
   private async selectBundle(name: string, enabled: boolean): Promise<void> {
+    if (this.protectsHost(name)) throw new ManagementFailure('management-required')
     const manifest = readProfileManifest('dsh', this.profile.dir)
     const previous = bundleSelection(manifest)
     if (enabled || !previous.includes(name)) {
@@ -828,20 +850,43 @@ export class PluginManager extends TypertRemoteService {
   }
 
   private bundleRows(name: string): EntryOptions[] {
+    return flatten(composeEntries([this.bundlePatches(name)]))
+  }
+
+  private bundlePatches(name: string): PatchOptions[] {
     const info = bundleManifest(name, this.profile.dir, this.profile.installAnchor)
     if (info?.dsh?.bundle === undefined) return []
     const dir = resolveBundleDir('dsh', name, this.profile.installAnchor, this.profile.dir)
-    return flatten(composeEntries([bundlePatchPaths(dir, info.dsh.bundle).flatMap(file => loadOverlayPatches('dsh', file))]))
+    return bundlePatchPaths(dir, info.dsh.bundle).flatMap(file => loadOverlayPatches('dsh', file))
+  }
+
+  private reservedIds(modules: ReadonlySet<string>, manager = false): Set<string> {
+    let patches: PatchOptions[] = []
+    try { patches = readProfilePatches('dsh', this.profile) } catch (_error) {
+      // Loader entries retain known identities when a selected bundle becomes unreadable.
+    }
+    const rows = [...this.ctx.loader.entries()].map(entry => entry.options)
+    return protectedIds(patches, rows, modules, manager ? this.ownerEntryId?.replace(/^include:/, '') : undefined)
+  }
+
+  private protectsHost(name: string): boolean {
+    if (this.hostModules.size === 0) return false
+    if (this.hostModules.has(name) || this.hostBundles.has(name)) return true
+    let patches: PatchOptions[]
+    try { patches = this.bundlePatches(name) } catch (_error) { return false }
+    if (!affectsProtected(patches, this.reservedIds(this.hostModules), this.hostModules)) return false
+    this.hostBundles.add(name)
+    return true
   }
 
   private protectsManager(name: string): boolean {
     if (this.managementBundles.has(name)) return true
-    let rows: EntryOptions[]
-    try { rows = this.bundleRows(name) } catch (_error) {
+    let patches: PatchOptions[]
+    try { patches = this.bundlePatches(name) } catch (_error) {
       // Unreadable bundles contribute no new rows; listBundles reports their diagnostics.
       return false
     }
-    const protectedBundle = rows.some(row => protectedModules.has(row.name) || `include:${row.id}` === this.ownerEntryId)
+    const protectedBundle = affectsProtected(patches, this.reservedIds(protectedModules, true), protectedModules)
     if (protectedBundle) this.managementBundles.add(name)
     return protectedBundle
   }

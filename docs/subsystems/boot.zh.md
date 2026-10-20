@@ -143,6 +143,12 @@ Source: [`packages/boot/hmr/src/index.ts`](../../packages/boot/hmr/src/index.ts)
 Manage profile files and apply their declared reload lifecycle.
 
 ```ts cordis-catalog
+/** Reserve platform-owned modules before publishing this manager to clients.
+ * Reservations are additive for this manager's lifetime. This method is intentionally not Remote.
+ * @param modules Exact loader module names, including platform-controlled disabled entries.
+ */
+protectModules(modules: readonly string[]): void
+
 /** Read exact plugin-version exemptions saved in this profile.
  * @returns Accepted package-name@version keys with the runtime versions they may run on, and any
  * record or file problem the reader rejected, which the caller reports instead of failing.

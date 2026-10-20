@@ -19,6 +19,8 @@ class AgentService : Service() {
     private val main = Handler(Looper.getMainLooper())
     private val workers = Executors.newCachedThreadPool()
     private val clients = mutableSetOf<Messenger>()
+    private data class AppClient(val owner: String, val death: IBinder.DeathRecipient)
+    private val appClients = mutableMapOf<Messenger, AppClient>()
     private val pending = ConcurrentHashMap<String, Messenger>()
     private val nativePending = mutableMapOf<String, (Result<JSONObject>) -> Unit>()
     private var output: BufferedWriter? = null
@@ -41,12 +43,29 @@ class AgentService : Service() {
     private val messenger = Messenger(Handler(Looper.getMainLooper()) { message ->
         val client = message.replyTo
         if (message.what == 1) {
+            if (!appClients.containsKey(client)) {
+                val death = IBinder.DeathRecipient { main.post { removeClient(client) } }
+                try {
+                    client.binder.linkToDeath(death, 0)
+                    appClients[client] = AppClient(UUID.randomUUID().toString(), death)
+                } catch (_: RemoteException) { return@Handler true }
+            }
             clients.add(client)
             send(client, status())
         } else if (message.what == 2) {
             val raw = WirePayload.decode(message.data)
             val frame = JSONObject(raw)
             val id = frame.getString("id")
+            if (frame.getString("method") in setOf("api.subscribe", "api.ack", "api.unsubscribe")) {
+                val owner = appClients[client]?.owner
+                if (owner == null) {
+                    send(client, error(id, "App stream owner is disconnected"))
+                    return@Handler true
+                }
+                val params = frame.optJSONObject("params") ?: JSONObject()
+                params.put("owner", owner)
+                frame.put("params", params)
+            }
             if (frame.getString("method") == "runtime.status") {
                 send(client, JSONObject().put("id", id).put("result", status().getJSONObject("params")))
             } else if (frame.getString("method") == "notifications.draft") {
@@ -65,7 +84,7 @@ class AgentService : Service() {
                     }
                 }
             }
-        } else if (message.what == 3) clients.remove(client)
+        } else if (message.what == 3) removeClient(client)
         else if (message.what == ApprovalNotifications.MESSAGE_RESPOND) {
             try {
                 approvals.handle(JSONObject(WirePayload.decode(message.data))) { ack -> send(client, ack) }
@@ -73,6 +92,17 @@ class AgentService : Service() {
                 send(client, JSONObject().put("accepted", false).put("requestStillPending", false))
             }
         } else if (message.what == 5) approvals.refresh()
+        else if (message.what == 6 && appClients.containsKey(client)) {
+            check(Application.getProcessName().endsWith(":agent")) { "Runtime restart requires the dedicated Agent process" }
+            phase = "restarting"
+            broadcast(status())
+            approvals.close()
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            // libnode can start only once per process. The Activity waits for Binder
+            // death before creating the replacement; durable data stays untouched.
+            main.post { Process.killProcess(Process.myPid()) }
+        }
         true
     })
 
@@ -147,12 +177,22 @@ class AgentService : Service() {
                         "native.documents.roots" -> DocumentAccess(this).roots()
                         "native.documents.list" -> DocumentAccess(this).list(params.getString("root"), params.optString("path"))
                         "native.documents.read" -> DocumentAccess(this).read(params.getString("root"), params.getString("path"), params.optInt("offset", 0))
+                        "native.documents.revoke" -> DocumentAccess(this).revoke(params.getString("root"))
+                        "native.exports.directory" -> DocumentExports.directory(this).canonicalPath
+                        "native.attachments.directory" -> AttachmentTransfers.directory(this).canonicalPath
                         else -> throw IllegalArgumentException("Unsupported native method: $method")
                     }
                     write(JSONObject().put("jsonrpc", "2.0").put("id", id).put("result", value ?: JSONObject.NULL))
                 } catch (exception: Exception) { write(error(id, exception.message ?: "Native operation failed")) }
             }
         } else main.post {
+            if (frame.optString("method") == "api.stream") {
+                val params = frame.getJSONObject("params")
+                val owner = params.getString("owner")
+                params.remove("owner")
+                appClients.entries.firstOrNull { it.value.owner == owner }?.let { send(it.key, frame) }
+                return@post
+            }
             if (frame.optString("method") == "runtime.ready") { phase = "ready"; broadcast(status()) }
             if (frame.optString("method") == "interactions.changed") {
                 try { approvals.sync(frame.getJSONObject("params")) }
@@ -195,12 +235,27 @@ class AgentService : Service() {
             try { client.send(Message.obtain(null, 2).apply { data = payload }) }
             finally { WirePayload.close(payload) }
         }
-        catch (_: RemoteException) { clients.remove(client) }
+        catch (_: RemoteException) { removeClient(client) }
+    }
+    private fun removeClient(client: Messenger) {
+        clients.remove(client)
+        val record = appClients.remove(client) ?: return
+        client.binder.unlinkToDeath(record.death, 0)
+        if (phase != "ready" || workers.isShutdown) return
+        workers.execute {
+            try {
+                write(JSONObject().put("jsonrpc", "2.0").put("method", "native.appDisconnected")
+                    .put("params", JSONObject().put("owner", record.owner)))
+            } catch (exception: Exception) {
+                // A closed Node process owns no remaining observations. Its exit is reported by boot().
+            }
+        }
     }
     override fun onDestroy() {
         getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(networkCallback)
         output?.close(); workers.shutdownNow()
         approvals.close()
+        appClients.keys.toList().forEach { removeClient(it) }
         super.onDestroy()
     }
 }

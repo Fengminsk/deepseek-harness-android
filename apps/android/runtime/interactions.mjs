@@ -56,6 +56,10 @@ export class AppInteractions {
         if (record) this.detach(record)
       } else if (frame.type === 'waterfall') {
         await this.receive(frame)
+      } else if (frame.type === 'emit' && [
+        'plugin-manager/changed', 'plugin-manager/install-state', 'plugin-manager/install-log', 'plugin-market/changed',
+      ].includes(frame.event)) {
+        this.transport.notify('api.event', { event: frame.event, args: frame.args })
       }
     }
     if (!this.lifetime.signal.aborted) throw new Error('Android interaction stream ended')

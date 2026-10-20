@@ -57,6 +57,38 @@ test('two App admissions for one Session wait for the shared controller in arriv
   assert.deepEqual(order, ['one', 'two'])
 })
 
+test('attachment preparation and message admission share creation and preserve real prompt parts', async () => {
+  const creating = Promise.withResolvers(), release = Promise.withResolvers()
+  let exists = false
+  const calls = []
+  const sessions = new AppSessions({
+    sessionController: { resolveAgent: async () => exists ? { agent: {} } : { error: { code: 'session/not-found' } } },
+  }, async (method, params) => {
+    calls.push({ method, params })
+    if (method === 'create') {
+      creating.resolve()
+      await release.promise
+      exists = true
+      return { sessionId: params.sessionId }
+    }
+    return { accepted: true }
+  }, async (sessionId, ids) => {
+    assert.equal(sessionId, 'attachment-session')
+    assert.deepEqual(ids, ['prepared-native-file'])
+    return [{ type: 'file', receiptId: 'original-upload-receipt' }]
+  })
+  const ensure = sessions.ensure({ sessionId: 'attachment-session', provider: 'p', model: 'm', reasoningEffort: 'high' })
+  await creating.promise
+  const send = sessions.send({ sessionId: 'attachment-session', requestId: 'with-file', provider: 'p', model: 'm',
+    text: '', attachmentIds: ['prepared-native-file'] })
+  release.resolve()
+  await Promise.all([ensure, send])
+  assert.equal(calls.filter(call => call.method === 'create').length, 1)
+  assert.equal(calls.find(call => call.method === 'selectModel').params.reasoningEffort, 'high')
+  assert.deepEqual(calls.find(call => call.method === 'prompt').params.content,
+    [{ type: 'file', receiptId: 'original-upload-receipt' }])
+})
+
 test('deleting a credential waits for an in-flight refresh and cannot resurrect its record', async () => {
   const ctx = new Context()
   const records = new Map([['records/account', JSON.stringify({ kind: 'initial' })]])

@@ -60,3 +60,7 @@ kotlin {
 flutter {
     source = "../.."
 }
+
+dependencies {
+    implementation("androidx.browser:browser:1.10.0")
+}

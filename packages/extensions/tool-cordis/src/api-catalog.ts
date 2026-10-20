@@ -82,6 +82,19 @@ export interface TypeApiEntry {
 /** Every harness `ctx.<key>` service, sorted by key. */
 export const SERVICE_API: readonly ServiceApiEntry[] = [
   {
+    key: 'accountCallback',
+    summary: 'Optional host carrier for account callbacks; the account provider retains the complete PKCE lifecycle.',
+    description: 'Optional host carrier for account callbacks; the account provider retains the complete PKCE lifecycle.',
+    methods: [
+      {
+        signature: 'abstract register(origin: string, route: WebRoute): () => void | Promise<void>',
+        description: 'Register the provider-owned callback route at the requested browser origin.',
+        parameters: [{ name: 'origin', description: 'validated callback origin of this account attempt.' }, { name: 'route', description: 'route whose handler validates state and settles the account grant.' }],
+        returns: 'removal of this attempt\'s route and carrier resources.',
+      },
+    ],
+  },
+  {
     key: 'agentDefaultModel',
     summary: 'Owns the default model selection independently of any Host or transport.',
     description: 'Owns the default model selection independently of any Host or transport. Each operation reads the owning Config references.',
@@ -1708,6 +1721,11 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     summary: 'Manage profile files and apply their declared reload lifecycle.',
     description: 'Manage profile files and apply their declared reload lifecycle.',
     methods: [
+      {
+        signature: 'protectModules(modules: readonly string[]): void',
+        description: 'Reserve platform-owned modules before publishing this manager to clients. Reservations are additive for this manager\'s lifetime. This method is intentionally not Remote.',
+        parameters: [{ name: 'modules', description: 'Exact loader module names, including platform-controlled disabled entries.' }],
+      },
       {
         signature: '@Remote listVersionExemptions(): { exemptions: Record<string, string[]>; warnings: string[] }',
         description: 'Read exact plugin-version exemptions saved in this profile.',
