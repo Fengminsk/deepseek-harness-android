@@ -7,7 +7,7 @@ const { AndroidCredentials } = await import(new URL('@minnnng/dsh-android-runtim
 const { Context } = await import(new URL('@deepseek-ai/cordis/lib/index.js', staged))
 const { AppLiveState } = await import(new URL('@minnnng/dsh-android-runtime/live-state.mjs', staged))
 
-test('reconnecting App receives the in-flight text and live status, then drops settled stream text', () => {
+test('reconnecting App receives the original attempt identity and live text, then drops a committed attempt', t => {
   const handlers = new Map(), notifications = []
   const agent = { session: { id: 'running' }, status: 'running' }
   const live = new AppLiveState({
@@ -15,12 +15,20 @@ test('reconnecting App receives the in-flight text and live status, then drops s
     agents: { list: () => [agent] },
   }, { notify(method, data) { notifications.push({ method, data }) } })
   const stream = handlers.get('agent/assistant-stream')
-  stream({ agent, frame: { type: 'start' } })
-  stream({ agent, frame: { type: 'chunk', chunk: { type: 'text-delta', text: 'hello' } } })
-  assert.deepEqual(live.snapshot(), { revision: 2, statuses: { running: 'running' }, streaming: { running: 'hello' }, errors: {} })
-  stream({ agent, frame: { type: 'end' } })
+  t.after(() => live.close())
+  stream({ agent, frame: { type: 'start', attemptId: 'one', revision: 1, turn: 2, step: 3 } })
+  stream({ agent, frame: { type: 'chunk', attemptId: 'one', revision: 2, index: 0,
+    chunk: { type: 'text-delta', index: 0, text: 'hello' } } })
+  assert.deepEqual(live.snapshot(), { revision: 1, statuses: { running: 'running' },
+    streaming: { running: 'hello' }, errors: {}, liveMessages: {
+      running: { attemptId: 'one', revision: 2, turn: 2, step: 3,
+        content: [{ type: 'text', text: 'hello' }], interrupted: false },
+    } })
+  stream({ agent, frame: { type: 'end', attemptId: 'one', revision: 3, index: 1,
+    outcome: { kind: 'committed', eventType: 'assistant/message', seq: 10 } } })
   assert.deepEqual(live.snapshot().streaming, {})
-  assert.deepEqual(notifications.map(item => item.data.revision), [1, 2, 3])
+  assert.deepEqual(live.snapshot().liveMessages, {})
+  assert.deepEqual(notifications.map(item => item.data.revision), [1, 2])
   handlers.get('api-session/error')('running', 'Credential not configured')
   assert.deepEqual(live.snapshot().errors, { running: 'Credential not configured' })
   assert.equal(notifications.at(-1).method, 'session.error')

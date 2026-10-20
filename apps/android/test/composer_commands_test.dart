@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:dsh_android/composer_commands.dart';
+import 'package:dsh_android/chat_messages.dart';
+import 'package:dsh_android/chat_projection.dart';
 import 'package:dsh_android/main.dart';
 import 'package:dsh_android/models.dart';
 import 'package:dsh_android/models_provider.dart';
@@ -498,9 +500,9 @@ void main() {
       runtime.notifyListeners();
       await tester.pumpAndSettle();
       expect(find.text('/goal 整理项目'), findsOneWidget);
-      expect(find.text('目标已保存'), findsOneWidget);
+      expect(find.text('目标已保存', findRichText: true), findsWidgets);
       expect(find.text('/feedback'), findsOneWidget);
-      expect(find.text('指令执行中…'), findsOneWidget);
+      expect(find.text('指令执行中…', findRichText: true), findsWidgets);
       expect(find.text('会话指令'), findsNothing);
     },
   );
@@ -736,45 +738,52 @@ void main() {
   testWidgets(
     'saved file attachments and original command results remain visible in history',
     (tester) async {
+      final projection = ChatProjection()
+        ..reconcile([
+          {
+            'seq': 0,
+            'time': 0,
+            'type': 'user/message',
+            'surfaceOp': 'append',
+            'data': {
+              'id': 'saved-file',
+              'role': 'user',
+              'source': {'kind': 'user'},
+              'content': [
+                {
+                  'type': 'file',
+                  'attachment': {
+                    'attachmentId': 'hash',
+                    'name': 'report.txt',
+                    'bytes': 5,
+                  },
+                },
+              ],
+            },
+          },
+          {
+            'seq': 1,
+            'time': 1,
+            'type': 'command/done',
+            'data': {'commandId': 'id', 'kind': 'success', 'text': '原命令的结果'},
+          },
+        ]);
+      final scroll = ScrollController();
+      addTearDown(scroll.dispose);
       await tester.pumpWidget(
         host(
-          const Scaffold(
-            body: Column(
-              children: [
-                EventCard(
-                  event: {
-                    'type': 'user/message',
-                    'data': {
-                      'content': [
-                        {
-                          'type': 'file',
-                          'attachment': {
-                            'attachmentId': 'hash',
-                            'name': 'report.txt',
-                            'bytes': 5,
-                          },
-                        },
-                      ],
-                    },
-                  },
-                ),
-                EventCard(
-                  event: {
-                    'type': 'command/done',
-                    'data': {
-                      'commandId': 'id',
-                      'kind': 'success',
-                      'text': '原命令的结果',
-                    },
-                  },
-                ),
-              ],
+          PocketScaffold(
+            title: const Text('会话'),
+            body: ChatTimeline(
+              sessionId: 'saved-session',
+              projection: projection,
+              controller: scroll,
             ),
           ),
         ),
       );
       expect(find.text('report.txt'), findsOneWidget);
-      expect(find.text('原命令的结果'), findsOneWidget);
+      expect(find.text('原命令的结果', findRichText: true), findsWidgets);
       expect(tester.takeException(), isNull);
     },
   );

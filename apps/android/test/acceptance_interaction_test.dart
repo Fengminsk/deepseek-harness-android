@@ -47,13 +47,25 @@ class _PendingRuntime extends _ReadyRuntime {
 
 Json _message(int seq, String text) => {
   'seq': seq,
+  'time': seq * 1000,
   'type': 'assistant/message',
+  'surfaceOp': 'append',
   'data': {
+    'turn': seq + 1,
+    'step': 1,
     'message': {
+      'id': 'fixture-assistant-$seq',
+      'role': 'assistant',
+      'source': {
+        'kind': 'model',
+        'provider': 'fixture-provider',
+        'model': 'fixture-model',
+      },
       'content': [
         {'type': 'text', 'text': text},
       ],
     },
+    'stream': <Json>[],
   },
 };
 

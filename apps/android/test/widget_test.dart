@@ -2,6 +2,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:dsh_android/main.dart';
 import 'package:dsh_android/runtime.dart';
+import 'package:dsh_android/chat_messages.dart';
+import 'package:dsh_android/chat_projection.dart';
+import 'package:dsh_android/ui.dart';
 
 class FailingRuntime extends RuntimeController {
   FailingRuntime() {
@@ -52,18 +55,34 @@ void main() {
     runtime.dispose();
   });
   testWidgets('durable user events render their saved text', (tester) async {
+    final projection = ChatProjection()
+      ..reconcile([
+        {
+          'seq': 0,
+          'time': 0,
+          'type': 'user/message',
+          'surfaceOp': 'append',
+          'data': {
+            'id': 'saved-user',
+            'role': 'user',
+            'source': {'kind': 'user'},
+            'content': [
+              {'type': 'text', 'text': '保存的消息'},
+            ],
+          },
+        },
+      ]);
+    final scroll = ScrollController();
+    addTearDown(scroll.dispose);
     await tester.pumpWidget(
-      const MaterialApp(
-        home: Scaffold(
-          body: EventCard(
-            event: {
-              'type': 'user/message',
-              'data': {
-                'content': [
-                  {'type': 'text', 'text': '保存的消息'},
-                ],
-              },
-            },
+      MaterialApp(
+        theme: pocketTheme(Brightness.light),
+        home: PocketScaffold(
+          title: const Text('会话'),
+          body: ChatTimeline(
+            sessionId: 'saved-session',
+            projection: projection,
+            controller: scroll,
           ),
         ),
       ),

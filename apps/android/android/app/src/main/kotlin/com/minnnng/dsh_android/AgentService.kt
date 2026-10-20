@@ -30,6 +30,21 @@ class AgentService : Service() {
     private lateinit var webPreferences: WebPreferences
     private lateinit var approvals: ApprovalNotifications
     private lateinit var documentSearch: DocumentSearchManager
+    private lateinit var background: BackgroundExecution
+    private var summaryRequest: String? = null
+    private val summaryTimeout = Runnable {
+        val id = summaryRequest
+        summaryRequest = null
+        if (id != null) nativePending.remove(id)
+        background.unavailable()
+    }
+    private val summaryPoll = object : Runnable {
+        override fun run() {
+            if (phase != "ready") return
+            requestTaskSummary()
+            main.postDelayed(this, 30_000)
+        }
+    }
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) = networkChanged()
         override fun onLost(network: Network) = networkChanged()
@@ -70,6 +85,15 @@ class AgentService : Service() {
             }
             if (frame.getString("method") == "runtime.status") {
                 send(client, JSONObject().put("id", id).put("result", status().getJSONObject("params")))
+            } else if (frame.getString("method") == "runtime.background.configure") {
+                try {
+                    val value = frame.getJSONObject("params").get("keepAwakeWhileWorking")
+                    require(value is Boolean) { "后台运行选项必须是布尔值" }
+                    send(client, JSONObject().put("id", id).put("result", background.configure(value)))
+                    broadcast(status())
+                } catch (exception: Exception) {
+                    send(client, error(id, exception.message ?: "无法保存后台运行设置"))
+                }
             } else if (frame.getString("method") == "notifications.draft") {
                 val params = frame.getJSONObject("params")
                 send(client, JSONObject().put("id", id).put("result", JSONObject().put("text",
@@ -97,6 +121,9 @@ class AgentService : Service() {
         else if (message.what == 6 && appClients.containsKey(client)) {
             check(Application.getProcessName().endsWith(":agent")) { "Runtime restart requires the dedicated Agent process" }
             phase = "restarting"
+            background.phase(phase)
+            main.removeCallbacks(summaryPoll)
+            main.removeCallbacks(summaryTimeout)
             broadcast(status())
             approvals.close()
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -113,6 +140,7 @@ class AgentService : Service() {
         vault = CredentialVault(this)
         webPreferences = WebPreferences(this)
         documentSearch = DocumentSearchManager(this)
+        background = BackgroundExecution(this)
         approvals = ApprovalNotifications(this) { params, completion ->
             if (phase != "ready") {
                 completion(Result.failure(IllegalStateException("Agent service is unavailable")))
@@ -130,12 +158,7 @@ class AgentService : Service() {
             }
         }
         getSystemService(ConnectivityManager::class.java).registerNetworkCallback(NetworkRequest.Builder().build(), networkCallback)
-        val notifications = getSystemService(NotificationManager::class.java)
-        notifications.createNotificationChannel(NotificationChannel("agent", "Pocket Harness", NotificationManager.IMPORTANCE_LOW))
-        val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
-        startForeground(1, Notification.Builder(this, "agent")
-            .setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle("Pocket Harness")
-            .setContentText("本地 Agent 服务正在运行").setContentIntent(open).setOngoing(true).build())
+        background.start()
         workers.execute { boot() }
     }
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_NOT_STICKY
@@ -207,7 +230,17 @@ class AgentService : Service() {
                 fail(frame.getJSONObject("params").getString("error"))
                 return@post
             }
-            if (frame.optString("method") == "runtime.ready") { phase = "ready"; broadcast(status()) }
+            if (frame.optString("method") == "runtime.ready") {
+                phase = "ready"
+                background.phase(phase)
+                main.removeCallbacks(summaryPoll)
+                summaryPoll.run()
+                broadcast(status())
+            }
+            if (frame.optString("method") == "runtime.tasks.changed") {
+                try { background.observe(frame.getJSONObject("params")) }
+                catch (_: Exception) { background.unavailable() }
+            }
             if (frame.optString("method") == "interactions.changed") {
                 try { approvals.sync(frame.getJSONObject("params")) }
                 catch (exception: Exception) {
@@ -226,16 +259,50 @@ class AgentService : Service() {
             } else broadcast(frame)
         }
     }
+    private fun requestTaskSummary() {
+        if (phase != "ready" || summaryRequest != null || workers.isShutdown) return
+        val id = "native-background-${UUID.randomUUID()}"
+        summaryRequest = id
+        nativePending[id] = { result ->
+            if (summaryRequest == id) {
+                summaryRequest = null
+                main.removeCallbacks(summaryTimeout)
+                if (phase == "ready") {
+                    result.fold(
+                        onSuccess = { snapshot ->
+                            try { background.observe(snapshot) }
+                            catch (_: Exception) { background.unavailable() }
+                        },
+                        onFailure = { background.unavailable() },
+                    )
+                }
+            }
+        }
+        main.postDelayed(summaryTimeout, 10_000)
+        workers.execute {
+            try {
+                write(JSONObject().put("jsonrpc", "2.0").put("id", id)
+                    .put("method", "tasks.summary").put("params", JSONObject()))
+            } catch (exception: Exception) {
+                main.post { nativePending.remove(id)?.invoke(Result.failure(exception)) }
+            }
+        }
+    }
     @Synchronized private fun write(frame: JSONObject) {
         val stream = output ?: throw IllegalStateException("Runtime is not connected")
         stream.write(frame.toString()); stream.newLine(); stream.flush()
     }
     private fun status() = JSONObject().put("method", "runtime.status").put("params",
-        JSONObject().put("phase", phase).put("error", failure ?: JSONObject.NULL))
+        JSONObject().put("phase", phase).put("error", failure ?: JSONObject.NULL)
+            .put("background", background.status()))
     private fun error(id: String, message: String) = JSONObject().put("jsonrpc", "2.0").put("id", id)
         .put("error", JSONObject().put("code", -32603).put("message", message))
     private fun fail(message: String) { main.post {
         phase = "failed"; failure = message
+        background.phase(phase)
+        main.removeCallbacks(summaryPoll)
+        main.removeCallbacks(summaryTimeout)
+        summaryRequest = null
         closeDocumentSearch()
         pending.entries.forEach { send(it.value, error(it.key, message)) }; pending.clear()
         nativePending.values.toList().forEach { it(Result.failure(IllegalStateException(message))) }
@@ -275,6 +342,10 @@ class AgentService : Service() {
         }, "document-search-close").start()
     }
     override fun onDestroy() {
+        main.removeCallbacks(summaryPoll)
+        main.removeCallbacks(summaryTimeout)
+        summaryRequest = null
+        background.close()
         getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(networkCallback)
         closeDocumentSearch()
         output?.close(); workers.shutdownNow()

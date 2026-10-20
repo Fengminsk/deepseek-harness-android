@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:material_ui/material_ui.dart';
 import 'package:dynamic_color/dynamic_color.dart';
@@ -21,7 +20,8 @@ import 'models.dart';
 import 'account.dart';
 import 'flclash/popup.dart';
 import 'automations.dart';
-import 'tool_activity.dart';
+import 'chat_projection.dart';
+import 'chat_messages.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -126,12 +126,15 @@ class _ChatPageState extends State<ChatPage> {
   final errors = <String, String>{};
   final submissions = <String>{};
   final commandDrafts = <String, Json>{};
-  final toolActivities = <String, ToolActivityProjection>{};
+  final chatProjections = <String, ChatProjection>{};
   late AttachmentDrafts attachments;
   String? lastRuntimePhase;
   final messageScroll = ScrollController();
   bool navigationScheduled = false;
-  (String, int, String?)? observedTimeline;
+  (String, int, Object?)? observedTimeline;
+  int scrollRequest = 0;
+  bool followPending = false;
+  bool userScrolling = false;
   bool get submitting => submissions.contains(sessionId);
   String? get submitError => errors[sessionId];
   set submitError(String? error) {
@@ -156,7 +159,7 @@ class _ChatPageState extends State<ChatPage> {
   void didUpdateWidget(ChatPage oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.runtime != runtime) {
-      toolActivities.clear();
+      chatProjections.clear();
       oldWidget.runtime.removeListener(handleNavigation);
       attachments.removeListener(attachmentChanged);
       attachments.dispose();
@@ -174,7 +177,11 @@ class _ChatPageState extends State<ChatPage> {
     lastRuntimePhase = runtime.phase;
     if (!mounted ||
         navigationScheduled ||
-        (!runtime.ready && runtime.navigationRequest?['route'] != 'account') ||
+        (!runtime.ready &&
+            ![
+              'account',
+              'tasks',
+            ].contains(runtime.navigationRequest?['route'])) ||
         runtime.navigationRequest == null) {
       return;
     }
@@ -184,7 +191,8 @@ class _ChatPageState extends State<ChatPage> {
       if (!mounted) return;
       final request = runtime.navigationRequest;
       if (request == null ||
-          (!runtime.ready && request['route'] != 'account')) {
+          (!runtime.ready &&
+              !['account', 'tasks'].contains(request['route']))) {
         return;
       }
       runtime.consumeNavigation();
@@ -192,6 +200,12 @@ class _ChatPageState extends State<ChatPage> {
         scaffold.currentState?.closeDrawer();
         inputFocus.unfocus();
         navigate(AccountPage(runtime: runtime));
+        return;
+      }
+      if (request['route'] == 'tasks') {
+        scaffold.currentState?.closeDrawer();
+        inputFocus.unfocus();
+        unawaited(openTasks());
         return;
       }
       if (request['route'] != 'approval' ||
@@ -427,25 +441,49 @@ class _ChatPageState extends State<ChatPage> {
     }
   }
 
-  void followReply(int count, String? streaming) {
+  void followReply(int count, Object? streaming) {
     final next = (sessionId, count, streaming);
     if (next == observedTimeline) return;
     final switching = observedTimeline?.$1 != sessionId;
     observedTimeline = next;
+    if (userScrolling && !switching) return;
     final follows =
         switching ||
+        followPending ||
         !messageScroll.hasClients ||
         messageScroll.position.extentAfter < 80;
     if (!follows) return;
+    final request = ++scrollRequest;
+    followPending = true;
     final observedSession = sessionId;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    var layouts = 0;
+    var settled = 0;
+    // Lazy variable-height rows refine the estimated end after each layout.
+    // Follow that refinement, but yield immediately to a user's drag.
+    void settle(Duration _) {
       if (!mounted ||
           sessionId != observedSession ||
+          request != scrollRequest ||
           !messageScroll.hasClients) {
+        if (request == scrollRequest) followPending = false;
         return;
       }
-      messageScroll.jumpTo(messageScroll.position.maxScrollExtent);
-    });
+      final position = messageScroll.position;
+      if (position.extentAfter <= .5) {
+        settled++;
+      } else {
+        settled = 0;
+        messageScroll.jumpTo(position.maxScrollExtent);
+      }
+      if (++layouts < 32 && settled < 2) {
+        WidgetsBinding.instance.addPostFrameCallback(settle);
+        WidgetsBinding.instance.ensureVisualUpdate();
+      } else {
+        followPending = false;
+      }
+    }
+
+    WidgetsBinding.instance.addPostFrameCallback(settle);
   }
 
   void suggest(String text) {
@@ -456,7 +494,12 @@ class _ChatPageState extends State<ChatPage> {
 
   String sessionTitle(Json session) {
     final header = session['header'] as Json;
-    return '${session['title'] ?? header['title'] ?? header['id']}';
+    final id = header['id'] as String;
+    final events = runtime.timelines[id];
+    if (events != null) {
+      chatProjections.putIfAbsent(id, ChatProjection.new).reconcile(events);
+    }
+    return '${chatProjections[id]?.title ?? session['title'] ?? header['title'] ?? id}';
   }
 
   @override
@@ -465,44 +508,38 @@ class _ChatPageState extends State<ChatPage> {
     builder: (context, _) {
       final colors = Theme.of(context).colorScheme;
       final events = runtime.timelines[sessionId] ?? [];
-      final tools = toolActivities.putIfAbsent(
+      final projection = chatProjections.putIfAbsent(
         sessionId,
-        ToolActivityProjection.new,
+        ChatProjection.new,
       )..reconcile(events);
-      final toolsByAnchor = tools.byAnchorSeq;
-      final consumedTools = tools.consumedSeqs;
-      final commandRuns = {
-        for (final event in events.where((e) => e['type'] == 'command/run'))
-          event['data']['commandId']: event,
-      };
-      final commandResults = {
-        for (final event in events.where((e) => e['type'] == 'command/done'))
-          event['data']['commandId']: event['data'] as Json,
-      };
       final modelLabel = nextSessionModel(events)?['model'] ?? runtime.model;
-      final visible = events.where((event) {
-        if (toolsByAnchor.containsKey(event['seq'])) return true;
-        if (consumedTools.contains(event['seq'])) return false;
-        return [
-              'user/message',
-              'assistant/message',
-              'tool/call',
-              'tool/result',
-              'turn/end',
-              'command/run',
-              'command/done',
-            ].contains(event['type']) &&
-            (event['type'] != 'command/done' ||
-                !commandRuns.containsKey(event['data']['commandId']));
-      }).toList();
-      final streaming = runtime.streaming[sessionId];
+      final stream = runtime.liveMessages[sessionId];
+      final live = stream == null
+          ? null
+          : ChatLiveMessage(
+              identity: stream['attemptId'] as String,
+              content: stream['content'] as List<dynamic>,
+              turn: stream['turn'] as int,
+              step: stream['step'] as int,
+              interrupted: stream['interrupted'] == true,
+              unconfirmed: stream['unconfirmed'] == true,
+            );
+      final filteredSessions = runtime.sessions
+          .where(
+            (item) =>
+                sessionTitle(item).toLowerCase().contains(search.toLowerCase()),
+          )
+          .toList();
       final sessionError = runtime.sessionErrors[sessionId];
       final running = runtime.statuses[sessionId] == 'running';
       final stoppable = running && commandDrafts[sessionId] == null;
       final sessionRequests = runtime.interactions
           .where((request) => request['sessionId'] == sessionId)
           .toList();
-      followReply(events.length, streaming);
+      followReply(
+        events.length,
+        stream == null ? null : (stream['attemptId'], stream['revision']),
+      );
       return PocketScaffold(
         scaffoldKey: scaffold,
         leading: GlassButton(
@@ -717,42 +754,41 @@ class _ChatPageState extends State<ChatPage> {
                     ],
                   ),
                 ),
-                SliverList.list(
-                  children: [
-                    if (runtime.sessions.isEmpty)
-                      Padding(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 26,
-                          vertical: 12,
+                if (filteredSessions.isEmpty)
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 26,
+                        vertical: 12,
+                      ),
+                      child: Text(
+                        search.isEmpty ? '你的对话会保存在这里' : '没有匹配的对话',
+                        style: TextStyle(fontSize: 14, color: colors.outline),
+                      ),
+                    ),
+                  ),
+                SliverList.builder(
+                  itemCount: filteredSessions.length,
+                  itemBuilder: (context, index) {
+                    final session = filteredSessions[index];
+                    return Padding(
+                      key: ValueKey((session['header'] as Json)['id']),
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      child: PocketTile(
+                        selected:
+                            (session['header'] as Json)['id'] == sessionId,
+                        title: Text(
+                          sessionTitle(session),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 15),
                         ),
-                        child: Text(
-                          '你的对话会保存在这里',
-                          style: TextStyle(fontSize: 14, color: colors.outline),
+                        onTap: () => selectSession(
+                          '${(session['header'] as Json)['id']}',
                         ),
                       ),
-                    for (final session in runtime.sessions.where(
-                      (item) =>
-                          sessionTitle(item)
-                              .toLowerCase()
-                              .contains(search.toLowerCase()),
-                    ))
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 12),
-                        child: PocketTile(
-                          selected:
-                              (session['header'] as Json)['id'] == sessionId,
-                          title: Text(
-                            sessionTitle(session),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(fontSize: 15),
-                          ),
-                          onTap: () => selectSession(
-                            '${(session['header'] as Json)['id']}',
-                          ),
-                        ),
-                      ),
-                  ],
+                    );
+                  },
                 ),
                 SliverFillRemaining(
                   hasScrollBody: false,
@@ -793,7 +829,7 @@ class _ChatPageState extends State<ChatPage> {
           ),
         ),
 
-        body: visible.isEmpty && streaming == null && sessionError == null
+        body: projection.entries.isEmpty && live == null && sessionError == null
             ? PocketEmpty(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
@@ -844,69 +880,67 @@ class _ChatPageState extends State<ChatPage> {
                   ],
                 ),
               )
-            : PocketList(
-                controller: messageScroll,
-                padding: const EdgeInsets.symmetric(horizontal: 24),
-                children: [
-                  for (final event in visible)
-                    if (toolsByAnchor[event['seq']] case final activity?)
-                      ToolActivityCard(
-                        key: ValueKey('tool-$sessionId-${activity.identity}'),
-                        activity: activity,
-                      )
-                    else
-                      EventCard(
-                        event: event,
-                        commandResult: event['type'] == 'command/run'
-                            ? commandResults[event['data']['commandId']]
-                            : null,
-                      ),
-                  if (streaming != null && streaming.isNotEmpty)
-                    Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                      child: SelectableText(
-                        streaming,
-                        style: const TextStyle(height: 1.6),
-                      ),
-                    ),
-                  if (sessionError != null)
-                    PocketCard(
-                      child: Padding(
-                        padding: const EdgeInsets.all(18),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              '本轮任务未完成',
-                              style: TextStyle(
-                                color: colors.error,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                            const SizedBox(height: 10),
-                            SelectableText(sessionError),
-                            const SizedBox(height: 10),
-                            Wrap(
-                              spacing: 8,
+            : NotificationListener<ScrollNotification>(
+                onNotification: (notification) {
+                  if (notification.depth != 0) return false;
+                  if (notification is ScrollStartNotification &&
+                      notification.dragDetails != null) {
+                    scrollRequest++;
+                    followPending = false;
+                    userScrolling = true;
+                  }
+                  if (notification is ScrollEndNotification) {
+                    userScrolling = false;
+                  }
+                  return false;
+                },
+                child: ChatTimeline(
+                  sessionId: sessionId,
+                  projection: projection,
+                  controller: messageScroll,
+                  live: live,
+                  onOpenLink: (uri) => RuntimeController.channel
+                      .invokeMethod<void>('openUrl', uri.toString()),
+                  footer: sessionError == null
+                      ? null
+                      : PocketCard(
+                          child: Padding(
+                            padding: const EdgeInsets.all(18),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                PocketButton.tonal(
-                                  onPressed: () =>
-                                      navigate(ModelsPage(runtime: runtime)),
-                                  child: const Text('模型与凭据'),
-                                ),
-                                PocketButton.tonal(
-                                  onPressed: () => navigate(
-                                    DiagnosticsPage(runtime: runtime),
+                                Text(
+                                  '本轮任务未完成',
+                                  style: TextStyle(
+                                    color: colors.error,
+                                    fontWeight: FontWeight.w600,
                                   ),
-                                  child: const Text('服务诊断'),
+                                ),
+                                const SizedBox(height: 10),
+                                SelectableText(sessionError),
+                                const SizedBox(height: 10),
+                                Wrap(
+                                  spacing: 8,
+                                  children: [
+                                    PocketButton.tonal(
+                                      onPressed: () => navigate(
+                                        ModelsPage(runtime: runtime),
+                                      ),
+                                      child: const Text('模型与凭据'),
+                                    ),
+                                    PocketButton.tonal(
+                                      onPressed: () => navigate(
+                                        DiagnosticsPage(runtime: runtime),
+                                      ),
+                                      child: const Text('服务诊断'),
+                                    ),
+                                  ],
                                 ),
                               ],
                             ),
-                          ],
+                          ),
                         ),
-                      ),
-                    ),
-                ],
+                ),
               ),
         bottom: Column(
           mainAxisSize: MainAxisSize.min,
@@ -1066,123 +1100,4 @@ class _Suggestion extends StatelessWidget {
       trailing: const Icon(Icons.arrow_outward_rounded, size: 18),
     ),
   );
-}
-
-class EventCard extends StatelessWidget {
-  const EventCard({required this.event, this.commandResult, super.key});
-  final Json event;
-  final Json? commandResult;
-  static String textOf(dynamic content) => content is List
-      ? content
-            .whereType<Json>()
-            .where((block) => block['type'] == 'text')
-            .map((block) => block['text'] ?? '')
-            .join('\n')
-      : '';
-  @override
-  Widget build(BuildContext context) {
-    final data = event['data'] as Json;
-    final type = event['type'];
-    if (type == 'user/message' || type == 'assistant/message') {
-      final user = type == 'user/message';
-      final content = user
-          ? data['content']
-          : (data['message'] as Json)['content'];
-      final text = textOf(content);
-      final attachments = (content as List).whereType<Json>().where(
-        (block) => block['type'] == 'file' || block['type'] == 'image',
-      );
-      return Align(
-        alignment: user ? Alignment.centerRight : Alignment.centerLeft,
-        child: Container(
-          constraints: BoxConstraints(
-            maxWidth: MediaQuery.sizeOf(context).width * (user ? .8 : 1),
-          ),
-          margin: const EdgeInsets.symmetric(vertical: 10),
-          padding: EdgeInsets.symmetric(
-            horizontal: user ? 18 : 0,
-            vertical: 14,
-          ),
-          decoration: BoxDecoration(
-            color: user ? Theme.of(context).colorScheme.surfaceContainer : null,
-            borderRadius: BorderRadius.circular(24),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              for (final block in attachments)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        block['type'] == 'image'
-                            ? Icons.image_outlined
-                            : Icons.attach_file_rounded,
-                        size: 18,
-                      ),
-                      const SizedBox(width: 6),
-                      Flexible(
-                        child: Text(
-                          '${block['attachment']?['name'] ?? (block['type'] == 'image' ? '图片附件' : '文件附件')}',
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              if (text.isNotEmpty)
-                SelectableText(
-                  text,
-                  style: const TextStyle(fontSize: 16, height: 1.6),
-                ),
-            ],
-          ),
-        ),
-      );
-    }
-    if (type == 'turn/end') {
-      return Padding(
-        padding: const EdgeInsets.symmetric(vertical: 8),
-        child: Text(
-          '任务状态：${data['reason']}',
-          style: Theme.of(context).textTheme.labelSmall,
-        ),
-      );
-    }
-    if (type == 'command/done' || type == 'command/run') {
-      final result = type == 'command/done' ? data : commandResult;
-      return Padding(
-        padding: const EdgeInsets.symmetric(vertical: 12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              type == 'command/run'
-                  ? '/${data['name']}${data['args'] ?? ''}'
-                  : '会话指令',
-              style: Theme.of(context).textTheme.labelMedium,
-            ),
-            const SizedBox(height: 8),
-            SelectableText(
-              result == null
-                  ? '指令执行中…'
-                  : '${result['text'] ?? (result['kind'] == 'error' ? '指令执行失败' : '指令已完成')}',
-              style: TextStyle(
-                color: result?['kind'] == 'error'
-                    ? Theme.of(context).colorScheme.error
-                    : null,
-              ),
-            ),
-          ],
-        ),
-      );
-    }
-    return PocketDisclosure(
-      title: type == 'tool/call' ? '${data['name']}' : '工具结果',
-      child: SelectableText(const JsonEncoder.withIndent('  ').convert(data)),
-    );
-  }
 }

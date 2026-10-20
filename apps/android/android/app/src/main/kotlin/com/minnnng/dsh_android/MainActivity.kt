@@ -18,6 +18,7 @@ class MainActivity : FlutterActivity() {
     private val transfers by lazy { DocumentTransfers(this) }
     private val exports by lazy { DocumentExports(this) }
     private val attachments by lazy { AttachmentTransfers(this) }
+    private val configurationTransfers by lazy { ConfigurationTransfers(this) }
     private var bound = false
     private var notificationPermission: MethodChannel.Result? = null
     private val main = Handler(Looper.getMainLooper())
@@ -80,6 +81,29 @@ class MainActivity : FlutterActivity() {
             when (call.method) {
                 "app.metadata" -> result.success(AuthTabs.metadata(this))
                 "attachment.pick" -> attachments.pick(result)
+                "configurationTransfer.pick" -> configurationTransfers.pick(call.argument<String>("id") ?: "", result)
+                "configurationTransfer.save" -> configurationTransfers.save(
+                    call.argument<String>("id") ?: "", call.argument<String>("text") ?: "",
+                    call.argument<String>("filename") ?: "", result)
+                "configurationTransfer.cancel" -> {
+                    configurationTransfers.cancel(call.argument<String>("id") ?: "")
+                    result.success(null)
+                }
+                "background.systemStatus" -> {
+                    val power = getSystemService(PowerManager::class.java)
+                    val activity = getSystemService(android.app.ActivityManager::class.java)
+                    result.success(JSONObject()
+                        .put("batteryOptimizationsIgnored", power.isIgnoringBatteryOptimizations(packageName))
+                        .put("backgroundRestricted", activity.isBackgroundRestricted)
+                        .put("powerSaveMode", power.isPowerSaveMode).toString())
+                }
+                "background.openSystemSettings" -> {
+                    try {
+                        startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                            Uri.fromParts("package", packageName, null)))
+                        result.success(null)
+                    } catch (failure: Exception) { result.error("settings", "无法打开系统应用设置", null) }
+                }
                 "account.openPage" -> {
                     try {
                         AuthTabs.open(this, call.argument<String>("url") ?: "", call.argument<Boolean>("dark") ?: false)
@@ -229,6 +253,12 @@ class MainActivity : FlutterActivity() {
                 JSONObject().put("route", "account")).toString())
             return
         }
+        if (intent.getStringExtra("pocket.route") == "tasks") {
+            intent.removeExtra("pocket.route")
+            sink.success(JSONObject().put("method", "navigation.open").put("params",
+                JSONObject().put("route", "tasks")).toString())
+            return
+        }
         if (intent.getStringExtra("pocket.route") != "approval") return
         val id = intent.getStringExtra("pocket.requestId") ?: return
         val version = intent.getLongExtra("pocket.requestVersion", -1)
@@ -257,6 +287,7 @@ class MainActivity : FlutterActivity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (exports.onActivityResult(requestCode, resultCode, data)) return
         if (attachments.onActivityResult(requestCode, resultCode, data)) return
+        if (configurationTransfers.onActivityResult(requestCode, resultCode, data)) return
         transfers.onActivityResult(requestCode, resultCode, data)
     }
     override fun onDestroy() {
@@ -270,6 +301,7 @@ class MainActivity : FlutterActivity() {
         transfers.close()
         exports.close()
         attachments.close()
+        configurationTransfers.close()
         restarting?.error("closed", "重启期间界面已关闭，请重新打开 App 查看运行时状态", null)
         restarting = null
         clearRestartObserver()

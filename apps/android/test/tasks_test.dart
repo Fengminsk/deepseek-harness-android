@@ -10,6 +10,27 @@ class _TasksRuntime extends RuntimeController {
   _TasksRuntime() {
     phase = 'ready';
     statuses['task-a'] = 'running';
+    taskState = {
+      'epoch': 'fixture',
+      'revision': 1,
+      'active': [
+        {
+          'sessionId': 'task-a',
+          'status': 'running',
+          'queued': 1,
+          'blockingRequests': 0,
+        },
+      ],
+    };
+    taskSessions = [
+      {
+        'sessionId': 'task-a',
+        'title': '整理文件',
+        'historyAvailable': true,
+        'history': [],
+        'pending': [],
+      },
+    ];
     sessions = [
       {
         'header': {'id': 'task-a', 'title': '整理文件'},
@@ -27,8 +48,10 @@ class _TasksRuntime extends RuntimeController {
   @override
   Future<void> refreshInteractions() async {}
   @override
+  Future<void> refreshTasks() async {}
+  @override
   Future<dynamic> call(String method, [Json params = const {}]) async {
-    if (method != 'session.cancel' || params['sessionId'] != 'task-a') {
+    if (method != 'tasks.cancel' || params['sessionId'] != 'task-a') {
       throw StateError('Unexpected call');
     }
     stops++;
@@ -39,6 +62,12 @@ class _TasksRuntime extends RuntimeController {
 
   void finishTask() {
     statuses['task-a'] = 'idle';
+    taskState = {
+      'epoch': 'fixture',
+      'revision': 2,
+      'active': <Json>[],
+      'summary': {'backgroundJobs': 0},
+    };
     notifyListeners();
   }
 }
@@ -49,6 +78,27 @@ Widget _host(RuntimeController runtime) => MaterialApp(
 );
 
 void main() {
+  for (final count in <int?>[2, null]) {
+    testWidgets('Agent idle does not imply background jobs idle: $count', (
+      tester,
+    ) async {
+      final runtime = _TasksRuntime()
+        ..taskState = {
+          'epoch': 'fixture',
+          'revision': 2,
+          'active': <Json>[],
+          'summary': {'backgroundJobs': count},
+        };
+      addTearDown(runtime.dispose);
+      await tester.pumpWidget(_host(runtime));
+      await tester.pumpAndSettle();
+      expect(find.text('当前没有运行中的任务'), findsNothing);
+      expect(
+        find.text(count == null ? '后台作业状态尚未确认，请刷新后查看。' : '2 个后台作业仍在执行'),
+        findsOneWidget,
+      );
+    });
+  }
   testWidgets('stop remains pending until shared Agent state finishes', (
     tester,
   ) async {
@@ -76,13 +126,13 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('停止任务'));
     await tester.pumpAndSettle();
-    expect(find.textContaining('停止请求未成功'), findsOneWidget);
-    expect(find.text('整理文件'), findsOneWidget);
+    expect(find.textContaining('停止请求未确认'), findsOneWidget);
+    expect(find.text('整理文件'), findsWidgets);
     runtime.rejectStop = false;
     await tester.tap(find.text('停止任务'));
     await tester.pumpAndSettle();
     expect(runtime.stops, 2);
-    expect(find.textContaining('停止请求未成功'), findsNothing);
+    expect(find.textContaining('停止请求未确认'), findsNothing);
   });
 
   testWidgets('a lost service shows stale status without allowing a stop', (

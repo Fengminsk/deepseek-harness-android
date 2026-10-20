@@ -354,20 +354,44 @@ class PocketList extends StatelessWidget {
     required this.children,
     this.padding = const EdgeInsets.symmetric(horizontal: 20),
     this.controller,
-  });
-  final List<Widget> children;
+  }) : itemBuilder = null,
+       itemCount = null,
+       findChildIndexCallback = null;
+  const PocketList.builder({
+    super.key,
+    required this.itemBuilder,
+    required this.itemCount,
+    this.findChildIndexCallback,
+    this.padding = const EdgeInsets.symmetric(horizontal: 20),
+    this.controller,
+  }) : children = null;
+  final List<Widget>? children;
+  final IndexedWidgetBuilder? itemBuilder;
+  final int? itemCount;
+  final int? Function(Key)? findChildIndexCallback;
   final EdgeInsets padding;
   final ScrollController? controller;
   @override
   Widget build(BuildContext context) {
     final insets = _PocketInsets.of(context);
+    final scrollPadding =
+        padding +
+        EdgeInsets.only(top: insets?.top ?? 12, bottom: insets?.bottom ?? 24);
+    if (itemBuilder != null) {
+      return ListView.builder(
+        controller: controller,
+        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+        padding: scrollPadding,
+        itemBuilder: itemBuilder!,
+        itemCount: itemCount,
+        findChildIndexCallback: findChildIndexCallback,
+      );
+    }
     return ListView(
       controller: controller,
       keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-      padding:
-          padding +
-          EdgeInsets.only(top: insets?.top ?? 12, bottom: insets?.bottom ?? 24),
-      children: children,
+      padding: scrollPadding,
+      children: children!,
     );
   }
 }

@@ -10,7 +10,7 @@ import { registerAndroidShell } from './tool-android-shell.mjs'
 import AndroidShell from './android-shell.mjs'
 import { WebAccess } from './web-access.mjs'
 import { AppSessions } from './sessions.mjs'
-import { AppLiveState } from './live-state.mjs'
+import { AppLiveState, presentSessionEvent } from './live-state.mjs'
 import { AppInteractions } from './interactions.mjs'
 import { AppStreams } from './streams.mjs'
 import { AppExports } from './exports.mjs'
@@ -18,6 +18,8 @@ import AndroidAccountCallback from './account-callback.mjs'
 import { AppAttachments } from './attachments.mjs'
 import { createRuntimeTransport } from './transport.mjs'
 import { AppDocumentSearch } from './document-search.mjs'
+import { AppTasks } from './tasks.mjs'
+import { AppConfigurationTransfers } from './configuration-transfer.mjs'
 
 export const name = 'android-runtime'
 export const inject = ['agents', 'sessions', 'workingDirectory', 'settings', 'tools', 'appReady', 'sessionPersistence']
@@ -26,6 +28,7 @@ export const Config = Schema.object({
   shellOutputLimit: Schema.natural().min(1024).max(1048576).default(65536).volatile(),
   appStreamMaxSubscriptions: Schema.natural().min(1).max(128).default(32).volatile(),
   appStreamMaxFrameBytes: Schema.natural().min(4096).max(16777216).default(16777216).volatile(),
+  streamPublishMs: Schema.natural().min(16).max(250).default(50).volatile(),
   documentSearchFileBytes: Schema.natural().min(1024).max(67108864).default(8388608).volatile(),
   documentSearchTotalBytes: Schema.natural().min(1024).max(268435456).default(67108864).volatile(),
   documentSearchMaxEntries: Schema.natural().min(1).max(10000).default(2000).volatile(),
@@ -54,7 +57,8 @@ export function apply(ctx, config) {
     return () => ipc.close()
   })
   // Connection needs the Keystore provider before the shared Session controller can activate.
-  ctx.inject(['sessionController', 'typertGateway', 'connection', 'accountCallback', 'fileUploads', 'pluginManager'], ctx => {
+  ctx.inject(['sessionController', 'typertGateway', 'connection', 'accountCallback', 'fileUploads',
+    'pluginManager', 'jobs', 'sessionProjections'], ctx => {
   // These Loader entries define the native carrier and App-controlled HTTP boundary.
   // The manager applies the same protection to App, Web, tools, and bundle overlays.
   const requiredEntries = new Set(['android-runtime', 'credentials', 'authorization', 'deepseek-account',
@@ -80,8 +84,16 @@ export function apply(ctx, config) {
     directory: () => transport.request('native.attachments.directory', {}),
     ensureSession: sessionId => sessions.ensure(sessionId),
   })
-  const live = new AppLiveState(ctx, transport)
-  const interactions = new AppInteractions(ctx, transport)
+  const live = new AppLiveState(ctx, transport, { streamPublishMs: () => config.streamPublishMs.get() })
+  let tasks
+  const interactions = new AppInteractions(ctx, {
+    notify(method, params) {
+      transport.notify(method, params)
+      if (method === 'interactions.changed') tasks?.interactionsChanged()
+    },
+  })
+  tasks = new AppTasks(ctx, transport, { interactions: () => interactions.snapshot() })
+  const configurationTransfers = new AppConfigurationTransfers(ctx, { protectedNamespaces: requiredEntries })
   const exports = new AppExports(ctx, { directory: () => transport.request('native.exports.directory', {}) })
   const documentSearch = new AppDocumentSearch(transport, {
     maxRequests: () => config.documentSearchMaxRequests.get(),
@@ -111,6 +123,11 @@ export function apply(ctx, config) {
       case 'runtime.info': return { node: process.version, platform: process.platform, arch: process.arch,
         uid: process.getuid?.(), workspace: process.cwd(), profile: 'android' }
       case 'runtime.live': return live.snapshot()
+      case 'tasks.summary': return tasks.summary()
+      case 'tasks.list': return tasks.list(params)
+      case 'tasks.session': return tasks.session(params)
+      case 'tasks.cancel': return tasks.cancel(params)
+      case 'tasks.removeQueued': return tasks.removeQueued(params)
       case 'account.signIn': {
         const client = params.client
         if (typeof client !== 'object' || client === null || typeof client.version !== 'string'
@@ -139,6 +156,10 @@ export function apply(ctx, config) {
       case 'session.export.cancel': return exports.cancel(params)
       case 'session.export.release': return exports.release(params)
       case 'settings.describe': return describe()
+      case 'configuration.transfer.export': return configurationTransfers.export()
+      case 'configuration.transfer.preview': return configurationTransfers.preview(params)
+      case 'configuration.transfer.apply': return configurationTransfers.apply(params)
+      case 'configuration.transfer.release': return configurationTransfers.release(params)
       case 'settings.mutate': {
         requiredString(params.ns, 'ns')
         if (!Array.isArray(params.ops) || !Number.isSafeInteger(params.revision)) throw new TypeError('ops and revision are required')
@@ -171,17 +192,15 @@ export function apply(ctx, config) {
         // The original controller owns the current attached Session observation.
         if (ctx.sessions.get(sessionId) !== undefined) {
           const inspection = await ctx.sessionController.inspect(sessionId)
-          return { events: inspection.events.filter(event => event.seq >= offset).slice(0, 200) }
+          return { events: inspection.events.filter(event => event.seq >= offset).slice(0, 200).map(presentSessionEvent) }
         }
         const handle = await ctx.sessionPersistence.open(sessionId, 'read')
-        try { return await handle.read(offset, 200) } finally { await handle.close() }
+        try {
+          const page = await handle.read(offset, 200)
+          return { ...page, events: page.events.map(presentSessionEvent) }
+        } finally { await handle.close() }
       }
-      case 'session.cancel': {
-        const agent = ctx.agents.get(SessionId(requiredString(params.sessionId, 'sessionId')))
-        if (agent === undefined) throw new Error('Session is not running')
-        agent.cancel({ kind: 'user' })
-        return { cancelled: true }
-      }
+      case 'session.cancel': return tasks.cancel(params)
       case 'documents.roots': return transport.request('native.documents.roots', {})
       case 'documents.list': return transport.request('native.documents.list', params)
       case 'documents.read': return transport.request('native.documents.read', params)
@@ -192,7 +211,7 @@ export function apply(ctx, config) {
     }
   })
   ctx.on('session/event', (session, event) => {
-    transport.notify('session.event', { sessionId: String(session.id), event })
+    transport.notify('session.event', { sessionId: String(session.id), event: presentSessionEvent(event) })
   })
   ctx.on('session/created', () => transport.notify('sessions.changed', {}))
   ctx.on('settings/document-updated', () => transport.notify('settings.changed'))
@@ -222,6 +241,7 @@ export function apply(ctx, config) {
         establishAttachmentHome(resolveDshHome(), requiredString(root, 'native storage root')),
       ).then(() => interactions.start()).then(() => {
         transport.notify('runtime.ready', { node: process.version })
+        tasks.publish()
         return web.restore().catch(error =>
           transport.notify('web.changed', { ...web.status(), phase: 'failed', error: String(error) }),
         )
@@ -232,7 +252,9 @@ export function apply(ctx, config) {
     return async () => {
       remove()
       const results = await Promise.allSettled([
-        () => documentSearch.close(), () => attachments.close(), () => exports.close(),
+        () => documentSearch.close(), () => attachments.close(), () => exports.close(), () => tasks.close(),
+        () => configurationTransfers.close(),
+        () => live.close(),
         () => streams.close(), () => interactions.close(), () => web.close(),
       ].map(close => Promise.resolve().then(close)))
       // Stream and interaction owners release their peer before the shared API peer.

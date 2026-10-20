@@ -35,9 +35,19 @@ class RuntimeController extends ChangeNotifier {
   );
   final Map<String, List<Json>> timelines = {};
   final Map<String, String> streaming = {};
+  final Map<String, Json> liveMessages = {};
   final Map<String, String> statuses = {};
   final Map<String, String> sessionErrors = {};
+  Json taskState = {};
+  List<Json> taskSessions = [];
+  int? tasksNextOffset;
+  String? tasksError;
+  Future<void>? _tasksRefresh;
+  int _tasksRefreshGeneration = -1;
+  int _connectionGeneration = 0;
+  bool _disposed = false;
   Future<void>? _liveRefresh;
+  int _liveRefreshGeneration = -1;
   List<({String method, Json data})>? _liveBuffer;
   String provider = 'deepseek-official';
   String model = 'deepseek-flash';
@@ -66,9 +76,16 @@ class RuntimeController extends ChangeNotifier {
   List<Json> get observationDiagnostics => _apiStreams.diagnostics;
 
   bool get ready => phase == 'ready';
+  void _markLiveUnconfirmed() {
+    for (final id in liveMessages.keys.toList()) {
+      liveMessages[id] = {...liveMessages[id]!, 'unconfirmed': true};
+    }
+  }
+
   void fail(Object exception) {
     error = '$exception';
     phase = 'failed';
+    _markLiveUnconfirmed();
     _apiStreams.setReady(false);
     notifyListeners();
   }
@@ -82,9 +99,15 @@ class RuntimeController extends ChangeNotifier {
           case 'runtime.status':
             phase = data['phase'] as String;
             error = data['error'] as String?;
+            if (!ready) _markLiveUnconfirmed();
             _apiStreams.setReady(ready);
             if (phase == 'starting') {
               _interactionsRevision = -1;
+              _connectionGeneration++;
+              taskState = {};
+              liveMessages.clear();
+              statuses.clear();
+              streaming.clear();
             }
             if (ready) {
               unawaited(
@@ -104,10 +127,14 @@ class RuntimeController extends ChangeNotifier {
             if (event['type'] == 'assistant/message') streaming.remove(id);
           case 'session.stream':
             _receiveLive('session.stream', data);
+          case 'session.live':
+            _receiveLive('session.live', data);
           case 'session.status':
             _receiveLive('session.status', data);
           case 'session.error':
             _receiveLive('session.error', data);
+          case 'runtime.tasks.changed':
+            _applyTasks(data);
           case 'settings.changed':
             if (ready) {
               unawaited(
@@ -143,6 +170,7 @@ class RuntimeController extends ChangeNotifier {
       },
       onError: (Object exception) {
         phase = 'failed';
+        _markLiveUnconfirmed();
         _apiStreams.setReady(false);
         error = '$exception';
         notifyListeners();
@@ -155,6 +183,11 @@ class RuntimeController extends ChangeNotifier {
     phase = 'restarting';
     error = null;
     _interactionsRevision = -1;
+    _connectionGeneration++;
+    taskState = {};
+    _markLiveUnconfirmed();
+    statuses.clear();
+    streaming.clear();
     _apiStreams.setReady(false);
     notifyListeners();
     try {
@@ -204,6 +237,66 @@ class RuntimeController extends ChangeNotifier {
     web = await call('web.status') as Json;
     await refreshSessions();
     await refreshForms();
+    await refreshTasks();
+  }
+
+  void _applyTasks(Json snapshot) {
+    if (snapshot['epoch'] == taskState['epoch'] &&
+        (snapshot['revision'] as int) < (taskState['revision'] as int? ?? -1)) {
+      return;
+    }
+    taskState = {
+      'epoch': snapshot['epoch'],
+      'revision': snapshot['revision'],
+      'summary': snapshot['summary'],
+      'active': snapshot['active'],
+    };
+  }
+
+  Future<void> refreshTasks() {
+    if (_tasksRefresh != null &&
+        _tasksRefreshGeneration == _connectionGeneration) {
+      return _tasksRefresh!;
+    }
+    _tasksRefreshGeneration = _connectionGeneration;
+    late final Future<void> operation;
+    operation = _readTasks().whenComplete(() {
+      if (identical(_tasksRefresh, operation)) _tasksRefresh = null;
+    });
+    return _tasksRefresh = operation;
+  }
+
+  Future<void> _readTasks() async {
+    final generation = _connectionGeneration;
+    try {
+      final snapshot = await call('tasks.list') as Json;
+      if (generation != _connectionGeneration) return;
+      _applyTasks(snapshot);
+      taskSessions = (snapshot['sessions'] as List).cast<Json>();
+      tasksNextOffset = snapshot['nextOffset'] as int?;
+      tasksError = null;
+    } catch (failure) {
+      if (generation == _connectionGeneration) tasksError = '$failure';
+      rethrow;
+    } finally {
+      if (!_disposed) notifyListeners();
+    }
+  }
+
+  Future<void> loadMoreTasks() async {
+    final offset = tasksNextOffset;
+    if (offset == null) return;
+    final generation = _connectionGeneration;
+    final snapshot = await call('tasks.list', {'offset': offset}) as Json;
+    if (generation != _connectionGeneration) return;
+    _applyTasks(snapshot);
+    final byId = {for (final row in taskSessions) row['sessionId']: row};
+    for (final row in (snapshot['sessions'] as List).cast<Json>()) {
+      byId[row['sessionId']] = row;
+    }
+    taskSessions = byId.values.toList();
+    tasksNextOffset = snapshot['nextOffset'] as int?;
+    notifyListeners();
   }
 
   void _applyInteractions(Json snapshot) {
@@ -236,6 +329,15 @@ class RuntimeController extends ChangeNotifier {
 
   void _applyLive(String method, Json data) {
     final id = data['sessionId'] as String;
+    if (method == 'session.live') {
+      final value = data['value'] as Json?;
+      if (value == null) {
+        liveMessages.remove(id);
+      } else {
+        liveMessages[id] = value;
+      }
+      return;
+    }
     if (method == 'session.status') {
       statuses[id] = data['status'] as String;
       if (data['status'] == 'idle') streaming.remove(id);
@@ -257,14 +359,26 @@ class RuntimeController extends ChangeNotifier {
     }
   }
 
-  Future<void> refreshLive() => _liveRefresh ??= _readLive().whenComplete(() {
-    _liveRefresh = null;
-  });
+  Future<void> refreshLive() {
+    if (_liveRefresh != null &&
+        _liveRefreshGeneration == _connectionGeneration) {
+      return _liveRefresh!;
+    }
+    _liveRefreshGeneration = _connectionGeneration;
+    late final Future<void> operation;
+    operation = _readLive().whenComplete(() {
+      if (identical(_liveRefresh, operation)) _liveRefresh = null;
+    });
+    return _liveRefresh = operation;
+  }
 
   Future<void> _readLive() async {
-    _liveBuffer = [];
+    final generation = _connectionGeneration;
+    final buffer = <({String method, Json data})>[];
+    _liveBuffer = buffer;
     try {
       final baseline = await call('runtime.live') as Json;
+      if (generation != _connectionGeneration) return;
       statuses
         ..clear()
         ..addAll((baseline['statuses'] as Json).cast<String, String>());
@@ -276,14 +390,20 @@ class RuntimeController extends ChangeNotifier {
         ..addAll(
           ((baseline['errors'] as Json?) ?? const {}).cast<String, String>(),
         );
-      for (final update in _liveBuffer!) {
+      liveMessages
+        ..clear()
+        ..addAll(
+          ((baseline['liveMessages'] as Json?) ?? const {})
+              .cast<String, Json>(),
+        );
+      for (final update in buffer) {
         if ((update.data['revision'] as int) > (baseline['revision'] as int)) {
           _applyLive(update.method, update.data);
         }
       }
       notifyListeners();
     } finally {
-      _liveBuffer = null;
+      if (identical(_liveBuffer, buffer)) _liveBuffer = null;
     }
   }
 
@@ -371,6 +491,8 @@ class RuntimeController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
+    _connectionGeneration++;
     _plugins?.dispose();
     unawaited(_subscription?.cancel());
     unawaited(_apiStreams.close());

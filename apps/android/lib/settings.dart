@@ -7,12 +7,14 @@ import 'ui.dart';
 import 'files.dart';
 import 'appearance.dart';
 import 'configuration_editor.dart';
+import 'configuration_transfer.dart';
 import 'models.dart';
 import 'diagnostics.dart';
 import 'approvals.dart';
 import 'approvals_notifications.dart';
 import 'account.dart';
 import 'plugins.dart';
+import 'background_settings.dart';
 
 class SettingsPage extends StatelessWidget {
   const SettingsPage({required this.runtime, super.key});
@@ -81,6 +83,13 @@ class SettingsPage extends StatelessWidget {
                   onTap: () => open(PluginsPage(runtime: runtime)),
                 ),
                 PocketRow(
+                  icon: Icons.import_export_rounded,
+                  title: '运行设置导入导出',
+                  subtitle: '普通运行设置的预览与迁移，不含凭据及设备授权',
+                  onTap: () =>
+                      open(ConfigurationTransferPage(runtime: runtime)),
+                ),
+                PocketRow(
                   icon: Icons.verified_user_outlined,
                   title: '授权与提问',
                   subtitle: runtime.interactions.isEmpty
@@ -118,6 +127,12 @@ class SettingsPage extends StatelessWidget {
                   title: '授权通知',
                   subtitle: '系统通知、快捷授权与填写',
                   onTap: () => open(const NotificationSettingsPage()),
+                ),
+                PocketRow(
+                  icon: Icons.battery_charging_full_rounded,
+                  title: '后台执行',
+                  subtitle: '后台任务与系统电池限制',
+                  onTap: () => open(BackgroundSettingsPage(runtime: runtime)),
                 ),
               ],
             ),

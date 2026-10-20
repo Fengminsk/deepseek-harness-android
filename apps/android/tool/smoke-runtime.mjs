@@ -77,7 +77,9 @@ try {
     await boot.promise
     assert.equal((await request('runtime.info')).profile, 'android')
     assert.equal((await request('web.status')).enabled, false)
-    assert.deepEqual(await request('runtime.live'), { revision: 0, statuses: {}, streaming: {}, errors: {} })
+    assert.deepEqual(await request('runtime.live'), {
+      revision: 0, statuses: {}, streaming: {}, errors: {}, liveMessages: {},
+    })
     assert.deepEqual(await request('sessions.list'), [])
     const list = await request('api.call', { namespace: 'session', method: 'list', args: { _request: {} } })
     assert.deepEqual(list.items, [])

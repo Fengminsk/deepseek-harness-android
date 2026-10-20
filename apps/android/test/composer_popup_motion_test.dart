@@ -70,9 +70,13 @@ class _Runtime extends RuntimeController {
       for (var turn = 1; turn <= 12; turn++) ...[
         {
           'seq': turn * 2 - 1,
+          'time': (turn * 2 - 1) * 1000,
           'type': 'user/message',
+          'surfaceOp': 'append',
           'data': {
+            'id': 'fixture-user-$turn',
             'role': 'user',
+            'source': {'kind': 'user'},
             'content': [
               {'type': 'text', 'text': '问题 $turn：请保留当前聊天位置。'},
             ],
@@ -80,12 +84,20 @@ class _Runtime extends RuntimeController {
         },
         {
           'seq': turn * 2,
+          'time': turn * 2 * 1000,
           'type': 'assistant/message',
+          'surfaceOp': 'append',
           'data': {
             'turn': turn,
             'step': 1,
             'message': {
+              'id': 'fixture-assistant-$turn',
               'role': 'assistant',
+              'source': {
+                'kind': 'model',
+                'provider': 'fixture-provider',
+                'model': 'fixture-model',
+              },
               'content': [
                 {'type': 'text', 'text': '回复 $turn：菜单应悬浮在内容之上，关闭后可以继续编辑。'},
               ],
