@@ -16,6 +16,8 @@
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="User-started local AI agent tasks and optional local Web interface" />
         </service>
+        <receiver android:name=".ApprovalActionReceiver" android:exported="false"
+            android:process=":agent" />
         <activity
             android:name=".MainActivity"
             android:exported="true"

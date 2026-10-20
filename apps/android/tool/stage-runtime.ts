@@ -4,6 +4,7 @@ import { resolve, join, sep, relative } from 'node:path'
 import { existsSync } from 'node:fs'
 import { deduplicateStagedWorkspacePackages } from '../../../scripts/build-exe-for-python-sdk-staging.ts'
 import { restoreLegacyHoists } from '../../../scripts/executable-packaging.ts'
+import { stageQuestionCarrier } from './stage-question-carrier.mjs'
 
 const root = resolve(import.meta.dirname, '../../..')
 const staging = join(root, '.cache/android/runtime-bundle')
@@ -83,6 +84,7 @@ const manifest = JSON.parse(await readFile(join(staging, 'package.json'), 'utf8'
 const plugin = join(staging, 'node_modules/@minnnng/dsh-android-runtime')
 await mkdir(plugin, { recursive: true })
 await cp(join(root, 'apps/android/runtime'), plugin, { recursive: true })
+await stageQuestionCarrier(plugin)
 await writeFile(join(plugin, 'package.json'), JSON.stringify({
   name: '@minnnng/dsh-android-runtime', version: manifest.version, type: 'module', main: './index.mjs',
   exports: { '.': './index.mjs', './package.json': './package.json' },

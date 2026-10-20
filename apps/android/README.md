@@ -50,6 +50,10 @@ Web preferences are separate from browser-editable runtime settings. The App con
 
 Shell commands run with the application's existing UID and Android permissions. This is not a per-command read-only or workspace-only sandbox. Root, ADB control, boot autostart and offline model inference are not implemented.
 
+**Approvals and questions** and Android notifications present the same pending DSH requests as Web. Approval buttons send the existing `allowed-once` and `rejected` outcomes. Simple questions can use notification options or direct text replies; complex questions open the matching App page. The original question controller owns waiting, continuation and cancellation. Notification transport tokens do not grant additional permissions. Old or already answered notifications cannot reply again, and an unconfirmed submission keeps its draft without automatic replay. The App exposes system notification permission and channel settings.
+
+**Background tasks** shows running Agent sessions, pending interaction links and an explicit stop action. A successful cancellation request remains shown as stopping until the core reports idle. This page does not yet manage the separate DSH subprocess job catalog. Leaving the page does not cancel work; Android can still stop the process.
+
 <a id="interface"></a>
 ## Interface and themes
 
@@ -62,4 +66,4 @@ Actual glass shaders, backdrop sampling, elastic press/drag springs, grouped but
 
 The focused Flutter tests cover retained message drafts, saved message rendering, theme persistence, failed theme saves, theme controls without an Agent service, press/drag/release and cancellation, reduced motion, full-height scrolling behind floating controls, keyboard insets, enlarged text, credential-preserving configuration edits and concurrent-edit conflicts. The host smoke drives the real Agent through a local model stub, an Android tool response and a second model step; closing Web during that step leaves the task running. It also checks browser authentication, connection closure and credential rotation. These checks do not establish a real provider/tool round trip on Android.
 
-The embedded runtime has started on an ARM64 Android device. Account authorization, complete management coverage, import/export, service recovery and detached-USB acceptance remain unfinished. Schema-driven forms and the advanced editor are available inside the App; complex configuration still uses JSON input. Device screenshots, diagnostic logs, personal sessions and generated APKs are local-only artifacts, excluded from Git.
+The embedded runtime has started on an ARM64 Android device. Notification code compiles, and host tests cover original DSH approvals/questions, competing Web/App answers, cancellation, timed continuation, stale notification tokens and retained drafts. Lock-screen actions, direct replies and notification permissions still require device testing. Account authorization, complete management coverage, import/export, service recovery and detached-USB acceptance remain unfinished. Schema-driven forms and the advanced editor are available inside the App; complex configuration still uses JSON input. Device screenshots, diagnostic logs, personal sessions and generated APKs are local-only artifacts, excluded from Git.

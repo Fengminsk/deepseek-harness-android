@@ -18,6 +18,7 @@ class MainActivity : FlutterActivity() {
     private var events: EventChannel.EventSink? = null
     private var picker: MethodChannel.Result? = null
     private var bound = false
+    private var notificationPermission: MethodChannel.Result? = null
     private val pending = mutableMapOf<String, MethodChannel.Result>()
     private val replies = Messenger(Handler(Looper.getMainLooper()) { message ->
         val raw = WirePayload.decode(message.data)
@@ -25,7 +26,7 @@ class MainActivity : FlutterActivity() {
         if (frame.has("id")) {
             pending.remove(frame.getString("id"))?.let { result ->
                 if (frame.has("error")) result.error("runtime", frame.getJSONObject("error").optString("message"), null)
-                else result.success(frame.opt("result").toString())
+                else result.success((frame.opt("result") ?: JSONObject.NULL).toString())
             }
         } else events?.success(raw)
         true
@@ -45,11 +46,26 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(engine: FlutterEngine) {
         super.configureFlutterEngine(engine)
         EventChannel(engine.dartExecutor.binaryMessenger, "dsh/events").setStreamHandler(object : EventChannel.StreamHandler {
-            override fun onListen(arguments: Any?, sink: EventChannel.EventSink) { events = sink }
+            override fun onListen(arguments: Any?, sink: EventChannel.EventSink) { events = sink; deliverNavigation() }
             override fun onCancel(arguments: Any?) { events = null }
         })
         MethodChannel(engine.dartExecutor.binaryMessenger, "dsh/runtime").setMethodCallHandler { call, result ->
             when (call.method) {
+                "notifications.status" -> result.success(ApprovalNotifications.status(this).toString())
+                "notifications.settings" -> {
+                    startActivity(ApprovalNotifications.settingsIntent(this))
+                    result.success(null)
+                }
+                "notifications.request" -> {
+                    if (Build.VERSION.SDK_INT >= 33 &&
+                        checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                        if (notificationPermission != null) result.error("busy", "通知权限请求已经打开", null)
+                        else {
+                            notificationPermission = result
+                            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 43)
+                        }
+                    } else result.success(null)
+                }
                 "appearance.load" -> result.success(getSharedPreferences("appearance", MODE_PRIVATE).getString("value", "{}"))
                 "appearance.save" -> {
                     try {
@@ -103,6 +119,37 @@ class MainActivity : FlutterActivity() {
             }
         }
     }
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        deliverNavigation()
+    }
+    private fun deliverNavigation() {
+        val sink = events ?: return
+        if (intent.getStringExtra("pocket.route") != "approval") return
+        val id = intent.getStringExtra("pocket.requestId") ?: return
+        val version = intent.getLongExtra("pocket.requestVersion", -1)
+        val params = JSONObject().put("route", "approval").put("requestId", id)
+            .put("requestVersion", version).put("sessionId", intent.getStringExtra("pocket.sessionId"))
+        sink.success(JSONObject().put("method", "navigation.open").put("params", params).toString())
+        listOf("pocket.route", "pocket.requestId", "pocket.requestVersion", "pocket.sessionId").forEach { intent.removeExtra(it) }
+    }
+    override fun onResume() {
+        super.onResume()
+        try { service?.send(Message.obtain(null, 5).apply { replyTo = replies }) }
+        catch (_: RemoteException) { /* Service disconnect is reported by ServiceConnection. */ }
+    }
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 43) {
+            notificationPermission?.success(null)
+            notificationPermission = null
+        }
+        if (requestCode == 41 || requestCode == 43) {
+            try { service?.send(Message.obtain(null, 5).apply { replyTo = replies }) }
+            catch (_: RemoteException) { /* Service disconnect is reported by ServiceConnection. */ }
+        }
+    }
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode != 42) return
@@ -121,6 +168,8 @@ class MainActivity : FlutterActivity() {
             unbindService(connection)
         }
         pending.values.forEach { it.error("closed", "界面已关闭", null) }; pending.clear()
+        notificationPermission?.error("closed", "界面已关闭", null)
+        notificationPermission = null
         super.onDestroy()
     }
 }

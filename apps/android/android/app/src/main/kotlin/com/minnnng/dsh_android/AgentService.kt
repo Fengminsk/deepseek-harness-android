@@ -12,6 +12,7 @@ import java.io.BufferedWriter
 import java.io.File
 import java.util.concurrent.Executors
 import java.util.concurrent.ConcurrentHashMap
+import java.util.UUID
 
 /** Owns Node and its IPC endpoint; activity destruction does not terminate tasks. */
 class AgentService : Service() {
@@ -19,11 +20,13 @@ class AgentService : Service() {
     private val workers = Executors.newCachedThreadPool()
     private val clients = mutableSetOf<Messenger>()
     private val pending = ConcurrentHashMap<String, Messenger>()
+    private val nativePending = mutableMapOf<String, (Result<JSONObject>) -> Unit>()
     private var output: BufferedWriter? = null
     private var phase = "starting"
     private var failure: String? = null
     private lateinit var vault: CredentialVault
     private lateinit var webPreferences: WebPreferences
+    private lateinit var approvals: ApprovalNotifications
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) = networkChanged()
         override fun onLost(network: Network) = networkChanged()
@@ -46,6 +49,10 @@ class AgentService : Service() {
             val id = frame.getString("id")
             if (frame.getString("method") == "runtime.status") {
                 send(client, JSONObject().put("id", id).put("result", status().getJSONObject("params")))
+            } else if (frame.getString("method") == "notifications.draft") {
+                val params = frame.getJSONObject("params")
+                send(client, JSONObject().put("id", id).put("result", JSONObject().put("text",
+                    approvals.draft(params.getString("id"), params.getLong("version")) ?: JSONObject.NULL)))
             } else if (phase != "ready") {
                 send(client, error(id, failure ?: "运行时正在启动，请稍后重试"))
             } else {
@@ -59,6 +66,13 @@ class AgentService : Service() {
                 }
             }
         } else if (message.what == 3) clients.remove(client)
+        else if (message.what == ApprovalNotifications.MESSAGE_RESPOND) {
+            try {
+                approvals.handle(JSONObject(WirePayload.decode(message.data))) { ack -> send(client, ack) }
+            } catch (exception: Exception) {
+                send(client, JSONObject().put("accepted", false).put("requestStillPending", false))
+            }
+        } else if (message.what == 5) approvals.refresh()
         true
     })
 
@@ -66,6 +80,22 @@ class AgentService : Service() {
         super.onCreate()
         vault = CredentialVault(this)
         webPreferences = WebPreferences(this)
+        approvals = ApprovalNotifications(this) { params, completion ->
+            if (phase != "ready") {
+                completion(Result.failure(IllegalStateException("Agent service is unavailable")))
+            } else {
+                val id = "native-interaction-${UUID.randomUUID()}"
+                nativePending[id] = completion
+                workers.execute {
+                    try {
+                        write(JSONObject().put("jsonrpc", "2.0").put("id", id)
+                            .put("method", "interactions.reply").put("params", params))
+                    } catch (exception: Exception) {
+                        main.post { nativePending.remove(id)?.invoke(Result.failure(exception)) }
+                    }
+                }
+            }
+        }
         getSystemService(ConnectivityManager::class.java).registerNetworkCallback(NetworkRequest.Builder().build(), networkCallback)
         val notifications = getSystemService(NotificationManager::class.java)
         notifications.createNotificationChannel(NotificationChannel("agent", "Pocket Harness", NotificationManager.IMPORTANCE_LOW))
@@ -124,8 +154,22 @@ class AgentService : Service() {
             }
         } else main.post {
             if (frame.optString("method") == "runtime.ready") { phase = "ready"; broadcast(status()) }
-            if (frame.has("id")) pending.remove(frame.getString("id"))?.let { send(it, frame) }
-            else broadcast(frame)
+            if (frame.optString("method") == "interactions.changed") {
+                try { approvals.sync(frame.getJSONObject("params")) }
+                catch (exception: Exception) {
+                    broadcast(JSONObject().put("method", "notifications.error").put("params",
+                        JSONObject().put("message", "通知状态更新失败，请在 App 内处理待办")))
+                }
+            }
+            if (frame.has("id")) {
+                val id = frame.getString("id")
+                val callback = nativePending.remove(id)
+                if (callback != null) {
+                    if (frame.has("error")) callback(Result.failure(IllegalStateException(
+                        frame.getJSONObject("error").optString("message", "Interaction result is unknown"))))
+                    else callback(Result.success(frame.getJSONObject("result")))
+                } else pending.remove(id)?.let { send(it, frame) }
+            } else broadcast(frame)
         }
     }
     @Synchronized private fun write(frame: JSONObject) {
@@ -139,6 +183,9 @@ class AgentService : Service() {
     private fun fail(message: String) { main.post {
         phase = "failed"; failure = message
         pending.entries.forEach { send(it.value, error(it.key, message)) }; pending.clear()
+        nativePending.values.toList().forEach { it(Result.failure(IllegalStateException(message))) }
+        nativePending.clear()
+        approvals.close()
         broadcast(status())
     } }
     private fun broadcast(frame: JSONObject) { clients.toList().forEach { send(it, frame) } }
@@ -153,6 +200,7 @@ class AgentService : Service() {
     override fun onDestroy() {
         getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(networkCallback)
         output?.close(); workers.shutdownNow()
+        approvals.close()
         super.onDestroy()
     }
 }

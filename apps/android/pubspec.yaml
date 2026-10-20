@@ -1,7 +1,7 @@
 name: dsh_android
 description: "Pocket Harness — 手机上的本地 Agent 与可选原版 Web。"
 publish_to: 'none'
-version: 0.1.0+4
+version: 0.1.0+5
 environment:
   sdk: ^3.13.5
 dependencies:
@@ -25,3 +25,4 @@ flutter:
     - licenses/FlClash-GPL-3.0.txt
     - licenses/flclash-source.json
     - licenses/require-builtin-MIT.txt
+    - licenses/node-addon-api-MIT.txt

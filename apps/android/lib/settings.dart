@@ -10,6 +10,8 @@ import 'files.dart';
 import 'appearance.dart';
 import 'configuration_editor.dart';
 import 'configuration_edits.dart';
+import 'approvals.dart';
+import 'approvals_notifications.dart';
 
 class SettingsPage extends StatelessWidget {
   const SettingsPage({required this.runtime, super.key});
@@ -65,6 +67,14 @@ class SettingsPage extends StatelessWidget {
                   subtitle: '预设、Shell、联网搜索与插件',
                   onTap: () => open(ConfigurationListPage(runtime: runtime)),
                 ),
+                PocketRow(
+                  icon: Icons.verified_user_outlined,
+                  title: '授权与提问',
+                  subtitle: runtime.interactions.isEmpty
+                      ? '查看 DSH 等待你处理的请求'
+                      : '${runtime.interactions.length} 项等待处理',
+                  onTap: () => open(ApprovalsPage(runtime: runtime)),
+                ),
               ],
             ),
             PocketSection(
@@ -90,6 +100,12 @@ class SettingsPage extends StatelessWidget {
                       : '使用原版 Web 界面',
                   onTap: () => open(WebSettingsPage(runtime: runtime)),
                 ),
+                PocketRow(
+                  icon: Icons.notifications_outlined,
+                  title: '授权通知',
+                  subtitle: '系统通知、快捷授权与填写',
+                  onTap: () => open(const NotificationSettingsPage()),
+                ),
               ],
             ),
             PocketSection(
@@ -104,7 +120,7 @@ class SettingsPage extends StatelessWidget {
                 const PocketRow(
                   icon: Icons.info_outline_rounded,
                   title: 'Pocket Harness',
-                  subtitle: '0.1.0 · 构建 4 · 开发预览',
+                  subtitle: '0.1.0 · 构建 5 · 开发预览',
                 ),
               ],
             ),

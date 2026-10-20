@@ -27,7 +27,7 @@ The App provides a conversation home, history sidebar, file browser, model crede
 
 The interface incorporates pinned liquid glass, typography, shape, color and page transition components. The App retains the original Web frontend as an optional interface. The product requires Web access to be off on first installation and controlled from the App; enabling Web must not create a second Agent runtime.
 
-App and Web share the core session controller. Native schema forms and the advanced editor preserve credentials and detect concurrent edits. Account authorization, complete management coverage, import/export and the full device acceptance matrix remain unfinished. Root, device ADB control and offline model inference are outside this preview. Do not treat a successful APK build as evidence that these operations have passed on a phone.
+App and Web share the core session controller. Native schema forms and the advanced editor preserve credentials and detect concurrent edits. Pending approvals and questions can be handled in the App or through Android notification actions, using the original DSH outcomes and question lifecycle. The background task page lists running Agent sessions and requests cancellation through the same core. Account authorization, complete management coverage, import/export and the full device acceptance matrix remain unfinished. Root, device ADB control and offline model inference are outside this preview. Do not treat a successful APK build as evidence that these operations have passed on a phone.
 
 <a id="run"></a>
 

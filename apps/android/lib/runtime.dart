@@ -17,6 +17,10 @@ class RuntimeController extends ChangeNotifier {
   Json web = {};
   List<Json> sessions = [];
   List<Json> forms = [];
+  List<Json> interactions = [];
+  String? interactionsError;
+  int _interactionsRevision = -1;
+  Json? navigationRequest;
   final Map<String, List<Json>> timelines = {};
   final Map<String, String> streaming = {};
   final Map<String, String> statuses = {};
@@ -54,6 +58,9 @@ class RuntimeController extends ChangeNotifier {
           case 'runtime.status':
             phase = data['phase'] as String;
             error = data['error'] as String?;
+            if (phase == 'starting') {
+              _interactionsRevision = -1;
+            }
             if (ready) {
               unawaited(
                 refresh().catchError((Object e) {
@@ -94,6 +101,12 @@ class RuntimeController extends ChangeNotifier {
             }
           case 'web.changed':
             web = data;
+          case 'interactions.changed':
+            _applyInteractions(data);
+          case 'navigation.open':
+            navigationRequest = data;
+          case 'notifications.error':
+            interactionsError = data['message'] as String?;
         }
         notifyListeners();
       },
@@ -140,9 +153,33 @@ class RuntimeController extends ChangeNotifier {
   Future<void> refresh() async {
     info = await call('runtime.info') as Json;
     await refreshLive();
+    await refreshInteractions();
     web = await call('web.status') as Json;
     await refreshSessions();
     await refreshForms();
+  }
+
+  void _applyInteractions(Json snapshot) {
+    final revision = snapshot['revision'] as int;
+    if (revision < _interactionsRevision) return;
+    _interactionsRevision = revision;
+    interactions = (snapshot['requests'] as List).cast<Json>();
+    interactionsError = snapshot['error'] as String?;
+  }
+
+  Future<void> refreshInteractions() async {
+    try {
+      _applyInteractions(await call('interactions.list') as Json);
+    } catch (exception) {
+      interactionsError = '$exception';
+      rethrow;
+    } finally {
+      notifyListeners();
+    }
+  }
+
+  void consumeNavigation() {
+    navigationRequest = null;
   }
 
   void _receiveLive(String method, Json data) {

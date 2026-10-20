@@ -42,7 +42,7 @@
     workspaceRoot: !!js process.cwd()
 - id: approval
   config:
-    policy: never
+    policy: ask
 - id: fs-sandbox
   disabled: true
 - id: ptc-runtime
@@ -96,3 +96,7 @@
               edit: false
           - id: tool-web
             name: '@deepseek-ai/dsh-tool-web'
+          - id: tool-ask-user
+            name: '@deepseek-ai/dsh-tool-ask-user'
+            config:
+              mode: timed

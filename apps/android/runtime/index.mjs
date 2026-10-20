@@ -9,6 +9,7 @@ import AndroidShell from './android-shell.mjs'
 import { WebAccess } from './web-access.mjs'
 import { AppSessions } from './sessions.mjs'
 import { AppLiveState } from './live-state.mjs'
+import { AppInteractions } from './interactions.mjs'
 
 export const name = 'android-runtime'
 export const inject = ['agents', 'workingDirectory', 'settings', 'tools', 'appReady', 'sessionPersistence']
@@ -41,6 +42,7 @@ export function apply(ctx, config) {
   }
   const sessions = new AppSessions(ctx, (method, request) => invoke('session', method, { request }))
   const live = new AppLiveState(ctx, transport)
+  const interactions = new AppInteractions(ctx, transport)
   transport.onNotification(method => {
     if (method === 'native.networkChanged') {
       void web.refresh().catch(error => web.publish({ phase: 'failed', host: null, url: null, error: String(error) }))
@@ -52,6 +54,9 @@ export function apply(ctx, config) {
       case 'runtime.info': return { node: process.version, platform: process.platform, arch: process.arch,
         uid: process.getuid?.(), workspace: process.cwd(), profile: 'android' }
       case 'runtime.live': return live.snapshot()
+      case 'interactions.list': return interactions.snapshot()
+      case 'interactions.reply': return interactions.reply(params)
+      case 'interactions.wait': return interactions.wait(params)
       case 'web.status': return web.status()
       case 'web.configure': return web.configure(params)
       case 'web.rotate': return web.rotate()
@@ -125,10 +130,14 @@ export function apply(ctx, config) {
   })))
   ctx.effect(() => {
     const remove = ctx.appReady.onReady(() => {
-      transport.notify('runtime.ready', { node: process.version })
+      void interactions.start().then(() => {
+        transport.notify('runtime.ready', { node: process.version })
+      }).catch(error => {
+        transport.notify('runtime.status', { phase: 'failed', error: `审批服务启动失败：${error.message}` })
+      })
       void web.restore().catch(error => transport.notify('web.changed', { ...web.status(), phase: 'failed', error: String(error) }))
     })
-    return async () => { remove(); await web.close(); await appPeer?.dispose() }
+    return async () => { remove(); await interactions.close(); await web.close(); await appPeer?.dispose() }
   })
   })
 }
