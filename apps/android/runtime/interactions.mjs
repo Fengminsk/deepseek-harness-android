@@ -222,7 +222,10 @@ export class AppInteractions {
         if (event?.type === 'tool/call' && event.data.callId === callId) { toolCall = event.data; break }
       }
     }
-    return { id, version, sessionId, kind, ...record.request, toolCall }
+    return { id, version, sessionId, kind, ...record.request, toolCall,
+      // android_shell executes against this process directory, not a session's header/configured cwd.
+      ...(record.request.toolName === 'android_shell' ? { executionContext: { cwd: process.cwd() } } : {}),
+    }
   }
 
   snapshot() {

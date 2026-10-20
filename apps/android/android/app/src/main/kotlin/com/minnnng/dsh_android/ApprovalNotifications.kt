@@ -219,7 +219,16 @@ class ApprovalNotifications(
                 val reason = localized?.optString("zh")?.takeIf { it.isNotBlank() }
                     ?: value.optString("reason").takeIf { it.isNotBlank() }
                     ?: "工具 $tool 请求审批"
-                Request(id, version, sessionId, "${tool.take(80)} · 等待审批", reason.take(1000), listOf(
+                val arguments = value.optJSONObject("toolCall")?.opt("arguments")
+                    ?.takeUnless { it === JSONObject.NULL }?.toString()
+                val command = if (tool == "android_shell" && arguments != null) {
+                    runCatching { JSONObject(arguments).opt("command") as? String }.getOrNull()
+                } else null
+                val cwd = if (tool == "android_shell") {
+                    value.optJSONObject("executionContext")?.opt("cwd") as? String
+                } else null
+                val body = ApprovalNotificationText.format(tool, reason, arguments, command, cwd)
+                Request(id, version, sessionId, "${tool.take(80)} · 等待审批", body, listOf(
                     Action("allowed-once", "允许一次", "allowed-once"),
                     Action("rejected", "拒绝", "rejected"),
                 ))
@@ -266,7 +275,7 @@ class ApprovalNotifications(
             .setContentTitle("Pocket Harness")
             .setContentText("有一个任务需要你处理")
             .build()
-        val body = entry.notice ?: request.body
+        val body = ApprovalNotificationText.withNotice(request.body, entry.notice)
         val builder = Notification.Builder(context, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentTitle(request.title)
