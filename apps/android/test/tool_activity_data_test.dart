@@ -349,6 +349,35 @@ void main() {
     expect(timed.fields['输出范围'], contains('截断'));
   });
 
+  test(
+    'an uncertain timeout stays explicit even with a successful shell exit',
+    () {
+      final projection = ToolActivityProjection()
+        ..reconcile([
+          callEvent(1),
+          resultEvent(
+            2,
+            text: jsonEncode({
+              'stdout': 'BACKGROUND_OK\n',
+              'stderr': '',
+              'exitCode': 0,
+              'timedOut': null,
+              'timeoutStatus': 'unconfirmed',
+              'timeoutDiagnostic': 'GROUP_LIVENESS_UNCONFIRMED',
+            }),
+          ),
+        ]);
+      final fields = ToolActivityPresentation.from(projection.byAnchorSeq[1]!)
+          .fields;
+      expect(fields['退出码'], '0');
+      expect(fields['超时'], startsWith('未确认'));
+      expect(
+        projection.byAnchorSeq[1]!.resultText,
+        contains('GROUP_LIVENESS_UNCONFIRMED'),
+      );
+    },
+  );
+
   test('file search metadata and unknown payloads remain available', () {
     final projection = ToolActivityProjection()
       ..reconcile([

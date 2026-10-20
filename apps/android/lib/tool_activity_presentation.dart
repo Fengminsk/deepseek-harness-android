@@ -38,6 +38,8 @@ class ToolActivityPresentation {
         }
         if (result['timedOut'] is bool) {
           fields['超时'] = result['timedOut'] == true ? '是' : '否';
+        } else if (result['timeoutStatus'] == 'unconfirmed') {
+          fields['超时'] = '未确认，无法确认截止时进程是否仍在运行';
         }
         if (result['cancelled'] is bool) {
           fields['取消'] = result['cancelled'] == true ? '是' : '否';
