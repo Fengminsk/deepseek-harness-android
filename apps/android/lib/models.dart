@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:material_ui/material_ui.dart';
 
 import 'configuration_edits.dart';
+import 'account.dart';
 import 'models_data.dart';
 import 'models_provider.dart';
 import 'runtime.dart';
@@ -63,6 +64,16 @@ class _ModelsPageState extends State<ModelsPage> {
       body: PocketList(
         padding: const EdgeInsets.all(20),
         children: [
+          PocketSection(
+            children: [
+              PocketRow(
+                icon: Icons.account_circle_outlined,
+                title: 'DeepSeek 账号',
+                subtitle: '通过官方账号登录，使用账号提供的模型与额度',
+                onTap: () => open(AccountPage(runtime: widget.runtime)),
+              ),
+            ],
+          ),
           if (error != null) ModelNotice('无法刷新模型目录：$error\n保留上次读取的内容。'),
           if (data == null)
             PocketSection(
@@ -109,10 +120,12 @@ class _ModelsPageState extends State<ModelsPage> {
                         '${provider.id} · ${provider.active ? '已注册' : '待配置'}'
                         '${provider.entry['error'] == null ? '' : '\n${provider.entry['error']}'}',
                     onTap: () => open(
-                      ProviderSettingsPage(
-                        runtime: widget.runtime,
-                        provider: provider,
-                      ),
+                      provider.account
+                          ? AccountPage(runtime: widget.runtime)
+                          : ProviderSettingsPage(
+                              runtime: widget.runtime,
+                              provider: provider,
+                            ),
                     ),
                   ),
               ],

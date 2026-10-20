@@ -4,7 +4,7 @@
 
 ## 概述
 
-Pocket Harness 把本地 Agent 带到 Android，提供对话、授权文件、普通 Shell 命令与可选的原版 Web 界面。模型推理使用配置的在线 API；手机运行内嵌服务不依赖 Root、Termux 或电脑。
+Pocket Harness 把本地 Agent 带到 Android，提供对话、授权文件、普通 Shell 命令与可选的原版 Web 界面。在线模型沿用原版 DeepSeek 账号登录或已配置的服务商 API；手机运行内嵌服务不依赖 Root、Termux 或电脑。
 
 本分支提供开发预览，并未完成全部 Android 迁移。Flutter 界面和主题设置已提供；运行时联调、完整原生管理页面以及 App/Web 共同操作验收仍在进行中。
 

@@ -4,7 +4,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-Pocket Harness brings an on-device Agent to Android, with conversations, authorized files, ordinary shell commands and an optional original Web interface. Model inference uses a configured online API; the phone does not need root, Termux or a computer to host the packaged runtime.
+Pocket Harness brings an on-device Agent to Android, with conversations, authorized files, ordinary shell commands and an optional original Web interface. Online models use the original DeepSeek account sign-in or a configured provider API; the phone does not need root, Termux or a computer to host the packaged runtime.
 
 This branch contains a development preview, not the completed Android migration. The Flutter interface and theme settings are available; runtime integration, complete native management pages and joint App/Web acceptance remain in progress.
 

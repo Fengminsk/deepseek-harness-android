@@ -16,6 +16,8 @@ import 'export.dart';
 import 'attachments.dart';
 import 'composer_commands.dart';
 import 'session_models.dart';
+import 'models.dart';
+import 'account.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -167,17 +169,26 @@ class _ChatPageState extends State<ChatPage> {
     lastRuntimePhase = runtime.phase;
     if (!mounted ||
         navigationScheduled ||
-        !runtime.ready ||
+        (!runtime.ready && runtime.navigationRequest?['route'] != 'account') ||
         runtime.navigationRequest == null) {
       return;
     }
     navigationScheduled = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       navigationScheduled = false;
-      if (!mounted || !runtime.ready) return;
+      if (!mounted) return;
       final request = runtime.navigationRequest;
-      if (request == null) return;
+      if (request == null ||
+          (!runtime.ready && request['route'] != 'account')) {
+        return;
+      }
       runtime.consumeNavigation();
+      if (request['route'] == 'account') {
+        scaffold.currentState?.closeDrawer();
+        inputFocus.unfocus();
+        navigate(AccountPage(runtime: runtime));
+        return;
+      }
       if (request['route'] != 'approval' ||
           request['requestId'] is! String ||
           request['requestVersion'] is! int) {
@@ -482,6 +493,7 @@ class _ChatPageState extends State<ChatPage> {
           )
           .toList();
       final streaming = runtime.streaming[sessionId];
+      final sessionError = runtime.sessionErrors[sessionId];
       final running = runtime.statuses[sessionId] == 'running';
       final stoppable = running && commandDrafts[sessionId] == null;
       final sessionRequests = runtime.interactions
@@ -753,7 +765,7 @@ class _ChatPageState extends State<ChatPage> {
           ),
         ),
 
-        body: visible.isEmpty && streaming == null
+        body: visible.isEmpty && streaming == null && sessionError == null
             ? PocketEmpty(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
@@ -821,6 +833,43 @@ class _ChatPageState extends State<ChatPage> {
                       child: SelectableText(
                         streaming,
                         style: const TextStyle(height: 1.6),
+                      ),
+                    ),
+                  if (sessionError != null)
+                    PocketCard(
+                      child: Padding(
+                        padding: const EdgeInsets.all(18),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              '本轮任务未完成',
+                              style: TextStyle(
+                                color: colors.error,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            const SizedBox(height: 10),
+                            SelectableText(sessionError),
+                            const SizedBox(height: 10),
+                            Wrap(
+                              spacing: 8,
+                              children: [
+                                PocketButton.tonal(
+                                  onPressed: () =>
+                                      navigate(ModelsPage(runtime: runtime)),
+                                  child: const Text('模型与凭据'),
+                                ),
+                                PocketButton.tonal(
+                                  onPressed: () => navigate(
+                                    DiagnosticsPage(runtime: runtime),
+                                  ),
+                                  child: const Text('服务诊断'),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                 ],

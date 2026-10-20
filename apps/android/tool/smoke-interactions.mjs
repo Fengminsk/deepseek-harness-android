@@ -69,6 +69,7 @@ lines.on('line', line => {
   else if (frame.method === 'native.network.addresses') send({ id: frame.id, result: { addresses: [] } })
   else if (frame.method === 'native.exports.directory') send({ id: frame.id, result: join(home, 'native-export-cache') })
   else if (frame.method === 'native.attachments.directory') send({ id: frame.id, result: join(home, 'native-attachment-cache') })
+  else if (frame.method === 'native.storage.root') send({ id: frame.id, result: home })
   else if (pending.has(frame.id)) {
     const waiter = pending.get(frame.id)
     pending.delete(frame.id)
@@ -125,6 +126,59 @@ try {
     }
     const account = await observe('account-baseline', 'account', 'watch', {})
     assert.ok(account && typeof account === 'object')
+    assert.equal((await request('credentials.describe', { ref: 'DEEPSEEK_API_KEY' })).configured, false)
+    const initialSession = 'first-run-without-credentials'
+    const initial = await request('session.ensure', { sessionId: initialSession,
+      provider: 'deepseek-official', model: 'deepseek-flash' })
+    assert.equal(initial.sessionId, initialSession)
+    assert.equal((await request('session.ensure', { sessionId: initialSession })).created, false)
+    const initialCommands = await request('api.call', {
+      namespace: 'commands', method: 'list', args: { agentId: initialSession },
+    })
+    for (const name of ['goal', 'plan', 'compact', 'feedback']) {
+      assert.ok(initialCommands.some(command => command.name === name))
+    }
+    const initialCatalog = await request('api.call', { namespace: 'session', method: 'modelCatalog', args: {} })
+    assert.ok(Array.isArray(initialCatalog.groups))
+    const initialProjections = await request('api.call', { namespace: 'session', method: 'projections',
+      args: { request: { sessionId: initialSession } } })
+    assert.equal(initialProjections.kind, 'sequenced')
+    for (const line of ['/goal', '/plan', '/plan off']) {
+      const execution = await request('session.command', { sessionId: initialSession, line })
+      assert.notEqual(execution.result.kind, 'error', execution.result.text)
+    }
+    assert.ok((await request('settings.describe')).some(form => form.ns === 'agent-default-model'))
+    const initialFile = randomUUID()
+    const initialBytes = Buffer.from('File selection precedes model configuration.')
+    await writeFile(join(home, 'native-attachment-cache', `${initialFile}.bin`), initialBytes)
+    await writeFile(join(home, 'native-attachment-cache', `${initialFile}.json`), JSON.stringify({
+      id: initialFile, name: 'first-run.txt', bytes: initialBytes.length, mediaType: 'text/plain',
+    }))
+    const initialUpload = await request('attachments.prepare', { sessionId: initialSession, id: initialFile })
+    assert.equal(typeof initialUpload.receiptId, 'string')
+    await assert.rejects(request('api.call', { namespace: 'session', method: 'selectModel', args: {
+      request: { sessionId: initialSession, provider: 'deepseek-official', model: 'deepseek-flash' },
+    } }), /Select an available model/)
+    const admission = await request('session.send', { sessionId: initialSession, requestId: 'needs-config',
+      provider: 'deepseek-official', model: 'deepseek-flash', text: '', attachmentIds: [initialFile] })
+    assert.equal(admission.accepted, true)
+    const failure = await waitFor(frame => frame.method === 'session.error'
+      && frame.params.sessionId === initialSession)
+    assert.ok(failure.params.error.length > 0)
+    assert.equal((await request('runtime.live')).errors[initialSession], failure.params.error)
+    const failedHistory = await request('session.read', { sessionId: initialSession })
+    assert.ok(failedHistory.events.some(event => JSON.stringify(event).includes('"type":"file"')))
+    assert.equal((await request('credentials.describe', { ref: 'DEEPSEEK_API_KEY' })).configured, false)
+    assert.equal(modelRequests, 0)
+    await request('attachments.release', { sessionId: initialSession, id: initialFile })
+    checkpoint('unconfigured first-run menus, model picker, commands and attachment preparation complete')
+    if (process.argv.includes('--first-run-only')) {
+      console.log(JSON.stringify({ noCredentials: true, sessionInitialization: true, originalCommandCatalog: true,
+        modelConfigurationReachable: true, localCommands: true, filePreparation: true,
+        originalPromptAdmission: true, modelErrorVisible: true, modelErrorReconnect: true,
+        acceptedAttachmentRemainsLogged: true, modelRequests: 0 }))
+      return
+    }
     await request('credentials.set', { ref: 'DEEPSEEK_API_KEY', value: 'local-smoke-fixture-only' })
     await request('session.ensure', { sessionId: 'command-session', provider: 'deepseek-official', model: 'deepseek-flash' })
     checkpoint('command session ready')

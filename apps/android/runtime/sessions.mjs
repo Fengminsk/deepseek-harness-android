@@ -42,7 +42,10 @@ export class AppSessions {
       throw new TypeError('sessionId must be a non-empty string')
     }
     const sessionId = SessionId(params.sessionId)
-    return this.enqueue(sessionId, () => this.resolve(sessionId, params))
+    // Creating a conversation is also needed to configure its model, inspect
+    // commands, and prepare files. Availability belongs to explicit selection
+    // and prompt admission, not to this initialization operation.
+    return this.enqueue(sessionId, () => this.resolve(sessionId, {}))
   }
 
   send(params) {
@@ -74,7 +77,7 @@ export class AppSessions {
       || !Array.isArray(params.attachmentIds ?? [])) throw new TypeError('A session and command line are required')
     const sessionId = SessionId(params.sessionId)
     return this.enqueue(sessionId, async () => {
-      await this.resolve(sessionId, params)
+      await this.resolve(sessionId, {})
       const submittedAttachments = await this.commands.content(sessionId, params.attachmentIds ?? [])
       return await this.commands.execute({ agentId: sessionId, line: params.line, submittedAttachments }) ?? null
     })

@@ -88,6 +88,7 @@ void main() {
           events.success(jsonEncode({'method': method, 'params': params}));
       runtime.statuses['stale-task'] = 'running';
       runtime.streaming['stale-task'] = 'stale text';
+      runtime.sessionErrors['stale-task'] = 'stale failure';
       final refresh = runtime.refreshLive();
       await runtime.entered.future;
       emit('session.stream', {
@@ -106,24 +107,42 @@ void main() {
           'chunk': {'type': 'text-delta', 'text': ' plus new text'},
         },
       });
+      emit('session.error', {
+        'sessionId': 'live-task',
+        'revision': 12,
+        'error': 'Credential not configured',
+      });
       await tester.pump();
       runtime.baseline.complete({
         'revision': 10,
         'statuses': {'live-task': 'running'},
         'streaming': {'live-task': 'restored text'},
+        'errors': {'failed-task': 'Restored failure'},
       });
       await tester.pump();
       await refresh;
       expect(runtime.statuses, {'live-task': 'running'});
       expect(runtime.streaming, {'live-task': 'restored text plus new text'});
+      expect(runtime.sessionErrors, {
+        'failed-task': 'Restored failure',
+        'live-task': 'Credential not configured',
+      });
       emit('session.status', {
         'sessionId': 'live-task',
-        'revision': 12,
+        'revision': 13,
         'status': 'idle',
       });
       await tester.pump();
       expect(runtime.statuses['live-task'], 'idle');
       expect(runtime.streaming, isEmpty);
+      expect(runtime.sessionErrors['live-task'], 'Credential not configured');
+      emit('session.status', {
+        'sessionId': 'live-task',
+        'revision': 14,
+        'status': 'running',
+      });
+      await tester.pump();
+      expect(runtime.sessionErrors, {'failed-task': 'Restored failure'});
       runtime.dispose();
       disposed = true;
       await tester.pump();

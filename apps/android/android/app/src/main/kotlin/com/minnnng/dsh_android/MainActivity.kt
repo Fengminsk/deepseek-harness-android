@@ -223,6 +223,12 @@ class MainActivity : FlutterActivity() {
     }
     private fun deliverNavigation() {
         val sink = events ?: return
+        if (AccountReturnLink.accepts(intent.action, intent.dataString)) {
+            intent.data = null
+            sink.success(JSONObject().put("method", "navigation.open").put("params",
+                JSONObject().put("route", "account")).toString())
+            return
+        }
         if (intent.getStringExtra("pocket.route") != "approval") return
         val id = intent.getStringExtra("pocket.requestId") ?: return
         val version = intent.getLongExtra("pocket.requestVersion", -1)

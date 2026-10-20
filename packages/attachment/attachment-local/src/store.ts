@@ -2,8 +2,8 @@
 
 import { createHash, randomUUID } from 'node:crypto'
 import { constants, createReadStream } from 'node:fs'
-import { chmod, link, mkdir, open, readFile, unlink } from 'node:fs/promises'
-import { dirname, join, parse, resolve } from 'node:path'
+import { chmod, link, mkdir, open, readFile, realpath, unlink } from 'node:fs/promises'
+import { dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path'
 import {
   AttachmentError,
   AttachmentId,
@@ -166,6 +166,28 @@ async function ensureDurableDirectory(path: string, boundary: string): Promise<v
     if (parent === level) return
     level = parent
   }
+}
+
+/**
+ * Establish attachment storage below a directory whose persistence the host owns.
+ * Call during host startup, before publishing attachments. Both directories must
+ * already exist; their canonical paths must keep the home inside the ancestor.
+ * Sandboxed hosts can use their OS-created data directory without opening its
+ * inaccessible parents. Sync failures inside that directory still reject.
+ * @param home - harness home used by the local attachment provider.
+ * @param durableAncestor - existing ancestor the host guarantees is durable.
+ * @returns completion after the home and intermediate entries are durable.
+ */
+export async function establishAttachmentHome(home: string, durableAncestor: string): Promise<void> {
+  const resolvedHome = resolve(home)
+  const [canonicalHome, canonicalAncestor] = await Promise.all([realpath(resolvedHome), realpath(durableAncestor)])
+  const distance = relative(canonicalAncestor, canonicalHome)
+  if (isAbsolute(distance) || distance === '..' || distance.startsWith(`..${sep}`)) {
+    throw new Error('Attachment home must be inside the host durable directory.')
+  }
+  await ensureDurableDirectory(canonicalHome, canonicalAncestor)
+  durableHomes.add(resolvedHome)
+  durableHomes.add(canonicalHome)
 }
 
 /**

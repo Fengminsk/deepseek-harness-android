@@ -6,6 +6,7 @@ import 'package:material_ui/material_ui.dart';
 import 'account_state.dart';
 import 'runtime.dart';
 import 'ui.dart';
+import 'diagnostics.dart';
 
 class AccountPage extends StatefulWidget {
   const AccountPage({super.key, required this.runtime});
@@ -19,12 +20,31 @@ class _AccountPageState extends State<AccountPage> with WidgetsBindingObserver {
   String? error, signOutImpact;
   int? signOutRevision;
   bool wantedSignIn = false, checkingImpact = false;
+  late String runtimePhase;
 
   @override
   void initState() {
     super.initState();
+    runtimePhase = widget.runtime.phase;
     WidgetsBinding.instance.addObserver(this);
+    widget.runtime.addListener(handleAccountReturn);
     unawaited(initialize());
+  }
+
+  void handleAccountReturn() {
+    if (mounted && runtimePhase != widget.runtime.phase) {
+      setState(() => runtimePhase = widget.runtime.phase);
+    }
+    if (!mounted ||
+        widget.runtime.navigationRequest?['route'] != 'account' ||
+        ModalRoute.of(context)?.isCurrent != true) {
+      return;
+    }
+    widget.runtime.consumeNavigation();
+    final model = account;
+    if (model != null) {
+      unawaited(model.connected ? model.refreshDetails() : model.watch());
+    }
   }
 
   Future<void> initialize() async {
@@ -127,6 +147,7 @@ class _AccountPageState extends State<AccountPage> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    widget.runtime.removeListener(handleAccountReturn);
     account?.removeListener(changed);
     account?.dispose();
     super.dispose();
@@ -161,6 +182,24 @@ class _AccountPageState extends State<AccountPage> with WidgetsBindingObserver {
       body: PocketList(
         padding: const EdgeInsets.all(20),
         children: [
+          if (!widget.runtime.ready)
+            PocketSection(
+              children: [
+                PocketRow(
+                  icon: Icons.info_outline_rounded,
+                  title: widget.runtime.phase == 'failed'
+                      ? '本地服务需要处理'
+                      : '正在等待本地服务',
+                  subtitle: widget.runtime.error ?? '服务就绪后才能核对账号状态。',
+                  onTap: () => Navigator.push(
+                    context,
+                    PocketRoute<void>(
+                      builder: (_) => DiagnosticsPage(runtime: widget.runtime),
+                    ),
+                  ),
+                ),
+              ],
+            ),
           if (model == null)
             PocketSection(
               children: [
@@ -192,7 +231,7 @@ class _AccountPageState extends State<AccountPage> with WidgetsBindingObserver {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      if (!model.signedIn && !activeAttempt)
+                      if (model.connected && !model.signedIn && !activeAttempt)
                         PocketButton(
                           onPressed: canAct ? signIn : null,
                           child: const Text('登录 DeepSeek'),
@@ -203,6 +242,13 @@ class _AccountPageState extends State<AccountPage> with WidgetsBindingObserver {
                               ? checkSignOut
                               : null,
                           child: Text(checkingImpact ? '正在核对任务' : '退出登录'),
+                        ),
+                      if (model.signedIn && !confirmSignOut)
+                        PocketButton.tonal(
+                          onPressed: canAct && !model.initializingModel
+                              ? model.initializeDefaultModel
+                              : null,
+                          child: const Text('初始化账号模型'),
                         ),
                       if (model.signedIn && confirmSignOut) ...[
                         Text(switch (signOutImpact) {
@@ -235,6 +281,35 @@ class _AccountPageState extends State<AccountPage> with WidgetsBindingObserver {
                 ),
               ],
             ),
+            if (model.initializingModel ||
+                model.modelInitializationError != null ||
+                model.modelInitializationNotice != null)
+              PocketSection(
+                title: '默认模型',
+                children: [
+                  PocketRow(
+                    icon: Icons.auto_awesome_outlined,
+                    title: model.initializingModel
+                        ? '正在准备账号模型'
+                        : model.modelInitializationError != null
+                        ? '账号模型需要处理'
+                        : '模型状态已同步',
+                    subtitle:
+                        model.modelInitializationError ??
+                        model.modelInitializationNotice,
+                  ),
+                  if (model.modelInitializationError != null)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(22, 0, 22, 18),
+                      child: PocketButton.tonal(
+                        onPressed: canAct && !model.initializingModel
+                            ? model.initializeDefaultModel
+                            : null,
+                        child: const Text('重试准备模型'),
+                      ),
+                    ),
+                ],
+              ),
             if (attempt != null)
               PocketSection(
                 title: '授权进度',

@@ -67,7 +67,8 @@ lines.on('line', line => {
     else if (frame.method === 'native.credentials.set') { records.set(name, value); result = true }
     else if (frame.method === 'native.credentials.remove') { records.delete(name); result = true }
     send({ id: frame.id, result })
-  } else if (frame.method === 'native.web.preferences') {
+  } else if (frame.method === 'native.storage.root') send({ id: frame.id, result: home })
+  else if (frame.method === 'native.web.preferences') {
     send({ id: frame.id, result: { enabled: false, scope: 'local', port: 3080 } })
   } else if (frame.method?.startsWith('native.') && frame.id) {
     send({ id: frame.id, error: { code: -32601, message: `Unexpected native method ${frame.method}` } })

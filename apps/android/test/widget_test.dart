@@ -10,9 +10,36 @@ class FailingRuntime extends RuntimeController {
   }
   @override
   Future<void> send(String id, String text) async => throw StateError('连接中断');
+
+  @override
+  String newSession() => 'test-session';
+
+  void reportSessionError(String id, String message) {
+    sessionErrors[id] = message;
+    notifyListeners();
+  }
 }
 
 void main() {
+  testWidgets('an accepted turn failure is visible only in its own session', (
+    tester,
+  ) async {
+    final runtime = FailingRuntime();
+    await tester.pumpWidget(MaterialApp(home: ChatPage(runtime: runtime)));
+    await tester.enterText(find.byType(TextField), '继续编辑的草稿');
+    runtime.reportSessionError('other-session', '另一会话的失败');
+    await tester.pumpAndSettle();
+    expect(find.text('另一会话的失败'), findsNothing);
+    runtime.reportSessionError('test-session', '模型登录凭据不可用');
+    await tester.pumpAndSettle();
+    expect(find.text('本轮任务未完成'), findsOneWidget);
+    expect(find.text('模型登录凭据不可用'), findsOneWidget);
+    expect(find.text('模型与凭据'), findsOneWidget);
+    expect(find.text('继续编辑的草稿'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+    runtime.dispose();
+  });
+
   testWidgets('a failed submission retains the user draft', (tester) async {
     final runtime = FailingRuntime();
     await tester.pumpWidget(MaterialApp(home: ChatPage(runtime: runtime)));

@@ -17,10 +17,15 @@ test('reconnecting App receives the in-flight text and live status, then drops s
   const stream = handlers.get('agent/assistant-stream')
   stream({ agent, frame: { type: 'start' } })
   stream({ agent, frame: { type: 'chunk', chunk: { type: 'text-delta', text: 'hello' } } })
-  assert.deepEqual(live.snapshot(), { revision: 2, statuses: { running: 'running' }, streaming: { running: 'hello' } })
+  assert.deepEqual(live.snapshot(), { revision: 2, statuses: { running: 'running' }, streaming: { running: 'hello' }, errors: {} })
   stream({ agent, frame: { type: 'end' } })
   assert.deepEqual(live.snapshot().streaming, {})
   assert.deepEqual(notifications.map(item => item.data.revision), [1, 2, 3])
+  handlers.get('api-session/error')('running', 'Credential not configured')
+  assert.deepEqual(live.snapshot().errors, { running: 'Credential not configured' })
+  assert.equal(notifications.at(-1).method, 'session.error')
+  handlers.get('agent/status')({ agent, status: 'running' })
+  assert.deepEqual(live.snapshot().errors, {})
 })
 
 test('App submissions use the live Web-owned Agent and do not reset its selected model', async () => {
@@ -84,7 +89,7 @@ test('attachment preparation and message admission share creation and preserve r
   release.resolve()
   await Promise.all([ensure, send])
   assert.equal(calls.filter(call => call.method === 'create').length, 1)
-  assert.equal(calls.find(call => call.method === 'selectModel').params.reasoningEffort, 'high')
+  assert.equal(calls.some(call => call.method === 'selectModel'), false)
   assert.deepEqual(calls.find(call => call.method === 'prompt').params.content,
     [{ type: 'file', receiptId: 'original-upload-receipt' }])
 })

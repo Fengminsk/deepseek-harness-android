@@ -180,6 +180,7 @@ class AgentService : Service() {
                         "native.documents.revoke" -> DocumentAccess(this).revoke(params.getString("root"))
                         "native.exports.directory" -> DocumentExports.directory(this).canonicalPath
                         "native.attachments.directory" -> AttachmentTransfers.directory(this).canonicalPath
+                        "native.storage.root" -> File(applicationInfo.dataDir).canonicalPath
                         else -> throw IllegalArgumentException("Unsupported native method: $method")
                     }
                     write(JSONObject().put("jsonrpc", "2.0").put("id", id).put("result", value ?: JSONObject.NULL))
@@ -191,6 +192,10 @@ class AgentService : Service() {
                 val owner = params.getString("owner")
                 params.remove("owner")
                 appClients.entries.firstOrNull { it.value.owner == owner }?.let { send(it.key, frame) }
+                return@post
+            }
+            if (frame.optString("method") == "runtime.status" && frame.getJSONObject("params").optString("phase") == "failed") {
+                fail(frame.getJSONObject("params").getString("error"))
                 return@post
             }
             if (frame.optString("method") == "runtime.ready") { phase = "ready"; broadcast(status()) }

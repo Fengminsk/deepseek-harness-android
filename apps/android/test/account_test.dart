@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:dsh_android/account.dart';
 import 'package:dsh_android/account_state.dart';
+import 'package:dsh_android/main.dart';
 import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/ui.dart';
 import 'package:flutter/services.dart';
@@ -31,6 +32,12 @@ class _Runtime extends RuntimeController {
   final calls = <Json>[];
   final pendingProfiles = <Completer<Json?>>[];
   bool deferProfile = false, failProfile = false, failImpact = false;
+  bool failInitialization = false, failForms = false;
+  Completer<void>? pendingInitialization;
+  Json defaultSelection = {
+    'provider': 'deepseek-account',
+    'model': 'account-model',
+  };
   @override
   Stream<Json> watchApi(
     String namespace,
@@ -46,11 +53,36 @@ class _Runtime extends RuntimeController {
 
   void publish(Json view) => feeds.last.add({'type': 'item', 'value': view});
 
+  void returnToAccount() {
+    navigationRequest = {'route': 'account'};
+    notifyListeners();
+  }
+
+  void serviceReady() {
+    phase = 'ready';
+    notifyListeners();
+  }
+
   @override
   Future<dynamic> call(String method, [Json params = const {}]) async {
     calls.add({'rpc': method, ...params});
     if (method == 'account.signIn') {
       return _view(attempt: {'id': 'attempt-a', 'phase': 'initializing'});
+    }
+    if (method == 'settings.describe') {
+      if (failForms) throw StateError('configuration unavailable');
+      return [
+        {'ns': 'agent-default-model', 'value': Json.of(defaultSelection)},
+      ];
+    }
+    if (method == 'api.call' &&
+        params['namespace'] == 'session' &&
+        params['method'] == 'initializeDefaultModel') {
+      await pendingInitialization?.future;
+      if (failInitialization) {
+        throw StateError('private initialization failure');
+      }
+      return null; // Original initializeDefaultModel is Promise<void>.
     }
     if (method != 'api.call' || params['namespace'] != 'account') {
       throw StateError('Unexpected RPC');
@@ -106,7 +138,385 @@ class _Runtime extends RuntimeController {
 }
 
 void main() {
+  for (final phase in ['starting', 'failed']) {
+    testWidgets('cold account return opens while the service is $phase', (
+      tester,
+    ) async {
+      final runtime = _Runtime()
+        ..phase = phase
+        ..returnToAccount();
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        RuntimeController.channel,
+        (call) async => '{"version":"0.1.0","build":8}',
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          RuntimeController.channel,
+          null,
+        ),
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: pocketTheme(Brightness.light),
+          home: ChatPage(runtime: runtime),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byType(AccountPage), findsOneWidget);
+      expect(runtime.navigationRequest, isNull);
+      expect(
+        find.text(phase == 'failed' ? '本地服务需要处理' : '正在等待本地服务'),
+        findsOneWidget,
+      );
+      expect(find.text('登录 DeepSeek'), findsNothing);
+      expect(runtime.calls, isEmpty);
+      runtime.serviceReady();
+      runtime.publish(_view());
+      await tester.pumpAndSettle();
+      expect(find.byType(AccountPage), findsOneWidget);
+      expect(find.text('登录 DeepSeek'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+      await tester.runAsync(runtime.closeFeeds);
+      runtime.dispose();
+    });
+  }
+
+  testWidgets(
+    'return link queries account state without signing in or duplicating the account page',
+    (tester) async {
+      final runtime = _Runtime();
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        RuntimeController.channel,
+        (call) async => '{"version":"0.1.0","build":8}',
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          RuntimeController.channel,
+          null,
+        ),
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: pocketTheme(Brightness.light),
+          home: ChatPage(runtime: runtime),
+        ),
+      );
+      await tester.enterText(find.byType(TextField), '未发送的内容');
+      runtime.returnToAccount();
+      await tester.pumpAndSettle();
+      expect(find.byType(AccountPage), findsOneWidget);
+      expect(find.text('登录 DeepSeek'), findsNothing);
+      expect(runtime.feeds, hasLength(1));
+      runtime.publish(_view(signed: true));
+      await tester.pumpAndSettle();
+      runtime.returnToAccount();
+      await tester.pumpAndSettle();
+      expect(find.byType(AccountPage), findsOneWidget);
+      expect(runtime.feeds, hasLength(1));
+      expect(
+        runtime.calls.where((item) => item['method'] == 'getProfile'),
+        hasLength(2),
+      );
+      expect(
+        runtime.calls.where(
+          (item) =>
+              item['rpc'] == 'account.signIn' ||
+              item['method'] == 'initializeDefaultModel',
+        ),
+        isEmpty,
+      );
+      await tester.tap(find.byTooltip('返回'));
+      await tester.pumpAndSettle();
+      expect(find.text('未发送的内容'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+      await tester.runAsync(runtime.closeFeeds);
+      runtime.dispose();
+    },
+  );
+
+  testWidgets('an unavailable runtime is distinct from a signed-out account', (
+    tester,
+  ) async {
+    final runtime = _Runtime()
+      ..phase = 'failed'
+      ..error = '运行时连接中断';
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      RuntimeController.channel,
+      (call) async => '{"version":"0.1.0","build":8}',
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        RuntimeController.channel,
+        null,
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: pocketTheme(Brightness.light),
+        home: AccountPage(runtime: runtime),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('本地服务需要处理'), findsOneWidget);
+    expect(find.text('登录 DeepSeek'), findsNothing);
+    runtime.serviceReady();
+    runtime.publish(_view());
+    await tester.pumpAndSettle();
+    expect(find.text('本地服务需要处理'), findsNothing);
+    expect(find.text('登录 DeepSeek'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+    await tester.runAsync(runtime.closeFeeds);
+    runtime.dispose();
+  });
+
   TestWidgetsFlutterBinding.ensureInitialized();
+  test('first succeeded snapshot initializes through the core and refreshes the actual default once', () async {
+    final runtime = _Runtime();
+    final model = AccountState(runtime, _client);
+    addTearDown(() async {
+      model.dispose();
+      await runtime.closeFeeds();
+      runtime.dispose();
+    });
+    runtime.timelines['existing'] = [
+      {
+        'type': 'model/selection',
+        'data': {'provider': 'existing', 'model': 'chosen'},
+      },
+    ];
+    await model.watch();
+    final signed = _view(
+      signed: true,
+      attempt: {'id': 'saved-attempt', 'phase': 'succeeded'},
+    );
+    runtime.publish(signed);
+    // Join the automatically started request instead of relying on a timer.
+    await model.initializeDefaultModel();
+    runtime.publish(signed);
+    expect(
+      runtime.calls
+          .where((item) => item['method'] == 'initializeDefaultModel')
+          .single,
+      {
+        'rpc': 'api.call',
+        'namespace': 'session',
+        'method': 'initializeDefaultModel',
+        'args': <String, dynamic>{},
+      },
+    );
+    expect(
+      runtime.calls.where((item) => item['rpc'] == 'settings.describe'),
+      hasLength(1),
+    );
+    expect(runtime.provider, 'deepseek-account');
+    expect(runtime.model, 'account-model');
+    expect(runtime.timelines['existing']!.single['data'], {
+      'provider': 'existing',
+      'model': 'chosen',
+    });
+    expect(model.signedIn, isTrue);
+    expect(model.error, isNull);
+    expect(model.modelInitializationError, isNull);
+    expect(model.modelInitializationNotice, contains('deepseek-account'));
+  });
+
+  test('stored login without an attempt needs explicit initialization and keeps the core chosen default', () async {
+    final runtime = _Runtime()
+      ..defaultSelection = {
+        'provider': 'api-key-provider',
+        'model': 'explicit',
+      };
+    final model = AccountState(runtime, _client);
+    addTearDown(() async {
+      model.dispose();
+      await runtime.closeFeeds();
+      runtime.dispose();
+    });
+    await model.watch();
+    runtime.publish(_view(signed: true));
+    expect(
+      runtime.calls.where((item) => item['method'] == 'initializeDefaultModel'),
+      isEmpty,
+    );
+    await model.initializeDefaultModel();
+    expect(runtime.provider, 'api-key-provider');
+    expect(runtime.model, 'explicit');
+    expect(
+      model.modelInitializationNotice,
+      contains('api-key-provider / explicit'),
+    );
+    expect(
+      runtime.calls.any(
+        (item) =>
+            item['rpc'] == 'settings.mutate' || item['method'] == 'selectModel',
+      ),
+      isFalse,
+    );
+  });
+
+  test(
+    'initialization failure stays separate from login and can be retried',
+    () async {
+      final runtime = _Runtime()..failInitialization = true;
+      final model = AccountState(runtime, _client);
+      addTearDown(() async {
+        model.dispose();
+        await runtime.closeFeeds();
+        runtime.dispose();
+      });
+      await model.watch();
+      runtime.publish(
+        _view(signed: true, attempt: {'id': 'attempt-a', 'phase': 'succeeded'}),
+      );
+      await model.initializeDefaultModel();
+      expect(model.signedIn, isTrue);
+      expect(model.connected, isTrue);
+      expect(model.error, isNull);
+      expect(model.modelInitializationError, contains('登录已成功'));
+      expect(model.modelInitializationError, isNot(contains('private')));
+      await model.refreshDetails();
+      expect(model.profile?['status'], 'ready');
+      runtime.failInitialization = false;
+      await model.initializeDefaultModel();
+      expect(model.modelInitializationError, isNull);
+      expect(runtime.provider, 'deepseek-account');
+      expect(
+        runtime.calls.where(
+          (item) => item['method'] == 'initializeDefaultModel',
+        ),
+        hasLength(2),
+      );
+    },
+  );
+
+  test(
+    'a failed configuration refresh retries the read without reinitializing',
+    () async {
+      final runtime = _Runtime()..failForms = true;
+      final model = AccountState(runtime, _client);
+      addTearDown(() async {
+        model.dispose();
+        await runtime.closeFeeds();
+        runtime.dispose();
+      });
+      await model.watch();
+      runtime.publish(
+        _view(signed: true, attempt: {'id': 'attempt-a', 'phase': 'succeeded'}),
+      );
+      await model.initializeDefaultModel();
+      expect(model.modelInitializationError, contains('尚未同步'));
+      runtime
+        ..failForms = false
+        ..defaultSelection = {'provider': 'later-choice', 'model': 'keep-this'};
+      await model.initializeDefaultModel();
+      expect(
+        runtime.calls.where(
+          (item) => item['method'] == 'initializeDefaultModel',
+        ),
+        hasLength(1),
+      );
+      expect(
+        runtime.calls.where((item) => item['rpc'] == 'settings.describe'),
+        hasLength(2),
+      );
+      expect(runtime.provider, 'later-choice');
+      expect(model.modelInitializationError, isNull);
+      expect(model.signedIn, isTrue);
+    },
+  );
+
+  test('a pending initialization does not block sign-out snapshots or publish a late error', () async {
+    final runtime = _Runtime()
+      ..pendingInitialization = Completer<void>()
+      ..failInitialization = true;
+    final model = AccountState(runtime, _client);
+    addTearDown(() async {
+      model.dispose();
+      await runtime.closeFeeds();
+      runtime.dispose();
+    });
+    await model.watch();
+    final signed = _view(
+      signed: true,
+      attempt: {'id': 'attempt-a', 'phase': 'succeeded'},
+    );
+    runtime.publish(signed);
+    final finishing = model.initializeDefaultModel();
+    runtime.publish(signed);
+    expect(model.initializingModel, isTrue);
+    expect(
+      runtime.calls.where((item) => item['method'] == 'initializeDefaultModel'),
+      hasLength(1),
+    );
+    runtime.publish(_view());
+    expect(model.signedIn, isFalse);
+    expect(model.initializingModel, isFalse);
+    runtime.pendingInitialization!.complete();
+    await finishing;
+    expect(model.modelInitializationError, isNull);
+    expect(model.error, isNull);
+    expect(
+      runtime.calls.where((item) => item['rpc'] == 'settings.describe'),
+      isEmpty,
+    );
+  });
+
+  testWidgets(
+    'signed-in legacy accounts can initialize and retry without repeating login',
+    (tester) async {
+      final runtime = _Runtime()..failInitialization = true;
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        RuntimeController.channel,
+        (call) async => '{"version":"0.1.0","build":7}',
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          RuntimeController.channel,
+          null,
+        ),
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: pocketTheme(Brightness.light),
+          home: AccountPage(runtime: runtime),
+        ),
+      );
+      await tester.pumpAndSettle();
+      runtime.publish(_view(signed: true));
+      await tester.pumpAndSettle();
+      expect(
+        runtime.calls.where(
+          (item) => item['method'] == 'initializeDefaultModel',
+        ),
+        isEmpty,
+      );
+      await tester.ensureVisible(find.text('初始化账号模型'));
+      await tester.tap(find.text('初始化账号模型'));
+      await tester.pumpAndSettle();
+      expect(find.text('本机已保存登录凭据'), findsOneWidget);
+      expect(find.text('登录 DeepSeek'), findsNothing);
+      expect(find.textContaining('登录已成功，但默认模型初始化未完成'), findsOneWidget);
+      runtime.failInitialization = false;
+      await tester.ensureVisible(find.text('重试准备模型'));
+      await tester.tap(find.text('重试准备模型'));
+      await tester.pumpAndSettle();
+      expect(find.text('重试准备模型'), findsNothing);
+      expect(
+        find.textContaining('当前默认模型：deepseek-account / account-model'),
+        findsOneWidget,
+      );
+      expect(
+        runtime.calls.where((item) => item['rpc'] == 'account.signIn'),
+        isEmpty,
+      );
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpAndSettle();
+      await tester.runAsync(runtime.closeFeeds);
+      runtime.dispose();
+    },
+  );
+
   test('late account details never repopulate a signed-out account', () async {
     final runtime = _Runtime()..deferProfile = true;
     final model = AccountState(runtime, _client);

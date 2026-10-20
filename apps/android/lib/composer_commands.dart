@@ -4,6 +4,7 @@ import 'package:material_ui/material_ui.dart';
 
 import 'runtime.dart';
 import 'ui.dart';
+import 'models.dart';
 
 const commandDefinitions = {
   'goal': '@deepseek-ai/dsh-command-goal',
@@ -154,6 +155,14 @@ class _ComposerCommandsState extends State<ComposerCommands> {
   List<Json>? rows;
   String? error;
   int generation = 0;
+  Future<void> configureModels() async {
+    await Navigator.push(
+      context,
+      PocketRoute<void>(builder: (_) => ModelsPage(runtime: widget.runtime)),
+    );
+    if (mounted) await load();
+  }
+
   @override
   void initState() {
     super.initState();
@@ -198,9 +207,27 @@ class _ComposerCommandsState extends State<ComposerCommands> {
           if (rows == null) ...[
             Padding(
               padding: const EdgeInsets.all(18),
-              child: Text(error ?? '正在读取会话菜单…'),
+              child: Text(
+                error == null
+                    ? '正在读取会话菜单…'
+                    : error!.contains('Select an available model')
+                    ? '请先配置可用模型与凭据，再使用会话指令。'
+                    : error!,
+              ),
             ),
-            if (error != null)
+            if (error != null) ...[
+              PocketTile(
+                leading: const Icon(Icons.attach_file_rounded),
+                title: const Text('文件  file'),
+                subtitle: const Text('添加文件到当前消息'),
+                onTap: () =>
+                    widget.onPick({'name': 'file', 'clientAction': 'file'}),
+              ),
+              PocketTile(
+                leading: const Icon(Icons.hub_outlined),
+                title: const Text('配置模型与凭据'),
+                onTap: configureModels,
+              ),
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 18),
                 child: PocketButton.tonal(
@@ -208,6 +235,7 @@ class _ComposerCommandsState extends State<ComposerCommands> {
                   child: const Text('重新读取'),
                 ),
               ),
+            ],
           ],
           for (var index = 0; index < (rows?.length ?? 0); index++) ...[
             if (index == 0 ||

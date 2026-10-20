@@ -16,6 +16,30 @@ class AppApiStreams {
   bool _ready = false;
   bool _closed = false;
 
+  /// A read-only snapshot of active delivery stages. Keep this allowlist
+  /// separate from request arguments, frames and transport identifiers.
+  List<ApiJson> get diagnostics => List<ApiJson>.unmodifiable(
+    _active.values.map(
+      (observation) => Map<String, dynamic>.unmodifiable({
+        'namespace': observation.namespace,
+        'method': observation.method,
+        'state': _diagnosticState(observation),
+        'sequence': observation.sequence,
+      }),
+    ),
+  );
+
+  String _diagnosticState(_Observation observation) {
+    if (!_ready) {
+      return observation.epoch == 0 ? 'waiting-service' : 'disconnected';
+    }
+    if (observation.sequence > 0) return 'received';
+    if (observation.opening || observation.generation == null) {
+      return 'subscribing';
+    }
+    return 'waiting-first-frame';
+  }
+
   Stream<ApiJson> watch(
     String namespace,
     String method, {

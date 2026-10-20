@@ -71,6 +71,7 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
             'error': runtime.error,
             'lastFailure': lastFailure,
             'environment': runtime.info,
+            'observations': runtime.observationDiagnostics,
           }),
         ),
       );
@@ -88,6 +89,7 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
 
   @override
   Widget build(BuildContext context) {
+    final observations = runtime.observationDiagnostics;
     final busy = dispatching || awaitingReady || runtime.phase == 'restarting';
     final phase = switch (runtime.phase) {
       'ready' => '运行中',
@@ -181,6 +183,37 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
                 ),
               ],
             ),
+          PocketSection(
+            title: '观察链',
+            children: [
+              const Padding(
+                padding: EdgeInsets.fromLTRB(22, 8, 22, 12),
+                child: Text('当前 App 的活动订阅。序号属于当前连接，重新连接后从 0 开始；已接收不代表业务操作已完成。'),
+              ),
+              if (observations.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.fromLTRB(22, 0, 22, 12),
+                  child: Text('当前没有活动订阅。'),
+                ),
+              for (final observation in observations)
+                PocketRow(
+                  icon: Icons.sync_alt_rounded,
+                  title: '${observation['namespace']}.${observation['method']}',
+                  subtitle:
+                      '${observationStage(observation['state'] as String)} · 已接收序号 ${observation['sequence']}',
+                ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(22, 4, 22, 14),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: PocketButton.tonal(
+                    onPressed: () => setState(() {}),
+                    child: const Text('刷新观察状态'),
+                  ),
+                ),
+              ),
+            ],
+          ),
           if (runtime.info.isNotEmpty)
             PocketSection(
               title: runtime.ready ? '运行环境' : '上次运行环境',
@@ -199,3 +232,12 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
     );
   }
 }
+
+String observationStage(String state) => switch (state) {
+  'waiting-service' => '等待服务就绪',
+  'subscribing' => '正在发起订阅',
+  'waiting-first-frame' => '等待首帧',
+  'received' => '已接收',
+  'disconnected' => '已断开，等待重连',
+  _ => '未知阶段',
+};

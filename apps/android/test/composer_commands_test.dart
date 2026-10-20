@@ -3,6 +3,8 @@ import 'dart:convert';
 
 import 'package:dsh_android/composer_commands.dart';
 import 'package:dsh_android/main.dart';
+import 'package:dsh_android/models.dart';
+import 'package:dsh_android/models_provider.dart';
 import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/session_models.dart';
 import 'package:dsh_android/ui.dart';
@@ -119,6 +121,61 @@ class _Runtime extends RuntimeController {
   }
 }
 
+/// Model configuration APIs remain usable when creating the chat Agent fails.
+class _RecoveryRuntime extends _Runtime {
+  bool failEnsure = true;
+  int ensureCalls = 0;
+
+  @override
+  Future<Json> ensureSession(String id) async {
+    ensureCalls++;
+    if (failEnsure) throw StateError('Select an available model before use');
+    return super.ensureSession(id);
+  }
+
+  @override
+  Future<dynamic> call(String method, [Json params = const {}]) async {
+    if (method == 'settings.describe') {
+      calls.add((method: method, params: params));
+      return [
+        {
+          'ns': 'llm-fixture',
+          'revision': 1,
+          'value': {'apiKeyEnv': 'FIXTURE_KEY'},
+          'user': <String, dynamic>{},
+          'base': <String, dynamic>{},
+          'schema': <String, dynamic>{},
+          'secrets': [],
+        },
+      ];
+    }
+    if (method == 'credentials.describe') {
+      calls.add((method: method, params: params));
+      return {'configured': false, 'writable': true, 'source': 'keystore'};
+    }
+    if (method == 'api.call' && params['namespace'] == 'llm') {
+      calls.add((method: method, params: params));
+      switch (params['method']) {
+        case 'listProviders':
+          return [
+            {'id': 'fixture', 'name': 'Fixture configuration'},
+          ];
+        case 'listConfigurableProviders':
+          return [
+            {
+              'provider': 'fixture',
+              'displayName': 'Fixture configuration',
+              'settingsNs': 'llm-fixture',
+              'settingsPath': <String>[],
+              'declared': false,
+            },
+          ];
+      }
+    }
+    return super.call(method, params);
+  }
+}
+
 Widget host(Widget child, {double scale = 1}) => MaterialApp(
   theme: pocketTheme(Brightness.light),
   builder: (context, child) => MediaQuery(
@@ -139,6 +196,209 @@ void phone(WidgetTester tester) {
 }
 
 void main() {
+  testWidgets(
+    'menu creation failure still reaches native model and credential pages',
+    (tester) async {
+      phone(tester);
+      final runtime = _RecoveryRuntime();
+      addTearDown(runtime.dispose);
+      await tester.pumpWidget(host(ChatPage(runtime: runtime)));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('添加与指令'));
+      await tester.pumpAndSettle();
+      expect(find.text('请先配置可用模型与凭据，再使用会话指令。'), findsOneWidget);
+      expect(find.text('文件  file'), findsOneWidget);
+      final ensureBeforeConfiguration = runtime.ensureCalls;
+
+      await tester.ensureVisible(find.text('配置模型与凭据'));
+      await tester.tap(find.text('配置模型与凭据'));
+      await tester.pumpAndSettle();
+      expect(find.byType(ModelsPage), findsOneWidget);
+      await tester.ensureVisible(find.text('Fixture configuration'));
+      await tester.tap(find.text('Fixture configuration'));
+      await tester.pumpAndSettle();
+      expect(find.byType(ProviderSettingsPage), findsOneWidget);
+      await tester.tap(find.text('API Key'));
+      await tester.pumpAndSettle();
+      expect(find.byType(ModelCredentialPage), findsOneWidget);
+      expect(find.byKey(const Key('model-key-input')), findsOneWidget);
+      expect(find.text('尚未配置凭据'), findsOneWidget);
+      expect(runtime.ensureCalls, ensureBeforeConfiguration);
+      expect(
+        runtime.calls
+            .where((call) => call.method == 'credentials.describe')
+            .single
+            .params,
+        {'ref': 'FIXTURE_KEY'},
+      );
+      expect(runtime.prompts, 0);
+      expect(
+        runtime.calls.where((call) => call.method == 'session.command'),
+        isEmpty,
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'failed menu keeps the file picker and its selected attachment draft',
+    (tester) async {
+      phone(tester);
+      final runtime = _Runtime()..failCatalog = true;
+      addTearDown(runtime.dispose);
+      final native = <String>[];
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        RuntimeController.channel,
+        (call) async {
+          native.add(call.method);
+          if (call.method != 'attachment.pick') {
+            throw StateError('Unexpected native action ${call.method}');
+          }
+          return jsonEncode({
+            'items': [
+              {
+                'id': 'recovery-file',
+                'name': 'report.txt',
+                'bytes': 5,
+                'mediaType': 'text/plain',
+              },
+            ],
+          });
+        },
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          RuntimeController.channel,
+          null,
+        ),
+      );
+      await tester.pumpWidget(host(ChatPage(runtime: runtime)));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('添加与指令'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('命令目录不可用'), findsOneWidget);
+      await tester.ensureVisible(find.text('文件  file'));
+      await tester.tap(find.text('文件  file'));
+      await tester.pumpAndSettle();
+      expect(native, ['attachment.pick']);
+      expect(find.text('report.txt'), findsOneWidget);
+      expect(
+        runtime.calls
+            .where((call) => call.method == 'attachments.prepare')
+            .single
+            .params,
+        {'id': 'recovery-file', 'sessionId': runtime.timelines.keys.single},
+      );
+      expect(runtime.prompts, 0);
+      expect(find.byType(ComposerCommands), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'retrying a failed menu only reloads its catalog until a command is picked',
+    (tester) async {
+      phone(tester);
+      final runtime = _Runtime()..failCatalog = true;
+      addTearDown(runtime.dispose);
+      await tester.pumpWidget(host(ChatPage(runtime: runtime)));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), '保留这段草稿');
+      await tester.tap(find.byTooltip('添加与指令'));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('重新读取'));
+      await tester.tap(find.text('重新读取'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('命令目录不可用'), findsOneWidget);
+      expect(runtime.prompts, 0);
+      expect(
+        runtime.calls.where((call) => call.method == 'session.command'),
+        isEmpty,
+      );
+
+      runtime.failCatalog = false;
+      await tester.tap(find.text('重新读取'));
+      await tester.pumpAndSettle();
+      expect(find.text('配置模型与凭据'), findsNothing);
+      expect(find.textContaining('命令目录不可用'), findsNothing);
+      expect(runtime.prompts, 0);
+      expect(
+        runtime.calls.where((call) => call.method == 'session.command'),
+        isEmpty,
+      );
+      expect(
+        runtime.calls.where(
+          (call) =>
+              call.method == 'api.call' &&
+              call.params['namespace'] == 'commands' &&
+              call.params['method'] == 'list',
+        ),
+        hasLength(3),
+      );
+      await tester.ensureVisible(find.text('压缩  compact'));
+      await tester.tap(find.text('压缩  compact'));
+      await tester.pumpAndSettle();
+      expect(
+        runtime.calls
+            .where((call) => call.method == 'session.command')
+            .single
+            .params['line'],
+        '/compact',
+      );
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller!.text,
+        '保留这段草稿',
+      );
+      expect(runtime.prompts, 0);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  for (final failCreation in [false, true]) {
+    testWidgets(
+      'typed command survives repeated ${failCreation ? 'Agent creation' : 'catalog'} failure and retries as a command',
+      (tester) async {
+        phone(tester);
+        final runtime = _RecoveryRuntime()
+          ..failEnsure = failCreation
+          ..failCatalog = !failCreation;
+        addTearDown(runtime.dispose);
+        await tester.pumpWidget(host(ChatPage(runtime: runtime)));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byType(TextField), '/计划 off');
+        for (var attempt = 0; attempt < 2; attempt++) {
+          await tester.tap(find.byTooltip('发送'));
+          await tester.pumpAndSettle();
+          expect(runtime.prompts, 0);
+          expect(
+            runtime.calls.where((call) => call.method == 'session.command'),
+            isEmpty,
+          );
+          expect(
+            tester.widget<TextField>(find.byType(TextField)).controller!.text,
+            '/计划 off',
+          );
+        }
+        runtime
+          ..failEnsure = false
+          ..failCatalog = false;
+        await tester.tap(find.byTooltip('发送'));
+        await tester.pumpAndSettle();
+        final executed = runtime.calls
+            .where((call) => call.method == 'session.command')
+            .single;
+        expect(executed.params['line'], '/plan off');
+        expect(executed.params['sessionId'], runtime.timelines.keys.single);
+        expect(runtime.prompts, 0);
+        expect(
+          tester.widget<TextField>(find.byType(TextField)).controller!.text,
+          isEmpty,
+        );
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
   test('typed aliases follow definition identity and bare-only commands do not claim arguments', () {
     expect(typedComposerCommand('/计划 off', catalog)?.line, '/plan off');
     expect(typedComposerCommand('/压缩', catalog)?.line, '/compact');

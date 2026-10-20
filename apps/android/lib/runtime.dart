@@ -36,6 +36,7 @@ class RuntimeController extends ChangeNotifier {
   final Map<String, List<Json>> timelines = {};
   final Map<String, String> streaming = {};
   final Map<String, String> statuses = {};
+  final Map<String, String> sessionErrors = {};
   Future<void>? _liveRefresh;
   List<({String method, Json data})>? _liveBuffer;
   String provider = 'deepseek-official';
@@ -61,6 +62,8 @@ class RuntimeController extends ChangeNotifier {
     Json Function()? resumeArgs,
   }) =>
       _apiStreams.watch(namespace, method, args: args, resumeArgs: resumeArgs);
+
+  List<Json> get observationDiagnostics => _apiStreams.diagnostics;
 
   bool get ready => phase == 'ready';
   void fail(Object exception) {
@@ -103,6 +106,8 @@ class RuntimeController extends ChangeNotifier {
             _receiveLive('session.stream', data);
           case 'session.status':
             _receiveLive('session.status', data);
+          case 'session.error':
+            _receiveLive('session.error', data);
           case 'settings.changed':
             if (ready) {
               unawaited(
@@ -234,6 +239,11 @@ class RuntimeController extends ChangeNotifier {
     if (method == 'session.status') {
       statuses[id] = data['status'] as String;
       if (data['status'] == 'idle') streaming.remove(id);
+      if (data['status'] == 'running') sessionErrors.remove(id);
+      return;
+    }
+    if (method == 'session.error') {
+      sessionErrors[id] = data['error'] as String;
       return;
     }
     final frame = data['frame'] as Json;
@@ -261,6 +271,11 @@ class RuntimeController extends ChangeNotifier {
       streaming
         ..clear()
         ..addAll((baseline['streaming'] as Json).cast<String, String>());
+      sessionErrors
+        ..clear()
+        ..addAll(
+          ((baseline['errors'] as Json?) ?? const {}).cast<String, String>(),
+        );
       for (final update in _liveBuffer!) {
         if ((update.data['revision'] as int) > (baseline['revision'] as int)) {
           _applyLive(update.method, update.data);
@@ -310,12 +325,7 @@ class RuntimeController extends ChangeNotifier {
   }
 
   Future<Json> ensureSession(String id) async {
-    return await call('session.ensure', {
-      'sessionId': id,
-      'provider': provider,
-      'model': model,
-      if (reasoningEffort != null) 'reasoningEffort': reasoningEffort,
-    }) as Json;
+    return await call('session.ensure', {'sessionId': id}) as Json;
   }
 
   Future<void> send(String id, String text) =>

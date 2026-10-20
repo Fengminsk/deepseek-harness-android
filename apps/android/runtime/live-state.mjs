@@ -4,8 +4,15 @@ export class AppLiveState {
     this.ctx = ctx
     this.revision = 0
     this.streaming = new Map()
+    this.errors = new Map()
     ctx.on('agent/status', ({ agent, status }) => {
+      if (status === 'running') this.errors.delete(String(agent.session.id))
       transport.notify('session.status', { sessionId: String(agent.session.id), status, revision: ++this.revision })
+    })
+    ctx.on('api-session/error', (id, error) => {
+      const sessionId = String(id)
+      this.errors.set(sessionId, error)
+      transport.notify('session.error', { sessionId, error, revision: ++this.revision })
     })
     ctx.on('agent/assistant-stream', ({ agent, frame }) => {
       const sessionId = String(agent.session.id)
@@ -26,6 +33,7 @@ export class AppLiveState {
       revision: this.revision,
       statuses: Object.fromEntries(this.ctx.agents.list().map(agent => [String(agent.session.id), agent.status])),
       streaming: Object.fromEntries(this.streaming),
+      errors: Object.fromEntries(this.errors),
     }
   }
 }

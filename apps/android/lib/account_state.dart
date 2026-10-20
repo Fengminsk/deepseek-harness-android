@@ -9,12 +9,17 @@ class AccountState extends ChangeNotifier {
   final RuntimeController runtime;
   final Json client;
   StreamSubscription<Json>? _subscription;
+  Future<void>? _modelInitialization;
   bool _disposed = false;
-  int _connection = 0, _details = 0;
+  int _connection = 0, _details = 0, _modelGeneration = 0;
   int revision = 0;
   bool connected = false, working = false, loadingDetails = false;
+  bool initializingModel = false, _modelRpcAccepted = false;
   Json? view, profile, balance, bonuses;
-  String? error, detailsError;
+  String? error,
+      detailsError,
+      modelInitializationError,
+      modelInitializationNotice;
   final Set<String> acknowledged = {};
   final Set<String> _acknowledging = {};
   bool get signedIn => view?['status'] == 'credential-stored';
@@ -42,11 +47,29 @@ class AccountState extends ChangeNotifier {
           (frame) {
             if (_disposed || connection != _connection) return;
             if (frame['type'] == 'item') {
+              final next = frame['value'] as Json;
+              final nextAttempt = next['attempt'] as Json?;
+              // Match ui-settings-account: the first succeeded snapshot after
+              // mounting also qualifies, including an App upgrade after login.
+              final initialize =
+                  next['status'] == 'credential-stored' &&
+                  nextAttempt?['phase'] == 'succeeded' &&
+                  attempt?['phase'] != 'succeeded';
+              if (next['status'] != 'credential-stored' ||
+                  nextAttempt?['id'] != attempt?['id']) {
+                _modelGeneration++;
+                _modelInitialization = null;
+                initializingModel = false;
+                _modelRpcAccepted = false;
+                modelInitializationError = null;
+                modelInitializationNotice = null;
+              }
               revision++;
-              view = frame['value'] as Json;
+              view = next;
               connected = true;
               error = null;
               _publish();
+              if (initialize) unawaited(initializeDefaultModel());
               unawaited(refreshDetails());
             } else if (frame['type'] == 'opening' ||
                 frame['type'] == 'disconnected') {
@@ -76,6 +99,61 @@ class AccountState extends ChangeNotifier {
             _publish();
           },
         );
+  }
+
+  /// The core owns the account/API-key decision and default-model selection.
+  /// Failure here never changes the already-committed account login state.
+  Future<void> initializeDefaultModel() {
+    final pending = _modelInitialization;
+    if (pending != null) return pending;
+    if (_disposed || !connected || !signedIn || !runtime.ready) {
+      return Future<void>.value();
+    }
+    final generation = _modelGeneration;
+    initializingModel = true;
+    modelInitializationError = null;
+    modelInitializationNotice = null;
+    _publish();
+    late final Future<void> operation;
+    operation = _initializeDefaultModel(generation).whenComplete(() {
+      if (identical(_modelInitialization, operation)) {
+        _modelInitialization = null;
+      }
+    });
+    _modelInitialization = operation;
+    return operation;
+  }
+
+  Future<void> _initializeDefaultModel(int generation) async {
+    bool current() => !_disposed && generation == _modelGeneration && signedIn;
+    try {
+      if (!_modelRpcAccepted) {
+        await runtime.call('api.call', {
+          'namespace': 'session',
+          'method': 'initializeDefaultModel',
+          'args': <String, dynamic>{},
+        });
+        if (!current()) return;
+        _modelRpcAccepted = true;
+      }
+      // A failed refresh retries only the read, avoiding a second successful
+      // initializer after the user may have changed their default elsewhere.
+      await runtime.refreshForms();
+      if (!current()) return;
+      _modelRpcAccepted = false;
+      modelInitializationNotice =
+          '当前默认模型：${runtime.provider} / ${runtime.model}。已有会话的模型保持不变。';
+    } catch (failure) {
+      if (!current()) return;
+      modelInitializationError = _modelRpcAccepted
+          ? '登录已成功，但默认模型配置尚未同步到 App，请重试同步。'
+          : '登录已成功，但默认模型初始化未完成，请重试。';
+    } finally {
+      if (current()) {
+        initializingModel = false;
+        _publish();
+      }
+    }
   }
 
   Future<void> refreshDetails() async {
@@ -177,6 +255,7 @@ class AccountState extends ChangeNotifier {
     _disposed = true;
     _connection++;
     _details++;
+    _modelGeneration++;
     unawaited(_subscription?.cancel());
     super.dispose();
   }

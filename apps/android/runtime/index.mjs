@@ -3,6 +3,8 @@ import { JsonRpcLineTransport } from '@deepseek-ai/dsh-sdk-protocol'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { SessionId } from '@deepseek-ai/dsh-session'
+import { establishAttachmentHome } from '@deepseek-ai/dsh-attachment-local'
+import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { AndroidCredentials } from './credentials.mjs'
 import { runShell } from './shell.mjs'
 import AndroidShell from './android-shell.mjs'
@@ -190,12 +192,16 @@ export function apply(ctx, config) {
   })))
   ctx.effect(() => {
     const remove = ctx.appReady.onReady(() => {
-      void interactions.start().then(() => {
+      void transport.request('native.storage.root', {}).then(root =>
+        establishAttachmentHome(resolveDshHome(), requiredString(root, 'native storage root')),
+      ).then(() => interactions.start()).then(() => {
         transport.notify('runtime.ready', { node: process.version })
+        return web.restore().catch(error =>
+          transport.notify('web.changed', { ...web.status(), phase: 'failed', error: String(error) }),
+        )
       }).catch(error => {
-        transport.notify('runtime.status', { phase: 'failed', error: `审批服务启动失败：${error.message}` })
+        transport.notify('runtime.status', { phase: 'failed', error: `运行时初始化失败：${error.message}` })
       })
-      void web.restore().catch(error => transport.notify('web.changed', { ...web.status(), phase: 'failed', error: String(error) }))
     })
     return async () => { remove(); await attachments.close(); await exports.close(); await streams.close(); await interactions.close(); await web.close(); await appPeer?.dispose() }
   })
