@@ -32,7 +32,7 @@ class BackgroundSettingsPage extends StatefulWidget {
 class _BackgroundSettingsPageState extends State<BackgroundSettingsPage>
     with WidgetsBindingObserver {
   Json? background, system;
-  String? error;
+  String? error, settingsError;
   bool loading = false, saving = false, active = true;
   Timer? timer;
 
@@ -112,8 +112,11 @@ class _BackgroundSettingsPageState extends State<BackgroundSettingsPage>
       await RuntimeController.channel.invokeMethod<void>(
         'background.openSystemSettings',
       );
+      if (mounted) setState(() => settingsError = null);
     } catch (failure) {
-      if (mounted) setState(() => error = '无法打开系统应用设置：$failure');
+      if (mounted) {
+        setState(() => settingsError = '无法打开系统应用设置，请按上面的路径手动查找：$failure');
+      }
     }
   }
 
@@ -179,12 +182,14 @@ class _BackgroundSettingsPageState extends State<BackgroundSettingsPage>
             ],
           ),
           PocketSection(
-            title: '锁屏执行',
+            title: 'CPU 唤醒保护',
             children: [
               if (state != null)
                 PocketSwitchRow(
                   title: const Text('执行任务时保持 CPU 运行'),
-                  subtitle: const Text('只在任务或后台作业运行时使用，空闲和等待答复时释放。不点亮屏幕。'),
+                  subtitle: const Text(
+                    '只在任务或后台作业运行时使用，空闲和等待答复时释放。不点亮屏幕，使用期间可能增加耗电。',
+                  ),
                   value: state['keepAwakeWhileWorking'] == true,
                   onChanged: loading || saving || error != null
                       ? null
@@ -192,12 +197,13 @@ class _BackgroundSettingsPageState extends State<BackgroundSettingsPage>
                 ),
               PocketRow(
                 icon: Icons.battery_saver_rounded,
-                title: state?['fresh'] != true
-                    ? '执行保护状态待确认'
+                title:
+                    state?['fresh'] != true || state?['wakeLockHeld'] is! bool
+                    ? 'CPU 唤醒锁状态待确认'
                     : state?['wakeLockHeld'] == true
-                    ? '正在维持任务执行'
-                    : '当前未持有执行保护',
-                subtitle: '系统省电、后台限制或强行停止仍可能中断服务。',
+                    ? '正在持有 CPU 唤醒锁'
+                    : '当前未持有 CPU 唤醒锁',
+                subtitle: 'CPU 唤醒锁不代表获得后台运行许可，不能代替系统或厂商的后台设置。',
               ),
               for (final name in ['powerError', 'notificationError'])
                 if (state?[name] is String)
@@ -208,39 +214,66 @@ class _BackgroundSettingsPageState extends State<BackgroundSettingsPage>
             ],
           ),
           PocketSection(
-            title: '系统电池管理',
+            title: 'Android 标准电池状态',
             children: [
               PocketRow(
                 icon: Icons.battery_charging_full_rounded,
-                title: '电池优化',
-                subtitle: policy == null
-                    ? '未确认'
-                    : policy['batteryOptimizationsIgnored'] == true
-                    ? '系统已豁免电池优化'
-                    : '仍受系统电池优化管理',
+                title: '标准电池优化',
+                subtitle: switch (policy?['batteryOptimizationsIgnored']) {
+                  true => '已获得 Android 标准电池优化豁免',
+                  false => '仍受 Android 标准电池优化管理',
+                  _ => '未确认',
+                },
               ),
               PocketRow(
                 icon: Icons.settings_power_rounded,
-                title: '后台限制',
-                subtitle: policy == null
-                    ? '未确认'
-                    : policy['backgroundRestricted'] == true
-                    ? '系统已限制后台运行'
-                    : '系统未报告后台限制',
+                title: '标准后台限制',
+                subtitle: switch (policy?['backgroundRestricted']) {
+                  true => 'Android 已报告后台限制',
+                  false => 'Android 标准接口未报告后台限制',
+                  _ => '未确认',
+                },
               ),
               PocketRow(
                 icon: Icons.power_settings_new_rounded,
                 title: '省电模式',
-                subtitle: policy == null
-                    ? '未确认'
-                    : policy['powerSaveMode'] == true
-                    ? '已开启'
-                    : '未开启',
+                subtitle: switch (policy?['powerSaveMode']) {
+                  true => '已开启',
+                  false => '未开启',
+                  _ => '未确认',
+                },
               ),
+            ],
+          ),
+          PocketSection(
+            title: '手机厂商后台策略',
+            children: [
+              const PocketRow(
+                key: ValueKey('oem-background-policy'),
+                icon: Icons.info_outline_rounded,
+                title: '厂商后台许可需要手动确认',
+                subtitle: 'App 无法读取厂商的耗电管理策略；标准电池优化已豁免或未报告后台限制，不代表厂商已允许后台运行。',
+              ),
+              const PocketRow(
+                icon: Icons.route_rounded,
+                title: '手动设置路径',
+                subtitle: '打开系统应用设置 → 耗电管理或电池 → 后台活动。OPPO 示例：在 Pocket Harness 的耗电管理中，按需选择“完全允许后台行为”；选项名称随手机和系统版本变化。',
+              ),
+              const PocketRow(
+                icon: Icons.battery_alert_rounded,
+                title: '耗电与运行限制',
+                subtitle: '允许更多后台活动可能增加耗电，请按需选择。后台运行仍受具体手机和系统策略影响，进程仍可能被暂停或停止，不能保证持续运行。',
+              ),
+              if (settingsError != null)
+                PocketRow(
+                  icon: Icons.error_outline_rounded,
+                  title: settingsError!,
+                ),
               PocketRow(
                 icon: Icons.open_in_new_rounded,
                 title: '打开系统应用设置',
-                subtitle: '按需调整电池与后台运行权限；不同手机的选项名称可能不同',
+                subtitle:
+                    '仅打开 Pocket Harness 的应用详情，不自动更改策略；返回后刷新 Android 标准状态。',
                 onTap: openSystemSettings,
               ),
             ],

@@ -23,6 +23,7 @@ import 'automations.dart';
 import 'chat_projection.dart';
 import 'chat_messages.dart';
 import 'subagents.dart';
+import 'library.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -252,6 +253,21 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   void newChat() => activateSession(runtime.newSession());
+
+  Future<void> openLibrary() async {
+    inputFocus.unfocus();
+    final id = await Navigator.push<String>(
+      context,
+      PocketRoute<String>(builder: (_) => LibraryPage(runtime: runtime)),
+    );
+    if (!mounted || id == null) return;
+    activateSession(id);
+    try {
+      await runtime.openSession(id);
+    } catch (error) {
+      if (mounted) setState(() => errors[id] = '$error');
+    }
+  }
 
   void pickCommand(Json command) {
     switch (builtinCommand(command) ?? command['clientAction']) {
@@ -500,7 +516,7 @@ class _ChatPageState extends State<ChatPage> {
     if (events != null) {
       chatProjections.putIfAbsent(id, ChatProjection.new).reconcile(events);
     }
-    return '${chatProjections[id]?.title ?? session['title'] ?? header['title'] ?? id}';
+    return '${session['title'] ?? chatProjections[id]?.title ?? header['title'] ?? id}';
   }
 
   @override
@@ -627,6 +643,20 @@ class _ChatPageState extends State<ChatPage> {
                         ),
                       ),
                       const SizedBox(height: 16),
+                      PocketTile(
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 26,
+                        ),
+                        leading: const Icon(
+                          Icons.folder_copy_outlined,
+                          size: 22,
+                        ),
+                        title: const Text('工作区与会话'),
+                        onTap: () {
+                          Navigator.pop(context);
+                          unawaited(openLibrary());
+                        },
+                      ),
                       PocketTile(
                         contentPadding: const EdgeInsets.symmetric(
                           horizontal: 26,
@@ -801,6 +831,9 @@ class _ChatPageState extends State<ChatPage> {
                       child: PocketTile(
                         selected:
                             (session['header'] as Json)['id'] == sessionId,
+                        trailing: session['pinned'] == true
+                            ? const Icon(Icons.push_pin_rounded, size: 16)
+                            : null,
                         title: Text(
                           sessionTitle(session),
                           maxLines: 1,

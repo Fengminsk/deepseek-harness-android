@@ -152,17 +152,17 @@ void main() {
       final runtime = BackgroundRuntime();
       final policy = SystemPolicy();
       await open(tester, runtime, policy);
-      expect(find.text('系统已豁免电池优化'), findsOneWidget);
+      expect(find.text('已获得 Android 标准电池优化豁免'), findsOneWidget);
       runtime.statusFailure = PlatformException(code: 'disconnected');
       await tap(tester, refresh);
       expect(find.text('任务状态尚未确认'), findsOneWidget);
       expect(find.text('任务执行中'), findsNothing);
       expect(find.text('2 个任务执行 · 1 条输入排队 · 0 项等待处理'), findsNothing);
       expect(find.text('3 个活动作业'), findsNothing);
-      expect(find.text('系统已豁免电池优化'), findsNothing);
-      expect(find.text('系统未报告后台限制'), findsNothing);
+      expect(find.text('已获得 Android 标准电池优化豁免'), findsNothing);
+      expect(find.text('Android 标准接口未报告后台限制'), findsNothing);
       expect(find.text('未确认'), findsNWidgets(3));
-      expect(find.text('执行保护状态待确认'), findsOneWidget);
+      expect(find.text('CPU 唤醒锁状态待确认'), findsOneWidget);
       expect(tester.widget<PocketSwitchRow>(toggle).onChanged, isNull);
       await close(tester);
     },
@@ -191,7 +191,7 @@ void main() {
       await open(tester, runtime, policy);
       policy.failure = PlatformException(code: 'system-unavailable');
       await tap(tester, refresh);
-      expect(find.text('系统已豁免电池优化'), findsNothing);
+      expect(find.text('已获得 Android 标准电池优化豁免'), findsNothing);
       expect(find.text('未确认'), findsNWidgets(3));
       expect(find.text('任务执行中'), findsNothing);
       expect(tester.widget<PocketSwitchRow>(toggle).onChanged, isNull);
@@ -220,9 +220,107 @@ void main() {
       runtime.background = snapshot(keepAwake: true);
       await tap(tester, refresh);
       expect(tester.widget<PocketSwitchRow>(toggle).value, isTrue);
-      expect(find.text('正在维持任务执行'), findsOneWidget);
+      expect(find.text('正在持有 CPU 唤醒锁'), findsOneWidget);
       expect(find.textContaining('设置保存未确认'), findsNothing);
       expect(runtime.writes, 1);
+      await close(tester);
+    },
+  );
+
+  testWidgets(
+    'standard exemptions and a held wake lock never confirm the manufacturer policy',
+    (tester) async {
+      final runtime = BackgroundRuntime()
+        ..background = snapshot(keepAwake: true);
+      final policy = SystemPolicy();
+      await open(tester, runtime, policy);
+      expect(find.text('正在持有 CPU 唤醒锁'), findsOneWidget);
+      expect(find.text('已获得 Android 标准电池优化豁免'), findsOneWidget);
+      expect(find.text('Android 标准接口未报告后台限制'), findsOneWidget);
+      expect(find.text('厂商后台许可需要手动确认'), findsOneWidget);
+      final manufacturer = tester.widget<PocketRow>(
+        find.byKey(const ValueKey('oem-background-policy')),
+      );
+      expect(manufacturer.onTap, isNull);
+      expect(manufacturer.subtitle, contains('不代表厂商已允许后台运行'));
+      policy.value = {
+        'batteryOptimizationsIgnored': false,
+        'backgroundRestricted': true,
+        'powerSaveMode': false,
+      };
+      runtime.background = snapshot();
+      await tap(tester, refresh);
+      expect(find.text('当前未持有 CPU 唤醒锁'), findsOneWidget);
+      expect(find.text('仍受 Android 标准电池优化管理'), findsOneWidget);
+      expect(find.text('Android 已报告后台限制'), findsOneWidget);
+      expect(find.text('厂商后台许可需要手动确认'), findsOneWidget);
+      expect(runtime.writes, 0);
+      expect(policy.calls, everyElement('background.systemStatus'));
+      await close(tester);
+    },
+  );
+
+  testWidgets(
+    'missing or malformed policy fields remain unknown instead of reporting no restrictions',
+    (tester) async {
+      final runtime = BackgroundRuntime()
+        ..background = {...snapshot(), 'wakeLockHeld': null};
+      final policy = SystemPolicy()
+        ..value = {
+          'batteryOptimizationsIgnored': 'true',
+          'backgroundRestricted': null,
+        };
+      await open(tester, runtime, policy);
+      expect(find.text('未确认'), findsNWidgets(3));
+      expect(find.text('CPU 唤醒锁状态待确认'), findsOneWidget);
+      expect(find.text('Android 标准接口未报告后台限制'), findsNothing);
+      expect(find.text('当前未持有 CPU 唤醒锁'), findsNothing);
+      expect(find.text('厂商后台许可需要手动确认'), findsOneWidget);
+      expect(runtime.writes, 0);
+      await close(tester);
+    },
+  );
+
+  testWidgets(
+    'manual settings entry stays reachable on a phone and returning only rereads standard status',
+    (tester) async {
+      final runtime = BackgroundRuntime();
+      final policy = SystemPolicy();
+      await open(tester, runtime, policy);
+      tester.view.physicalSize = const Size(390, 844);
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.text('手动设置路径'),
+        350,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
+      expect(find.textContaining('完全允许后台行为'), findsOneWidget);
+      expect(find.textContaining('可能增加耗电，请按需选择'), findsOneWidget);
+      expect(
+        policy.calls.where(
+          (method) => method == 'background.openSystemSettings',
+        ),
+        isEmpty,
+      );
+      await tap(tester, find.text('打开系统应用设置'));
+      expect(
+        policy.calls.where(
+          (method) => method == 'background.openSystemSettings',
+        ),
+        hasLength(1),
+      );
+      expect(tester.takeException(), isNull);
+      expect(runtime.writes, 0);
+      final reads = runtime.reads;
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      await tester.pump(const Duration(seconds: 6));
+      expect(runtime.reads, reads);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pumpAndSettle();
+      expect(runtime.reads, reads + 1);
+      expect(find.text('厂商后台许可需要手动确认'), findsOneWidget);
+      expect(runtime.writes, 0);
       await close(tester);
     },
   );
@@ -236,6 +334,17 @@ void main() {
       await open(tester, runtime, policy);
       await tap(tester, find.text('打开系统应用设置'));
       expect(find.textContaining('无法打开系统应用设置'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byWidgetPredicate(
+            (widget) => widget is PocketSection && widget.title == '手机厂商后台策略',
+          ),
+          matching: find.textContaining('无法打开系统应用设置'),
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('手动设置路径'), findsOneWidget);
+      expect(find.text('厂商后台许可需要手动确认'), findsOneWidget);
       expect(runtime.writes, 0);
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
       await tester.pump(const Duration(seconds: 20));
@@ -255,8 +364,13 @@ void main() {
       await tester.pumpAndSettle();
       expect(runtime.reads, 2);
       expect(find.text('已就绪 · 暂无任务'), findsOneWidget);
-      expect(find.text('仍受系统电池优化管理'), findsOneWidget);
-      expect(find.text('系统已限制后台运行'), findsOneWidget);
+      expect(find.text('仍受 Android 标准电池优化管理'), findsOneWidget);
+      expect(find.text('Android 已报告后台限制'), findsOneWidget);
+      expect(runtime.writes, 0);
+      policy.openFailure = null;
+      await tap(tester, find.text('打开系统应用设置'));
+      expect(find.textContaining('无法打开系统应用设置'), findsNothing);
+      expect(find.text('厂商后台许可需要手动确认'), findsOneWidget);
       expect(runtime.writes, 0);
       await close(tester);
       final reads = runtime.reads;

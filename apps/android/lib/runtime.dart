@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'api_streams.dart';
 import 'approvals_draft.dart';
 import 'plugins_data.dart';
+import 'library_data.dart';
 
 typedef Json = Map<String, dynamic>;
 
@@ -28,6 +29,8 @@ class RuntimeController extends ChangeNotifier {
   final questionDrafts = QuestionDraftStore();
   PluginsController? _plugins;
   PluginsController get plugins => _plugins ??= PluginsController(this);
+  LibraryController? _library;
+  LibraryController get library => _library ??= LibraryController(this);
   final _remoteEvents = StreamController<Json>.broadcast(sync: true);
   Stream<Json> get remoteEvents => _remoteEvents.stream;
   late final AppApiStreams _apiStreams = AppApiStreams(
@@ -43,6 +46,8 @@ class RuntimeController extends ChangeNotifier {
   int? tasksNextOffset;
   String? tasksError;
   Future<void>? _tasksRefresh;
+  Future<void>? _sessionsRefresh;
+  bool _sessionsRefreshAgain = false;
   int _tasksRefreshGeneration = -1;
   int _connectionGeneration = 0;
   bool _disposed = false;
@@ -407,9 +412,38 @@ class RuntimeController extends ChangeNotifier {
     }
   }
 
-  Future<void> refreshSessions() async {
-    sessions = (await call('sessions.list') as List).cast<Json>();
-    notifyListeners();
+  Future<void> refreshSessions() {
+    if (_sessionsRefresh != null) {
+      _sessionsRefreshAgain = true;
+      return _sessionsRefresh!;
+    }
+    late final Future<void> operation;
+    operation = _readSessions().whenComplete(() {
+      if (identical(_sessionsRefresh, operation)) _sessionsRefresh = null;
+    });
+    return _sessionsRefresh = operation;
+  }
+
+  Future<void> _readSessions() async {
+    do {
+      _sessionsRefreshAgain = false;
+      final generation = _connectionGeneration;
+      List<Json> next;
+      try {
+        next = (await call('sessions.list') as List).cast<Json>();
+      } catch (_) {
+        // A queued invalidation still owns a fresh read after this one fails.
+        if (_sessionsRefreshAgain && ready && !_disposed) continue;
+        rethrow;
+      }
+      if (_disposed) return;
+      if (generation != _connectionGeneration) {
+        _sessionsRefreshAgain = ready;
+        continue;
+      }
+      sessions = next;
+      notifyListeners();
+    } while (_sessionsRefreshAgain && !_disposed);
   }
 
   String newSession() {
@@ -494,6 +528,7 @@ class RuntimeController extends ChangeNotifier {
     _disposed = true;
     _connectionGeneration++;
     _plugins?.dispose();
+    _library?.dispose();
     unawaited(_subscription?.cancel());
     unawaited(_apiStreams.close());
     unawaited(_remoteEvents.close());

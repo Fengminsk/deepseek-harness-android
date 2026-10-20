@@ -5,6 +5,7 @@ import 'package:material_ui/material_ui.dart';
 import 'runtime.dart';
 import 'ui.dart';
 import 'document_search.dart';
+import 'workspace_files.dart';
 
 class FilesPage extends StatefulWidget {
   const FilesPage({
@@ -218,7 +219,13 @@ class _FilesPageState extends State<FilesPage> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) => PocketScaffold(
-    title: Text(widget.path.isEmpty ? '授权文件' : widget.path),
+    title: Text(
+      widget.root == null
+          ? '我的文件'
+          : widget.path.isEmpty
+          ? '授权目录'
+          : widget.path,
+    ),
     trailing: GlassButton(
       icon: Icons.refresh_rounded,
       label: '刷新授权文件',
@@ -249,6 +256,21 @@ class _FilesPageState extends State<FilesPage> with WidgetsBindingObserver {
     body: PocketList(
       padding: const EdgeInsets.all(16),
       children: [
+        if (widget.root == null)
+          PocketSection(
+            children: [
+              PocketRow(
+                icon: Icons.folder_special_outlined,
+                title: '应用私有工作区',
+                subtitle: '浏览 Agent 的本地文件、读取文本和搜索',
+                onTap: () => Navigator.of(context).push(
+                  PocketRoute<void>(
+                    builder: (_) => WorkspaceFilesPage(runtime: widget.runtime),
+                  ),
+                ),
+              ),
+            ],
+          ),
         if (notice != null)
           Padding(
             padding: const EdgeInsets.all(20),
