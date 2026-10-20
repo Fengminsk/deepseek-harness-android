@@ -12,11 +12,20 @@ import { runShell } from './shell.mjs'
  *
  * @param {import('@deepseek-ai/cordis').Context} ctx - Tool-owning plugin context.
  * @param {{shellTimeoutMs: {get(): number}, shellOutputLimit: {get(): number}}} config - Live process budgets, applied only after approval.
+ * @returns {{context(sessionId: string, callId: string): {cwd: string} | undefined}} The directory fixed before this exact approval.
  */
 export function registerAndroidShell(ctx, config) {
+  const prepared = new Map()
+  ctx.on('tools/result', execution => { prepared.delete(execution.token) })
+  ctx.effect(() => () => prepared.clear())
   ctx.on('tools/pre-execute', async (execution, next) => {
     const downstream = await next()
-    if (execution.name !== 'android_shell' || downstream.kind !== 'allow') return downstream
+    if (execution.name !== 'android_shell' || !['allow', 'ask'].includes(downstream.kind)) return downstream
+    if (!execution.agent) return { kind: 'deny', reason: 'Android shell requires an Agent session.' }
+    const cwd = await ctx.workingDirectory.ensure(execution.agent, execution.signal)
+    execution.signal.throwIfAborted()
+    prepared.set(execution.token, { cwd, sessionId: String(execution.agent.session.id), callId: String(execution.callId) })
+    if (downstream.kind === 'ask') return downstream
     return {
       kind: 'ask',
       reason: 'Android shell commands require approval for this invocation.',
@@ -28,16 +37,28 @@ export function registerAndroidShell(ctx, config) {
   })
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'android_shell',
-    description: 'Run a non-interactive Android shell command after one-time user approval. Runs as this app, without root or adb privileges. Starts in the app workspace; that directory does not restrict file access. No approval means no execution.',
+    description: 'Run a non-interactive Android shell command after one-time user approval. Runs as this app, without root or adb privileges. Starts in the session working directory shown with the approval; that directory does not restrict file access. No approval means no execution.',
     parameters: { command: { type: 'string', required: true } },
     output: {
       schema: { type: 'json' },
       render: (_args, result) => [{ type: 'text', text: JSON.stringify(result) }],
     },
-    execute: (args, execution) => runShell(args.command, process.cwd(), {
-      timeoutMs: config.shellTimeoutMs.get(),
-      outputLimit: config.shellOutputLimit.get(),
-      signal: execution.signal,
-    }),
+    execute(args, execution) {
+      const context = prepared.get(execution.token)
+      if (!context) throw new Error('Shell execution directory was not prepared for this approval.')
+      return runShell(args.command, context.cwd, {
+        timeoutMs: config.shellTimeoutMs.get(),
+        outputLimit: config.shellOutputLimit.get(),
+        signal: execution.signal,
+      })
+    },
   })))
+  return {
+    context(sessionId, callId) {
+      for (const value of prepared.values()) {
+        if (value.sessionId === sessionId && value.callId === callId) return { cwd: value.cwd }
+      }
+      return undefined
+    },
+  }
 }

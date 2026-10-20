@@ -78,7 +78,8 @@ async function fixture(t, { approval = true, policy = 'ask', timeoutMs = 60000 }
     return true
   })
   syncBuiltinESMExports()
-  let ctx
+  let ctx, shell
+  let cwd = directory
   t.after(async () => {
     for (const { child } of spawned) child.finish()
     await ctx?.fiber.dispose()
@@ -95,7 +96,8 @@ async function fixture(t, { approval = true, policy = 'ask', timeoutMs = 60000 }
       name: 'android-shell-test',
       inject: ['tools'],
       apply(scope) {
-        registerAndroidShell(scope, {
+        scope.provide('workingDirectory', { ensure: async () => cwd })
+        shell = registerAndroidShell(scope, {
           shellTimeoutMs: { get: () => timeoutMs },
           shellOutputLimit: { get: () => 4096 },
         })
@@ -113,7 +115,8 @@ async function fixture(t, { approval = true, policy = 'ask', timeoutMs = 60000 }
   })
   const outcomes = () => session.snapshotEvents().filter(event => event.type === 'approval/decided')
     .map(event => event.data.outcome)
-  return { ctx, session, agent, execute, spawned, outcomes, kill, started: started.promise }
+  return { ctx, session, agent, execute, spawned, outcomes, kill, started: started.promise,
+    shell, setCwd: value => { cwd = value }, directory }
 }
 
 test('real Loader tool waits for one-shot approval and records the exact call identity', async t => {
@@ -125,6 +128,8 @@ test('real Loader tool waits for one-shot approval and records the exact call id
   assert.equal(request.toolName, 'android_shell')
   assert.equal(request.callId, 'shell-1')
   assert.match(request.displayReason.zh, /不构成文件访问沙箱/)
+  assert.deepEqual(f.shell.context(String(f.session.id), 'shell-1'), { cwd: f.directory })
+  f.setCwd(join(f.directory, 'changed-while-awaiting-approval'))
   assert.equal(f.spawned.length, 0)
   answer.resolve('allowed-once')
   // A named process-start observation avoids sleep-based authorization checks.
@@ -135,6 +140,8 @@ test('real Loader tool waits for one-shot approval and records the exact call id
   assert.equal(result.isError, false)
   assert.equal(f.spawned.length, 1)
   assert.deepEqual(f.spawned[0].args, ['-c', 'printf approved'])
+  assert.equal(f.spawned[0].options.cwd, f.directory)
+  assert.equal(f.shell.context(String(f.session.id), 'shell-1'), undefined)
   assert.deepEqual(f.outcomes(), ['allowed-once'])
   assert.equal(f.session.snapshotEvents().find(event => event.type === 'approval/asked').data.callId, 'shell-1')
 })

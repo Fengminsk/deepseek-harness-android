@@ -21,6 +21,8 @@ import { AppDocumentSearch } from './document-search.mjs'
 import { AppTasks } from './tasks.mjs'
 import { AppConfigurationTransfers } from './configuration-transfer.mjs'
 import { AppSubagents } from './subagents.mjs'
+import { AppLibrary } from './library.mjs'
+import { AppWorkspaceFiles } from './workspace-files.mjs'
 
 export const name = 'android-runtime'
 export const inject = ['agents', 'sessions', 'workingDirectory', 'settings', 'tools', 'appReady', 'sessionPersistence']
@@ -39,6 +41,11 @@ export const Config = Schema.object({
   documentSearchPreviewChars: Schema.natural().min(512).max(2000).default(600).volatile(),
   documentSearchMaxDurationMs: Schema.natural().min(100).max(300000).default(30000).volatile(),
   documentSearchMaxRequests: Schema.natural().min(1).max(4).default(4).volatile(),
+  workspaceReadPageBytes: Schema.natural().min(1024).max(1048576).default(65536).volatile(),
+  workspaceDirectoryMaxEntries: Schema.natural().min(1).max(10000).default(5000).volatile(),
+  workspaceDirectoryPageSize: Schema.natural().min(1).max(500).default(100).volatile(),
+  workspaceFilesCloseTimeoutMs: Schema.natural().min(100).max(30000).default(5000).volatile(),
+  libraryCloseTimeoutMs: Schema.natural().min(100).max(30000).default(5000).volatile(),
 })
 
 function requiredString(value, label) {
@@ -59,13 +66,14 @@ export function apply(ctx, config) {
   })
   // Connection needs the Keystore provider before the shared Session controller can activate.
   ctx.inject(['sessionController', 'typertGateway', 'connection', 'accountCallback', 'fileUploads',
-    'pluginManager', 'jobs', 'sessionProjections', 'subagents'], ctx => {
+    'pluginManager', 'jobs', 'sessionProjections', 'subagents', 'workspaceRegistry'], ctx => {
   // These Loader entries define the native carrier and App-controlled HTTP boundary.
   // The manager applies the same protection to App, Web, tools, and bundle overlays.
   const requiredEntries = new Set(['android-runtime', 'credentials', 'authorization', 'deepseek-account',
     'web-startup', 'webserver', 'web-runtime', 'connection', 'session-controller',
     'session-persistence-jsonl', 'android-session-persistence', 'settings', 'file-upload',
-    'attachment-local', 'android-attachment-store', 'working-directory', 'agent-loop'])
+    'attachment-local', 'android-attachment-store', 'working-directory', 'agent-loop',
+    'workspace', 'workspace-controller', 'android-directory-picker', 'android-filesystem'])
   const loaderEntries = [...ctx.get('loader').entries()]
   ctx.pluginManager.protectModules(loaderEntries.filter(entry => requiredEntries.has(entry.options.id))
     .map(entry => entry.options.name))
@@ -75,6 +83,13 @@ export function apply(ctx, config) {
   const invoke = (namespace, method, args, signal) => {
     return ctx.typertGateway.invoke({ namespace, method, args, peer: peer(), signal })
   }
+  const library = new AppLibrary(ctx, {
+    invoke,
+    closeTimeoutMs: () => config.libraryCloseTimeoutMs.get(),
+    follow: signal => ctx.typertGateway.stream({
+      namespace: 'workspace', method: 'follow', args: {}, peer: peer(), signal,
+    }),
+  })
   let attachments
   const sessions = new AppSessions(ctx, (method, request) => invoke('session', method, { request }),
     (sessionId, ids) => attachments.content(sessionId, ids), {
@@ -86,13 +101,14 @@ export function apply(ctx, config) {
     ensureSession: sessionId => sessions.ensure(sessionId),
   })
   const live = new AppLiveState(ctx, transport, { streamPublishMs: () => config.streamPublishMs.get() })
+  const shell = registerAndroidShell(ctx, config)
   let tasks
   const interactions = new AppInteractions(ctx, {
     notify(method, params) {
       transport.notify(method, params)
       if (method === 'interactions.changed') tasks?.interactionsChanged()
     },
-  })
+  }, { shellContext: (sessionId, callId) => shell.context(sessionId, callId) })
   tasks = new AppTasks(ctx, transport, { interactions: () => interactions.snapshot() })
   const subagents = new AppSubagents(ctx, {
     invoke,
@@ -104,13 +120,23 @@ export function apply(ctx, config) {
   })
   const configurationTransfers = new AppConfigurationTransfers(ctx, { protectedNamespaces: requiredEntries })
   const exports = new AppExports(ctx, { directory: () => transport.request('native.exports.directory', {}) })
-  const documentSearch = new AppDocumentSearch(transport, {
-    maxRequests: () => config.documentSearchMaxRequests.get(),
-    limits: () => ({
+  const searchLimits = () => ({
       fileBytes: config.documentSearchFileBytes.get(), totalBytes: config.documentSearchTotalBytes.get(),
       maxEntries: config.documentSearchMaxEntries.get(), maxFiles: config.documentSearchMaxFiles.get(),
       maxDepth: config.documentSearchMaxDepth.get(), maxMatches: config.documentSearchMaxMatches.get(),
       previewChars: config.documentSearchPreviewChars.get(), maxDurationMs: config.documentSearchMaxDurationMs.get(),
+  })
+  const documentSearch = new AppDocumentSearch(transport, {
+    maxRequests: () => config.documentSearchMaxRequests.get(), limits: searchLimits,
+  })
+  const workspaceFiles = new AppWorkspaceFiles({
+    root: process.cwd(),
+    limits: () => ({
+      readPageBytes: config.workspaceReadPageBytes.get(),
+      maxDirectoryEntries: config.workspaceDirectoryMaxEntries.get(),
+      listPageSize: config.workspaceDirectoryPageSize.get(),
+      closeTimeoutMs: config.workspaceFilesCloseTimeoutMs.get(),
+      maxSearches: config.documentSearchMaxRequests.get(), search: searchLimits(),
     }),
   })
   const streams = new AppStreams(ctx, transport, peer, {
@@ -128,6 +154,8 @@ export function apply(ctx, config) {
   })
   const describe = () => ctx.settings.describe({ redactSecrets: true })
   transport.onRequest(async (method, params) => {
+    if (method.startsWith('library.')) return library.call(method.slice('library.'.length), params)
+    if (method.startsWith('workspace.files.')) return workspaceFiles.call(method.slice('workspace.files.'.length), params)
     switch (method) {
       case 'runtime.info': return { node: process.version, platform: process.platform, arch: process.arch,
         uid: process.getuid?.(), workspace: process.cwd(), profile: 'android' }
@@ -198,7 +226,7 @@ export function apply(ctx, config) {
         return { configured: false }
       }
       // Child transcripts require their durable parent address and belong to the subagent/task entry points.
-      case 'sessions.list': return (await ctx.sessionPersistence.list()).filter(entry => entry.header.origin !== 'subagent')
+      case 'sessions.list': return library.sidebar()
       case 'session.read': {
         const sessionId = SessionId(requiredString(params.sessionId, 'sessionId'))
         const offset = params.offset ?? 0
@@ -227,10 +255,13 @@ export function apply(ctx, config) {
   })
   ctx.on('session/event', (session, event) => {
     transport.notify('session.event', { sessionId: String(session.id), event: presentSessionEvent(event) })
+    if (event.type === 'session/title') transport.notify('sessions.changed', {})
   })
   ctx.on('session/created', () => transport.notify('sessions.changed', {}))
+  ctx.on('domain/changed', change => {
+    if (change.domain === 'workspace') transport.notify('sessions.changed', {})
+  })
   ctx.on('settings/document-updated', () => transport.notify('settings.changed'))
-  registerAndroidShell(ctx, config)
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'android_files', description: 'List authorized Android document roots, list a relative directory, read UTF-8 text in chunks, or search literal text below an authorized root. Search is bounded and reports skipped files and incomplete results. content:// URIs are not shell paths.',
     parameters: { action: { type: 'string', required: true }, root: { type: 'string' }, path: { type: 'string' }, offset: { type: 'integer' },
@@ -254,7 +285,7 @@ export function apply(ctx, config) {
     const remove = ctx.appReady.onReady(() => {
       void transport.request('native.storage.root', {}).then(root =>
         establishAttachmentHome(resolveDshHome(), requiredString(root, 'native storage root')),
-      ).then(() => interactions.start()).then(() => {
+      ).then(() => library.initialize()).then(() => interactions.start()).then(() => {
         transport.notify('runtime.ready', { node: process.version })
         tasks.publish()
         return web.restore().catch(error =>
@@ -268,7 +299,7 @@ export function apply(ctx, config) {
       remove()
       const results = await Promise.allSettled([
         () => documentSearch.close(), () => attachments.close(), () => exports.close(), () => tasks.close(),
-        () => configurationTransfers.close(), () => subagents.close(),
+        () => configurationTransfers.close(), () => subagents.close(), () => workspaceFiles.close(), () => library.close(),
         () => live.close(),
         () => streams.close(), () => interactions.close(), () => web.close(),
       ].map(close => Promise.resolve().then(close)))

@@ -30,11 +30,13 @@ function fixture(request, events = []) {
   Object.assign(carrier, {
     ctx: { agents: { list: () => [agent] } },
     records: new Map([[record.id, record]]), revision: 7, error: null,
+    shellContext: (sessionId, callId) => sessionId === 'session' && callId === 'shell-call'
+      ? { cwd: '/actual/prepared/session-workspace' } : undefined,
   })
   return carrier
 }
 
-test('shell approval includes process cwd and exact matching original tool call without rewriting the DSH request', () => {
+test('shell approval includes its prepared cwd and exact matching original tool call without rewriting the DSH request', () => {
   const request = Object.freeze({
     toolName: 'android_shell', callId: 'shell-call', reason: 'original reason',
     displayReason: Object.freeze({ zh: '原审批说明', en: 'Original explanation' }),
@@ -55,7 +57,7 @@ test('shell approval includes process cwd and exact matching original tool call 
   assert.equal(value.version, 4)
   assert.equal(value.toolCall, toolCall)
   assert.equal(value.toolCall.arguments, toolCall.arguments)
-  assert.deepEqual(value.executionContext, { cwd: process.cwd() })
+  assert.deepEqual(value.executionContext, { cwd: '/actual/prepared/session-workspace' })
   assert.equal(value.reason, request.reason)
   assert.equal(value.displayReason, request.displayReason)
   assert.equal(Object.hasOwn(request, 'executionContext'), false)
@@ -76,7 +78,7 @@ test('missing call details remain missing instead of borrowing another command o
   ])
   const value = carrier.snapshot().requests[0]
   assert.equal(value.toolCall, undefined)
-  assert.deepEqual(value.executionContext, { cwd: process.cwd() })
+  assert.equal(Object.hasOwn(value, 'executionContext'), false)
 })
 
 test('question snapshots retain original questions and state without shell presentation fields', () => {

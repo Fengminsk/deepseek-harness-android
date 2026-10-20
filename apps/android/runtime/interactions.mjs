@@ -6,9 +6,10 @@ const waitActions = new Set(['holdFocus', 'releaseFocus', 'engage', 'takeTime'])
 
 /** Android is one authenticated owner client of the existing Gateway event stream. */
 export class AppInteractions {
-  constructor(ctx, transport) {
+  constructor(ctx, transport, { shellContext = () => undefined } = {}) {
     this.ctx = ctx
     this.transport = transport
+    this.shellContext = shellContext
     this.peer = ctx.connection.createPeer({ principal: { kind: 'owner' }, interactions: 'answer' })
     this.fetchHandler = ctx.connection.createSharedFetchHandler('/api')
     this.lifetime = new AbortController()
@@ -222,9 +223,9 @@ export class AppInteractions {
         if (event?.type === 'tool/call' && event.data.callId === callId) { toolCall = event.data; break }
       }
     }
+    const executionContext = record.request.toolName === 'android_shell' ? this.shellContext(sessionId, callId) : undefined
     return { id, version, sessionId, kind, ...record.request, toolCall,
-      // android_shell executes against this process directory, not a session's header/configured cwd.
-      ...(record.request.toolName === 'android_shell' ? { executionContext: { cwd: process.cwd() } } : {}),
+      ...(executionContext === undefined ? {} : { executionContext }),
     }
   }
 
