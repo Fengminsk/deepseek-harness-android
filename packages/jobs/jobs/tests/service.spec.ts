@@ -49,6 +49,10 @@ class StubJobRegistry extends JobRegistry {
     return [this.view(JobId('bash-1'), caller)]
   }
 
+  snapshot(): JobView[] {
+    return this.list()
+  }
+
   get(id: JobId, caller?: SessionId): JobView {
     return this.view(id, caller)
   }

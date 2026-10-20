@@ -711,6 +711,40 @@ describe('LocalJobRegistry.remove', () => {
 })
 
 describe('LocalJobRegistry owner isolation', () => {
+  it('gives a host a detached all-owner baseline and preserves caller-fenced controls', async () => {
+    const ctx = await harness()
+    const alice = await liveAgent(ctx, 'snapshot-alice')
+    const bob = await liveAgent(ctx, 'snapshot-bob')
+    const first = producer({ owner: alice })
+    const second = producer({ owner: bob })
+    const unowned = producer()
+    try {
+      const firstId = ctx.jobs.start(first.spec)
+      const events = collect(ctx, { owners: 'all' }, ['registered', 'settled'])
+      expect(ctx.jobs.snapshot().map(job => job.id)).toEqual([firstId])
+      const secondId = ctx.jobs.start(second.spec)
+      const openId = ctx.jobs.start(unowned.spec)
+      const baseline = ctx.jobs.snapshot()
+      expect(baseline.map(job => job.id)).toEqual([firstId, secondId, openId])
+      expect(events.map(event => event.type)).toEqual(['registered', 'registered'])
+      for (const row of baseline) Object.defineProperty(row.output, 'total', { value: 1000 })
+      baseline.pop()
+      expect(ctx.jobs.snapshot()).toHaveLength(3)
+      expect(ctx.jobs.get(firstId, alice.id).output.total).toBe(0)
+      expect(ctx.jobs.list(alice.id).map(job => job.id)).toEqual([firstId, openId])
+      expect(() => ctx.jobs.kill(secondId, alice.id)).toThrow('belongs to another session')
+      first.settle({ status: 'completed' })
+      await ctx.jobs.wait(firstId, 1000, alice.id)
+      expect(ctx.jobs.snapshot()[0]?.status).toBe('completed')
+      expect(events.at(-1)?.type).toBe('settled')
+    } finally {
+      first.settle({ status: 'completed' })
+      second.settle({ status: 'completed' })
+      unowned.settle({ status: 'completed' })
+      await ctx.fiber.dispose()
+    }
+  })
+
   it('fences every view operation to the owning session and keeps unowned jobs open', async () => {
     const ctx = await harness()
     const owner = await liveAgent(ctx, 'owner')

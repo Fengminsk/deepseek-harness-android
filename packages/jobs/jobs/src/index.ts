@@ -120,6 +120,16 @@ export abstract class JobRegistry extends Service {
   abstract list(caller?: SessionId): JobView[]
 
   /**
+   * Read every registered job for a trusted in-process host observer.
+   * This synchronous baseline includes all owners and unowned jobs, preserves
+   * registration order, and returns detached projections without consuming output.
+   * Subscribe with `{ owners: 'all' }` before reading to observe subsequent commits.
+   * Remote and model callers must keep using the caller-fenced `list` operation.
+   * @returns Fresh projections of every currently registered job.
+   */
+  abstract snapshot(): JobView[]
+
+  /**
    * Project one job without changing its cursor. Throws for an unknown or
    * foreign job.
    * @param id - job to look up.

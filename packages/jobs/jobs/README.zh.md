@@ -86,6 +86,8 @@ kind: "package-reference"
 
 ### 服务操作
 
+受信任的进程内宿主观察者通过 `snapshot()` 同步取得所有拥有者及无主 job 的独立投影，顺序与注册顺序一致。先注册 `events.subscribe({ owners: 'all' }, listener)` 再读取基线，可连续观察后续提交。这个宿主读取方法不是 Remote 方法，也不消耗输出；模型与 Remote 列表继续使用按调用方隔离的 `list(caller)`。
+
 每个读取或控制操作接收可选的调用方 `SessionId`，省略时仅允许访问无主 job：`list` 与 `get` 返回全新投影，`read` 推进模型游标并在结算后把生产方的 result 交出一次，`readAt` 按绝对偏移读取保留块且不消耗任何东西，`kill` 在改变状态前调用生产方取消并为终态 `detail` 记录原因，`wait` 阻塞至超时，`remove` 丢弃调用方经自己的等待收走且从未交出的已结算记录，`start()` 在调用生产方 `run()` 一次之前预检访问、校验与准入，同时拒绝任何没有已附加控制器服务的所有者；`events.subscribe` 按所有者、scope 或进程粒度投递注册、进度、停止中、结算、移除与输出提交。
 
 每个实现还会回答 Workspace 注册表的归档准入（[接缝](../../workspace/workspace/README.zh.md)），由接缝的构造函数只通过抽象的 `list` 与 `kill` 安装：`workspace/session-activity` 把被询问会话拥有的运行中或停止中任务作为 `job` 族报告，每个任务一项、附其 label；`workspace/session-stop` 以原因 `session archived` 逐个 kill 它们，因此一个在取消时抛错的生产方只记日志，该会话的其他任务仍会停止。无主任务不属于任何会话，绝不会为某个会话被报告或 kill。
