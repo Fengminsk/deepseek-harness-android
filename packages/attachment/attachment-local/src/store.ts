@@ -208,36 +208,50 @@ async function ensureDurableHome(path: string): Promise<string> {
  * Publish one already verified normalized image below a versioned attachment root.
  * @param root - absolute `DSH_HOME/attachments/v1` root.
  * @param prepared - deterministic normalized bytes and reference.
+ * @param publish - host publication primitive; omitted uses an exclusive hard link.
  * @returns durable content-addressed normalized image reference.
  */
 export async function commitPreparedImageFile(
   root: string,
   prepared: PreparedImageFile,
+  publish: ImmutableFilePublisher = link,
 ): Promise<ImageAttachmentRef> {
   const normalized = prepared.data
   const sha256 = ensureReference(prepared.ref)
   if (digest(normalized) !== sha256 || normalized.byteLength !== prepared.ref.bytes) {
     throw new AttachmentError('Prepared attachment bytes do not match their reference.', 'ATTACHMENT_CORRUPT')
   }
-  await publishImmutableObject(root, normalizedImagePath(root, prepared.ref), normalized, sha256)
+  await publishImmutableObject(root, normalizedImagePath(root, prepared.ref), normalized, sha256, publish)
   return prepared.ref
 }
 
 /**
+ * Atomically create a target containing the complete source bytes without
+ * replacing an existing target. Preserve the source; reject collisions with
+ * `code: 'EEXIST'`. A copied target must be file-synced before it becomes visible.
+ * @param source - existing complete immutable bytes; the caller retains ownership.
+ * @param target - absent publication path in an already-created private directory.
+ * @returns resolves after complete publication; directory syncing remains caller-owned.
+ */
+export type ImmutableFilePublisher = (source: string, target: string) => Promise<void>
+
+/**
  * Publish one immutable content-addressed object below a versioned attachment
- * root: staged write, fsync, hard-link into place, digest-verified EEXIST
+ * root: staged write, fsync, exclusive publication, digest-verified EEXIST
  * deduplication, read-only mode, and durable directory entries from the
  * target's parent up to (excluding) `root`.
  * @param root - absolute `DSH_HOME/attachments/v1` root.
  * @param target - absolute final object path below `root`.
  * @param data - exact object bytes whose digest is `sha256`.
  * @param sha256 - hex digest the stored bytes must match on deduplication.
+ * @param publish - host publication primitive; omitted uses an exclusive hard link.
  */
 export async function publishImmutableObject(
   root: string,
   target: string,
   data: Uint8Array,
   sha256: string,
+  publish: ImmutableFilePublisher = link,
 ): Promise<void> {
   const staged = await stageImmutableObject(root, (function* (): Iterable<Uint8Array> {
     yield data
@@ -246,7 +260,7 @@ export async function publishImmutableObject(
     await removeTemporary(staged.path)
     throw new AttachmentError('Attachment bytes do not match their publication digest.', 'ATTACHMENT_CORRUPT')
   }
-  await publishStagedObject(root, target, staged)
+  await publishStagedObject(root, target, staged, publish)
 }
 
 /** Digest and byte count produced while streaming one immutable object to disk. */
@@ -262,6 +276,7 @@ export interface StreamedImmutableObject {
  * @param data - exact object bytes in order.
  * @param targetFor - derive the final absolute target from the completed digest and byte count.
  * @param signal - optional cancellation for source reads and storage writes.
+ * @param publish - host publication primitive; omitted uses an exclusive hard link.
  * @returns digest and exact byte count of the published object.
  */
 export async function publishImmutableObjectStream(
@@ -269,6 +284,7 @@ export async function publishImmutableObjectStream(
   data: AsyncIterable<Uint8Array>,
   targetFor: (sha256: string, bytes: number) => string,
   signal?: AbortSignal,
+  publish: ImmutableFilePublisher = link,
 ): Promise<StreamedImmutableObject> {
   const staged = await stageImmutableObject(root, data, signal)
   let target: string
@@ -280,29 +296,31 @@ export async function publishImmutableObjectStream(
     throw error
     /* v8 ignore stop */
   }
-  await publishStagedObject(root, target, staged)
+  await publishStagedObject(root, target, staged, publish)
   return { sha256: staged.sha256, bytes: staged.bytes }
 }
 
 /**
- * Publish another durable hard-link name for an existing immutable object.
+ * Publish another durable name for an existing immutable object.
  * @param root - absolute versioned attachment root.
  * @param source - existing content-addressed object below `root`.
  * @param target - new alias below `root`.
  * @param sha256 - expected object digest for an existing-target race.
+ * @param publish - host publication primitive; omitted uses an exclusive hard link.
  */
 export async function publishImmutableAlias(
   root: string,
   source: string,
   target: string,
   sha256: string,
+  publish: ImmutableFilePublisher = link,
 ): Promise<void> {
   const parent = dirname(target)
   try {
     const boundary = await ensureDurableHome(dirname(dirname(resolve(root))))
     await ensureDurableDirectory(parent, boundary)
     try {
-      await link(source, target)
+      await publish(source, target)
     } catch (error) {
       /* v8 ignore next -- Private same-filesystem directories make EEXIST the only recoverable link race. */
       if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST')) throw error
@@ -373,12 +391,13 @@ async function publishStagedObject(
   root: string,
   target: string,
   staged: StagedImmutableObject,
+  publish: ImmutableFilePublisher,
 ): Promise<void> {
   const parent = dirname(target)
   try {
     await ensureDurableDirectory(parent, staged.boundary)
     try {
-      await link(staged.path, target)
+      await publish(staged.path, target)
     } catch (error) {
       /* v8 ignore next -- Private same-filesystem directories make EEXIST the only recoverable link race. */
       if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST')) throw error

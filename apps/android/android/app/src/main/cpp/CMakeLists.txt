@@ -16,6 +16,12 @@ target_include_directories(dsh_system PRIVATE "${NODE_ROOT}/include/node")
 target_compile_definitions(dsh_system PRIVATE NAPI_VERSION=8)
 target_link_libraries(dsh_system node)
 target_link_options(dsh_system PRIVATE "-Wl,-z,max-page-size=16384")
+add_library(pocket_file_publish SHARED file_publish.cpp)
+target_include_directories(pocket_file_publish PRIVATE "${NODE_ROOT}/include/node")
+target_compile_definitions(pocket_file_publish PRIVATE NAPI_VERSION=8 NODE_GYP_MODULE_NAME=pocket_file_publish)
+target_compile_options(pocket_file_publish PRIVATE -std=c++17)
+target_link_libraries(pocket_file_publish node)
+target_link_options(pocket_file_publish PRIVATE "-Wl,-z,max-page-size=16384")
 
 # Build the same N-API backend selected by the upstream desktop dependency.
 set(BUILTIN_ROOT "${REPOSITORY_ROOT}/.cache/references/require-builtin/packages/native")

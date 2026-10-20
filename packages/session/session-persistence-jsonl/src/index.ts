@@ -313,7 +313,12 @@ class JsonlSessionPersistence extends SessionPersistence {
   /** One joinable decode/migration operation per selected historical Session file revision. */
   private readonly migrationPreparations = new Map<SessionId, MigrationPreparation>()
 
-  constructor(ctx: Context, public config: Config, private readonly tracker: JsonlBackendTracker) {
+  constructor(
+    ctx: Context,
+    public config: Config,
+    private readonly tracker: JsonlBackendTracker,
+    private readonly publishExclusive?: JsonlFilePublisher,
+  ) {
     super(ctx)
     /* v8 ignore next 5 -- generated catalog and Session source share one build-time version owner. */
     if (sessionFormatCatalog.currentVersion !== SESSION_FORMAT_VERSION) {
@@ -718,7 +723,7 @@ class JsonlSessionPersistence extends SessionPersistence {
           signal,
         ),
         signal,
-      })
+      }, this.publishExclusive)
     } catch (error: unknown) {
       throw this.generationFailure(id, selected, error)
     }
@@ -1294,12 +1299,11 @@ class JsonlSessionPersistence extends SessionPersistence {
     await this.syncDirPosix(project)
     await this.rejectExistingLog(finalPath, id)
     const tmp = await this.writeSyncedTempFile(finalPath, content)
-    // Publish via link()+unlink(), NOT rename(): link fails with EEXIST if the
-    // final path already exists, so two processes materializing the same id
-    // concurrently cannot clobber each other. rename() would silently overwrite.
+    // Publication must reject EEXIST atomically: a plain rename could overwrite
+    // a concurrent materialization by another process.
     let linked = false
     try {
-      await link(tmp, finalPath)
+      await (this.publishExclusive ?? link)(tmp, finalPath)
       linked = true
     } finally {
       // Remove an unpublished temp on failure. After publication, defer cleanup
@@ -1307,8 +1311,8 @@ class JsonlSessionPersistence extends SessionPersistence {
       /* v8 ignore next -- link failure is the TOCTOU/IO race guarded above; not reachable in test */
       if (!linked) await rm(tmp, { force: true })
     }
-    // link() succeeded — the log is published. fsync the directory so the new
-    // entry survives a power loss: the new link is not crash-durable until the
+    // Publication succeeded. fsync the directory so the new
+    // entry survives a power loss: it is not crash-durable until the
     // parent directory's metadata is synced.
     await this.syncDirPosix(dir)
     // Best-effort temp cleanup: the log is already published and durable, so a
@@ -1336,10 +1340,16 @@ class JsonlSessionPersistence extends SessionPersistence {
     await this.rejectExistingLog(finalPath, id)
     const tmp = await this.writeSyncedTempFile(finalPath, content)
     try {
-      await publishNewFileWin32(tmp, finalPath)
+      if (this.publishExclusive === undefined) await publishNewFileWin32(tmp, finalPath)
+      else await this.publishExclusive(tmp, finalPath)
     } catch (error) {
       await rm(tmp, { force: true })
       throw error
+    }
+    if (this.publishExclusive !== undefined) {
+      try { await rm(tmp, { force: true }) } catch {
+        // A committed target owns the bytes; redundant source cleanup cannot reject the append.
+      }
     }
   }
   /* v8 ignore stop */
@@ -1820,6 +1830,34 @@ export const Config: z<Config> = z.object({
  * @returns resolves when the service is ready.
  */
 export async function apply(ctx: Context, config: Config): Promise<void> {
+  return mount(ctx, config)
+}
+
+/**
+ * Publish complete, file-synced bytes atomically without replacing a target.
+ * Keep the source for caller-owned cleanup; reject collisions with EEXIST.
+ * On Windows the host must also provide write-through namespace publication;
+ * on POSIX the backend syncs the parent directory after this operation.
+ * @param source - complete, synced staging file owned by the backend.
+ * @param target - absent current-generation log path.
+ * @returns resolves after publication with the platform's guarantees described above.
+ */
+export type JsonlFilePublisher = (source: string, target: string) => Promise<void>
+
+/**
+ * Mount the original backend with one host-owned exclusive publication operation.
+ * Applies to first materialization and generation migration; leases, verification,
+ * append, durability and disposal retain the ordinary plugin behavior.
+ * @param ctx - the owning plugin context.
+ * @param config - the same accepted storage configuration as the ordinary plugin.
+ * @param publish - atomic, non-replacing publication that preserves its synced source.
+ * @returns resolves when the service is ready; publication failures remain storage errors.
+ */
+export async function applyWithPublication(ctx: Context, config: Config, publish: JsonlFilePublisher): Promise<void> {
+  return mount(ctx, config, publish)
+}
+
+async function mount(ctx: Context, config: Config, publish?: JsonlFilePublisher): Promise<void> {
   let service!: Fiber
   // Keep this generator synchronous so thenable disposers are registered as functions, not awaited.
   ctx.effect(function* () {
@@ -1828,7 +1866,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     service = ctx.plugin({
       name: 'session-persistence-jsonl-service',
       apply(serviceCtx: Context) {
-        new JsonlSessionPersistence(serviceCtx, config, tracker)
+        new JsonlSessionPersistence(serviceCtx, config, tracker, publish)
       },
     })
     yield service.dispose

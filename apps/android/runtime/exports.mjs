@@ -1,7 +1,8 @@
-import { link, mkdir, open, realpath, stat, unlink } from 'node:fs/promises'
+import { mkdir, open, realpath, stat, unlink } from 'node:fs/promises'
 import { isAbsolute, join } from 'node:path'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
+import { publishImmutableFile } from './immutable-file-publisher.mjs'
 import {
   DEFAULT_SESSION_LOG_COMPRESSION_LEVEL,
   flushLiveSessionLog,
@@ -70,8 +71,8 @@ export class AppExports {
       record.partialOwned = true
       await pipeline(Readable.fromWeb(archive), target.createWriteStream(), { signal })
       signal.throwIfAborted()
-      // link is exclusive: a collision never overwrites another producer's completed artifact.
-      await link(record.partial, record.complete)
+      // Exclusive publication preserves another producer's completed artifact.
+      await publishImmutableFile(record.partial, record.complete)
       record.completeOwned = true
       await unlink(record.partial)
       record.partialOwned = false

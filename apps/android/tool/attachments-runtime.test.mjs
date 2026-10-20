@@ -62,6 +62,20 @@ test('native selected bytes produce a real DSH receipt and unchanged persistent 
   })
 })
 
+test('storage failures log stable cause codes without selected names, paths or error payloads', async t => {
+  const diagnostics = []
+  t.mock.method(console, 'error', (...args) => diagnostics.push(args.join(' ')))
+  await fixture(async ({ bridge, selected, uploads, root }) => {
+    const id = await selected(Buffer.from('synthetic private content'), { name: 'private-fixture.txt' })
+    const cause = Object.assign(new Error('PRIVATE_ERROR_PAYLOAD'), { code: 'EACCES', path: '/private/fixture' })
+    const failure = Object.assign(new Error('PRIVATE_OUTER_MESSAGE', { cause }), { code: 'ATTACHMENT_WRITE_FAILED' })
+    uploads.uploadStream = async () => { throw failure }
+    await assert.rejects(bridge.prepare({ sessionId: 'diagnostics', id }), error => error === failure)
+    assert.deepEqual(diagnostics, ['Pocket attachment storage failure: ATTACHMENT_WRITE_FAILED > EACCES'])
+    assert.ok((await readFile(join(root, `${id}.bin`))).length > 0)
+  })
+})
+
 test('concurrent prepare deduplicates; failed upload preserves selection and retries real receipt creation', async () => {
   await fixture(async ({ bridge, selected, uploads, root }) => {
     const id = await selected(Buffer.from('retry'))

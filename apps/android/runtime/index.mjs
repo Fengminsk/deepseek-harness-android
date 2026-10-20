@@ -59,7 +59,8 @@ export function apply(ctx, config) {
   // The manager applies the same protection to App, Web, tools, and bundle overlays.
   const requiredEntries = new Set(['android-runtime', 'credentials', 'authorization', 'deepseek-account',
     'web-startup', 'webserver', 'web-runtime', 'connection', 'session-controller',
-    'session-persistence-jsonl', 'settings', 'file-upload', 'working-directory', 'agent-loop'])
+    'session-persistence-jsonl', 'android-session-persistence', 'settings', 'file-upload',
+    'attachment-local', 'android-attachment-store', 'working-directory', 'agent-loop'])
   const loaderEntries = [...ctx.get('loader').entries()]
   ctx.pluginManager.protectModules(loaderEntries.filter(entry => requiredEntries.has(entry.options.id))
     .map(entry => entry.options.name))

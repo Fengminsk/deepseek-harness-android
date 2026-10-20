@@ -192,6 +192,7 @@ interface JsonlGenerationInternals {
   readonly randomToken: () => string
   readonly platform: NodeJS.Platform
   readonly publishNewWin32: typeof publishNewFileWin32
+  readonly publishExclusive?: (source: string, target: string) => Promise<void>
   readonly barrier: (phase: GenerationBarrierPhase, attempt: number) => void | Promise<void>
 }
 
@@ -819,6 +820,16 @@ async function publishCurrentExclusive(
   currentPath: string,
   internals: JsonlGenerationInternals,
 ): Promise<boolean> {
+  if (internals.publishExclusive !== undefined) {
+    try {
+      await internals.publishExclusive(staged, currentPath)
+    } catch (error) {
+      if (isEEXIST(error)) return false
+      throw error
+    }
+    await syncDirectory(dirname(currentPath), internals)
+    return true
+  }
   if (internals.platform === 'win32') {
     try {
       await internals.publishNewWin32(staged, currentPath)
@@ -909,7 +920,7 @@ async function publishPreparedMigration(
       throw new JsonlGenerationSourceChangedError(sourcePath)
     }
     const published = await publishCurrentExclusive(staged.path, currentPath, internals)
-    if (published && internals.platform === 'win32') staged = { ...staged, path: '' }
+    if (published && internals.platform === 'win32' && internals.publishExclusive === undefined) staged = { ...staged, path: '' }
     await internals.barrier('after-publication', 1)
     let currentIdentity: JsonlPhysicalIdentity
     if (published) {
@@ -1002,11 +1013,15 @@ async function prepareMigration(
 /**
  * Decode and migrate one historical generation without writing its successor.
  * @param options - resolved source, current target, format adapter, and load cancellation.
+ * @param publishExclusive - optional host operation: preserve source, atomically publish synced complete bytes,
+ * never replace targets, and reject collisions with EEXIST.
  * @returns the current artifact and an idempotent explicit publication operation.
  */
 export function prepareJsonlMigration(
   options: PrepareJsonlMigrationOptions,
+  publishExclusive?: (source: string, target: string) => Promise<void>,
 ): Promise<PreparedJsonlMigration> {
+  if (publishExclusive !== undefined) return createJsonlGenerationRuntime({ publishExclusive }).prepare(options)
   return defaultGenerationRuntime.prepare(options)
 }
 

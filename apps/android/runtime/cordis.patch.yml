@@ -20,6 +20,8 @@
     trustedHosts: []
 - id: credentials
   disabled: true
+- id: attachment-local
+  disabled: true
 - id: subprocess
   disabled: false
 - id: bash-sandbox
@@ -48,9 +50,7 @@
 - id: ptc-runtime
   disabled: true
 - id: session-persistence-jsonl
-  config:
-    root: !!js dshHomePath('sessions')
-    compression: none
+  disabled: true
 - id: agent-preset-registry
   config:
     default: android
@@ -63,6 +63,13 @@
 - id: preset-cordis
   disabled: true
 - insert:
+    - id: android-attachment-store
+      name: ./android-attachment-store.mjs
+    - id: android-session-persistence
+      name: ./android-session-persistence.mjs
+      config:
+        root: !!js dshHomePath('sessions')
+        compression: none
     - id: android-filesystem
       name: '@deepseek-ai/dsh-fs-local'
     - id: android-directory-picker

@@ -1,6 +1,7 @@
 /** Local durable attachment backend rooted below `DSH_HOME`. @module @deepseek-ai/dsh-attachment-local */
 
 import { join } from 'node:path'
+import { link } from 'node:fs/promises'
 import { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { AttachmentStore } from '@deepseek-ai/dsh-attachment'
@@ -19,6 +20,7 @@ import { dshCachePath, resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import type { NormalizationPolicy } from './normalization.ts'
 import { CompressionLimiter, compressionFailure } from './compression-limiter.ts'
 import { commitPreparedImageFile, normalizedImagePath, prepareImageFile, readImageFile, validateImageFile } from './store.ts'
+import type { ImmutableFilePublisher } from './store.ts'
 import {
   readFileStreamVerbatim, saveFileStreamVerbatim, saveFileVerbatim, storedFilePath,
 } from './file-store.ts'
@@ -27,7 +29,7 @@ import { readRequestImageFile, requestImageVariantId } from './request-image.ts'
 export { canPassThroughNormalization, normalizeImage } from './normalization.ts'
 export type { NormalizedImage, NormalizationPolicy } from './normalization.ts'
 export { commitPreparedImageFile, establishAttachmentHome, prepareImageFile, readImageFile, saveImageFile, validateImageFile } from './store.ts'
-export type { PreparedImageFile } from './store.ts'
+export type { ImmutableFilePublisher, PreparedImageFile } from './store.ts'
 export { readRequestImageFile, requestImageVariantId } from './request-image.ts'
 
 /** Default maximum encoded bytes for one submitted image; oversized sources are refused, not shrunk. */
@@ -169,6 +171,12 @@ export class LocalAttachmentStore extends AttachmentStore {
   private readonly cacheRoot: string
   private readonly compression: CompressionLimiter
   private readonly requestInflight = new Map<string, SharedRequest<RequestImageAttachment>>()
+  /**
+   * Host override for complete, file-synced, atomic and non-replacing publication.
+   * The source remains owned by the caller; existing targets reject with EEXIST.
+   * Default hosts publish hard links. This is not a remote or configuration API.
+   */
+  protected publishImmutableFile: ImmutableFilePublisher = link
 
   constructor(ctx: Context, config: Config) {
     super(ctx)
@@ -210,7 +218,7 @@ export class LocalAttachmentStore extends AttachmentStore {
       () => prepareImageFile(input, this.imageLimits, this.normalizationPolicy),
     )))
     const refs: ImageAttachmentRef[] = []
-    for (const image of prepared) refs.push(await commitPreparedImageFile(this.root, image))
+    for (const image of prepared) refs.push(await commitPreparedImageFile(this.root, image, this.publishImmutableFile))
     return refs
   }
 
@@ -218,7 +226,7 @@ export class LocalAttachmentStore extends AttachmentStore {
     const prepared = await this.compression.run(
       () => prepareImageFile(input, this.imageLimits, this.normalizationPolicy),
     )
-    return commitPreparedImageFile(this.root, prepared)
+    return commitPreparedImageFile(this.root, prepared, this.publishImmutableFile)
   }
 
   async readImage(ref: ImageAttachmentRef, signal?: AbortSignal): Promise<StoredImageAttachment> {
@@ -230,11 +238,11 @@ export class LocalAttachmentStore extends AttachmentStore {
   }
 
   override async saveFile(input: SaveFileAttachment): Promise<FileAttachmentRef> {
-    return saveFileVerbatim(this.root, input)
+    return saveFileVerbatim(this.root, input, this.publishImmutableFile)
   }
 
   override async saveFileStream(input: SaveFileStreamAttachment): Promise<FileAttachmentRef> {
-    return saveFileStreamVerbatim(this.root, input)
+    return saveFileStreamVerbatim(this.root, input, this.publishImmutableFile)
   }
 
   override readFileStream(ref: FileAttachmentRef, signal?: AbortSignal): AsyncIterable<Uint8Array> {

@@ -11,6 +11,8 @@ import { SearchNativeFixture, verifyDocumentSearch } from './smoke-document-sear
 
 const root = resolve(import.meta.dirname, '../../..')
 const home = await mkdtemp(join(root, '.cache/android/interactions-'))
+const copiedPublication = process.argv.includes('--copied-publication')
+const publicationReport = join(home, 'publication-report.json')
 await mkdir(join(home, 'workspace'))
 await mkdir(join(home, 'native-attachment-cache'))
 const modelSteps = []
@@ -37,9 +39,11 @@ const model = createServer((request, response) => {
 model.listen(0, '127.0.0.1')
 await once(model, 'listening')
 const child = spawn(process.execPath, ['--import', new URL('./interaction-smoke-loader.mjs', import.meta.url).href,
+  ...copiedPublication ? ['--import', new URL('./copied-publication-smoke-loader.mjs', import.meta.url).href] : [],
   join(root, '.cache/android/runtime-bundle/bootstrap.mjs')], {
   cwd: join(home, 'workspace'), env: { ...process.env, DSH_HOME: home,
-    DSH_TELEMETRY_DISABLED: '1', DEEPSEEK_BASE_URL: `http://127.0.0.1:${model.address().port}` }, stdio: ['pipe', 'pipe', 'pipe'],
+    DSH_TELEMETRY_DISABLED: '1', DEEPSEEK_BASE_URL: `http://127.0.0.1:${model.address().port}`,
+    ...copiedPublication ? { POCKET_SMOKE_PUBLICATION_REPORT: publicationReport } : {} }, stdio: ['pipe', 'pipe', 'pipe'],
 })
 const exited = once(child, 'exit')
 const records = new Map(), pending = new Map(), notices = [], waiters = []
@@ -107,6 +111,18 @@ try {
     assert.ok(inventory.entries.length > 0)
     const plugins = await request('api.call', { namespace: 'pluginManager', method: 'listPlugins', args: {} })
     assert.ok(Array.isArray(plugins))
+    for (const name of ['attachment-local', 'session-persistence-jsonl']) {
+      const matches = plugins.filter(item => item.moduleName === `@deepseek-ai/dsh-${name}`)
+      assert.equal(matches.length, 1)
+      assert.equal(matches[0].enabled, false)
+      assert.equal(matches[0].readOnlyReason, 'management-required')
+    }
+    for (const name of ['android-attachment-store', 'android-session-persistence']) {
+      const matches = plugins.filter(item => item.moduleName.endsWith(`/${name}.mjs`))
+      assert.equal(matches.length, 1)
+      assert.equal(matches[0].enabled, true)
+      assert.equal(matches[0].readOnlyReason, 'management-required')
+    }
     for (const moduleName of ['@deepseek-ai/dsh-web-app/startup', '@minnnng/dsh-android-runtime']) {
       const plugin = plugins.find(item => item.moduleName === moduleName)
       assert.equal(plugin?.readOnlyReason, 'management-required')
@@ -352,6 +368,11 @@ try {
     } finally { clearTimeout(cancelDeadline) }
     checkpoint('cancelled turn complete')
     assert.equal((await request('interactions.list')).requests.some(item => item.id === cancelled.id), false)
+    if (copiedPublication) {
+      const copies = JSON.parse(await readFile(publicationReport, 'utf8'))
+      for (const kind of ['attachments', 'sessions', 'exports']) assert.ok(copies[kind] > 0, `Missing copied ${kind} publication`)
+      console.log(JSON.stringify({ copiedPublication: copies }))
+    }
     console.log(JSON.stringify({ questionTool: true, invalidAnswerPreserved: true, textAnswer: true,
       originalQuestionEditHold: true, originalTimeoutContinues: true, continuedAnswer: true,
       actualApprovalAudit: true, sharedWebRequestId: true, appAnswerCancelsWeb: true,

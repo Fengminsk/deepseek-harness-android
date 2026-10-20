@@ -90,6 +90,13 @@ export class AppAttachments {
         bytes: record.receipt.file.bytes, ...record.receipt }
     } catch (failure) {
       record.state = 'error'
+      const codes = []
+      for (let cause = failure, depth = 0; cause && depth < 6; cause = cause.cause, depth++) {
+        if (typeof cause.code === 'string' && /^[A-Z][A-Z_0-9]{0,63}$/.test(cause.code)) codes.push(cause.code)
+        if (cause.cause === cause) break
+      }
+      // Log only stable error codes; selected names, content, paths and tokens stay private.
+      if (codes.length) console.error(`Pocket attachment storage failure: ${codes.join(' > ')}`)
       throw failure
     }
   }

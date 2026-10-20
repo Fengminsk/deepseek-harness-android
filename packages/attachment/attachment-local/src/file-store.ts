@@ -10,6 +10,7 @@ import type {
 import {
   publishImmutableAlias, publishImmutableObject, publishImmutableObjectStream,
 } from './store.ts'
+import type { ImmutableFilePublisher } from './store.ts'
 
 const FILE_ID_PATTERN = /^sha256:([a-f0-9]{64})$/
 const WINDOWS_DEVICE_NAME = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/iu
@@ -86,11 +87,13 @@ function storedFileObjectPath(root: string, sha256: string): string {
  * Commit one file byte-for-byte below a versioned attachment root.
  * @param root - absolute `DSH_HOME/attachments/v1` root.
  * @param input - exact bytes and optional display name.
+ * @param publish - host atomic, non-replacing publication; omitted uses a hard link.
  * @returns the durable content-addressed file reference.
  */
 export async function saveFileVerbatim(
   root: string,
   input: SaveFileAttachment,
+  publish?: ImmutableFilePublisher,
 ): Promise<FileAttachmentRef> {
   const sha256 = createHash('sha256').update(input.data).digest('hex')
   const ref: FileAttachmentRef = {
@@ -99,8 +102,8 @@ export async function saveFileVerbatim(
     bytes: input.data.byteLength,
   }
   const objectPath = storedFileObjectPath(root, sha256)
-  await publishImmutableObject(root, objectPath, input.data, sha256)
-  await publishImmutableAlias(root, objectPath, storedFilePath(root, ref), sha256)
+  await publishImmutableObject(root, objectPath, input.data, sha256, publish)
+  await publishImmutableAlias(root, objectPath, storedFilePath(root, ref), sha256, publish)
   return ref
 }
 
@@ -108,11 +111,13 @@ export async function saveFileVerbatim(
  * Commit one file byte-for-byte from bounded chunks below a versioned attachment root.
  * @param root - absolute `DSH_HOME/attachments/v1` root.
  * @param input - ordered exact bytes, optional cancellation, and display name.
+ * @param publish - host atomic, non-replacing publication; omitted uses a hard link.
  * @returns the durable content-addressed file reference.
  */
 export async function saveFileStreamVerbatim(
   root: string,
   input: SaveFileStreamAttachment,
+  publish?: ImmutableFilePublisher,
 ): Promise<FileAttachmentRef> {
   const name = fileLeafName(input.name)
   const stored = await publishImmutableObjectStream(
@@ -120,6 +125,7 @@ export async function saveFileStreamVerbatim(
     input.data,
     sha256 => storedFileObjectPath(root, sha256),
     input.signal,
+    publish,
   )
   const ref: FileAttachmentRef = {
     attachmentId: AttachmentId(`sha256:${stored.sha256}`),
@@ -132,6 +138,7 @@ export async function saveFileStreamVerbatim(
     storedFileObjectPath(root, stored.sha256),
     storedFilePath(root, ref),
     stored.sha256,
+    publish,
   )
   input.signal?.throwIfAborted()
   return ref
