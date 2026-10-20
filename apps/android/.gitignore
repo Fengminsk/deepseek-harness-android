@@ -1,0 +1,11 @@
+/build/
+/android/app/src/main/jniLibs/
+/android/app/src/main/assets/runtime/
+/android/.cxx/
+/android/app/.cxx/
+*.iml
+.dart_tool/
+.flutter-plugins-dependencies
+.metadata
+!/lib/
+!/lib/**

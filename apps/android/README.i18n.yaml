@@ -1,0 +1,25 @@
+# Bilingual-pair consistency record for README.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write apps/android/README.md
+/pocket-harness-for-android:
+  en: 9c59bfd2608ccaf7
+  zh: 846c564243982c35
+/pocket-harness-for-android/summary:
+  en: ac04a6c971b43c0d
+  zh: a714c64adfb5e7b4
+/pocket-harness-for-android/table-of-contents:
+  en: b78ee98eb3325af3
+  zh: 8aba8ae016d10899
+/pocket-harness-for-android/build-the-preview:
+  en: d4fc8a2669fc3243
+  zh: b9078c84fb2eed33
+/pocket-harness-for-android/runtime-and-storage:
+  en: 22bd200a2f9edabf
+  zh: 69fa8c036e4c4b88
+/pocket-harness-for-android/interface-and-themes:
+  en: 5874382e56462991
+  zh: 8091f13b7014a8ae
+/pocket-harness-for-android/verification-limits:
+  en: 7ad0ceb0870574fe
+  zh: ea3fabf3cf3d2d8a

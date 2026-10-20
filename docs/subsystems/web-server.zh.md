@@ -154,6 +154,12 @@ authorizeIndex(request: ConnectionIndexRequest, response: ConnectionIndexRespons
  * @returns tokenized URL for initial login; a mount proxy strips its prefix before {@link authorizeIndex}.
  */
 authenticatedUrl(baseUrl: string): string
+
+/**
+ * Revoke issued browser tokens and cookies after closing the listener's sockets.
+ * @returns completion after disposable API peers have been released.
+ */
+rotateBrowserCredentials(): Promise<void>
 ```
 
 Types: [Principal](typert.zh.md)

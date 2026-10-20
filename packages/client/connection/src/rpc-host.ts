@@ -200,6 +200,18 @@ export class HostConnectionService extends Service implements HostConnectionHand
   }
 
   /**
+   * Revoke browser credentials without disposing Agent services or RPC registrations.
+   * The caller must close its listener and existing sockets before rotating.
+   * @returns completion after disposable API peers have been released.
+   */
+  async rotateBrowserCredentials(): Promise<void> {
+    this.browserAuth.rotate()
+    const peers = Array.from(this.peers.values(), record => record.peer)
+    this.peers.clear()
+    await Promise.all(peers.map(peer => peer.dispose()))
+  }
+
+  /**
    * Compose one shared-channel Fetch handler from exact routes and its interceptor.
    * @param channel - shared channel mounted by Connection.
    * @returns Fetch handler that selects one owner or returns 404.

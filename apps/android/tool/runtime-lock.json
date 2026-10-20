@@ -1,0 +1,32 @@
+{
+  "flutter": {
+    "version": "3.47.7",
+    "repository": "https://github.com/flutter/flutter.git",
+    "revision": "abaf9c523780a608bd46686fd5e53740a07077f8"
+  },
+  "node": {
+    "version": "24.22.0",
+    "mobileVersion": "24.22.0-0",
+    "channel": "prerelease",
+    "repository": "https://github.com/fogtape/nodejs-mobile",
+    "url": "https://github.com/fogtape/nodejs-mobile/releases/download/v24.22.0-0/nodejs-mobile-android-24.22.0-0.zip",
+    "sha256": "9b068f4ad4c755f26c04b31883c536f037a4831e6575847a699cdf5fa72dde25"
+  },
+  "flclash": {
+    "referenceVersion": "v0.9.1",
+    "repository": "https://github.com/chen08209/FlClash",
+    "componentPackage": "material_ui",
+    "revision": "8d4f9744948751f1273fe871e1d05276fac09b0e",
+    "sourceManifest": "../licenses/flclash-source.json"
+  },
+  "requireBuiltin": {
+    "version": "0.1.9",
+    "repository": "https://github.com/deepseek-ai/dsh-node-addon-require-builtin.git",
+    "revision": "a58d3599a2e551d7d706d1ff796c9fd4bbaff63c"
+  },
+  "nodeAddonApi": {
+    "version": "8.9.0",
+    "url": "https://registry.npmjs.org/node-addon-api/-/node-addon-api-8.9.0.tgz",
+    "sha256": "19b87e2ce3a77fec0121ac97d7db088aae28aacfff481adab50d5f61b70e68f4"
+  }
+}

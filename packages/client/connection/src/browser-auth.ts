@@ -204,12 +204,12 @@ async function initializeSecret(credentials: CredentialProvider): Promise<Buffer
  * and retains it for synchronous request authentication.
  */
 export class BrowserAuth {
-  private readonly launchToken: string
+  private launchToken: string
   private readonly maxAgeMilliseconds: number
 
   private constructor(
-    processOwner: object,
-    private readonly secret: Buffer,
+    private readonly processOwner: object,
+    private secret: Buffer,
     maxAgeDays: number,
   ) {
     this.launchToken = processLaunchToken(processOwner)
@@ -245,6 +245,13 @@ export class BrowserAuth {
     const url = new URL(baseUrl)
     url.searchParams.set(TOKEN_QUERY, this.launchToken)
     return url.href
+  }
+
+  /** Revoke every issued token and cookie for an explicitly restarted browser listener. */
+  rotate(): void {
+    this.launchToken = encodeBase64Url(randomBytes(SECRET_BYTES))
+    this.secret = randomBytes(SECRET_BYTES)
+    PROCESS_LAUNCH_TOKENS.set(this.processOwner, this.launchToken)
   }
 
   /**

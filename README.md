@@ -1,77 +1,46 @@
-# DSH for Android · 安卓版 DSH
+# Pocket Harness
 
 English | [中文](README.zh.md)
 
 ## Summary
 
-DSH for Android is an Android adaptation of DeepSeek Harness for a personal agent on a rooted phone. The product goal is to connect conversations with local shell commands, root execution, files, and ADB device operations.
+Pocket Harness brings an on-device Agent to Android, with conversations, authorized files, ordinary shell commands and an optional original Web interface. Model inference uses a configured online API; the phone does not need root, Termux or a computer to host the packaged runtime.
 
-This repository is at the initialization stage. It contains the existing Node.js/TypeScript harness; it does not yet contain an Android application, an APK, or verified Android root and ADB integration.
+This branch contains a development preview, not the completed Android migration. The Flutter interface and theme settings are available; runtime integration, complete native management pages and joint App/Web acceptance remain in progress.
 
 ## Table of Contents
 
 - [Repository](#repository-home)
+- [Current preview](#current-preview)
 - [Development](#development-guide)
 - [License](#license-info)
-- [Dev Note: Android product brief](#android-product-brief)
 
 <a id="repository-home"></a>
-
 ## Repository
 
-The primary repository is [DSH for Android on Gitee](https://gitee.com/minnnng/deepseek-harness-android). The `android` branch owns Android development; `master` retains the imported baseline. The local `origin` remote points to Gitee, and `github` retains the source repository for comparison and fetching updates.
+The primary repository is [Pocket Harness on Gitee](https://gitee.com/minnnng/deepseek-harness-android), on the `android` branch. Internal DSH package names and the Android application ID remain stable across the product rename.
 
-The README describes the Android product. Existing package names and runtime versions still belong to the imported harness and do not identify an Android release.
+<a id="current-preview"></a>
+## Current preview
+
+The App provides a conversation home, history sidebar, file browser, model credential form, advanced configuration editor, Web access controls and diagnostics. **Settings → Appearance and theme** independently controls light/dark/system mode, theme color, system colors, color style, pure black backgrounds, glass quality, text size and reduced motion. Theme choices are stored locally and do not require the Agent service or a browser.
+
+The interface incorporates pinned liquid glass, typography, shape, color and page transition components. The App retains the original Web frontend as an optional interface. The product requires Web access to be off on first installation and controlled from the App; enabling Web must not create a second Agent runtime.
+
+App and Web share the core session controller. Native schema forms and the advanced editor preserve credentials and detect concurrent edits. Account authorization, complete management coverage, import/export and the full device acceptance matrix remain unfinished. Root, device ADB control and offline model inference are outside this preview. Do not treat a successful APK build as evidence that these operations have passed on a phone.
 
 <a id="run"></a>
 
 <a id="run-from-source"></a>
 
 <a id="development-guide"></a>
-
 ## Development
 
-The repository currently contains the following development areas:
+The Android application and its packaging instructions are in [apps/android](apps/android/README.md). The existing Agent core remains under `packages/`; the architecture and repository rules are in [docs/architecture.md](docs/architecture.md) and [AGENTS.md](AGENTS.md).
 
-| Path | Purpose |
-| --- | --- |
-| `apps/` | Existing CLI, Web, and desktop applications |
-| `packages/` | Agent runtime, model access, sessions, shell execution, and other plugins |
-| `native/` | Native runtime support |
-| `docs/` | Runtime architecture and development documentation |
-
-Read the [development guide](docs/development.md), [architecture](docs/architecture.md), and [repository instructions](AGENTS.md) when working on the existing harness. These documents describe the existing runtime, not an Android installation procedure.
-
-Android runtime packaging, background execution, and the native command bridge require implementation and device validation before an APK can be offered. No Android build or installation command is available in this branch yet.
+Build outputs, API keys, credentials, device screenshots and personal sessions stay outside version control. Preview APKs use the development signing key and are not production releases.
 
 <a id="license-info"></a>
-
 ## License
 
-The imported harness retains its [MIT license](LICENSE). Existing dependency terms are recorded in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
-
-No FlClash source has been copied into this branch. Its [GPL-3.0 license](https://github.com/chen08209/FlClash/blob/main/LICENSE) must be accounted for before incorporating its components and distributing the Android application; the current MIT license does not cover that future integration.
-
-<a id="android-product-brief"></a>
-
-## Dev Note: Android product brief
-
-The following is the development brief, not a list of implemented or device-tested features.
-
-### Local agent and devices
-
-- Run the agent and its tool execution on the phone. Local execution does not imply offline model inference; model API access remains a separate configuration.
-- Support ordinary shell and root commands through a native bridge, with command output, exit status, cancellation, and a persistent execution history.
-- Support ADB operations on explicitly selected, connected, and authorized devices. USB and wireless transport compatibility must be verified on real hardware; root access on the host phone does not grant access to every target device.
-- Keep workspaces, conversations, and file operations accessible from the application. Keep credentials, signing keys, ADB private keys, and personal session data out of Git.
-
-### Interface and navigation
-
-- Use Flutter as the intended Android UI foundation. Evaluate the latest released [FlClash](https://github.com/chen08209/FlClash) design and reusable components before implementation, then pin the selected source version and record any imported components and their licenses.
-- Use conversations as the main entry point, with a history sidebar, new conversation action, a persistent composer, streaming replies, and visible tool execution results, following the familiar ChatGPT mobile interaction pattern.
-- Provide dedicated pages for workspaces and files, device connections, and settings. Settings cover models, API access, appearance, and execution permissions.
-- Keep execution target and privilege level visible so that phone-local shell, phone-local root, and a selected ADB device are distinguishable.
-
-### First Android milestone
-
-The first device-tested milestone is one complete flow: open a conversation, select a model and execution target, run a local command, display its output and exit status, and reopen the saved conversation. Root execution and authorized ADB connections follow with their own device checks.
+The Android application is distributed under [GPL-3.0](apps/android/LICENSE). Component source versions and license files are recorded in [the Android component manifest](apps/android/licenses/flclash-source.json). The imported core retains its [MIT license](LICENSE); other dependency terms remain in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

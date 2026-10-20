@@ -160,6 +160,25 @@ describe('API credentials', () => {
 })
 
 describe('BrowserAuth', () => {
+  it('revokes both links and signed cookies when the listener owner rotates access', async () => {
+    const store = new RecordCredentials()
+    const owner = {}
+    const auth = await createAuth(store, 30, owner)
+    const previous = exchange(auth)
+    auth.rotate()
+    const oldLink = new URL(previous.launchUrl)
+    const denied = response()
+    expect(auth.authorizeIndex(request(oldLink.pathname + oldLink.search), denied.value)).toBe(false)
+    expect(denied.state.status).toBe(401)
+    expect(auth.isAuthenticated(request('/', '127.0.0.1:3080', { cookie: previous.cookie }))).toBe(false)
+    const current = exchange(auth)
+    expect(current.launchUrl).not.toBe(previous.launchUrl)
+    expect(auth.isAuthenticated(request('/', '127.0.0.1:3080', { cookie: current.cookie }))).toBe(true)
+    const reloaded = await createAuth(store, 30, owner)
+    expect(reloaded.authenticatedUrl('http://127.0.0.1:3080/')).toBe(current.launchUrl)
+    expect(reloaded.isAuthenticated(request('/', '127.0.0.1:3080', { cookie: current.cookie }))).toBe(false)
+  })
+
   it('mints one process token and a persistent authority-bound cookie', async () => {
     const store = new RecordCredentials()
     const processOwner = {}

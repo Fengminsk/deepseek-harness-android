@@ -1,0 +1,240 @@
+import 'dart:async';
+
+import 'package:dsh_android/appearance.dart';
+import 'package:dsh_android/main.dart';
+import 'package:dsh_android/runtime.dart';
+import 'package:dsh_android/ui.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:material_ui/material_ui.dart';
+
+class _ReadyRuntime extends RuntimeController {
+  _ReadyRuntime() {
+    phase = 'ready';
+  }
+
+  @override
+  Future<void> openSession(String id) async {}
+}
+
+class _ConversationRuntime extends _ReadyRuntime {
+  @override
+  String newSession() {
+    final id = super.newSession();
+    timelines[id] = List.generate(
+      20,
+      (index) => _message(index, '历史回复 $index'),
+    );
+    return id;
+  }
+
+  void appendReply(String text) {
+    final timeline = timelines.values.first;
+    timeline.add(_message(timeline.length, text));
+    notifyListeners();
+  }
+}
+
+class _PendingRuntime extends _ReadyRuntime {
+  final entered = Completer<void>();
+  final release = Completer<void>();
+
+  @override
+  Future<void> send(String id, String text) async {
+    entered.complete();
+    await release.future;
+  }
+}
+
+Json _message(int seq, String text) => {
+  'seq': seq,
+  'type': 'assistant/message',
+  'data': {
+    'message': {
+      'content': [
+        {'type': 'text', 'text': text},
+      ],
+    },
+  },
+};
+
+Widget _host(Widget child, {double scale = 1}) => MaterialApp(
+  theme: pocketTheme(Brightness.light),
+  builder: (context, child) => MediaQuery(
+    data: MediaQuery.of(
+      context,
+    ).copyWith(disableAnimations: true, textScaler: TextScaler.linear(scale)),
+    child: child!,
+  ),
+  home: child,
+);
+
+void _phone(WidgetTester tester, Size size) {
+  tester.view.physicalSize = size;
+  tester.view.devicePixelRatio = 1;
+  addTearDown(tester.view.resetPhysicalSize);
+  addTearDown(tester.view.resetDevicePixelRatio);
+  addTearDown(tester.view.resetViewInsets);
+}
+
+void main() {
+  testWidgets(
+    'drawer search stays usable with a phone keyboard and enlarged text',
+    (tester) async {
+      _phone(tester, const Size(360, 800));
+      final runtime = _ReadyRuntime();
+      addTearDown(runtime.dispose);
+      await tester.pumpWidget(_host(ChatPage(runtime: runtime), scale: 1.3));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('打开侧栏'));
+      await tester.pumpAndSettle();
+      final search = find.widgetWithText(TextField, '搜索对话');
+      await tester.tap(search);
+      tester.view.viewInsets = const FakeViewPadding(bottom: 320);
+      await tester.pumpAndSettle();
+      await tester.enterText(search, '文件');
+      expect(tester.takeException(), isNull);
+      expect(tester.getRect(search).bottom, lessThanOrEqualTo(480));
+      expect(find.text('文件'), findsOneWidget);
+    },
+  );
+
+  testWidgets('system 200 percent text keeps the theme preview readable', (
+    tester,
+  ) async {
+    _phone(tester, const Size(390, 844));
+    final appearance = AppearanceController();
+    addTearDown(appearance.dispose);
+    await tester.pumpWidget(
+      AppearanceScope(
+        controller: appearance,
+        child: _host(const AppearancePage(), scale: 2),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(find.text('按住右上按钮，拖动试试'), findsOneWidget);
+  });
+
+  testWidgets(
+    'a multiline composer stays above the keyboard and leaves send reachable',
+    (tester) async {
+      _phone(tester, const Size(360, 800));
+      final runtime = _ReadyRuntime();
+      addTearDown(runtime.dispose);
+      await tester.pumpWidget(_host(ChatPage(runtime: runtime), scale: 1.3));
+      await tester.pumpAndSettle();
+      final composer = find.widgetWithText(TextField, '交给 Pocket Harness');
+      await tester.enterText(composer, '第一行\n第二行\n第三行\n第四行\n第五行\n第六行');
+      tester.view.viewInsets = const FakeViewPadding(bottom: 320);
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      expect(tester.getRect(composer).bottom, lessThanOrEqualTo(480));
+      final send = find.byTooltip('发送');
+      expect(send.hitTestable(), findsOneWidget);
+      expect(tester.getRect(send).bottom, lessThanOrEqualTo(480));
+    },
+  );
+
+  testWidgets('new conversations isolate drafts and returning restores them', (
+    tester,
+  ) async {
+    _phone(tester, const Size(390, 844));
+    final runtime = _ReadyRuntime();
+    addTearDown(runtime.dispose);
+    await tester.pumpWidget(_host(ChatPage(runtime: runtime)));
+    await tester.pumpAndSettle();
+    final originalId = runtime.timelines.keys.single;
+    runtime.sessions = [
+      {
+        'header': {'id': originalId, 'title': '原对话'},
+      },
+    ];
+    final composer = find.widgetWithText(TextField, '交给 Pocket Harness');
+    await tester.enterText(composer, '仅属于原对话的未发送草稿');
+    await tester.tap(find.byTooltip('新对话'));
+    await tester.pumpAndSettle();
+    expect(tester.widget<TextField>(composer).controller!.text, isEmpty);
+    await tester.enterText(composer, '新对话的草稿');
+    await tester.tap(find.byTooltip('打开侧栏'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('原对话'));
+    await tester.pumpAndSettle();
+    expect(tester.widget<TextField>(composer).controller!.text, '仅属于原对话的未发送草稿');
+  });
+
+  testWidgets('new replies follow the reader who is already at the bottom', (
+    tester,
+  ) async {
+    _phone(tester, const Size(390, 844));
+    final runtime = _ConversationRuntime();
+    addTearDown(runtime.dispose);
+    await tester.pumpWidget(_host(ChatPage(runtime: runtime)));
+    await tester.pumpAndSettle();
+    final list = find.byType(ListView);
+    final scrollable = tester.state<ScrollableState>(
+      find.descendant(of: list, matching: find.byType(Scrollable)).first,
+    );
+    scrollable.position.jumpTo(scrollable.position.maxScrollExtent);
+    await tester.pumpAndSettle();
+    runtime.appendReply('这条新回复应跟随已在底部的阅读位置。');
+    await tester.pumpAndSettle();
+    expect(
+      scrollable.position.maxScrollExtent - scrollable.position.pixels,
+      lessThanOrEqualTo(1),
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'an old admission cannot clear an identical draft in a new conversation',
+    (tester) async {
+      _phone(tester, const Size(390, 844));
+      final runtime = _PendingRuntime();
+      addTearDown(runtime.dispose);
+      await tester.pumpWidget(_host(ChatPage(runtime: runtime)));
+      await tester.pumpAndSettle();
+      final composer = find.widgetWithText(TextField, '交给 Pocket Harness');
+      await tester.enterText(composer, '两个对话中相同的文字');
+      await tester.tap(find.byTooltip('发送'));
+      await runtime.entered.future;
+      await tester.tap(find.byTooltip('新对话'));
+      await tester.pumpAndSettle();
+      await tester.enterText(composer, '两个对话中相同的文字');
+      runtime.release.complete();
+      await tester.pumpAndSettle();
+      expect(tester.widget<TextField>(composer).controller!.text, '两个对话中相同的文字');
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('new replies do not pull a reader away from older messages', (
+    tester,
+  ) async {
+    _phone(tester, const Size(390, 844));
+    final runtime = _ConversationRuntime();
+    addTearDown(runtime.dispose);
+    await tester.pumpWidget(_host(ChatPage(runtime: runtime)));
+    await tester.pumpAndSettle();
+    final scrollable = tester.state<ScrollableState>(
+      find
+          .descendant(
+            of: find.byType(ListView),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
+    scrollable.position.jumpTo(scrollable.position.maxScrollExtent);
+    await tester.pumpAndSettle();
+    await tester.drag(find.byType(ListView), const Offset(0, 400));
+    await tester.pumpAndSettle();
+    final readingPosition = scrollable.position.pixels;
+    expect(
+      scrollable.position.maxScrollExtent - readingPosition,
+      greaterThan(200),
+    );
+    runtime.appendReply('读者在查看旧消息时，不应自动跳走。');
+    await tester.pumpAndSettle();
+    expect(scrollable.position.pixels, closeTo(readingPosition, 1));
+    expect(tester.takeException(), isNull);
+  });
+}

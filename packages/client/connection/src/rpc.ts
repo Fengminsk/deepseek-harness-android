@@ -271,6 +271,12 @@ export interface HostConnectionHandle {
    * @returns tokenized URL for initial login; a mount proxy strips its prefix before {@link authorizeIndex}.
    */
   authenticatedUrl(baseUrl: string): string
+
+  /**
+   * Revoke issued browser tokens and cookies after closing the listener's sockets.
+   * @returns completion after disposable API peers have been released.
+   */
+  rotateBrowserCredentials(): Promise<void>
 }
 
 /** Transport-independent Fetch handler used by HTTP and worker carriers. */

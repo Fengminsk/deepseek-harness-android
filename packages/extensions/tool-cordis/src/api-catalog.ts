@@ -805,6 +805,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         parameters: [{ name: 'baseUrl', description: 'clean application URL whose authority and mount are preserved.' }],
         returns: 'tokenized URL for initial login; a mount proxy strips its prefix before {@link authorizeIndex}.',
       },
+      {
+        signature: 'rotateBrowserCredentials(): Promise<void>',
+        description: 'Revoke issued browser tokens and cookies after closing the listener\'s sockets.',
+        parameters: [],
+        returns: 'completion after disposable API peers have been released.',
+      },
     ],
   },
   {

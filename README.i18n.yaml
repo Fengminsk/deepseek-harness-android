@@ -2,33 +2,24 @@
 # section, a hash of its English and Chinese blocks outside code blocks and generated regions.
 # After editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write README.md
-/dsh-for-android-dsh:
-  en: a56fb58bc6c47968
-  zh: 87f8a23217bd5893
-/dsh-for-android-dsh/summary:
-  en: 2ec253a4796698f0
-  zh: 0cf5f71e5b5ad38e
-/dsh-for-android-dsh/table-of-contents:
-  en: 7240f954e4e8895d
-  zh: fe2cbb238857f1cd
-/dsh-for-android-dsh/repository:
-  en: 8f5ec6372c2e34ab
-  zh: d29528079d3866cc
-/dsh-for-android-dsh/development:
-  en: 672415708031efc7
-  zh: 8640f4b9f6198c85
-/dsh-for-android-dsh/license:
-  en: 0a5c8087111ac019
-  zh: 0e75421242c35c26
-/dsh-for-android-dsh/dev-note-android-product-brief:
-  en: 2d5f82b144086bbb
-  zh: 8ea789a3f2a4d91f
-/dsh-for-android-dsh/dev-note-android-product-brief/local-agent-and-devices:
-  en: e5cf69a9be8e27d0
-  zh: 09eba936b5583260
-/dsh-for-android-dsh/dev-note-android-product-brief/interface-and-navigation:
-  en: 9e157cca9d0da523
-  zh: 318eb86215d70d93
-/dsh-for-android-dsh/dev-note-android-product-brief/first-android-milestone:
-  en: cc1bebc38645d9c9
-  zh: be3cdaa3de8f7b2e
+/pocket-harness:
+  en: 11eca87e60064062
+  zh: e337df4d30cb535c
+/pocket-harness/summary:
+  en: 77395be4e2d619c1
+  zh: 929bdca27b0291b7
+/pocket-harness/table-of-contents:
+  en: c87a92b7d7abec2c
+  zh: ea8f4397beaee8ec
+/pocket-harness/repository:
+  en: 21eb92023b30f723
+  zh: c53d07e8cf42030e
+/pocket-harness/current-preview:
+  en: cd9df7e50ded8797
+  zh: da0fd5848c7b3f24
+/pocket-harness/development:
+  en: aecf535cc06ef7d6
+  zh: 308e9a0b4c219844
+/pocket-harness/license:
+  en: f811b3879dd3877d
+  zh: bf8029b7de1d77be

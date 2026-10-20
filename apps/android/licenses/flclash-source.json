@@ -1,0 +1,32 @@
+{
+  "project": "FlClash",
+  "repository": "https://github.com/chen08209/FlClash",
+  "revision": "8d4f9744948751f1273fe871e1d05276fac09b0e",
+  "tag": "v0.9.1",
+  "license": "GPL-3.0-only",
+  "files": [
+    "lib/ui/liquid_glass.dart",
+    "lib/ui/liquid_glass_capture.dart",
+    "lib/ui/shape.dart",
+    "lib/ui/typography.dart",
+    "lib/ui/color.dart",
+    "lib/ui/surface.dart",
+    "lib/ui/page_transition.dart",
+    "lib/ui/drag_back.dart",
+    "shaders/liquid_glass.frag",
+    "lib/ui/navigation_dock.dart (ElasticPress and spring/paint helpers)",
+    "lib/ui/button.dart (TonalButtonTheme and TonalButtonGroup)",
+    "lib/ui/segmented_control.dart",
+    "lib/ui/input.dart (FilledInputTheme)",
+    "lib/views/dashboard/widgets/card.dart (DashboardSwitch and mobile DashboardCard)",
+    "lib/views/dashboard/style.dart (DashboardShadows and mobile card metrics)"
+  ],
+  "changes": [
+    "Package imports point to the local component directory.",
+    "The BuildContext motion adapter uses this app's accessibility settings.",
+    "Constructor syntax follows the Dart 3.13 initializing-formals lint.",
+    "Standalone component extraction removes FlClash application-state and desktop dependencies; dashboard colors resolve to the same ColorScheme roles.",
+    "ElasticPress and segmented controls respect reduced motion; segmented height grows with text scale.",
+    "LiquidGlass exposes its existing analytic corner renderer through borderRadius so long composer panels avoid 64-ray outline interpolation artifacts."
+  ]
+}

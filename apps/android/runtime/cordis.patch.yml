@@ -1,0 +1,98 @@
+# The App owns the listener lifecycle; the original Web frontend roster stays intact.
+- id: web-startup
+  disabled: true
+- id: webserver
+  disabled: true
+- id: web-runtime
+  disabled: true
+- id: harness-dev-context
+  disabled: true
+- id: client-hmr
+  disabled: true
+# Android confines the application UID, not individual shell commands.
+- id: permission
+  disabled: true
+- id: ui-permission
+  disabled: true
+- id: connection
+  inject: []
+  config:
+    trustedHosts: []
+- id: credentials
+  disabled: true
+- id: subprocess
+  disabled: false
+- id: bash-sandbox
+  disabled: true
+- id: pwsh-sandbox
+  disabled: true
+- id: terminal-controller
+  disabled: true
+- id: open-in-app
+  disabled: true
+- id: ui-open-in-app
+  disabled: true
+- id: office-to-pdf
+  disabled: true
+- id: directory-picker
+  disabled: true
+- id: sandbox-policy
+  config:
+    mode: danger-full-access
+    workspaceRoot: !!js process.cwd()
+- id: approval
+  config:
+    policy: never
+- id: fs-sandbox
+  disabled: true
+- id: ptc-runtime
+  disabled: true
+- id: session-persistence-jsonl
+  config:
+    root: !!js dshHomePath('sessions')
+    compression: none
+- id: agent-preset-registry
+  config:
+    default: android
+- id: preset-standard
+  disabled: true
+- id: preset-minimal
+  disabled: true
+- id: preset-ptc
+  disabled: true
+- id: preset-cordis
+  disabled: true
+- insert:
+    - id: android-filesystem
+      name: '@deepseek-ai/dsh-fs-local'
+    - id: android-directory-picker
+      name: '@deepseek-ai/dsh-host-directory-picker-browse'
+    - id: android-runtime
+      name: '@minnnng/dsh-android-runtime'
+    - id: preset-android
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: android
+        order: 0
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: You are Pocket Harness running locally inside an Android app. Use android_shell for ordinary app-UID shell commands and android_files for user-authorized documents. Root and adb are unavailable. Never interpret a content URI as a filesystem path.
+          - id: context-compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+            config:
+              read: true
+              readImage: true
+              write: false
+              edit: false
+          - id: tool-web
+            name: '@deepseek-ai/dsh-tool-web'
