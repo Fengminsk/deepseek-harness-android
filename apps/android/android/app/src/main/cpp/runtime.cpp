@@ -31,7 +31,8 @@ extern "C" JNIEXPORT jint JNICALL
 Java_com_minnnng_dsh_1android_NativeRuntime_start(
     JNIEnv* env, jobject, jstring runtime, jstring home, jstring cache,
     jstring libraries, jint descriptor) {
-  if (started.exchange(true)) return 70;
+  if (started.exchange(true)) { close(descriptor); return 70; }
+  const auto fail_start = [descriptor](int code) { close(descriptor); return code; };
   const std::string runtime_path = utf8(env, runtime);
   const std::string home_path = utf8(env, home);
   const std::string cache_path = utf8(env, cache);
@@ -43,10 +44,13 @@ Java_com_minnnng_dsh_1android_NativeRuntime_start(
   setenv("NODE_COMPILE_CACHE", (cache_path + "/node-compile").c_str(), 1);
   setenv("NODE_COMPILE_CACHE_PORTABLE", "1", 1);
   const std::string workspace = home_path + "/workspace";
-  if (chdir(workspace.c_str()) != 0) return 71;
-  if (freopen((home_path + "/runtime-stderr.log").c_str(), "w", stderr) == nullptr) return 73;
-  if (dup2(descriptor, STDIN_FILENO) < 0 || dup2(descriptor, STDOUT_FILENO) < 0) return 72;
-  close(descriptor);
+  if (chdir(workspace.c_str()) != 0) return fail_start(71);
+  if (freopen((home_path + "/runtime-stderr.log").c_str(), "w", stderr) == nullptr) return fail_start(73);
+  // Libraries own their console output. Only the dedicated socket carries RPC;
+  // Node's Socket takes ownership of this CLOEXEC descriptor in the runtime plugin.
+  if (dup2(STDERR_FILENO, STDOUT_FILENO) < 0) return fail_start(72);
+  const std::string ipc_descriptor = std::to_string(descriptor);
+  if (setenv("DSH_ANDROID_IPC_FD", ipc_descriptor.c_str(), 1) != 0) return fail_start(72);
   std::vector<std::string> arguments{"node", "--max-old-space-size=384", runtime_path + "/bootstrap.mjs"};
   size_t size = 0;
   for (const auto& argument : arguments) size += argument.size() + 1;

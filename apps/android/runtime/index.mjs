@@ -1,5 +1,4 @@
 import Schema from '@deepseek-ai/schemastery'
-import { JsonRpcLineTransport } from '@deepseek-ai/dsh-sdk-protocol'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { SessionId } from '@deepseek-ai/dsh-session'
@@ -16,6 +15,7 @@ import { AppStreams } from './streams.mjs'
 import { AppExports } from './exports.mjs'
 import AndroidAccountCallback from './account-callback.mjs'
 import { AppAttachments } from './attachments.mjs'
+import { createRuntimeTransport } from './transport.mjs'
 
 export const name = 'android-runtime'
 export const inject = ['agents', 'sessions', 'workingDirectory', 'settings', 'tools', 'appReady', 'sessionPersistence']
@@ -33,13 +33,14 @@ function requiredString(value, label) {
 
 /** Android is an additional carrier over the same DSH services and session log. */
 export function apply(ctx, config) {
-  const transport = new JsonRpcLineTransport(process.stdin, process.stdout)
+  const ipc = createRuntimeTransport()
+  const { transport } = ipc
   const credentials = new AndroidCredentials(ctx, transport)
   ctx.plugin(AndroidShell)
   ctx.plugin(AndroidAccountCallback)
   ctx.effect(() => {
     transport.start()
-    return () => transport.close()
+    return () => ipc.close()
   })
   // Connection needs the Keystore provider before the shared Session controller can activate.
   ctx.inject(['sessionController', 'typertGateway', 'connection', 'accountCallback', 'fileUploads', 'pluginManager'], ctx => {
