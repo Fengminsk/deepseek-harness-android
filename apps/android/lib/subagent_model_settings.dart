@@ -609,7 +609,7 @@ class _SubagentModelSettingsPageState extends State<SubagentModelSettingsPage>
               ),
               ModelNotice(
                 selection.enabled
-                    ? '从下方授权模型中选择子任务的提供方、模型与推理强度。仅影响新会话。'
+                    ? '选择子任务可用的模型。Agent 会选择模型及其支持的推理强度，仅影响新会话。'
                     : '子 Agent 使用配置的默认模型，或继承父 Agent 的模型。已选模型会保留。',
               ),
               if (selection.enabled)
