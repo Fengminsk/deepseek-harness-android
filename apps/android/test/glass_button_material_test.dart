@@ -39,6 +39,99 @@ Widget host(
 
 void main() {
   for (final brightness in Brightness.values) {
+    testWidgets(
+      'tinted bevel is visible while the central primary face stays unchanged ($brightness)',
+      (tester) async {
+        final boundary = GlobalKey();
+        final scheme = pocketTheme(brightness).colorScheme;
+        final dark = brightness == Brightness.dark;
+        // The build 25 material is a visual regression baseline for its face.
+        final previous = LiquidGlassStyle(
+          tint: scheme.primary.withValues(alpha: .82),
+          saturation: 1.2,
+          rim: dark ? .14 : .2,
+          rimWidth: 1.2,
+          rimTail: .17,
+          rimFocus: 1,
+          rimAdded: .38,
+          hairline: dark ? 0 : .34,
+          hairlineSide: dark ? .73 : .5,
+        );
+        final next = LiquidGlassStyle.tinted(scheme, scheme.primary);
+        await tester.pumpWidget(
+          RepaintBoundary(
+            key: boundary,
+            child: host(
+              Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  for (final item in [('before', previous), ('after', next)])
+                    Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: LiquidGlass(
+                        key: ValueKey(item.$1),
+                        style: item.$2,
+                        borderRadius: BorderRadius.circular(22),
+                        child: const SizedBox(width: 180, height: 44),
+                      ),
+                    ),
+                ],
+              ),
+              brightness: brightness,
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        final originalRect = tester.getRect(
+          find.byKey(const ValueKey('before')),
+        );
+        final revisedRect = tester.getRect(find.byKey(const ValueKey('after')));
+        final sample = await tester.runAsync(() async {
+          final image =
+              await (boundary.currentContext!.findRenderObject()!
+                      as RenderRepaintBoundary)
+                  .toImage(pixelRatio: 2);
+          try {
+            final data = (await image.toByteData(
+              format: ui.ImageByteFormat.rawRgba,
+            ))!;
+            Color colorAt(Offset position) {
+              final offset =
+                  ((position.dy * 2).floor() * image.width +
+                      (position.dx * 2).floor()) *
+                  4;
+              return Color.fromARGB(
+                data.getUint8(offset + 3),
+                data.getUint8(offset),
+                data.getUint8(offset + 1),
+                data.getUint8(offset + 2),
+              );
+            }
+
+            return (
+              oldFace: colorAt(originalRect.center),
+              face: colorAt(revisedRect.center),
+              oldEdge: colorAt(originalRect.topCenter + const Offset(0, 1)),
+              edge: colorAt(revisedRect.topCenter + const Offset(0, 1)),
+            );
+          } finally {
+            image.dispose();
+          }
+        });
+        expect(
+          sample!.face,
+          sample.oldFace,
+          reason:
+              'onPrimary must keep the same central background and contrast.',
+        );
+        expect(
+          sample.edge.computeLuminance(),
+          greaterThan(sample.oldEdge.computeLuminance() + .015),
+          reason: 'The primary rim must be visibly lighter than the flat build 25 edge.',
+        );
+        expect(tester.takeException(), isNull);
+      },
+    );
     for (final enabled in [true, false]) {
       testWidgets(
         'primary circle uses one tinted glass pane with state colors ($brightness/$enabled)',

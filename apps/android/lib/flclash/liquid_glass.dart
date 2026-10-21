@@ -182,13 +182,16 @@ class LiquidGlassStyle {
     return LiquidGlassStyle(
       tint: color.withValues(alpha: 0.82),
       saturation: 1.2,
-      rim: dark ? 0.14 : 0.2,
-      rimWidth: 1.2,
-      rimTail: 0.17,
-      rimFocus: 1,
-      rimAdded: 0.38,
-      hairline: dark ? 0 : 0.34,
-      hairlineSide: dark ? 0.73 : 0.5,
+      // A primary tint masks the neutral pane's edge at normal phone scale.
+      // Keep its face (and onPrimary contrast) unchanged; light a narrow bevel
+      // and let the highlight reach the rounded ends without whitening them.
+      rim: dark ? 0.52 : 0.42,
+      rimWidth: 1.5,
+      rimTail: 0.23,
+      rimFocus: 0.72,
+      rimAdded: 0.16,
+      hairline: dark ? 0.12 : 0.26,
+      hairlineSide: dark ? 0.48 : 0.42,
     );
   }
 
