@@ -5,6 +5,7 @@ import 'dart:math';
 import 'package:material_ui/material_ui.dart';
 
 import 'configuration_editor.dart' show configurationNamespaceTitle;
+import 'metadata_artwork.dart';
 import 'flclash/switch.dart';
 import 'runtime.dart';
 import 'ui.dart';
@@ -494,6 +495,13 @@ class _ConfigurationTransferPageState extends State<ConfigurationTransferPage> {
       for (final section in rows)
         _TransferFold(
           key: ValueKey('${stage.name}-${section['ns']}'),
+          leading: result
+              ? null
+              : configurationArtwork({
+                  'ns': section['ns'],
+                  for (final form in widget.runtime.forms)
+                    if (form['ns'] == section['ns']) 'display': form['display'],
+                }),
           title: configurationNamespaceTitle('${section['ns']}'),
           subtitle: exporting
               ? '${(section['fields'] as List).length} 个字段'
@@ -822,6 +830,7 @@ class _TransferFold extends StatefulWidget {
     super.key,
     required this.title,
     required this.icon,
+    this.leading,
     required this.child,
     this.subtitle,
     this.action,
@@ -830,6 +839,7 @@ class _TransferFold extends StatefulWidget {
   final String title;
   final String? subtitle;
   final IconData icon;
+  final Widget? leading;
   final Widget child;
   final Widget? action;
   final bool initiallyExpanded;
@@ -857,6 +867,7 @@ class _TransferFoldState extends State<_TransferFold> {
           expanded: expanded,
           child: PocketRow(
             icon: widget.icon,
+            leading: widget.leading,
             title: widget.title,
             subtitle: widget.subtitle,
             onTap: () => setState(() => expanded = !expanded),

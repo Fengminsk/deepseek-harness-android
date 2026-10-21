@@ -1,8 +1,10 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:dsh_android/configuration_edits.dart';
 import 'package:dsh_android/plugins.dart';
 import 'package:dsh_android/plugins_data.dart';
@@ -146,6 +148,34 @@ Future<void> tap(WidgetTester tester, String label) async {
 }
 
 void main() {
+  testWidgets('package and configured-entry rows render their original artwork', (
+    tester,
+  ) async {
+    final icon =
+        'data:image/svg+xml;base64,${base64Encode(utf8.encode('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M2 2h20v20H2z" fill="#1683ff"/></svg>'))}';
+    final runtime = PluginsRuntime()
+      ..bundles = [
+        {
+          ...bundle(),
+          'enabled': true,
+          'meta': {'title': '图标插件', 'icon': icon},
+        },
+      ]
+      ..entries = [
+        {
+          ...entry(),
+          'meta': {'title': '图标工具', 'icon': icon},
+        },
+      ];
+    addTearDown(runtime.dispose);
+    await mount(tester, PluginsPage(runtime: runtime));
+    expect(find.byType(SvgPicture), findsOneWidget);
+    await tap(tester, '图标插件');
+    expect(find.byType(SvgPicture), findsNWidgets(2));
+    expect(methods(runtime, 'setBundleEnabled'), isEmpty);
+    expect(methods(runtime, 'setPluginEnabled'), isEmpty);
+    expect(tester.takeException(), isNull);
+  });
   test(
     'inventory management availability gates mutations and management reads',
     () async {

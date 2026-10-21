@@ -86,6 +86,12 @@ try {
     await boot.promise
     assert.equal((await request('runtime.info')).profile, 'android')
     assert.equal((await request('web.status')).enabled, false)
+    const settings = await request('settings.describe')
+    const defaultModel = settings.find(form => form.ns === 'agent-default-model')
+    assert.ok(defaultModel, 'The Android profile must expose its default-model settings')
+    assert.equal(defaultModel.display.moduleName, '@deepseek-ai/dsh-agent-default-model')
+    assert.ok(Number.isInteger(defaultModel.revision))
+    assert.ok(defaultModel.value && typeof defaultModel.value === 'object')
     assert.deepEqual(await request('runtime.live'), {
       revision: 0, statuses: {}, streaming: {}, errors: {}, liveMessages: {},
     })

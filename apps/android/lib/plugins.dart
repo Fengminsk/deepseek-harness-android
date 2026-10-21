@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:material_ui/material_ui.dart';
 
 import 'plugins_data.dart';
+import 'metadata_artwork.dart';
 import 'runtime.dart';
 import 'ui.dart';
 
@@ -144,6 +145,7 @@ class _PluginBundleRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) => PocketRow(
     icon: Icons.inventory_2_outlined,
+    leading: pluginArtwork(bundle),
     title: pluginName(bundle),
     subtitle: [
       _bundleAvailability(bundle),
@@ -274,7 +276,8 @@ class _PluginRuntimeSections extends StatelessWidget {
             for (final entry in preset['rows'] as List? ?? [])
               PocketRow(
                 icon: Icons.extension_outlined,
-                title: pluginName(entry as Json),
+                leading: pluginArtwork(entry as Json),
+                title: pluginName(entry),
                 subtitle:
                     '${entry['moduleName']}\n'
                     '${entry['enabled'] == 'conditional'
@@ -304,6 +307,7 @@ class PluginEntryRow extends StatelessWidget {
     final writable =
         controller.managementAvailable && entry['readOnlyReason'] == null;
     return PocketSwitchRow(
+      leading: pluginArtwork(entry),
       title: Text(pluginName(entry)),
       subtitle: Text(
         '${entry['moduleName']}\n$id · ${entry['fiberPhase'] ?? '未加载'}'
@@ -363,6 +367,7 @@ class _PluginBundlePageState extends State<PluginBundlePage> {
                 children: [
                   PocketRow(
                     icon: Icons.inventory_2_outlined,
+                    leading: pluginArtwork(current, size: 36),
                     title: pluginName(current),
                     subtitle:
                         '${_bundleAvailability(current)} · 版本 ${current['version'] ?? '未声明'}',
@@ -454,7 +459,8 @@ class _PluginBundlePageState extends State<PluginBundlePage> {
                         return live == null
                             ? PocketRow(
                                 icon: Icons.extension_outlined,
-                                title: pluginName(row as Json),
+                                leading: pluginArtwork(row as Json),
+                                title: pluginName(row),
                                 subtitle: '${row['rowId']} · 尚未加载',
                               )
                             : PluginEntryRow(

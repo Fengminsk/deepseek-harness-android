@@ -677,6 +677,7 @@ class PocketRow extends StatelessWidget {
     this.subtitle,
     this.onTap,
     this.trailing,
+    this.leading,
     super.key,
   });
   final IconData icon;
@@ -684,9 +685,10 @@ class PocketRow extends StatelessWidget {
   final String? subtitle;
   final VoidCallback? onTap;
   final Widget? trailing;
+  final Widget? leading;
   @override
   Widget build(BuildContext context) => PocketTile(
-    leading: Icon(icon),
+    leading: leading ?? Icon(icon),
     title: Text(title),
     subtitle: subtitle == null ? null : Text(subtitle!),
     onTap: onTap,
@@ -707,6 +709,7 @@ class PocketSwitchRow extends StatelessWidget {
     super.key,
     required this.title,
     this.subtitle,
+    this.leading,
     required this.value,
     required this.onChanged,
     this.contentPadding = const EdgeInsets.symmetric(
@@ -716,12 +719,14 @@ class PocketSwitchRow extends StatelessWidget {
   });
   final Widget title;
   final Widget? subtitle;
+  final Widget? leading;
   final bool value;
   final ValueChanged<bool>? onChanged;
   final EdgeInsetsGeometry contentPadding;
   @override
   Widget build(BuildContext context) => PocketTile(
     title: title,
+    leading: leading,
     subtitle: subtitle,
     contentPadding: contentPadding,
     onTap: onChanged == null ? null : () => onChanged!(!value),

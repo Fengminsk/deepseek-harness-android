@@ -10,6 +10,7 @@ import 'files.dart';
 import 'appearance.dart';
 import 'configuration_editor.dart';
 import 'configuration_transfer.dart';
+import 'metadata_artwork.dart';
 import 'models.dart';
 import 'diagnostics.dart';
 import 'approvals.dart';
@@ -240,6 +241,7 @@ class ConfigurationListPage extends StatelessWidget {
               for (final form in runtime.forms)
                 PocketRow(
                   icon: Icons.tune_rounded,
+                  leading: configurationArtwork(form),
                   title: configurationNamespaceTitle('${form['ns']}'),
                   onTap: () => Navigator.push(
                     context,

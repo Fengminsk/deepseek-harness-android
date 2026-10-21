@@ -24,6 +24,7 @@ import { AppConfigurationTransfers } from './configuration-transfer.mjs'
 import { AppSubagents } from './subagents.mjs'
 import { AppLibrary } from './library.mjs'
 import { AppWorkspaceFiles } from './workspace-files.mjs'
+import { describeAndroidSettings } from './settings-presentation.mjs'
 
 export const name = 'android-runtime'
 export const inject = ['agents', 'sessions', 'workingDirectory', 'settings', 'tools', 'appReady', 'sessionPersistence']
@@ -154,7 +155,7 @@ export function apply(ctx, config) {
       void documentSearch.closeOwner(params.owner).catch(error => console.error('App file search cleanup failed:', error))
     }
   })
-  const describe = () => ctx.settings.describe({ redactSecrets: true })
+  const describe = () => describeAndroidSettings(ctx)
   transport.onRequest(async (method, params) => {
     if (method.startsWith('library.')) return library.call(method.slice('library.'.length), params)
     if (method.startsWith('workspace.files.')) return workspaceFiles.call(method.slice('workspace.files.'.length), params)
