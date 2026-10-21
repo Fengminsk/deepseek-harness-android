@@ -310,7 +310,8 @@ class MainActivity : FlutterActivity() {
             restarting = null
             clearRestartObserver()
             restartModeToken = null
-            result?.error("recovery/busy", "恢复操作仍在执行，未切换服务；请等待操作结果", null)
+            result?.error(params.optString("code", "recovery/busy"),
+                params.optString("message", "恢复操作仍在执行，未切换服务；请等待操作结果"), null)
             return
         }
         persistModeAndContinue(token, service)

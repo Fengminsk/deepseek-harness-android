@@ -40,4 +40,14 @@ assertAndroidHostConfiguration({
 })
 process.argv = [process.argv[0], fileURLToPath(cli), '--profile', 'android']
 const { runCli } = await import(cli.href)
-await runCli()
+const options = {}
+if (process.platform === 'android') {
+  const { prepareAndroidPackageManager } = await import(
+    './node_modules/@minnnng/dsh-android-runtime/package-manager.mjs')
+  options.packageManager = await prepareAndroidPackageManager({
+    runtimeDirectory: fileURLToPath(new URL('.', import.meta.url)),
+    home: process.env.DSH_HOME,
+    nativeLibraryDirectory: process.env.DSH_ANDROID_NATIVE_LIBRARY_DIR,
+  })
+}
+await runCli(options)

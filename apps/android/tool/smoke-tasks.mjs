@@ -17,6 +17,7 @@ const model = createServer((request, response) => {
   void (async () => {
     const body = JSON.parse(Buffer.concat(await Array.fromAsync(request)).toString())
     const isAgent = body.tools?.some(tool => tool.name === 'smoke_approval')
+    if (process.env.POCKET_SMOKE_TRACE === '1') checkpoint(`model fixture request ${isAgent ? 'agent' : 'auxiliary'}`)
     const step = isAgent ? steps.shift() : undefined
     if (isAgent) requests++
     if (step === 'fail') {
@@ -79,6 +80,9 @@ function launch() {
   })
   function receive(line) {
     const frame = JSON.parse(line)
+    if (process.env.POCKET_SMOKE_TRACE === '1' && frame.method?.startsWith('native.')) checkpoint(`native request ${frame.method}`)
+    if (process.env.POCKET_SMOKE_TRACE === '1' && frame.method === 'session.event') checkpoint(`session event ${frame.params.event.type}`)
+    if (process.env.POCKET_SMOKE_TRACE === '1' && frame.method === 'session.event' && frame.params.event.type === 'turn/end') checkpoint(`turn ended ${JSON.stringify(frame.params.event.data?.reason ?? frame.params.event.reason)}`)
     if (frame.method?.startsWith('native.')) {
       let result
       const { name, value } = frame.params ?? {}
@@ -99,6 +103,7 @@ function launch() {
     } else if (pending.has(frame.id)) {
       const call = pending.get(frame.id)
       pending.delete(frame.id)
+      if (process.env.POCKET_SMOKE_TRACE === '1') checkpoint(`reply ${frame.id} ${call.method} ${frame.error ? 'error' : 'ok'}`)
       if (frame.error) call.reject(new Error(frame.error.message))
       else call.resolve(frame.result)
     } else {
@@ -111,10 +116,12 @@ function launch() {
   }
   const runtime = {
     notices,
+    pendingMethods: () => [...pending.values()].map(call => call.method),
     request(method, params = {}) {
       if (failure || ended) return Promise.reject(failure ?? new Error('Runtime is stopped'))
       const id = `tasks-${++serial}`
-      return new Promise((resolve, reject) => { pending.set(id, { resolve, reject }); send({ id, method, params }) })
+      if (process.env.POCKET_SMOKE_TRACE === '1') checkpoint(`request ${id} ${method}${method === 'api.call' ? ` ${params.namespace}.${params.method}` : ''}`)
+      return new Promise((resolve, reject) => { pending.set(id, { method, resolve, reject }); send({ id, method, params }) })
     },
     wait(predicate) {
       if (failure || ended) return Promise.reject(failure ?? new Error('Runtime is stopped'))
@@ -149,6 +156,7 @@ try {
     checkpoint('first process ready')
     const baseline = await request('tasks.summary')
     assert.equal(baseline.summary.backgroundJobs, 0, 'real profile must have a ready JobRegistry baseline')
+    assert.equal(baseline.summary.packageOperations, 0, 'real profile must have a ready PluginManager baseline')
     assert.deepEqual(baseline.active, [])
     const exported = await request('configuration.transfer.export')
     assert.ok(exported.sections.some(section => section.fields.length > 0))
@@ -164,11 +172,15 @@ try {
       provider: 'deepseek-official', model: 'deepseek-flash', selectModel: true })
     const finish = id => first.wait(frame => frame.method === 'session.event'
       && frame.params.sessionId === id && frame.params.event.type === 'turn/end')
-    const approval = id => first.wait(frame => frame.method === 'interactions.changed'
-      && frame.params.requests.some(row => row.sessionId === id))
+    const approval = id => Promise.race([
+      first.wait(frame => frame.method === 'interactions.changed'
+        && frame.params.requests.some(row => row.sessionId === id)),
+      finish(id).then(frame => { throw new Error(`Turn ended before approval: ${JSON.stringify(frame.params.event.data.reason)}`) }),
+    ])
 
     steps.push('approval')
     await prompt('queue', 'first', 'Wait for the fixture approval')
+    checkpoint('first prompt admitted; awaiting approval fixture')
     await approval('queue')
     await prompt('queue', 'second', 'Retained followup')
     const queued = await request('tasks.session', { sessionId: 'queue' })
@@ -200,6 +212,13 @@ try {
     assert.equal((await request('tasks.session', { sessionId: 'completed' })).history[0].status, 'completed')
     checkpoint('durable failure and completed turn')
 
+    const renamedTitle = 'Renamed background task'
+    await request('api.call', { namespace: 'session', method: 'rename',
+      args: { request: { sessionId: 'completed', title: renamedTitle } } })
+    assert.equal((await request('tasks.list')).sessions.find(row => row.sessionId === 'completed').title, renamedTitle)
+    assert.equal((await request('tasks.session', { sessionId: 'completed' })).title, renamedTitle)
+    checkpoint('original rename visible in task list and details')
+
     steps.push('approval')
     await prompt('crashed', 'crashed', 'Leave a pending approval at process loss')
     await approval('crashed')
@@ -216,8 +235,14 @@ try {
         return record.type === 'agent/inbox/spliced'
           && record.data.inserted.some(message => message.source?.rpcId === 'retained')
       })
-      if (queued) break
-      if (performance.now() > durableDeadline) throw new Error('Fixture queued input was not persisted within 10 seconds')
+      const titledFiles = await Array.fromAsync(glob('sessions/**/completed/session.v4.jsonl', { cwd: home }))
+      const titled = titledFiles.length === 1 ? await readFile(join(home, titledFiles[0]), 'utf8') : ''
+      const renamed = titled.split('\n').slice(0, -1).filter(Boolean).some(line => {
+        const record = JSON.parse(line)
+        return record.type === 'session/title' && record.data.title === renamedTitle
+      })
+      if (queued && renamed) break
+      if (performance.now() > durableDeadline) throw new Error('Fixture queued input and renamed title were not persisted within 10 seconds')
       await new Promise(resolve => setTimeout(resolve, 20))
     }
     const stoppedProcess = await first.close()
@@ -228,11 +253,14 @@ try {
     checkpoint('replacement process ready')
     const current = await second.request('tasks.summary')
     assert.notEqual(current.epoch, baseline.epoch)
-    assert.deepEqual(current.summary, { running: 0, queued: 0, waiting: 0, failed: 0, backgroundJobs: 0 })
+    assert.deepEqual(current.summary, { running: 0, queued: 0, waiting: 0, failed: 0, backgroundJobs: 0, packageOperations: 0 })
     const list = await second.request('tasks.list')
     assert.ok(list.sessions.some(row => row.sessionId === 'failure'))
     const recoveredFailure = await second.request('tasks.session', { sessionId: 'failure' })
     assert.equal(recoveredFailure.history[0].status, 'failed')
+    const recoveredTitle = await second.request('tasks.session', { sessionId: 'completed' })
+    assert.equal(recoveredTitle.title, renamedTitle)
+    assert.equal(recoveredTitle.observation, 'sequenced')
     const recovered = await second.request('tasks.session', { sessionId: 'crashed' })
     assert.equal(recovered.history.find(row => row.kind === 'turn').status, 'interrupted')
     assert.equal(recovered.pending.length, 1)
@@ -242,8 +270,10 @@ try {
     assert.deepEqual((await second.request('tasks.summary')).active, [])
     console.log(JSON.stringify({ realProfile: true, jobsBaseline: true, configurationExportPreview: true,
       waitingApproval: true, cancelRetainsQueue: true, explicitRemoval: true, durableFailure: true,
-      completedTurn: true, processRecovery: true, noAutomaticReplay: true }))
-  })(), new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('Task profile smoke exceeded 120 seconds')), 120000) })])
+      completedTurn: true, titleRecovery: true, processRecovery: true, noAutomaticReplay: true }))
+  })(), new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error(
+    `Task profile smoke exceeded 120 seconds; pending=${JSON.stringify(runtimes.map(runtime => runtime.pendingMethods()))}; modelCalls=${requests}; remainingFixtureSteps=${steps.length}`,
+  )), 120000) })])
 } finally {
   clearTimeout(deadline)
   try {

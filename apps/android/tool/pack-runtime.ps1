@@ -1,8 +1,13 @@
+param([string]$StagingDirectory = '', [string]$AssetsDirectory = '')
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path $PSScriptRoot -Parent
 $repositoryRoot = (Resolve-Path (Join-Path $projectRoot '../..')).Path
-$staging = Join-Path $repositoryRoot '.cache/android/runtime-bundle'
-$assets = Join-Path $projectRoot 'android/app/src/main/assets/runtime'
+$staging = if ($StagingDirectory) { (Resolve-Path -LiteralPath $StagingDirectory).Path } else { Join-Path $repositoryRoot '.cache/android/runtime-bundle' }
+$assets = if ($AssetsDirectory) { [IO.Path]::GetFullPath($AssetsDirectory) } else { Join-Path $projectRoot 'android/app/src/main/assets/runtime' }
+if (-not (Test-Path -LiteralPath (Join-Path $staging 'android/package-manager/packages.json')) -or
+    -not (Test-Path -LiteralPath (Join-Path $staging 'android/package-manager/pnpm/bin/pnpm.mjs'))) {
+    throw 'Bundled pnpm and local core packages are missing. Run stage-runtime.ts before packaging.'
+}
 New-Item -ItemType Directory -Force -Path $assets | Out-Null
 $archive = Join-Path $assets 'runtime.zip'
 $temporary = Join-Path $assets 'runtime.zip.partial'

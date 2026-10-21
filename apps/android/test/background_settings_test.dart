@@ -13,6 +13,7 @@ Json snapshot({
   int running = 2,
   int queued = 1,
   int jobs = 3,
+  int? packageOperations = 0,
   bool keepAwake = false,
 }) => {
   'keepAwakeWhileWorking': keepAwake,
@@ -24,6 +25,7 @@ Json snapshot({
   'waiting': 0,
   'failed': 0,
   'backgroundJobs': jobs,
+  'packageOperations': packageOperations,
   'powerError': null,
   'notificationError': null,
 };
@@ -129,6 +131,39 @@ Future<void> close(WidgetTester tester) async {
 }
 
 void main() {
+  testWidgets('plugin activity is separate and withdrawn on failed refresh', (
+    tester,
+  ) async {
+    final runtime = BackgroundRuntime()
+      ..background = snapshot(
+        taskState: 'packages',
+        running: 0,
+        queued: 0,
+        jobs: 0,
+        packageOperations: 2,
+        keepAwake: true,
+      );
+    await open(tester, runtime, SystemPolicy());
+    expect(find.text('插件管理操作中'), findsOneWidget);
+    expect(find.text('2 项进行中'), findsOneWidget);
+    expect(find.text('0 个任务执行 · 0 条输入排队 · 0 项等待处理'), findsOneWidget);
+    runtime.statusFailure = StateError('disconnected');
+    await tap(tester, refresh);
+    expect(find.text('2 项进行中'), findsNothing);
+    expect(find.text('插件管理操作中'), findsNothing);
+    expect(find.text('任务状态尚未确认'), findsOneWidget);
+    await close(tester);
+  });
+
+  testWidgets('unknown plugin count is not presented as zero', (tester) async {
+    final runtime = BackgroundRuntime()
+      ..background = snapshot(packageOperations: null);
+    await open(tester, runtime, SystemPolicy());
+    expect(find.text('状态尚未确认，请刷新后查看'), findsOneWidget);
+    expect(find.text('0 项进行中'), findsNothing);
+    await close(tester);
+  });
+
   testWidgets(
     'opening reads service and system state without changing policy',
     (tester) async {

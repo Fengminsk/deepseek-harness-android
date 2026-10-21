@@ -9,6 +9,7 @@ public final class BackgroundTaskState {
     private boolean keepAwake;
     private int running, queued, waiting, failed;
     private Integer backgroundJobs;
+    private Integer packageOperations;
 
     public BackgroundTaskState(boolean keepAwake) {
         this.keepAwake = keepAwake;
@@ -24,10 +25,11 @@ public final class BackgroundTaskState {
     }
 
     public boolean accept(String sourceEpoch, long sourceRevision, int running, int queued,
-            int waiting, int failed, Integer backgroundJobs) {
+            int waiting, int failed, Integer backgroundJobs, Integer packageOperations) {
         if (sourceEpoch == null || sourceEpoch.trim().isEmpty() || sourceEpoch.length() > 128
                 || sourceRevision < 0 || running < 0 || queued < 0 || waiting < 0 || failed < 0
-                || (backgroundJobs != null && backgroundJobs < 0)) {
+                || (backgroundJobs != null && backgroundJobs < 0)
+                || (packageOperations != null && packageOperations < 0)) {
             throw new IllegalArgumentException("Invalid task summary");
         }
         if (!phase.equals("ready") || (epoch != null && !epoch.equals(sourceEpoch))
@@ -39,6 +41,7 @@ public final class BackgroundTaskState {
         this.waiting = waiting;
         this.failed = failed;
         this.backgroundJobs = backgroundJobs;
+        this.packageOperations = packageOperations;
         fresh = true;
         return true;
     }
@@ -52,16 +55,19 @@ public final class BackgroundTaskState {
     public int waiting() { return waiting; }
     public int failed() { return failed; }
     public Integer backgroundJobs() { return backgroundJobs; }
+    public Integer packageOperations() { return packageOperations; }
     public boolean shouldHoldWakeLock() {
-        return fresh() && keepAwake && (running > 0 || (backgroundJobs != null && backgroundJobs > 0));
+        return fresh() && keepAwake && (running > 0 || (backgroundJobs != null && backgroundJobs > 0)
+                || (packageOperations != null && packageOperations > 0));
     }
     public String presentation() {
         if (!phase.equals("ready")) return phase;
         if (!fresh) return "unconfirmed";
         if (running > 0 || (backgroundJobs != null && backgroundJobs > 0)) return "running";
+        if (packageOperations != null && packageOperations > 0) return "packages";
         if (waiting > 0) return "waiting";
         if (queued > 0) return "queued";
-        if (backgroundJobs == null) return "partial";
+        if (backgroundJobs == null || packageOperations == null) return "partial";
         if (failed > 0) return "attention";
         return "idle";
     }

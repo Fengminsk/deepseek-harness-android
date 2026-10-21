@@ -19,6 +19,7 @@ import { AppAttachments } from './attachments.mjs'
 import { createRuntimeTransport } from './transport.mjs'
 import { AppDocumentSearch } from './document-search.mjs'
 import { AppTasks } from './tasks.mjs'
+import { AppPackageOperations } from './package-operations.mjs'
 import { AppConfigurationTransfers } from './configuration-transfer.mjs'
 import { AppSubagents } from './subagents.mjs'
 import { AppLibrary } from './library.mjs'
@@ -110,6 +111,7 @@ export function apply(ctx, config) {
     },
   }, { shellContext: (sessionId, callId) => shell.context(sessionId, callId) })
   tasks = new AppTasks(ctx, transport, { interactions: () => interactions.snapshot() })
+  const packageOperations = new AppPackageOperations(ctx)
   const subagents = new AppSubagents(ctx, {
     invoke,
     follow: (request, signal) => ctx.typertGateway.stream({
@@ -160,6 +162,9 @@ export function apply(ctx, config) {
       case 'runtime.info': return { node: process.version, platform: process.platform, arch: process.arch,
         uid: process.getuid?.(), workspace: process.cwd(), profile: 'android' }
       case 'runtime.live': return live.snapshot()
+      case 'runtime.transition.reserve': return packageOperations.reserve(params)
+      case 'runtime.transition.commit': return packageOperations.commit(params)
+      case 'runtime.transition.release': return packageOperations.release(params)
       case 'tasks.summary': return tasks.summary()
       case 'tasks.list': return tasks.list(params)
       case 'tasks.session': return tasks.session(params)
@@ -299,6 +304,7 @@ export function apply(ctx, config) {
       remove()
       const results = await Promise.allSettled([
         () => documentSearch.close(), () => attachments.close(), () => exports.close(), () => tasks.close(),
+        () => packageOperations.close(),
         () => configurationTransfers.close(), () => subagents.close(), () => workspaceFiles.close(), () => library.close(),
         () => live.close(),
         () => streams.close(), () => interactions.close(), () => web.close(),

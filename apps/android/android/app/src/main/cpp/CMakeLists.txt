@@ -7,6 +7,29 @@ if(NOT EXISTS "${NODE_ROOT}/include/node/node.h")
 endif()
 add_library(node SHARED IMPORTED)
 set_target_properties(node PROPERTIES IMPORTED_LOCATION "${NODE_ROOT}/bin/${ANDROID_ABI}/libnode.so")
+
+# Package an executable in Android's extracted native library directory. The .so
+# name is required by APK native packaging; add_executable still supplies the
+# proper CRT entry point and ELF interpreter, unlike a shared library with main.
+add_executable(pocket_node_cli node_cli.cpp)
+set_target_properties(pocket_node_cli PROPERTIES
+  PREFIX "lib"
+  SUFFIX ".so"
+  POSITION_INDEPENDENT_CODE TRUE
+)
+target_include_directories(pocket_node_cli PRIVATE "${NODE_ROOT}/include/node")
+target_link_libraries(pocket_node_cli PRIVATE node)
+# Android's toolchain omits CMake's normal RPATH flags. A linker response file
+# also preserves the literal $ORIGIN across Windows Ninja/cmd and Unix shells.
+set(NODE_CLI_LINKER_OPTIONS "${CMAKE_CURRENT_BINARY_DIR}/pocket_node_cli.rsp")
+file(GENERATE OUTPUT "${NODE_CLI_LINKER_OPTIONS}" CONTENT "-rpath\n$ORIGIN\n")
+set_property(TARGET pocket_node_cli APPEND PROPERTY LINK_DEPENDS "${NODE_CLI_LINKER_OPTIONS}")
+target_link_options(pocket_node_cli PRIVATE
+  "-pie"
+  "-Wl,-z,max-page-size=16384"
+  "-Wl,@${NODE_CLI_LINKER_OPTIONS}"
+)
+
 add_library(dsh_runtime SHARED runtime.cpp)
 target_include_directories(dsh_runtime PRIVATE "${NODE_ROOT}/include/node")
 target_link_libraries(dsh_runtime node log)

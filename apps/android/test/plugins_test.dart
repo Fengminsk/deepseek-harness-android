@@ -123,8 +123,12 @@ Future<void> checked(PluginsController controller) async {
   await controller.inspect();
 }
 
-Future<void> mount(WidgetTester tester, Widget child) async {
-  tester.view.physicalSize = const Size(800, 1500);
+Future<void> mount(
+  WidgetTester tester,
+  Widget child, {
+  Size size = const Size(800, 1500),
+}) async {
+  tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
@@ -355,6 +359,161 @@ void main() {
     expect(switchRow.onChanged, isNull);
     expect(find.textContaining('management-required'), findsOneWidget);
   });
+
+  testWidgets(
+    'install and catalog stay on the first phone screen with many bundles',
+    (tester) async {
+      final runtime = PluginsRuntime()
+        ..bundles = List.generate(
+          40,
+          (index) => {
+            ...bundle(),
+            'name': '@example/bundle-$index',
+            'installed': false,
+            'availability': 'installation',
+          },
+        );
+      addTearDown(runtime.dispose);
+      await mount(
+        tester,
+        PluginsPage(runtime: runtime),
+        size: const Size(390, 844),
+      );
+
+      expect(find.text('安装插件包').hitTestable(), findsOneWidget);
+      expect(find.text('可用插件包').hitTestable(), findsOneWidget);
+      expect(find.text('运行时条目与预设').hitTestable(), findsOneWidget);
+      expect(find.text('40 个未选用的插件包'), findsOneWidget);
+      expect(find.text('@example/bundle-0'), findsNothing);
+      await tester.tap(find.text('安装插件包'));
+      await tester.pumpAndSettle();
+      expect(find.byType(PluginInstallPage), findsOneWidget);
+      expect(methods(runtime, 'installBundle'), isEmpty);
+    },
+  );
+
+  testWidgets(
+    'selected, shipped, profile-installed and missing bundles remain reachable',
+    (tester) async {
+      final runtime = PluginsRuntime()
+        ..bundles = [
+          {
+            ...bundle(),
+            'name': '@example/selected',
+            'enabled': true,
+            'meta': {'title': '已选用扩展'},
+          },
+          {
+            ...bundle(),
+            'name': '@example/shipped',
+            'availability': 'installation',
+            'installed': false,
+            'meta': {'title': '随应用扩展'},
+          },
+          {
+            ...bundle(),
+            'name': '@example/installed',
+            'meta': {'title': '自行安装扩展'},
+          },
+          {
+            ...bundle(),
+            'name': '@example/missing',
+            'availability': 'missing',
+            'installed': false,
+            'meta': {'title': '待安装扩展'},
+            'installTarget': {
+              'spec': '@example/missing@1.0.0',
+              'version': '1.0.0',
+            },
+          },
+        ];
+      addTearDown(runtime.dispose);
+      await mount(
+        tester,
+        PluginsPage(runtime: runtime),
+        size: const Size(390, 844),
+      );
+
+      expect(find.text('已选用 · 1'), findsOneWidget);
+      await tap(tester, '已选用扩展');
+      expect(
+        tester.widget<PluginBundlePage>(find.byType(PluginBundlePage)).name,
+        '@example/selected',
+      );
+      await tester.tap(find.byTooltip('返回'));
+      await tester.pumpAndSettle();
+      await tap(tester, '可用插件包');
+      expect(find.text('随应用提供 · 1'), findsOneWidget);
+      expect(find.text('已添加到配置 · 1'), findsOneWidget);
+      expect(find.text('其他插件包 · 1'), findsOneWidget);
+      expect(find.text('已选用扩展'), findsNothing);
+      for (final item in [
+        ('随应用扩展', '@example/shipped'),
+        ('自行安装扩展', '@example/installed'),
+        ('待安装扩展', '@example/missing'),
+      ]) {
+        await tap(tester, item.$1);
+        expect(
+          tester.widget<PluginBundlePage>(find.byType(PluginBundlePage)).name,
+          item.$2,
+        );
+        await tester.tap(find.byTooltip('返回'));
+        await tester.pumpAndSettle();
+      }
+      expect(methods(runtime, 'setBundleEnabled'), isEmpty);
+      expect(methods(runtime, 'installBundle'), isEmpty);
+    },
+  );
+
+  testWidgets(
+    'reopening an in-flight install keeps its draft and never repeats the request',
+    (tester) async {
+      final runtime = PluginsRuntime()..installing = Completer<Json>();
+      addTearDown(runtime.dispose);
+      await mount(
+        tester,
+        PluginsPage(runtime: runtime),
+        size: const Size(390, 844),
+      );
+      await tap(tester, '安装插件包');
+      await tester.enterText(
+        find.byWidgetPredicate(
+          (widget) =>
+              widget is TextField &&
+              widget.decoration?.labelText == '包名、Git 地址或设备本地路径',
+        ),
+        '@example/new',
+      );
+      await tap(tester, '安装选项');
+      await tester.enterText(
+        find.byWidgetPredicate(
+          (widget) =>
+              widget is TextField &&
+              widget.decoration?.labelText == 'Registry（可选）',
+        ),
+        'https://registry.example.test',
+      );
+      await tap(tester, '核对安装来源');
+      expect(methods(runtime, 'installBundle'), isEmpty);
+      await tap(tester, '确认安装');
+      final requestId = runtime.plugins.requestId;
+      expect(methods(runtime, 'installBundle'), hasLength(1));
+      await tester.tap(find.byTooltip('返回'));
+      await tester.pumpAndSettle();
+      expect(find.text('查看进行中的安装').hitTestable(), findsOneWidget);
+      await tap(tester, '查看进行中的安装');
+      expect(find.text('取消本次安装').hitTestable(), findsOneWidget);
+      expect(find.text('核对原请求结果').hitTestable(), findsOneWidget);
+      expect(runtime.plugins.requestId, requestId);
+      expect(runtime.plugins.spec, '@example/new');
+      expect(runtime.plugins.registry, 'https://registry.example.test');
+      expect(methods(runtime, 'installBundle'), hasLength(1));
+      expect(methods(runtime, 'cancelInstall'), isEmpty);
+      runtime.installing!.complete(runtime.outcome);
+      await tester.pumpAndSettle();
+      expect(methods(runtime, 'installBundle'), hasLength(1));
+    },
+  );
 
   testWidgets('uninstall requires the concrete package confirmation', (
     tester,

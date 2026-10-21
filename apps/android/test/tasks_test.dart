@@ -72,7 +72,7 @@ class _TasksRuntime extends RuntimeController {
       'epoch': 'fixture',
       'revision': 2,
       'active': <Json>[],
-      'summary': {'backgroundJobs': 0},
+      'summary': {'backgroundJobs': 0, 'packageOperations': 0},
     };
     notifyListeners();
   }
@@ -84,6 +84,35 @@ Widget _host(RuntimeController runtime) => MaterialApp(
 );
 
 void main() {
+  for (final count in <int?>[2, null]) {
+    testWidgets('idle Agent does not imply plugin operations idle: $count', (
+      tester,
+    ) async {
+      final runtime = _TasksRuntime()
+        ..taskState = {
+          'epoch': 'fixture',
+          'revision': 2,
+          'active': <Json>[],
+          'summary': {'backgroundJobs': 0, 'packageOperations': count},
+        };
+      addTearDown(runtime.dispose);
+      await tester.pumpWidget(_host(runtime));
+      await tester.pumpAndSettle();
+      expect(find.text('当前没有运行中的任务'), findsNothing);
+      expect(find.text('Agent 暂无运行任务'), findsOneWidget);
+      expect(
+        find.text(count == null ? '插件管理操作状态尚未确认，请刷新后查看。' : '2 项进行中'),
+        findsOneWidget,
+      );
+      runtime.phase = 'failed';
+      runtime.notifyListeners();
+      await tester.pumpAndSettle();
+      expect(find.text('2 项进行中'), findsNothing);
+      expect(find.text('任务状态暂不可用'), findsOneWidget);
+      expect(runtime.stops, 0);
+    });
+  }
+
   testWidgets('cold child without its parent address reports a visible error', (
     tester,
   ) async {

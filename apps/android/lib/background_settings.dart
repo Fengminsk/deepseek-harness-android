@@ -9,6 +9,7 @@ import 'ui.dart';
 
 String backgroundStateLabel(Json state) => switch (state['taskState']) {
   'running' => '任务执行中',
+  'packages' => '插件管理操作中',
   'waiting' => '等待授权或答复',
   'queued' => '有输入等待处理',
   'idle' => '已就绪 · 暂无任务',
@@ -169,6 +170,14 @@ class _BackgroundSettingsPageState extends State<BackgroundSettingsPage>
                   title: '后台作业',
                   subtitle: '${state!['backgroundJobs']} 个活动作业',
                 ),
+              if (state?['fresh'] == true)
+                PocketRow(
+                  icon: Icons.extension_outlined,
+                  title: '插件管理操作',
+                  subtitle: state?['packageOperations'] is int
+                      ? '${state!['packageOperations']} 项进行中'
+                      : '状态尚未确认，请刷新后查看',
+                ),
               PocketRow(
                 icon: Icons.task_alt_rounded,
                 title: '查看任务与历史',
@@ -188,7 +197,7 @@ class _BackgroundSettingsPageState extends State<BackgroundSettingsPage>
                 PocketSwitchRow(
                   title: const Text('执行任务时保持 CPU 运行'),
                   subtitle: const Text(
-                    '只在任务或后台作业运行时使用，空闲和等待答复时释放。不点亮屏幕，使用期间可能增加耗电。',
+                    '在任务、后台作业或插件管理操作进行时使用，空闲和仅等待答复时释放。不点亮屏幕，使用期间可能增加耗电。',
                   ),
                   value: state['keepAwakeWhileWorking'] == true,
                   onChanged: loading || saving || error != null

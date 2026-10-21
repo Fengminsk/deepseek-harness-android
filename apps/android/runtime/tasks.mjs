@@ -115,12 +115,14 @@ export class AppTasks {
         this.publish()
       }),
       ctx.on('agent/disposed', () => this.publish()),
+      ctx.on('plugin-manager/package-operation', () => this.publish()),
       ctx.on('api-session/error', (id, error) => {
         this.errors.set(String(id), error)
         this.publish()
       }),
     ]
     this.jobs = ctx.get('jobs')
+    this.pluginManager = ctx.get('pluginManager')
     if (this.jobs) this.disposers.push(this.jobs.events.subscribe({ owners: 'all' }, event => {
       if (event.type !== 'output') this.publish()
     }))
@@ -147,7 +149,7 @@ export class AppTasks {
       ...(failed ? { error: this.errors.get(sessionId) } : {}) }
   }
 
-  /** Synchronous current-process baseline; a missing job provider stays explicitly unknown. */
+  /** Synchronous current-process baseline; unavailable job or package-operation providers stay explicitly unknown. */
   summary() {
     const active = this.ctx.agents.list().map(agent => this.liveRecord(agent)).filter(row => row.status !== 'idle')
     const jobs = this.jobs?.snapshot()
@@ -158,6 +160,7 @@ export class AppTasks {
       failed: active.filter(row => row.status === 'failed').length,
       backgroundJobs: jobs === undefined ? null
         : jobs.filter(job => job.status === 'running' || job.status === 'stopping').length,
+      packageOperations: this.pluginManager?.packageOperationsSnapshot?.().length ?? null,
     }
     const value = { summary, active }
     const fingerprint = JSON.stringify(value)
@@ -203,7 +206,7 @@ export class AppTasks {
       // A stale cache never authorizes an inbox mutation.
       cancellable: !!agent && observation === 'live',
     })))
-    return { sessionId, title: values.title?.title ?? sessionId, observation,
+    return { sessionId, title: values.title ?? sessionId, observation,
       ...(header?.origin === 'subagent' ? { subagent: subagentAddressFromHeader(header) } : {}),
       asOfSeq: snapshot?.asOfSeq ?? null, historyAvailable: tasks !== undefined,
       pending, history: [...turns, ...dropped, ...jobs].sort((a, b) => b.seq - a.seq),

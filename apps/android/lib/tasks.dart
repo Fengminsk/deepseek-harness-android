@@ -179,6 +179,8 @@ class _TasksPageState extends State<TasksPage> with WidgetsBindingObserver {
           .cast<Json>();
       final backgroundJobs =
           (runtime.taskState['summary'] as Json?)?['backgroundJobs'] as int?;
+      final packageOperations =
+          (runtime.taskState['summary'] as Json?)?['packageOperations'] as int?;
       stopping.removeWhere(
         (id) => !active.any(
           (row) =>
@@ -239,12 +241,28 @@ class _TasksPageState extends State<TasksPage> with WidgetsBindingObserver {
                         ? 'Agent 暂无运行任务'
                         : backgroundJobs > 0
                         ? '$backgroundJobs 个后台作业仍在执行'
+                        : packageOperations == null || packageOperations > 0
+                        ? 'Agent 暂无运行任务'
                         : '当前没有运行中的任务',
                     subtitle: backgroundJobs == null
                         ? '后台作业状态尚未确认，请刷新后查看。'
                         : backgroundJobs > 0
                         ? 'Agent 当前空闲；可从对应会话查看作业状态与输出。'
+                        : packageOperations == null
+                        ? '插件管理操作状态尚未确认，请刷新后查看。'
+                        : packageOperations > 0
+                        ? '插件操作仍在进行，完成后再进入维护模式。'
                         : '历史结果保留在下方；进程恢复不会自动重放旧请求。',
+                  ),
+                ],
+              ),
+            if (runtime.ready && (packageOperations ?? 0) > 0)
+              PocketSection(
+                children: [
+                  PocketRow(
+                    icon: Icons.extension_outlined,
+                    title: '插件管理操作',
+                    subtitle: '$packageOperations 项进行中',
                   ),
                 ],
               ),

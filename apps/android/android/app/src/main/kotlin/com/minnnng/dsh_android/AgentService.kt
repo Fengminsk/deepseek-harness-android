@@ -19,6 +19,7 @@ class AgentService : Service() {
     private val main = Handler(Looper.getMainLooper())
     private val workers = Executors.newCachedThreadPool()
     private val recoveryWorker = Executors.newSingleThreadExecutor()
+    private val transitionWrites = Executors.newSingleThreadExecutor()
     private val clients = mutableSetOf<Messenger>()
     private data class AppClient(val owner: String, val death: IBinder.DeathRecipient)
     private val appClients = mutableMapOf<Messenger, AppClient>()
@@ -31,12 +32,12 @@ class AgentService : Service() {
     private var mode = "active"
     private var modeToken = ""
     @Volatile private var nodeStarted = false
+    @Volatile private var bootStopped = false
     @Volatile private var mutationAllowed = false
     @Volatile private var bootStage = "service-created"
     private var started = false
     private var recoveryBusy = false
-    private var transitionToken: String? = null
-    private val transitionExpired = Runnable { transitionToken = null }
+    private lateinit var transitions: PackageOperationTransitions
     private lateinit var vault: CredentialVault
     private lateinit var webPreferences: WebPreferences
     private lateinit var approvals: ApprovalNotifications
@@ -101,7 +102,7 @@ class AgentService : Service() {
                 val mutation = method in setOf("write", "restore", "runtimeRepair")
                 if (!appClients.containsKey(client)) {
                     send(client, recoveryError(id, "recovery/disconnected", "恢复连接已断开，请重新打开页面"))
-                } else if (mutation && (recoveryBusy || transitionToken != null)) {
+                } else if (mutation && (recoveryBusy || transitions.busy())) {
                     send(client, recoveryError(id, "recovery/busy", "恢复操作仍在执行，不能重复提交或切换服务"))
                 } else {
                     if (mutation) recoveryBusy = true
@@ -120,6 +121,8 @@ class AgentService : Service() {
                 }
             } else if (frame.getString("method") == "runtime.status") {
                 send(client, JSONObject().put("id", id).put("result", status().getJSONObject("params")))
+            } else if (frame.getString("method").startsWith("runtime.transition.")) {
+                send(client, error(id, "服务切换必须通过原生维护入口执行"))
             } else if (frame.getString("method") == "runtime.background.configure") {
                 try {
                     val value = frame.getJSONObject("params").get("keepAwakeWhileWorking")
@@ -155,37 +158,22 @@ class AgentService : Service() {
         } else if (message.what == 5) approvals.refresh()
         else if (message.what == 6 && appClients.containsKey(client)) {
             val token = message.data.getString("token") ?: ""
-            val accepted = !recoveryBusy && transitionToken == null &&
-                token.matches(Regex("[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"))
-            if (accepted) {
-                transitionToken = token
-                main.removeCallbacks(transitionExpired)
-                main.postDelayed(transitionExpired, 15_000)
-            }
-            send(client, JSONObject().put("method", "runtime.transition").put("params",
-                JSONObject().put("token", token).put("accepted", accepted)))
+            if (recoveryBusy) transitionReply(client, token, PackageOperationTransitions.denied(
+                "recovery/busy", "恢复操作仍在执行，未切换服务；请等待操作结果"))
+            else transitions.reserve(token, client, transitionAvailability()) { reply -> transitionReply(client, token, reply) }
         }
         else if (message.what == 9 && appClients.containsKey(client)) {
-            if (message.data.getString("token") == transitionToken) {
-                transitionToken = null
-                main.removeCallbacks(transitionExpired)
-            }
+            transitions.release(message.data.getString("token") ?: "", client)
         }
-        else if (message.what == 8 && appClients.containsKey(client) &&
-            transitionToken != null && message.data.getString("token") == transitionToken && !recoveryBusy) {
-            check(Application.getProcessName().endsWith(":agent")) { "Runtime restart requires the dedicated Agent process" }
-            main.removeCallbacks(transitionExpired)
-            phase = "restarting"
-            background.phase(phase)
-            main.removeCallbacks(summaryPoll)
-            main.removeCallbacks(summaryTimeout)
-            broadcast(status())
-            approvals.close()
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
-            // libnode can start only once per process. The Activity waits for Binder
-            // death before creating the replacement; durable data stays untouched.
-            main.post { Process.killProcess(Process.myPid()) }
+        else if (message.what == 8 && appClients.containsKey(client)) {
+            val token = message.data.getString("token") ?: ""
+            if (recoveryBusy) {
+                transitions.release(token, client)
+                transitionReply(client, token, PackageOperationTransitions.denied(
+                    "recovery/busy", "恢复操作仍在执行，旧服务未被主动停止"))
+            } else transitions.commit(token, client) { reply ->
+                if (reply.accepted()) stopForTransition() else transitionReply(client, token, reply)
+            }
         }
         true
     })
@@ -197,6 +185,12 @@ class AgentService : Service() {
         webPreferences = WebPreferences(this)
         documentSearch = DocumentSearchManager(this)
         background = BackgroundExecution(this)
+        transitions = PackageOperationTransitions(PackageOperationTransitions.Rpc { method, token, epoch, completion ->
+            requestTransition(method, token, epoch) { completion.accept(it) }
+        }, object : PackageOperationTransitions.Scheduler {
+            override fun schedule(callback: Runnable, milliseconds: Long) { main.postDelayed(callback, milliseconds) }
+            override fun cancel(callback: Runnable) { main.removeCallbacks(callback) }
+        })
         approvals = ApprovalNotifications(this) { params, completion ->
             if (phase != "ready") {
                 completion(Result.failure(IllegalStateException("Agent service is unavailable")))
@@ -286,6 +280,7 @@ class AgentService : Service() {
             val code = NativeRuntime.start(runtime.path, home.path, cacheDir.path, applicationInfo.nativeLibraryDir, pair[1])
             fail("运行时已退出：$code")
         } catch (exception: Throwable) { fail(exception.message ?: exception.javaClass.simpleName) }
+        finally { bootStopped = true }
     }
     private fun handle(frame: JSONObject) {
         if (frame.has("method") && frame.has("id")) {
@@ -391,6 +386,79 @@ class AgentService : Service() {
             }
         }
     }
+    private fun transitionAvailability(): PackageOperationTransitions.Availability = when {
+        phase == "ready" && !bootStopped -> PackageOperationTransitions.Availability.RUNNING
+        bootStopped || mode == "maintenance" && phase == "maintenance" && mutationAllowed ->
+            PackageOperationTransitions.Availability.STOPPED
+        else -> PackageOperationTransitions.Availability.UNKNOWN
+    }
+    private fun transitionReply(client: Messenger, token: String, reply: PackageOperationTransitions.Reply) {
+        send(client, JSONObject().put("method", "runtime.transition").put("params",
+            JSONObject().put("token", token).put("accepted", reply.accepted())
+                .put("code", reply.code() ?: JSONObject.NULL).put("message", reply.message() ?: JSONObject.NULL)))
+    }
+    private fun requestTransition(method: String, token: String, epoch: String?,
+                                  completion: (PackageOperationTransitions.Reply) -> Unit) {
+        val id = "native-transition-${UUID.randomUUID()}"
+        val timeout = Runnable {
+            nativePending.remove(id)?.invoke(Result.failure(IllegalStateException("服务切换确认超时")))
+        }
+        nativePending[id] = { result ->
+            main.removeCallbacks(timeout)
+            val reply = try {
+                val value = result.getOrThrow()
+                check(value.getString("token") == token)
+                if (method == "release") {
+                    PackageOperationTransitions.Reply(value.getBoolean("released"), value.getString("epoch"), null, null, null)
+                } else {
+                    val accepted = value.get("accepted")
+                    check(accepted is Boolean)
+                    PackageOperationTransitions.Reply(accepted, value.getString("epoch"),
+                        if (accepted) value.getString("state") else null,
+                        if (accepted) null else value.getString("code"),
+                        if (accepted) null else value.getString("message"))
+                }
+            } catch (_: Exception) {
+                PackageOperationTransitions.denied("runtime/transition-unconfirmed",
+                    "无法确认插件管理操作状态，旧服务未被主动停止；请重新读取状态")
+            }
+            completion(reply)
+        }
+        main.postDelayed(timeout, 10_000)
+        val params = JSONObject().put("token", token)
+        if (epoch != null) params.put("epoch", epoch)
+        try {
+            // Preserve reserve/release order even when their callbacks time out or the Activity disconnects.
+            transitionWrites.execute {
+                try {
+                    write(JSONObject().put("jsonrpc", "2.0").put("id", id)
+                        .put("method", "runtime.transition.$method").put("params", params))
+                } catch (exception: Exception) {
+                    main.post { nativePending.remove(id)?.invoke(Result.failure(exception)) }
+                }
+            }
+        } catch (exception: java.util.concurrent.RejectedExecutionException) {
+            nativePending.remove(id)?.invoke(Result.failure(exception))
+        }
+    }
+    private fun stopForTransition() {
+        check(Application.getProcessName().endsWith(":agent")) { "Runtime restart requires the dedicated Agent process" }
+        phase = "restarting"
+        background.phase(phase)
+        main.removeCallbacks(summaryPoll)
+        main.removeCallbacks(summaryTimeout)
+        broadcast(status())
+        approvals.close()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+        // libnode starts only once per process. The committed Node gate remains sealed until this process exits.
+        main.post {
+            try { Process.killProcess(Process.myPid()) }
+            catch (_: Exception) {
+                fail("旧运行时停止未确认，插件管理仍暂停；请在系统设置中停止应用后重新打开")
+            }
+        }
+    }
     @Synchronized private fun write(frame: JSONObject) {
         val stream = output ?: throw IllegalStateException("Runtime is not connected")
         stream.write(frame.toString()); stream.newLine(); stream.flush()
@@ -415,8 +483,10 @@ class AgentService : Service() {
         summaryRequest = null
         closeDocumentSearch()
         pending.entries.forEach { send(it.value, error(it.key, message)) }; pending.clear()
-        nativePending.values.toList().forEach { it(Result.failure(IllegalStateException(message))) }
+        val callbacks = nativePending.values.toList()
         nativePending.clear()
+        callbacks.forEach { it(Result.failure(IllegalStateException(message))) }
+        transitions.unavailable()
         approvals.close()
         broadcast(status())
     } }
@@ -433,6 +503,7 @@ class AgentService : Service() {
         clients.remove(client)
         val record = appClients.remove(client) ?: return
         client.binder.unlinkToDeath(record.death, 0)
+        transitions.disconnect(client)
         if (phase != "ready" || workers.isShutdown) return
         workers.execute {
             try {
@@ -452,7 +523,7 @@ class AgentService : Service() {
         }, "document-search-close").start()
     }
     override fun onDestroy() {
-        main.removeCallbacks(transitionExpired)
+        transitions.close()
         main.removeCallbacks(summaryPoll)
         main.removeCallbacks(summaryTimeout)
         summaryRequest = null
@@ -460,6 +531,7 @@ class AgentService : Service() {
         getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(networkCallback)
         closeDocumentSearch()
         output?.close(); workers.shutdownNow()
+        transitionWrites.shutdown()
         // Accepted writes own their completion; Activity cancellation never interrupts commits.
         recoveryWorker.shutdown()
         approvals.close()

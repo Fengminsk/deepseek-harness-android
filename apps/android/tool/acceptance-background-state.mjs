@@ -11,9 +11,14 @@ try {
   const sources = [
     'android/app/src/main/java/com/minnnng/dsh_android/BackgroundTaskState.java',
     'android/app/src/test/java/com/minnnng/dsh_android/BackgroundTaskStateTest.java',
+    'android/app/src/main/java/com/minnnng/dsh_android/PackageOperationTransitions.java',
+    'android/app/src/test/java/com/minnnng/dsh_android/PackageOperationTransitionsTest.java',
   ].map(path => join(project, path))
-  execFileSync('javac', ['-d', output, ...sources], { stdio: 'inherit', windowsHide: true })
+  execFileSync('javac', ['-encoding', 'UTF-8', '-d', output, ...sources], { stdio: 'inherit', windowsHide: true })
   execFileSync('java', ['-cp', output, 'com.minnnng.dsh_android.BackgroundTaskStateTest'], {
+    stdio: 'inherit', windowsHide: true,
+  })
+  execFileSync('java', ['-cp', output, 'com.minnnng.dsh_android.PackageOperationTransitionsTest'], {
     stdio: 'inherit', windowsHide: true,
   })
 } finally {

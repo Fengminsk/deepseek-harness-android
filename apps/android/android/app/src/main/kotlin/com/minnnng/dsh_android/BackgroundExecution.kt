@@ -57,13 +57,14 @@ class BackgroundExecution(private val service: Service) {
         if (closed) return
         val counts = snapshot.getJSONObject("summary")
         val jobs = if (counts.isNull("backgroundJobs")) null else count(counts, "backgroundJobs")
+        val packages = if (counts.isNull("packageOperations")) null else count(counts, "packageOperations")
         val rawRevision = snapshot.get("revision")
         require(rawRevision is Number && rawRevision.toDouble().isFinite()
             && rawRevision.toDouble() == rawRevision.toLong().toDouble() && rawRevision.toLong() >= 0)
         val revision = rawRevision.toLong()
         if (state.accept(snapshot.getString("epoch"), revision,
                 count(counts, "running"), count(counts, "queued"),
-                count(counts, "waiting"), count(counts, "failed"), jobs)) {
+                count(counts, "waiting"), count(counts, "failed"), jobs, packages)) {
             main.removeCallbacks(expire)
             main.postDelayed(expire, SNAPSHOT_LIFETIME_MS)
             render()
@@ -106,6 +107,7 @@ class BackgroundExecution(private val service: Service) {
         .put("waiting", state.waiting())
         .put("failed", state.failed())
         .put("backgroundJobs", state.backgroundJobs() ?: JSONObject.NULL)
+        .put("packageOperations", state.packageOperations() ?: JSONObject.NULL)
         .put("powerError", powerError ?: JSONObject.NULL)
         .put("notificationError", notificationError ?: JSONObject.NULL)
 
@@ -118,13 +120,15 @@ class BackgroundExecution(private val service: Service) {
         "failed" -> "服务异常，任务可能已中断；打开 App 查看"
         "stopped" -> "本地服务已停止"
         "unconfirmed" -> "任务状态尚未确认；打开 App 查看"
-        "partial" -> "Agent 暂无运行任务，后台作业状态尚未确认"
+        "partial" -> "Agent 暂无运行任务，后台作业或插件管理操作状态尚未确认"
         "running" -> buildList {
             if (state.running() > 0) add("${state.running()} 个任务运行中")
             if ((state.backgroundJobs() ?: 0) > 0) add("${state.backgroundJobs()} 个后台作业")
+            if ((state.packageOperations() ?: 0) > 0) add("${state.packageOperations()} 项插件管理操作")
             if (state.waiting() > 0) add("${state.waiting()} 项等待处理")
             if (state.queued() > 0) add("${state.queued()} 条输入排队")
         }.joinToString(" · ")
+        "packages" -> "${state.packageOperations()} 项插件管理操作进行中"
         "waiting" -> "${state.waiting()} 项等待授权或答复"
         "queued" -> "${state.queued()} 条输入等待处理"
         "attention" -> "${state.failed()} 个会话的最近任务失败；打开 App 查看"
@@ -142,7 +146,7 @@ class BackgroundExecution(private val service: Service) {
             .setContentIntent(open).setOngoing(true).setOnlyAlertOnce(true)
             .setShowWhen(false).setCategory(Notification.CATEGORY_SERVICE)
             .setVisibility(Notification.VISIBILITY_PUBLIC)
-        if (state.presentation() == "running") builder.setProgress(0, 0, true)
+        if (state.presentation() in setOf("running", "packages")) builder.setProgress(0, 0, true)
         if (Build.VERSION.SDK_INT >= 31) {
             builder.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE)
         }

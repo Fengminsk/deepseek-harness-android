@@ -17,12 +17,15 @@ const child = spawn(process.execPath, ['--import', new URL('./web-smoke-loader.m
 })
 const exited = once(child, 'exit')
 const records = new Map(), pending = new Map()
+const started = performance.now()
+const trace = label => { if (process.env.POCKET_SMOKE_TRACE === '1') console.error(`[runtime-smoke ${Math.round(performance.now() - started)}ms] ${label}`) }
 let preferences = { enabled: false, scope: 'local', port: 3080 }
 const send = frame => child.stdin.write(JSON.stringify({ jsonrpc: '2.0', ...frame }) + '\n')
 let serial = 0
 const request = (method, params = {}) => {
   const id = `smoke-${++serial}`
-  return new Promise((resolve, reject) => { pending.set(id, { resolve, reject }); send({ id, method, params }) })
+  trace(`request ${id} ${method}${method === 'api.call' ? ` ${params.namespace}.${params.method}` : ''}`)
+  return new Promise((resolve, reject) => { pending.set(id, { method, resolve, reject }); send({ id, method, params }) })
 }
 const boot = Promise.withResolvers()
 const turnEnded = Promise.withResolvers()
@@ -39,6 +42,9 @@ child.once('exit', () => {
 lines.on('line', line => {
   let frame
   try { frame = JSON.parse(line) } catch (error) { boot.reject(new Error('Invalid runtime frame', { cause: error })); return }
+  if (frame.method?.startsWith('native.')) trace(`native request ${frame.method}`)
+  if (frame.method === 'session.event') trace(`session event ${frame.params.event.type}`)
+  if (frame.method === 'session.event' && frame.params.event.type === 'turn/end') trace(`turn ended ${JSON.stringify(frame.params.event.data?.reason ?? frame.params.event.reason)}`)
   if (frame.method?.startsWith('native.credentials.')) {
     const { name, value } = frame.params
     let result = null
@@ -59,10 +65,11 @@ lines.on('line', line => {
   }
   else if (frame.method === 'session.event' && frame.params.sessionId === 'android-smoke-shared'
     && frame.params.event.type === 'turn/end') turnEnded.resolve(frame.params.event)
-  else if (frame.method === 'runtime.ready') boot.resolve()
+  else if (frame.method === 'runtime.ready') { trace('runtime ready'); boot.resolve() }
   else if (pending.has(frame.id)) {
     const waiter = pending.get(frame.id)
     pending.delete(frame.id)
+    trace(`reply ${frame.id} ${waiter.method} ${frame.error ? 'error' : 'ok'}`)
     if (frame.error) waiter.reject(new Error(frame.error.message))
     else waiter.resolve(frame.result)
   } else if (frame.method?.startsWith('native.') && frame.id) {
@@ -70,7 +77,9 @@ lines.on('line', line => {
   }
 })
 let deadline
-const bounded = new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('Runtime smoke timed out')), 60000) })
+const bounded = new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error(
+  `Runtime smoke timed out; pending=${JSON.stringify([...pending.values()].map(call => call.method))}; modelCalls=${model.calls()}; fileReads=${fileReads}`,
+)), 60000) })
 const conflict = createServer()
 try {
   await Promise.race([(async () => {
@@ -94,7 +103,10 @@ try {
     const receipt = await request('session.send', { sessionId: created.sessionId, requestId: 'smoke-prompt',
       text: 'Read the authorized fixture file.', provider: 'deepseek-official', model: 'deepseek-flash', selectModel: true })
     assert.equal(receipt.accepted, true)
-    await model.waiting
+    trace('awaiting held second model response')
+    await Promise.race([model.waiting, turnEnded.promise.then(event => {
+      throw new Error(`Turn ended before the held model response: ${JSON.stringify(event.data.reason)}`)
+    })])
     assert.equal(fileReads, 1)
     assert.equal((await request('runtime.live')).statuses[created.sessionId], 'running')
     const waiting = await request('web.configure', { enabled: true, scope: 'lan', port: 3080 })
