@@ -1733,6 +1733,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         parameters: [{ name: 'modules', description: 'Exact loader module names, including platform-controlled disabled entries.' }],
       },
       {
+        signature: 'packageOperationsSnapshot(): readonly PluginPackageOperation[]',
+        description: 'Read all admitted package calls, including lock waits, rollback and application. This synchronous Host-only snapshot does not retain completed outcomes.',
+        parameters: [],
+        returns: 'Active operations; registry reads nested inside inspection or installation count once.',
+      },
+      {
         signature: '@Remote listVersionExemptions(): { exemptions: Record<string, string[]>; warnings: string[] }',
         description: 'Read exact plugin-version exemptions saved in this profile.',
         parameters: [],
@@ -1757,13 +1763,13 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'Package versions, manifest descriptions, the installable spec of profile dependencies, rows, optional display metadata, activation selections, whether the installation offers the bundle, and removal availability.',
       },
       {
-        signature: '@Remote async registries(): Promise<PluginRegistries>',
+        signature: '@Remote registries(): Promise<PluginRegistries>',
         description: 'Read the registries this manager asks: the configured first one, its fallbacks in order, and what pnpm\'s own configuration names.',
         parameters: [],
         returns: 'The registries in pnpm\'s comparison form; null is the one pnpm\'s own configuration names, `resolved` as pnpm reads it now.',
       },
       {
-        signature: '@Remote async inspect(spec: string, options?: InspectOptions, signal?: AbortSignal): Promise<PluginSpecInspection>',
+        signature: '@Remote inspect(spec: string, options?: InspectOptions, signal?: AbortSignal): Promise<PluginSpecInspection>',
         description: 'Read what a spec names before installing it.',
         parameters: [{ name: 'spec', description: 'One package spec: a registry name, an absolute path, a git address, or a tarball.' }, { name: 'options', description: 'The registry asked first.' }, { name: 'signal', description: 'Ends a registry lookup early.' }],
         returns: 'The package the spec names, or why it is refused.',
@@ -4412,6 +4418,14 @@ export const EVENT_API: readonly EventApiEntry[] = [
     parameters: [],
   },
   {
+    name: 'plugin-manager/before-package-operation',
+    mode: 'emit',
+    signature: '\'plugin-manager/before-package-operation\'(operation: PluginPackageOperation): void',
+    summary: 'Synchronous admission before a package operation enters the active snapshot or starts work.',
+    description: 'Synchronous admission before a package operation enters the active snapshot or starts work. Listeners must be synchronous; throwing refuses the call without starting it.',
+    parameters: [{ name: 'operation', description: 'the proposed operation, with an id distinct from every other call.' }],
+  },
+  {
     name: 'plugin-manager/changed',
     mode: 'emit',
     signature: '\'plugin-manager/changed\'(change: PluginChange): void',
@@ -4434,6 +4448,14 @@ export const EVENT_API: readonly EventApiEntry[] = [
     summary: 'An installation moved between its Host phases.',
     description: 'An installation moved between its Host phases. `installing` is announced once per registry the installation asks, with the attempt\'s registry and position; `cancelling` and `applying` once.',
     parameters: [{ name: 'progress', description: 'the installation\'s request id and phase, with the attempt while installing.' }],
+  },
+  {
+    name: 'plugin-manager/package-operation',
+    mode: 'emit',
+    signature: '\'plugin-manager/package-operation\'(operation: PluginPackageOperation, phase: \'started\' | \'settled\'): void',
+    summary: 'The active package snapshot changed.',
+    description: 'The active package snapshot changed. Started calls include lock waits; settlement follows rollback, application and request cleanup. Listener failures are logged without changing the operation\'s result, and returned promises do not delay it. The snapshot is already updated.',
+    parameters: [{ name: 'operation', description: 'the admitted operation that entered or left the snapshot.' }, { name: 'phase', description: 'whether its full call started or settled, independently of success or cancellation.' }],
   },
   {
     name: 'plugin-market/changed',
@@ -6466,6 +6488,14 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'PluginOptionValue',
     declaration: 'export type PluginOptionValue = string | number | boolean | readonly string[];',
+  },
+  {
+    name: 'PluginPackageOperation',
+    declaration: 'export interface PluginPackageOperation {\n    readonly id: PluginPackageOperationId;\n    readonly kind: \'inspect\' | \'registries\' | \'install\' | \'remove\';\n}',
+  },
+  {
+    name: 'PluginPackageOperationId',
+    declaration: 'export type PluginPackageOperationId = Branded<\'PluginPackageOperationId\'>;',
   },
   {
     name: 'PluginRegistries',

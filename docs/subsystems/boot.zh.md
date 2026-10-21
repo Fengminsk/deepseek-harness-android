@@ -16,6 +16,8 @@
 
 `PluginRegistries` 携带配置的第一个注册表（`null` 即 pnpm 自身配置指定的那个）、随后依次询问的备选注册表，以及 `resolved`——pnpm 自身配置指向的 URL，未读到时为 `null`。`InspectOptions.registry` 指定一次查询首先询问的注册表。
 
+`PluginPackageOperation` 携带进程内的 `PluginPackageOperationId` 和 `kind`：`inspect`、`registries`、`install` 或 `remove`。该 id 标识一次通过准入的调用，独立于安装请求 id；仅供 Host 使用的活动快照保留该记录直到调用完成清理，内部注册表读取计入其外层操作。
+
 `ChangeResult.changed` 报告磁盘修改，独立于 `application`：`applied`、`restart-required`、`overridden` 或 `failed`。可选的 `error` 包含可本地化的错误码和外部诊断。`packageResult` 记录 pnpm 退出码、有界输出、截断标志及完整诊断日志路径；当管理器终止了一个停止打印的运行，还记录 `timedOut`。被终止的运行不论信号留下什么退出状态都归类为 `timeout`，因此安装与删除都报告失败而非成功，也不会再询问下一个注册表。`pendingBuilds` 列出整个 profile 尚未决定的包；`approvedBuilds` 记录本次操作授予权限的包名；`registries` 按顺序列出一次安装问过的注册表；`bundle` 与 `version` 给出完成的安装新增的包及其清单版本；`failedAt` 说明最后一次失败的运行连不上的是所问的注册表，还是 git 或 tarball spec 自身拉取的主机。
 
 ## 市场记录
@@ -149,6 +151,12 @@ Manage profile files and apply their declared reload lifecycle.
  */
 protectModules(modules: readonly string[]): void
 
+/** Read all admitted package calls, including lock waits, rollback and application.
+ * This synchronous Host-only snapshot does not retain completed outcomes.
+ * @returns Active operations; registry reads nested inside inspection or installation count once.
+ */
+packageOperationsSnapshot(): readonly PluginPackageOperation[]
+
 /** Read exact plugin-version exemptions saved in this profile.
  * @returns Accepted package-name@version keys with the runtime versions they may run on, and any
  * record or file problem the reader rejected, which the caller reports instead of failing.
@@ -179,7 +187,7 @@ protectModules(modules: readonly string[]): void
 /** Read the registries this manager asks: the configured first one, its fallbacks in order, and what pnpm's own configuration names.
  * @returns The registries in pnpm's comparison form; null is the one pnpm's own configuration names, `resolved` as pnpm reads it now.
  */
-@Remote async registries(): Promise<PluginRegistries>
+@Remote registries(): Promise<PluginRegistries>
 
 /** Read what a spec names before installing it.
  * @param spec One package spec: a registry name, an absolute path, a git address, or a tarball.
@@ -187,7 +195,7 @@ protectModules(modules: readonly string[]): void
  * @param signal Ends a registry lookup early.
  * @returns The package the spec names, or why it is refused.
  */
-@Remote async inspect(spec: string, options?: InspectOptions, signal?: AbortSignal): Promise<PluginSpecInspection>
+@Remote inspect(spec: string, options?: InspectOptions, signal?: AbortSignal): Promise<PluginSpecInspection>
 
 /** Persist a plugin entry's desired enablement and apply it on live profiles.
  * @param id Loader entry identity returned by listPlugins.
@@ -377,6 +385,24 @@ Source: [`packages/boot/hmr/src/index.ts`](../../packages/boot/hmr/src/index.ts)
 
 ### `plugin-manager/*` events
 
+<a id="plugin-managerbefore-package-operation--emit"></a>
+
+#### `plugin-manager/before-package-operation` — emit
+
+Synchronous admission before a package operation enters the active snapshot or starts work. Listeners must be synchronous; throwing refuses the call without starting it.
+
+```ts cordis-catalog
+/**
+ * Synchronous admission before a package operation enters the active snapshot or starts work.
+ * Listeners must be synchronous; throwing refuses the call without starting it.
+ * @mode emit
+ * @param operation - the proposed operation, with an id distinct from every other call.
+ */
+'plugin-manager/before-package-operation'(operation: PluginPackageOperation): void
+```
+
+Source: [`packages/boot/plugin-manager/src/types.ts`](../../packages/boot/plugin-manager/src/types.ts)
+
 <a id="plugin-managerchanged--emit"></a>
 
 #### `plugin-manager/changed` — emit
@@ -427,6 +453,26 @@ An installation moved between its Host phases. `installing` is announced once pe
  * @param progress - the installation's request id and phase, with the attempt while installing.
  */
 'plugin-manager/install-state'(progress: PluginInstallProgress): void
+```
+
+Source: [`packages/boot/plugin-manager/src/types.ts`](../../packages/boot/plugin-manager/src/types.ts)
+
+<a id="plugin-managerpackage-operation--emit"></a>
+
+#### `plugin-manager/package-operation` — emit
+
+The active package snapshot changed. Started calls include lock waits; settlement follows rollback, application and request cleanup. Listener failures are logged without changing the operation's result, and returned promises do not delay it. The snapshot is already updated.
+
+```ts cordis-catalog
+/**
+ * The active package snapshot changed. Started calls include lock waits; settlement follows
+ * rollback, application and request cleanup. Listener failures are logged without changing the
+ * operation's result, and returned promises do not delay it. The snapshot is already updated.
+ * @mode emit
+ * @param operation - the admitted operation that entered or left the snapshot.
+ * @param phase - whether its full call started or settled, independently of success or cancellation.
+ */
+'plugin-manager/package-operation'(operation: PluginPackageOperation, phase: 'started' | 'settled'): void
 ```
 
 Source: [`packages/boot/plugin-manager/src/types.ts`](../../packages/boot/plugin-manager/src/types.ts)

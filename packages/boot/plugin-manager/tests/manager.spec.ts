@@ -15,12 +15,13 @@ import {
   reconcileProfilePatches, OPTIONAL_BUNDLES, OFFICIAL_ON_DEMAND_CATALOG, PluginPackages, readPluginMeta, getDshRuntimeVersion,
   type ProfileContext, type RuntimeResolution,
 } from '@deepseek-ai/dsh-app-boot'
-import PluginManager, { type Config, type PluginChange, type PluginInstallLogChunk, type PluginInstallProgress, type PluginInstallRequestId } from '../src/index.ts'
+import PluginManager, { type ChangeResult, type Config, type PluginChange, type PluginInstallLogChunk, type PluginInstallProgress, type PluginInstallRequestId } from '../src/index.ts'
 import Hmr from '@deepseek-ai/dsh-hmr'
 import Timer from '@deepseek-ai/cordis-plugin-timer'
 import type { PatchOptions } from '@deepseek-ai/cordis-plugin-include'
 import { Group } from '@deepseek-ai/cordis-plugin-loader'
 import { remoteMethods } from '@deepseek-ai/dsh-typert-protocol'
+import * as atomicWrite from '@deepseek-ai/dsh-atomic-write'
 import * as operations from '../src/operations.ts'
 import * as githubConnection from '../src/github-connection.ts'
 import { parse, parseDocument } from 'yaml'
@@ -173,9 +174,11 @@ it('disposal waits for an active GitHub check to stop', async () => {
   onTestFinished(() => { pnpm.mockRestore() })
   const installing = manager.installBundle('github:acme/addon')
   await entered.promise
+  expect(manager.packageOperationsSnapshot().map(operation => operation.kind)).toEqual(['install'])
   await ctx.fiber.dispose()
   await released.promise
   expect(await installing).toMatchObject({ application: 'cancelled', changed: false })
+  expect(manager.packageOperationsSnapshot()).toEqual([])
   expect(pnpm).not.toHaveBeenCalled()
 })
 
@@ -1793,4 +1796,201 @@ it.each(['absent', 'bundle', 'not-bundle', 'unreadable'])('keeps a missing sourc
   })
   expect((await manager.listBundles()).find(item => item.name === name)?.error?.diagnostic).toContain('restore the checkout')
   expect((await manager.listBundles()).find(item => item.name === name)?.installTarget).toBeUndefined()
+})
+
+it('package operation lifecycle exposes synchronous activity without adding a Remote method or nested registry calls', async () => {
+  const { ctx, manager } = await fixture()
+  const release = Promise.withResolvers<string>()
+  vi.mocked(operations.readProfileRegistry).mockReturnValue(release.promise)
+  const observations: { kind: string; phase: string; active: number }[] = []
+  ctx.on('plugin-manager/package-operation', (operation, phase) => {
+    observations.push({ kind: operation.kind, phase, active: manager.packageOperationsSnapshot().length })
+  })
+  expect(remoteMethods(manager).some(method => method.method === 'packageOperationsSnapshot')).toBe(false)
+  const inspection = manager.inspect('github:acme/addon')
+  const registries = manager.registries()
+  try {
+    expect(manager.packageOperationsSnapshot().map(operation => operation.kind)).toEqual(['inspect', 'registries'])
+    expect(new Set(manager.packageOperationsSnapshot().map(operation => operation.id)).size).toBe(2)
+    expect(observations).toEqual([
+      { kind: 'inspect', phase: 'started', active: 1 },
+      { kind: 'registries', phase: 'started', active: 2 },
+    ])
+  } finally {
+    release.resolve('https://registry.npmjs.org/')
+  }
+  expect(await inspection).toMatchObject({ status: 'accepted' })
+  await registries
+  expect(manager.packageOperationsSnapshot()).toEqual([])
+  expect(observations.filter(event => event.phase === 'settled')).toHaveLength(2)
+  expect(observations.at(-1)?.active).toBe(0)
+})
+
+it('package operation lifecycle admission refuses all callers before side effects and unregisters with its fiber', async () => {
+  const { ctx, manager, dir, connection } = await fixture()
+  const before = readFileSync(join(dir, 'package.json'), 'utf8')
+  const refusal = new Error('Host maintenance is reserved')
+  const kinds: string[] = []
+  const observer = await ctx.plugin((scope) => {
+    scope.on('plugin-manager/before-package-operation', (operation) => {
+      expect(manager.packageOperationsSnapshot()).toEqual([])
+      kinds.push(operation.kind)
+      throw refusal
+    })
+  })
+  const notices = vi.fn()
+  ctx.on('plugin-manager/package-operation', notices)
+  const requestId = '824103ec-bc45-489d-bb85-5b4fe0aefc78' as PluginInstallRequestId
+  const calls = [manager.inspect('github:acme/addon'), manager.registries(),
+    manager.installBundle('addon', { requestId }), manager.removeBundle('extra')]
+  for (const call of calls) await expect(call).rejects.toBe(refusal)
+  expect(kinds).toEqual(['inspect', 'registries', 'install', 'remove'])
+  expect(notices).not.toHaveBeenCalled()
+  expect(operations.readProfileRegistry).not.toHaveBeenCalled()
+  expect(connection).not.toHaveBeenCalled()
+  expect(await manager.waitForInstall(requestId)).toBeNull()
+  expect(await manager.cancelInstall(requestId)).toEqual({ status: 'not-running' })
+  expect(readFileSync(join(dir, 'package.json'), 'utf8')).toBe(before)
+  await observer.dispose()
+  expect(await manager.inspect('github:acme/addon')).toMatchObject({ status: 'accepted' })
+})
+
+it('package operation lifecycle contains failing and pending observers without changing results or rejection', async () => {
+  const { ctx, manager } = await fixture()
+  const release = Promise.withResolvers<undefined>()
+  const phases: string[] = []
+  ctx.on('plugin-manager/package-operation', () => { throw new Error('synchronous observer failure') })
+  // oxlint-disable-next-line typescript/no-misused-promises -- exercises rejected-listener containment
+  ctx.on('plugin-manager/package-operation', async () => { throw new Error('asynchronous observer failure') })
+  // oxlint-disable-next-line typescript/no-misused-promises -- a pending observer must not delay package settlement
+  ctx.on('plugin-manager/package-operation', () => release.promise)
+  ctx.on('plugin-manager/package-operation', (_operation, phase) => { phases.push(phase) })
+  try {
+    expect(await manager.inspect('')).toMatchObject({ status: 'refused', problem: 'invalid-spec' })
+    const failure = new Error('registry unavailable')
+    vi.mocked(operations.readProfileRegistry).mockRejectedValueOnce(failure)
+    await expect(manager.registries()).rejects.toBe(failure)
+    expect(manager.packageOperationsSnapshot()).toEqual([])
+    expect(phases).toEqual(['started', 'settled', 'started', 'settled'])
+  } finally {
+    release.resolve(undefined)
+  }
+})
+
+it('package operation lifecycle retains installations without request ids through connection checks and lock rejection', async () => {
+  const { ctx, manager, dir, connection } = await fixture('startup', false, undefined, { lockWaitMs: 1 })
+  const entered = Promise.withResolvers<undefined>()
+  const release = Promise.withResolvers<undefined>()
+  const phases: string[] = []
+  ctx.on('plugin-manager/package-operation', (operation, phase) => { phases.push(`${operation.kind}:${phase}`) })
+  connection.mockImplementation(async () => {
+    entered.resolve(undefined)
+    await release.promise
+    return { exitCode: 1, output: 'offline', truncated: false, logPath: join(dir, 'git.log'), kind: 'network' }
+  })
+  const installing = manager.installBundle('github:acme/addon')
+  await entered.promise
+  try {
+    const removal = manager.removeBundle('extra')
+    expect(manager.packageOperationsSnapshot().map(operation => operation.kind)).toEqual(['install', 'remove'])
+    await expect(removal).rejects.toThrow('timed out waiting for the writer lock')
+    expect(manager.packageOperationsSnapshot().map(operation => operation.kind)).toEqual(['install'])
+  } finally {
+    release.resolve(undefined)
+  }
+  expect(await installing).toMatchObject({ application: 'failed', failedAt: 'spec-host' })
+  expect(manager.packageOperationsSnapshot()).toEqual([])
+  expect(phases).toEqual(['install:started', 'remove:started', 'remove:settled', 'install:settled'])
+})
+
+it('package operation lifecycle keeps cancellation active through file restoration and request cleanup', async () => {
+  const { ctx, manager, dir } = await fixture()
+  const requestId = '824103ec-bc45-489d-bb85-5b4fe0aefc78' as PluginInstallRequestId
+  const file = join(dir, 'package.json')
+  const before = readFileSync(file, 'utf8')
+  const started = Promise.withResolvers<undefined>()
+  const restoring = Promise.withResolvers<undefined>()
+  const release = Promise.withResolvers<undefined>()
+  const originalWrite = atomicWrite.writeFileAtomic
+  const write = vi.spyOn(atomicWrite, 'writeFileAtomic').mockImplementation(async (path, content, options) => {
+    if (path === file && content === before) {
+      restoring.resolve(undefined)
+      await release.promise
+    }
+    return originalWrite(path, content, options)
+  })
+  const pnpm = vi.spyOn(operations, 'runProfilePnpm').mockImplementation(async (_profile, _args, options) => {
+    writeFileSync(file, JSON.stringify({ ...JSON.parse(before), dependencies: { incomplete: '1.0.0' } }))
+    started.resolve(undefined)
+    await new Promise<void>(resolve => options.signal?.addEventListener('abort', () => { resolve() }, { once: true }))
+    return { exitCode: 1, output: 'stopped', truncated: false, logPath: join(dir, 'pnpm.log') }
+  })
+  onTestFinished(() => { write.mockRestore(); pnpm.mockRestore() })
+  let settledRecovery: Promise<ChangeResult | null> | undefined
+  ctx.on('plugin-manager/package-operation', (_operation, phase) => {
+    if (phase === 'settled') settledRecovery = manager.waitForInstall(requestId)
+  })
+  const installing = manager.installBundle('slow', { requestId })
+  await started.promise
+  let cancellationFinished = false
+  const cancellation = manager.cancelInstall(requestId).then((result) => { cancellationFinished = true; return result })
+  await restoring.promise
+  const recovered = manager.waitForInstall(requestId)
+  try {
+    expect(cancellationFinished).toBe(false)
+    expect(readFileSync(file, 'utf8')).not.toBe(before)
+    expect(manager.packageOperationsSnapshot().map(operation => operation.kind)).toEqual(['install'])
+  } finally {
+    release.resolve(undefined)
+  }
+  expect(await cancellation).toEqual({ status: 'cancelled' })
+  const result = await installing
+  expect(result).toMatchObject({ application: 'cancelled', changed: false })
+  expect(await recovered).toEqual(result)
+  expect(await settledRecovery).toBeNull()
+  expect(manager.packageOperationsSnapshot()).toEqual([])
+  expect(readFileSync(file, 'utf8')).toBe(before)
+})
+
+it('package operation lifecycle includes non-cancellable application and the full removal call', async () => {
+  const { ctx, manager, dir, bundle } = await fixture()
+  const requestId = '824103ec-bc45-489d-bb85-5b4fe0aefc78' as PluginInstallRequestId
+  const applying = Promise.withResolvers<undefined>()
+  const release = Promise.withResolvers<undefined>()
+  const originalReconcile = ctx.hmr.reconcileProfile.bind(ctx.hmr)
+  const reload = vi.spyOn(ctx.hmr, 'reconcileProfile').mockImplementation(async (ids) => {
+    applying.resolve(undefined)
+    await release.promise
+    return originalReconcile(ids)
+  })
+  const pnpm = vi.spyOn(operations, 'runProfilePnpm').mockImplementation(async (_profile, args) => {
+    const manifest = readProfileManifest('test', dir)
+    if (args[0] === 'add') {
+      expect(manager.packageOperationsSnapshot().map(operation => operation.kind)).toEqual(['install'])
+      bundle('addon', [])
+      manifest.dependencies = { ...manifest.dependencies, addon: '1.0.0' }
+    } else {
+      expect(manager.packageOperationsSnapshot().map(operation => operation.kind)).toEqual(['remove'])
+      delete manifest.dependencies?.extra
+    }
+    writeFileSync(join(dir, 'package.json'), JSON.stringify(manifest))
+    return { exitCode: 0, output: 'complete', truncated: false, logPath: join(dir, 'pnpm.log') }
+  })
+  onTestFinished(() => { reload.mockRestore(); pnpm.mockRestore() })
+  const installing = manager.installBundle('addon', { requestId })
+  await applying.promise
+  const recovered = manager.waitForInstall(requestId)
+  try {
+    expect(await manager.cancelInstall(requestId)).toEqual({ status: 'too-late' })
+    expect(manager.packageOperationsSnapshot().map(operation => operation.kind)).toEqual(['install'])
+  } finally {
+    release.resolve(undefined)
+  }
+  const installed = await installing
+  expect(installed).toMatchObject({ application: 'applied', bundle: 'addon' })
+  expect(await recovered).toEqual(installed)
+  expect(manager.packageOperationsSnapshot()).toEqual([])
+  reload.mockRestore()
+  expect(await manager.removeBundle('extra')).toMatchObject({ application: 'applied', changed: true })
+  expect(manager.packageOperationsSnapshot()).toEqual([])
 })

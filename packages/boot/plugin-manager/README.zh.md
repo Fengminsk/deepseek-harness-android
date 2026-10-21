@@ -63,6 +63,8 @@ kind: "package-reference"
 
 `waitForInstall(requestId)` 让客户端在响应丢失后等待活动安装的结果，包括不可取消的应用阶段。它返回与原调用相同的结果，请求不在活动中时返回 `null`。已完成的结果不保留；`null` 不表示成功或已取消。
 
+Host 通过同步、仅供 Host 调用的 `packageOperationsSnapshot()` 观察包操作。它涵盖每次通过准入的 `inspect`、`registries`、`installBundle` 和 `removeBundle` 调用，包括等待文件锁、连接检查、注册表重试、回滚、应用和安装请求清理。内部注册表读取归属于外层调用；未提供安装请求 id 的调用也会计入。`plugin-manager/before-package-operation` 允许同步监听器抛错拒绝新操作，此时尚未登记活动或产生包操作副作用。Host 可以在同步确认快照为空后预留维护状态，再通过该监听器拒绝后续调用。`plugin-manager/package-operation` 在更新快照后通告 `started` 和 `settled`；结束不代表成功。所有通知监听器都会执行，其失败只记录到日志，返回的 Promise 不延迟包操作结果。活动观察与维护准入都不会取消已经接受的操作。
+
 pnpm 11 拦下依赖脚本时，失败的安装在 `pendingBuilds` 里报告 profile 中所有待决定的包名，包括先前尝试留下的，以及本次运行报告为已忽略的。pnpm 只在能够交互提示时才把这些条目写入 `pnpm-workspace.yaml`，因此由管理器自行记录本次运行报告的包名；失败的运行会恢复 `package.json` 与 `pnpm-lock.yaml`，但有意不恢复 `pnpm-workspace.yaml`。Web 插件页提供**允许这些脚本并重试**；工具可以在用户于对话中批准这些脚本后，通过 `install_bundle` 的 `approvedBuilds` 代为授权。服务只校验待决定的名字，不核实对话中的批准。授权按包名保存在当前 profile，允许以宿主用户的权限执行命令，并在再次安装失败后保留。只能批准当前未决定的名字；已有的拒绝与通配规则不能通过此操作覆盖。`allowBuilds` 里出现 YAML 锚点或别名时拒绝授权。重试保留原来的启用选择。
 
 <a id="version-compatibility-and-exemptions"></a>

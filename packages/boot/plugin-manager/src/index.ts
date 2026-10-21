@@ -33,7 +33,7 @@ import { checkGithubConnection } from './github-connection.ts'
 import type {
   BundleInfo, BundleRowInfo, ChangeResult, InspectOptions, InstallBundleOptions, ManagementError, PackageResult, PluginChange,
   PluginEntryId, PluginInfo, PluginInspectProblem, PluginInstallCancellation, PluginInstallProgress, PluginInstallRequestId,
-  PluginRegistries, PluginSpecInspection, Registry,
+  PluginPackageOperation, PluginPackageOperationId, PluginRegistries, PluginSpecInspection, Registry,
 } from './types.ts'
 export type * from './types.ts'
 export { classifyInstallFailure, type InstallFailureFacts } from './install-failure.ts'
@@ -229,6 +229,7 @@ export class PluginManager extends TypertRemoteService {
   private readonly installedFrom = new Map<string, Registry>()
   private readonly ownerEntryId: string | undefined
   private readonly packageOperations = new Set<Promise<unknown>>()
+  private readonly activePackageOperations = new Map<PluginPackageOperationId, PluginPackageOperation>()
   private readonly profile: ProfileContext
   private readonly outputBytes: number
   private readonly lockWaitMs: number
@@ -272,6 +273,33 @@ export class PluginManager extends TypertRemoteService {
     if (modules.some(name => typeof name !== 'string' || name.trim() === '')) throw new TypeError('Module names must be nonempty strings')
     for (const name of modules) this.hostModules.add(name)
     for (const name of bundleSelection(readProfileManifest('dsh', this.profile.dir))) this.protectsHost(name)
+  }
+
+  /** Read all admitted package calls, including lock waits, rollback and application.
+   * This synchronous Host-only snapshot does not retain completed outcomes.
+   * @returns Active operations; registry reads nested inside inspection or installation count once.
+   */
+  packageOperationsSnapshot(): readonly PluginPackageOperation[] {
+    return [...this.activePackageOperations.values()]
+  }
+
+  private async packageOperation<T>(kind: PluginPackageOperation['kind'], run: () => Promise<T>): Promise<T> {
+    const operation: PluginPackageOperation = { id: randomUUID() as PluginPackageOperationId, kind }
+    this.ownerContext.emit('plugin-manager/before-package-operation', operation)
+    this.activePackageOperations.set(operation.id, operation)
+    this.announcePackageOperation(operation, 'started')
+    try {
+      return await run()
+    } finally {
+      this.activePackageOperations.delete(operation.id)
+      this.announcePackageOperation(operation, 'settled')
+    }
+  }
+
+  private announcePackageOperation(operation: PluginPackageOperation, phase: 'started' | 'settled'): void {
+    void this.ownerContext.parallel('plugin-manager/package-operation', operation, phase).catch((error: unknown) => {
+      this.ownerContext.logger.warn('Package operation listener failed', error)
+    })
   }
 
   /** Read exact plugin-version exemptions saved in this profile.
@@ -405,7 +433,11 @@ export class PluginManager extends TypertRemoteService {
    * @returns The registries in pnpm's comparison form; null is the one pnpm's own configuration names, `resolved` as pnpm reads it now.
    */
   @Remote
-  async registries(): Promise<PluginRegistries> {
+  registries(): Promise<PluginRegistries> {
+    return this.packageOperation('registries', () => this.readRegistries())
+  }
+
+  private async readRegistries(): Promise<PluginRegistries> {
     return {
       ...this.configuredRegistries, fallbackRegistries: [...this.configuredRegistries.fallbackRegistries],
       resolved: await readProfileRegistry(this.profile.dir, {
@@ -421,82 +453,86 @@ export class PluginManager extends TypertRemoteService {
    * @returns The package the spec names, or why it is refused.
    */
   @Remote
-  async inspect(spec: string, options?: InspectOptions, signal?: AbortSignal): Promise<PluginSpecInspection> {
-    let parsed
-    try {
-      parsed = parseInstallSpec(spec)
-    } catch (error) {
-      /* v8 ignore next 2 -- parseInstallSpec throws nothing but its own refusal */
-      if (!(error instanceof InvalidInstallSpecError)) throw error
-      return refused('invalid-spec', error.reason)
-    }
-    const manifest = readProfileManifest('dsh', this.profile.dir)
-    const installation = JSON.parse(readFileSync(this.profile.installAnchor, 'utf8')) as InstallationManifest
-    const known = new Set([
-      ...bundleSelection(manifest), ...Object.keys(manifest.dependencies ?? {}), ...Object.keys(installation.dependencies ?? {}),
-    ])
-    const plan = registryPlan(options?.registry, await this.registries())
-    const registry = plan[0] as Registry
-    switch (parsed.kind) {
-      case 'git': return { status: 'accepted', kind: 'git', bundle: null, registry, host: parsed.host }
-      case 'tarball':
-        if (parsed.path !== undefined && !existsSync(parsed.path)) return refused('not-a-package', 'the tarball does not exist')
-        return { status: 'accepted', kind: 'tarball', bundle: null, registry, ...parsed.host === undefined ? {} : { host: parsed.host } }
-      case 'path': {
-        if (!existsSync(parsed.path)) return refused('not-a-package', 'the path does not exist')
-        let read: object
-        try {
-          read = JSON.parse(await readFile(join(parsed.path, 'package.json'), 'utf8')) as object
-        } catch (error) {
-          return refused('not-a-package', `no readable package.json at the path: ${messageOf(error)}`)
-        }
-        const inspection = inspectionOf('path', read, registry)
-        if (inspection.name === undefined) return refused('not-a-package', 'the package.json names no package')
-        if (known.has(inspection.name)) return refused('already-installed', `${inspection.name} is already installed`)
-        if (!inspection.bundle) return refused('not-a-bundle', `${inspection.name} declares no dsh.bundle`)
-        return inspection
+  inspect(spec: string, options?: InspectOptions, signal?: AbortSignal): Promise<PluginSpecInspection> {
+    return this.packageOperation('inspect', async () => {
+      let parsed
+      try {
+        parsed = parseInstallSpec(spec)
+      } catch (error) {
+        /* v8 ignore next 2 -- parseInstallSpec throws nothing but its own refusal */
+        if (!(error instanceof InvalidInstallSpecError)) throw error
+        return refused('invalid-spec', error.reason)
       }
-      case 'registry': {
-        if (known.has(parsed.name)) return refused('already-installed', `${parsed.name} is already installed`)
-        const registries: Registry[] = []
-        const refusedBy = (problem: PluginInspectProblem, reason: string): PluginSpecInspection =>
-          ({ status: 'refused', problem, reason, registries })
-        for (const current of plan) {
-          registries.push(current)
-          const view = await viewProfilePackage(this.profile.dir, spec.trim(), {
-            ...this.profile.packageManager ?? { command: this.pnpmCommand },
-            timeoutMs: this.inspectTimeoutMs, ...signal === undefined ? {} : { signal }, registry: current,
-          })
-          const printed = view.stdout.replace(ANSI_SEQUENCE, '').trim()
-          if (view.exitCode !== 0 || view.cause !== undefined || view.timedOut) {
-            // pnpm prints a refusal as `{ error: { code, message } }` on stdout, with nothing on stderr.
-            const log = [view.stderr.trim(), printedError(printed), view.cause === undefined ? '' : messageOf(view.cause)].filter(Boolean).join('\n')
-            const kind = classifyInstallFailure({ log, timedOut: view.timedOut, ...view.cause === undefined ? {} : { cause: view.cause } })
-            // A lookup the caller dropped is not carried to the next registry.
-            if (registries.length < plan.length && signal?.aborted !== true && attributeFailure(kind, log, parsed) === 'registry') continue
-            const reason = view.timedOut ? `pnpm view timed out after ${String(this.inspectTimeoutMs)}ms` : log || printed || `pnpm view exited with ${String(view.exitCode)}`
-            if (kind === 'not-found' || kind === 'no-matching-version') return refusedBy('not-found', reason)
-            if (kind === 'network' || kind === 'timeout') return refusedBy('network', reason)
-            return refusedBy('unknown', reason)
-          }
-          let answer: unknown
+      const manifest = readProfileManifest('dsh', this.profile.dir)
+      const installation = JSON.parse(readFileSync(this.profile.installAnchor, 'utf8')) as InstallationManifest
+      const known = new Set([
+        ...bundleSelection(manifest), ...Object.keys(manifest.dependencies ?? {}), ...Object.keys(installation.dependencies ?? {}),
+      ])
+      const plan = registryPlan(options?.registry, await this.readRegistries())
+      const registry = plan[0] as Registry
+      switch (parsed.kind) {
+        case 'git': return { status: 'accepted', kind: 'git', bundle: null, registry, host: parsed.host }
+        case 'tarball':
+          if (parsed.path !== undefined && !existsSync(parsed.path)) return refused('not-a-package', 'the tarball does not exist')
+          return { status: 'accepted', kind: 'tarball', bundle: null, registry, ...parsed.host === undefined ? {} : { host: parsed.host } }
+        case 'path': {
+          if (!existsSync(parsed.path)) return refused('not-a-package', 'the path does not exist')
+          let read: object
           try {
-            answer = JSON.parse(printed || 'null')
+            read = JSON.parse(await readFile(join(parsed.path, 'package.json'), 'utf8')) as object
           } catch (error) {
-            return refusedBy('unknown', `unreadable pnpm view output: ${messageOf(error)}`)
+            return refused('not-a-package', `no readable package.json at the path: ${messageOf(error)}`)
           }
-          // A range answers one object per matching version, oldest first.
-          const latest: unknown = Array.isArray(answer) ? answer.at(-1) : answer
-          if (typeof latest !== 'object' || latest === null) return refusedBy('unknown', 'pnpm view answered no package')
-          const inspection = inspectionOf('registry', latest, current)
-          const named = inspection.name === undefined ? { ...inspection, name: parsed.name } : inspection
-          if (!named.bundle) return refusedBy('not-a-bundle', `${named.name} declares no dsh.bundle`)
-          return named
+          const inspection = inspectionOf('path', read, registry)
+          if (inspection.name === undefined) return refused('not-a-package', 'the package.json names no package')
+          if (known.has(inspection.name)) return refused('already-installed', `${inspection.name} is already installed`)
+          if (!inspection.bundle) return refused('not-a-bundle', `${inspection.name} declares no dsh.bundle`)
+          return inspection
         }
-        /* v8 ignore next -- the plan is never empty: every attempt returns or continues to the next */
-        throw new Error('no registry was asked')
+        case 'registry': {
+          if (known.has(parsed.name)) return refused('already-installed', `${parsed.name} is already installed`)
+          const registries: Registry[] = []
+          const refusedBy = (problem: PluginInspectProblem, reason: string): PluginSpecInspection =>
+            ({ status: 'refused', problem, reason, registries })
+          for (const current of plan) {
+            registries.push(current)
+            const view = await viewProfilePackage(this.profile.dir, spec.trim(), {
+              ...this.profile.packageManager ?? { command: this.pnpmCommand },
+              timeoutMs: this.inspectTimeoutMs, ...signal === undefined ? {} : { signal }, registry: current,
+            })
+            const printed = view.stdout.replace(ANSI_SEQUENCE, '').trim()
+            if (view.exitCode !== 0 || view.cause !== undefined || view.timedOut) {
+              // pnpm prints a refusal as `{ error: { code, message } }` on stdout, with nothing on stderr.
+              const log = [view.stderr.trim(), printedError(printed), view.cause === undefined ? '' : messageOf(view.cause)].filter(Boolean).join('\n')
+              const kind = classifyInstallFailure({
+                log, timedOut: view.timedOut, ...view.cause === undefined ? {} : { cause: view.cause },
+              })
+              // A lookup the caller dropped is not carried to the next registry.
+              if (registries.length < plan.length && signal?.aborted !== true && attributeFailure(kind, log, parsed) === 'registry') continue
+              const reason = view.timedOut ? `pnpm view timed out after ${String(this.inspectTimeoutMs)}ms` : log || printed || `pnpm view exited with ${String(view.exitCode)}`
+              if (kind === 'not-found' || kind === 'no-matching-version') return refusedBy('not-found', reason)
+              if (kind === 'network' || kind === 'timeout') return refusedBy('network', reason)
+              return refusedBy('unknown', reason)
+            }
+            let answer: unknown
+            try {
+              answer = JSON.parse(printed || 'null')
+            } catch (error) {
+              return refusedBy('unknown', `unreadable pnpm view output: ${messageOf(error)}`)
+            }
+            // A range answers one object per matching version, oldest first.
+            const latest: unknown = Array.isArray(answer) ? answer.at(-1) : answer
+            if (typeof latest !== 'object' || latest === null) return refusedBy('unknown', 'pnpm view answered no package')
+            const inspection = inspectionOf('registry', latest, current)
+            const named = inspection.name === undefined ? { ...inspection, name: parsed.name } : inspection
+            if (!named.bundle) return refusedBy('not-a-bundle', `${named.name} declares no dsh.bundle`)
+            return named
+          }
+          /* v8 ignore next -- the plan is never empty: every attempt returns or continues to the next */
+          throw new Error('no registry was asked')
+        }
       }
-    }
+    })
   }
 
   /** Persist a plugin entry's desired enablement and apply it on live profiles.
@@ -543,131 +579,133 @@ export class PluginManager extends TypertRemoteService {
    */
   @Remote
   installBundle(spec: string, options?: InstallBundleOptions): Promise<ChangeResult> {
-    const requestId = options?.requestId
-    const control: InstallControl = { abort: new AbortController(), phase: 'installing', result: Promise.resolve(null) }
-    const stopped = (): boolean => control.abort.signal.aborted || this.abort.signal.aborted
-    if (requestId !== undefined) this.installs.set(requestId, control)
-    const announce = (phase: PluginInstallProgress['phase'], attempt?: PluginInstallProgress['attempt']): void => {
-      if (requestId !== undefined) this.ownerContext.emit('plugin-manager/install-state', { requestId, phase, ...attempt === undefined ? {} : { attempt } })
-    }
-    const result = this.change(async (result) => {
-      if (spec.trim() === '' || spec.startsWith('-')) throw new ManagementFailure('invalid-spec')
-      if (stopped()) throw new InstallCancelledError()
-      const before = readProfileManifest('dsh', this.profile.dir).dependencies ?? {}
-      // With HMR, an installed package is removed before another version is installed, so its plugins stop first.
-      const known = specPackageName(spec, before, this.profile.dir)
-      if (known !== undefined && this.protectsHost(known)) throw new ManagementFailure('management-required')
-      if (this.ownerContext.get('hmr') !== undefined && known !== undefined && Object.hasOwn(before, known)) {
-        throw new ManagementFailure('already-installed')
+    return this.packageOperation('install', () => {
+      const requestId = options?.requestId
+      const control: InstallControl = { abort: new AbortController(), phase: 'installing', result: Promise.resolve(null) }
+      const stopped = (): boolean => control.abort.signal.aborted || this.abort.signal.aborted
+      if (requestId !== undefined) this.installs.set(requestId, control)
+      const announce = (phase: PluginInstallProgress['phase'], attempt?: PluginInstallProgress['attempt']): void => {
+        if (requestId !== undefined) this.ownerContext.emit('plugin-manager/install-state', { requestId, phase, ...attempt === undefined ? {} : { attempt } })
       }
-      if (options?.approvedBuilds !== undefined) {
-        await approveBuilds(this.profile.dir, options.approvedBuilds)
-        result.approvedBuilds = options.approvedBuilds
-      }
-      const files = await this.readRestoredFiles()
-      let name: string
-      let version: string | undefined
-      try {
-        result.registries = []
-        const connection = checkGithubConnection(parsedForRegistry(spec), this.profile.dir, {
-          timeoutMs: this.githubConnectionTimeoutMs, outputBytes: this.outputBytes,
-          signal: AbortSignal.any([this.abort.signal, control.abort.signal]),
-          ...this.profile.packageManager?.env === undefined ? {} : { env: this.profile.packageManager.env },
-        })
-        this.packageOperations.add(connection)
-        let connectionFailure: PackageResult | undefined
-        try { connectionFailure = await connection }
-        finally { this.packageOperations.delete(connection) }
+      const result = this.change(async (result) => {
+        if (spec.trim() === '' || spec.startsWith('-')) throw new ManagementFailure('invalid-spec')
         if (stopped()) throw new InstallCancelledError()
-        if (connectionFailure?.kind === 'network' || connectionFailure?.kind === 'timeout') {
-          result.packageResult = connectionFailure
-          result.failedAt = 'spec-host'
-          throw new Error(connectionFailure.output)
+        const before = readProfileManifest('dsh', this.profile.dir).dependencies ?? {}
+        // With HMR, an installed package is removed before another version is installed, so its plugins stop first.
+        const known = specPackageName(spec, before, this.profile.dir)
+        if (known !== undefined && this.protectsHost(known)) throw new ManagementFailure('management-required')
+        if (this.ownerContext.get('hmr') !== undefined && known !== undefined && Object.hasOwn(before, known)) {
+          throw new ManagementFailure('already-installed')
         }
-        // The last run is the result's; the registries asked stay listed whatever the outcome.
-        const plan = registryPlan(options?.registry, await this.registries())
-        let run: PackageResult | undefined
-        let used: Registry = null
-        for (const [index, registry] of plan.entries()) {
-          if (index > 0) await this.restoreFiles(files)
-          // A stop that landed while the files went back, or before the first run, starts no run with a dead signal.
-          if (stopped()) throw new InstallCancelledError()
-          result.registries.push(registry)
-          used = registry
-          announce('installing', { registry, index: index + 1, total: plan.length })
-          run = await this.runPnpm(['add', spec, ...options?.saveExact === true ? ['--save-exact'] : [], ...registryArguments(registry)], control.abort.signal, requestId)
-          result.packageResult = run
-          if (stopped()) throw new InstallCancelledError()
-          // A compatibility refusal is the package's own answer, so no other registry is asked.
-          if (run.incompatible !== undefined) throw new ManagementFailure('incompatible-version', run.incompatible)
-          // A run this manager terminated is not a success, even when pnpm trapped the signal and exited 0.
-          if (run.exitCode === 0 && run.timedOut !== true) break
-          /* v8 ignore next 2 -- runPnpm classifies every run it does not report as succeeded */
-          if (run.kind === undefined) break
-          // What the last failed run could not reach; a later run that succeeds leaves nothing to say.
-          delete result.failedAt
-          // A run this manager terminated got no answer from the registry at all, so no registry explains it.
-          if (run.timedOut === true) break
-          const failedAt = attributeFailure(run.kind, run.output, parsedForRegistry(spec))
-          if (failedAt !== 'other') result.failedAt = failedAt
-          if (failedAt !== 'registry' || index === plan.length - 1) break
+        if (options?.approvedBuilds !== undefined) {
+          await approveBuilds(this.profile.dir, options.approvedBuilds)
+          result.approvedBuilds = options.approvedBuilds
         }
-        /* v8 ignore next -- the plan is never empty, so a run always settled */
-        if (run === undefined) throw new Error('no registry was asked')
-        // A terminated run reports no usable exit status, so neither its files nor its bundle are trusted.
-        const succeeded = run.exitCode === 0 && run.timedOut !== true
-        if (succeeded) delete result.failedAt
-        if (!succeeded) {
-          // pnpm-workspace.yaml is not restored, so the names it left undecided, or reported as ignored, are offered for approval.
-          try { result.pendingBuilds = await recordPendingBuilds(this.profile.dir, run.output) }
-          catch (error) {
-            this.ownerContext.logger.warn('Could not read pending build approvals after pnpm failed', error)
+        const files = await this.readRestoredFiles()
+        let name: string
+        let version: string | undefined
+        try {
+          result.registries = []
+          const connection = checkGithubConnection(parsedForRegistry(spec), this.profile.dir, {
+            timeoutMs: this.githubConnectionTimeoutMs, outputBytes: this.outputBytes,
+            signal: AbortSignal.any([this.abort.signal, control.abort.signal]),
+            ...this.profile.packageManager?.env === undefined ? {} : { env: this.profile.packageManager.env },
+          })
+          this.packageOperations.add(connection)
+          let connectionFailure: PackageResult | undefined
+          try { connectionFailure = await connection }
+          finally { this.packageOperations.delete(connection) }
+          if (stopped()) throw new InstallCancelledError()
+          if (connectionFailure?.kind === 'network' || connectionFailure?.kind === 'timeout') {
+            result.packageResult = connectionFailure
+            result.failedAt = 'spec-host'
+            throw new Error(connectionFailure.output)
           }
-          throw new Error(run.output)
+          // The last run is the result's; the registries asked stay listed whatever the outcome.
+          const plan = registryPlan(options?.registry, await this.readRegistries())
+          let run: PackageResult | undefined
+          let used: Registry = null
+          for (const [index, registry] of plan.entries()) {
+            if (index > 0) await this.restoreFiles(files)
+            // A stop that landed while the files went back, or before the first run, starts no run with a dead signal.
+            if (stopped()) throw new InstallCancelledError()
+            result.registries.push(registry)
+            used = registry
+            announce('installing', { registry, index: index + 1, total: plan.length })
+            run = await this.runPnpm(['add', spec, ...options?.saveExact === true ? ['--save-exact'] : [], ...registryArguments(registry)], control.abort.signal, requestId)
+            result.packageResult = run
+            if (stopped()) throw new InstallCancelledError()
+            // A compatibility refusal is the package's own answer, so no other registry is asked.
+            if (run.incompatible !== undefined) throw new ManagementFailure('incompatible-version', run.incompatible)
+            // A run this manager terminated is not a success, even when pnpm trapped the signal and exited 0.
+            if (run.exitCode === 0 && run.timedOut !== true) break
+            /* v8 ignore next 2 -- runPnpm classifies every run it does not report as succeeded */
+            if (run.kind === undefined) break
+            // What the last failed run could not reach; a later run that succeeds leaves nothing to say.
+            delete result.failedAt
+            // A run this manager terminated got no answer from the registry at all, so no registry explains it.
+            if (run.timedOut === true) break
+            const failedAt = attributeFailure(run.kind, run.output, parsedForRegistry(spec))
+            if (failedAt !== 'other') result.failedAt = failedAt
+            if (failedAt !== 'registry' || index === plan.length - 1) break
+          }
+          /* v8 ignore next -- the plan is never empty, so a run always settled */
+          if (run === undefined) throw new Error('no registry was asked')
+          // A terminated run reports no usable exit status, so neither its files nor its bundle are trusted.
+          const succeeded = run.exitCode === 0 && run.timedOut !== true
+          if (succeeded) delete result.failedAt
+          if (!succeeded) {
+            // pnpm-workspace.yaml is not restored, so the names it left undecided, or reported as ignored, are offered for approval.
+            try { result.pendingBuilds = await recordPendingBuilds(this.profile.dir, run.output) }
+            catch (error) {
+              this.ownerContext.logger.warn('Could not read pending build approvals after pnpm failed', error)
+            }
+            throw new Error(run.output)
+          }
+          const after = readProfileManifest('dsh', this.profile.dir).dependencies ?? {}
+          const installed = Object.keys(after).filter(name => before[name] !== after[name])
+          // Without HMR a repeated installation can leave the saved dependency as it was.
+          if (installed.length === 0) {
+            const local = specPackageName(spec, after, this.profile.dir)
+            if (local !== undefined && Object.hasOwn(after, local)) installed.push(local)
+          }
+          const target = installed[0]
+          if (installed.length !== 1 || target === undefined) throw new ManagementFailure('ambiguous-install')
+          name = target
+          const dir = resolveBundleDir('dsh', name, this.profile.installAnchor, this.profile.dir)
+          const manifest = bundleManifest(name, this.profile.dir, this.profile.installAnchor)
+          if (manifest?.dsh?.bundle === undefined) throw new ManagementFailure('not-bundle')
+          const compatibility = evaluatePluginCompatibility(manifest, readProfileVersionExemptions(this.profile.dir))
+          if (compatibility !== undefined && !compatibility.exempted) throw new ManagementFailure('incompatible-version', [incompatiblePlugin(compatibility)])
+          for (const file of bundlePatchPaths(dir, manifest.dsh.bundle)) loadOverlayPatches('dsh', file)
+          // Git/tarball identity and patches may only be known after pnpm. Refuse before any activation;
+          // the catch below restores the saved manifest and lockfile.
+          if (this.protectsHost(name)) throw new ManagementFailure('management-required')
+          version = manifest.version
+          this.installedFrom.set(name, used)
+        } catch (error) {
+          // pnpm has exited by now, so the files it rewrote go back as they were.
+          await this.restoreFiles(files)
+          throw error
         }
-        const after = readProfileManifest('dsh', this.profile.dir).dependencies ?? {}
-        const installed = Object.keys(after).filter(name => before[name] !== after[name])
-        // Without HMR a repeated installation can leave the saved dependency as it was.
-        if (installed.length === 0) {
-          const local = specPackageName(spec, after, this.profile.dir)
-          if (local !== undefined && Object.hasOwn(after, local)) installed.push(local)
-        }
-        const target = installed[0]
-        if (installed.length !== 1 || target === undefined) throw new ManagementFailure('ambiguous-install')
-        name = target
-        const dir = resolveBundleDir('dsh', name, this.profile.installAnchor, this.profile.dir)
-        const manifest = bundleManifest(name, this.profile.dir, this.profile.installAnchor)
-        if (manifest?.dsh?.bundle === undefined) throw new ManagementFailure('not-bundle')
-        const compatibility = evaluatePluginCompatibility(manifest, readProfileVersionExemptions(this.profile.dir))
-        if (compatibility !== undefined && !compatibility.exempted) throw new ManagementFailure('incompatible-version', [incompatiblePlugin(compatibility)])
-        for (const file of bundlePatchPaths(dir, manifest.dsh.bundle)) loadOverlayPatches('dsh', file)
-        // Git/tarball identity and patches may only be known after pnpm. Refuse before any activation;
-        // the catch below restores the saved manifest and lockfile.
-        if (this.protectsHost(name)) throw new ManagementFailure('management-required')
-        version = manifest.version
-        this.installedFrom.set(name, used)
-      } catch (error) {
-        // pnpm has exited by now, so the files it rewrote go back as they were.
-        await this.restoreFiles(files)
-        throw error
-      }
-      control.phase = 'applying'
-      announce('applying')
-      result.bundle = name
-      if (version !== undefined) result.version = version
-      result.target = name
-      result.stage = 'enable'
-      return this.configure(async () => {
-        if (options?.enabled !== false) await this.selectBundle(name, true)
-        // Without HMR the replaced package's plugins keep running until the restart the result already reports.
-        if (Object.hasOwn(before, name) && this.ownerContext.get('hmr') === undefined) return
-        // A selected bundle's own rows must start.
-        const selected = bundleSelection(readProfileManifest('dsh', this.profile.dir)).includes(name)
-        Object.assign(result, await this.publishAndReload(selected ? this.bundleRows(name).map(row => row.id) : []))
-      })
-    }, { stage: 'install', target: spec, enabled: options?.enabled !== false }, 'install')
-    control.result = result
-    return result.finally(() => { if (requestId !== undefined) this.installs.delete(requestId) })
+        control.phase = 'applying'
+        announce('applying')
+        result.bundle = name
+        if (version !== undefined) result.version = version
+        result.target = name
+        result.stage = 'enable'
+        return this.configure(async () => {
+          if (options?.enabled !== false) await this.selectBundle(name, true)
+          // Without HMR the replaced package's plugins keep running until the restart the result already reports.
+          if (Object.hasOwn(before, name) && this.ownerContext.get('hmr') === undefined) return
+          // A selected bundle's own rows must start.
+          const selected = bundleSelection(readProfileManifest('dsh', this.profile.dir)).includes(name)
+          Object.assign(result, await this.publishAndReload(selected ? this.bundleRows(name).map(row => row.id) : []))
+        })
+      }, { stage: 'install', target: spec, enabled: options?.enabled !== false }, 'install')
+      control.result = result
+      return result.finally(() => { if (requestId !== undefined) this.installs.delete(requestId) })
+    })
   }
 
   /** Recover the result of an active installation without cancelling it.
@@ -704,38 +742,40 @@ export class PluginManager extends TypertRemoteService {
    */
   @Remote
   removeBundle(name: string): Promise<ChangeResult> {
-    return this.change(async (result) => {
-      const installed = await this.configure(async () => {
-        if (this.protectsHost(name)) throw new ManagementFailure('management-required')
-        const bundle = (await this.listBundles()).find(item => item.name === name)
-        if (bundle === undefined || !bundle.removable) throw new ManagementFailure('not-removable')
-        if (this.ownerContext.get('hmr') === undefined && (this.profile.startedBundles.includes(name)
-          || (bundle.error === undefined && this.bundleRows(name).some(row => [...this.ctx.loader.entries()]
-            .some(entry => entry.options.id === row.id && entry.fiber !== undefined))))) {
-          throw new ManagementFailure('stop-profile')
+    return this.packageOperation('remove', () => {
+      return this.change(async (result) => {
+        const installed = await this.configure(async () => {
+          if (this.protectsHost(name)) throw new ManagementFailure('management-required')
+          const bundle = (await this.listBundles()).find(item => item.name === name)
+          if (bundle === undefined || !bundle.removable) throw new ManagementFailure('not-removable')
+          if (this.ownerContext.get('hmr') === undefined && (this.profile.startedBundles.includes(name)
+            || (bundle.error === undefined && this.bundleRows(name).some(row => [...this.ctx.loader.entries()]
+              .some(entry => entry.options.id === row.id && entry.fiber !== undefined))))) {
+            throw new ManagementFailure('stop-profile')
+          }
+          const contributions = bundle.error === undefined ? this.bundleRows(name) : []
+          if (bundle.enabled) {
+            await this.selectBundle(name, false)
+            Object.assign(result, await this.reload())
+          }
+          if ([...this.ctx.loader.entries()].some(entry => entry.fiber?.uid != null
+            && contributions.some(row => row.id === entry.options.id && row.name === entry.options.name))) {
+            throw new ManagementFailure('bundle-in-use')
+          }
+          return bundle.installed
+        })
+        if (!installed) return
+        // `pnpm remove` takes no `--registry` option; the generic configuration flag sets the same setting. A package
+        // installed before this process started is removed with the registry an installation asks first.
+        const registry = this.installedFrom.has(name) ? this.installedFrom.get(name) : this.configuredRegistries.registry
+        result.packageResult = await this.runPnpm(['remove', name, ...typeof registry === 'string' ? [`--config.registry=${registry}`] : []])
+        if (result.packageResult.exitCode !== 0 || result.packageResult.timedOut === true) {
+          throw new Error(result.packageResult.output)
         }
-        const contributions = bundle.error === undefined ? this.bundleRows(name) : []
-        if (bundle.enabled) {
-          await this.selectBundle(name, false)
-          Object.assign(result, await this.reload())
-        }
-        if ([...this.ctx.loader.entries()].some(entry => entry.fiber?.uid != null
-          && contributions.some(row => row.id === entry.options.id && row.name === entry.options.name))) {
-          throw new ManagementFailure('bundle-in-use')
-        }
-        return bundle.installed
-      })
-      if (!installed) return
-      // `pnpm remove` takes no `--registry` option; the generic configuration flag sets the same setting. A package
-      // installed before this process started is removed with the registry an installation asks first.
-      const registry = this.installedFrom.has(name) ? this.installedFrom.get(name) : this.configuredRegistries.registry
-      result.packageResult = await this.runPnpm(['remove', name, ...typeof registry === 'string' ? [`--config.registry=${registry}`] : []])
-      if (result.packageResult.exitCode !== 0 || result.packageResult.timedOut === true) {
-        throw new Error(result.packageResult.output)
-      }
-      this.installedFrom.delete(name)
-      Object.assign(result, await this.configure(() => this.publishAndReload()))
-    }, { stage: 'remove', target: name }, 'remove')
+        this.installedFrom.delete(name)
+        Object.assign(result, await this.configure(() => this.publishAndReload()))
+      }, { stage: 'remove', target: name }, 'remove')
+    })
   }
 
   /** The rows a bundle's patch inserts and the existing rows it changes; an unreadable patch throws. */

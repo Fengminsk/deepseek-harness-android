@@ -162,6 +162,16 @@ export interface ChangeResult {
 /** Identifies one installation from its start to its settlement, including its log chunks and cancellation. */
 export type PluginInstallRequestId = Branded<'PluginInstallRequestId'>
 
+/** Identifies one admitted package operation until its complete call settles. */
+export type PluginPackageOperationId = Branded<'PluginPackageOperationId'>
+
+/** Host activity independent of the caller's transport or optional installation request id. */
+export interface PluginPackageOperation {
+  readonly id: PluginPackageOperationId
+  /** A registry read within inspection or installation belongs to that enclosing operation. */
+  readonly kind: 'inspect' | 'registries' | 'install' | 'remove'
+}
+
 /** Bundle installation defaults to activation; callers that offer cancellation supply their request id. */
 export interface InstallBundleOptions {
   enabled?: boolean
@@ -259,6 +269,22 @@ export interface PluginChange {
 
 declare module '@deepseek-ai/cordis' {
   interface Events {
+    /**
+     * Synchronous admission before a package operation enters the active snapshot or starts work.
+     * Listeners must be synchronous; throwing refuses the call without starting it.
+     * @mode emit
+     * @param operation - the proposed operation, with an id distinct from every other call.
+     */
+    'plugin-manager/before-package-operation'(operation: PluginPackageOperation): void
+    /**
+     * The active package snapshot changed. Started calls include lock waits; settlement follows
+     * rollback, application and request cleanup. Listener failures are logged without changing the
+     * operation's result, and returned promises do not delay it. The snapshot is already updated.
+     * @mode emit
+     * @param operation - the admitted operation that entered or left the snapshot.
+     * @param phase - whether its full call started or settled, independently of success or cancellation.
+     */
+    'plugin-manager/package-operation'(operation: PluginPackageOperation, phase: 'started' | 'settled'): void
     /**
      * The profile's plugins, bundles, or composition changed: a manager
      * operation completed. A patch generation applied outside the manager,

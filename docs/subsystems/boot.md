@@ -16,6 +16,8 @@ The [boot package group](../../packages/boot/README.md) owns launcher-provided p
 
 `PluginRegistries` carries the configured first registry, `null` for the one pnpm's own configuration names, the fallbacks asked after it, and `resolved`, the URL pnpm's own configuration names or `null` while unread. `InspectOptions.registry` names the registry a lookup asks first.
 
+`PluginPackageOperation` carries a process-local `PluginPackageOperationId` and a `kind`: `inspect`, `registries`, `install` or `remove`. The id identifies one admitted call independently of any installation request id; the Host-only activity snapshot retains it through that call's cleanup, with nested registry reads included in their enclosing operation.
+
 `ChangeResult.changed` reports a disk edit independently of `application`: `applied`, `restart-required`, `overridden` or `failed`. Optional `error` carries a localizable code and external diagnostic. `packageResult` records the pnpm exit code, bounded output, truncation flag and complete diagnostic log path, plus `timedOut` when the manager terminated a run that stopped printing. A terminated run is classified `timeout` whatever exit status the signal left behind, so installation and removal report failure instead of success and no further registry is asked. `pendingBuilds` lists undecided packages across the profile; `approvedBuilds` records the names granted permission by this operation; `registries` lists the registries an installation asked, in order; `bundle` and `version` name the package a finished installation added and its manifest version; `failedAt` says whether the last failed run could not reach the registry it asked or the host a git or tarball spec is fetched from.
 
 ## Market records
@@ -149,6 +151,12 @@ Manage profile files and apply their declared reload lifecycle.
  */
 protectModules(modules: readonly string[]): void
 
+/** Read all admitted package calls, including lock waits, rollback and application.
+ * This synchronous Host-only snapshot does not retain completed outcomes.
+ * @returns Active operations; registry reads nested inside inspection or installation count once.
+ */
+packageOperationsSnapshot(): readonly PluginPackageOperation[]
+
 /** Read exact plugin-version exemptions saved in this profile.
  * @returns Accepted package-name@version keys with the runtime versions they may run on, and any
  * record or file problem the reader rejected, which the caller reports instead of failing.
@@ -179,7 +187,7 @@ protectModules(modules: readonly string[]): void
 /** Read the registries this manager asks: the configured first one, its fallbacks in order, and what pnpm's own configuration names.
  * @returns The registries in pnpm's comparison form; null is the one pnpm's own configuration names, `resolved` as pnpm reads it now.
  */
-@Remote async registries(): Promise<PluginRegistries>
+@Remote registries(): Promise<PluginRegistries>
 
 /** Read what a spec names before installing it.
  * @param spec One package spec: a registry name, an absolute path, a git address, or a tarball.
@@ -187,7 +195,7 @@ protectModules(modules: readonly string[]): void
  * @param signal Ends a registry lookup early.
  * @returns The package the spec names, or why it is refused.
  */
-@Remote async inspect(spec: string, options?: InspectOptions, signal?: AbortSignal): Promise<PluginSpecInspection>
+@Remote inspect(spec: string, options?: InspectOptions, signal?: AbortSignal): Promise<PluginSpecInspection>
 
 /** Persist a plugin entry's desired enablement and apply it on live profiles.
  * @param id Loader entry identity returned by listPlugins.
@@ -377,6 +385,24 @@ Source: [`packages/boot/hmr/src/index.ts`](../../packages/boot/hmr/src/index.ts)
 
 ### `plugin-manager/*` events
 
+<a id="plugin-managerbefore-package-operation--emit"></a>
+
+#### `plugin-manager/before-package-operation` — emit
+
+Synchronous admission before a package operation enters the active snapshot or starts work. Listeners must be synchronous; throwing refuses the call without starting it.
+
+```ts cordis-catalog
+/**
+ * Synchronous admission before a package operation enters the active snapshot or starts work.
+ * Listeners must be synchronous; throwing refuses the call without starting it.
+ * @mode emit
+ * @param operation - the proposed operation, with an id distinct from every other call.
+ */
+'plugin-manager/before-package-operation'(operation: PluginPackageOperation): void
+```
+
+Source: [`packages/boot/plugin-manager/src/types.ts`](../../packages/boot/plugin-manager/src/types.ts)
+
 <a id="plugin-managerchanged--emit"></a>
 
 #### `plugin-manager/changed` — emit
@@ -427,6 +453,26 @@ An installation moved between its Host phases. `installing` is announced once pe
  * @param progress - the installation's request id and phase, with the attempt while installing.
  */
 'plugin-manager/install-state'(progress: PluginInstallProgress): void
+```
+
+Source: [`packages/boot/plugin-manager/src/types.ts`](../../packages/boot/plugin-manager/src/types.ts)
+
+<a id="plugin-managerpackage-operation--emit"></a>
+
+#### `plugin-manager/package-operation` — emit
+
+The active package snapshot changed. Started calls include lock waits; settlement follows rollback, application and request cleanup. Listener failures are logged without changing the operation's result, and returned promises do not delay it. The snapshot is already updated.
+
+```ts cordis-catalog
+/**
+ * The active package snapshot changed. Started calls include lock waits; settlement follows
+ * rollback, application and request cleanup. Listener failures are logged without changing the
+ * operation's result, and returned promises do not delay it. The snapshot is already updated.
+ * @mode emit
+ * @param operation - the admitted operation that entered or left the snapshot.
+ * @param phase - whether its full call started or settled, independently of success or cancellation.
+ */
+'plugin-manager/package-operation'(operation: PluginPackageOperation, phase: 'started' | 'settled'): void
 ```
 
 Source: [`packages/boot/plugin-manager/src/types.ts`](../../packages/boot/plugin-manager/src/types.ts)
