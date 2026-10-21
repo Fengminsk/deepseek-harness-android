@@ -11,12 +11,12 @@ void main() {
     () async {
       final calls = <String>[];
       final admitted = Completer<ApiJson>();
-      late ApiJson request;
+      final subscribed = Completer<ApiJson>();
       var cursorReads = 0;
       final streams = AppApiStreams((method, params) async {
         calls.add(method);
         if (method == 'api.subscribe') {
-          request = params;
+          subscribed.complete(params);
           return admitted.future;
         }
         return {'accepted': true};
@@ -46,6 +46,9 @@ void main() {
       streams.setReady(true);
       final pending = streams.diagnostics;
       expect(pending.single['state'], 'subscribing');
+      // Readiness starts reconnection; wait for the actual request, not the
+      // synchronous return of setReady, before asserting transport traffic.
+      final request = await subscribed.future;
       expect(calls, ['api.subscribe']);
       expect(cursorReads, 1);
       admitted.complete({'generation': 'private-generation'});

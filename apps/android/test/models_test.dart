@@ -89,7 +89,9 @@ Json catalog() => {
 };
 
 class ModelsRuntime extends RuntimeController {
-  ModelsRuntime(this.descriptors);
+  ModelsRuntime(this.descriptors) {
+    phase = 'ready';
+  }
   List<Json> descriptors;
   final calls = <Json>[];
   bool failCredential = false, conflict = false;

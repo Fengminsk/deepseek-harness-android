@@ -17,35 +17,46 @@ class ModelsPage extends StatefulWidget {
 }
 
 class _ModelsPageState extends State<ModelsPage> {
-  ModelsSnapshot? snapshot;
-  bool loading = true;
-  String? error;
-  int generation = 0;
+  late final directory = widget.runtime.models;
+  ModelsSnapshot? get snapshot => directory.snapshot;
+  bool get loading => directory.loading;
+  String? get error => directory.error;
   @override
   void initState() {
     super.initState();
+    directory.addListener(changed);
     unawaited(refresh());
   }
 
-  Future<void> refresh() async {
-    final current = ++generation;
-    setState(() => loading = true);
-    try {
-      final next = await ModelsSnapshot.read(widget.runtime);
-      if (mounted && current == generation) {
-        setState(() {
-          snapshot = next;
-          error = null;
-        });
-      }
-    } catch (failure) {
-      if (mounted && current == generation) setState(() => error = '$failure');
-    } finally {
-      if (mounted && current == generation) setState(() => loading = false);
-    }
+  void changed() {
+    if (mounted) setState(() {});
   }
 
-  Future<void> open(Widget page) async {
+  Future<void> refresh() => directory.refresh();
+
+  @override
+  void dispose() {
+    directory.removeListener(changed);
+    super.dispose();
+  }
+
+  Future<void> openAccount() async {
+    await Navigator.push(
+      context,
+      PocketRoute<void>(builder: (_) => AccountPage(runtime: widget.runtime)),
+    );
+    if (mounted) await refresh();
+  }
+
+  Future<void> open(Widget? Function(ModelsSnapshot) create) async {
+    if (!directory.fresh) {
+      await refresh();
+      if (!mounted || !directory.fresh) return;
+    }
+    final current = snapshot;
+    if (current == null) return;
+    final page = create(current);
+    if (page == null) return; // The provider may have been removed in Web.
     await Navigator.push(context, PocketRoute<void>(builder: (_) => page));
     if (mounted) await refresh();
   }
@@ -70,11 +81,15 @@ class _ModelsPageState extends State<ModelsPage> {
                 icon: Icons.account_circle_outlined,
                 title: 'DeepSeek 账号',
                 subtitle: '通过官方账号登录，使用账号提供的模型与额度',
-                onTap: () => open(AccountPage(runtime: widget.runtime)),
+                onTap: openAccount,
               ),
             ],
           ),
-          if (error != null) ModelNotice('无法刷新模型目录：$error\n保留上次读取的内容。'),
+          if (error != null)
+            ModelNotice(
+              '无法刷新模型目录：$error'
+              '${data == null ? '' : '\n当前显示上次读取的内容，编辑前会重新核对。'}',
+            ),
           if (data == null)
             PocketSection(
               children: [
@@ -97,10 +112,13 @@ class _ModelsPageState extends State<ModelsPage> {
                   onTap: data.descriptor('agent-default-model') == null
                       ? null
                       : () => open(
-                          DefaultModelPage(
-                            runtime: widget.runtime,
-                            snapshot: data,
-                          ),
+                          (current) =>
+                              current.descriptor('agent-default-model') == null
+                              ? null
+                              : DefaultModelPage(
+                                  runtime: widget.runtime,
+                                  snapshot: current,
+                                ),
                         ),
                 ),
               ],
@@ -119,14 +137,18 @@ class _ModelsPageState extends State<ModelsPage> {
                     subtitle:
                         '${provider.id} · ${provider.active ? '已注册' : '待配置'}'
                         '${provider.entry['error'] == null ? '' : '\n${provider.entry['error']}'}',
-                    onTap: () => open(
-                      provider.account
-                          ? AccountPage(runtime: widget.runtime)
-                          : ProviderSettingsPage(
+                    onTap: provider.account
+                        ? openAccount
+                        : () => open((current) {
+                            final matches = current.providers.where(
+                              (row) => row.id == provider.id,
+                            );
+                            if (matches.isEmpty) return null;
+                            return ProviderSettingsPage(
                               runtime: widget.runtime,
-                              provider: provider,
-                            ),
-                    ),
+                              provider: matches.first,
+                            );
+                          }),
                   ),
               ],
             ),
@@ -137,13 +159,15 @@ class _ModelsPageState extends State<ModelsPage> {
                   'api',
                 ]).isNotEmpty)
               PocketButton.tonal(
-                onPressed: () => open(
-                  CustomProviderPage(
+                onPressed: () => open((current) {
+                  final descriptor = current.descriptor('llm-pi-ai');
+                  if (descriptor == null) return null;
+                  return CustomProviderPage(
                     runtime: widget.runtime,
-                    descriptor: custom,
-                    taken: data.providers.map((row) => row.id).toSet(),
-                  ),
-                ),
+                    descriptor: descriptor,
+                    taken: current.providers.map((row) => row.id).toSet(),
+                  );
+                }),
                 child: const Text('添加自定义服务商'),
               ),
             const ModelNotice('服务商、模型和凭据与 Web 共用。目录注册状态不代表模型请求已经验证成功。'),

@@ -5,15 +5,26 @@ import 'package:flutter/foundation.dart';
 import 'runtime.dart';
 
 class AccountState extends ChangeNotifier {
-  AccountState(this.runtime, this.client);
+  AccountState(this.runtime, this.client)
+    : _ready = runtime.ready,
+      _runtimeGeneration = runtime.connectionGeneration {
+    runtime.addListener(_runtimeChanged);
+  }
   final RuntimeController runtime;
   final Json client;
   StreamSubscription<Json>? _subscription;
   Future<void>? _modelInitialization;
+  Future<void>? _detailsRefresh;
+  Timer? _retry;
+  int _retryAttempt = 0;
+  bool _watching = false;
+  bool _ready;
+  int _runtimeGeneration;
   bool _disposed = false;
   int _connection = 0, _details = 0, _modelGeneration = 0;
   int revision = 0;
   bool connected = false, working = false, loadingDetails = false;
+  bool profileFresh = false, balanceFresh = false, bonusesFresh = false;
   bool initializingModel = false, _modelRpcAccepted = false;
   Json? view, profile, balance, bonuses;
   String? error,
@@ -25,6 +36,42 @@ class AccountState extends ChangeNotifier {
   bool get signedIn => view?['status'] == 'credential-stored';
   Json? get attempt => view?['attempt'] as Json?;
 
+  Future<void> ensureWatching() =>
+      _watching || _disposed ? Future.value() : watch();
+
+  void _invalidateDetails() {
+    _details++;
+    _detailsRefresh = null;
+    loadingDetails = false;
+    profileFresh = balanceFresh = bonusesFresh = false;
+  }
+
+  void _runtimeChanged() {
+    final nextReady = runtime.ready;
+    final generation = runtime.connectionGeneration;
+    if (_ready == nextReady && _runtimeGeneration == generation) return;
+    _ready = nextReady;
+    _runtimeGeneration = generation;
+    connected = false;
+    _invalidateDetails();
+    _modelGeneration++;
+    _modelInitialization = null;
+    initializingModel = false;
+    _retry?.cancel();
+    _retry = null;
+    if (nextReady) unawaited(ensureWatching());
+    _publish();
+  }
+
+  void _retryWatch() {
+    if (_disposed || !runtime.ready || _retry != null) return;
+    final seconds = 1 << (_retryAttempt > 5 ? 5 : _retryAttempt++);
+    _retry = Timer(Duration(seconds: seconds), () {
+      _retry = null;
+      if (!_disposed && runtime.ready) unawaited(watch());
+    });
+  }
+
   Future<dynamic> api(String method, [Json args = const {}]) => runtime.call(
     'api.call',
     {'namespace': 'account', 'method': method, 'args': args},
@@ -35,8 +82,12 @@ class AccountState extends ChangeNotifier {
   }
 
   Future<void> watch() async {
+    _retry?.cancel();
+    _retry = null;
     final connection = ++_connection;
+    _watching = true;
     connected = false;
+    _invalidateDetails();
     error = null;
     _publish();
     await _subscription?.cancel();
@@ -55,18 +106,25 @@ class AccountState extends ChangeNotifier {
                   next['status'] == 'credential-stored' &&
                   nextAttempt?['phase'] == 'succeeded' &&
                   attempt?['phase'] != 'succeeded';
-              if (next['status'] != 'credential-stored' ||
+              if (next['status'] != view?['status'] ||
+                  next['status'] != 'credential-stored' ||
                   nextAttempt?['id'] != attempt?['id']) {
+                _invalidateDetails();
                 _modelGeneration++;
                 _modelInitialization = null;
                 initializingModel = false;
                 _modelRpcAccepted = false;
                 modelInitializationError = null;
                 modelInitializationNotice = null;
+                profile = balance = bonuses = null;
+                acknowledged.clear();
               }
               revision++;
               view = next;
               connected = true;
+              _retry?.cancel();
+              _retry = null;
+              _retryAttempt = 0;
               error = null;
               _publish();
               if (initialize) unawaited(initializeDefaultModel());
@@ -74,8 +132,7 @@ class AccountState extends ChangeNotifier {
             } else if (frame['type'] == 'opening' ||
                 frame['type'] == 'disconnected') {
               connected = false;
-              _details++;
-              loadingDetails = false;
+              _invalidateDetails();
               error = frame['type'] == 'disconnected'
                   ? '账号连接已中断，请等待服务恢复或重新连接。'
                   : null;
@@ -85,18 +142,20 @@ class AccountState extends ChangeNotifier {
           onError: (Object failure) {
             if (_disposed || connection != _connection) return;
             connected = false;
-            _details++;
-            loadingDetails = false;
+            _invalidateDetails();
             error = '无法读取账号状态，请重新连接。';
             _publish();
+            // Recoverable errors keep the transport's pending unsubscribe and
+            // retry. Only a terminal onDone may create a replacement observer.
           },
           onDone: () {
             if (_disposed || connection != _connection) return;
             connected = false;
-            _details++;
-            loadingDetails = false;
+            _watching = false;
+            _invalidateDetails();
             error ??= '账号连接已结束，请重新连接。';
             _publish();
+            _retryWatch();
           },
         );
   }
@@ -156,27 +215,47 @@ class AccountState extends ChangeNotifier {
     }
   }
 
-  Future<void> refreshDetails() async {
+  Future<void> refreshDetails() {
+    if (_detailsRefresh != null) return _detailsRefresh!;
+    late final Future<void> operation;
+    operation = _readDetails().whenComplete(() {
+      if (identical(_detailsRefresh, operation)) _detailsRefresh = null;
+    });
+    return _detailsRefresh = operation;
+  }
+
+  Future<void> _readDetails() async {
     final generation = ++_details;
-    profile = null;
-    balance = null;
-    bonuses = null;
     detailsError = null;
+    profileFresh = balanceFresh = bonusesFresh = false;
     if (!signedIn || !connected) {
       loadingDetails = false;
-      acknowledged.clear();
+      if (!signedIn) {
+        profile = balance = bonuses = null;
+        acknowledged.clear();
+      }
       _publish();
       return;
     }
     loadingDetails = true;
     _publish();
-    Future<void> read(String method, void Function(Json?) accept) async {
+    Future<void> read(
+      String method,
+      void Function(Json?) accept, {
+      bool requiresReady = false,
+    }) async {
       try {
         final value = await api(method, {'client': client});
         if (_disposed || generation != _details || !connected || !signedIn) {
           return;
         }
-        accept(value as Json?);
+        if (requiresReady && (value is! Json || value['status'] != 'ready')) {
+          // DSH returns {status: failed} for network/protocol failures. Keep a
+          // previous ready observation without claiming this read succeeded.
+          detailsError = '部分账号信息更新失败，已保留上次读取的信息，可重新刷新。';
+        } else {
+          accept(value as Json?);
+        }
       } catch (failure) {
         if (_disposed || generation != _details) return;
         detailsError = '部分账号信息读取失败，可重新刷新。';
@@ -185,9 +264,18 @@ class AccountState extends ChangeNotifier {
     }
 
     await Future.wait([
-      read('getProfile', (value) => profile = value),
-      read('getBalance', (value) => balance = value),
-      read('getUnnotifiedBonuses', (value) => bonuses = value),
+      read('getProfile', (value) {
+        profile = value;
+        profileFresh = true;
+      }, requiresReady: true),
+      read('getBalance', (value) {
+        balance = value;
+        balanceFresh = true;
+      }, requiresReady: true),
+      read('getUnnotifiedBonuses', (value) {
+        bonuses = value;
+        bonusesFresh = true;
+      }),
     ]);
     if (_disposed || generation != _details) return;
     loadingDetails = false;
@@ -228,6 +316,7 @@ class AccountState extends ChangeNotifier {
     if (_acknowledging.contains(key) ||
         !connected ||
         !signedIn ||
+        !bonusesFresh ||
         bonuses?['accountId'] != accountId) {
       return false;
     }
@@ -256,6 +345,8 @@ class AccountState extends ChangeNotifier {
     _connection++;
     _details++;
     _modelGeneration++;
+    _retry?.cancel();
+    runtime.removeListener(_runtimeChanged);
     unawaited(_subscription?.cancel());
     super.dispose();
   }

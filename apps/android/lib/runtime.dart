@@ -11,6 +11,8 @@ import 'plugins_data.dart';
 import 'library_data.dart';
 import 'credentials_data.dart';
 import 'recovery_data.dart';
+import 'account_state.dart';
+import 'models_data.dart';
 
 typedef Json = Map<String, dynamic>;
 
@@ -39,6 +41,69 @@ class RuntimeController extends ChangeNotifier {
       _credentials ??= CredentialsController(this);
   RecoveryController? _recovery;
   RecoveryController get recovery => _recovery ??= RecoveryController(this);
+  AccountState? _account;
+  AccountState? get accountSnapshot => _account;
+  Future<AccountState>? _accountInitialization;
+  String? accountError;
+  ModelsDirectoryController? _models;
+  ModelsDirectoryController get models =>
+      _models ??= ModelsDirectoryController(this);
+  Future<void>? _resume;
+  int _statusRevision = 0;
+  int get connectionGeneration => _connectionGeneration;
+
+  /// The core retains credentials. This owner retains only its observed view
+  /// while pages mount and unmount; closing a page cannot cancel sign-in.
+  Future<AccountState> ensureAccount({String locale = 'zh-CN'}) {
+    final existing = _account;
+    if (existing != null) return Future.value(existing);
+    if (_accountInitialization != null) return _accountInitialization!;
+    late final Future<AccountState> operation;
+    operation =
+        () async {
+          final raw = await channel.invokeMethod<String>('app.metadata');
+          if (raw == null) {
+            throw const FormatException('Missing application version');
+          }
+          final metadata = jsonDecode(raw) as Json;
+          if (_disposed) throw StateError('Runtime is closed');
+          final account = AccountState(this, {
+            'version': metadata['version'],
+            'locale': locale,
+            'timezoneOffsetSeconds': DateTime.now().timeZoneOffset.inSeconds,
+          });
+          _account = account;
+          account.addListener(_accountChanged);
+          accountError = null;
+          notifyListeners();
+          await account.watch();
+          return account;
+        }().whenComplete(() {
+          if (identical(_accountInitialization, operation)) {
+            _accountInitialization = null;
+          }
+        });
+    return _accountInitialization = operation;
+  }
+
+  void _accountChanged() {
+    if (!_disposed) notifyListeners();
+  }
+
+  void _prepareAccount() {
+    unawaited(
+      ensureAccount().then<void>(
+        (_) {},
+        onError: (Object failure) {
+          if (!_disposed) {
+            accountError = '无法读取账号状态，可在账号页重试。';
+            notifyListeners();
+          }
+        },
+      ),
+    );
+  }
+
   final _remoteEvents = StreamController<Json>.broadcast(sync: true);
   Stream<Json> get remoteEvents => _remoteEvents.stream;
   late final AppApiStreams _apiStreams = AppApiStreams(
@@ -96,6 +161,8 @@ class RuntimeController extends ChangeNotifier {
   }
 
   void fail(Object exception) {
+    _statusRevision++;
+    _connectionGeneration++;
     error = '$exception';
     phase = 'failed';
     _markLiveUnconfirmed();
@@ -110,28 +177,7 @@ class RuntimeController extends ChangeNotifier {
         final data = (frame['params'] as Json?) ?? {};
         switch (frame['method']) {
           case 'runtime.status':
-            phase = data['phase'] as String;
-            nativeGeneration = data['generation'] as String?;
-            nativeMode = data['mode'] as String?;
-            error = data['error'] as String?;
-            if (!ready) _markLiveUnconfirmed();
-            _apiStreams.setReady(ready);
-            if (phase == 'starting') {
-              _interactionsRevision = -1;
-              _connectionGeneration++;
-              taskState = {};
-              liveMessages.clear();
-              statuses.clear();
-              streaming.clear();
-            }
-            if (ready) {
-              unawaited(
-                refresh().catchError((Object e) {
-                  error = '$e';
-                  notifyListeners();
-                }),
-              );
-            }
+            _acceptStatus(data);
           case 'session.event':
             final id = data['sessionId'] as String;
             final event = data['event'] as Json;
@@ -184,17 +230,94 @@ class RuntimeController extends ChangeNotifier {
         notifyListeners();
       },
       onError: (Object exception) {
-        phase = 'failed';
-        _markLiveUnconfirmed();
-        _apiStreams.setReady(false);
-        error = '$exception';
-        notifyListeners();
+        if (!_disposed) fail(exception);
       },
     );
     await channel.invokeMethod<void>('start');
+    _prepareAccount();
+  }
+
+  void _acceptStatus(Json data) {
+    _statusRevision++;
+    final nextGeneration = data['generation'] as String?;
+    final changedProcess =
+        nextGeneration != null && nativeGeneration != nextGeneration;
+    final nextPhase = data['phase'] as String;
+    final newProcess = changedProcess || nextPhase == 'starting';
+    if (newProcess || (ready && nextPhase != 'ready')) {
+      _connectionGeneration++;
+      _interactionsRevision = -1;
+      _apiStreams.setReady(false);
+      _markLiveUnconfirmed();
+    }
+    if (newProcess) {
+      // These projections belong to one native process. A transient disconnect
+      // may retain them as unconfirmed; a new process must supply a new baseline.
+      taskState = {};
+      liveMessages.clear();
+      statuses.clear();
+      streaming.clear();
+    }
+    phase = nextPhase;
+    nativeGeneration = nextGeneration;
+    nativeMode = data['mode'] as String?;
+    error = data['error'] as String?;
+    if (!ready) _markLiveUnconfirmed();
+    // Invalidate domain observations before a replacement stream can emit its
+    // baseline. A synchronous first frame must not be cleared by a later notify.
+    notifyListeners();
+    _apiStreams.setReady(ready);
+    if (ready) {
+      unawaited(
+        refresh().catchError((Object failure) {
+          if (!_disposed) {
+            error = '$failure';
+            notifyListeners();
+          }
+        }),
+      );
+    }
+  }
+
+  /// Reconcile the existing service after returning to the foreground. Only
+  /// observations are reopened; writes and model submissions are never replayed.
+  Future<void> resume() {
+    if (_resume != null) return _resume!;
+    late final Future<void> operation;
+    operation =
+        () async {
+          try {
+            final statusRevision = _statusRevision;
+            final state = await call('runtime.status') as Json;
+            if (_disposed) return;
+            // A pushed service transition observed after this request is newer than
+            // the probe, even if the probe's Future completes afterwards.
+            if (statusRevision == _statusRevision) _acceptStatus(state);
+            if (!ready) return;
+            await _apiStreams.reconnect();
+            if (_disposed || !ready) return;
+            await Future.wait([
+              () async {
+                final account = await ensureAccount();
+                await account.ensureWatching();
+                if (account.connected) await account.refreshDetails();
+              }(),
+              if (_models != null) _models!.refresh(),
+            ]);
+          } catch (failure) {
+            if (!_disposed) {
+              error = '返回前台后的状态同步未完成：$failure';
+              notifyListeners();
+            }
+          }
+        }().whenComplete(() {
+          if (identical(_resume, operation)) _resume = null;
+        });
+    return _resume = operation;
   }
 
   Future<void> restart() async {
+    _statusRevision++;
     phase = 'restarting';
     error = null;
     _interactionsRevision = -1;
@@ -231,7 +354,10 @@ class RuntimeController extends ChangeNotifier {
   }
 
   Future<void> refreshForms() async {
-    forms = (await call('settings.describe') as List).cast<Json>();
+    final generation = _connectionGeneration;
+    final next = (await call('settings.describe') as List).cast<Json>();
+    if (_disposed || generation != _connectionGeneration) return;
+    forms = next;
     for (final form in forms) {
       if (form['ns'] == 'agent-default-model' && form['value'] is Json) {
         final selected = form['value'] as Json;
@@ -541,6 +667,9 @@ class RuntimeController extends ChangeNotifier {
     _library?.dispose();
     _credentials?.dispose();
     _recovery?.dispose();
+    _account?.removeListener(_accountChanged);
+    _account?.dispose();
+    _models?.dispose();
     unawaited(_subscription?.cancel());
     unawaited(_apiStreams.close());
     unawaited(_remoteEvents.close());

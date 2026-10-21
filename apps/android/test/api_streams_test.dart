@@ -4,6 +4,79 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:dsh_android/api_streams.dart';
 
 void main() {
+  testWidgets(
+    'foreground unsubscribe failure retains identity and recovers the same observer',
+    (tester) async {
+      final calls = <({String method, ApiJson params})>[];
+      final requests = <ApiJson>[];
+      final firstAck = Completer<dynamic>();
+      var failUnsubscribe = true;
+      final streams = AppApiStreams((method, params) async {
+        calls.add((method: method, params: params));
+        if (method == 'api.subscribe') {
+          requests.add(params);
+          return {'generation': 'generation-${requests.length}'};
+        }
+        if (method == 'api.unsubscribe' && failUnsubscribe) {
+          failUnsubscribe = false;
+          throw StateError('temporary Binder failure');
+        }
+        if (method == 'api.ack' && params['generation'] == 'generation-1') {
+          return firstAck.future;
+        }
+        return {'accepted': true};
+      })..setReady(true);
+      final frames = <ApiJson>[], errors = <Object>[];
+      final subscription = streams
+          .watch('session', 'control')
+          .listen(frames.add, onError: errors.add);
+      await tester.pump();
+      streams.receive({
+        'subscriptionId': requests.first['subscriptionId'],
+        'generation': 'generation-1',
+        'sequence': 1,
+        'type': 'item',
+        'value': 'initial',
+      });
+      await streams.reconnect();
+      expect(errors, hasLength(1));
+      expect(
+        requests,
+        hasLength(1),
+      ); // No replacement until the old source closed.
+      await tester.pump(const Duration(seconds: 1));
+      expect(requests, hasLength(2));
+      final closed = calls
+          .where((call) => call.method == 'api.unsubscribe')
+          .toList();
+      expect(closed, hasLength(2));
+      expect(closed[1].params, closed[0].params);
+      firstAck.completeError(StateError('late old ack'));
+      await tester.pump();
+      streams.receive({
+        'subscriptionId': requests.first['subscriptionId'],
+        'generation': 'generation-1',
+        'sequence': 2,
+        'type': 'item',
+        'value': 'obsolete',
+      });
+      streams.receive({
+        'subscriptionId': requests.last['subscriptionId'],
+        'generation': 'generation-2',
+        'sequence': 1,
+        'type': 'item',
+        'value': 'recovered',
+      });
+      expect(errors, hasLength(1));
+      expect(frames.last['value'], 'recovered');
+      expect(frames.where((frame) => frame['value'] == 'obsolete'), isEmpty);
+      await subscription.cancel();
+      await streams.close();
+      await tester.pump(const Duration(seconds: 40));
+      expect(requests, hasLength(2));
+    },
+  );
+
   test('paused observers hold acknowledgement and cancellation releases the source', () async {
     final calls = <({String method, ApiJson params})>[];
     final subscribed = Completer<ApiJson>();

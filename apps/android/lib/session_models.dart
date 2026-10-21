@@ -21,13 +21,18 @@ class SessionModelPage extends StatefulWidget {
   State<SessionModelPage> createState() => _SessionModelPageState();
 }
 
-class _SessionModelPageState extends State<SessionModelPage> {
+class _SessionModelPageState extends State<SessionModelPage>
+    with WidgetsBindingObserver {
   Json? catalog, selection, appliedSelection, modelView;
   Json? unconfirmedSelection;
   StreamSubscription<Json>? observation;
+  bool observationActive = false;
   bool loading = true, busy = false, conflict = false, uncertain = false;
   String? error, notice, syncError;
   int loadGeneration = 0, watchGeneration = 0, projectionSeq = -1;
+  late bool runtimeReady;
+  late int runtimeGeneration;
+  bool reloadAfterBusy = false;
   bool get hasDraft => !mapEquals(selection, appliedSelection);
   bool get inherited => modelView?['next'] == null;
   List<Json> get groups => (catalog?['groups'] as List? ?? []).cast<Json>();
@@ -87,7 +92,37 @@ class _SessionModelPageState extends State<SessionModelPage> {
   @override
   void initState() {
     super.initState();
+    runtimeReady = widget.runtime.ready;
+    runtimeGeneration = widget.runtime.connectionGeneration;
+    WidgetsBinding.instance.addObserver(this);
+    widget.runtime.addListener(runtimeChanged);
     unawaited(load());
+  }
+
+  void runtimeChanged() {
+    final ready = widget.runtime.ready;
+    final generation = widget.runtime.connectionGeneration;
+    if (ready == runtimeReady && generation == runtimeGeneration) return;
+    runtimeReady = ready;
+    runtimeGeneration = generation;
+    loadGeneration++;
+    projectionSeq = -1;
+    if (busy) reloadAfterBusy = true;
+    setState(() {
+      loading = false;
+      syncError = '连接已变化，选择已保留，正在重新核对会话。';
+    });
+    if (ready && !busy) unawaited(load());
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) return;
+    if (busy) {
+      reloadAfterBusy = true;
+    } else {
+      unawaited(load());
+    }
   }
 
   Future<Json> readProjection() async {
@@ -131,6 +166,8 @@ class _SessionModelPageState extends State<SessionModelPage> {
   }
 
   Future<void> watch() async {
+    if (observationActive) return;
+    observationActive = true;
     final generation = ++watchGeneration;
     await observation?.cancel();
     if (!mounted || generation != watchGeneration) return;
@@ -178,6 +215,7 @@ class _SessionModelPageState extends State<SessionModelPage> {
           },
           onDone: () {
             if (mounted && generation == watchGeneration) {
+              observationActive = false;
               setState(() => syncError ??= '实时同步已结束，可刷新重新连接。');
             }
           },
@@ -186,6 +224,13 @@ class _SessionModelPageState extends State<SessionModelPage> {
 
   Future<void> load() async {
     if (busy) return;
+    if (!widget.runtime.ready) {
+      setState(() {
+        loading = false;
+        error = '本地服务尚未就绪，恢复后会自动刷新，当前选择已保留。';
+      });
+      return;
+    }
     final generation = ++loadGeneration;
     setState(() {
       loading = true;
@@ -197,7 +242,7 @@ class _SessionModelPageState extends State<SessionModelPage> {
         throw const FormatException('会话标识已变化，请重新打开此会话');
       }
       if (!mounted || generation != loadGeneration) return;
-      if (observation == null || syncError != null) await watch();
+      if (!observationActive) await watch();
       if (!mounted || generation != loadGeneration) return;
       final parts = await Future.wait([
         modelsApi(widget.runtime, 'session', 'modelCatalog'),
@@ -240,6 +285,14 @@ class _SessionModelPageState extends State<SessionModelPage> {
 
   Future<void> apply() async {
     if (!canApply) return;
+    final connection = widget.runtime.connectionGeneration;
+    void requireConnection() {
+      if (!widget.runtime.ready ||
+          connection != widget.runtime.connectionGeneration) {
+        throw StateError('运行时连接已变化，请刷新核对');
+      }
+    }
+
     final submitted = Json.of(selection!);
     setState(() {
       busy = true;
@@ -253,6 +306,7 @@ class _SessionModelPageState extends State<SessionModelPage> {
       // conflicting edit before submitting, and verify the current result.
       final before = await readProjection();
       if (!mounted) return;
+      requireConnection();
       setState(() => acceptProjection(before));
       if (conflict) return;
       if (!hasDraft) {
@@ -266,8 +320,10 @@ class _SessionModelPageState extends State<SessionModelPage> {
       }) as Json;
       accepted = checkedSelection(result['selected']);
       if (!mounted) return;
+      requireConnection();
       final after = await readProjection();
       if (!mounted) return;
+      requireConnection();
       setState(() {
         acceptProjection(after);
         if (mapEquals(appliedSelection, accepted)) {
@@ -292,11 +348,18 @@ class _SessionModelPageState extends State<SessionModelPage> {
         });
       }
     } finally {
-      if (mounted) setState(() => busy = false);
+      if (mounted) {
+        setState(() => busy = false);
+        if (reloadAfterBusy) {
+          reloadAfterBusy = false;
+          unawaited(load());
+        }
+      }
     }
   }
 
   bool get canApply =>
+      widget.runtime.ready &&
       !busy &&
       !loading &&
       !conflict &&
@@ -306,6 +369,7 @@ class _SessionModelPageState extends State<SessionModelPage> {
       modelFor(selection) != null;
 
   String get buttonLabel {
+    if (!widget.runtime.ready) return '等待本地服务恢复';
     if (busy) return '正在核对并应用…';
     if (loading) return '正在读取模型…';
     if (uncertain) return '请先刷新确认结果';
@@ -317,6 +381,9 @@ class _SessionModelPageState extends State<SessionModelPage> {
 
   @override
   void dispose() {
+    observationActive = false;
+    WidgetsBinding.instance.removeObserver(this);
+    widget.runtime.removeListener(runtimeChanged);
     watchGeneration++;
     loadGeneration++;
     unawaited(observation?.cancel());

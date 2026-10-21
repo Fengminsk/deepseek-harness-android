@@ -72,11 +72,18 @@ class AppApiStreams {
     _ready = ready;
     for (final observation in _active.values.toList()) {
       if (ready) {
-        unawaited(observation.open());
+        unawaited(observation.reconnect());
       } else {
         observation.disconnected();
       }
     }
+  }
+
+  /// Reattach foreground observers to their service baseline even when Binder
+  /// stayed connected while Flutter stopped delivering frames.
+  Future<void> reconnect() async {
+    if (_closed || !_ready) return;
+    await Future.wait(_active.values.toList().map((item) => item.reconnect()));
   }
 
   Future<void> close() async {
@@ -131,9 +138,17 @@ class _Observation {
   bool paused = false;
   bool cancelled = false;
   bool opening = false;
+  ApiJson? _closingSubscription;
+  bool _reconnecting = false;
+  Timer? _reconnectRetry;
+  int _reconnectFailures = 0;
 
   Future<void> open() async {
     if (cancelled || opening || generation != null) return;
+    if (_closingSubscription != null) {
+      unawaited(reconnect());
+      return;
+    }
     opening = true;
     final attempt = ++epoch;
     final subscriptionId = '$id-$attempt';
@@ -222,6 +237,16 @@ class _Observation {
   }
 
   void disconnected() {
+    // Retain the exact old identity until unsubscribe is confirmed. A transient
+    // Binder error must not strand an unacknowledged producer on the service.
+    if (deliveryId != null) {
+      _closingSubscription ??= {
+        'subscriptionId': deliveryId,
+        if (generation != null) 'generation': generation,
+      };
+    }
+    _reconnectRetry?.cancel();
+    _reconnectRetry = null;
     epoch++;
     opening = false;
     generation = null;
@@ -231,17 +256,55 @@ class _Observation {
     if (!cancelled) controller.add({'type': 'disconnected'});
   }
 
+  Future<void> reconnect() async {
+    if (cancelled || opening || _reconnecting || !owner._ready) return;
+    _reconnecting = true;
+    disconnected();
+    final attempt = epoch;
+    try {
+      await _closeRetiredSubscription();
+      if (!cancelled && owner._ready && attempt == epoch) {
+        _reconnectFailures = 0;
+        await open();
+      }
+    } catch (error, stack) {
+      if (!cancelled && attempt == epoch) {
+        controller.addError(error, stack);
+        final delay = 1 << (_reconnectFailures > 5 ? 5 : _reconnectFailures++);
+        _reconnectRetry = Timer(Duration(seconds: delay), () {
+          _reconnectRetry = null;
+          if (!cancelled && owner._ready) unawaited(reconnect());
+        });
+      }
+    } finally {
+      _reconnecting = false;
+      // The service may have changed while unsubscribe was in flight. Its
+      // readiness event cannot be lost merely because this attempt was busy.
+      if (!cancelled &&
+          owner._ready &&
+          attempt != epoch &&
+          !opening &&
+          generation == null) {
+        scheduleMicrotask(() => unawaited(reconnect()));
+      }
+    }
+  }
+
+  Future<void> _closeRetiredSubscription() async {
+    final closing = _closingSubscription;
+    if (closing == null) return;
+    await owner.call('api.unsubscribe', closing);
+    if (identical(closing, _closingSubscription)) _closingSubscription = null;
+  }
+
   Future<void> cancel() async {
     if (cancelled) return;
     cancelled = true;
     owner._active.remove(id);
-    epoch++;
-    if (!owner._ready || deliveryId == null) return;
+    disconnected();
+    if (!owner._ready) return;
     try {
-      await owner.call('api.unsubscribe', {
-        'subscriptionId': deliveryId,
-        if (generation != null) 'generation': generation,
-      });
+      await _closeRetiredSubscription();
     } catch (error) {
       // Binder teardown also releases every stream of this Activity.
     }

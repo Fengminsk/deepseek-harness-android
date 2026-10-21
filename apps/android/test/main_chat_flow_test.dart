@@ -100,7 +100,12 @@ class _ChatRuntime extends RuntimeController {
         return {
           'epoch': 'fixture-epoch',
           'revision': 1,
-          'summary': {'running': 0, 'waiting': 0, 'backgroundJobs': 0},
+          'summary': {
+            'running': 0,
+            'waiting': 0,
+            'backgroundJobs': 0,
+            'packageOperations': 0,
+          },
           'active': <Json>[],
           'sessions': <Json>[],
           'nextOffset': null,

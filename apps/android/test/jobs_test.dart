@@ -21,7 +21,7 @@ class _JobsRuntime extends RuntimeController {
     phase = 'ready';
   }
   final feeds = <StreamController<Json>>[];
-  final resume = <Json Function()>[];
+  final resumeArguments = <Json Function()>[];
   final calls = <Json>[];
   int cancellations = 0;
 
@@ -33,7 +33,7 @@ class _JobsRuntime extends RuntimeController {
     Json Function()? resumeArgs,
   }) {
     expect(namespace, 'job');
-    resume.add(resumeArgs ?? () => args);
+    resumeArguments.add(resumeArgs ?? () => args);
     final feed = StreamController<Json>(
       sync: true,
       onCancel: () async {
@@ -112,7 +112,7 @@ void main() {
         _host(JobsPage(runtime: runtime, sessionId: 'session-a')),
       );
       await tester.pumpAndSettle();
-      expect(runtime.resume.single(), {
+      expect(runtime.resumeArguments.single(), {
         'request': {'sessionId': 'session-a'},
       });
       runtime.feeds.single.add({
@@ -171,7 +171,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.byTooltip('重新连接任务输出'));
       await tester.pumpAndSettle();
-      expect(runtime.resume.last(), {
+      expect(runtime.resumeArguments.last(), {
         'request': {'sessionId': 'session-a', 'jobId': 'bash-123', 'from': 6},
       });
       expect(find.text('中文'), findsOneWidget);

@@ -67,9 +67,9 @@ class _Runtime extends RuntimeController {
     Json args = const {},
     Json Function()? resumeArgs,
   }) {
-    expect(namespace, 'session');
-    expect(method, 'control');
-    expect(args, isEmpty);
+    expectSync(namespace, 'session');
+    expectSync(method, 'control');
+    expectSync(args, isEmpty);
     subscriptions++;
     return control.stream.transform(
       StreamTransformer.fromHandlers(
@@ -122,14 +122,14 @@ class _Runtime extends RuntimeController {
       case 'modelCatalog':
         return directory;
       case 'projections':
-        expect(params['args'], {
+        expectSync(params['args'], {
           'request': {'sessionId': 'session-A'},
         });
         return read == null ? projection() : read!();
       case 'selectModel':
-        expect(ensured, isNotEmpty);
+        expectSync(ensured, isNotEmpty);
         final request = Json.of(params['args']['request'] as Json);
-        expect(
+        expectSync(
           request.keys.toSet().difference({
             'sessionId',
             'provider',
@@ -206,6 +206,66 @@ Future<void> refresh(WidgetTester tester) =>
     tap(tester, find.byTooltip('刷新会话模型'));
 
 void main() {
+  testWidgets(
+    'refresh preserves a live observer while transport recovery is pending',
+    (tester) async {
+      final runtime = _Runtime();
+      await _open(tester, runtime);
+      await tap(tester, model(pro));
+      runtime.control.add({'type': 'disconnected'});
+      runtime.control.addError(StateError('temporary cleanup failure'));
+      await tester.pumpAndSettle();
+      await refresh(tester);
+      expect(runtime.subscriptions, 1);
+      expect(selected(tester, pro), isTrue);
+      expect(runtime.applied, isEmpty);
+    },
+  );
+
+  testWidgets(
+    'session model page waits for the service and automatically recovers',
+    (tester) async {
+      final runtime = _Runtime()..phase = 'starting';
+      await _open(tester, runtime);
+      expect(runtime.ensured, isEmpty);
+      expect(find.textContaining('本地服务尚未就绪'), findsOneWidget);
+      runtime.phase = 'ready';
+      runtime.notifyListeners();
+      await tester.pumpAndSettle();
+      expect(runtime.ensured, ['session-A']);
+      expect(selected(tester, flash), isTrue);
+      expect(find.textContaining('本地服务尚未就绪'), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'a connection change during preflight preserves draft and cannot submit it',
+    (tester) async {
+      final runtime = _Runtime();
+      await _open(tester, runtime);
+      await tap(tester, model(pro));
+      final pending = Completer<Json>();
+      final oldProjection = runtime.projection();
+      runtime.read = () => pending.future;
+      await tester.ensureVisible(applyButton);
+      await tester.tap(applyButton);
+      await tester.pump();
+      runtime.fail(StateError('service disconnected'));
+      runtime.read = null;
+      pending.complete(oldProjection);
+      await tester.pumpAndSettle();
+      expect(runtime.applied, isEmpty);
+      expect(enabled(tester), isFalse);
+      expect(selected(tester, pro), isTrue);
+      runtime.phase = 'ready';
+      runtime.notifyListeners();
+      await tester.pumpAndSettle();
+      expect(selected(tester, pro), isTrue);
+      expect(enabled(tester), isTrue);
+      expect(runtime.applied, isEmpty);
+    },
+  );
+
   testWidgets(
     'blank Session inherits real catalog default and can choose another account model',
     (tester) async {

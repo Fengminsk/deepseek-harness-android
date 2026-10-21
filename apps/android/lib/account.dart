@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:material_ui/material_ui.dart';
 
@@ -20,6 +19,7 @@ class _AccountPageState extends State<AccountPage> with WidgetsBindingObserver {
   String? error, signOutImpact;
   int? signOutRevision;
   bool wantedSignIn = false, checkingImpact = false;
+  bool initialized = false;
   late String runtimePhase;
 
   @override
@@ -28,7 +28,15 @@ class _AccountPageState extends State<AccountPage> with WidgetsBindingObserver {
     runtimePhase = widget.runtime.phase;
     WidgetsBinding.instance.addObserver(this);
     widget.runtime.addListener(handleAccountReturn);
-    unawaited(initialize());
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!initialized) {
+      initialized = true;
+      unawaited(initialize());
+    }
   }
 
   void handleAccountReturn() {
@@ -43,29 +51,23 @@ class _AccountPageState extends State<AccountPage> with WidgetsBindingObserver {
     widget.runtime.consumeNavigation();
     final model = account;
     if (model != null) {
-      unawaited(model.connected ? model.refreshDetails() : model.watch());
+      unawaited(
+        model.connected ? model.refreshDetails() : model.ensureWatching(),
+      );
     }
   }
 
   Future<void> initialize() async {
     setState(() => error = null);
     try {
-      final raw = await RuntimeController.channel.invokeMethod<String>(
-        'app.metadata',
+      final model = await widget.runtime.ensureAccount(
+        locale: Localizations.localeOf(context).toLanguageTag(),
       );
-      if (raw == null) {
-        throw const FormatException('Missing application version');
-      }
-      final metadata = jsonDecode(raw) as Json;
       if (!mounted) return;
-      final model = AccountState(widget.runtime, {
-        'version': metadata['version'],
-        'locale': Localizations.localeOf(context).toLanguageTag(),
-        'timezoneOffsetSeconds': DateTime.now().timeZoneOffset.inSeconds,
-      });
+      account?.removeListener(changed);
       model.addListener(changed);
       setState(() => account = model);
-      await model.watch();
+      await model.ensureWatching();
     } catch (failure) {
       if (mounted) setState(() => error = '无法初始化账号页面，请重新打开。');
     }
@@ -139,8 +141,12 @@ class _AccountPageState extends State<AccountPage> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed && account?.connected == true) {
-      unawaited(account!.refreshDetails());
+    if (state == AppLifecycleState.resumed && account != null) {
+      unawaited(
+        account!.connected
+            ? account!.refreshDetails()
+            : account!.ensureWatching(),
+      );
     }
   }
 
@@ -149,7 +155,6 @@ class _AccountPageState extends State<AccountPage> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     widget.runtime.removeListener(handleAccountReturn);
     account?.removeListener(changed);
-    account?.dispose();
     super.dispose();
   }
 
@@ -177,7 +182,9 @@ class _AccountPageState extends State<AccountPage> with WidgetsBindingObserver {
         label: '刷新账号信息',
         onPressed: model == null
             ? initialize
-            : () => model.connected ? model.refreshDetails() : model.watch(),
+            : () => model.connected
+                  ? model.refreshDetails()
+                  : model.ensureWatching(),
       ),
       body: PocketList(
         padding: const EdgeInsets.all(20),
@@ -216,9 +223,13 @@ class _AccountPageState extends State<AccountPage> with WidgetsBindingObserver {
                   icon: Icons.account_circle_outlined,
                   title: profile?['name'] as String? ?? 'DeepSeek',
                   subtitle: !model.connected
-                      ? '账号状态待确认'
+                      ? model.view == null
+                            ? '正在读取账号状态'
+                            : '显示上次账号信息，正在重新连接'
                       : model.signedIn
-                      ? '本机已保存登录凭据'
+                      ? model.profileFresh
+                            ? '本机已保存登录凭据'
+                            : '本机凭据已保存 · 账号资料待刷新'
                       : '尚未登录',
                 ),
                 if (profile?['contact'] != null)
@@ -366,6 +377,7 @@ class _AccountPageState extends State<AccountPage> with WidgetsBindingObserver {
                       PocketRow(
                         icon: Icons.account_balance_wallet_outlined,
                         title: '充值余额',
+                        subtitle: model.balanceFresh ? null : '上次读取，本次尚未更新',
                         trailing: Text(
                           '${wallet['balance']} ${wallet['currency']}',
                         ),
@@ -374,6 +386,7 @@ class _AccountPageState extends State<AccountPage> with WidgetsBindingObserver {
                       PocketRow(
                         icon: Icons.redeem_rounded,
                         title: '赠送余额',
+                        subtitle: model.balanceFresh ? null : '上次读取，本次尚未更新',
                         trailing: Text(
                           '${wallet['balance']} ${wallet['currency']}',
                         ),

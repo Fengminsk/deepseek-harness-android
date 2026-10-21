@@ -100,13 +100,22 @@ void main() {
           },
         }),
       );
+      void status(String phase, {String? generation}) => sink.success(
+        jsonEncode({
+          'method': 'runtime.status',
+          'params': {
+            'phase': phase,
+            'generation': ?generation,
+          },
+        }),
+      );
       emit(9, 'old');
       emit(11, 'latest');
       await tester.pump();
       runtime.reads.single.complete({
         'revision': 10,
-      'statuses': <String, dynamic>{},
-      'streaming': <String, dynamic>{},
+        'statuses': <String, dynamic>{},
+        'streaming': <String, dynamic>{},
         'liveMessages': {'s': message('baseline')},
       });
       await tester.pump();
@@ -114,17 +123,30 @@ void main() {
       expect(runtime.liveMessages['s']!['content'], [
         {'type': 'reasoning', 'text': 'latest'},
       ]);
+      status('failed');
+      await tester.pump();
+      expect(runtime.liveMessages['s']!['unconfirmed'], isTrue);
       await runtime.restart();
       expect(runtime.liveMessages['s']!['unconfirmed'], isTrue);
       expect(runtime.liveMessages['s']!['interrupted'], isFalse);
-      sink.success(
-        jsonEncode({
-          'method': 'runtime.status',
-          'params': {'phase': 'starting'},
-        }),
-      );
+      status('starting');
       await tester.pump();
       expect(runtime.liveMessages, isEmpty);
+      status('ready', generation: 'first-process');
+      await tester.pump();
+      runtime.liveMessages['s'] = message('current process');
+      runtime.statuses['s'] = 'running';
+      runtime.streaming['s'] = 'current delta';
+      status('ready', generation: 'first-process');
+      await tester.pump();
+      expect(runtime.liveMessages['s']!['content'], [
+        {'type': 'reasoning', 'text': 'current process'},
+      ]);
+      status('ready', generation: 'replacement-process');
+      await tester.pump();
+      expect(runtime.liveMessages, isEmpty);
+      expect(runtime.statuses, isEmpty);
+      expect(runtime.streaming, isEmpty);
       runtime.dispose();
       await tester.pump();
     },

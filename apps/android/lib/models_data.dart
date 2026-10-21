@@ -1,3 +1,7 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
+
 import 'configuration_edits.dart';
 import 'runtime.dart';
 
@@ -118,6 +122,93 @@ class ModelsSnapshot {
       descriptors,
       parts[3] as Json,
     );
+  }
+}
+
+/// Runtime-owned read cache. A retained directory is display data; edits must
+/// refresh it before opening an editor after a connection change or failure.
+class ModelsDirectoryController extends ChangeNotifier {
+  ModelsDirectoryController(this.runtime)
+    : _phase = runtime.phase,
+      _connection = runtime.connectionGeneration {
+    runtime.addListener(_runtimeChanged);
+  }
+  final RuntimeController runtime;
+  ModelsSnapshot? snapshot;
+  String? error;
+  bool loading = false, fresh = false, _disposed = false;
+  int _revision = 0, _connection;
+  String _phase;
+  Future<void>? _refresh;
+
+  void _runtimeChanged() {
+    if (_phase == runtime.phase &&
+        _connection == runtime.connectionGeneration) {
+      return;
+    }
+    _phase = runtime.phase;
+    _connection = runtime.connectionGeneration;
+    _revision++;
+    _refresh = null;
+    fresh = false;
+    loading = false;
+    if (runtime.ready) {
+      unawaited(refresh());
+    } else {
+      error = '本地服务尚未就绪，恢复后会自动刷新。';
+      notifyListeners();
+    }
+  }
+
+  Future<void> refresh() {
+    if (_disposed) return Future.value();
+    if (_refresh != null) return _refresh!;
+    if (!runtime.ready) {
+      fresh = false;
+      error = '本地服务尚未就绪，恢复后会自动刷新。';
+      notifyListeners();
+      return Future.value();
+    }
+    final revision = ++_revision;
+    final connection = runtime.connectionGeneration;
+    loading = true;
+    error = null;
+    notifyListeners();
+    late final Future<void> operation;
+    operation =
+        () async {
+          bool current() =>
+              !_disposed &&
+              revision == _revision &&
+              connection == runtime.connectionGeneration &&
+              runtime.ready;
+          try {
+            final next = await ModelsSnapshot.read(runtime);
+            if (!current()) return;
+            snapshot = next;
+            fresh = true;
+          } catch (failure) {
+            if (!current()) return;
+            fresh = false;
+            error = '$failure';
+          } finally {
+            if (current()) {
+              loading = false;
+              notifyListeners();
+            }
+          }
+        }().whenComplete(() {
+          if (identical(_refresh, operation)) _refresh = null;
+        });
+    return _refresh = operation;
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    _revision++;
+    runtime.removeListener(_runtimeChanged);
+    super.dispose();
   }
 }
 

@@ -34,21 +34,29 @@ class PocketHarnessApp extends StatefulWidget {
   State<PocketHarnessApp> createState() => _PocketHarnessAppState();
 }
 
-class _PocketHarnessAppState extends State<PocketHarnessApp> {
+class _PocketHarnessAppState extends State<PocketHarnessApp>
+    with WidgetsBindingObserver {
   final runtime = RuntimeController();
   final appearance = AppearanceController();
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     unawaited(appearance.load());
     unawaited(runtime.start().catchError(runtime.fail));
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     runtime.dispose();
     appearance.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) unawaited(runtime.resume());
   }
 
   @override

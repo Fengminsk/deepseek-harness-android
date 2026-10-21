@@ -31,7 +31,9 @@ class _Runtime extends RuntimeController {
   final feeds = <StreamController<Json>>[];
   final calls = <Json>[];
   final pendingProfiles = <Completer<Json?>>[];
+  void Function()? onWatch;
   bool deferProfile = false, failProfile = false, failImpact = false;
+  bool returnFailedDetails = false;
   bool failInitialization = false, failForms = false;
   Completer<void>? pendingInitialization;
   Json defaultSelection = {
@@ -45,9 +47,10 @@ class _Runtime extends RuntimeController {
     Json args = const {},
     Json Function()? resumeArgs,
   }) {
-    expect([namespace, method], ['account', 'watch']);
+    expectSync([namespace, method], ['account', 'watch']);
     final feed = StreamController<Json>(sync: true, onCancel: () async {});
     feeds.add(feed);
+    onWatch?.call();
     return feed.stream;
   }
 
@@ -89,6 +92,7 @@ class _Runtime extends RuntimeController {
     }
     switch (params['method']) {
       case 'getProfile':
+        if (returnFailedDetails) return {'status': 'failed'};
         if (failProfile) throw StateError('private upstream response');
         if (deferProfile) {
           final result = Completer<Json?>();
@@ -100,6 +104,7 @@ class _Runtime extends RuntimeController {
           'value': {'id': 'account-a', 'name': '测试账号', 'contact': '1**'},
         };
       case 'getBalance':
+        if (returnFailedDetails) return {'status': 'failed'};
         return {
           'status': 'ready',
           'value': [
@@ -138,6 +143,150 @@ class _Runtime extends RuntimeController {
 }
 
 void main() {
+  testWidgets(
+    'shared account survives page disposal and transient profile failure',
+    (tester) async {
+      final runtime = _Runtime();
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        RuntimeController.channel,
+        (call) async => '{"version":"0.1.0","build":18}',
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          RuntimeController.channel,
+          null,
+        ),
+      );
+      final account = await runtime.ensureAccount();
+      runtime.publish(_view(signed: true));
+      await tester.pump();
+      final knownProfile = account.profile;
+      expect(knownProfile?['value']['name'], '测试账号');
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: pocketTheme(Brightness.light),
+          home: AccountPage(runtime: runtime),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.pumpWidget(const SizedBox());
+      expect(await runtime.ensureAccount(), same(account));
+      expect(runtime.feeds, hasLength(1));
+      runtime.failProfile = true;
+      await account.refreshDetails();
+      expect(account.profile, same(knownProfile));
+      expect(account.detailsError, isNotNull);
+      runtime.returnFailedDetails = true;
+      await account.refreshDetails();
+      expect(account.profile, same(knownProfile));
+      expect(account.profileFresh, isFalse);
+      expect(account.balanceFresh, isFalse);
+      expect(account.detailsError, isNotNull);
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: pocketTheme(Brightness.light),
+          home: AccountPage(runtime: runtime),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('本机凭据已保存 · 账号资料待刷新'), findsOneWidget);
+      expect(find.text('上次读取，本次尚未更新'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+      runtime.fail(StateError('connection lost'));
+      expect(account.connected, isFalse);
+      expect(account.profile, same(knownProfile));
+      expect(await account.signOut(), isFalse);
+      runtime.serviceReady();
+      runtime.publish(_view());
+      expect(account.signedIn, isFalse);
+      expect(account.profile, isNull);
+      expect(
+        runtime.calls.where(
+          (call) => ['signOut', 'signIn'].contains(call['method']),
+        ),
+        isEmpty,
+      );
+      runtime.dispose();
+      await tester.runAsync(runtime.closeFeeds);
+    },
+  );
+
+  test(
+    'reopened baseline starts new details before obsolete reads finish',
+    () async {
+      final runtime = _Runtime()..deferProfile = true;
+      final account = AccountState(runtime, _client);
+      await account.watch();
+      runtime.publish(_view(signed: true));
+      expect(runtime.pendingProfiles, hasLength(1));
+      runtime.feeds.last.add({'type': 'disconnected'});
+      runtime.feeds.last.add({'type': 'opening'});
+      runtime.publish(_view(signed: true));
+      expect(runtime.pendingProfiles, hasLength(2));
+      runtime.pendingProfiles[1].complete({
+        'status': 'ready',
+        'value': {'name': 'fresh'},
+      });
+      await Future<void>.delayed(Duration.zero);
+      runtime.pendingProfiles[0].complete({
+        'status': 'ready',
+        'value': {'name': 'obsolete'},
+      });
+      await Future<void>.delayed(Duration.zero);
+      expect(account.profile?['value']['name'], 'fresh');
+      expect(account.loadingDetails, isFalse);
+      account.dispose();
+      await runtime.closeFeeds();
+      runtime.dispose();
+    },
+  );
+
+  test('synchronous signed-out then restored baseline cannot reuse the empty detail read', () async {
+    final runtime = _Runtime();
+    final account = AccountState(runtime, _client);
+    await account.watch();
+    runtime.publish(_view());
+    runtime.publish(_view(signed: true));
+    await Future<void>.delayed(Duration.zero);
+    expect(account.profile?['value']['name'], '测试账号');
+    expect(account.connected, isTrue);
+    account.dispose();
+    await runtime.closeFeeds();
+    runtime.dispose();
+  });
+
+  test('ended account observation retries without replaying login or default writes', () async {
+    final runtime = _Runtime();
+    final account = AccountState(runtime, _client);
+    await account.watch();
+    final view = _view(
+      signed: true,
+      attempt: {'id': 'accepted', 'phase': 'succeeded'},
+    );
+    runtime.publish(view);
+    await Future<void>.delayed(Duration.zero);
+    final reopened = Completer<void>();
+    runtime.onWatch = reopened.complete;
+    await runtime.feeds.first.close();
+    expect(account.connected, isFalse);
+    await reopened.future.timeout(const Duration(seconds: 5));
+    expect(runtime.feeds, hasLength(2));
+    runtime.publish(view);
+    await Future<void>.delayed(Duration.zero);
+    expect(account.connected, isTrue);
+    expect(
+      runtime.calls.where((call) => call['method'] == 'initializeDefaultModel'),
+      hasLength(1),
+    );
+    expect(
+      runtime.calls.where((call) => call['rpc'] == 'account.signIn'),
+      isEmpty,
+    );
+    account.dispose();
+    await runtime.closeFeeds();
+    runtime.dispose();
+  });
+
   for (final phase in ['starting', 'failed']) {
     testWidgets('cold account return opens while the service is $phase', (
       tester,
