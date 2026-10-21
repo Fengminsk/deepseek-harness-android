@@ -459,28 +459,31 @@ class _ConfigPageState extends State<ConfigPage> {
 }
 
 String configurationNamespaceTitle(String namespace) {
+  // Exact host entry IDs from the bundled profiles. In particular, ui-* forms
+  // configure the original Web client, not Pocket Harness's native appearance.
   const names = {
     'session-log-deepseek': 'DeepSeek 会话记录',
     'agent-default-model': '默认会话模型',
-    'llm-deepseek': 'DeepSeek 模型参数',
+    'llm-deepseek': 'DeepSeek API 密钥接入',
+    'llm-deepseek-account': 'DeepSeek 账号模型接入',
     'llm-pi-ai': '兼容模型服务',
     'subagent': '子 Agent',
+    'subagent-model-selection-settings': '子 Agent 模型选择',
     'web': '联网工具',
     'web-search-deepseek': 'DeepSeek 搜索',
     'web-deepseek-api': 'DeepSeek 联网服务',
     'web-search-exa': 'Exa 搜索',
     'web-fetch-http': '网页读取',
     'android-runtime': 'Android 工具',
+    'ui-settings-account': 'Web 账号界面',
+    'ui-theme': 'Web 主题与字体',
+    'ui-settings': 'Web 开发者工具',
+    'ui-conversation': 'Web 繁忙时发送行为',
+    'ui-chat': 'Web 聊天展示',
   };
-  if (names.containsKey(namespace)) return names[namespace]!;
-  if (namespace.contains('llm') || namespace.contains('model')) return '模型参数';
-  if (namespace.contains('shell') || namespace.contains('bash')) return 'Shell';
-  if (namespace.contains('search') || namespace.contains('web')) return '联网搜索';
-  if (namespace.contains('preset') || namespace.contains('persona')) {
-    return 'Agent 预设';
-  }
-  if (namespace.contains('subagent')) return '子 Agent';
-  return '工具与运行参数';
+  // Unknown plugins keep their identity instead of receiving an ambiguous or
+  // potentially incorrect title inferred from a substring of their entry ID.
+  return names[namespace] ?? namespace;
 }
 
 const _fieldLabels = {

@@ -249,8 +249,8 @@ void main() {
         runtime.calls.where((call) => call.$1.endsWith('.apply')),
         isEmpty,
       );
-      expect(find.text('agent'), findsNothing);
-      await tap(tester, find.text('工具与运行参数'));
+      expect(find.text('agent'), findsOneWidget);
+      await tap(tester, find.text('agent'));
       await tap(tester, find.text('maxTokens'));
       expect(find.textContaining('当前：100\n导入：200'), findsOneWidget);
       await tap(tester, apply);
@@ -331,7 +331,7 @@ void main() {
         hasLength(1),
       );
       expect(apply, findsOneWidget);
-      await tap(tester, find.text('工具与运行参数'));
+      await tap(tester, find.text('agent'));
       await tap(tester, find.text('高级详情'));
       expect(find.textContaining('配置标识：agent\n读取版本：2'), findsOneWidget);
     },
@@ -398,10 +398,10 @@ void main() {
       expect(find.text('1 个字段'), findsOneWidget);
       expect(apply, findsNothing);
       expect(source, findsNothing);
-      expect(find.text('agent'), findsNothing);
+      expect(find.text('agent'), findsOneWidget);
       await tap(tester, find.text('未包含的设置'));
       expect(find.text('设备设置不迁移'), findsOneWidget);
-      expect(find.textContaining('web-startup'), findsNothing);
+      expect(find.text('web-startup'), findsOneWidget);
       await tap(tester, find.byKey(const Key('configuration-transfer-save')));
       expect(native.single.method, 'configurationTransfer.save');
       expect((native.single.arguments as Map)['text'], input);
@@ -491,7 +491,7 @@ void main() {
       expect(apply, findsOneWidget);
       expect(tester.takeException(), isNull);
       await capture(tester, 'transfer-import-preview');
-      await tap(tester, find.text('工具与运行参数'));
+      await tap(tester, find.text('agent'));
       await tester.pump(const Duration(milliseconds: 100));
       expect(find.byType(AnimatedSize), findsWidgets);
       await tester.pumpAndSettle();
@@ -542,7 +542,7 @@ void main() {
               widget is Semantics &&
               widget.properties.expanded != null &&
               widget.child is PocketRow &&
-              (widget.child! as PocketRow).title == '工具与运行参数',
+              (widget.child! as PocketRow).title == 'agent',
         );
         final bounds = tester.getRect(selection);
         expect(bounds.width, greaterThanOrEqualTo(48));
@@ -554,7 +554,7 @@ void main() {
         expect(
           tester.getSemantics(selection),
           isSemantics(
-            label: '选择工具与运行参数',
+            label: '选择agent',
             hasToggledState: true,
             isToggled: true,
             isEnabled: true,
@@ -571,7 +571,7 @@ void main() {
         await tester.pumpAndSettle();
         expect(apply, findsOneWidget);
         expect(tester.getSemantics(disclosure), isSemantics(isExpanded: false));
-        await tap(tester, find.text('工具与运行参数'));
+        await tap(tester, find.text('agent'));
         expect(tester.getSemantics(disclosure), isSemantics(isExpanded: true));
         expect(tester.getSemantics(selection), isSemantics(isToggled: true));
       } finally {
@@ -601,11 +601,11 @@ void main() {
         await tester.pumpAndSettle();
         expect(find.text('maxTokens'), findsNothing);
         expect(apply, findsNothing);
-        await tap(tester, find.text('工具与运行参数'));
+        await tap(tester, find.text('agent'));
         expect(find.text('maxTokens'), findsOneWidget);
         expect(find.byType(AnimatedSize), findsNothing);
         expect(tester.takeException(), isNull);
-        await tap(tester, find.text('工具与运行参数'));
+        await tap(tester, find.text('agent'));
         expect(find.text('maxTokens'), findsNothing);
         expect(tester.takeException(), isNull);
       } finally {

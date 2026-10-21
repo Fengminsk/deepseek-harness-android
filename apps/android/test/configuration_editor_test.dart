@@ -101,6 +101,53 @@ Future<void> openEditor(WidgetTester tester, SettingsRuntime runtime) async {
 }
 
 void main() {
+  test('bundled model and Web settings have distinct functional titles', () {
+    const expected = {
+      'llm-deepseek': 'DeepSeek API 密钥接入',
+      'llm-deepseek-account': 'DeepSeek 账号模型接入',
+      'subagent-model-selection-settings': '子 Agent 模型选择',
+      'ui-settings-account': 'Web 账号界面',
+      'ui-theme': 'Web 主题与字体',
+      'ui-settings': 'Web 开发者工具',
+      'ui-conversation': 'Web 繁忙时发送行为',
+      'ui-chat': 'Web 聊天展示',
+    };
+    for (final entry in expected.entries) {
+      expect(configurationNamespaceTitle(entry.key), entry.value);
+    }
+    final titles = [
+      ...expected.keys,
+      'session-log-deepseek',
+      'agent-default-model',
+      'llm-pi-ai',
+      'subagent',
+      'web',
+      'web-search-deepseek',
+      'web-deepseek-api',
+    ].map(configurationNamespaceTitle).toList();
+    expect(titles.toSet(), hasLength(titles.length));
+  });
+
+  test(
+    'unknown settings retain their exact identity without keyword guesses',
+    () {
+      for (final namespace in [
+        'agent',
+        'custom-llm',
+        'custom-model',
+        'custom-shell',
+        'custom-bash',
+        'custom-search',
+        'custom-web',
+        'custom-preset',
+        'custom-persona',
+        'custom-subagent',
+      ]) {
+        expect(configurationNamespaceTitle(namespace), namespace);
+      }
+    },
+  );
+
   testWidgets(
     'native fields save only their changes without writing the hidden key or defaults',
     (tester) async {
