@@ -300,16 +300,11 @@ class _ConfigPageState extends State<ConfigPage> {
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(8, 0, 8, 20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          padding: const EdgeInsets.fromLTRB(0, 0, 0, 16),
+          child: Row(
             children: [
-              Text('${accepted['ns']} · 版本 ${accepted['revision']}'),
-              const SizedBox(height: 8),
-              const Text(
-                '仅提交修改的字段。凭据及含凭据的数组会保留，'
-                '需要通过专门的凭据入口管理。',
-              ),
+              const Expanded(child: Text('调整后保存生效')),
+              const SizedBox(width: 12),
               PocketButton.tonal(
                 onPressed: busy || invalidFields.isNotEmpty
                     ? null
@@ -384,6 +379,18 @@ class _ConfigPageState extends State<ConfigPage> {
         PocketSection(
           title: '版本与默认值',
           children: [
+            PocketDisclosure(
+              title: '配置说明',
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('只保存修改的字段。已有凭据及包含凭据的内容会保留，请在凭据入口单独管理。'),
+                  const SizedBox(height: 12),
+                  Text('${accepted['ns']} · 版本 ${accepted['revision']}',
+                      style: Theme.of(context).textTheme.bodySmall),
+                ],
+              ),
+            ),
             PocketRow(
               icon: Icons.sync_rounded,
               title: '读取最新版本并比较',
@@ -452,6 +459,20 @@ class _ConfigPageState extends State<ConfigPage> {
 }
 
 String configurationNamespaceTitle(String namespace) {
+  const names = {
+    'session-log-deepseek': 'DeepSeek 会话记录',
+    'agent-default-model': '默认会话模型',
+    'llm-deepseek': 'DeepSeek 模型参数',
+    'llm-pi-ai': '兼容模型服务',
+    'subagent': '子 Agent',
+    'web': '联网工具',
+    'web-search-deepseek': 'DeepSeek 搜索',
+    'web-deepseek-api': 'DeepSeek 联网服务',
+    'web-search-exa': 'Exa 搜索',
+    'web-fetch-http': '网页读取',
+    'android-runtime': 'Android 工具',
+  };
+  if (names.containsKey(namespace)) return names[namespace]!;
   if (namespace.contains('llm') || namespace.contains('model')) return '模型参数';
   if (namespace.contains('shell') || namespace.contains('bash')) return 'Shell';
   if (namespace.contains('search') || namespace.contains('web')) return '联网搜索';

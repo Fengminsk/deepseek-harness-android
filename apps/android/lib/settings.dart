@@ -17,6 +17,8 @@ import 'approvals_notifications.dart';
 import 'account.dart';
 import 'plugins.dart';
 import 'background_settings.dart';
+import 'credentials.dart';
+import 'recovery.dart';
 
 class SettingsPage extends StatelessWidget {
   const SettingsPage({required this.runtime, super.key});
@@ -73,6 +75,13 @@ class SettingsPage extends StatelessWidget {
                   onTap: () => open(AccountPage(runtime: runtime)),
                 ),
                 PocketRow(
+                  icon: Icons.key_outlined,
+                  title: '凭据引用',
+                  subtitle: '管理模型与工具共用的密钥',
+                  onTap: () =>
+                      open(CredentialsPage(controller: runtime.credentials)),
+                ),
+                PocketRow(
                   icon: Icons.tune_rounded,
                   title: 'Agent 与工具',
                   subtitle: '预设、Shell、联网搜索与插件',
@@ -86,8 +95,8 @@ class SettingsPage extends StatelessWidget {
                 ),
                 PocketRow(
                   icon: Icons.import_export_rounded,
-                  title: '运行设置导入导出',
-                  subtitle: '普通运行设置的预览与迁移，不含凭据及设备授权',
+                  title: '导入与导出',
+                  subtitle: '预览和迁移运行设置',
                   onTap: () =>
                       open(ConfigurationTransferPage(runtime: runtime)),
                 ),
@@ -140,12 +149,19 @@ class SettingsPage extends StatelessWidget {
             ),
             PocketSection(
               title: '帮助与诊断',
+              divided: true,
               children: [
                 PocketRow(
                   icon: Icons.monitor_heart_outlined,
                   title: '运行状态',
                   subtitle: runtime.ready ? '本地服务已就绪' : '查看启动状态与错误',
                   onTap: () => open(DiagnosticsPage(runtime: runtime)),
+                ),
+                PocketRow(
+                  icon: Icons.build_outlined,
+                  title: '启动配置与恢复',
+                  subtitle: '原始配置、备份与启动故障处理',
+                  onTap: () => open(RecoveryPage(controller: runtime.recovery)),
                 ),
                 const _InstalledVersionRow(),
               ],
@@ -216,10 +232,7 @@ class ConfigurationListPage extends StatelessWidget {
         children: [
           const Padding(
             padding: EdgeInsets.fromLTRB(12, 0, 12, 24),
-            child: Text(
-              '按运行时配置提供原生字段表单。复杂结构可在 App 内高级编辑，凭据保持隐藏。',
-              style: TextStyle(fontSize: 13),
-            ),
+            child: Text('选择要调整的功能。', style: TextStyle(fontSize: 13)),
           ),
           if (!runtime.ready) const Text('本地服务就绪后可读取配置。'),
           PocketSection(
@@ -228,7 +241,6 @@ class ConfigurationListPage extends StatelessWidget {
                 PocketRow(
                   icon: Icons.tune_rounded,
                   title: configurationNamespaceTitle('${form['ns']}'),
-                  subtitle: '${form['ns']}',
                   onTap: () => Navigator.push(
                     context,
                     PocketRoute<void>(
@@ -261,9 +273,11 @@ class WebSettingsPage extends StatefulWidget {
 
 class _WebSettingsPageState extends State<WebSettingsPage> {
   Json? state;
+  Json? observedWeb;
   String? error;
   final port = TextEditingController(text: '3080');
   bool busy = false;
+  int reads = 0;
   @override
   void initState() {
     super.initState();
@@ -272,7 +286,11 @@ class _WebSettingsPageState extends State<WebSettingsPage> {
   }
 
   void changed() {
-    if (mounted && widget.runtime.web.isNotEmpty) {
+    if (mounted &&
+        widget.runtime.web.isNotEmpty &&
+        !identical(observedWeb, widget.runtime.web)) {
+      observedWeb = widget.runtime.web;
+      reads++;
       setState(() => state = widget.runtime.web);
     }
   }
@@ -285,24 +303,37 @@ class _WebSettingsPageState extends State<WebSettingsPage> {
   }
 
   Future<void> load() async {
+    final read = ++reads;
+    final draft = port.text;
+    final updatePort = state == null || draft == '${state!['port']}';
     try {
       final value = await widget.runtime.call('web.status') as Json;
-      if (mounted) {
+      if (mounted && read == reads) {
         setState(() {
           state = value;
-          port.text = '${value['port']}';
+          error = null;
+          if (updatePort && port.text == draft) port.text = '${value['port']}';
         });
       }
     } catch (exception) {
-      if (mounted) setState(() => error = '$exception');
+      if (mounted && read == reads) {
+        setState(() {
+          error = 'Web 状态未确认，请刷新重试：$exception';
+          state = state == null ? null : {...state!, 'phase': 'unknown'};
+        });
+      }
     }
   }
 
   Future<void> update({
     bool? enabled,
     String? scope,
+    int? portNumber,
     bool rotate = false,
   }) async {
+    ++reads;
+    final draft = port.text;
+    final updatePort = portNumber != null || draft == '${state!['port']}';
     setState(() {
       busy = true;
       error = null;
@@ -315,10 +346,15 @@ class _WebSettingsPageState extends State<WebSettingsPage> {
             : {
                 'enabled': enabled ?? state!['enabled'],
                 'scope': scope ?? state!['scope'],
-                'port': int.parse(port.text),
+                'port': portNumber ?? state!['port'],
               },
       ) as Json;
-      if (mounted) setState(() => state = value);
+      if (mounted) {
+        setState(() {
+          state = value;
+          if (updatePort && port.text == draft) port.text = '${value['port']}';
+        });
+      }
     } catch (exception) {
       if (mounted) setState(() => error = '$exception');
     } finally {
@@ -329,105 +365,165 @@ class _WebSettingsPageState extends State<WebSettingsPage> {
   @override
   Widget build(BuildContext context) => PocketScaffold(
     title: const Text('Web 访问'),
+    trailing: GlassButton(
+      icon: Icons.refresh_rounded,
+      label: '刷新 Web 状态',
+      onPressed: busy ? null : load,
+    ),
     body: PocketList(
-      padding: const EdgeInsets.all(24),
       children: [
-        const Text(
-          '原版 Web',
-          style: TextStyle(fontSize: 24, fontWeight: FontWeight.w600),
-        ),
-        const SizedBox(height: 12),
-        const Text('浏览器与 App 使用同一个 Agent、会话和配置。'),
         if (error != null)
           Padding(
-            padding: const EdgeInsets.symmetric(vertical: 24),
+            padding: const EdgeInsets.fromLTRB(18, 0, 18, 20),
             child: SelectableText(error!),
           ),
+        if (state == null && error == null)
+          const Padding(
+            padding: EdgeInsets.all(20),
+            child: Text('正在读取 Web 状态…'),
+          ),
         if (state != null) ...[
-          const SizedBox(height: 24),
-          PocketSwitchRow(
-            contentPadding: EdgeInsets.zero,
-            title: const Text('开启 Web 访问'),
-            subtitle: const Text('记住开关和访问范围；每次开启生成新的访问链接'),
-            value: state!['enabled'] == true,
-            onChanged: busy ? null : (value) => update(enabled: value),
+          PocketSection(
+            children: [
+              PocketSwitchRow(
+                title: const Text('开启 Web 访问'),
+                subtitle: Text(
+                  const {
+                        'disabled': '已关闭',
+                        'starting': '正在启动',
+                        'listening': '正在监听',
+                        'waiting-network': '等待 Wi-Fi 或以太网的局域网地址',
+                        'failed': '启动失败',
+                      }[state!['phase']] ??
+                      '状态尚未确认',
+                ),
+                value: state!['enabled'] == true,
+                onChanged: busy ? null : (value) => update(enabled: value),
+              ),
+              if (state!['error'] != null)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 18),
+                  child: SelectableText('${state!['error']}'),
+                ),
+            ],
           ),
-          const SizedBox(height: 16),
-          IgnorePointer(
-            ignoring: busy,
-            child: SegmentedControl<String>(
-              segments: const [('local', '仅本机'), ('lan', '局域网')],
-              value: state!['scope'] as String,
-              onChanged: (value) => update(scope: value),
-            ),
-          ),
-          const SizedBox(height: 24),
-          TextField(
-            controller: port,
-            keyboardType: TextInputType.number,
-            decoration: const InputDecoration(
-              labelText: '端口',
-              helperText: '1024–65535，默认 3080',
-            ),
-          ),
-          const SizedBox(height: 16),
-          PocketButton.tonal(
-            onPressed: busy ? null : update,
-            child: const Text('应用端口并重启 Web'),
-          ),
-          const SizedBox(height: 24),
-          Text(
-            const {
-                  'disabled': '已关闭',
-                  'starting': '正在启动',
-                  'listening': '正在监听',
-                  'waiting-network': '等待 Wi-Fi 或以太网的局域网地址',
-                  'failed': '启动失败',
-                }[state!['phase']] ??
-                '${state!['phase']}',
-            style: Theme.of(context).textTheme.titleMedium,
-          ),
-          if (state!['error'] != null) SelectableText('${state!['error']}'),
-          if (state!['phase'] == 'listening') ...[
-            const SizedBox(height: 8),
-            SelectableText('监听地址：${state!['host']}:${state!['port']}'),
-            const SizedBox(height: 16),
-            SelectableText('${state!['url']}'),
-            const SizedBox(height: 16),
-            Row(
-              children: [
-                Expanded(
-                  child: PocketButton(
-                    onPressed: () => RuntimeController.channel
-                        .invokeMethod<void>('openUrl', state!['url']),
-                    child: const Text('打开浏览器'),
+          PocketSection(
+            title: '允许访问的设备',
+            children: [
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: IgnorePointer(
+                  ignoring: busy,
+                  child: SegmentedControl<String>(
+                    segments: const [('local', '仅本机'), ('lan', '局域网')],
+                    value: state!['scope'] as String,
+                    onChanged: (value) => update(scope: value),
                   ),
                 ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: PocketButton.tonal(
-                    onPressed: () => Clipboard.setData(
-                      ClipboardData(text: '${state!['url']}'),
-                    ),
-                    child: const Text('复制链接'),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 18),
+                child: Text(
+                  state!['scope'] == 'lan'
+                      ? '允许同一局域网中的设备访问，网络不可用时等待连接。'
+                      : '只有这台手机上的浏览器能够访问。',
+                ),
+              ),
+            ],
+          ),
+          if (state!['phase'] == 'listening')
+            PocketSection(
+              title: '访问原版 Web',
+              divided: true,
+              children: [
+                PocketRow(
+                  icon: Icons.open_in_browser_rounded,
+                  title: '打开浏览器',
+                  subtitle: '${state!['host']}:${state!['port']}',
+                  onTap: () => RuntimeController.channel.invokeMethod<void>(
+                    'openUrl',
+                    state!['url'],
                   ),
+                ),
+                PocketRow(
+                  icon: Icons.link_rounded,
+                  title: '复制访问链接',
+                  onTap: () => Clipboard.setData(
+                    ClipboardData(text: '${state!['url']}'),
+                  ),
+                ),
+                PocketDisclosure(
+                  title: '二维码与完整链接',
+                  child: Column(
+                    children: [
+                      ColoredBox(
+                        color: Colors.white,
+                        child: QrImageView(data: '${state!['url']}', size: 220),
+                      ),
+                      const SizedBox(height: 16),
+                      SelectableText('${state!['url']}'),
+                    ],
+                  ),
+                ),
+                PocketRow(
+                  icon: Icons.refresh_rounded,
+                  title: '重置访问凭证',
+                  subtitle: '旧链接和浏览器连接会失效',
+                  onTap: busy ? null : () => update(rotate: true),
                 ),
               ],
             ),
-            const SizedBox(height: 16),
-            Center(
-              child: ColoredBox(
-                color: Colors.white,
-                child: QrImageView(data: '${state!['url']}', size: 230),
+          PocketSection(
+            title: '高级设置',
+            children: [
+              Padding(
+                padding: const EdgeInsets.all(18),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    TextField(
+                      controller: port,
+                      enabled: !busy,
+                      keyboardType: TextInputType.number,
+                      onChanged: (_) => setState(() {}),
+                      decoration: const InputDecoration(
+                        labelText: '访问端口',
+                        helperText: '1024–65535，默认 3080',
+                      ),
+                    ),
+                    if (port.text != '${state!['port']}') ...[
+                      const SizedBox(height: 12),
+                      PocketButton.tonal(
+                        onPressed: busy
+                            ? null
+                            : () {
+                                final value = int.tryParse(port.text);
+                                if (value == null ||
+                                    value < 1024 ||
+                                    value > 65535) {
+                                  setState(
+                                    () => error = '请输入 1024–65535 之间的端口。',
+                                  );
+                                  return;
+                                }
+                                update(portNumber: value);
+                              },
+                        child: Text(
+                          state!['enabled'] == true ? '保存端口并重启 Web' : '保存端口',
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
               ),
-            ),
-            PocketButton.tonal(
-              onPressed: busy ? null : () => update(rotate: true),
-              child: const Text('重置访问凭证'),
-            ),
-          ],
-          const SizedBox(height: 16),
-          const Text('关闭会立即断开浏览器连接，手机中的任务继续执行。局域网模式只绑定当前本地网络地址。'),
+              const PocketDisclosure(
+                title: '关于 Web 访问',
+                child: Text(
+                  '浏览器与 App 共用 Agent、会话和配置。开关和访问范围会保留，每次开启生成新链接。关闭 Web 会断开浏览器，手机中的任务继续执行。',
+                ),
+              ),
+            ],
+          ),
         ],
       ],
     ),

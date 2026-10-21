@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:dsh_android/chat_messages.dart';
 import 'package:dsh_android/main.dart';
 import 'package:dsh_android/runtime.dart';
@@ -21,6 +23,38 @@ class _ChatRuntime extends RuntimeController {
   final List<Json> history;
   final calls = <({String method, Json params})>[];
   int draft = 0;
+  String catalogTitle = '历史会话';
+  final libraryStreams = <String, List<StreamController<Json>>>{};
+
+  @override
+  Stream<Json> watchApi(
+    String namespace,
+    String method, {
+    Json args = const {},
+    Json Function()? resumeArgs,
+  }) {
+    late final StreamController<Json> stream;
+    stream = StreamController<Json>(
+      onListen: () => scheduleMicrotask(
+        () => stream.add({
+          'type': 'item',
+          'value': {'type': 'baseline'},
+        }),
+      ),
+    );
+    libraryStreams.putIfAbsent(namespace, () => []).add(stream);
+    return stream.stream;
+  }
+
+  @override
+  void dispose() {
+    super.dispose();
+    for (final streams in libraryStreams.values) {
+      for (final stream in streams) {
+        unawaited(stream.close());
+      }
+    }
+  }
 
   @override
   String newSession() {
@@ -33,6 +67,25 @@ class _ChatRuntime extends RuntimeController {
   Future<dynamic> call(String method, [Json params = const {}]) async {
     calls.add((method: method, params: params));
     switch (method) {
+      case 'library.catalog':
+        return {
+          'workspaces': <Json>[],
+          'sessions': [
+            {
+              'sessionId': 'history',
+              'updatedAt': 1,
+              'running': false,
+              'blank': false,
+              'cwd': '/fixture',
+              'projections': {
+                'values': {'title': catalogTitle},
+              },
+            },
+          ],
+          'archivedSessionIds': <String>[],
+          'pinnedSessionIds': <String>[],
+          'defaultDirectory': '/fixture',
+        };
       case 'session.read':
         if (params['sessionId'] != 'history') {
           throw StateError('Unexpected session read');
@@ -67,6 +120,16 @@ class _ChatRuntime extends RuntimeController {
 
   void append(Json event) {
     timelines['history']!.add(event);
+    if (event['type'] == 'session/title') {
+      catalogTitle = event['data']['title'] as String;
+      for (final stream
+          in libraryStreams['session'] ?? <StreamController<Json>>[]) {
+        stream.add({
+          'type': 'item',
+          'value': {'type': 'projection', 'key': 'title'},
+        });
+      }
+    }
     notifyListeners();
   }
 
@@ -247,8 +310,10 @@ void main() {
     await tester.enterText(find.byType(TextField), '父会话未发送的草稿');
     await tester.tap(find.byTooltip('打开侧栏'));
     await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('子 Agent'));
-    await tester.tap(find.text('子 Agent'));
+    await tester.ensureVisible(find.text('更多'));
+    await tester.tap(find.text('更多'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('当前会话的子 Agent'));
     await tester.pumpAndSettle();
     expect(find.byType(SubagentsPage), findsOneWidget);
     final call = runtime.calls.singleWhere(

@@ -93,3 +93,27 @@ test('question snapshots retain original questions and state without shell prese
     questions: [{ id: 'one', question: '原问题？' }], state: 'continued', waitState: 'continued', countdown: 12,
   })
 })
+
+test('shared credential reference changes reach native observers without forwarding account record events', async () => {
+  const lifetime = new AbortController()
+  const delivered = []
+  const ready = Promise.withResolvers()
+  const carrier = Object.create(AppInteractions.prototype)
+  Object.assign(carrier, {
+    lifetime, peer: {}, reconcile() {},
+    transport: { notify: (method, params) => delivered.push({ method, params }) },
+    ctx: { typertGateway: { wireStream: { async open() {
+      return (async function* () {
+        yield { type: 'ready', clientId: 'test-client' }
+        yield { type: 'emit', event: 'credentials/reference-updated', args: ['SEARCH_API_KEY'] }
+        yield { type: 'emit', event: 'credentials/record-updated', args: ['account/record'] }
+        lifetime.abort()
+      })()
+    } } } },
+  })
+  await carrier.consume(ready)
+  await ready.promise
+  assert.deepEqual(delivered, [{ method: 'api.event', params: {
+    event: 'credentials/reference-updated', args: ['SEARCH_API_KEY'],
+  } }])
+})

@@ -23,15 +23,24 @@ class MainActivity : FlutterActivity() {
     private var notificationPermission: MethodChannel.Result? = null
     private val main = Handler(Looper.getMainLooper())
     private var restarting: MethodChannel.Result? = null
+    private val recoveryControl by lazy { RecoveryRuntime(this) }
+    private var restartTargetMode = "active"
+    private var restartModeToken: String? = null
+    private var restartReturnsState = false
+    private var restartAwaitingNewStatus = false
+    private var restartModePersisting = false
+    private var restartModePersisted = false
+    private var replacementStarted = false
     private var restartBinder: IBinder? = null
     private var restartDeath: IBinder.DeathRecipient? = null
     private var restartAwaitingOldConnection = false
     private val restartTimeout = Runnable {
         val result = restarting ?: return@Runnable
         clearRestartObserver()
+        abortTransition()
         restarting = null
         restartAwaitingOldConnection = false
-        result.error("restart-timeout", "无法确认旧运行时已退出或新服务已连接，请稍后重试。未启动第二个运行时实例。", null)
+        result.error("restart-timeout", "无法确认旧运行时退出或新模式生效；请重新读取状态，未确认退出时不会启动第二个实例。", null)
     }
     private val pending = mutableMapOf<String, MethodChannel.Result>()
     private val replies = Messenger(Handler(Looper.getMainLooper()) { message ->
@@ -39,28 +48,63 @@ class MainActivity : FlutterActivity() {
         val frame = JSONObject(raw)
         if (frame.has("id")) {
             pending.remove(frame.getString("id"))?.let { result ->
-                if (frame.has("error")) result.error("runtime", frame.getJSONObject("error").optString("message"), null)
+                if (frame.has("error")) {
+                    val error = frame.getJSONObject("error")
+                    val code = error.opt("code")
+                    val details = error.optJSONObject("details")
+                    val proof = if (details?.optString("outcome") == "not-started")
+                        mapOf("outcome" to "not-started", "requestId" to details.optString("requestId")) else null
+                    result.error(if (code is String) code else "runtime", error.optString("message"), proof)
+                }
                 else result.success((frame.opt("result") ?: JSONObject.NULL).toString())
             }
-        } else events?.success(raw)
+        } else if (frame.optString("method") == "runtime.transition") {
+            transitionAccepted(frame.getJSONObject("params"))
+        } else {
+            if (frame.optString("method") == "runtime.status") {
+                val state = frame.getJSONObject("params")
+                if (restarting != null && restartAwaitingNewStatus &&
+                    state.optString("modeToken") == restartModeToken &&
+                    state.optString("phase") == "maintenance-blocked") {
+                    val result = restarting
+                    restarting = null
+                    restartAwaitingNewStatus = false
+                    clearRestartObserver()
+                    restartModeToken = null
+                    result?.error("recovery/maintenance-blocked", "维护模式无法确认遗留进程已停止，配置仍为只读", null)
+                }
+                if (restarting != null && restartAwaitingNewStatus &&
+                    state.optString("modeToken") == restartModeToken &&
+                    state.optString("mode") == restartTargetMode &&
+                    (restartTargetMode != "maintenance" ||
+                        state.optString("phase") == "maintenance" && !state.optBoolean("nodeStarted", true)
+                            && state.optBoolean("mutationAllowed"))) {
+                    val result = restarting
+                    restarting = null
+                    restartAwaitingNewStatus = false
+                    clearRestartObserver()
+                    if (restartReturnsState) result?.success(state.toString()) else result?.success(null)
+                    restartModeToken = null
+                }
+            }
+            events?.success(raw)
+        }
         true
     })
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             service = Messenger(binder)
-            service!!.send(Message.obtain(null, 1).apply { replyTo = replies })
-            if (restartAwaitingOldConnection) {
-                restartAwaitingOldConnection = false
-                val result = restarting
-                restarting = null
-                clearRestartObserver()
-                if (result != null) restartRuntime(result)
+            try { service!!.send(Message.obtain(null, 1).apply { replyTo = replies }) }
+            catch (_: RemoteException) {
+                service = null
+                // A pending transition keeps its deadline; a bind is never proof
+                // that either the old process stopped or the new mode is ready.
                 return
             }
-            if (restartBinder == null) {
-                restarting?.success(null)
-                restarting = null
-                main.removeCallbacks(restartTimeout)
+            if (restartAwaitingOldConnection) {
+                restartAwaitingOldConnection = false
+                prepareTransition()
+                return
             }
         }
         override fun onServiceDisconnected(name: ComponentName?) {
@@ -131,6 +175,21 @@ class MainActivity : FlutterActivity() {
                     } else result.success(null)
                 }
                 "restart" -> restartRuntime(result)
+                "recovery.enter", "recovery.resume" -> {
+                    val id = call.argument<String>("requestId") ?: ""
+                    try {
+                        RecoveryFiles.requestId(id)
+                        restartRuntime(result, if (call.method == "recovery.enter") "maintenance" else "active", true, id)
+                    } catch (_: Exception) {
+                        result.error("recovery/request-invalid", "恢复操作标识无效", null)
+                    }
+                }
+                "recovery.call" -> {
+                    try {
+                        val request = JSONObject(call.arguments as String)
+                        sendCall(JSONObject().put("method", "recovery.call").put("params", request), result)
+                    } catch (_: Exception) { result.error("recovery/request-invalid", "恢复请求无法读取", null) }
+                }
                 "appearance.load" -> result.success(getSharedPreferences("appearance", MODE_PRIVATE).getString("value", "{}"))
                 "appearance.save" -> {
                     try {
@@ -155,17 +214,7 @@ class MainActivity : FlutterActivity() {
                     result.success(null)
                 }
                 "call" -> {
-                    val peer = service
-                    if (peer == null) result.error("starting", "正在连接本地运行时", null) else {
-                        val id = UUID.randomUUID().toString()
-                        val frame = JSONObject(call.arguments as String).put("jsonrpc", "2.0").put("id", id)
-                        pending[id] = result
-                        try {
-                            val payload = WirePayload.encode(frame.toString())
-                            try { peer.send(Message.obtain(null, 2).apply { replyTo = replies; data = payload }) }
-                            finally { WirePayload.close(payload) }
-                        } catch (exception: Exception) { pending.remove(id); result.error("disconnected", exception.message, null) }
-                    }
+                    sendCall(JSONObject(call.arguments as String), result)
                 }
                 "pickDirectory" -> transfers.pickDirectory(result)
                 "pickDocument" -> transfers.pickDocument(result)
@@ -179,6 +228,21 @@ class MainActivity : FlutterActivity() {
             }
         }
     }
+    private fun sendCall(frame: JSONObject, result: MethodChannel.Result) {
+        val peer = service
+        if (peer == null) { result.error("starting", "正在连接本地服务", null); return }
+        val id = UUID.randomUUID().toString()
+        frame.put("jsonrpc", "2.0").put("id", id)
+        pending[id] = result
+        try {
+            val payload = WirePayload.encode(frame.toString())
+            try { peer.send(Message.obtain(null, 2).apply { replyTo = replies; data = payload }) }
+            finally { WirePayload.close(payload) }
+        } catch (_: Exception) {
+            pending.remove(id)
+            result.error("disconnected", "服务连接中断，操作结果未确认，请重新读取状态", null)
+        }
+    }
     private fun clearRestartObserver() {
         val binder = restartBinder
         val death = restartDeath
@@ -187,39 +251,122 @@ class MainActivity : FlutterActivity() {
         restartDeath = null
         main.removeCallbacks(restartTimeout)
     }
-    private fun restartRuntime(result: MethodChannel.Result) {
+    private fun restartRuntime(result: MethodChannel.Result, mode: String? = null,
+                               returnState: Boolean = false, token: String = UUID.randomUUID().toString()) {
         if (restarting != null) { result.error("busy", "正在重启 Agent 服务", null); return }
         restarting = result
-        main.postDelayed(restartTimeout, 10000)
+        restartTargetMode = mode ?: try { recoveryControl.mode()[0] } catch (_: Exception) { "maintenance" }
+        restartModeToken = token
+        restartReturnsState = returnState
+        restartAwaitingNewStatus = false
+        restartModePersisting = false
+        restartModePersisted = false
+        replacementStarted = false
+        main.postDelayed(restartTimeout, 20_000)
         val peer = service
         if (peer == null) {
             restartAwaitingOldConnection = true
             startReplacement()
             return
         }
+        prepareTransition()
+    }
+    private fun prepareTransition() {
+        val peer = service ?: return
+        val token = restartModeToken ?: return
         val binder = peer.binder
         val death = IBinder.DeathRecipient { main.post {
             if (restarting == null || restartBinder !== binder) return@post
-            clearRestartObserver()
-            main.postDelayed(restartTimeout, 10000)
-            startReplacement()
+            if (restartModePersisted) replacementAfterDeath()
+            else persistModeAndContinue(token, null)
         } }
         restartBinder = binder
         restartDeath = death
         try {
             binder.linkToDeath(death, 0)
-            peer.send(Message.obtain(null, 6).apply { replyTo = replies })
+            peer.send(Message.obtain(null, 6).apply {
+                replyTo = replies
+                data = Bundle().apply { putString("token", token) }
+            })
         } catch (failure: RemoteException) {
             if (!binder.isBinderAlive) {
                 clearRestartObserver()
-                main.postDelayed(restartTimeout, 10000)
-                startReplacement()
+                main.postDelayed(restartTimeout, 20_000)
+                // There is no live process to reserve. Persist the target before its replacement.
+                persistModeAndContinue(token, null)
             } else {
+                val result = restarting
                 clearRestartObserver()
                 restarting = null
-                result.error("restart-failed", "未能请求旧服务退出，请稍后重试", null)
+                result?.error("restart-failed", "未能请求旧服务退出，请稍后重试", null)
             }
         }
+    }
+    private fun transitionAccepted(params: JSONObject) {
+        val token = restartModeToken ?: return
+        if (restarting == null || params.optString("token") != token) return
+        if (!params.optBoolean("accepted")) {
+            val result = restarting
+            restarting = null
+            clearRestartObserver()
+            restartModeToken = null
+            result?.error("recovery/busy", "恢复操作仍在执行，未切换服务；请等待操作结果", null)
+            return
+        }
+        persistModeAndContinue(token, service)
+    }
+    private fun persistModeAndContinue(token: String, peer: Messenger?) {
+        if (restartModePersisting || restarting == null || restartModeToken != token) return
+        restartModePersisting = true
+        val mode = restartTargetMode
+        RecoveryModeQueue.execute {
+            try {
+                recoveryControl.setMode(mode, token)
+                main.post {
+                    if (restarting == null || restartModeToken != token) return@post
+                    restartModePersisting = false
+                    restartModePersisted = true
+                    if (peer == null || !peer.binder.isBinderAlive) {
+                        replacementAfterDeath()
+                    } else {
+                        try {
+                            peer.send(Message.obtain(null, 8).apply {
+                                replyTo = replies
+                                data = Bundle().apply { putString("token", token) }
+                            })
+                        } catch (_: RemoteException) {
+                            // Binder death owns replacement startup; timeout leaves the outcome explicit.
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+                main.post {
+                    if (restarting == null || restartModeToken != token) return@post
+                    restartModePersisting = false
+                    val result = restarting
+                    restarting = null
+                    abortTransition()
+                    clearRestartObserver()
+                    result?.error("recovery/mode-unconfirmed", "模式偏好保存未确认，旧服务未被主动停止；请重新读取状态", null)
+                }
+            }
+        }
+    }
+    private fun replacementAfterDeath() {
+        if (replacementStarted || restarting == null) return
+        replacementStarted = true
+        clearRestartObserver()
+        main.postDelayed(restartTimeout, 20_000)
+        restartAwaitingNewStatus = true
+        startReplacement()
+    }
+    private fun abortTransition() {
+        val token = restartModeToken ?: return
+        try { service?.send(Message.obtain(null, 9).apply {
+            replyTo = replies
+            data = Bundle().apply { putString("token", token) }
+        }) } catch (_: RemoteException) { /* A dead process cannot retain a transition reservation. */ }
+        restartModeToken = null
     }
     private fun startReplacement() {
         if (bound) {
@@ -237,7 +384,7 @@ class MainActivity : FlutterActivity() {
             restarting = null
             restartAwaitingOldConnection = false
             clearRestartObserver()
-            result?.error("restart-failed", "Agent 服务重新启动失败：${failure.message}", null)
+            result?.error("restart-failed", "Agent 服务重新启动失败，请重新打开恢复页面核对状态", null)
         }
     }
     override fun onNewIntent(intent: Intent) {
@@ -304,6 +451,7 @@ class MainActivity : FlutterActivity() {
         configurationTransfers.close()
         restarting?.error("closed", "重启期间界面已关闭，请重新打开 App 查看运行时状态", null)
         restarting = null
+        abortTransition()
         clearRestartObserver()
         super.onDestroy()
     }

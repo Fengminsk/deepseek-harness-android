@@ -26,12 +26,18 @@ registerHooks({
 })
 const profile = join(process.env.DSH_HOME, 'profiles', 'android')
 mkdirSync(profile, { recursive: true, mode: 0o700 })
+const { ANDROID_BUNDLES, assertAndroidHostConfiguration } = await import(
+  './node_modules/@minnnng/dsh-android-runtime/host-guard.mjs')
 const manifest = join(profile, 'package.json')
 if (!existsSync(manifest)) {
   writeFileSync(manifest, JSON.stringify({ name: 'dsh-android-profile', private: true, type: 'module',
-    dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', '@minnnng/dsh-android-runtime'] } } }, null, 2) + '\n')
+    dsh: { profile: { bundles: ANDROID_BUNDLES } } }, null, 2) + '\n')
 }
 const cli = new URL('./node_modules/@deepseek-ai/dsh/lib/bin.js', import.meta.url)
+assertAndroidHostConfiguration({
+  home: process.env.DSH_HOME,
+  installAnchor: fileURLToPath(new URL('../package.json', cli)),
+})
 process.argv = [process.argv[0], fileURLToPath(cli), '--profile', 'android']
 const { runCli } = await import(cli.href)
 await runCli()

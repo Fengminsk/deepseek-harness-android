@@ -59,7 +59,7 @@ export class AppInteractions {
         await this.receive(frame)
       } else if (frame.type === 'emit' && [
         'plugin-manager/changed', 'plugin-manager/install-state', 'plugin-manager/install-log', 'plugin-market/changed',
-        'schedule/changed',
+        'schedule/changed', 'credentials/reference-updated',
       ].includes(frame.event)) {
         this.transport.notify('api.event', { event: frame.event, args: frame.args })
       }

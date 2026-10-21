@@ -112,6 +112,9 @@ class BackgroundExecution(private val service: Service) {
     private fun text(): String = when (state.presentation()) {
         "starting" -> "正在启动本地 Agent"
         "restarting" -> "正在重启服务，核对任务恢复状态"
+        "maintenance" -> "维护模式 · Agent 已停止，可在 App 修复启动配置"
+        "maintenance-checking" -> "维护检查 · 正在确认本应用遗留进程已停止"
+        "maintenance-blocked" -> "维护受阻 · 无法确认遗留进程状态，配置保持只读"
         "failed" -> "服务异常，任务可能已中断；打开 App 查看"
         "stopped" -> "本地服务已停止"
         "unconfirmed" -> "任务状态尚未确认；打开 App 查看"

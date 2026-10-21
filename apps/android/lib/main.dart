@@ -4,7 +4,6 @@ import 'package:material_ui/material_ui.dart';
 import 'package:dynamic_color/dynamic_color.dart';
 
 import 'runtime.dart';
-import 'settings.dart';
 import 'files.dart';
 import 'ui.dart';
 import 'appearance.dart';
@@ -22,8 +21,7 @@ import 'flclash/popup.dart';
 import 'automations.dart';
 import 'chat_projection.dart';
 import 'chat_messages.dart';
-import 'subagents.dart';
-import 'library.dart';
+import 'chat_sidebar.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -123,7 +121,6 @@ class _ChatPageState extends State<ChatPage> {
   final inputFocus = FocusNode();
   final scaffold = GlobalKey<ScaffoldState>();
   late String sessionId = widget.runtime.newSession();
-  String search = '';
   final drafts = <String, TextEditingValue>{};
   final errors = <String, String>{};
   final submissions = <String>{};
@@ -253,21 +250,6 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   void newChat() => activateSession(runtime.newSession());
-
-  Future<void> openLibrary() async {
-    inputFocus.unfocus();
-    final id = await Navigator.push<String>(
-      context,
-      PocketRoute<String>(builder: (_) => LibraryPage(runtime: runtime)),
-    );
-    if (!mounted || id == null) return;
-    activateSession(id);
-    try {
-      await runtime.openSession(id);
-    } catch (error) {
-      if (mounted) setState(() => errors[id] = '$error');
-    }
-  }
 
   void pickCommand(Json command) {
     switch (builtinCommand(command) ?? command['clientAction']) {
@@ -444,11 +426,6 @@ class _ChatPageState extends State<ChatPage> {
     }
   }
 
-  Future<void> selectSession(String id) async {
-    Navigator.pop(context);
-    await loadConversation(id);
-  }
-
   Future<void> loadConversation(String id) async {
     activateSession(id);
     try {
@@ -541,12 +518,6 @@ class _ChatPageState extends State<ChatPage> {
               interrupted: stream['interrupted'] == true,
               unconfirmed: stream['unconfirmed'] == true,
             );
-      final filteredSessions = runtime.sessions
-          .where(
-            (item) =>
-                sessionTitle(item).toLowerCase().contains(search.toLowerCase()),
-          )
-          .toList();
       final sessionError = runtime.sessionErrors[sessionId];
       final running = runtime.statuses[sessionId] == 'running';
       final stoppable = running && commandDrafts[sessionId] == null;
@@ -600,288 +571,29 @@ class _ChatPageState extends State<ChatPage> {
           label: '新对话',
           onPressed: newChat,
         ),
-        drawer: Drawer(
-          width: MediaQuery.sizeOf(context).width * .86,
-          backgroundColor: colors.surface,
-          shape: const RoundedRectangleBorder(
-            borderRadius: BorderRadius.horizontal(right: Radius.circular(28)),
-          ),
-          child: SafeArea(
-            child: CustomScrollView(
-              slivers: [
-                SliverToBoxAdapter(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      const Padding(
-                        padding: EdgeInsets.fromLTRB(24, 28, 24, 22),
-                        child: Row(
-                          children: [
-                            PocketMark(size: 32),
-                            SizedBox(width: 12),
-                            Expanded(
-                              child: Text(
-                                'Pocket Harness',
-                                style: TextStyle(
-                                  fontSize: 21,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 20),
-                        child: TextField(
-                          onChanged: (text) => setState(() => search = text),
-                          decoration: const InputDecoration(
-                            hintText: '搜索对话',
-                            prefixIcon: Icon(Icons.search_rounded, size: 20),
-                            isDense: true,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      PocketTile(
-                        contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 26,
-                        ),
-                        leading: const Icon(
-                          Icons.folder_copy_outlined,
-                          size: 22,
-                        ),
-                        title: const Text('工作区与会话'),
-                        onTap: () {
-                          Navigator.pop(context);
-                          unawaited(openLibrary());
-                        },
-                      ),
-                      PocketTile(
-                        contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 26,
-                        ),
-                        leading: const Icon(Icons.edit_square, size: 22),
-                        title: const Text('新对话'),
-                        onTap: () {
-                          Navigator.pop(context);
-                          newChat();
-                        },
-                      ),
-                      PocketTile(
-                        contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 26,
-                        ),
-                        leading: const Icon(
-                          Icons.folder_open_rounded,
-                          size: 22,
-                        ),
-                        title: const Text('我的文件'),
-                        onTap: () {
-                          Navigator.pop(context);
-                          navigate(FilesPage(runtime: runtime));
-                        },
-                      ),
-                      PocketTile(
-                        contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 26,
-                        ),
-                        leading: const Icon(
-                          Icons.play_circle_outline_rounded,
-                          size: 22,
-                        ),
-                        title: const Text('后台任务'),
-                        trailing:
-                            runtime.statuses.values.any(
-                              (value) => value == 'running',
-                            )
-                            ? Text(
-                                '${runtime.statuses.values.where((value) => value == 'running').length}',
-                              )
-                            : null,
-                        onTap: () {
-                          Navigator.pop(context);
-                          unawaited(openTasks());
-                        },
-                      ),
-                      PocketTile(
-                        contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 26,
-                        ),
-                        leading: const Icon(Icons.schedule_rounded, size: 22),
-                        title: const Text('自动化任务'),
-                        onTap: () {
-                          Navigator.pop(context);
-                          navigate(
-                            AutomationsPage(
-                              runtime: runtime,
-                              onNewTask: () {
-                                Navigator.of(context)
-                                    .popUntil((route) => route.isFirst);
-                                newChat();
-                              },
-                              onOpenSession: (id) {
-                                Navigator.of(context)
-                                    .popUntil((route) => route.isFirst);
-                                unawaited(loadConversation(id));
-                              },
-                            ),
-                          );
-                        },
-                      ),
-                      if (runtime.sessions.any(
-                        (item) => (item['header'] as Json)['id'] == sessionId,
-                      ))
-                        PocketTile(
-                          contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 26,
-                          ),
-                          leading: const Icon(
-                            Icons.account_tree_outlined,
-                            size: 22,
-                          ),
-                          title: const Text('子 Agent'),
-                          subtitle: const Text('当前会话的委派任务'),
-                          onTap: () {
-                            Navigator.pop(context);
-                            navigate(
-                              SubagentsPage(
-                                runtime: runtime,
-                                parentSessionId: sessionId,
-                              ),
-                            );
-                          },
-                        ),
-                      if (runtime.sessions.any(
-                        (item) => (item['header'] as Json)['id'] == sessionId,
-                      ))
-                        PocketTile(
-                          contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 26,
-                          ),
-                          leading: const Icon(
-                            Icons.ios_share_rounded,
-                            size: 22,
-                          ),
-                          title: const Text('导出当前对话'),
-                          onTap: () {
-                            Navigator.pop(context);
-                            final session = runtime.sessions.firstWhere(
-                              (item) =>
-                                  (item['header'] as Json)['id'] == sessionId,
-                            );
-                            navigate(
-                              SessionExportPage(
-                                runtime: runtime,
-                                sessionId: sessionId,
-                                sessionTitle: sessionTitle(session),
-                              ),
-                            );
-                          },
-                        ),
-                      if (runtime.interactions.isNotEmpty)
-                        PocketTile(
-                          contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 26,
-                          ),
-                          leading: const Icon(
-                            Icons.pending_actions_rounded,
-                            size: 22,
-                          ),
-                          title: const Text('授权与提问'),
-                          trailing: Text('${runtime.interactions.length}'),
-                          onTap: () {
-                            Navigator.pop(context);
-                            navigate(ApprovalsPage(runtime: runtime));
-                          },
-                        ),
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(26, 28, 24, 10),
-                        child: Text(
-                          '最近对话',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: colors.onSurfaceVariant,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                if (filteredSessions.isEmpty)
-                  SliverToBoxAdapter(
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 26,
-                        vertical: 12,
-                      ),
-                      child: Text(
-                        search.isEmpty ? '你的对话会保存在这里' : '没有匹配的对话',
-                        style: TextStyle(fontSize: 14, color: colors.outline),
-                      ),
-                    ),
-                  ),
-                SliverList.builder(
-                  itemCount: filteredSessions.length,
-                  itemBuilder: (context, index) {
-                    final session = filteredSessions[index];
-                    return Padding(
-                      key: ValueKey((session['header'] as Json)['id']),
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
-                      child: PocketTile(
-                        selected:
-                            (session['header'] as Json)['id'] == sessionId,
-                        trailing: session['pinned'] == true
-                            ? const Icon(Icons.push_pin_rounded, size: 16)
-                            : null,
-                        title: Text(
-                          sessionTitle(session),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(fontSize: 15),
-                        ),
-                        onTap: () => selectSession(
-                          '${(session['header'] as Json)['id']}',
-                        ),
-                      ),
-                    );
-                  },
-                ),
-                SliverFillRemaining(
-                  hasScrollBody: false,
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: [
-                      const Padding(
-                        padding: EdgeInsets.symmetric(horizontal: 24),
-                        child: Divider(),
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(8, 8, 8, 12),
-                        child: PocketTile(
-                          leading: Icon(
-                            Icons.tune_rounded,
-                            color: colors.onSurface,
-                          ),
-                          title: const Text('设置'),
-                          subtitle: const Text(
-                            '模型、Agent 与设备',
-                            style: TextStyle(fontSize: 12),
-                          ),
-                          trailing: const Icon(
-                            Icons.chevron_right_rounded,
-                            size: 20,
-                          ),
-                          onTap: () {
-                            Navigator.pop(context);
-                            navigate(SettingsPage(runtime: runtime));
-                          },
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
+        drawer: ChatSidebar(
+          runtime: runtime,
+          currentSessionId: sessionId,
+          onClose: () {
+            inputFocus.unfocus();
+            scaffold.currentState?.closeDrawer();
+          },
+          onNewChat: newChat,
+          onSelectSession: (id) {
+            if (mounted) unawaited(loadConversation(id));
+          },
+          onOpenTasks: () => unawaited(openTasks()),
+          onOpenAutomations: () => navigate(
+            AutomationsPage(
+              runtime: runtime,
+              onNewTask: () {
+                Navigator.of(context).popUntil((route) => route.isFirst);
+                newChat();
+              },
+              onOpenSession: (id) {
+                Navigator.of(context).popUntil((route) => route.isFirst);
+                unawaited(loadConversation(id));
+              },
             ),
           ),
         ),

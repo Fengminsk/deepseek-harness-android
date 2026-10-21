@@ -5,6 +5,7 @@ import 'package:material_ui/material_ui.dart';
 
 import 'runtime.dart';
 import 'ui.dart';
+import 'recovery.dart';
 
 class DiagnosticsPage extends StatefulWidget {
   const DiagnosticsPage({required this.runtime, super.key});
@@ -96,6 +97,9 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
       'starting' => '正在启动',
       'restarting' => '正在重启',
       'failed' => '服务异常',
+      'maintenance' => '维护模式',
+      'maintenance-checking' => '正在检查维护条件',
+      'maintenance-blocked' => '维护条件未确认',
       _ => runtime.phase,
     };
     return PocketScaffold(
@@ -127,6 +131,17 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
           PocketSection(
             title: '恢复服务',
             children: [
+              PocketRow(
+                icon: Icons.build_outlined,
+                title: '启动配置与恢复',
+                subtitle: '即使 Agent 未就绪，也可进入维护模式修正配置',
+                onTap: () => Navigator.push<void>(
+                  context,
+                  PocketRoute<void>(
+                    builder: (_) => RecoveryPage(controller: runtime.recovery),
+                  ),
+                ),
+              ),
               const Padding(
                 padding: EdgeInsets.fromLTRB(22, 18, 22, 8),
                 child: Text('重启会中断当前任务。已保存的会话、配置、凭据与文件授权会保留；Web 按已保存的设置恢复。'),
@@ -136,7 +151,9 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    if (busy)
+                    if (runtime.nativeMode == 'maintenance')
+                      const Text('当前处于维护模式，请在“启动配置与恢复”中恢复运行。')
+                    else if (busy)
                       const Text('正在恢复本地服务，等待内嵌运行时就绪……')
                     else if (confirming) ...[
                       const Text('确定中断当前任务并重启服务？'),

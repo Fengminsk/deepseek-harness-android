@@ -9,6 +9,8 @@ import 'api_streams.dart';
 import 'approvals_draft.dart';
 import 'plugins_data.dart';
 import 'library_data.dart';
+import 'credentials_data.dart';
+import 'recovery_data.dart';
 
 typedef Json = Map<String, dynamic>;
 
@@ -17,6 +19,7 @@ class RuntimeController extends ChangeNotifier {
   static const events = EventChannel('dsh/events');
   StreamSubscription<dynamic>? _subscription;
   String phase = 'starting';
+  String? nativeGeneration, nativeMode;
   String? error;
   Json info = {};
   Json web = {};
@@ -31,6 +34,11 @@ class RuntimeController extends ChangeNotifier {
   PluginsController get plugins => _plugins ??= PluginsController(this);
   LibraryController? _library;
   LibraryController get library => _library ??= LibraryController(this);
+  CredentialsController? _credentials;
+  CredentialsController get credentials =>
+      _credentials ??= CredentialsController(this);
+  RecoveryController? _recovery;
+  RecoveryController get recovery => _recovery ??= RecoveryController(this);
   final _remoteEvents = StreamController<Json>.broadcast(sync: true);
   Stream<Json> get remoteEvents => _remoteEvents.stream;
   late final AppApiStreams _apiStreams = AppApiStreams(
@@ -103,6 +111,8 @@ class RuntimeController extends ChangeNotifier {
         switch (frame['method']) {
           case 'runtime.status':
             phase = data['phase'] as String;
+            nativeGeneration = data['generation'] as String?;
+            nativeMode = data['mode'] as String?;
             error = data['error'] as String?;
             if (!ready) _markLiveUnconfirmed();
             _apiStreams.setReady(ready);
@@ -529,6 +539,8 @@ class RuntimeController extends ChangeNotifier {
     _connectionGeneration++;
     _plugins?.dispose();
     _library?.dispose();
+    _credentials?.dispose();
+    _recovery?.dispose();
     unawaited(_subscription?.cancel());
     unawaited(_apiStreams.close());
     unawaited(_remoteEvents.close());

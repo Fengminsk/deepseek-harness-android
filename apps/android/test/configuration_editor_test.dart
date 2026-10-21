@@ -17,7 +17,7 @@ class SettingsRuntime extends RuntimeController {
   }
   Json remote;
   final writes = <Json>[];
-  final credentials = <String, String>{};
+  final storedCredentials = <String, String>{};
 
   @override
   Future<dynamic> call(String method, [Json params = const {}]) async {
@@ -38,9 +38,9 @@ class SettingsRuntime extends RuntimeController {
         remote['revision'] = (remote['revision'] as int) + 1;
         return [cloneConfiguration(remote)];
       case 'credentials.describe':
-        return {'configured': credentials.containsKey(params['ref'])};
+        return {'configured': storedCredentials.containsKey(params['ref'])};
       case 'credentials.set':
-        credentials[params['ref'] as String] = params['value'] as String;
+        storedCredentials[params['ref'] as String] = params['value'] as String;
         return {'configured': true};
       default:
         throw StateError('Unexpected method $method');

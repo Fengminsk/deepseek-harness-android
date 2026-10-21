@@ -12,8 +12,67 @@ class _ReadyRuntime extends RuntimeController {
     phase = 'ready';
   }
 
+  final openedSessions = <String>[];
+  final libraryStreams = <StreamController<Json>>[];
+
   @override
-  Future<void> openSession(String id) async {}
+  Future<void> openSession(String id) async => openedSessions.add(id);
+
+  @override
+  Future<dynamic> call(String method, [Json params = const {}]) async {
+    if (method != 'library.catalog') {
+      throw StateError('Unexpected fixture call $method');
+    }
+    return {
+      'workspaces': <Json>[],
+      'sessions': [
+        for (final row in sessions)
+          {
+            'sessionId': row['header']['id'],
+            'updatedAt': 1,
+            'running': false,
+            'blank': false,
+            'cwd': '/fixture',
+            'projections': {
+              'values': {'title': row['title'] ?? row['header']['title']},
+            },
+          },
+      ],
+      'archivedSessionIds': <String>[],
+      'pinnedSessionIds': <String>[],
+      'defaultDirectory': '/fixture',
+    };
+  }
+
+  @override
+  Stream<Json> watchApi(
+    String namespace,
+    String method, {
+    Json args = const {},
+    Json Function()? resumeArgs,
+  }) {
+    if ((namespace, method) != ('workspace', 'follow') &&
+        (namespace, method) != ('session', 'control')) {
+      throw StateError('Unexpected fixture stream $namespace.$method');
+    }
+    late final StreamController<Json> stream;
+    stream = StreamController<Json>(
+      onListen: () => scheduleMicrotask(() {
+        if (stream.isClosed) return;
+        stream.add({
+          'type': 'item',
+          'value': {'type': 'baseline'},
+        });
+      }),
+    );
+    libraryStreams.add(stream);
+    return stream.stream;
+  }
+
+  Future<void> disposeFixture() async {
+    dispose();
+    await Future.wait(libraryStreams.map((stream) => stream.close()));
+  }
 }
 
 class _ConversationRuntime extends _ReadyRuntime {
@@ -94,19 +153,28 @@ void main() {
     (tester) async {
       _phone(tester, const Size(360, 800));
       final runtime = _ReadyRuntime();
-      addTearDown(runtime.dispose);
+      addTearDown(runtime.disposeFixture);
       await tester.pumpWidget(_host(ChatPage(runtime: runtime), scale: 1.3));
       await tester.pumpAndSettle();
       await tester.tap(find.byTooltip('打开侧栏'));
       await tester.pumpAndSettle();
-      final search = find.widgetWithText(TextField, '搜索对话');
+      final search = find.byKey(const ValueKey('sidebar-search'));
+      expect(search, findsNothing);
+      await tester.tap(find.byTooltip('搜索对话'));
+      await tester.pumpAndSettle();
       await tester.tap(search);
       tester.view.viewInsets = const FakeViewPadding(bottom: 320);
       await tester.pumpAndSettle();
       await tester.enterText(search, '文件');
       expect(tester.takeException(), isNull);
       expect(tester.getRect(search).bottom, lessThanOrEqualTo(480));
+      expect(search.hitTestable(), findsOneWidget);
       expect(find.text('文件'), findsOneWidget);
+      expect(find.byTooltip('关闭搜索').hitTestable(), findsOneWidget);
+      await tester.tap(find.byTooltip('关闭搜索'));
+      await tester.pumpAndSettle();
+      expect(search, findsNothing);
+      expect(tester.takeException(), isNull);
     },
   );
 
@@ -132,7 +200,7 @@ void main() {
     (tester) async {
       _phone(tester, const Size(360, 800));
       final runtime = _ReadyRuntime();
-      addTearDown(runtime.dispose);
+      addTearDown(runtime.disposeFixture);
       await tester.pumpWidget(_host(ChatPage(runtime: runtime), scale: 1.3));
       await tester.pumpAndSettle();
       final composer = find.widgetWithText(TextField, '交给 Pocket Harness');
@@ -152,7 +220,7 @@ void main() {
   ) async {
     _phone(tester, const Size(390, 844));
     final runtime = _ReadyRuntime();
-    addTearDown(runtime.dispose);
+    addTearDown(runtime.disposeFixture);
     await tester.pumpWidget(_host(ChatPage(runtime: runtime)));
     await tester.pumpAndSettle();
     final originalId = runtime.timelines.keys.single;
@@ -172,6 +240,8 @@ void main() {
     await tester.tap(find.text('原对话'));
     await tester.pumpAndSettle();
     expect(tester.widget<TextField>(composer).controller!.text, '仅属于原对话的未发送草稿');
+    expect(runtime.openedSessions, [originalId]);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('new replies follow the reader who is already at the bottom', (
@@ -179,7 +249,7 @@ void main() {
   ) async {
     _phone(tester, const Size(390, 844));
     final runtime = _ConversationRuntime();
-    addTearDown(runtime.dispose);
+    addTearDown(runtime.disposeFixture);
     await tester.pumpWidget(_host(ChatPage(runtime: runtime)));
     await tester.pumpAndSettle();
     final list = find.byType(ListView);
@@ -202,7 +272,7 @@ void main() {
     (tester) async {
       _phone(tester, const Size(390, 844));
       final runtime = _PendingRuntime();
-      addTearDown(runtime.dispose);
+      addTearDown(runtime.disposeFixture);
       await tester.pumpWidget(_host(ChatPage(runtime: runtime)));
       await tester.pumpAndSettle();
       final composer = find.widgetWithText(TextField, '交给 Pocket Harness');
@@ -224,7 +294,7 @@ void main() {
   ) async {
     _phone(tester, const Size(390, 844));
     final runtime = _ConversationRuntime();
-    addTearDown(runtime.dispose);
+    addTearDown(runtime.disposeFixture);
     await tester.pumpWidget(_host(ChatPage(runtime: runtime)));
     await tester.pumpAndSettle();
     final scrollable = tester.state<ScrollableState>(

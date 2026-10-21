@@ -517,29 +517,73 @@ class PocketCard extends StatelessWidget {
       DashboardCard(padding: padding, onTap: onTap, child: child);
 }
 
+class _PocketGroup extends InheritedWidget {
+  const _PocketGroup({required super.child});
+  static bool contains(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<_PocketGroup>() != null;
+  @override
+  bool updateShouldNotify(_PocketGroup oldWidget) => false;
+}
+
 class PocketSection extends StatelessWidget {
-  const PocketSection({this.title, required this.children, super.key});
+  const PocketSection({
+    this.title,
+    required this.children,
+    this.divided = false,
+    super.key,
+  });
   final String? title;
   final List<Widget> children;
+
+  /// Separates each direct child when callers supply a group of custom rows.
+  final bool divided;
   @override
   Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.only(bottom: 22),
-    child: PocketCard(
-      padding: const EdgeInsets.symmetric(vertical: 10),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          if (title != null)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(22, 12, 22, 12),
-              child: Text(
-                title!,
-                style: AppTextStyle.headline.of(context, emphasized: true),
-              ),
+    padding: const EdgeInsets.only(bottom: 28),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (title != null)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(18, 6, 18, 10),
+            child: Text(
+              title!,
+              style: AppTextStyle.footnote
+                  .of(context, emphasized: true)
+                  .copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
             ),
-          ...children,
-        ],
-      ),
+          ),
+        Material(
+          color: Theme.of(context).colorScheme.surfaceContainerLow,
+          shape: AppShape.xl,
+          clipBehavior: Clip.antiAlias,
+          child: _PocketGroup(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                for (var i = 0; i < children.length; i++) ...[
+                  if (i > 0 &&
+                      (divided ||
+                          (children[i - 1] is PocketRow &&
+                              children[i] is PocketRow)))
+                    Padding(
+                      padding: const EdgeInsets.only(left: 56, right: 18),
+                      child: Divider(
+                        height: 1,
+                        thickness: .5,
+                        color: Theme.of(context).colorScheme.outlineVariant
+                            .withValues(alpha: .4),
+                      ),
+                    ),
+                  children[i],
+                ],
+              ],
+            ),
+          ),
+        ),
+      ],
     ),
   );
 }
@@ -717,39 +761,44 @@ class PocketDisclosure extends StatefulWidget {
 class _PocketDisclosureState extends State<PocketDisclosure> {
   bool expanded = false;
   @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.symmetric(vertical: 8),
-    child: PocketCard(
-      child: Column(
-        children: [
-          PocketRow(
-            icon: Icons.terminal_rounded,
-            title: widget.title,
+  Widget build(BuildContext context) {
+    final reduceMotion = MediaQuery.disableAnimationsOf(context);
+    final details = expanded
+        ? Padding(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+            child: widget.child,
+          )
+        : const SizedBox(width: double.infinity);
+    final contents = Column(
+      children: [
+        Semantics(
+          expanded: expanded,
+          child: PocketTile(
+            title: Text(widget.title),
             trailing: AnimatedRotation(
               turns: expanded ? .25 : 0,
-              duration: MediaQuery.disableAnimationsOf(context)
+              duration: reduceMotion
                   ? Duration.zero
                   : const Duration(milliseconds: 200),
               child: const Icon(Icons.chevron_right_rounded),
             ),
             onTap: () => setState(() => expanded = !expanded),
           ),
+        ),
+        if (reduceMotion)
+          details
+        else
           AnimatedSize(
-            duration: MediaQuery.disableAnimationsOf(context)
-                ? Duration.zero
-                : const Duration(milliseconds: 200),
+            duration: const Duration(milliseconds: 200),
             alignment: Alignment.topCenter,
-            child: expanded
-                ? Padding(
-                    padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
-                    child: widget.child,
-                  )
-                : const SizedBox(width: double.infinity),
+            child: details,
           ),
-        ],
-      ),
-    ),
-  );
+      ],
+    );
+    return _PocketGroup.contains(context)
+        ? contents
+        : PocketSection(children: [contents]);
+  }
 }
 
 /// An action inside FlClash's TonalButtonGroup; the group owns its press.
