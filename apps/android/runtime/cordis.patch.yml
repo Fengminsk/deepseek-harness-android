@@ -9,6 +9,11 @@
   disabled: true
 - id: client-hmr
   disabled: true
+# App and Web share the original lazy index in the private DSH home.
+- id: session-query-sqlite
+  config:
+    path: !!js dshHomePath('session-search.sqlite')
+    openAt: first-search
 # Android confines the application UID, not individual shell commands.
 - id: permission
   disabled: true

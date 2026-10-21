@@ -9,6 +9,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
 class _Runtime extends RuntimeController {
+  _Runtime() {
+    phase = 'ready';
+  }
   final calls = <({String method, Json params})>[];
   bool failUpload = false;
   Completer<void>? uploadBarrier;
@@ -17,6 +20,12 @@ class _Runtime extends RuntimeController {
   int generation = 0;
   @override
   int get connectionGeneration => generation;
+
+  void replaceConnection({String nextPhase = 'ready'}) {
+    generation++;
+    phase = nextPhase;
+    notifyListeners();
+  }
 
   @override
   Future<dynamic> call(String method, [Json params = const {}]) async {
@@ -231,6 +240,59 @@ void main() {
     await picking;
     expect(drafts.ready('one'), isFalse);
     expect(drafts.items('one').single.error, contains('服务已重启'));
+  });
+
+  test('ready connection replacement withdraws all receipts without uploading again', () async {
+    final runtime = _Runtime();
+    final drafts = AttachmentDrafts(runtime);
+    addTearDown(drafts.dispose);
+    var selected = 'first';
+    var picks = 0;
+    picker((_) async {
+      picks++;
+      return jsonEncode({
+        'items': [selection(selected)],
+      });
+    });
+    await drafts.pick('one');
+    selected = 'second';
+    await drafts.pick('two');
+    expect(drafts.ready('one'), isTrue);
+    expect(drafts.ready('two'), isTrue);
+    final before = runtime.calls.length;
+    runtime.replaceConnection();
+    expect(drafts.ready('one'), isFalse);
+    expect(drafts.ready('two'), isFalse);
+    expect(drafts.items('one').single.error, contains('服务已重启'));
+    expect(drafts.items('two').single.id, 'second');
+    expect(
+      runtime.calls.length,
+      before,
+      reason: 'reconnection never uploads automatically',
+    );
+    expect(() => drafts.snapshotIds('one'), throwsStateError);
+    await drafts.retry('one', 'first');
+    expect(drafts.snapshotIds('one'), ['first']);
+    expect(drafts.ready('two'), isFalse);
+    expect(picks, 2, reason: 'explicit retry reuses the native selected copy');
+  });
+
+  test('unrelated runtime observations keep prepared receipts ready', () async {
+    final runtime = _Runtime();
+    final drafts = AttachmentDrafts(runtime);
+    addTearDown(drafts.dispose);
+    picker(
+      (_) async => jsonEncode({
+        'items': [selection('first')],
+      }),
+    );
+    await drafts.pick('one');
+    runtime.notifyListeners();
+    expect(drafts.snapshotIds('one'), ['first']);
+    expect(runtime.calls.length, 1);
+    runtime.phase = 'failed';
+    runtime.notifyListeners();
+    expect(drafts.ready('one'), isFalse);
   });
 
   test(

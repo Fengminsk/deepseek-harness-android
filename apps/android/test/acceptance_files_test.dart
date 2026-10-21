@@ -20,10 +20,21 @@ class _FilesRuntime extends RuntimeController {
   bool failNextPage = false;
   bool failFirstPage = false;
   Completer<Json>? readBarrier;
+  Completer<List<Json>>? rootsBarrier;
+  Object? rootsError;
+  int generation = 1;
+  @override
+  int get connectionGeneration => generation;
+  void replaceConnection() {
+    generation++;
+    notifyListeners();
+  }
 
   @override
   Future<dynamic> call(String method, [Json params = const {}]) async {
     if (method == 'documents.roots') {
+      if (rootsError != null) throw rootsError!;
+      if (rootsBarrier != null) return rootsBarrier!.future;
       return grants.map((entry) => Json.from(entry)).toList();
     }
     if (method == 'documents.revoke') {
@@ -78,6 +89,143 @@ Widget _host(Widget child, {double scale = 1}) => MaterialApp(
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  testWidgets(
+    'same-ready replacement discards old granted roots and reloads the current list',
+    (tester) async {
+      final runtime = _FilesRuntime();
+      addTearDown(runtime.dispose);
+      final older = Completer<List<Json>>();
+      runtime.rootsBarrier = older;
+      await tester.pumpWidget(_host(FilesPage(runtime: runtime)));
+      await tester.pumpAndSettle();
+      try {
+        runtime.grants.clear();
+        runtime.rootsBarrier = null;
+        runtime.replaceConnection();
+        await tester.pumpAndSettle();
+        expect(find.textContaining('这里还没有文件'), findsOneWidget);
+        older.complete([
+          {'id': 'old', 'name': '已撤销.txt', 'directory': false},
+        ]);
+        await tester.pumpAndSettle();
+        expect(find.text('已撤销.txt'), findsNothing);
+        expect(runtime.revocations, isEmpty);
+      } finally {
+        if (!older.isCompleted) older.complete([]);
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pumpAndSettle();
+      }
+    },
+  );
+
+  testWidgets(
+    'failed grant refresh marks retained entries unverified and blocks opening them',
+    (tester) async {
+      final runtime = _FilesRuntime();
+      addTearDown(runtime.dispose);
+      await tester.pumpWidget(_host(FilesPage(runtime: runtime)));
+      await tester.pumpAndSettle();
+      runtime.rootsError = StateError('provider unavailable');
+      await tester.tap(find.byTooltip('刷新授权文件'));
+      await tester.pumpAndSettle();
+      expect(find.text('笔记.txt'), findsOneWidget);
+      expect(find.textContaining('当前状态尚未核实'), findsOneWidget);
+      final entry = tester.widget<PocketRow>(
+        find.ancestor(
+          of: find.text('笔记.txt'),
+          matching: find.byType(PocketRow),
+        ),
+      );
+      expect(entry.onTap, isNull);
+      expect(runtime.reads, isEmpty);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  testWidgets(
+    'connection replacement preserves the read page and ignores its old continuation',
+    (tester) async {
+      final runtime = _FilesRuntime();
+      addTearDown(runtime.dispose);
+      await tester.pumpWidget(
+        _host(TextFilePage(runtime: runtime, root: 'file-id', path: '')),
+      );
+      await tester.pumpAndSettle();
+      final older = Completer<Json>();
+      runtime.readBarrier = older;
+      await tester.tap(find.text('下一段'));
+      await tester.pump();
+      try {
+        runtime.replaceConnection();
+        await tester.pumpAndSettle();
+        expect(find.text('第一段中文🙂'), findsOneWidget);
+        expect(find.textContaining('已显示的内容尚未核实'), findsOneWidget);
+        final next = tester.widget<PocketButton>(
+          find.ancestor(
+            of: find.text('下一段'),
+            matching: find.byType(PocketButton),
+          ),
+        );
+        expect(next.onPressed, isNull);
+        expect(runtime.reads, hasLength(2));
+        runtime.readBarrier = null;
+        await tester.tap(find.text('重新确认当前段'));
+        await tester.pumpAndSettle();
+        expect(runtime.reads.last['offset'], 0);
+        older.complete({
+          'text': '旧连接下一段',
+          'offset': 19,
+          'nextOffset': 28,
+          'truncated': false,
+        });
+        await tester.pumpAndSettle();
+        expect(find.text('旧连接下一段'), findsNothing);
+        expect(find.text('第一段中文🙂'), findsOneWidget);
+      } finally {
+        if (!older.isCompleted) {
+          older.complete({
+            'text': '',
+            'offset': 19,
+            'nextOffset': 19,
+            'truncated': false,
+          });
+        }
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pumpAndSettle();
+      }
+    },
+  );
+
+  testWidgets(
+    'reconfirming after replacement starts a new cursor at the visible page',
+    (tester) async {
+      final runtime = _FilesRuntime();
+      addTearDown(runtime.dispose);
+      await tester.pumpWidget(
+        _host(TextFilePage(runtime: runtime, root: 'file-id', path: '')),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('下一段'));
+      await tester.pumpAndSettle();
+      runtime.replaceConnection();
+      await tester.pumpAndSettle();
+      expect(find.text('第二段'), findsOneWidget);
+      expect(runtime.reads, hasLength(2));
+      await tester.tap(find.text('重新确认当前段'));
+      await tester.pumpAndSettle();
+      expect(runtime.reads.last['offset'], 19);
+      expect(find.textContaining('从上次阅读位置开始'), findsOneWidget);
+      final previous = tester.widget<PocketButton>(
+        find.ancestor(
+          of: find.text('上一段'),
+          matching: find.byType(PocketButton),
+        ),
+      );
+      expect(previous.onPressed, isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
 
   testWidgets(
     'single file grants open their granted document with an empty path',

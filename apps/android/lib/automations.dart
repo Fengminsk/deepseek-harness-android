@@ -105,9 +105,13 @@ class _AutomationsPageState extends State<AutomationsPage> {
           const SizedBox(height: 16),
           if (!widget.runtime.ready)
             const AutomationNotice('等待本地服务就绪。保留上次读取的任务。'),
+          if (widget.runtime.ready &&
+              !catalog.confirmed &&
+              catalog.records.isNotEmpty)
+            const AutomationNotice('任务列表待核实。以下是上次读取的记录。'),
           if (catalog.error != null) AutomationNotice(catalog.error!),
           if (catalog.loading) const AutomationNotice('正在读取任务……'),
-          if (catalog.settled && !catalog.loading && rows.isEmpty)
+          if (catalog.current && rows.isEmpty)
             AutomationNotice(
               catalog.records.isEmpty ? '还没有定时任务。' : '没有符合当前筛选条件的任务。',
             ),
@@ -171,24 +175,23 @@ class _AutomationDetailPageState extends State<AutomationDetailPage> {
   };
   bool busy = false, confirmingDelete = false, deleted = false;
   bool discardReview = false, leaving = false;
+  late int connection;
+  int operation = 0;
   String? error, notice;
   AutomationsController get catalog => widget.catalog;
   Json? get current => catalog.find(widget.record['id'] as String);
-  bool get currentRead =>
-      catalog.settled && !catalog.loading && catalog.error == null;
+  bool get currentRead => catalog.current;
   bool get missing => currentRead && current == null;
   bool get stale =>
       currentRead && current != null && !sameAutomation(draft.base, current!);
+  bool get canDelete => !busy && !deleted && !missing && currentRead;
   bool get editable =>
-      !busy &&
-      !deleted &&
-      !missing &&
-      catalog.runtime.ready &&
-      (current ?? draft.base)['status'] == 'active';
+      canDelete && (current ?? draft.base)['status'] == 'active';
 
   @override
   void initState() {
     super.initState();
+    connection = catalog.runtime.connectionGeneration;
     for (final entry in fields.entries) {
       entry.value.addListener(() {
         draft.values[entry.key] = entry.value.text;
@@ -199,8 +202,22 @@ class _AutomationDetailPageState extends State<AutomationDetailPage> {
   }
 
   void changed() {
+    if (connection != catalog.runtime.connectionGeneration) {
+      connection = catalog.runtime.connectionGeneration;
+      operation++;
+      if (busy) error = '连接已变化，操作结果尚未确认。草稿已保留，请核对当前任务。';
+      busy = false;
+      confirmingDelete = false;
+      deleted = false;
+      notice = null;
+    }
     if (mounted) setState(() {});
   }
+
+  bool ownsOperation(int attempt, int generation) =>
+      mounted &&
+      attempt == operation &&
+      generation == catalog.runtime.connectionGeneration;
 
   void syncFields() {
     for (final entry in fields.entries) {
@@ -225,6 +242,8 @@ class _AutomationDetailPageState extends State<AutomationDetailPage> {
 
   Future<void> save() async {
     if (!editable || !draft.dirty) return;
+    final attempt = ++operation;
+    final generation = catalog.runtime.connectionGeneration;
     setState(() {
       busy = true;
       error = null;
@@ -232,26 +251,26 @@ class _AutomationDetailPageState extends State<AutomationDetailPage> {
     });
     try {
       final result = await catalog.update(draft.request());
-      if (!mounted) return;
+      if (!ownsOperation(attempt, generation)) return;
       if (result['code'] != null) {
         error = automationError(result['code'] as String);
       } else {
         // A catalog refresh can already show a newer committed record.
         final saved =
-            (catalog.error == null ? current : null) ??
+            (catalog.current ? current : null) ??
             {...draft.base, ...(result['record'] as Json)};
         draft.reset(saved);
         syncFields();
         notice = '已保存任务。';
       }
     } catch (failure) {
-      if (mounted) {
+      if (ownsOperation(attempt, generation)) {
         error = failure is FormatException
             ? failure.message
             : '未能确认保存结果。草稿已保留，请刷新并比较任务后重试。';
       }
     } finally {
-      if (mounted) {
+      if (ownsOperation(attempt, generation)) {
         setState(() => busy = false);
         showOutcome();
       }
@@ -259,7 +278,9 @@ class _AutomationDetailPageState extends State<AutomationDetailPage> {
   }
 
   Future<void> remove() async {
-    if (busy || deleted || !catalog.runtime.ready) return;
+    if (!canDelete) return;
+    final attempt = ++operation;
+    final generation = catalog.runtime.connectionGeneration;
     setState(() {
       busy = true;
       confirmingDelete = false;
@@ -267,7 +288,7 @@ class _AutomationDetailPageState extends State<AutomationDetailPage> {
     });
     try {
       final result = await catalog.delete(widget.record);
-      if (!mounted) return;
+      if (!ownsOperation(attempt, generation)) return;
       if (result['deleted'] == true || result['code'] == 'schedule_not_found') {
         deleted = true;
         notice = result['deleted'] == true ? '任务已删除。' : '任务已不存在。';
@@ -275,9 +296,11 @@ class _AutomationDetailPageState extends State<AutomationDetailPage> {
         error = automationError('${result['code']}');
       }
     } catch (_) {
-      if (mounted) error = '未能确认删除结果。保留当前内容，请刷新列表确认。';
+      if (ownsOperation(attempt, generation)) {
+        error = '未能确认删除结果。保留当前内容，请刷新列表确认。';
+      }
     } finally {
-      if (mounted) {
+      if (ownsOperation(attempt, generation)) {
         setState(() => busy = false);
         showOutcome();
       }
@@ -369,6 +392,8 @@ class _AutomationDetailPageState extends State<AutomationDetailPage> {
               if (catalog.error != null) AutomationNotice(catalog.error!),
               if (!catalog.runtime.ready)
                 const AutomationNotice('本地服务未就绪。草稿保留，暂不能保存。'),
+              if (catalog.runtime.ready && !catalog.confirmed)
+                const AutomationNotice('当前任务待核实。草稿保留，读取成功后才能保存或删除。'),
               if (missing && !deleted)
                 const AutomationNotice('最新列表中已无此任务。保留当前草稿供查看。'),
               if ((current ?? draft.base)['status'] == 'inactive')
@@ -542,14 +567,12 @@ class _AutomationDetailPageState extends State<AutomationDetailPage> {
                               child: const Text('保留任务'),
                             ),
                             PocketButton(
-                              onPressed: busy || !catalog.runtime.ready
-                                  ? null
-                                  : remove,
+                              onPressed: canDelete ? remove : null,
                               child: const Text('确认删除任务'),
                             ),
                           ] else
                             PocketButton.tonal(
-                              onPressed: busy || !catalog.runtime.ready
+                              onPressed: !canDelete
                                   ? null
                                   : () =>
                                         setState(() => confirmingDelete = true),
@@ -614,6 +637,10 @@ class _AutomationHistoryPageState extends State<AutomationHistoryPage> {
         const AutomationNotice('以下是已持久保存的收件箱投递回执，不是模型执行结果。'),
         if (!widget.catalog.runtime.ready)
           const AutomationNotice('等待本地服务恢复。保留已读取的记录。'),
+        if (widget.catalog.runtime.ready &&
+            !history.confirmed &&
+            history.page != null)
+          const AutomationNotice('投递记录待核实。以下是上次读取的记录。'),
         if (history.loading) const AutomationNotice('正在读取投递记录……'),
         if (history.error != null) ...[
           AutomationNotice(history.error!),
@@ -622,7 +649,7 @@ class _AutomationHistoryPageState extends State<AutomationHistoryPage> {
             child: const Text('重试读取'),
           ),
         ],
-        if (history.page != null && history.records.isEmpty)
+        if (history.confirmed && history.records.isEmpty)
           const AutomationNotice('尚无保存的投递记录。'),
         for (final record in history.records)
           PocketSection(
@@ -634,7 +661,7 @@ class _AutomationHistoryPageState extends State<AutomationHistoryPage> {
           ),
         if (history.page?['nextBefore'] != null && history.error == null)
           PocketButton.tonal(
-            onPressed: history.loading
+            onPressed: !history.current
                 ? null
                 : () => history.load(
                     before: history.page!['nextBefore'] as String,

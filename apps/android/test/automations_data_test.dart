@@ -171,6 +171,8 @@ void main() {
         ? [taskFixture(title: 'Web 名称')]
         : {'id': 'task-a', 'updated': false, 'code': 'schedule_conflict'};
     final catalog = AutomationsController(runtime);
+    await catalog.refresh();
+    runtime.requests.clear();
     final draft = AutomationDraft(taskFixture())..values['title'] = '我的名称';
     final result = await catalog.update(draft.request());
     expect(result['code'], 'schedule_conflict');
@@ -231,8 +233,10 @@ void main() {
       final catalog = AutomationsController(runtime);
       final older = Completer<Json>(), fresh = Completer<Json>();
       var reads = 0;
-      runtime.handler = (_, _) => ++reads == 1 ? older.future : fresh.future;
+      runtime.handler = (_, _) async => {'records': <Json>[]};
       final history = AutomationHistory(catalog, taskFixture());
+      await history.load();
+      runtime.handler = (_, _) => ++reads == 1 ? older.future : fresh.future;
       final pendingOld = history.load(before: 'old-cursor');
       final pendingNew = history.load();
       fresh.complete({

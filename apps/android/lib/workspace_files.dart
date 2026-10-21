@@ -69,19 +69,25 @@ class _WorkspaceFilesPageState extends State<WorkspaceFilesPage>
   bool loading = false, current = false, truncated = false;
   int generation = 0;
   late String phase;
+  late int connection;
 
   @override
   void initState() {
     super.initState();
     phase = widget.runtime.phase;
+    connection = widget.runtime.connectionGeneration;
     widget.runtime.addListener(runtimeChanged);
     WidgetsBinding.instance.addObserver(this);
     unawaited(load());
   }
 
   void runtimeChanged() {
-    if (phase == widget.runtime.phase) return;
+    if (phase == widget.runtime.phase &&
+        connection == widget.runtime.connectionGeneration) {
+      return;
+    }
     phase = widget.runtime.phase;
+    connection = widget.runtime.connectionGeneration;
     generation++;
     setState(() {
       current = false;
@@ -217,7 +223,8 @@ class _WorkspaceFilesPageState extends State<WorkspaceFilesPage>
                     ? '目录'
                     : workspaceFileSize(row['bytes'] as int?),
                 onTap:
-                    widget.runtime.ready &&
+                    current &&
+                        widget.runtime.ready &&
                         row['path'] is String &&
                         row['blockedReason'] == null
                     ? () => open(row)
@@ -258,29 +265,46 @@ class _WorkspaceTextPageState extends State<WorkspaceTextPage> {
   String? text, error, version, root;
   int index = 0, bytes = 0, retryIndex = 0, retryOffset = 0;
   bool loading = false, eof = true, retryReset = false;
+  bool current = false, retryPreserveScroll = false;
   int generation = 0;
   late String phase;
+  late int connection;
 
   @override
   void initState() {
     super.initState();
     phase = widget.runtime.phase;
+    connection = widget.runtime.connectionGeneration;
     version = widget.version;
     widget.runtime.addListener(runtimeChanged);
     unawaited(load(0, widget.offset));
   }
 
   void runtimeChanged() {
-    if (phase == widget.runtime.phase) return;
+    if (phase == widget.runtime.phase &&
+        connection == widget.runtime.connectionGeneration) {
+      return;
+    }
     phase = widget.runtime.phase;
+    connection = widget.runtime.connectionGeneration;
     generation++;
     setState(() {
       loading = false;
-      error = '连接已变化，原内容保留。请刷新后确认文件当前状态。';
+      current = false;
+      error = '连接已变化，已显示的内容尚未核实。请重新确认当前段或从头读取。';
+      retryIndex = 0;
+      retryOffset = starts[index];
+      retryReset = true;
+      retryPreserveScroll = true;
     });
   }
 
-  Future<void> load(int targetIndex, int offset, {bool reset = false}) async {
+  Future<void> load(
+    int targetIndex,
+    int offset, {
+    bool reset = false,
+    bool preserveScroll = false,
+  }) async {
     if (loading || !widget.runtime.ready) return;
     final attempt = generation;
     setState(() {
@@ -288,6 +312,7 @@ class _WorkspaceTextPageState extends State<WorkspaceTextPage> {
       retryIndex = targetIndex;
       retryOffset = offset;
       retryReset = reset;
+      retryPreserveScroll = preserveScroll;
     });
     try {
       final result = await _call(widget.runtime, 'read', {
@@ -313,6 +338,7 @@ class _WorkspaceTextPageState extends State<WorkspaceTextPage> {
         index = targetIndex;
         eof = end;
         error = null;
+        current = true;
         if (reset) {
           starts.clear();
           starts.add(offset);
@@ -320,7 +346,7 @@ class _WorkspaceTextPageState extends State<WorkspaceTextPage> {
         starts.removeRange(targetIndex + 1, starts.length);
         if (!end) starts.add(next);
       });
-      if (scroll.hasClients) scroll.jumpTo(0);
+      if (!preserveScroll && scroll.hasClients) scroll.jumpTo(0);
     } catch (failure) {
       if (mounted && attempt == generation) {
         setState(() => error = workspaceFileFailure(failure));
@@ -360,14 +386,15 @@ class _WorkspaceTextPageState extends State<WorkspaceTextPage> {
             children: [
               PocketButton.tonal(
                 glass: true,
-                onPressed: loading || !widget.runtime.ready || index == 0
+                onPressed:
+                    loading || !current || !widget.runtime.ready || index == 0
                     ? null
                     : () => load(index - 1, starts[index - 1]),
                 child: const Text('上一段'),
               ),
               PocketButton(
                 glass: true,
-                onPressed: loading || !widget.runtime.ready || eof
+                onPressed: loading || !current || !widget.runtime.ready || eof
                     ? null
                     : () => load(index + 1, starts[index + 1]),
                 child: const Text('下一段'),
@@ -384,7 +411,7 @@ class _WorkspaceTextPageState extends State<WorkspaceTextPage> {
             if (text != null)
               _Note(
                 '${workspaceFileSize(bytes)} · 第 ${index + 1} 段'
-                '${starts.first > 0 ? '（从搜索位置开始）' : ''}${eof ? ' · 文件末尾' : ''}',
+                '${starts.first > 0 ? '（从指定位置开始）' : ''}${eof ? ' · 文件末尾' : ''}${current ? '' : ' · 尚未核实'}',
               ),
             PocketRow(
               icon: Icons.search_rounded,
@@ -408,9 +435,15 @@ class _WorkspaceTextPageState extends State<WorkspaceTextPage> {
         if (error != null)
           _ErrorNotice(
             error!,
+            retryLabel: !current && text != null ? '重新确认当前段' : '重试读取',
             onRetry: loading || !widget.runtime.ready
                 ? null
-                : () => load(retryIndex, retryOffset, reset: retryReset),
+                : () => load(
+                    retryIndex,
+                    retryOffset,
+                    reset: retryReset,
+                    preserveScroll: retryPreserveScroll,
+                  ),
           ),
         if (text != null) SelectableText(text!.isEmpty ? '文件为空。' : text!),
       ],
@@ -438,6 +471,36 @@ class _WorkspaceSearchPageState extends State<WorkspaceSearchPage> {
   String? requestId, error, notice, submittedQuery;
   Json? result;
   bool caseSensitive = false, cancelling = false, leaving = false;
+  bool resultCurrent = false;
+  int operation = 0;
+  late int connection;
+  late String phase;
+
+  @override
+  void initState() {
+    super.initState();
+    connection = widget.runtime.connectionGeneration;
+    phase = widget.runtime.phase;
+    widget.runtime.addListener(runtimeChanged);
+  }
+
+  void runtimeChanged() {
+    if (connection == widget.runtime.connectionGeneration &&
+        phase == widget.runtime.phase) {
+      return;
+    }
+    connection = widget.runtime.connectionGeneration;
+    phase = widget.runtime.phase;
+    operation++;
+    setState(() {
+      requestId = null;
+      cancelling = false;
+      leaving = false;
+      resultCurrent = false;
+      error = null;
+      notice = '连接已变化，上一轮搜索状态尚未核实；这不表示搜索已停止。查询已保留，不会自动重新搜索。';
+    });
+  }
 
   String newId() {
     final random = Random.secure();
@@ -461,6 +524,8 @@ class _WorkspaceSearchPageState extends State<WorkspaceSearchPage> {
       return;
     }
     final id = newId(), selectedMode = mode;
+    final attempt = ++operation;
+    bool current() => mounted && attempt == operation;
     final sensitive = caseSensitive;
     setState(() {
       requestId = id;
@@ -470,7 +535,7 @@ class _WorkspaceSearchPageState extends State<WorkspaceSearchPage> {
     });
     try {
       final info = await _call(widget.runtime, 'info');
-      if (!mounted || requestId != id || cancelling) return;
+      if (!current() || requestId != id || cancelling) return;
       final duration =
           (info['limits'] as Json)['search']['maxDurationMs'] as int;
       final response = await _call(widget.runtime, 'search', {
@@ -480,7 +545,7 @@ class _WorkspaceSearchPageState extends State<WorkspaceSearchPage> {
         'mode': selectedMode,
         'caseSensitive': sensitive,
       }, Duration(milliseconds: duration + 5000));
-      if (!mounted || requestId != id || cancelling) return;
+      if (!current() || requestId != id || cancelling) return;
       if (response['matches'] is! List ||
           response['skipped'] is! List ||
           response['complete'] is! bool) {
@@ -488,21 +553,24 @@ class _WorkspaceSearchPageState extends State<WorkspaceSearchPage> {
       }
       setState(() {
         result = response;
+        resultCurrent = true;
         requestId = null;
       });
     } catch (failure) {
-      if (!mounted || requestId != id || cancelling) return;
+      if (!current() || requestId != id || cancelling) return;
       final description = workspaceFileFailure(failure);
       try {
         await stop(id);
-        if (mounted && requestId == id) {
+        if (current() && requestId == id && !cancelling) {
           setState(() {
             requestId = null;
             error = description;
           });
         }
       } catch (stopFailure) {
-        if (mounted) setState(() => error = '$description\n停止尚未确认，请重试停止搜索。');
+        if (current() && requestId == id && !cancelling) {
+          setState(() => error = '$description\n停止尚未确认，请重试停止搜索。');
+        }
       }
     }
   }
@@ -519,6 +587,8 @@ class _WorkspaceSearchPageState extends State<WorkspaceSearchPage> {
   Future<void> cancel({bool pop = false}) async {
     if (cancelling) return;
     final id = requestId;
+    final attempt = operation;
+    bool current() => mounted && attempt == operation;
     if (id == null) {
       if (pop) Navigator.pop(context);
       return;
@@ -529,7 +599,7 @@ class _WorkspaceSearchPageState extends State<WorkspaceSearchPage> {
     });
     try {
       await stop(id);
-      if (!mounted) return;
+      if (!current()) return;
       setState(() {
         requestId = null;
         notice = '搜索已停止，未完成整个范围的检查。';
@@ -537,18 +607,20 @@ class _WorkspaceSearchPageState extends State<WorkspaceSearchPage> {
       });
       if (pop) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) Navigator.pop(context);
+          if (current() && leaving) Navigator.pop(context);
         });
       }
     } catch (failure) {
-      if (mounted) setState(() => error = '停止尚未确认，请重试停止搜索。');
+      if (current()) setState(() => error = '停止尚未确认，请重试停止搜索。');
     } finally {
-      if (mounted) setState(() => cancelling = false);
+      if (current()) setState(() => cancelling = false);
     }
   }
 
   @override
   void dispose() {
+    operation++;
+    widget.runtime.removeListener(runtimeChanged);
     final id = requestId;
     if (id != null) {
       unawaited(
@@ -643,6 +715,8 @@ class _WorkspaceSearchPageState extends State<WorkspaceSearchPage> {
             if (notice != null) _Note(notice!),
             if (requestId != null && result != null)
               const _Note('下方保留上一次完成的结果。'),
+            if (result != null && !resultCurrent)
+              const _Note('下方保留上次搜索结果，当前文件状态尚未核实。'),
             if (result != null) ...[
               PocketSection(
                 children: [
@@ -668,7 +742,8 @@ class _WorkspaceSearchPageState extends State<WorkspaceSearchPage> {
                           ? '名称匹配'
                           : '第 ${hit['line']} 行 · ${hit['preview']}',
                       onTap:
-                          !widget.runtime.ready ||
+                          !resultCurrent ||
+                              !widget.runtime.ready ||
                               !['file', 'directory'].contains(hit['kind'])
                           ? null
                           : () => Navigator.push<void>(
@@ -723,8 +798,9 @@ class _Note extends StatelessWidget {
 }
 
 class _ErrorNotice extends StatelessWidget {
-  const _ErrorNotice(this.text, {this.onRetry});
+  const _ErrorNotice(this.text, {this.onRetry, this.retryLabel = '重试读取'});
   final String text;
+  final String retryLabel;
   final VoidCallback? onRetry;
   @override
   Widget build(BuildContext context) => PocketSection(
@@ -732,10 +808,7 @@ class _ErrorNotice extends StatelessWidget {
       _Note(text),
       Padding(
         padding: const EdgeInsets.fromLTRB(18, 0, 18, 14),
-        child: PocketButton.tonal(
-          onPressed: onRetry,
-          child: const Text('重试读取'),
-        ),
+        child: PocketButton.tonal(onPressed: onRetry, child: Text(retryLabel)),
       ),
     ],
   );

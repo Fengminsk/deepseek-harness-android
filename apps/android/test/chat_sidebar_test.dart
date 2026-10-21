@@ -4,6 +4,7 @@ import 'package:dsh_android/account_state.dart';
 import 'package:dsh_android/chat_sidebar.dart';
 import 'package:dsh_android/flclash/popup.dart';
 import 'package:dsh_android/library.dart';
+import 'package:dsh_android/session_search.dart';
 import 'package:dsh_android/ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -394,6 +395,45 @@ void main() {
     expect(key('sidebar-workspace:w1'), findsOneWidget);
     await dispose(tester);
   });
+
+  testWidgets(
+    'content search keeps the query and opens the selected real session',
+    (tester) async {
+      final runtime = LibraryRuntime();
+      runtime.handlers['api.call'] = (params) async {
+        expect(params, {
+          'namespace': 'session',
+          'method': 'search',
+          'args': {
+            'request': {'query': '正文标记'},
+          },
+        });
+        return {
+          'items': [
+            {'sessionId': 's1', 'snippet': '包含正文标记的原始回复'},
+          ],
+          'hasMore': false,
+        };
+      };
+      final harness = await setup(tester, runtime: runtime);
+      await tester.tap(key('sidebar-search-toggle'));
+      await tester.pumpAndSettle();
+      await tester.enterText(key('sidebar-search'), '正文标记');
+      await tester.testTextInput.receiveAction(TextInputAction.search);
+      await tester.pumpAndSettle();
+      expect(find.byType(SessionSearchPage), findsOneWidget);
+      expect(
+        tester.widget<TextField>(key('session-search-input')).controller!.text,
+        '正文标记',
+      );
+      await tester.tap(key('session-search-result:s1'));
+      await tester.pumpAndSettle();
+      expect(harness.selected, ['s1']);
+      expect(harness.closes, 1);
+      expect(runtime.calls.where((call) => call.$1 == 'session.send'), isEmpty);
+      await dispose(tester);
+    },
+  );
 
   testWidgets(
     'session selection closes only the drawer and emits its real id',

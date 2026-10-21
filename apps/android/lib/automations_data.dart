@@ -15,6 +15,15 @@ class AutomationsController extends ChangeNotifier {
   StreamSubscription<Json>? _events;
   bool _disposed = false, _ready = false;
   int _read = 0;
+  int? _connection, _settledConnection;
+
+  bool get confirmed =>
+      !_disposed &&
+      runtime.ready &&
+      _settledConnection == runtime.connectionGeneration &&
+      settled &&
+      error == null;
+  bool get current => confirmed && !loading;
 
   Future<dynamic> api(String method, [Json args = const {}]) => runtime.call(
     'api.call',
@@ -23,6 +32,7 @@ class AutomationsController extends ChangeNotifier {
 
   void start() {
     _ready = runtime.ready;
+    _connection = runtime.connectionGeneration;
     runtime.addListener(_connectionChanged);
     _events = runtime.remoteEvents.listen((event) {
       if (event['event'] == 'schedule/changed') unawaited(refresh());
@@ -31,13 +41,18 @@ class AutomationsController extends ChangeNotifier {
   }
 
   void _connectionChanged() {
-    if (_ready == runtime.ready) return;
+    final connection = runtime.connectionGeneration;
+    if (_ready == runtime.ready && _connection == connection) return;
     _ready = runtime.ready;
+    _connection = connection;
+    _read++;
+    settled = false;
+    _settledConnection = null;
+    error = null;
+    loading = false;
     if (_ready) {
       unawaited(refresh());
     } else {
-      _read++;
-      loading = false;
       _publish();
     }
   }
@@ -49,7 +64,15 @@ class AutomationsController extends ChangeNotifier {
   Future<void> refresh() async {
     if (_disposed) return;
     final read = ++_read;
+    final connection = runtime.connectionGeneration;
+    bool ownsRead() =>
+        !_disposed &&
+        runtime.ready &&
+        connection == runtime.connectionGeneration &&
+        read == _read;
     if (!runtime.ready) {
+      settled = false;
+      _settledConnection = null;
       loading = false;
       _publish();
       return;
@@ -59,14 +82,15 @@ class AutomationsController extends ChangeNotifier {
     _publish();
     try {
       final result = await api('catalog') as List;
-      if (_disposed || read != _read) return;
+      if (!ownsRead()) return;
       records = result.cast<Json>();
       settled = true;
+      _settledConnection = connection;
     } catch (failure) {
-      if (_disposed || read != _read) return;
+      if (!ownsRead()) return;
       error = '无法读取任务列表：$failure';
     } finally {
-      if (!_disposed && read == _read) {
+      if (ownsRead()) {
         loading = false;
         _publish();
       }
@@ -81,7 +105,10 @@ class AutomationsController extends ChangeNotifier {
   }
 
   Future<Json> update(Json request) async {
+    if (!current) throw const AutomationCatalogUnconfirmed();
+    final connection = runtime.connectionGeneration;
     final result = await api('update', {'request': request}) as Json;
+    _requireConnection(connection);
     if (result.containsKey('record') ||
         const {
           'schedule_conflict',
@@ -90,15 +117,29 @@ class AutomationsController extends ChangeNotifier {
         }.contains(result['code'])) {
       await refresh();
     }
+    _requireConnection(connection);
     return result;
   }
 
   Future<Json> delete(Json record) async {
+    if (!current) throw const AutomationCatalogUnconfirmed();
+    final connection = runtime.connectionGeneration;
     final result = await api('delete', {
       'request': {'sessionId': record['sessionId'], 'id': record['id']},
     }) as Json;
+    _requireConnection(connection);
     await refresh();
+    _requireConnection(connection);
     return result;
+  }
+
+  void _requireConnection(int connection) {
+    if (_disposed ||
+        !runtime.ready ||
+        connection != runtime.connectionGeneration) {
+      // A write may have committed; a new connection must never replay it.
+      throw const AutomationCatalogUnconfirmed();
+    }
   }
 
   @override
@@ -109,6 +150,10 @@ class AutomationsController extends ChangeNotifier {
     unawaited(_events?.cancel());
     super.dispose();
   }
+}
+
+class AutomationCatalogUnconfirmed implements Exception {
+  const AutomationCatalogUnconfirmed();
 }
 
 /// The original compare-and-update contract excludes catalog metadata.
@@ -290,40 +335,67 @@ class AutomationHistory extends ChangeNotifier {
   bool loading = false, _disposed = false;
   String? error, _retryBefore;
   int _read = 0;
+  int? _connection, _settledConnection;
   String? _latestReceipt;
   bool _connected = false;
 
+  bool get confirmed =>
+      !_disposed &&
+      catalog.runtime.ready &&
+      _settledConnection == catalog.runtime.connectionGeneration &&
+      error == null;
+  bool get current => confirmed && !loading;
+
   void start() {
     _connected = catalog.runtime.ready;
+    _connection = catalog.runtime.connectionGeneration;
     _latestReceipt =
         catalog.find(record['id'] as String)?['lastDelivery']?['messageId']
             as String?;
     catalog.addListener(_catalogChanged);
+    catalog.runtime.addListener(_catalogChanged);
     if (_connected) unawaited(load());
   }
 
   void _catalogChanged() {
     final connected = catalog.runtime.ready;
+    final connection = catalog.runtime.connectionGeneration;
+    final connectionChanged =
+        connection != _connection || connected != _connected;
     final receipt =
         catalog.find(record['id'] as String)?['lastDelivery']?['messageId']
             as String?;
-    if (connected && (!_connected || receipt != _latestReceipt)) {
-      unawaited(load());
-    }
+    final refresh =
+        connected && (connectionChanged || receipt != _latestReceipt);
+    _connection = connection;
     _connected = connected;
     _latestReceipt = receipt;
-    if (!connected) {
+    if (connectionChanged) {
       _read++;
+      _settledConnection = null;
+      _retryBefore = null;
+      error = null;
       loading = false;
       if (!_disposed) notifyListeners();
     }
+    if (refresh) unawaited(load());
   }
 
   Future<void> load({String? before}) async {
-    if (_disposed || !catalog.runtime.ready || (loading && before != null)) {
+    if (_disposed ||
+        !catalog.runtime.ready ||
+        (before != null &&
+            (loading ||
+                _settledConnection != catalog.runtime.connectionGeneration))) {
       return;
     }
     final read = ++_read;
+    final connection = catalog.runtime.connectionGeneration;
+    bool ownsRead() =>
+        !_disposed &&
+        catalog.runtime.ready &&
+        connection == catalog.runtime.connectionGeneration &&
+        read == _read;
     loading = true;
     error = null;
     notifyListeners();
@@ -336,7 +408,7 @@ class AutomationHistory extends ChangeNotifier {
           'before': ?before,
         },
       }) as Json;
-      if (_disposed || read != _read) return;
+      if (!ownsRead()) return;
       if (result['code'] != null) {
         error = automationError(result['code'] as String);
         _retryBefore = null;
@@ -351,13 +423,14 @@ class AutomationHistory extends ChangeNotifier {
             if (seen.add(item['messageId'])) item,
         ];
         page = result;
+        _settledConnection = connection;
       }
     } catch (failure) {
-      if (_disposed || read != _read) return;
+      if (!ownsRead()) return;
       error = '无法读取投递记录：$failure';
       _retryBefore = before;
     } finally {
-      if (!_disposed && read == _read) {
+      if (ownsRead()) {
         loading = false;
         notifyListeners();
       }
@@ -370,6 +443,7 @@ class AutomationHistory extends ChangeNotifier {
     _disposed = true;
     _read++;
     catalog.removeListener(_catalogChanged);
+    catalog.runtime.removeListener(_catalogChanged);
     super.dispose();
   }
 }

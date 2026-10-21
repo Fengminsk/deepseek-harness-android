@@ -27,13 +27,28 @@ class AttachmentDraft {
 
 /// One composer draft owns each native selection, including while a different chat is open.
 class AttachmentDrafts extends ChangeNotifier {
-  AttachmentDrafts(this.runtime);
+  AttachmentDrafts(this.runtime)
+    : _generation = runtime.connectionGeneration,
+      _ready = runtime.ready {
+    runtime.addListener(_connectionChanged);
+  }
 
   final RuntimeController runtime;
   final _drafts = <String, List<AttachmentDraft>>{};
   final _messages = <String, String>{};
   String? pickingSession;
   bool _closed = false;
+  int _generation;
+  bool _ready;
+
+  void _connectionChanged() {
+    if (_closed) return;
+    final changed = _generation != runtime.connectionGeneration;
+    final disconnected = _ready && !runtime.ready;
+    _generation = runtime.connectionGeneration;
+    _ready = runtime.ready;
+    if (changed || disconnected) invalidateReceipts();
+  }
 
   List<AttachmentDraft> items(String sessionId) =>
       List.unmodifiable(_drafts[sessionId] ?? const <AttachmentDraft>[]);
@@ -118,7 +133,7 @@ class AttachmentDrafts extends ChangeNotifier {
         'id': item.id,
       }) as Json;
       if (!_contains(sessionId, item) || item.removing) return;
-      if (generation != runtime.connectionGeneration) {
+      if (generation != runtime.connectionGeneration || !runtime.ready) {
         throw StateError('运行服务已重启，请重试准备此附件后发送。');
       }
       final kind = receipt['kind'];
@@ -214,6 +229,7 @@ class AttachmentDrafts extends ChangeNotifier {
   @override
   void dispose() {
     _closed = true;
+    runtime.removeListener(_connectionChanged);
     for (final entry in _drafts.entries) {
       for (final item in entry.value) {
         unawaited(

@@ -9,6 +9,18 @@ import 'package:dsh_android/document_search.dart';
 import 'package:dsh_android/files.dart';
 
 class SearchRuntime extends RuntimeController {
+  SearchRuntime() {
+    phase = 'ready';
+  }
+  int generation = 1;
+  @override
+  int get connectionGeneration => generation;
+  void replaceConnection() {
+    generation++;
+    notifyListeners();
+  }
+
+  Future<dynamic> Function(String, Json)? handle;
   final calls = <Json>[];
   Completer<Json>? runGate, cancelGate;
   bool failSearch = false;
@@ -22,6 +34,7 @@ class SearchRuntime extends RuntimeController {
   @override
   Future<dynamic> call(String method, [Json params = const {}]) async {
     calls.add({'method': method, 'params': params});
+    if (handle != null) return handle!(method, params);
     if (method == 'documents.roots') {
       return [
         {
@@ -67,6 +80,95 @@ Future<void> submit(WidgetTester tester, [String query = '中文🙂']) async {
 }
 
 void main() {
+  testWidgets('late failed-search stop cannot replace a newer search state', (
+    tester,
+  ) async {
+    final runtime = SearchRuntime();
+    addTearDown(runtime.dispose);
+    final oldStop = Completer<Json>(), nextSearch = Completer<Json>();
+    var searches = 0, stops = 0;
+    runtime.handle = (method, _) async {
+      if (method == 'documents.search') {
+        if (++searches == 1) throw StateError('old search failed');
+        return nextSearch.future;
+      }
+      if (++stops == 1) return oldStop.future;
+      return {'cancelled': true};
+    };
+    await tester.pumpWidget(host(runtime));
+    await tester.pumpAndSettle();
+    try {
+      await submit(tester, '旧查询');
+      await tester.pumpAndSettle();
+      expect(stops, 1);
+      await tester.tap(find.text('停止搜索'));
+      await tester.pumpAndSettle();
+      await submit(tester, '新查询');
+      await tester.pumpAndSettle();
+      oldStop.complete({'cancelled': true});
+      await tester.pumpAndSettle();
+      expect(find.textContaining('old search failed'), findsNothing);
+      expect(find.text('正在搜索…'), findsOneWidget);
+      expect(searches, 2);
+      nextSearch.complete(runtime.response);
+      await tester.pumpAndSettle();
+      expect(find.text('“新查询” · 0 条匹配行'), findsOneWidget);
+    } finally {
+      if (!oldStop.isCompleted) oldStop.complete({'cancelled': true});
+      if (!nextSearch.isCompleted) nextSearch.complete(runtime.response);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+    }
+  });
+
+  testWidgets(
+    'same-ready replacement preserves query and suppresses previous search and stop receipts',
+    (tester) async {
+      final runtime = SearchRuntime()
+        ..runGate = Completer<Json>()
+        ..cancelGate = Completer<Json>();
+      addTearDown(runtime.dispose);
+      final oldSearch = runtime.runGate!, oldStop = runtime.cancelGate!;
+      await tester.pumpWidget(host(runtime));
+      await tester.pumpAndSettle();
+      try {
+        await submit(tester, '保留查询');
+        await tester.tap(find.text('停止搜索'));
+        await tester.pump();
+        runtime.replaceConnection();
+        await tester.pumpAndSettle();
+        expect(find.textContaining('这不表示搜索已停止'), findsOneWidget);
+        expect(
+          tester.widget<TextField>(find.byType(TextField)).controller!.text,
+          '保留查询',
+        );
+        expect(
+          runtime.calls.where((call) => call['method'] == 'documents.search'),
+          hasLength(1),
+        );
+        runtime.runGate = null;
+        runtime.cancelGate = null;
+        await tester.tap(find.text('搜索'));
+        await tester.pumpAndSettle();
+        oldSearch.complete({
+          ...runtime.response,
+          'matches': [
+            {'path': 'old.txt', 'lineNumber': 1, 'line': '不得回填'},
+          ],
+        });
+        oldStop.complete({'cancelled': true});
+        await tester.pumpAndSettle();
+        expect(find.text('不得回填'), findsNothing);
+        expect(find.text('搜索已取消，没有完成整个范围的检查。'), findsNothing);
+        expect(find.text('本次范围已查完，没有匹配。'), findsOneWidget);
+      } finally {
+        if (!oldSearch.isCompleted) oldSearch.complete(runtime.response);
+        if (!oldStop.isCompleted) oldStop.complete({'cancelled': true});
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pumpAndSettle();
+      }
+    },
+  );
   testWidgets(
     'single document grant search opens without picking a wider directory',
     (tester) async {

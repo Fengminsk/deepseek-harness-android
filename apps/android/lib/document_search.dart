@@ -29,6 +29,37 @@ class _DocumentSearchPageState extends State<DocumentSearchPage> {
       running = false,
       cancelling = false,
       leaving = false;
+  bool resultCurrent = false;
+  int operation = 0;
+  late int connection;
+  late String phase;
+
+  @override
+  void initState() {
+    super.initState();
+    connection = widget.runtime.connectionGeneration;
+    phase = widget.runtime.phase;
+    widget.runtime.addListener(runtimeChanged);
+  }
+
+  void runtimeChanged() {
+    if (connection == widget.runtime.connectionGeneration &&
+        phase == widget.runtime.phase) {
+      return;
+    }
+    connection = widget.runtime.connectionGeneration;
+    phase = widget.runtime.phase;
+    operation++;
+    setState(() {
+      requestId = null;
+      running = false;
+      cancelling = false;
+      leaving = false;
+      resultCurrent = false;
+      error = null;
+      notice = '连接已变化，上一轮搜索状态尚未核实；这不表示搜索已停止。查询已保留，不会自动重新搜索。';
+    });
+  }
 
   static String newId() {
     final random = Random.secure();
@@ -52,7 +83,7 @@ class _DocumentSearchPageState extends State<DocumentSearchPage> {
   }
 
   Future<void> search() async {
-    if (requestId != null || cancelling) return;
+    if (requestId != null || cancelling || !widget.runtime.ready) return;
     final text = query.text;
     if (text.isEmpty ||
         text.length > 256 ||
@@ -61,6 +92,8 @@ class _DocumentSearchPageState extends State<DocumentSearchPage> {
       return;
     }
     final id = newId();
+    final attempt = ++operation;
+    bool current() => mounted && attempt == operation;
     setState(() {
       requestId = id;
       running = true;
@@ -77,7 +110,7 @@ class _DocumentSearchPageState extends State<DocumentSearchPage> {
         'query': text,
         'caseSensitive': caseSensitive,
       });
-      if (!mounted || requestId != id || cancelling) return;
+      if (!current() || requestId != id || cancelling) return;
       if (value is! Json ||
           value['matches'] is! List ||
           value['complete'] is! bool) {
@@ -85,26 +118,37 @@ class _DocumentSearchPageState extends State<DocumentSearchPage> {
       }
       setState(() {
         result = value;
+        resultCurrent = true;
         requestId = null;
       });
     } catch (failure) {
-      if (!mounted || requestId != id || cancelling) return;
+      if (!current() || requestId != id || cancelling) return;
       var description = '搜索未完成，查询内容已保留。$failure';
       try {
         await stop(id);
-        if (mounted && requestId == id) requestId = null;
       } catch (stopFailure) {
         description += '\n停止尚未确认，请重试停止：$stopFailure';
+        if (current() && requestId == id && !cancelling) {
+          setState(() => error = description);
+        }
+        return;
       }
-      if (mounted) setState(() => error = description);
+      if (current() && requestId == id && !cancelling) {
+        setState(() {
+          requestId = null;
+          error = description;
+        });
+      }
     } finally {
-      if (mounted) setState(() => running = false);
+      if (current()) setState(() => running = false);
     }
   }
 
   Future<void> cancel({bool pop = false}) async {
     if (cancelling) return;
     final id = requestId;
+    final attempt = operation;
+    bool current() => mounted && attempt == operation;
     if (id == null) {
       if (pop) Navigator.of(context).pop();
       return;
@@ -115,7 +159,7 @@ class _DocumentSearchPageState extends State<DocumentSearchPage> {
     });
     try {
       await stop(id);
-      if (!mounted) return;
+      if (!current()) return;
       setState(() {
         requestId = null;
         running = false;
@@ -125,18 +169,20 @@ class _DocumentSearchPageState extends State<DocumentSearchPage> {
       if (pop) {
         // PopScope must publish the completed cancellation before allowing pop.
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) Navigator.of(context).pop();
+          if (current() && leaving) Navigator.of(context).pop();
         });
       }
     } catch (failure) {
-      if (mounted) setState(() => error = '尚未确认搜索已停止，请重试停止。\n$failure');
+      if (current()) setState(() => error = '尚未确认搜索已停止，请重试停止。\n$failure');
     } finally {
-      if (mounted) setState(() => cancelling = false);
+      if (current()) setState(() => cancelling = false);
     }
   }
 
   @override
   void dispose() {
+    operation++;
+    widget.runtime.removeListener(runtimeChanged);
     final id = requestId;
     if (id != null) {
       // Normal back navigation awaits cancellation. External route disposal has
@@ -211,7 +257,10 @@ class _DocumentSearchPageState extends State<DocumentSearchPage> {
                         spacing: 8,
                         children: [
                           PocketButton(
-                            onPressed: requestId != null || cancelling
+                            onPressed:
+                                requestId != null ||
+                                    cancelling ||
+                                    !widget.runtime.ready
                                 ? null
                                 : search,
                             child: Text(running ? '正在搜索…' : '搜索'),
@@ -234,6 +283,11 @@ class _DocumentSearchPageState extends State<DocumentSearchPage> {
                 child: SelectableText(error ?? notice!),
               ),
             if (result != null) ...[
+              if (!resultCurrent)
+                const Padding(
+                  padding: EdgeInsets.all(20),
+                  child: Text('下方保留上次搜索结果，当前文件状态尚未核实。'),
+                ),
               PocketSection(
                 children: [
                   Padding(

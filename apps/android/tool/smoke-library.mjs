@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { once } from 'node:events'
-import { glob, mkdtemp, mkdir, readFile, realpath, writeFile } from 'node:fs/promises'
+import { glob, mkdtemp, mkdir, readFile, realpath, stat, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
@@ -326,6 +326,28 @@ try {
     await poll(() => persisted(parent), rows => rows.some(row => row.type === 'session/title'
       && row.data.title === 'Library durable title') && rows.at(-1)?.seq >= finalSeq,
     'final original session log')
+    checkpoint('lazy original content index and bounded API results')
+    const indexPath = join(home, 'session-search.sqlite')
+    await assert.rejects(readFile(indexPath), { code: 'ENOENT' }, 'ordinary chat must not eagerly open the index')
+    const search = async (runtime, query) => {
+      const result = await runtime.request('api.call', {
+        namespace: 'session', method: 'search', args: { request: { query } },
+      })
+      assert.equal(result?._pocket_error, undefined, `content search: ${JSON.stringify(result)}`)
+      assert.ok(Array.isArray(result.items) && result.items.length <= 20)
+      assert.equal(typeof result.hasMore, 'boolean')
+      assert.ok(result.items.every(item => typeof item.sessionId === 'string'
+        && typeof item.snippet === 'string' && [...item.snippet].length <= 240))
+      return result
+    }
+    const beforeSearch = await persisted(parent)
+    const firstSearch = await search(first, markers.parent)
+    assert.ok(firstSearch.items.some(item => item.sessionId === parent && item.snippet.includes(markers.parent)))
+    assert.equal(firstSearch.items.some(item => item.sessionId === sibling), false)
+    assert.ok((await stat(indexPath)).size > 0)
+    assert.deepEqual(await search(first, 'POCKET_NO_SUCH_MESSAGE'), { items: [], hasMore: false })
+    assert.deepEqual(await search(first, 'Library durable title'), { items: [], hasMore: false }, 'content search is not title matching')
+    assert.deepEqual(await persisted(parent), beforeSearch, 'search must not append or rewrite session events')
     const modelCount = modelCalls
     await first.close()
 
@@ -340,6 +362,10 @@ try {
     assert.ok(afterRestart.sessions.every(item => !item.agentAvailable && !item.running))
     assert.equal(afterRestart.sessions.find(item => item.sessionId === parent).projections.values.title, 'Library durable title')
     assert.deepEqual((await second.request('runtime.live')).statuses, {})
+    const restoredSearch = await search(second, markers.parent)
+    assert.deepEqual(restoredSearch, firstSearch, 'the original durable index returns the same cold session matches')
+    assert.deepEqual((await second.request('runtime.live')).statuses, {}, 'search must not activate a cold Agent')
+    assert.deepEqual(await persisted(parent), beforeSearch)
     assert.equal((await second.request('sessions.list'))[0].header.id, parent)
     assert.equal((await second.request('sessions.list')).some(item => item.header.id === sibling || item.header.id === childId), false)
     assert.equal(modelCalls, modelCount, 'catalog/sidebars/restart must not replay requests')
@@ -358,6 +384,7 @@ try {
       childIsolation: true, originalExactAndCompletedFork: true, activeArchiveRequiresExplicitStop: true,
       processRecovery: true, coldReadDoesNotActivate: true, noRequestReplay: true,
       titleRecovery: true, sharedOriginalApi: true, privateWorkspaceFilesRpc: true,
+      originalContentSearch: true, lazyDurableSearchIndex: true, searchDoesNotActivateOrRewrite: true,
       utf8ReadPages: true, boundedFilenameSearch: true, home }))
   })(), failed.promise, new Promise((_, reject) => {
     deadline = setTimeout(() => reject(new Error(`Library profile timed out at ${phase}: ${

@@ -25,12 +25,35 @@ class _FilesPageState extends State<FilesPage> with WidgetsBindingObserver {
   List<Json>? items;
   String? error, confirmRevoke, notice;
   bool loading = false, choosing = false, revoking = false;
+  bool current = false;
+  int generation = 0;
+  late int connection;
+  late String phase;
 
   @override
   void initState() {
     super.initState();
+    connection = widget.runtime.connectionGeneration;
+    phase = widget.runtime.phase;
+    widget.runtime.addListener(runtimeChanged);
     WidgetsBinding.instance.addObserver(this);
     unawaited(load());
+  }
+
+  void runtimeChanged() {
+    if (connection == widget.runtime.connectionGeneration &&
+        phase == widget.runtime.phase) {
+      return;
+    }
+    connection = widget.runtime.connectionGeneration;
+    phase = widget.runtime.phase;
+    generation++;
+    setState(() {
+      current = false;
+      loading = false;
+      confirmRevoke = null;
+    });
+    if (widget.runtime.ready) unawaited(load());
   }
 
   @override
@@ -41,23 +64,30 @@ class _FilesPageState extends State<FilesPage> with WidgetsBindingObserver {
   }
 
   Future<void> load() async {
-    if (loading) return;
+    if (loading || !widget.runtime.ready) return;
+    final attempt = generation;
     setState(() => loading = true);
     try {
       final result = await widget.runtime.call(
         widget.root == null ? 'documents.roots' : 'documents.list',
         widget.root == null ? {} : {'root': widget.root, 'path': widget.path},
       );
-      if (mounted) {
+      if (mounted && attempt == generation) {
         setState(() {
           items = (result as List).cast<Json>();
           error = null;
+          current = true;
         });
       }
     } catch (failure) {
-      if (mounted) setState(() => error = '无法读取授权文件，请重试或重新授权。\n$failure');
+      if (mounted && attempt == generation) {
+        setState(() {
+          current = false;
+          error = '无法读取授权文件，请重试或重新授权。\n$failure';
+        });
+      }
     } finally {
-      if (mounted) setState(() => loading = false);
+      if (mounted && attempt == generation) setState(() => loading = false);
     }
   }
 
@@ -77,7 +107,8 @@ class _FilesPageState extends State<FilesPage> with WidgetsBindingObserver {
   }
 
   Future<void> revoke(String id) async {
-    if (revoking || loading) return;
+    if (revoking || loading || !widget.runtime.ready || !current) return;
+    final attempt = generation;
     setState(() => revoking = true);
     try {
       final result = await widget.runtime.call('documents.revoke', {
@@ -87,6 +118,10 @@ class _FilesPageState extends State<FilesPage> with WidgetsBindingObserver {
         throw StateError('尚未确认授权已撤销，请刷新后重试');
       }
       if (!mounted) return;
+      if (attempt != generation) {
+        setState(() => error = '连接已变化，撤销结果尚未核实。请刷新授权列表确认。');
+        return;
+      }
       setState(() {
         items?.removeWhere((entry) => entry['id'] == id);
         confirmRevoke = null;
@@ -154,7 +189,7 @@ class _FilesPageState extends State<FilesPage> with WidgetsBindingObserver {
                     ? '目录 · 只读授权'
                     : '文件 · 只读授权'
               : '${entry['error'] ?? '授权项目暂不可用，请重试或重新授权。'}',
-          onTap: available && !revoking ? () => select(entry) : null,
+          onTap: current && available && !revoking ? () => select(entry) : null,
         ),
         Padding(
           padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
@@ -185,7 +220,7 @@ class _FilesPageState extends State<FilesPage> with WidgetsBindingObserver {
                         if (available)
                           PocketButton.tonal(
                             key: ValueKey('search-$id'),
-                            onPressed: loading || revoking
+                            onPressed: loading || revoking || !current
                                 ? null
                                 : () => search(id, '', '${entry['name']}'),
                             child: const Text('搜索文字'),
@@ -197,7 +232,7 @@ class _FilesPageState extends State<FilesPage> with WidgetsBindingObserver {
                           ),
                         PocketButton.tonal(
                           key: ValueKey('revoke-$id'),
-                          onPressed: revoking || loading
+                          onPressed: revoking || loading || !current
                               ? null
                               : () => setState(() => confirmRevoke = id),
                           child: const Text('撤销授权'),
@@ -213,6 +248,8 @@ class _FilesPageState extends State<FilesPage> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    generation++;
+    widget.runtime.removeListener(runtimeChanged);
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -229,7 +266,7 @@ class _FilesPageState extends State<FilesPage> with WidgetsBindingObserver {
     trailing: GlassButton(
       icon: Icons.refresh_rounded,
       label: '刷新授权文件',
-      onPressed: loading || revoking ? null : load,
+      onPressed: loading || revoking || !widget.runtime.ready ? null : load,
     ),
     bottom: widget.root != null
         ? null
@@ -256,6 +293,16 @@ class _FilesPageState extends State<FilesPage> with WidgetsBindingObserver {
     body: PocketList(
       padding: const EdgeInsets.all(16),
       children: [
+        if (!current && items != null)
+          const Padding(
+            padding: EdgeInsets.all(20),
+            child: Text('显示上次读取的授权列表，当前状态尚未核实。'),
+          ),
+        if (!widget.runtime.ready)
+          const Padding(
+            padding: EdgeInsets.all(20),
+            child: Text('运行时尚未连接，连接恢复后重新读取。'),
+          ),
         if (widget.root == null)
           PocketSection(
             children: [
@@ -281,7 +328,9 @@ class _FilesPageState extends State<FilesPage> with WidgetsBindingObserver {
             icon: Icons.search_rounded,
             title: '搜索此目录的文字',
             subtitle: '包括已授权范围内的子目录',
-            onTap: () => search(widget.root!, widget.path, '已授权目录'),
+            onTap: current
+                ? () => search(widget.root!, widget.path, '已授权目录')
+                : null,
           ),
         if (error != null)
           PocketSection(
@@ -301,7 +350,7 @@ class _FilesPageState extends State<FilesPage> with WidgetsBindingObserver {
           ),
         if (loading)
           const Padding(padding: EdgeInsets.all(20), child: Text('正在读取授权文件…')),
-        if (items?.isEmpty == true && !loading)
+        if (current && items?.isEmpty == true && !loading)
           const Padding(
             padding: EdgeInsets.all(24),
             child: Text('这里还没有文件。可以选择一个文件，或授权一个目录。'),
@@ -318,7 +367,7 @@ class _FilesPageState extends State<FilesPage> with WidgetsBindingObserver {
               ),
               title: Text('${entry['name']}'),
               trailing: const Icon(Icons.chevron_right),
-              onTap: () => select(entry),
+              onTap: current ? () => select(entry) : null,
             ),
       ],
     ),
@@ -346,20 +395,54 @@ class _TextFilePageState extends State<TextFilePage> {
   String? text, error;
   int index = 0, retryIndex = 0, retryOffset = 0;
   bool more = false, loading = false;
+  bool current = false, retryReset = false, retryPreserveScroll = false;
+  int generation = 0;
+  late int connection;
+  late String phase;
 
   @override
   void initState() {
     super.initState();
+    connection = widget.runtime.connectionGeneration;
+    phase = widget.runtime.phase;
+    widget.runtime.addListener(runtimeChanged);
     unawaited(load(0, 0));
   }
 
+  void runtimeChanged() {
+    if (connection == widget.runtime.connectionGeneration &&
+        phase == widget.runtime.phase) {
+      return;
+    }
+    connection = widget.runtime.connectionGeneration;
+    phase = widget.runtime.phase;
+    generation++;
+    setState(() {
+      current = false;
+      loading = false;
+      error = '连接已变化，已显示的内容尚未核实。请重新确认当前段或从头读取。';
+      retryIndex = 0;
+      retryOffset = starts[index];
+      retryReset = true;
+      retryPreserveScroll = true;
+    });
+  }
+
   /// Only a completed page changes navigation. Re-reading earlier pages keeps memory bounded.
-  Future<void> load(int targetIndex, int offset) async {
-    if (loading) return;
+  Future<void> load(
+    int targetIndex,
+    int offset, {
+    bool reset = false,
+    bool preserveScroll = false,
+  }) async {
+    if (loading || !widget.runtime.ready) return;
+    final attempt = generation;
     setState(() {
       loading = true;
       retryIndex = targetIndex;
       retryOffset = offset;
+      retryReset = reset;
+      retryPreserveScroll = preserveScroll;
     });
     try {
       final result = await widget.runtime.call('documents.read', {
@@ -375,25 +458,34 @@ class _TextFilePageState extends State<TextFilePage> {
           (hasMore && next == offset)) {
         throw const FormatException('文件分段信息无效，请重新打开文件');
       }
-      if (!mounted) return;
+      if (!mounted || attempt != generation) return;
       setState(() {
         text = content;
         index = targetIndex;
         more = hasMore;
         error = null;
+        current = true;
+        if (reset) {
+          starts.clear();
+          starts.add(offset);
+        }
         starts.removeRange(targetIndex + 1, starts.length);
         if (hasMore) starts.add(next);
       });
-      if (scroll.hasClients) scroll.jumpTo(0);
+      if (!preserveScroll && scroll.hasClients) scroll.jumpTo(0);
     } catch (failure) {
-      if (mounted) setState(() => error = '读取未完成，已显示的内容仍保留。\n$failure');
+      if (mounted && attempt == generation) {
+        setState(() => error = '读取未完成，已显示的内容仍保留。\n$failure');
+      }
     } finally {
-      if (mounted) setState(() => loading = false);
+      if (mounted && attempt == generation) setState(() => loading = false);
     }
   }
 
   @override
   void dispose() {
+    generation++;
+    widget.runtime.removeListener(runtimeChanged);
     scroll.dispose();
     super.dispose();
   }
@@ -421,7 +513,9 @@ class _TextFilePageState extends State<TextFilePage> {
         GlassButton(
           icon: Icons.refresh_rounded,
           label: '重新从头读取',
-          onPressed: loading ? null : () => load(0, 0),
+          onPressed: loading || !widget.runtime.ready
+              ? null
+              : () => load(0, 0, reset: true),
         ),
       ],
     ),
@@ -433,14 +527,15 @@ class _TextFilePageState extends State<TextFilePage> {
             children: [
               PocketButton.tonal(
                 glass: true,
-                onPressed: loading || index == 0
+                onPressed:
+                    loading || !current || !widget.runtime.ready || index == 0
                     ? null
                     : () => load(index - 1, starts[index - 1]),
                 child: const Text('上一段'),
               ),
               PocketButton(
                 glass: true,
-                onPressed: loading || !more
+                onPressed: loading || !current || !widget.runtime.ready || !more
                     ? null
                     : () => load(index + 1, starts[index + 1]),
                 child: const Text('下一段'),
@@ -462,10 +557,15 @@ class _TextFilePageState extends State<TextFilePage> {
               Padding(
                 padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
                 child: PocketButton.tonal(
-                  onPressed: loading
+                  onPressed: loading || !widget.runtime.ready
                       ? null
-                      : () => load(retryIndex, retryOffset),
-                  child: const Text('重试读取'),
+                      : () => load(
+                          retryIndex,
+                          retryOffset,
+                          reset: retryReset,
+                          preserveScroll: retryPreserveScroll,
+                        ),
+                  child: Text(!current && text != null ? '重新确认当前段' : '重试读取'),
                 ),
               ),
             ],
@@ -473,7 +573,9 @@ class _TextFilePageState extends State<TextFilePage> {
         if (text != null) ...[
           Padding(
             padding: const EdgeInsets.only(bottom: 16),
-            child: Text('第 ${index + 1} 段${more ? '' : ' · 文件末尾'}'),
+            child: Text(
+              '第 ${index + 1} 段${starts.first > 0 ? '（从上次阅读位置开始）' : ''}${more ? '' : ' · 文件末尾'}${current ? '' : ' · 尚未核实'}',
+            ),
           ),
           SelectableText(text!.isEmpty ? '文件为空。' : text!),
         ],

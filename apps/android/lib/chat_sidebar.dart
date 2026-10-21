@@ -13,6 +13,7 @@ import 'library.dart';
 import 'library_data.dart';
 import 'runtime.dart';
 import 'settings.dart';
+import 'session_search.dart';
 import 'subagents.dart';
 import 'ui.dart';
 
@@ -149,6 +150,15 @@ class _ChatSidebarState extends State<ChatSidebar> {
   void _details(String id) =>
       unawaited(_browse(LibrarySessionPage(library: _library, sessionId: id)));
 
+  void _searchContents() => unawaited(
+    _browse(
+      SessionSearchPage(
+        runtime: widget.runtime,
+        initialQuery: _search.text.trim(),
+      ),
+    ),
+  );
+
   Future<void> _mutate(String id, {required bool archive}) async {
     final key = '${archive ? 'archive' : 'pin'}:$id';
     if (!_library.allowed(key) || _library.session(id) == null) return;
@@ -263,6 +273,7 @@ class _ChatSidebarState extends State<ChatSidebar> {
           controller: _search,
           focusNode: _searchFocus,
           onChanged: (_) => setState(() {}),
+          onSubmitted: (_) => _searchContents(),
           textInputAction: TextInputAction.search,
           decoration: const InputDecoration(
             hintText: '搜索会话与工作区',
@@ -418,6 +429,13 @@ class _ChatSidebarState extends State<ChatSidebar> {
             padding: scrollPadding,
             keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
             children: [
+              if (_searchOpen)
+                _destination(
+                  '搜索对话内容',
+                  Icons.manage_search_rounded,
+                  _searchContents,
+                  key: const ValueKey('sidebar-search-content'),
+                ),
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 4),
                 child: PocketButton.tonal(

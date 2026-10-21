@@ -137,7 +137,6 @@ class _ChatPageState extends State<ChatPage> {
   final commandDrafts = <String, Json>{};
   final chatProjections = <String, ChatProjection>{};
   late AttachmentDrafts attachments;
-  String? lastRuntimePhase;
   final messageScroll = ScrollController();
   bool navigationScheduled = false;
   (String, int, Object?)? observedTimeline;
@@ -160,7 +159,6 @@ class _ChatPageState extends State<ChatPage> {
     super.initState();
     runtime.addListener(handleNavigation);
     attachments = AttachmentDrafts(runtime)..addListener(attachmentChanged);
-    lastRuntimePhase = runtime.phase;
     handleNavigation();
   }
 
@@ -173,17 +171,12 @@ class _ChatPageState extends State<ChatPage> {
       attachments.removeListener(attachmentChanged);
       attachments.dispose();
       attachments = AttachmentDrafts(runtime)..addListener(attachmentChanged);
-      lastRuntimePhase = runtime.phase;
       runtime.addListener(handleNavigation);
       handleNavigation();
     }
   }
 
   void handleNavigation() {
-    if (lastRuntimePhase == 'ready' && !runtime.ready) {
-      attachments.invalidateReceipts();
-    }
-    lastRuntimePhase = runtime.phase;
     if (!mounted ||
         navigationScheduled ||
         (!runtime.ready &&

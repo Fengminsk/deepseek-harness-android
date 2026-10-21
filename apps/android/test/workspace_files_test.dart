@@ -83,6 +83,14 @@ class WorkspaceRuntime extends RuntimeController {
     phase = 'ready';
   }
   final calls = <(String, Json)>[];
+  int generation = 1;
+  @override
+  int get connectionGeneration => generation;
+  void replaceConnection() {
+    generation++;
+    notifyListeners();
+  }
+
   Future<dynamic> Function(String, Json)? handle;
   @override
   Future<dynamic> call(String method, [Json params = const {}]) async {
@@ -141,6 +149,159 @@ Future<void> close(WidgetTester tester) async {
 }
 
 void main() {
+  testWidgets(
+    'same-ready search replacement retains query without replay and ignores an old completion',
+    (tester) async {
+      final runtime = WorkspaceRuntime();
+      addTearDown(runtime.dispose);
+      final older = Completer<Json>();
+      var first = true;
+      runtime.handle = (method, _) async => switch (method) {
+        'workspace.files.info' => {
+          'limits': {
+            'search': {'maxDurationMs': 10000},
+          },
+        },
+        'workspace.files.search' =>
+          first
+              ? older.future
+              : results(
+                  matches: [
+                    {'path': 'fresh.txt', 'kind': 'file'},
+                  ],
+                ),
+        'workspace.files.search.cancel' => {'cancelled': true},
+        _ => throw StateError('Unexpected $method'),
+      };
+      await open(tester, WorkspaceSearchPage(runtime: runtime));
+      try {
+        await tester.enterText(
+          find.byKey(const Key('workspace-search-query')),
+          '保留查询',
+        );
+        await tap(tester, find.byKey(const Key('workspace-start-search')));
+        runtime.replaceConnection();
+        await tester.pumpAndSettle();
+        expect(find.textContaining('这不表示搜索已停止'), findsOneWidget);
+        expect(
+          tester.widget<TextField>(find.byType(TextField)).controller!.text,
+          '保留查询',
+        );
+        expect(
+          runtime.calls.where((call) => call.$1 == 'workspace.files.search'),
+          hasLength(1),
+        );
+        first = false;
+        await tap(tester, find.byKey(const Key('workspace-start-search')));
+        older.complete(
+          results(
+            matches: [
+              {'path': 'stale.txt', 'kind': 'file'},
+            ],
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(find.text('stale.txt'), findsNothing);
+        expect(find.text('fresh.txt'), findsOneWidget);
+      } finally {
+        if (!older.isCompleted) older.complete(results());
+        await close(tester);
+      }
+    },
+  );
+  testWidgets(
+    'same-ready replacement invalidates a directory until the new listing arrives',
+    (tester) async {
+      final runtime = WorkspaceRuntime();
+      addTearDown(runtime.dispose);
+      await open(tester, WorkspaceFilesPage(runtime: runtime));
+      final latest = Completer<Json>();
+      runtime.handle = (_, _) => latest.future;
+      try {
+        runtime.replaceConnection();
+        await tester.pumpAndSettle();
+        expect(find.text('显示上次读取的目录，当前状态未确认。'), findsOneWidget);
+        final row = tester.widget<PocketRow>(
+          find.byKey(const ValueKey('workspace-entry-notes')),
+        );
+        expect(row.onTap, isNull);
+        expect(runtime.calls, hasLength(2));
+        latest.complete(listing('', entries: []));
+        await tester.pumpAndSettle();
+        expect(find.text('此目录为空。'), findsOneWidget);
+        expect(find.text('notes'), findsNothing);
+      } finally {
+        if (!latest.isCompleted) latest.complete(listing('', entries: []));
+        await close(tester);
+      }
+    },
+  );
+
+  testWidgets(
+    'same-ready text replacement preserves position and replaces the old cursor only after recheck',
+    (tester) async {
+      final runtime = WorkspaceRuntime();
+      addTearDown(runtime.dispose);
+      runtime.handle = (_, params) async => textPage(
+        offset: params['offset'] as int,
+        next: 16,
+        eof: false,
+        text: '阅读中的页面',
+        version: 'old-version',
+      );
+      await open(
+        tester,
+        WorkspaceTextPage(
+          runtime: runtime,
+          path: 'notes/report.txt',
+          offset: 8,
+          version: 'old-version',
+        ),
+      );
+      final older = Completer<Json>();
+      runtime.handle = (_, _) => older.future;
+      await tap(tester, find.text('下一段'));
+      try {
+        runtime.replaceConnection();
+        await tester.pumpAndSettle();
+        expect(find.text('阅读中的页面'), findsOneWidget);
+        expect(runtime.calls, hasLength(2));
+        final next = tester.widget<PocketButton>(
+          find.ancestor(
+            of: find.text('下一段'),
+            matching: find.byType(PocketButton),
+          ),
+        );
+        expect(next.onPressed, isNull);
+        runtime.handle = (_, params) async => textPage(
+          offset: params['offset'] as int,
+          text: '核实后的当前页面',
+          version: 'new-version',
+        );
+        await tap(tester, find.text('重新确认当前段'));
+        expect(runtime.calls.last.$2, {
+          'path': 'notes/report.txt',
+          'offset': 8,
+        });
+        older.complete(
+          textPage(offset: 16, text: '旧回执不能展示', version: 'old-version'),
+        );
+        await tester.pumpAndSettle();
+        expect(find.text('旧回执不能展示'), findsNothing);
+        expect(find.text('核实后的当前页面'), findsOneWidget);
+        final previous = tester.widget<PocketButton>(
+          find.ancestor(
+            of: find.text('上一段'),
+            matching: find.byType(PocketButton),
+          ),
+        );
+        expect(previous.onPressed, isNull);
+      } finally {
+        if (!older.isCompleted) older.complete(textPage(offset: 16));
+        await close(tester);
+      }
+    },
+  );
   testWidgets(
     'private root, nested directory and text use relative RPC paths and block links',
     (tester) async {

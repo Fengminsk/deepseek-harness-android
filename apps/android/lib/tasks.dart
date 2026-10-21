@@ -47,22 +47,48 @@ class TasksPage extends StatefulWidget {
 class _TasksPageState extends State<TasksPage> with WidgetsBindingObserver {
   final stopping = <String>{};
   final errors = <String, String>{};
+  final stopAttempts = <String, int>{};
   bool refreshing = false;
+  bool loadingMore = false;
   bool refreshAgain = false;
   String? refreshError;
   Object? observedRevision;
+  late int connection;
+  int? snapshotConnection;
+  int readAttempt = 0, stopAttempt = 0, moreAttempt = 0;
+  bool get confirmed =>
+      widget.runtime.ready &&
+      snapshotConnection == widget.runtime.connectionGeneration &&
+      refreshError == null;
+  bool get current => confirmed && !refreshing && !loadingMore;
 
   @override
   void initState() {
     super.initState();
+    connection = widget.runtime.connectionGeneration;
     WidgetsBinding.instance.addObserver(this);
     widget.runtime.addListener(changed);
     unawaited(refresh());
   }
 
   void changed() {
+    if (connection != widget.runtime.connectionGeneration) {
+      connection = widget.runtime.connectionGeneration;
+      snapshotConnection = null;
+      readAttempt++;
+      moreAttempt++;
+      refreshing = false;
+      loadingMore = false;
+      refreshAgain = false;
+      refreshError = null;
+      for (final id in stopping) {
+        errors[id] = '连接已变化，停止结果尚未确认。请核对当前任务。';
+      }
+      stopping.clear();
+      stopAttempts.clear();
+    }
     final key =
-        '${widget.runtime.phase}:${widget.runtime.taskState['epoch']}:${widget.runtime.taskState['revision']}';
+        '$connection:${widget.runtime.phase}:${widget.runtime.taskState['epoch']}:${widget.runtime.taskState['revision']}';
     if (key == observedRevision) return;
     observedRevision = key;
     unawaited(refresh());
@@ -75,41 +101,84 @@ class _TasksPageState extends State<TasksPage> with WidgetsBindingObserver {
 
   Future<void> refresh() async {
     if (!widget.runtime.ready) return;
-    if (refreshing) {
+    if (refreshing || loadingMore) {
       refreshAgain = true;
       return;
     }
     refreshAgain = false;
+    final attempt = ++readAttempt;
+    final generation = widget.runtime.connectionGeneration;
+    bool ownsRead() =>
+        mounted &&
+        widget.runtime.ready &&
+        attempt == readAttempt &&
+        generation == widget.runtime.connectionGeneration;
     setState(() => refreshing = true);
     try {
       await Future.wait([
         widget.runtime.refreshTasks(),
         widget.runtime.refreshInteractions(),
       ]);
-      if (mounted) setState(() => refreshError = null);
+      if (ownsRead()) {
+        setState(() {
+          snapshotConnection = generation;
+          refreshError = null;
+        });
+      }
     } catch (failure) {
-      if (mounted) setState(() => refreshError = '无法刷新任务状态：$failure');
+      if (ownsRead()) setState(() => refreshError = '无法刷新任务状态：$failure');
     } finally {
-      if (mounted) setState(() => refreshing = false);
-      if (mounted && refreshAgain) unawaited(refresh());
+      if (ownsRead()) {
+        setState(() => refreshing = false);
+        if (refreshAgain) unawaited(refresh());
+      }
     }
   }
 
   Future<void> stop(String id) async {
-    if (stopping.contains(id) || !widget.runtime.ready) return;
+    if (stopping.contains(id) || !current) return;
+    final generation = widget.runtime.connectionGeneration;
+    final attempt = ++stopAttempt;
+    stopAttempts[id] = attempt;
+    bool ownsStop() =>
+        mounted &&
+        generation == widget.runtime.connectionGeneration &&
+        stopAttempts[id] == attempt;
     setState(() {
       stopping.add(id);
       errors.remove(id);
     });
     try {
       await widget.runtime.call('tasks.cancel', {'sessionId': id});
+      if (!ownsStop()) return;
       await widget.runtime.refreshTasks();
     } catch (failure) {
-      if (mounted) {
+      if (ownsStop()) {
         setState(() {
           stopping.remove(id);
           errors[id] = '停止请求未确认，请刷新状态后再操作：$failure';
         });
+      }
+    }
+  }
+
+  Future<void> more() async {
+    if (!current) return;
+    final generation = widget.runtime.connectionGeneration;
+    final attempt = ++moreAttempt;
+    bool ownsRead() =>
+        mounted &&
+        generation == widget.runtime.connectionGeneration &&
+        attempt == moreAttempt;
+    setState(() => loadingMore = true);
+    try {
+      await widget.runtime.loadMoreTasks();
+    } catch (failure) {
+      if (ownsRead()) setState(() => refreshError = '无法读取更多任务：$failure');
+    } finally {
+      if (ownsRead()) {
+        setState(() => loadingMore = false);
+        if (refreshAgain) unawaited(refresh());
       }
     }
   }
@@ -217,13 +286,13 @@ class _TasksPageState extends State<TasksPage> with WidgetsBindingObserver {
                   ),
                 ],
               ),
-            if (!runtime.ready)
+            if (!confirmed)
               const PocketSection(
                 children: [
                   PocketRow(
                     icon: Icons.cloud_off_rounded,
                     title: '任务状态暂不可用',
-                    subtitle: '以下保留上次读取的记录，不代表任务仍在执行。重新连接后才能确认。',
+                    subtitle: '以下保留上次读取的记录，不代表任务仍在执行。读取最新状态后才能确认。',
                   ),
                 ],
               ),
@@ -232,7 +301,7 @@ class _TasksPageState extends State<TasksPage> with WidgetsBindingObserver {
                 padding: const EdgeInsets.all(12),
                 child: SelectableText(message),
               ),
-            if (runtime.ready && runtime.taskState.isNotEmpty && active.isEmpty)
+            if (confirmed && runtime.taskState.isNotEmpty && active.isEmpty)
               PocketSection(
                 children: [
                   PocketRow(
@@ -256,7 +325,7 @@ class _TasksPageState extends State<TasksPage> with WidgetsBindingObserver {
                   ),
                 ],
               ),
-            if (runtime.ready && (packageOperations ?? 0) > 0)
+            if (confirmed && (packageOperations ?? 0) > 0)
               PocketSection(
                 children: [
                   PocketRow(
@@ -272,7 +341,7 @@ class _TasksPageState extends State<TasksPage> with WidgetsBindingObserver {
                   PocketRow(
                     icon: Icons.auto_awesome_outlined,
                     title: title(row['sessionId'] as String),
-                    subtitle: !runtime.ready
+                    subtitle: !confirmed
                         ? '状态待确认'
                         : stopping.contains(row['sessionId'])
                         ? '正在停止'
@@ -316,8 +385,7 @@ class _TasksPageState extends State<TasksPage> with WidgetsBindingObserver {
                             ['running', 'waiting'].contains(row['status']))
                           PocketButton.tonal(
                             onPressed:
-                                stopping.contains(row['sessionId']) ||
-                                    !runtime.ready
+                                stopping.contains(row['sessionId']) || !current
                                 ? null
                                 : () => stop(row['sessionId'] as String),
                             child: const Text('停止任务'),
@@ -334,7 +402,9 @@ class _TasksPageState extends State<TasksPage> with WidgetsBindingObserver {
                   PocketRow(
                     icon: Icons.history_rounded,
                     title: '${row['title']}',
-                    subtitle: row['historyAvailable'] != true
+                    subtitle: !confirmed
+                        ? '状态待确认 · 保留上次读取的记录'
+                        : row['historyAvailable'] != true
                         ? '尚无缓存记录 · 点按读取'
                         : '${(row['history'] as List).isEmpty ? '尚无执行回合' : taskStatusLabel(((row['history'] as List).first as Json)['status'] as String?)}'
                               '${row['observation'] == 'cached' ? ' · 缓存记录' : ''}',
@@ -357,17 +427,7 @@ class _TasksPageState extends State<TasksPage> with WidgetsBindingObserver {
               ),
             if (runtime.tasksNextOffset != null)
               PocketButton.tonal(
-                onPressed: refreshing || !runtime.ready
-                    ? null
-                    : () async {
-                        try {
-                          await runtime.loadMoreTasks();
-                        } catch (failure) {
-                          if (mounted) {
-                            setState(() => refreshError = '无法读取更多任务：$failure');
-                          }
-                        }
-                      },
+                onPressed: current ? more : null,
                 child: const Text('更多会话'),
               ),
             const Padding(
@@ -400,16 +460,36 @@ class _TaskHistoryPageState extends State<TaskHistoryPage> {
   bool loading = false;
   bool readAgain = false;
   Object? observedRevision;
+  late int connection;
+  int? snapshotConnection;
+  int readAttempt = 0, mutationAttempt = 0;
+  bool get confirmed =>
+      widget.runtime.ready &&
+      snapshotConnection == widget.runtime.connectionGeneration &&
+      error == null;
+  bool get current => confirmed && !loading;
   @override
   void initState() {
     super.initState();
+    connection = widget.runtime.connectionGeneration;
     widget.runtime.addListener(changed);
     unawaited(read());
   }
 
   void changed() {
+    if (connection != widget.runtime.connectionGeneration) {
+      connection = widget.runtime.connectionGeneration;
+      readAttempt++;
+      mutationAttempt++;
+      snapshotConnection = null;
+      loading = false;
+      readAgain = false;
+      error = busyItem == null ? null : '连接已变化，移除结果尚未确认。请核对当前队列。';
+      busyItem = null;
+      confirming = null;
+    }
     final key =
-        '${widget.runtime.phase}:${widget.runtime.taskState['epoch']}:${widget.runtime.taskState['revision']}';
+        '$connection:${widget.runtime.phase}:${widget.runtime.taskState['epoch']}:${widget.runtime.taskState['revision']}';
     if (key == observedRevision) return;
     observedRevision = key;
     unawaited(read());
@@ -422,21 +502,34 @@ class _TaskHistoryPageState extends State<TaskHistoryPage> {
   }
 
   Future<void> read({bool more = false}) async {
-    if (!widget.runtime.ready) return;
+    if (!widget.runtime.ready || (more && !current)) return;
     if (loading) {
       if (!more) readAgain = true;
       return;
     }
     readAgain = false;
+    final attempt = ++readAttempt;
+    final generation = widget.runtime.connectionGeneration;
+    bool ownsRead() =>
+        mounted &&
+        widget.runtime.ready &&
+        attempt == readAttempt &&
+        generation == widget.runtime.connectionGeneration;
     setState(() => loading = true);
     try {
       final next = await widget.runtime.call('tasks.session', {
         'sessionId': widget.sessionId,
         if (more) 'beforeSeq': snapshot!['nextBeforeSeq'],
       }) as Json;
-      if (!mounted || !widget.runtime.ready) return;
+      if (!ownsRead()) return;
       final epoch = widget.runtime.taskState['epoch'];
-      if (epoch != null && next['epoch'] != epoch) return;
+      if (epoch != null && next['epoch'] != epoch) {
+        setState(() {
+          snapshotConnection = null;
+          error = '任务记录已变化，请刷新后核对队列。';
+        });
+        return;
+      }
       setState(() {
         if (more) {
           next['history'] = [
@@ -445,17 +538,27 @@ class _TaskHistoryPageState extends State<TaskHistoryPage> {
           ];
         }
         snapshot = next;
+        snapshotConnection = generation;
         error = null;
       });
     } catch (failure) {
-      if (mounted) setState(() => error = '无法读取任务历史：$failure');
+      if (ownsRead()) setState(() => error = '无法读取任务历史：$failure');
     } finally {
-      if (mounted) setState(() => loading = false);
-      if (mounted && readAgain) unawaited(read());
+      if (ownsRead()) {
+        setState(() => loading = false);
+        if (readAgain) unawaited(read());
+      }
     }
   }
 
   Future<void> remove(Json row) async {
+    if (!current || busyItem != null || confirming != row['itemId']) return;
+    final attempt = ++mutationAttempt;
+    final generation = widget.runtime.connectionGeneration;
+    bool ownsMutation() =>
+        mounted &&
+        attempt == mutationAttempt &&
+        generation == widget.runtime.connectionGeneration;
     setState(() {
       busyItem = row['itemId'] as String;
       error = null;
@@ -465,13 +568,17 @@ class _TaskHistoryPageState extends State<TaskHistoryPage> {
         'sessionId': widget.sessionId,
         'itemId': row['itemId'],
       });
-      if (mounted) setState(() => confirming = null);
+      if (!ownsMutation()) return;
+      setState(() => confirming = null);
       await read();
+      if (!ownsMutation()) return;
       await widget.runtime.refreshTasks();
     } catch (failure) {
-      if (mounted) setState(() => error = '移除请求未确认，先刷新队列核对：$failure');
+      if (ownsMutation()) {
+        setState(() => error = '移除请求未确认，先刷新队列核对：$failure');
+      }
     } finally {
-      if (mounted) setState(() => busyItem = null);
+      if (ownsMutation()) setState(() => busyItem = null);
     }
   }
 
@@ -502,6 +609,11 @@ class _TaskHistoryPageState extends State<TaskHistoryPage> {
             const Padding(
               padding: EdgeInsets.all(12),
               child: Text('服务未连接，以下状态尚未重新确认。'),
+            ),
+          if (widget.runtime.ready && !confirmed && snapshot != null)
+            const Padding(
+              padding: EdgeInsets.all(12),
+              child: Text('任务记录待核实。以下是上次读取的状态，暂不能移除输入。'),
             ),
           if (error != null)
             Padding(
@@ -538,14 +650,14 @@ class _TaskHistoryPageState extends State<TaskHistoryPage> {
                             child: const Text('保留'),
                           ),
                           PocketButton.tonal(
-                            onPressed: busyItem != null || !widget.runtime.ready
+                            onPressed: busyItem != null || !current
                                 ? null
                                 : () => remove(row),
                             child: const Text('确认移除'),
                           ),
                         ] else
                           PocketButton.tonal(
-                            onPressed: busyItem != null || !widget.runtime.ready
+                            onPressed: busyItem != null || !current
                                 ? null
                                 : () => setState(
                                     () => confirming = row['itemId'] as String,
@@ -588,9 +700,7 @@ class _TaskHistoryPageState extends State<TaskHistoryPage> {
             ),
           if (snapshot?['nextBeforeSeq'] != null)
             PocketButton.tonal(
-              onPressed: loading || !widget.runtime.ready
-                  ? null
-                  : () => read(more: true),
+              onPressed: !current ? null : () => read(more: true),
               child: const Text('更早的回合'),
             ),
         ],
