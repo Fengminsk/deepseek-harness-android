@@ -77,6 +77,7 @@ class _Runtime extends RuntimeController {
     if (method == 'attachments.prepare') {
       return {
         'id': params['id'],
+        'kind': 'file',
         'receiptId': 'receipt',
         'name': 'report.txt',
         'bytes': 5,

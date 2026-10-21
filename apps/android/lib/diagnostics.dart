@@ -5,6 +5,7 @@ import 'package:material_ui/material_ui.dart';
 
 import 'runtime.dart';
 import 'ui.dart';
+import 'text_document_page.dart';
 import 'recovery.dart';
 
 class DiagnosticsPage extends StatefulWidget {
@@ -191,12 +192,10 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
             PocketSection(
               title: runtime.error != null ? '错误详情' : '上次错误',
               children: [
-                Padding(
-                  padding: const EdgeInsets.all(20),
-                  child: SelectableText(
-                    lastFailure!,
-                    style: const TextStyle(fontSize: 13),
-                  ),
+                TextDocumentRow(
+                  title: '查看错误详情',
+                  text: lastFailure!,
+                  monospace: true,
                 ),
               ],
             ),
@@ -235,12 +234,11 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
             PocketSection(
               title: runtime.ready ? '运行环境' : '上次运行环境',
               children: [
-                Padding(
-                  padding: const EdgeInsets.all(20),
-                  child: SelectableText(
-                    const JsonEncoder.withIndent('  ').convert(runtime.info),
-                    style: const TextStyle(fontSize: 12),
-                  ),
+                TextDocumentRow(
+                  title: '查看运行环境',
+                  text: const JsonEncoder.withIndent('  ')
+                      .convert(runtime.info),
+                  monospace: true,
                 ),
               ],
             ),

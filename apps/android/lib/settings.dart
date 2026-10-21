@@ -6,6 +6,7 @@ import 'package:material_ui/material_ui.dart';
 
 import 'runtime.dart';
 import 'ui.dart';
+import 'text_document_page.dart';
 import 'files.dart';
 import 'appearance.dart';
 import 'configuration_editor.dart';
@@ -437,7 +438,7 @@ class _WebSettingsPageState extends State<WebSettingsPage> {
                   child: SegmentedControl<String>(
                     segments: const [('local', '仅本机'), ('lan', '局域网')],
                     value: state!['scope'] as String,
-                    onChanged: (value) => update(scope: value),
+                    onChanged: busy ? null : (value) => update(scope: value),
                   ),
                 ),
               ),
@@ -536,11 +537,9 @@ class _WebSettingsPageState extends State<WebSettingsPage> {
                   ],
                 ),
               ),
-              const PocketDisclosure(
+              const TextDocumentRow(
                 title: '关于 Web 访问',
-                child: Text(
-                  '浏览器与 App 共用 Agent、会话和配置。开关和访问范围会保留，每次开启生成新链接。关闭 Web 会断开浏览器，手机中的任务继续执行。',
-                ),
+                text: '浏览器与 App 共用 Agent、会话和配置。开关和访问范围会保留，每次开启生成新链接。关闭 Web 会断开浏览器，手机中的任务继续执行。',
               ),
             ],
           ),

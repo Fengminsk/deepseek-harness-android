@@ -7,6 +7,7 @@ import 'configuration_state.dart';
 import 'models.dart' show ModelDraftGuard, ModelNotice;
 import 'runtime.dart';
 import 'ui.dart';
+import 'text_document_page.dart';
 
 const subagentModelSettingsNamespace = 'subagent-model-selection-settings';
 
@@ -361,23 +362,16 @@ class _SubagentModelSettingsPageState extends State<SubagentModelSettingsPage>
 
   Widget _comparison(String title, Json? value) {
     final selection = _selection(value);
-    return PocketDisclosure(
+    return TextDocumentRow(
       title: title,
-      child: selection == null
-          ? const Text('配置尚未确认')
-          : Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(selection.enabled ? 'Agent 可选择子任务模型' : '使用默认或继承模型'),
-                const SizedBox(height: 8),
-                if (selection.routes.isEmpty) const Text('未选择授权模型'),
-                for (final route in selection.routes)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 8),
-                    child: SelectableText('${route.provider} / ${route.model}'),
-                  ),
-              ],
-            ),
+      text: selection == null
+          ? '配置尚未确认'
+          : [
+              selection.enabled ? 'Agent 可选择子任务模型' : '使用默认或继承模型',
+              if (selection.routes.isEmpty) '未选择授权模型',
+              for (final route in selection.routes)
+                '${route.provider} / ${route.model}',
+            ].join('\n'),
     );
   }
 
@@ -513,9 +507,9 @@ class _SubagentModelSettingsPageState extends State<SubagentModelSettingsPage>
               title: catalogError != null ? '模型目录暂未更新' : '部分提供方暂不可用',
               subtitle: '已保存的选择仍然保留，可以移除。',
             ),
-            PocketDisclosure(
+            TextDocumentRow(
               title: '查看原因',
-              child: SelectableText([?catalogError, ...failures].join('\n')),
+              text: [?catalogError, ...failures].join('\n'),
             ),
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),

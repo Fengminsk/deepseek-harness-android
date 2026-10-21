@@ -221,45 +221,67 @@ class _ModelDraftGuardState extends State<ModelDraftGuard> {
       if (result != null || !widget.hasEdits()) {
         close(result);
       } else {
+        // Close the keyboard and selection toolbar before exposing the review.
+        FocusManager.instance.primaryFocus?.unfocus();
         setState(() => review = true);
       }
     },
     child: Stack(
       children: [
-        widget.child,
+        ExcludeSemantics(
+          excluding: review,
+          child: ExcludeFocus(
+            excluding: review,
+            child: IgnorePointer(ignoring: review, child: widget.child),
+          ),
+        ),
         if (review) ...[
           const Positioned.fill(
             child: ModalBarrier(color: Color(0x55000000), dismissible: false),
           ),
           Positioned.fill(
-            child: SafeArea(
-              child: Center(
-                child: Padding(
-                  padding: const EdgeInsets.all(24),
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 460),
-                    child: PocketSection(
-                      title: '保留当前编辑？',
-                      children: [
-                        const ModelNotice('当前内容尚未保存。继续编辑会保留所有输入。'),
-                        Padding(
-                          padding: const EdgeInsets.all(16),
-                          child: Wrap(
-                            spacing: 8,
-                            runSpacing: 8,
-                            children: [
-                              PocketButton(
-                                onPressed: () => setState(() => review = false),
-                                child: const Text('继续编辑'),
-                              ),
-                              PocketButton.tonal(
-                                onPressed: close,
-                                child: const Text('放弃编辑并返回'),
-                              ),
-                            ],
+            child: Padding(
+              padding: MediaQuery.viewInsetsOf(context),
+              child: SafeArea(
+                child: LayoutBuilder(
+                  builder: (context, constraints) => SingleChildScrollView(
+                    key: const Key('draft-review-scroll'),
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(
+                        minHeight: constraints.maxHeight,
+                      ),
+                      child: Center(
+                        child: Padding(
+                          padding: const EdgeInsets.all(24),
+                          child: ConstrainedBox(
+                            constraints: const BoxConstraints(maxWidth: 460),
+                            child: PocketSection(
+                              title: '保留当前编辑？',
+                              children: [
+                                const ModelNotice('当前内容尚未保存。继续编辑会保留所有输入。'),
+                                Padding(
+                                  padding: const EdgeInsets.all(16),
+                                  child: Wrap(
+                                    spacing: 8,
+                                    runSpacing: 8,
+                                    children: [
+                                      PocketButton(
+                                        onPressed: () =>
+                                            setState(() => review = false),
+                                        child: const Text('继续编辑'),
+                                      ),
+                                      PocketButton.tonal(
+                                        onPressed: widget.busy ? null : close,
+                                        child: const Text('放弃编辑并返回'),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
                         ),
-                      ],
+                      ),
                     ),
                   ),
                 ),

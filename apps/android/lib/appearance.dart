@@ -177,17 +177,16 @@ class AppearancePage extends StatelessWidget {
                 padding: const EdgeInsets.all(14),
                 child: SizedBox(
                   width: double.infinity,
-                  child: IgnorePointer(
-                    ignoring: settings.saving,
-                    child: SegmentedControl<ThemeMode>(
-                      segments: const [
-                        (ThemeMode.system, '系统'),
-                        (ThemeMode.light, '浅色'),
-                        (ThemeMode.dark, '深色'),
-                      ],
-                      value: settings.mode,
-                      onChanged: (value) => update({'mode': value.name}),
-                    ),
+                  child: SegmentedControl<ThemeMode>(
+                    segments: const [
+                      (ThemeMode.system, '系统'),
+                      (ThemeMode.light, '浅色'),
+                      (ThemeMode.dark, '深色'),
+                    ],
+                    value: settings.mode,
+                    onChanged: settings.saving
+                        ? null
+                        : (value) => update({'mode': value.name}),
                   ),
                 ),
               ),
@@ -254,24 +253,17 @@ class AppearancePage extends StatelessWidget {
               ),
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
-                child: Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    for (final entry in const {
-                      ColorStyle.vivid: '鲜明',
-                      ColorStyle.tinted: '染色',
-                      ColorStyle.soft: '柔和',
-                      ColorStyle.monochrome: '单色',
-                    }.entries)
-                      PocketChoice(
-                        label: Text(entry.value),
-                        selected: settings.style == entry.key,
-                        onSelected: settings.saving
-                            ? null
-                            : (_) => update({'style': entry.key.name}),
-                      ),
+                child: SegmentedControl<ColorStyle>(
+                  segments: const [
+                    (ColorStyle.vivid, '鲜明'),
+                    (ColorStyle.tinted, '染色'),
+                    (ColorStyle.soft, '柔和'),
+                    (ColorStyle.monochrome, '单色'),
                   ],
+                  value: settings.style,
+                  onChanged: settings.saving
+                      ? null
+                      : (value) => update({'style': value.name}),
                 ),
               ),
             ],
@@ -283,17 +275,16 @@ class AppearancePage extends StatelessWidget {
                 padding: const EdgeInsets.all(16),
                 child: SizedBox(
                   width: double.infinity,
-                  child: IgnorePointer(
-                    ignoring: settings.saving,
-                    child: SegmentedControl<String>(
-                      segments: const [
-                        ('none', '关闭'),
-                        ('standard', '标准'),
-                        ('ultra', '精细'),
-                      ],
-                      value: settings.glass,
-                      onChanged: (value) => update({'glass': value}),
-                    ),
+                  child: SegmentedControl<String>(
+                    segments: const [
+                      ('none', '关闭'),
+                      ('standard', '标准'),
+                      ('ultra', '精细'),
+                    ],
+                    value: settings.glass,
+                    onChanged: settings.saving
+                        ? null
+                        : (value) => update({'glass': value}),
                   ),
                 ),
               ),

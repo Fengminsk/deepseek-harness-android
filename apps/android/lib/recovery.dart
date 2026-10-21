@@ -5,6 +5,7 @@ import 'package:material_ui/material_ui.dart';
 import 'recovery_data.dart';
 import 'runtime.dart';
 import 'ui.dart';
+import 'text_document_page.dart';
 
 Widget _message(String text) => Padding(
   padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
@@ -347,7 +348,7 @@ class _RecoveryDocumentPageState extends State<RecoveryDocumentPage> {
   final input = TextEditingController();
   RecoveryDocument? document;
   Json? log;
-  bool loading = false, showLatest = false;
+  bool loading = false;
   String? error;
   bool get isLog => widget.fileId == 'runtime-log';
   RecoveryController get controller => widget.controller;
@@ -367,7 +368,12 @@ class _RecoveryDocumentPageState extends State<RecoveryDocumentPage> {
     try {
       if (isLog) {
         final value = await controller.read(widget.fileId);
-        if (mounted) setState(() => log = value);
+        if (mounted) {
+          setState(() {
+            log = value;
+            input.text = value['text'] as String;
+          });
+        }
       } else {
         final value = await controller.open(widget.fileId);
         if (mounted) {
@@ -414,12 +420,10 @@ class _RecoveryDocumentPageState extends State<RecoveryDocumentPage> {
                   ),
                   Padding(
                     padding: const EdgeInsets.all(20),
-                    child: SelectableText(
-                      log!['text'] as String,
-                      style: const TextStyle(
-                        fontFamily: 'monospace',
-                        fontSize: 13,
-                      ),
+                    child: TextDocumentField(
+                      controller: input,
+                      readOnly: true,
+                      monospace: true,
                     ),
                   ),
                 ],
@@ -464,11 +468,6 @@ class _RecoveryDocumentPageState extends State<RecoveryDocumentPage> {
                         runSpacing: 12,
                         children: [
                           PocketButton.tonal(
-                            onPressed: () =>
-                                setState(() => showLatest = !showLatest),
-                            child: Text(showLatest ? '收起最新文件' : '查看最新文件'),
-                          ),
-                          PocketButton.tonal(
                             onPressed:
                                 controller.working || doc.requestId != null
                                 ? null
@@ -478,28 +477,19 @@ class _RecoveryDocumentPageState extends State<RecoveryDocumentPage> {
                         ],
                       ),
                     ),
-                    if (showLatest)
-                      Padding(
-                        padding: const EdgeInsets.all(20),
-                        child: SelectableText(doc.observed!['text'] as String),
-                      ),
+                    TextDocumentRow(
+                      title: '查看最新文件',
+                      text: doc.observed!['text'] as String,
+                      monospace: true,
+                    ),
                   ],
                   Padding(
                     padding: const EdgeInsets.all(20),
-                    child: TextField(
-                      key: const ValueKey('recovery-document-input'),
+                    child: TextDocumentField(
+                      fieldKey: const ValueKey('recovery-document-input'),
                       controller: input,
                       readOnly: !controller.maintenance,
-                      autocorrect: false,
-                      enableSuggestions: false,
-                      minLines: 12,
-                      maxLines: null,
-                      keyboardType: TextInputType.multiline,
-                      style: const TextStyle(
-                        fontFamily: 'monospace',
-                        fontSize: 13,
-                      ),
-                      decoration: const InputDecoration(labelText: '配置原文'),
+                      monospace: true,
                       onChanged: (_) => setState(() {}),
                     ),
                   ),
@@ -609,15 +599,10 @@ class _RecoveryBackupPageState extends State<RecoveryBackupPage> {
                       : '此备份表示原文件不存在。恢复将移除当前配置文件，并先备份当前版本。',
                 ),
                 if (backup!['exists'] == true)
-                  Padding(
-                    padding: const EdgeInsets.all(20),
-                    child: SelectableText(
-                      backup!['text'] as String,
-                      style: const TextStyle(
-                        fontFamily: 'monospace',
-                        fontSize: 13,
-                      ),
-                    ),
+                  TextDocumentRow(
+                    title: '查看备份内容',
+                    text: backup!['text'] as String,
+                    monospace: true,
                   ),
                 if (confirming)
                   _message(

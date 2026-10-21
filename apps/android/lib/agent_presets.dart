@@ -7,6 +7,7 @@ import 'agent_presets_data.dart';
 import 'models.dart' show ModelDraftGuard;
 import 'runtime.dart';
 import 'ui.dart';
+import 'text_document_page.dart';
 
 /// Native management and selection over the original DSH preset registry.
 class AgentPresetsPage extends StatefulWidget {
@@ -469,10 +470,7 @@ class _AgentPresetDocumentPageState extends State<AgentPresetDocumentPage> {
         if (widget.option.broken != null)
           PocketSection(
             children: [
-              PocketDisclosure(
-                title: '暂不可用的原因',
-                child: SelectableText(widget.option.broken!),
-              ),
+              TextDocumentRow(title: '暂不可用的原因', text: widget.option.broken!),
             ],
           ),
         if (loading) const _PresetNotice('正在读取声明…'),
@@ -484,26 +482,39 @@ class _AgentPresetDocumentPageState extends State<AgentPresetDocumentPage> {
           ),
         ],
         if (notice != null) _PresetNotice(notice!),
-        if (document != null)
-          PocketSection(
-            title: '声明内容 · 只读',
-            children: [
-              Padding(
-                padding: const EdgeInsets.all(20),
-                child: SelectableText(
-                  document!.content,
-                  key: const ValueKey('agent-preset-document-content'),
-                  style: const TextStyle(
-                    fontFamily: 'monospace',
-                    fontSize: 13,
-                    height: 1.6,
-                  ),
-                ),
-              ),
-            ],
-          ),
+        if (document != null) _PresetDocumentText(text: document!.content),
       ],
     ),
+  );
+}
+
+class _PresetDocumentText extends StatefulWidget {
+  const _PresetDocumentText({required this.text});
+  final String text;
+  @override
+  State<_PresetDocumentText> createState() => _PresetDocumentTextState();
+}
+
+class _PresetDocumentTextState extends State<_PresetDocumentText> {
+  late final input = TextEditingController(text: widget.text);
+  @override
+  void didUpdateWidget(_PresetDocumentText oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.text != widget.text) input.text = widget.text;
+  }
+
+  @override
+  void dispose() {
+    input.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => TextDocumentField(
+    fieldKey: const ValueKey('agent-preset-document-content'),
+    controller: input,
+    readOnly: true,
+    monospace: true,
   );
 }
 

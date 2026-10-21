@@ -127,6 +127,252 @@ Future<void> openEditor(WidgetTester tester, SettingsRuntime runtime) async {
 }
 
 void main() {
+  testWidgets(
+    'JSON subpage holds the original revision while remote updates remain reviewable',
+    (tester) async {
+      final runtime = SettingsRuntime(fixture());
+      await openEditor(tester, runtime);
+      await tester.tap(find.text('高级 JSON 编辑'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const Key('configuration-json')),
+        '{"baseURL":"https://local.example","maxTokens":1024}',
+      );
+      runtime.remote['revision'] = 2;
+      runtime.remote['value']['maxTokens'] = 2048;
+      await runtime.refreshForms();
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('完成编辑'));
+      await tester.pumpAndSettle();
+      expect(runtime.writes, isEmpty);
+      expect(find.text('版本比较'), findsOneWidget);
+      expect(find.textContaining('编辑基于版本 1，当前版本 2'), findsOneWidget);
+      expect(
+        tester.widget<TextField>(field('baseURL')).controller!.text,
+        'https://local.example',
+      );
+      expect(
+        tester.widget<TextField>(field('maxTokens')).controller!.text,
+        '1024',
+      );
+      expect(find.text('请先比较并合并'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'long text edits return to the parent draft without writing or truncating',
+    (tester) async {
+      final descriptor = fixture();
+      final original = List.filled(10, 'prompt line').join('\n');
+      descriptor['value']['baseURL'] = original;
+      final runtime = SettingsRuntime(descriptor);
+      await openEditor(tester, runtime);
+      await tester.tap(find.text('编辑服务地址'));
+      await tester.pumpAndSettle();
+      expect(find.byType(TextField), findsOneWidget);
+      final next = '$original\nnew line';
+      await tester.enterText(find.byType(TextField), next);
+      await tester.tap(find.byTooltip('完成编辑'));
+      await tester.pumpAndSettle();
+      expect(runtime.writes, isEmpty);
+      expect(find.text('${next.length} 个字符'), findsOneWidget);
+      await tester.tap(find.text('编辑服务地址'));
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller!.text,
+        next,
+      );
+    },
+  );
+
+  testWidgets(
+    'JSON protection rejects before leaving the text buffer and normal edits remain staged only',
+    (tester) async {
+      final runtime = SettingsRuntime(fixture());
+      await openEditor(tester, runtime);
+      await tester.tap(find.text('高级 JSON 编辑'));
+      await tester.pumpAndSettle();
+      final text = find.byKey(const Key('configuration-json'));
+      const protected =
+          '{"baseURL":"https://draft.example","maxTokens":1024,"apiKey":"never-save-this"}';
+      await tester.enterText(text, protected);
+      await tester.tap(find.byTooltip('完成编辑'));
+      await tester.pumpAndSettle();
+      expect(tester.widget<TextField>(text).controller!.text, protected);
+      expect(find.textContaining('输入已保留'), findsWidgets);
+      expect(runtime.writes, isEmpty);
+      await tester.enterText(
+        text,
+        '{"baseURL":"https://draft.example","maxTokens":1024}',
+      );
+      await tester.tap(find.byTooltip('完成编辑'));
+      await tester.pumpAndSettle();
+      expect(text, findsNothing);
+      expect(runtime.writes, isEmpty);
+      expect(
+        tester.widget<TextField>(field('baseURL')).controller!.text,
+        'https://draft.example',
+      );
+      await tester.tap(find.text('保存并应用'));
+      await tester.pumpAndSettle();
+      expect(runtime.writes, hasLength(1));
+      expect(runtime.remote['value']['baseURL'], 'https://draft.example');
+      expect(runtime.remote['value'].containsKey('apiKey'), isFalse);
+    },
+  );
+
+  Json structuredFixture() => {
+    'ns': 'llm-example',
+    'revision': 1,
+    'user': {},
+    'secrets': [],
+    'value': {
+      'models': [
+        {'id': 'before', 'unknown': true},
+      ],
+      'other': 'original',
+    },
+    'schema': {
+      'type': 'object',
+      'dict': {
+        'models': {
+          'type': 'array',
+          'inner': {
+            'type': 'object',
+            'dict': {
+              'id': {
+                'type': 'string',
+                'meta': {'required': true},
+              },
+            },
+          },
+        },
+        'other': {'type': 'string'},
+      },
+    },
+  };
+
+  Future<void> openModelField(WidgetTester tester) async {
+    await tester.tap(find.text('编辑模型目录'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('structure-item:0')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('structure-entry:id')));
+    await tester.pumpAndSettle();
+  }
+
+  Future<void> finishStructure(WidgetTester tester) async {
+    for (var i = 0; i < 3; i++) {
+      await tester.tap(find.text('完成编辑'));
+      await tester.pumpAndSettle();
+    }
+  }
+
+  testWidgets(
+    'structured arrays stage once and save one atomic field with revision',
+    (tester) async {
+      final runtime = SettingsRuntime(structuredFixture());
+      await openEditor(tester, runtime);
+      await openModelField(tester);
+      await tester.enterText(find.byKey(const Key('structure-value')), 'after');
+      await finishStructure(tester);
+      expect(runtime.writes, isEmpty);
+      await tester.tap(find.text('保存并应用'));
+      await tester.pumpAndSettle();
+      expect(runtime.writes.single['expectedRevision'], 1);
+      expect(runtime.writes.single['ops'], [
+        {
+          'op': 'set',
+          'path': ['models'],
+          'value': [
+            {'id': 'after', 'unknown': true},
+          ],
+        },
+      ]);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'remote update during structured draft becomes atomic conflict and keeps input',
+    (tester) async {
+      final runtime = SettingsRuntime(structuredFixture());
+      await openEditor(tester, runtime);
+      await openModelField(tester);
+      await tester.enterText(find.byKey(const Key('structure-value')), 'local');
+      runtime.remote['revision'] = 2;
+      runtime.remote['value']['models'] = [
+        {'id': 'remote'},
+      ];
+      await runtime.refreshForms();
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<TextField>(find.byKey(const Key('structure-value')))
+            .controller!
+            .text,
+        'local',
+      );
+      await finishStructure(tester);
+      expect(find.text('编辑基于版本 1，当前版本 2。'), findsOneWidget);
+      expect(find.textContaining('local'), findsWidgets);
+      final save = find.ancestor(
+        of: find.text('请先比较并合并'),
+        matching: find.byType(PocketButton),
+      );
+      expect(tester.widget<PocketButton>(save).onPressed, isNull);
+      expect(runtime.writes, isEmpty);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets('discarded child leaves outer configuration unchanged', (
+    tester,
+  ) async {
+    final runtime = SettingsRuntime(structuredFixture());
+    await openEditor(tester, runtime);
+    await openModelField(tester);
+    await tester.enterText(find.byKey(const Key('structure-value')), 'discard');
+    await tester.tap(find.byTooltip('返回'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('放弃编辑并返回'));
+    await tester.pumpAndSettle();
+    for (var i = 0; i < 2; i++) {
+      await tester.tap(find.byTooltip('返回'));
+      await tester.pumpAndSettle();
+    }
+    await tester.tap(find.text('保存并应用'));
+    await tester.pumpAndSettle();
+    expect(runtime.writes, isEmpty);
+    expect(runtime.remote['value']['models'], [
+      {'id': 'before', 'unknown': true},
+    ]);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+    'secret-bearing array never exposes structured replacement controls',
+    (tester) async {
+      final data = structuredFixture();
+      data['schema']['dict']['models']['inner']['dict']['token'] = {
+        'type': 'string',
+        'meta': {'role': 'secret'},
+      };
+      data['secrets'] = [
+        {
+          'path': ['models', '0', 'token'],
+          'set': true,
+        },
+      ];
+      final runtime = SettingsRuntime(data);
+      await openEditor(tester, runtime);
+      expect(find.text('编辑模型目录'), findsNothing);
+      expect(find.textContaining('此结构包含凭据'), findsOneWidget);
+      expect(runtime.writes, isEmpty);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
   test('bundled model and Web settings have distinct functional titles', () {
     const expected = {
       'llm-deepseek': 'DeepSeek API 密钥接入',
@@ -313,6 +559,8 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.textContaining('https://old.example'), findsOneWidget);
       expect(find.textContaining('此次保存没有覆盖新版本'), findsNothing);
+      await tester.tap(find.byTooltip('返回'));
+      await tester.pumpAndSettle();
       await tester.ensureVisible(find.text('继续核对'));
       await tester.tap(find.text('继续核对'));
       await tester.pumpAndSettle();
@@ -383,6 +631,9 @@ void main() {
       await tester.tap(find.byTooltip('返回'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('放弃编辑并返回'));
+      await tester.pumpAndSettle();
+      expect(find.text('高级 JSON 编辑'), findsOneWidget);
+      await tester.tap(find.byTooltip('返回'));
       await tester.pumpAndSettle();
       expect(find.text('open editor'), findsOneWidget);
       expect(runtime.writes, isEmpty);

@@ -8,6 +8,7 @@ import 'configuration_editor.dart' show configurationNamespaceTitle;
 import 'metadata_artwork.dart';
 import 'flclash/switch.dart';
 import 'runtime.dart';
+import 'text_document_page.dart';
 import 'ui.dart';
 
 const _pretty = JsonEncoder.withIndent('  ');
@@ -52,7 +53,7 @@ class _ConfigurationTransferPageState extends State<ConfigurationTransferPage> {
   Json? plan, exported;
   String? reviewedText, fileOperation, message, receipt;
   bool busy = false, uncertain = false, replaceReview = false;
-  bool leaving = false, leaveReview = false, editingSource = false;
+  bool leaving = false, leaveReview = false;
   bool sourceDirty = false, planReleased = false;
   _Stage stage = _Stage.home;
 
@@ -346,95 +347,65 @@ class _ConfigurationTransferPageState extends State<ConfigurationTransferPage> {
 
   Widget scope() => PocketSection(
     children: [
-      _TransferFold(
+      TextDocumentRow(
         title: '迁移范围',
         subtitle: '普通运行设置，不含账号与密钥',
         icon: Icons.info_outline_rounded,
-        child: note(_scope),
+        text: _scope,
       ),
     ],
   );
 
   Widget omissions(dynamic value, String title) {
     final items = (value as List? ?? const []).cast<Json>();
-    return _TransferFold(
+    return TextDocumentRow(
       title: title,
       subtitle: '${items.length} 项',
       icon: Icons.info_outline_rounded,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          for (final item in items)
-            PocketRow(
-              icon: Icons.remove_circle_outline_rounded,
-              title: configurationNamespaceTitle('${item['ns'] ?? ''}'),
-              subtitle: '${item['reason']}',
-            ),
-          _TransferFold(
-            title: '高级详情',
-            icon: Icons.code_rounded,
-            child: note(
-              items
-                  .map((item) {
-                    final path = (item['path'] as List? ?? const []).join(
-                      ' › ',
-                    );
-                    return '${item['ns'] ?? '全局'}${path.isEmpty ? '' : ' · $path'}：${item['reason']}';
-                  })
-                  .join('\n'),
-            ),
-          ),
-        ],
-      ),
+      text: items.isEmpty
+          ? '没有此类项目。'
+          : items
+                .map((item) {
+                  final path = (item['path'] as List? ?? const []).join(' › ');
+                  return '${configurationNamespaceTitle('${item['ns'] ?? '全局'}')}'
+                      '${path.isEmpty ? '' : ' · $path'}\n${item['reason']}';
+                })
+                .join('\n\n'),
     );
   }
 
-  Widget sourceEditor() => Padding(
-    padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
-    child: TextField(
-      key: const Key('configuration-transfer-source'),
-      controller: source,
-      enabled: !busy,
-      minLines: 5,
-      maxLines: 12,
-      autocorrect: false,
-      enableSuggestions: false,
-      decoration: const InputDecoration(
-        labelText: 'JSON 内容',
-        hintText: '粘贴运行设置 JSON',
+  Future<void> editSource() async {
+    if (busy) return;
+    final result = await Navigator.of(context).push<String>(
+      PocketRoute(
+        builder: (_) => TextDocumentPage(
+          title: '导入内容',
+          text: source.text,
+          readOnly: false,
+          monospace: true,
+          fieldKey: const Key('configuration-transfer-source'),
+          helperText: '完成后返回导入草稿，预览不会写入设置。',
+        ),
       ),
-      onChanged: (_) => setState(() => sourceDirty = true),
-    ),
-  );
+    );
+    if (mounted && result != null && !busy) {
+      setState(() {
+        sourceDirty = sourceDirty || result != source.text;
+        source.text = result;
+      });
+    }
+  }
 
-  Widget sectionDetails(Json section, {required bool exporting}) {
+  String sectionText(Json section, {required bool exporting}) {
     final values = (section[exporting ? 'fields' : 'changes'] as List)
         .cast<Json>();
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        if (section['message'] != null) note('${section['message']}'),
-        for (final value in values)
-          _TransferFold(
-            title: (value['path'] as List).join(' › '),
-            icon: Icons.tune_rounded,
-            child: note(
-              exporting
-                  ? _pretty.convert(value['value'])
-                  : '当前：${value.containsKey('before') ? _pretty.convert(value['before']) : '未设置'}'
-                        '\n导入：${_pretty.convert(value['after'])}',
-            ),
-          ),
-        _TransferFold(
-          title: '高级详情',
-          icon: Icons.code_rounded,
-          child: note(
-            '配置标识：${section['ns']}'
-            '${section['revision'] == null ? '' : '\n读取版本：${section['revision']}'}',
-          ),
-        ),
-      ],
-    );
+    return [
+      if (section['message'] != null) '${section['message']}',
+      for (final value in values)
+        '${(value['path'] as List).join(' › ')}\n'
+            '${exporting ? _pretty.convert(value['value']) : '当前：${value.containsKey('before') ? _pretty.convert(value['before']) : '未设置'}\n导入：${_pretty.convert(value['after'])}'}',
+      '配置标识：${section['ns']}${section['revision'] == null ? '' : '\n读取版本：${section['revision']}'}',
+    ].join('\n\n');
   }
 
   Widget selection(Json section) {
@@ -493,7 +464,7 @@ class _ConfigurationTransferPageState extends State<ConfigurationTransferPage> {
         : '选择要导入的设置',
     children: [
       for (final section in rows)
-        _TransferFold(
+        PocketRow(
           key: ValueKey('${stage.name}-${section['ns']}'),
           leading: result
               ? null
@@ -515,8 +486,25 @@ class _ConfigurationTransferPageState extends State<ConfigurationTransferPage> {
                     ? Icons.check_circle_outline_rounded
                     : Icons.info_outline_rounded
               : Icons.tune_rounded,
-          action: exporting || result ? null : selection(section),
-          child: sectionDetails(section, exporting: exporting),
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (!exporting && !result) ...[
+                selection(section),
+                const SizedBox(width: 10),
+              ],
+              const Icon(Icons.chevron_right_rounded, size: 20),
+            ],
+          ),
+          onTap: () => Navigator.of(context).push<void>(
+            PocketRoute(
+              builder: (_) => TextDocumentPage(
+                title: configurationNamespaceTitle('${section['ns']}'),
+                text: sectionText(section, exporting: exporting),
+                monospace: true,
+              ),
+            ),
+          ),
         ),
     ],
   );
@@ -565,15 +553,13 @@ class _ConfigurationTransferPageState extends State<ConfigurationTransferPage> {
               ? pick
               : () => setState(() => replaceReview = true),
         ),
-        _TransferFold(
-          key: ValueKey('source-$editingSource'),
+        PocketRow(
           title: source.text.isEmpty ? '粘贴 JSON 内容' : '查看或编辑 JSON',
           subtitle: source.text == reviewedText || reviewedText == null
               ? '高级编辑'
               : '草稿已修改，需要重新预览',
           icon: Icons.code_rounded,
-          initiallyExpanded: editingSource,
-          child: sourceEditor(),
+          onTap: busy ? null : editSource,
         ),
         if (replaceReview) ...[
           note('选择新文件会替换当前草稿。取消文件选择时，原草稿保留。'),
@@ -641,17 +627,15 @@ class _ConfigurationTransferPageState extends State<ConfigurationTransferPage> {
           onTap: busy
               ? null
               : () {
-                  editingSource = true;
                   go(_Stage.input);
+                  unawaited(editSource());
                 },
         ),
-        _TransferFold(
+        TextDocumentRow(
           title: '应用规则',
           subtitle: '保留未选设置，提交时检查版本',
           icon: Icons.info_outline_rounded,
-          child: note(
-            '按本机配置规则校验，逐项检查版本并执行。遇到冲突或未确认结果时停止后续写入；已应用项不会自动回滚，未完成项不会自动重试。文件未提供的字段保持原样。',
-          ),
+          text: '按本机配置规则校验，逐项检查版本并执行。遇到冲突或未确认结果时停止后续写入；已应用项不会自动回滚，未完成项不会自动重试。文件未提供的字段保持原样。',
         ),
         omissions(plan!['excluded'], '未包含的设置'),
       ],
@@ -688,8 +672,8 @@ class _ConfigurationTransferPageState extends State<ConfigurationTransferPage> {
           onTap: busy
               ? null
               : () {
-                  editingSource = true;
                   go(_Stage.input);
+                  unawaited(editSource());
                 },
         ),
       ],
@@ -710,11 +694,11 @@ class _ConfigurationTransferPageState extends State<ConfigurationTransferPage> {
       divided: true,
       children: [
         omissions(exported!['excluded'], '未包含的设置'),
-        _TransferFold(
+        TextDocumentRow(
           title: '迁移范围',
           subtitle: '普通运行设置，不是全量备份',
           icon: Icons.info_outline_rounded,
-          child: note(_scope),
+          text: _scope,
         ),
         PocketRow(
           icon: Icons.refresh_rounded,
@@ -822,82 +806,4 @@ class _ConfigurationTransferPageState extends State<ConfigurationTransferPage> {
       ],
     ),
   );
-}
-
-/// Flat disclosure inside a shared settings group; no additional card surface.
-class _TransferFold extends StatefulWidget {
-  const _TransferFold({
-    super.key,
-    required this.title,
-    required this.icon,
-    this.leading,
-    required this.child,
-    this.subtitle,
-    this.action,
-    this.initiallyExpanded = false,
-  });
-  final String title;
-  final String? subtitle;
-  final IconData icon;
-  final Widget? leading;
-  final Widget child;
-  final Widget? action;
-  final bool initiallyExpanded;
-
-  @override
-  State<_TransferFold> createState() => _TransferFoldState();
-}
-
-class _TransferFoldState extends State<_TransferFold> {
-  late bool expanded = widget.initiallyExpanded;
-
-  @override
-  Widget build(BuildContext context) {
-    final disableAnimations = MediaQuery.disableAnimationsOf(context);
-    final duration = disableAnimations
-        ? Duration.zero
-        : const Duration(milliseconds: 220);
-    final content = expanded
-        ? widget.child
-        : const SizedBox(width: double.infinity);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Semantics(
-          expanded: expanded,
-          child: PocketRow(
-            icon: widget.icon,
-            leading: widget.leading,
-            title: widget.title,
-            subtitle: widget.subtitle,
-            onTap: () => setState(() => expanded = !expanded),
-            trailing: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (widget.action != null) ...[
-                  widget.action!,
-                  const SizedBox(width: 10),
-                ],
-                AnimatedRotation(
-                  turns: expanded ? .25 : 0,
-                  duration: duration,
-                  curve: Curves.easeOutCubic,
-                  child: const Icon(Icons.chevron_right_rounded, size: 20),
-                ),
-              ],
-            ),
-          ),
-        ),
-        if (disableAnimations)
-          content
-        else
-          AnimatedSize(
-            duration: duration,
-            curve: Curves.easeOutCubic,
-            alignment: Alignment.topCenter,
-            child: content,
-          ),
-      ],
-    );
-  }
 }

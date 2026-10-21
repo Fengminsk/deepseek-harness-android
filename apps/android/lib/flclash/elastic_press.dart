@@ -108,6 +108,7 @@ class ElasticPress extends StatefulWidget {
     this.maxGrowth = _maxPressGrowth,
     this.maxPull,
     this.panelOf,
+    this.preserveAspectRatio = false,
     required this.child,
   });
 
@@ -126,6 +127,10 @@ class ElasticPress extends StatefulWidget {
 
   /// Where the pressed panel lies in this box, when the box is larger.
   final Rect Function(RenderBox box)? panelOf;
+
+  /// Circular controls keep equal paint scales while retaining drag and spring.
+  /// Groups and text capsules retain FlClash's directional stretch by default.
+  final bool preserveAspectRatio;
 
   final Widget child;
 
@@ -299,6 +304,7 @@ class _ElasticPressState extends State<ElasticPress>
           pull: Offset(_pullX.value, _pullY.value),
           maxGrowth: widget.maxGrowth,
           panelOf: widget.panelOf,
+          preserveAspectRatio: widget.preserveAspectRatio,
           child: child,
         ),
         child: widget.child,
@@ -354,6 +360,7 @@ class _PressTransform extends SingleChildRenderObjectWidget {
     required this.pull,
     this.maxGrowth = _maxPressGrowth,
     this.panelOf,
+    this.preserveAspectRatio = false,
     super.child,
   });
 
@@ -361,11 +368,13 @@ class _PressTransform extends SingleChildRenderObjectWidget {
   final Offset pull;
   final double maxGrowth;
   final Rect Function(RenderBox box)? panelOf;
+  final bool preserveAspectRatio;
 
   @override
   RenderObject createRenderObject(BuildContext context) {
     return _RenderPressTransform(lift: lift, pull: pull)
       ..maxGrowth = maxGrowth
+      ..preserveAspectRatio = preserveAspectRatio
       ..panelOf = panelOf;
   }
 
@@ -378,20 +387,25 @@ class _PressTransform extends SingleChildRenderObjectWidget {
       ..lift = lift
       ..pull = pull
       ..maxGrowth = maxGrowth
+      ..preserveAspectRatio = preserveAspectRatio
       ..panelOf = panelOf;
   }
 }
 
 class _RenderPressTransform extends RenderProxyBox {
-  _RenderPressTransform({
-    required this._lift,
-    required this._pull,
-  });
+  _RenderPressTransform({required this._lift, required this._pull});
 
   double _lift;
   Offset _pull;
   double maxGrowth = _maxPressGrowth;
   Rect Function(RenderBox box)? panelOf;
+  bool _preserveAspectRatio = false;
+
+  set preserveAspectRatio(bool value) {
+    if (value == _preserveAspectRatio) return;
+    _preserveAspectRatio = value;
+    markNeedsPaint();
+  }
 
   set lift(double value) {
     if (value == _lift) {
@@ -413,8 +427,11 @@ class _RenderPressTransform extends RenderProxyBox {
     final panel = panelOf?.call(this) ?? Offset.zero & size;
     final swell =
         1 + _lift * math.min(_pressGrowth * 2, maxGrowth / panel.longestSide);
-    final scaleX = swell * (1 + _pull.dx.abs() / panel.width * _pullStretch);
-    final scaleY = swell * (1 + _pull.dy.abs() / panel.height * _pullStretch);
+    final pullScaleX = 1 + _pull.dx.abs() / panel.width * _pullStretch;
+    final pullScaleY = 1 + _pull.dy.abs() / panel.height * _pullStretch;
+    final uniformPull = math.max(pullScaleX, pullScaleY);
+    final scaleX = swell * (_preserveAspectRatio ? uniformPull : pullScaleX);
+    final scaleY = swell * (_preserveAspectRatio ? uniformPull : pullScaleY);
     final center = panel.center;
     return Matrix4.diagonal3Values(scaleX, scaleY, 1)..setTranslationRaw(
       center.dx * (1 - scaleX) + _pull.dx,

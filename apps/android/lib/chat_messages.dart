@@ -8,6 +8,7 @@ import 'package:material_ui/material_ui.dart';
 import 'chat_message_actions.dart';
 import 'chat_projection.dart';
 import 'chat_tool_groups.dart';
+import 'entry_motion.dart';
 import 'runtime.dart';
 import 'tool_activity.dart';
 import 'ui.dart';
@@ -57,6 +58,7 @@ class ChatTimeline extends StatefulWidget {
     this.footer,
     this.onOpenLink,
     this.onOpenAttachment,
+    this.onOpenImage,
     super.key,
   });
   final String sessionId;
@@ -66,6 +68,7 @@ class ChatTimeline extends StatefulWidget {
   final Widget? footer;
   final ChatOpenLink? onOpenLink;
   final ChatOpenAttachment? onOpenAttachment;
+  final ChatOpenAttachment? onOpenImage;
 
   @override
   State<ChatTimeline> createState() => _ChatTimelineState();
@@ -263,6 +266,7 @@ class _ChatTimelineState extends State<ChatTimeline>
                 : _sources[row.tool!.identity],
             onOpenLink: widget.onOpenLink,
             onOpenAttachment: widget.onOpenAttachment,
+            onOpenImage: widget.onOpenImage,
           );
           final group = item.parent;
           final motion = group == null ? null : _motions[group.key];
@@ -270,7 +274,7 @@ class _ChatTimelineState extends State<ChatTimeline>
           if (motion != null) {
             final animation = CurveTween(curve: Curves.easeOutCubic)
                 .animate(motion);
-            child = FadeTransition(opacity: animation, child: child);
+            child = PocketBlurTransition(animation: animation, child: child);
             // Shrinking thousands of row extents would make them all visible
             // in the last frame. Large groups fade while retaining lazy layout.
             if (group!.entries.length <= 20) {
@@ -298,6 +302,7 @@ class _ChatTimelineState extends State<ChatTimeline>
                   storageId: '$sessionId:$liveKey',
                   onOpenLink: widget.onOpenLink,
                   onOpenAttachment: widget.onOpenAttachment,
+                  onOpenImage: widget.onOpenImage,
                 ),
                 if (stream.unconfirmed)
                   Text('回复状态待确认', style: Theme.of(context).textTheme.labelSmall)
@@ -352,6 +357,7 @@ class ChatMessage extends StatelessWidget {
     required this.storageId,
     this.onOpenLink,
     this.onOpenAttachment,
+    this.onOpenImage,
     this.activitySource,
     super.key,
   });
@@ -359,6 +365,7 @@ class ChatMessage extends StatelessWidget {
   final String storageId;
   final ChatOpenLink? onOpenLink;
   final ChatOpenAttachment? onOpenAttachment;
+  final ChatOpenAttachment? onOpenImage;
   final ValueListenable<ToolActivity?>? activitySource;
 
   @override
@@ -406,6 +413,7 @@ class ChatMessage extends StatelessWidget {
                       opaqueText: true,
                       onOpenLink: onOpenLink,
                       onOpenAttachment: onOpenAttachment,
+                      onOpenImage: onOpenImage,
                     ),
             ),
           ),
@@ -473,6 +481,7 @@ class ChatMessage extends StatelessWidget {
                     selectable: false,
                     onOpenLink: onOpenLink,
                     onOpenAttachment: onOpenAttachment,
+                    onOpenImage: onOpenImage,
                   ),
                   if (entry.interrupted)
                     Text(
@@ -497,6 +506,7 @@ class ChatContent extends StatelessWidget {
     this.selectable = true,
     this.onOpenLink,
     this.onOpenAttachment,
+    this.onOpenImage,
     super.key,
   });
   final List<dynamic> content;
@@ -505,6 +515,7 @@ class ChatContent extends StatelessWidget {
   final bool selectable;
   final ChatOpenLink? onOpenLink;
   final ChatOpenAttachment? onOpenAttachment;
+  final ChatOpenAttachment? onOpenImage;
 
   @override
   Widget build(BuildContext context) => Column(
@@ -558,7 +569,9 @@ class ChatContent extends StatelessWidget {
           key: key,
           attachment: attachment is Json ? attachment : block,
           image: block['type'] == 'image',
-          onOpen: onOpenAttachment,
+          onOpen: block['type'] == 'image'
+              ? (onOpenImage ?? onOpenAttachment)
+              : onOpenAttachment,
         );
       case 'tool-call':
         // The durable tool/call/result projection owns this protocol block.
@@ -818,13 +831,7 @@ class _ChatDisclosureState extends State<_ChatDisclosure> {
             curve: Curves.easeOutCubic,
             alignment: Alignment.topCenter,
             child: expanded
-                ? TweenAnimationBuilder<double>(
-                    tween: Tween(begin: 0, end: 1),
-                    duration: MediaQuery.disableAnimationsOf(context)
-                        ? Duration.zero
-                        : const Duration(milliseconds: 180),
-                    builder: (_, opacity, child) =>
-                        Opacity(opacity: opacity, child: child),
+                ? PocketReveal(
                     child: Padding(
                       padding: const EdgeInsets.fromLTRB(18, 0, 18, 18),
                       child: widget.body(context),

@@ -147,7 +147,12 @@ void main() {
     expect(runtime.restarts, 1);
     expect(find.text('本地服务已重新就绪。'), findsNothing);
     expect(find.text('确认重启'), findsNothing);
+    await tester.ensureVisible(find.text('查看错误详情'));
+    await tester.tap(find.text('查看错误详情'));
+    await tester.pumpAndSettle();
     expect(find.text('Node startup failed'), findsOneWidget);
+    await tester.tap(find.byTooltip('返回'));
+    await tester.pumpAndSettle();
     runtime.readyNow();
     await tester.pumpAndSettle();
     expect(find.text('本地服务已重新就绪。'), findsOneWidget);

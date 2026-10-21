@@ -4,9 +4,12 @@ import 'dart:convert';
 import 'package:material_ui/material_ui.dart';
 
 import 'configuration_edits.dart';
+import 'configuration_fields.dart';
+import 'configuration_fields_schema.dart';
 import 'configuration_state.dart';
 import 'models.dart' show ModelDraftGuard;
 import 'runtime.dart';
+import 'text_document_page.dart';
 import 'ui.dart';
 
 const _encoder = JsonEncoder.withIndent('  ');
@@ -39,20 +42,18 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
     return parts.isEmpty ? null : parts.join('\n');
   }
 
-  late final editor = TextEditingController(text: _encoder.convert(draft));
-  Json? observedDraft, observedAccepted;
+  Json? observedAccepted;
   ConfigurationReset? resetReview;
   final choices = <String, bool>{};
   final invalidFields = <String, String>{};
   final fieldVersions = <String, int>{};
-  bool advanced = false, rawDirty = false;
+  bool structureOpen = false;
   int generation = 0;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    observedDraft = draft;
     observedAccepted = accepted;
     state.addListener(runtimeChanged);
     unawaited(state.start());
@@ -61,17 +62,11 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
   void runtimeChanged() {
     if (!mounted) return;
     setState(() {
-      if (!identical(observedDraft, draft)) {
-        observedDraft = draft;
-        if (!rawDirty) editor.text = _encoder.convert(draft);
-      }
       if (!identical(observedAccepted, accepted)) {
         observedAccepted = accepted;
-        if (!rawDirty) {
-          invalidFields.clear();
-          fieldVersions.clear();
-          generation++;
-        }
+        invalidFields.clear();
+        fieldVersions.clear();
+        generation++;
         choices.clear();
         resetReview = null;
       }
@@ -83,14 +78,10 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
     if (lifecycle == AppLifecycleState.resumed) unawaited(state.refresh());
   }
 
-  Json readDraft() => advanced
-      ? configurationObject(jsonDecode(editor.text))
-      : cloneConfiguration(draft);
+  Json readDraft() => cloneConfiguration(draft);
 
   void replaceDraft(Json value) {
     state.replaceDraft(value, holdExternalDraft: false);
-    rawDirty = false;
-    editor.text = _encoder.convert(value);
     invalidFields.clear();
     fieldVersions.clear();
     generation++;
@@ -101,16 +92,105 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
     setState(() => resetReview = null);
   }
 
-  void toggleEditor() {
+  Future<void> editStructure(List<String> path, Json node, String title) async {
+    if (!state.canEdit ||
+        ConfigurationProtection(accepted).containsSecret(path)) {
+      return;
+    }
+    // Freeze the editing baseline while the route owns its detached draft. A
+    // remote update must become a reviewable conflict, never silently replace it.
+    structureOpen = true;
+    state.holdDraft(true);
     try {
-      final value = readDraft();
+      final result = await Navigator.of(context).push<ConfigurationFieldResult>(
+        PocketRoute(
+          builder: (_) => ConfigurationStructurePage(
+            field: ConfigurationFieldSchema(
+              ConfigurationSchema(accepted['schema']),
+              node,
+            ),
+            title: title,
+            value: configurationValueAt(draft, path),
+            labels: _fieldLabels,
+            editingState: state,
+            canEdit: () => state.canEdit,
+          ),
+        ),
+      );
+      if (!mounted) return;
+      if (result != null && state.canEdit) edit(path, result.value);
+    } finally {
+      structureOpen = false;
+      if (mounted) {
+        state.holdDraft(structureOpen || invalidFields.isNotEmpty);
+      }
+    }
+  }
+
+  Future<void> toggleEditor() async {
+    if (!state.canEdit || invalidFields.isNotEmpty) return;
+    structureOpen = true;
+    state.holdDraft(true);
+    try {
+      final result = await Navigator.of(context).push<String>(
+        PocketRoute(
+          builder: (_) => TextDocumentPage(
+            title: 'JSON 配置',
+            text: _encoder.convert(readDraft()),
+            readOnly: false,
+            monospace: true,
+            fieldKey: const Key('configuration-json'),
+            editingState: state,
+            canEdit: () => state.canEdit,
+            helperText: '完成后返回配置草稿，仍需在配置页保存。已有凭据保持原保护。',
+            validate: (text) {
+              try {
+                final candidate = configurationObject(jsonDecode(text));
+                configurationEdits(accepted, candidate);
+                return null;
+              } catch (error) {
+                return '配置无法应用到草稿：$error\n输入已保留。';
+              }
+            },
+          ),
+        ),
+      );
+      if (!mounted || result == null || !state.canEdit) return;
+      replaceDraft(configurationObject(jsonDecode(result)));
       setState(() {
-        if (advanced) replaceDraft(value);
-        advanced = !advanced;
         localMessage = null;
       });
     } catch (error) {
-      setState(() => localMessage = 'JSON 无法解析：$error\n输入已保留。');
+      if (mounted) setState(() => localMessage = '未能更新草稿：$error');
+    } finally {
+      structureOpen = false;
+      if (mounted) state.holdDraft(invalidFields.isNotEmpty);
+    }
+  }
+
+  Future<void> editText(List<String> path, String title, String value) async {
+    if (!state.canEdit ||
+        ConfigurationProtection(accepted).containsSecret(path)) {
+      return;
+    }
+    structureOpen = true;
+    state.holdDraft(true);
+    try {
+      final result = await Navigator.of(context).push<String>(
+        PocketRoute(
+          builder: (_) => TextDocumentPage(
+            title: title,
+            text: value,
+            readOnly: false,
+            editingState: state,
+            canEdit: () => state.canEdit,
+          ),
+        ),
+      );
+      if (mounted && result != null && state.canEdit) edit(path, result);
+    } finally {
+      structureOpen = false;
+      if (mounted) state.holdDraft(invalidFields.isNotEmpty);
     }
   }
 
@@ -127,8 +207,6 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
       if (!mounted) return;
       if (saved || !state.uncertain && !state.hasDraft) {
         setState(() {
-          rawDirty = false;
-          editor.text = _encoder.convert(draft);
           invalidFields.clear();
           fieldVersions.clear();
           generation++;
@@ -215,9 +293,10 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
                   ],
                 ),
               ],
-              PocketDisclosure(
+              TextDocumentRow(
                 title: '查看最新配置（凭据已隐藏）',
-                child: SelectableText(_encoder.convert(latest!['value'])),
+                text: _encoder.convert(latest!['value']),
+                monospace: true,
               ),
               PocketButton.tonal(
                 onPressed:
@@ -242,13 +321,12 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     state.removeListener(runtimeChanged);
     state.dispose();
-    editor.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) => ModelDraftGuard(
-    hasEdits: () => state.hasDraft || rawDirty || invalidFields.isNotEmpty,
+    hasEdits: () => state.hasDraft || invalidFields.isNotEmpty,
     busy: busy,
     child: PocketScaffold(
       title: Text(configurationNamespaceTitle('${accepted['ns']}')),
@@ -289,7 +367,7 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
                   onPressed: !state.canEdit || invalidFields.isNotEmpty
                       ? null
                       : toggleEditor,
-                  child: Text(advanced ? '返回表单' : '高级 JSON 编辑'),
+                  child: const Text('高级 JSON 编辑'),
                 ),
               ],
             ),
@@ -311,18 +389,12 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
                   child: Text('尚未取得有效回执。请继续核对，或确认采用当前配置并放弃此次草稿。'),
                 ),
                 if (latest != null)
-                  PocketDisclosure(
+                  TextDocumentRow(
                     title: '查看当前配置（凭据已隐藏）',
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          '版本 ${latest!['revision']}${state.fresh ? '' : ' · 等待重新核对'}',
-                        ),
-                        const SizedBox(height: 12),
-                        SelectableText(_encoder.convert(latest!['value'])),
-                      ],
-                    ),
+                    subtitle:
+                        '版本 ${latest!['revision']}${state.fresh ? '' : ' · 等待重新核对'}',
+                    text: _encoder.convert(latest!['value']),
+                    monospace: true,
                   ),
                 PocketRow(
                   icon: Icons.sync_rounded,
@@ -335,9 +407,7 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
                   onTap: !state.fresh || busy
                       ? null
                       : () {
-                          rawDirty = false;
                           state.discardDraft();
-                          editor.text = _encoder.convert(draft);
                           setState(() => localMessage = null);
                         },
                 ),
@@ -345,84 +415,44 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
             )
           else if (latest != null)
             comparison(),
-          if (advanced)
-            PocketSection(
-              title: '高级参数',
-              children: [
-                Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: TextField(
-                    key: const Key('configuration-json'),
-                    controller: editor,
-                    enabled: state.canEdit,
-                    minLines: 12,
-                    maxLines: 24,
-                    autocorrect: false,
-                    enableSuggestions: false,
-                    style: const TextStyle(
-                      fontFamily: 'monospace',
-                      fontSize: 13,
-                    ),
-                    onChanged: (_) {
-                      rawDirty = editor.text != _encoder.convert(draft);
-                      state.holdDraft(rawDirty || invalidFields.isNotEmpty);
-                      setState(() => resetReview = null);
-                    },
-                    decoration: const InputDecoration(
-                      labelText: 'JSON 配置',
-                      helperText: '移除普通字段表示将该字段恢复为继承值或默认值。',
-                      helperMaxLines: 3,
-                    ),
-                  ),
-                ),
-              ],
-            )
-          else
-            ConfigurationFields(
-              key: ValueKey(generation),
-              descriptor: accepted,
-              value: draft,
-              enabled: state.canEdit,
-              fieldVersions: fieldVersions,
-              onEdit: (path, value) => edit(path, value),
-              onRemove: (path) {
-                edit(path, null, remove: true);
-                setState(() {
-                  final id = jsonEncode(path);
-                  fieldVersions[id] = (fieldVersions[id] ?? 0) + 1;
+          ConfigurationFields(
+            key: ValueKey(generation),
+            descriptor: accepted,
+            value: draft,
+            enabled: state.canEdit,
+            fieldVersions: fieldVersions,
+            onEdit: (path, value) => edit(path, value),
+            onRemove: (path) {
+              edit(path, null, remove: true);
+              setState(() {
+                final id = jsonEncode(path);
+                fieldVersions[id] = (fieldVersions[id] ?? 0) + 1;
+                invalidFields.remove(id);
+                state.holdDraft(structureOpen || invalidFields.isNotEmpty);
+              });
+            },
+            onError: (path, error) {
+              setState(() {
+                final id = jsonEncode(path);
+                if (error == null) {
                   invalidFields.remove(id);
-                  state.holdDraft(rawDirty || invalidFields.isNotEmpty);
-                });
-              },
-              onError: (path, error) {
-                setState(() {
-                  final id = jsonEncode(path);
-                  if (error == null) {
-                    invalidFields.remove(id);
-                  } else {
-                    invalidFields[id] = error;
-                  }
-                  state.holdDraft(rawDirty || invalidFields.isNotEmpty);
-                });
-              },
-              onAdvanced: toggleEditor,
-            ),
+                } else {
+                  invalidFields[id] = error;
+                }
+                state.holdDraft(structureOpen || invalidFields.isNotEmpty);
+              });
+            },
+            onAdvanced: toggleEditor,
+            onStructure: editStructure,
+            onText: editText,
+          ),
           PocketSection(
             title: '版本与默认值',
             children: [
-              PocketDisclosure(
+              TextDocumentRow(
                 title: '配置说明',
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text('只保存修改的字段。已有凭据及包含凭据的内容会保留，请在凭据入口单独管理。'),
-                    const SizedBox(height: 12),
-                    Text(
-                      '${accepted['ns']} · 版本 ${accepted['revision']}',
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
-                  ],
-                ),
+                text:
+                    '只保存修改的字段。已有凭据及包含凭据的内容会保留，请在凭据入口单独管理。\n\n${accepted['ns']} · 版本 ${accepted['revision']}',
               ),
               PocketRow(
                 icon: Icons.sync_rounded,
@@ -531,6 +561,17 @@ String configurationNamespaceTitle(String namespace) {
 }
 
 const _fieldLabels = {
+  'id': '标识',
+  'name': '名称',
+  'displayName': '显示名称',
+  'providers': '模型提供方',
+  'indexes': '插件源',
+  'args': '启动参数',
+  'env': '环境变量',
+  'headers': '请求头',
+  'input': '输入类型',
+  'compat': '兼容选项',
+  'thinkingBudgets': '思考预算',
   'baseURL': '服务地址',
   'provider': '模型提供方',
   'model': '模型 ID',
@@ -589,6 +630,10 @@ List<_Field> _fields(ConfigurationSchema schema) {
       return;
     }
     if (type == 'object') {
+      if (path.isNotEmpty && !schema.containsSecret(node)) {
+        fields.add(_Field(path, node, 'structure'));
+        return;
+      }
       for (final entry in (node['dict'] as Map? ?? {}).entries) {
         visit(schema.resolve(entry.value), [
           ...path,
@@ -621,6 +666,8 @@ List<_Field> _fields(ConfigurationSchema schema) {
           node,
           const ['string', 'number', 'boolean'].contains(type)
               ? type as String
+              : const ['array', 'dict'].contains(type)
+              ? 'structure'
               : 'complex',
         ),
       );
@@ -646,6 +693,8 @@ class ConfigurationFields extends StatelessWidget {
     required this.onRemove,
     required this.onError,
     required this.onAdvanced,
+    required this.onStructure,
+    required this.onText,
   });
   final Json descriptor, value;
   final bool enabled;
@@ -654,6 +703,8 @@ class ConfigurationFields extends StatelessWidget {
   final void Function(List<String>) onRemove;
   final void Function(List<String>, String?) onError;
   final VoidCallback onAdvanced;
+  final void Function(List<String>, Json, String) onStructure;
+  final void Function(List<String>, String, String) onText;
 
   @override
   Widget build(BuildContext context) {
@@ -696,6 +747,17 @@ class ConfigurationFields extends StatelessWidget {
                   onRemove: () => onRemove(field.path),
                   onError: (error) => onError(field.path, error),
                   onAdvanced: onAdvanced,
+                  onStructure: () =>
+                      onStructure(field.path, field.node, field.title),
+                  onText: () => onText(
+                    field.path,
+                    field.title,
+                    configurationHasValue(
+                          configurationValueAt(value, field.path),
+                        )
+                        ? '${configurationValueAt(value, field.path)}'
+                        : '',
+                  ),
                 ),
               ),
             ],
@@ -717,18 +779,25 @@ class _ConfigurationField extends StatefulWidget {
     required this.onRemove,
     required this.onError,
     required this.onAdvanced,
+    required this.onStructure,
+    required this.onText,
   });
   final _Field field;
   final dynamic value;
   final bool configured, protected, enabled;
   final ValueChanged<dynamic> onChanged;
-  final VoidCallback onRemove, onAdvanced;
+  final VoidCallback onRemove, onAdvanced, onStructure, onText;
   final ValueChanged<String?> onError;
   @override
   State<_ConfigurationField> createState() => _ConfigurationFieldState();
 }
 
 class _ConfigurationFieldState extends State<_ConfigurationField> {
+  late final longText =
+      widget.field.kind == 'string' &&
+      (widget.field.node['meta']?['role'] == 'textarea' ||
+          '${widget.value}'.contains('\n') ||
+          '${widget.value}'.length > 120);
   late final controller = TextEditingController(
     text: configurationHasValue(widget.value) ? '${widget.value}' : '',
   );
@@ -782,6 +851,15 @@ class _ConfigurationFieldState extends State<_ConfigurationField> {
                 ? (widget.configured ? '已配置；值已隐藏，请在凭据入口管理。' : '未配置；请在凭据入口管理。')
                 : '此结构包含凭据，保留现有值。通用编辑器不能替换或重排。',
           )
+        else if (field.kind == 'structure')
+          PocketRow(
+            icon: field.node['type'] == 'array'
+                ? Icons.format_list_bulleted_rounded
+                : Icons.tune_rounded,
+            title: '编辑${field.title}',
+            subtitle: configurationStructureSummary(widget.value),
+            onTap: widget.enabled ? widget.onStructure : null,
+          )
         else if (field.kind == 'boolean')
           PocketSwitchRow(
             contentPadding: EdgeInsets.zero,
@@ -806,6 +884,13 @@ class _ConfigurationFieldState extends State<_ConfigurationField> {
                 ),
             ],
           )
+        else if (longText)
+          PocketRow(
+            icon: Icons.notes_rounded,
+            title: '编辑${field.title}',
+            subtitle: exists ? '${'${widget.value}'.length} 个字符' : '尚未设置',
+            onTap: widget.enabled ? widget.onText : null,
+          )
         else if (field.kind == 'string' || field.kind == 'number')
           TextField(
             key: ValueKey('configuration-field:${jsonEncode(field.path)}'),
@@ -829,9 +914,10 @@ class _ConfigurationFieldState extends State<_ConfigurationField> {
             onChanged: changed,
           )
         else ...[
-          SelectableText(
-            exists ? _encoder.convert(widget.value) : '尚未设置',
-            style: const TextStyle(fontSize: 12),
+          TextDocumentRow(
+            title: '查看${field.title}',
+            text: exists ? _encoder.convert(widget.value) : '尚未设置',
+            monospace: true,
           ),
           PocketButton.tonal(
             onPressed: widget.enabled ? widget.onAdvanced : null,

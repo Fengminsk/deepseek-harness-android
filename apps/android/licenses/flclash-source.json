@@ -19,6 +19,7 @@
     "lib/ui/navigation_dock.dart (ElasticPress and spring/paint helpers)",
     "lib/ui/button.dart (TonalButtonTheme and TonalButtonGroup)",
     "lib/ui/segmented_control.dart",
+    "lib/ui/sheet_header.dart (FloatingHeader and eased edge surface fade)",
     "lib/ui/input.dart (FilledInputTheme)",
     "lib/views/dashboard/widgets/card.dart (DashboardSwitch and mobile DashboardCard)",
     "lib/views/dashboard/style.dart (DashboardShadows and mobile card metrics)"
@@ -29,6 +30,9 @@
     "Constructor syntax follows the Dart 3.13 initializing-formals lint.",
     "Standalone component extraction removes FlClash application-state and desktop dependencies; dashboard colors resolve to the same ColorScheme roles.",
     "ElasticPress and segmented controls respect reduced motion; segmented height grows with text scale.",
+    "Segmented controls add controlled horizontal drag previews and release-only selection, keyboard/semantic actions, and the existing liquid-glass lens during press; cancelled gestures do not commit.",
+    "Standalone round icon controls retain circular geometry under drag; text capsules keep directional press stretch.",
+    "FloatingHeader's scrim also supports bottom-edge chrome on pages and the chat sidebar, without shrinking the scroll viewport.",
     "LiquidGlass exposes its existing analytic corner renderer through borderRadius so long composer panels avoid 64-ray outline interpolation artifacts.",
     "Popup glyphs and text use the app's existing Flutter icons and platform fonts; menu rows accept DSH section labels, descriptions and in-place retry actions.",
     "Popup routes and carried presses honor reduced motion, and cancelled row gestures release their pointer even after winning the gesture arena."

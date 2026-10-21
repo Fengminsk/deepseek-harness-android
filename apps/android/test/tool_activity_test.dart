@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' as ui;
 
+import 'package:dsh_android/entry_motion.dart';
 import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/tool_activity.dart';
 import 'package:dsh_android/ui.dart';
@@ -54,7 +55,7 @@ Finder row(ToolActivity activity) =>
 Finder copy(String title) => find.byKey(ValueKey('tool-copy:$title'));
 
 Future<void> tapVisible(WidgetTester tester, Finder target) async {
-  await tester.ensureVisible(target);
+  await Scrollable.ensureVisible(tester.element(target), alignment: .5);
   await tester.pumpAndSettle();
   await tester.tap(target);
   await tester.pumpAndSettle();
@@ -101,14 +102,20 @@ void main() {
         callEvent(
           1,
           args: {
-            'command': 'pwd; printf "BACKGROUND_OK\\n"',
+            'command':
+                'pwd; printf "BACKGROUND_OK\\n"\n'
+                'node --version\n'
+                'printf "本地任务执行记录\\n"',
             'workdir': '/data/user/0/app/files/workspace',
           },
         ),
         resultEvent(
           2,
           text: jsonEncode({
-            'stdout': '/data/user/0/app/files/workspace\nBACKGROUND_OK\n',
+            'stdout':
+                '/data/user/0/app/files/workspace\nBACKGROUND_OK\n'
+                'v24.22.0\n本地任务执行记录\n'
+                '${List.generate(40, (i) => '步骤 ${i + 1}：等待后台任务完成').join('\n')}\n',
             'stderr': '',
             'exitCode': 0,
             'timedOut': false,
@@ -131,20 +138,130 @@ void main() {
         ),
       );
       await open(tester, activity);
-      await tester.runAsync(() async {
+      Future<void> capture(String suffix) => tester.runAsync(() async {
         final image =
             await (captureKey.currentContext!.findRenderObject()!
                     as RenderRepaintBoundary)
                 .toImage(pixelRatio: 2);
         final bytes = (await image.toByteData(format: ui.ImageByteFormat.png))!;
         await Directory(directory).create(recursive: true);
-        await File('$directory/tool-details-${brightness.name}.png')
+        await File('$directory/tool-details-${brightness.name}$suffix.png')
             .writeAsBytes(bytes.buffer.asUint8List());
         image.dispose();
       });
+      await capture('');
+      final list = tester.widget<ListView>(
+        find.byKey(ValueKey('tool-details-body:${activity.identity}')),
+      );
+      list.controller!.jumpTo(200);
+      await tester.pumpAndSettle();
+      await capture('-scrolled');
       await close(tester);
     }
   });
+
+  testWidgets(
+    'long logs scroll behind the floating header without a clipped viewport',
+    (tester) async {
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final command = List.generate(
+        40,
+        (i) => 'printf "line ${i + 1}\\n"',
+      ).join('\n');
+      final projection = ToolActivityProjection()
+        ..reconcile([
+          callEvent(1, args: {'command': command}),
+          resultEvent(
+            2,
+            text: jsonEncode({'stdout': 'complete', 'exitCode': 0}),
+          ),
+        ]);
+      final activity = projection.byAnchorSeq[1]!;
+      await tester.pumpWidget(host(activity));
+      await open(tester, activity);
+      tester
+          .widget<DraggableScrollableSheet>(
+            find.byType(DraggableScrollableSheet),
+          )
+          .controller!
+          .jumpTo(.96);
+      await tester.pumpAndSettle();
+      final listFinder = find.byKey(
+        ValueKey('tool-details-body:${activity.identity}'),
+      );
+      final list = tester.widget<ListView>(listFinder);
+      final header = find.byKey(const Key('tool-details-header'));
+      final title = find.byKey(const Key('tool-details-title'));
+      final closeButton = find.byKey(const Key('tool-details-close'));
+      final commandText = find.byWidgetPredicate(
+        (widget) => widget is SelectableText && widget.data == command,
+      );
+      final bounds = tester.getRect(sheet);
+      expect(tester.getRect(listFinder), bounds);
+      expect(tester.getCenter(title).dx, closeTo(bounds.center.dx, .01));
+      final closeBounds = tester.getRect(closeButton);
+      final paintedButton = tester.getRect(
+        find.descendant(of: closeButton, matching: find.byType(IconButton)),
+      );
+      expect(paintedButton.width, closeTo(paintedButton.height, .01));
+      final headerBounds = tester.getRect(header);
+      list.controller!.jumpTo(
+        tester.getTopLeft(commandText).dy - headerBounds.center.dy,
+      );
+      await tester.pumpAndSettle();
+      expect(tester.getRect(commandText).overlaps(headerBounds), isTrue);
+      expect(tester.getRect(listFinder), bounds);
+      expect(tester.getRect(header), headerBounds);
+      expect(tester.getRect(closeButton), closeBounds);
+      // The scrim and centered title do not steal scrolling from the log below.
+      final before = list.controller!.offset;
+      await tester.dragFrom(tester.getCenter(title), const Offset(0, -80));
+      await tester.pumpAndSettle();
+      expect(list.controller!.offset, greaterThan(before));
+      expect(tester.getRect(header), headerBounds);
+      expect(tester.takeException(), isNull);
+      await close(tester);
+    },
+  );
+
+  testWidgets(
+    'detail entrance uses route motion and live updates do not replay it',
+    (tester) async {
+      final events = <Json>[callEvent(1)];
+      final projection = ToolActivityProjection()..reconcile(events);
+      final activity = projection.byAnchorSeq[1]!;
+      final source = ValueNotifier<ToolActivity?>(activity);
+      addTearDown(source.dispose);
+      await tester.pumpWidget(host(activity, source: source));
+      await tester.pumpAndSettle();
+      await tester.tap(row(activity));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 70));
+      final transition = find.ancestor(
+        of: sheet,
+        matching: find.byType(PocketBlurTransition),
+      );
+      expect(transition, findsOneWidget);
+      expect(
+        tester.widget<PocketBlurTransition>(transition).animation.value,
+        inExclusiveRange(0, 1),
+      );
+      await tester.pumpAndSettle();
+      events.add(resultEvent(2, text: 'new result after the entrance'));
+      projection.reconcile(events);
+      source.value = projection.byAnchorSeq[1]!;
+      await tester.pump();
+      expect(find.text('new result after the entrance'), findsOneWidget);
+      expect(
+        tester.widget<PocketBlurTransition>(transition).animation.value,
+        1,
+      );
+      await close(tester);
+    },
+  );
 
   testWidgets(
     'compact row opens a live detail sheet without expanding the transcript',

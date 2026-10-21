@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:material_ui/material_ui.dart';
 
+import 'image_preview.dart';
 import 'runtime.dart';
 import 'ui.dart';
 
@@ -21,12 +22,7 @@ class AttachmentDraft {
   String? error;
   bool removing = false;
 
-  bool get isImage => const {
-    'image/png',
-    'image/jpeg',
-    'image/webp',
-    'image/gif',
-  }.contains(mediaType);
+  bool get isImage => pocketImageMediaTypes.contains(mediaType);
 }
 
 /// One composer draft owns each native selection, including while a different chat is open.
@@ -115,13 +111,32 @@ class AttachmentDrafts extends ChangeNotifier {
     item.status = 'uploading';
     item.error = null;
     _changed();
+    final generation = runtime.connectionGeneration;
     try {
       final receipt = await runtime.call('attachments.prepare', {
         'sessionId': sessionId,
         'id': item.id,
       }) as Json;
       if (!_contains(sessionId, item) || item.removing) return;
-      if (receipt['id'] != item.id || receipt['receiptId'] is! String) {
+      if (generation != runtime.connectionGeneration) {
+        throw StateError('运行服务已重启，请重试准备此附件后发送。');
+      }
+      final kind = receipt['kind'];
+      final validImage =
+          kind == 'image' &&
+          item.isImage &&
+          receipt['mediaType'] == item.mediaType;
+      final validFile =
+          kind == 'file' &&
+          !item.isImage &&
+          receipt['receiptId'] is String &&
+          (receipt['receiptId'] as String).isNotEmpty;
+      if (receipt['id'] != item.id ||
+          (!validImage && !validFile) ||
+          receipt['name'] is! String ||
+          (receipt['name'] as String).isEmpty ||
+          receipt['bytes'] is! int ||
+          (receipt['bytes'] as int) < (item.isImage ? 1 : 0)) {
         throw const FormatException('未能确认附件上传，请重试');
       }
       item.name = receipt['name'] as String;
@@ -297,6 +312,19 @@ class PocketAttachmentRail extends StatelessWidget {
                                     item.error!,
                                     maxLines: 4,
                                     overflow: TextOverflow.ellipsis,
+                                  ),
+                                if (item.isImage &&
+                                    item.status == 'ready' &&
+                                    !item.removing)
+                                  PocketButton.tonal(
+                                    onPressed: () => showPocketDraftImage(
+                                      context,
+                                      drafts.runtime,
+                                      sessionId,
+                                      item.id,
+                                      item.name,
+                                    ),
+                                    child: const Text('查看图片'),
                                   ),
                                 if (item.status == 'error' && !item.removing)
                                   PocketButton.tonal(

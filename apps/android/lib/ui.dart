@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/rendering.dart';
 
@@ -13,12 +15,15 @@ import 'flclash/button.dart';
 import 'flclash/input.dart';
 import 'flclash/switch.dart';
 import 'flclash/dashboard_card.dart';
+import 'flclash/floating_header.dart';
+import 'entry_motion.dart';
 
 export 'flclash/liquid_glass.dart';
 export 'flclash/shape.dart';
 export 'flclash/elastic_press.dart';
 export 'flclash/button.dart';
 export 'flclash/segmented_control.dart';
+export 'flclash/floating_header.dart';
 
 ThemeData pocketTheme(
   Brightness brightness, {
@@ -61,7 +66,7 @@ class PocketRoute<T> extends PageRoute<T>
   ) => Semantics(
     scopesRoute: true,
     explicitChildNodes: true,
-    child: builder(context),
+    child: PocketReveal(child: builder(context)),
   );
 }
 
@@ -83,7 +88,7 @@ class GlassSurface extends StatelessWidget {
         );
 }
 
-/// FlClash's actual pane, press spring, rubber-band drag and paint transform.
+/// A round FlClash control, including while its press follows a dragging finger.
 class GlassButton extends StatelessWidget {
   const GlassButton({
     required this.icon,
@@ -91,29 +96,87 @@ class GlassButton extends StatelessWidget {
     this.onPressed,
     this.solid = false,
     super.key,
-  });
-  final IconData icon;
+  }) : iconChild = null;
+  const GlassButton.custom({
+    required Widget icon,
+    required this.label,
+    this.onPressed,
+    this.solid = false,
+    super.key,
+  }) : icon = null,
+       iconChild = icon;
+  final IconData? icon;
+  final Widget? iconChild;
   final String label;
   final VoidCallback? onPressed;
   final bool solid;
   @override
-  Widget build(BuildContext context) => TonalButtonTheme(
-    glass: !solid && LiquidGlassScope.of(context),
-    child: ElasticPress(
-      enabled: onPressed != null,
-      child: IconButton(
-        tooltip: label,
-        onPressed: onPressed,
-        style: solid
-            ? IconButton.styleFrom(
-                backgroundColor: Theme.of(context).colorScheme.primary,
-                foregroundColor: Theme.of(context).colorScheme.onPrimary,
-              )
-            : null,
-        icon: Icon(icon),
+  Widget build(BuildContext context) {
+    final glass = !solid && LiquidGlassScope.of(context);
+    final colors = Theme.of(context).colorScheme;
+    return _CircleControl(
+      builder: (side) => TonalButtonTheme(
+        glass: glass,
+        child: ElasticPress(
+          enabled: onPressed != null,
+          preserveAspectRatio: true,
+          child: IconButton(
+            tooltip: label,
+            onPressed: onPressed,
+            style:
+                IconButton.styleFrom(
+                  fixedSize: Size.square(side),
+                  minimumSize: Size.square(side),
+                  maximumSize: Size.square(side),
+                  iconSize: math.min(24, side),
+                  padding: EdgeInsets.zero,
+                  shape: const CircleBorder(),
+                  backgroundColor: solid ? colors.primary : null,
+                  foregroundColor: solid ? colors.onPrimary : null,
+                ).copyWith(
+                  backgroundBuilder: glass
+                      ? (context, states, child) => LiquidGlass(
+                          style: LiquidGlassStyle.regular(colors),
+                          pressed: states.contains(WidgetState.pressed),
+                          clipper: const _CircleControlClipper(),
+                          child: child,
+                        )
+                      : null,
+                ),
+            icon: iconChild ?? Icon(icon),
+          ),
+        ),
       ),
-    ),
+    );
+  }
+}
+
+/// Loosen rectangular parent minimums, then fit one square within the available
+/// space. Text scaling and tooltip length cannot change the painted geometry.
+class _CircleControl extends StatelessWidget {
+  const _CircleControl({required this.builder});
+  final Widget Function(double side) builder;
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, limits) {
+      final side = math.min(44.0, math.min(limits.maxWidth, limits.maxHeight));
+      return PocketReveal(
+        child: Align(
+          widthFactor: 1,
+          heightFactor: 1,
+          child: SizedBox.square(dimension: side, child: builder(side)),
+        ),
+      );
+    },
   );
+}
+
+class _CircleControlClipper extends CustomClipper<Path> {
+  const _CircleControlClipper();
+  @override
+  Path getClip(Size size) => Path()..addOval(Offset.zero & size);
+  @override
+  bool shouldReclip(_CircleControlClipper oldClipper) => false;
 }
 
 class PocketButton extends StatelessWidget {
@@ -134,24 +197,26 @@ class PocketButton extends StatelessWidget {
   final Widget child;
   final bool tonal, glass;
   @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.symmetric(vertical: 5),
-    child: TonalButtonTheme(
-      glass: glass && LiquidGlassScope.of(context),
-      child: ElasticPress(
-        enabled: onPressed != null,
-        child: Builder(
-          builder: (context) => FilledButton(
-            onPressed: onPressed,
-            style: tonal
-                ? FilledButton.styleFrom(
-                    backgroundColor: context.raisedSurfaceLevel.colorOf(
-                      Theme.of(context).colorScheme,
-                    ),
-                    foregroundColor: Theme.of(context).colorScheme.onSurface,
-                  )
-                : null,
-            child: child,
+  Widget build(BuildContext context) => PocketReveal(
+    child: Padding(
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      child: TonalButtonTheme(
+        glass: glass && LiquidGlassScope.of(context),
+        child: ElasticPress(
+          enabled: onPressed != null,
+          child: Builder(
+            builder: (context) => FilledButton(
+              onPressed: onPressed,
+              style: tonal
+                  ? FilledButton.styleFrom(
+                      backgroundColor: context.raisedSurfaceLevel.colorOf(
+                        Theme.of(context).colorScheme,
+                      ),
+                      foregroundColor: Theme.of(context).colorScheme.onSurface,
+                    )
+                  : null,
+              child: child,
+            ),
           ),
         ),
       ),
@@ -188,145 +253,136 @@ class _PocketScaffoldState extends State<PocketScaffold> {
     final headerHeight = (MediaQuery.textScalerOf(context).scale(17) * 2.4)
         .clamp(52.0, 120.0);
     final top = safe.top + headerHeight + 20;
-    return Scaffold(
-      key: widget.scaffoldKey,
-      drawer: widget.drawer == null
-          ? null
-          : FilledInputTheme(borderRadius: AppRadius.xl, child: widget.drawer!),
-      resizeToAvoidBottomInset: true,
-      body: FilledInputTheme(
-        borderRadius: AppRadius.xl,
-        contentPadding: const EdgeInsets.symmetric(
-          horizontal: 20,
-          vertical: 17,
-        ),
-        child: _PocketInsets(
-          top: top + 12,
-          bottom: widget.bottom == null ? safe.bottom + 28 : bottomHeight + 20,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              widget.body,
-              Positioned(
-                top: 0,
-                left: 0,
-                right: 0,
-                height: top + 28,
-                child: IgnorePointer(
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        begin: Alignment.topCenter,
-                        end: Alignment.bottomCenter,
-                        stops: const [0, .35, 1],
-                        colors: [
-                          color,
-                          color.withValues(alpha: .9),
-                          color.withValues(alpha: 0),
-                        ],
-                      ),
+    return PocketReveal(
+      child: Scaffold(
+        key: widget.scaffoldKey,
+        drawer: widget.drawer == null
+            ? null
+            : FilledInputTheme(
+                borderRadius: AppRadius.xl,
+                child: widget.drawer!,
+              ),
+        resizeToAvoidBottomInset: true,
+        body: FilledInputTheme(
+          borderRadius: AppRadius.xl,
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 20,
+            vertical: 17,
+          ),
+          child: _PocketInsets(
+            top: top + 12,
+            bottom: widget.bottom == null
+                ? safe.bottom + 28
+                : bottomHeight + 20,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                widget.body,
+                Positioned(
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  height: top + 28,
+                  child: FloatingEdgeScrim(
+                    backgroundColor: color,
+                    overhang: 28,
+                  ),
+                ),
+                Positioned(
+                  top: safe.top + 10,
+                  left: 18,
+                  right: 18,
+                  child: SizedBox(
+                    height: headerHeight,
+                    child: Stack(
+                      alignment: Alignment.center,
+                      children: [
+                        Positioned.fill(
+                          left: 60,
+                          right: 60,
+                          child: Center(
+                            child: DefaultTextStyle(
+                              style: AppTextStyle.headline.of(
+                                context,
+                                emphasized: true,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              textAlign: TextAlign.center,
+                              child: widget.title,
+                            ),
+                          ),
+                        ),
+                        Row(
+                          children: [
+                            widget.leading ??
+                                GlassButton(
+                                  icon: Icons.arrow_back_rounded,
+                                  label: '返回',
+                                  onPressed: Navigator.canPop(context)
+                                      ? () => Navigator.maybePop(context)
+                                      : null,
+                                ),
+                            const Spacer(),
+                            widget.trailing ?? const SizedBox(width: 44),
+                          ],
+                        ),
+                      ],
                     ),
                   ),
                 ),
-              ),
-              Positioned(
-                top: safe.top + 10,
-                left: 18,
-                right: 18,
-                child: SizedBox(
-                  height: headerHeight,
-                  child: Stack(
-                    alignment: Alignment.center,
-                    children: [
-                      Positioned.fill(
-                        left: 60,
-                        right: 60,
-                        child: Center(
-                          child: DefaultTextStyle(
-                            style: AppTextStyle.headline.of(
-                              context,
-                              emphasized: true,
-                            ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            textAlign: TextAlign.center,
-                            child: widget.title,
+                if (widget.bottom != null) ...[
+                  Positioned(
+                    bottom: 0,
+                    left: 0,
+                    right: 0,
+                    height: bottomHeight + 28,
+                    child: FloatingEdgeScrim(
+                      backgroundColor: color,
+                      overhang: 28,
+                      bottom: true,
+                    ),
+                  ),
+                  Positioned(
+                    bottom: 0,
+                    left: 0,
+                    right: 0,
+                    child: _MeasureSize(
+                      onChange: (size) {
+                        if (mounted &&
+                            (bottomHeight - size.height).abs() > .5) {
+                          setState(() => bottomHeight = size.height);
+                        }
+                      },
+                      child: Padding(
+                        padding: EdgeInsets.fromLTRB(
+                          16,
+                          10,
+                          16,
+                          safe.bottom + 8,
+                        ),
+                        child: ConstrainedBox(
+                          constraints: BoxConstraints(
+                            maxHeight:
+                                (MediaQuery.sizeOf(context).height -
+                                        MediaQuery.viewInsetsOf(context)
+                                            .bottom -
+                                        top -
+                                        safe.bottom -
+                                        30)
+                                    .clamp(80.0, double.infinity),
+                          ),
+                          child: SingleChildScrollView(
+                            reverse: true,
+                            child: widget.bottom,
                           ),
                         ),
                       ),
-                      Row(
-                        children: [
-                          widget.leading ??
-                              GlassButton(
-                                icon: Icons.arrow_back_rounded,
-                                label: '返回',
-                                onPressed: Navigator.canPop(context)
-                                    ? () => Navigator.maybePop(context)
-                                    : null,
-                              ),
-                          const Spacer(),
-                          widget.trailing ?? const SizedBox(width: 44),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              if (widget.bottom != null) ...[
-                Positioned(
-                  bottom: 0,
-                  left: 0,
-                  right: 0,
-                  height: bottomHeight + 28,
-                  child: IgnorePointer(
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.topCenter,
-                          end: Alignment.bottomCenter,
-                          stops: const [0, .6, 1],
-                          colors: [
-                            color.withValues(alpha: 0),
-                            color.withValues(alpha: .85),
-                            color,
-                          ],
-                        ),
-                      ),
                     ),
                   ),
-                ),
-                Positioned(
-                  bottom: 0,
-                  left: 0,
-                  right: 0,
-                  child: _MeasureSize(
-                    onChange: (size) {
-                      if (mounted && (bottomHeight - size.height).abs() > .5) {
-                        setState(() => bottomHeight = size.height);
-                      }
-                    },
-                    child: Padding(
-                      padding: EdgeInsets.fromLTRB(16, 10, 16, safe.bottom + 8),
-                      child: ConstrainedBox(
-                        constraints: BoxConstraints(
-                          maxHeight:
-                              (MediaQuery.sizeOf(context).height -
-                                      MediaQuery.viewInsetsOf(context).bottom -
-                                      top -
-                                      safe.bottom -
-                                      30)
-                                  .clamp(80.0, double.infinity),
-                        ),
-                        child: SingleChildScrollView(
-                          reverse: true,
-                          child: widget.bottom,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
+                ],
               ],
-            ],
+            ),
           ),
         ),
       ),
@@ -348,7 +404,7 @@ class _PocketInsets extends InheritedWidget {
       top != oldWidget.top || bottom != oldWidget.bottom;
 }
 
-class PocketList extends StatelessWidget {
+class PocketList extends StatefulWidget {
   const PocketList({
     super.key,
     required this.children,
@@ -372,28 +428,90 @@ class PocketList extends StatelessWidget {
   final EdgeInsets padding;
   final ScrollController? controller;
   @override
+  State<PocketList> createState() => _PocketListState();
+}
+
+class _PocketListState extends State<PocketList> {
+  // Keep only identities, not widgets or buffers. Lazy rows may be disposed
+  // outside the cache extent without becoming new content on the return trip.
+  final _presented = <(Type, Object)>{};
+
+  @override
   Widget build(BuildContext context) {
     final insets = _PocketInsets.of(context);
     final scrollPadding =
-        padding +
+        widget.padding +
         EdgeInsets.only(top: insets?.top ?? 12, bottom: insets?.bottom ?? 24);
-    if (itemBuilder != null) {
+    if (widget.itemBuilder != null) {
       return ListView.builder(
-        controller: controller,
+        controller: widget.controller,
         keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
         padding: scrollPadding,
-        itemBuilder: itemBuilder!,
-        itemCount: itemCount,
-        findChildIndexCallback: findChildIndexCallback,
+        itemBuilder: (context, index) =>
+            _revealItem(widget.itemBuilder!(context, index), index),
+        itemCount: widget.itemCount,
+        findChildIndexCallback: widget.findChildIndexCallback == null
+            ? null
+            : (key) {
+                if (key is _PocketListItemKey) {
+                  final original = key.value.$2;
+                  return original is Key
+                      ? widget.findChildIndexCallback!(original)
+                      : null;
+                }
+                return widget.findChildIndexCallback!(key);
+              },
       );
     }
     return ListView(
-      controller: controller,
+      controller: widget.controller,
       keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
       padding: scrollPadding,
-      children: children!,
+      children: [
+        for (var index = 0; index < widget.children!.length; index++)
+          _revealItem(widget.children![index], index),
+      ],
     );
   }
+
+  // Keep the original child's stable identity through this wrapper. A GlobalKey
+  // belongs only to the child, never to both levels.
+  Widget _revealItem(Widget child, int index) {
+    final identity = (child.runtimeType, child.key ?? index);
+    return _PocketListItem(
+      key: _PocketListItemKey(identity),
+      presented: _presented,
+      identity: identity,
+      child: child,
+    );
+  }
+}
+
+class _PocketListItemKey extends ValueKey<(Type, Object)> {
+  const _PocketListItemKey(super.value);
+}
+
+class _PocketListItem extends StatefulWidget {
+  const _PocketListItem({
+    super.key,
+    required this.presented,
+    required this.identity,
+    required this.child,
+  });
+  final Set<(Type, Object)> presented;
+  final (Type, Object) identity;
+  final Widget child;
+  @override
+  State<_PocketListItem> createState() => _PocketListItemState();
+}
+
+class _PocketListItemState extends State<_PocketListItem> {
+  // Recording belongs to mount, not the eager ListView's widget construction.
+  late final animate = widget.presented.add(widget.identity);
+
+  @override
+  Widget build(BuildContext context) =>
+      PocketReveal(animate: animate, child: widget.child);
 }
 
 class PocketEmpty extends StatelessWidget {
@@ -418,7 +536,7 @@ class PocketEmpty extends StatelessWidget {
                         (inset?.bottom ?? 0))
                     .clamp(0, double.infinity),
           ),
-          child: Center(child: child),
+          child: Center(child: PocketReveal(child: child)),
         ),
       ),
     );
@@ -513,8 +631,9 @@ class PocketCard extends StatelessWidget {
   final EdgeInsetsGeometry padding;
   final VoidCallback? onTap;
   @override
-  Widget build(BuildContext context) =>
-      DashboardCard(padding: padding, onTap: onTap, child: child);
+  Widget build(BuildContext context) => PocketReveal(
+    child: DashboardCard(padding: padding, onTap: onTap, child: child),
+  );
 }
 
 class _PocketGroup extends InheritedWidget {
@@ -538,52 +657,54 @@ class PocketSection extends StatelessWidget {
   /// Separates each direct child when callers supply a group of custom rows.
   final bool divided;
   @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.only(bottom: 28),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        if (title != null)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(18, 6, 18, 10),
-            child: Text(
-              title!,
-              style: AppTextStyle.footnote
-                  .of(context, emphasized: true)
-                  .copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
-            ),
-          ),
-        Material(
-          color: Theme.of(context).colorScheme.surfaceContainerLow,
-          shape: AppShape.xl,
-          clipBehavior: Clip.antiAlias,
-          child: _PocketGroup(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                for (var i = 0; i < children.length; i++) ...[
-                  if (i > 0 &&
-                      (divided ||
-                          (children[i - 1] is PocketRow &&
-                              children[i] is PocketRow)))
-                    Padding(
-                      padding: const EdgeInsets.only(left: 56, right: 18),
-                      child: Divider(
-                        height: 1,
-                        thickness: .5,
-                        color: Theme.of(context).colorScheme.outlineVariant
-                            .withValues(alpha: .4),
-                      ),
+  Widget build(BuildContext context) => PocketReveal(
+    child: Padding(
+      padding: const EdgeInsets.only(bottom: 28),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (title != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(18, 6, 18, 10),
+              child: Text(
+                title!,
+                style: AppTextStyle.footnote
+                    .of(context, emphasized: true)
+                    .copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
                     ),
-                  children[i],
+              ),
+            ),
+          Material(
+            color: Theme.of(context).colorScheme.surfaceContainerLow,
+            shape: AppShape.xl,
+            clipBehavior: Clip.antiAlias,
+            child: _PocketGroup(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  for (var i = 0; i < children.length; i++) ...[
+                    if (i > 0 &&
+                        (divided ||
+                            (children[i - 1] is PocketRow &&
+                                children[i] is PocketRow)))
+                      Padding(
+                        padding: const EdgeInsets.only(left: 56, right: 18),
+                        child: Divider(
+                          height: 1,
+                          thickness: .5,
+                          color: Theme.of(context).colorScheme.outlineVariant
+                              .withValues(alpha: .4),
+                        ),
+                      ),
+                    children[i],
+                  ],
                 ],
-              ],
+              ),
             ),
           ),
-        ),
-      ],
+        ],
+      ),
     ),
   );
 }
@@ -608,66 +729,71 @@ class PocketTile extends StatelessWidget {
   final bool selected;
   final EdgeInsetsGeometry contentPadding;
   @override
-  Widget build(BuildContext context) => FocusRing(
-    shape: AppShape.xl,
-    child: Material(
-      type: MaterialType.transparency,
-      child: InkWell(
-        customBorder: AppShape.xl,
-        onTap: onTap,
-        child: Container(
-          constraints: const BoxConstraints(minHeight: 60),
-          padding: contentPadding,
-          decoration: ShapeDecoration(
-            color: selected
-                ? Theme.of(context).colorScheme.primaryContainer
-                : Colors.transparent,
-            shape: AppShape.xl,
-          ),
-          child: Row(
-            children: [
-              if (leading != null) ...[
-                IconTheme(
-                  data: IconThemeData(
-                    size: 22,
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
-                  child: leading!,
-                ),
-                const SizedBox(width: 14),
-              ],
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    DefaultTextStyle(
-                      style: AppTextStyle.body.of(context),
-                      child: title,
-                    ),
-                    if (subtitle != null) ...[
-                      const SizedBox(height: 4),
-                      DefaultTextStyle(
-                        style: AppTextStyle.footnote
-                            .of(context)
-                            .copyWith(
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .onSurfaceVariant,
-                            ),
-                        child: subtitle!,
+  Widget build(BuildContext context) {
+    final shape = _PocketGroup.contains(context) ? AppShape.none : AppShape.xl;
+    return PocketReveal(
+      child: FocusRing(
+        shape: shape,
+        child: Material(
+          color: selected
+              ? Theme.of(context).colorScheme.primaryContainer
+              : Colors.transparent,
+          shape: shape,
+          child: InkWell(
+            customBorder: shape,
+            onTap: onTap,
+            child: Container(
+              constraints: const BoxConstraints(minHeight: 60),
+              padding: contentPadding,
+              child: Row(
+                children: [
+                  if (leading != null) ...[
+                    IconTheme(
+                      data: IconThemeData(
+                        size: 22,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
                       ),
-                    ],
+                      child: leading!,
+                    ),
+                    const SizedBox(width: 14),
                   ],
-                ),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        DefaultTextStyle(
+                          style: AppTextStyle.body.of(context),
+                          child: title,
+                        ),
+                        if (subtitle != null) ...[
+                          const SizedBox(height: 4),
+                          DefaultTextStyle(
+                            style: AppTextStyle.footnote
+                                .of(context)
+                                .copyWith(
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .onSurfaceVariant,
+                                ),
+                            child: subtitle!,
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                  if (trailing != null) ...[
+                    const SizedBox(width: 14),
+                    trailing!,
+                  ],
+                ],
               ),
-              if (trailing != null) ...[const SizedBox(width: 14), trailing!],
-            ],
+            ),
           ),
         ),
       ),
-    ),
-  );
+    );
+  }
 }
 
 class PocketRow extends StatelessWidget {
@@ -771,7 +897,7 @@ class _PocketDisclosureState extends State<PocketDisclosure> {
     final details = expanded
         ? Padding(
             padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
-            child: widget.child,
+            child: PocketReveal(child: widget.child),
           )
         : const SizedBox(width: double.infinity);
     final contents = Column(
@@ -833,20 +959,26 @@ class PocketSwatch extends StatelessWidget {
   final bool selected;
   final VoidCallback? onTap;
   @override
-  Widget build(BuildContext context) => ElasticPress(
-    enabled: onTap != null,
-    child: Semantics(
-      selected: selected,
-      button: true,
-      child: GestureDetector(
-        onTap: onTap,
-        child: Container(
-          width: 44,
-          height: 44,
-          decoration: ShapeDecoration(color: color, shape: AppShape.full),
-          child: selected
-              ? const Icon(Icons.check_rounded, color: Colors.white)
-              : null,
+  Widget build(BuildContext context) => _CircleControl(
+    builder: (side) => ElasticPress(
+      enabled: onTap != null,
+      preserveAspectRatio: true,
+      child: Semantics(
+        selected: selected,
+        button: true,
+        child: GestureDetector(
+          onTap: onTap,
+          child: Container(
+            width: side,
+            height: side,
+            decoration: ShapeDecoration(
+              color: color,
+              shape: const CircleBorder(),
+            ),
+            child: selected
+                ? const Icon(Icons.check_rounded, color: Colors.white)
+                : null,
+          ),
         ),
       ),
     ),

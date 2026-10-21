@@ -387,10 +387,11 @@ void main() {
     );
     await openPage(tester, runtime);
     await tap(tester, document('android'));
-    final content = tester.widget<SelectableText>(
+    final content = tester.widget<TextField>(
       find.byKey(const ValueKey('agent-preset-document-content')),
     );
-    expect(content.data, declaration);
+    expect(content.controller!.text, declaration);
+    expect(content.readOnly, isTrue);
     await tap(tester, find.byTooltip('复制预设声明'));
     expect(copied, declaration);
     expect(find.text('已复制声明'), findsOneWidget);
@@ -508,7 +509,16 @@ void main() {
       expect(find.text('待应用 · 审阅助手'), findsOneWidget);
       await capture(tester, 'large-draft');
       await tap(tester, document('broken'));
-      await tap(tester, find.text('暂不可用的原因'));
+      await Scrollable.ensureVisible(
+        tester.element(find.text('暂不可用的原因')),
+        alignment: .5,
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('暂不可用的原因'));
+      await tester.pumpAndSettle();
+      expect(find.byType(TextField), findsOneWidget);
+      await tester.tap(find.byTooltip('返回'));
+      await tester.pumpAndSettle();
       await tester.ensureVisible(
         find.byKey(const ValueKey('agent-preset-document-content')),
       );

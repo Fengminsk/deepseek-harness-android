@@ -6,6 +6,7 @@ import 'package:material_ui/material_ui.dart';
 import 'plugins_data.dart';
 import 'metadata_artwork.dart';
 import 'runtime.dart';
+import 'text_document_page.dart';
 import 'ui.dart';
 
 PluginsController pluginsFor(RuntimeController runtime) => runtime.plugins;
@@ -19,6 +20,7 @@ class PluginsPage extends StatefulWidget {
 
 class _PluginsPageState extends State<PluginsPage> with WidgetsBindingObserver {
   late final controller = pluginsFor(widget.runtime);
+  final scroll = ScrollController();
   @override
   void initState() {
     super.initState();
@@ -36,12 +38,13 @@ class _PluginsPageState extends State<PluginsPage> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     controller.detach();
+    scroll.dispose();
     super.dispose();
   }
 
   Future<void> open(Widget page) async {
     await Navigator.push(context, PocketRoute<void>(builder: (_) => page));
-    if (mounted) await controller.load();
+    if (mounted && !controller.fresh) await controller.load();
   }
 
   @override
@@ -61,8 +64,11 @@ class _PluginsPageState extends State<PluginsPage> with WidgetsBindingObserver {
           onPressed: controller.loading ? null : controller.load,
         ),
         body: PocketList(
+          key: const PageStorageKey('plugins-overview'),
+          controller: scroll,
           padding: const EdgeInsets.all(20),
           children: [
+            _PluginReadStatus(controller: controller),
             if (controller.managementAvailable)
               PocketSection(
                 children: [
@@ -98,20 +104,19 @@ class _PluginsPageState extends State<PluginsPage> with WidgetsBindingObserver {
                   ),
                 ],
               ),
-            if (controller.error != null) PluginNotice(controller.error!),
-            if (controller.actionMessage != null)
-              PluginNotice(controller.actionMessage!),
             if (controller.inventory == null)
               PluginNotice(controller.loading ? '正在读取插件清单。' : '暂时无法读取插件清单。'),
             if (controller.inventory != null && !controller.managementAvailable)
               const PluginNotice('当前运行时没有提供持久化插件管理。以下为真实运行清单，不能在此切换。'),
             if (controller.managementAvailable)
               PocketSection(
+                key: const ValueKey('selected-bundles'),
                 title: '已选用 · ${selected.length}',
                 divided: true,
                 children: [
                   for (final bundle in selected)
                     _PluginBundleRow(
+                      key: ValueKey<String>(bundle['name'] as String),
                       bundle: bundle,
                       onTap: () => open(
                         PluginBundlePage(
@@ -138,7 +143,11 @@ class _PluginsPageState extends State<PluginsPage> with WidgetsBindingObserver {
 }
 
 class _PluginBundleRow extends StatelessWidget {
-  const _PluginBundleRow({required this.bundle, required this.onTap});
+  const _PluginBundleRow({
+    required this.bundle,
+    required this.onTap,
+    super.key,
+  });
   final Json bundle;
   final VoidCallback onTap;
 
@@ -194,9 +203,10 @@ class PluginCatalogPage extends StatelessWidget {
       return PocketScaffold(
         title: const Text('可用插件包'),
         body: PocketList(
+          key: const PageStorageKey('plugin-catalog'),
           padding: const EdgeInsets.all(20),
           children: [
-            if (controller.error != null) PluginNotice(controller.error!),
+            _PluginReadStatus(controller: controller),
             if (available.isEmpty) const PluginNotice('没有未选用的插件包。'),
             for (final group in [
               (title: '随应用提供', bundles: bundled),
@@ -205,11 +215,13 @@ class PluginCatalogPage extends StatelessWidget {
             ])
               if (group.bundles.isNotEmpty)
                 PocketSection(
+                  key: ValueKey(group.title),
                   title: '${group.title} · ${group.bundles.length}',
                   divided: true,
                   children: [
                     for (final bundle in group.bundles)
                       _PluginBundleRow(
+                        key: ValueKey(bundle['name']),
                         bundle: bundle,
                         onTap: () => Navigator.push(
                           context,
@@ -240,11 +252,10 @@ class PluginRuntimePage extends StatelessWidget {
     builder: (context, _) => PocketScaffold(
       title: const Text('运行时条目与预设'),
       body: PocketList(
+        key: const PageStorageKey('plugin-runtime-entries'),
         padding: const EdgeInsets.all(20),
         children: [
-          if (controller.error != null) PluginNotice(controller.error!),
-          if (controller.actionMessage != null)
-            PluginNotice(controller.actionMessage!),
+          _PluginReadStatus(controller: controller),
           _PluginRuntimeSections(controller: controller),
         ],
       ),
@@ -261,15 +272,21 @@ class _PluginRuntimeSections extends StatelessWidget {
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
       PocketSection(
+        key: const ValueKey('runtime-entries'),
         title: '运行时条目',
         divided: true,
         children: [
           for (final entry in controller.entries)
-            PluginEntryRow(controller: controller, entry: entry),
+            PluginEntryRow(
+              key: ValueKey<String>(entry['entryId'] as String),
+              controller: controller,
+              entry: entry,
+            ),
         ],
       ),
       for (final preset in controller.inventory?['agentPresets'] as List? ?? [])
         PocketSection(
+          key: ValueKey('preset:${preset['id'] ?? preset['name']}'),
           title: '预设 · ${preset['name'] ?? preset['id']}',
           children: [
             if (preset['broken'] != null) PluginNotice('${preset['broken']}'),
@@ -306,20 +323,37 @@ class PluginEntryRow extends StatelessWidget {
     final id = entry['entryId'] as String;
     final writable =
         controller.managementAvailable && entry['readOnlyReason'] == null;
-    return PocketSwitchRow(
-      leading: pluginArtwork(entry),
-      title: Text(pluginName(entry)),
-      subtitle: Text(
-        '${entry['moduleName']}\n$id · ${entry['fiberPhase'] ?? '未加载'}'
-        '${entry['readOnlyReason'] == null ? '' : '\n${entry['readOnlyReason']}'}',
+    final action = controller.actionFor(id);
+    return ListenableBuilder(
+      listenable: action,
+      builder: (context, _) => PocketSwitchRow(
+        leading: pluginArtwork(entry),
+        title: Text(pluginName(entry)),
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '${entry['moduleName']}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            _PluginActionStatus(
+              controller: controller,
+              target: id,
+              idle: entry['readOnlyReason'] == null
+                  ? '$id · ${entry['fiberPhase'] ?? '未加载'}'
+                  : '${entry['readOnlyReason']}',
+            ),
+          ],
+        ),
+        value: entry['enabled'] == true,
+        onChanged: !writable || !controller.canChange(id)
+            ? null
+            : (value) => controller.change(id, 'setPluginEnabled', {
+                'id': id,
+                'enabled': value,
+              }),
       ),
-      value: entry['enabled'] == true,
-      onChanged: !writable || controller.actions.contains(id)
-          ? null
-          : (value) => controller.change(id, 'setPluginEnabled', {
-              'id': id,
-              'enabled': value,
-            }),
     );
   }
 }
@@ -338,9 +372,19 @@ class PluginBundlePage extends StatefulWidget {
 
 class _PluginBundlePageState extends State<PluginBundlePage> {
   bool removeReview = false;
+  final scroll = ScrollController();
+  @override
+  void dispose() {
+    scroll.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) => ListenableBuilder(
-    listenable: widget.controller,
+    listenable: Listenable.merge([
+      widget.controller,
+      widget.controller.actionFor(widget.name),
+    ]),
     builder: (context, _) {
       Json? bundle;
       for (final item in widget.controller.bundles) {
@@ -350,19 +394,19 @@ class _PluginBundlePageState extends State<PluginBundlePage> {
         }
       }
       final current = bundle;
-      final busy = widget.controller.actions.contains(widget.name);
+      final busy = !widget.controller.canChange(widget.name);
       return PocketScaffold(
         title: Text(current == null ? widget.name : pluginName(current)),
         body: PocketList(
+          key: PageStorageKey('plugin-bundle:${widget.name}'),
+          controller: scroll,
           padding: const EdgeInsets.all(20),
           children: [
-            if (widget.controller.error != null)
-              PluginNotice(widget.controller.error!),
-            if (widget.controller.actionMessage != null)
-              PluginNotice(widget.controller.actionMessage!),
+            _PluginReadStatus(controller: widget.controller),
             if (current == null) const PluginNotice('此插件包已不在最新目录中。'),
             if (current != null) ...[
               PocketSection(
+                key: const ValueKey('bundle-controls'),
                 title: '插件包',
                 children: [
                   PocketRow(
@@ -384,8 +428,10 @@ class _PluginBundlePageState extends State<PluginBundlePage> {
                     ),
                   PocketSwitchRow(
                     title: const Text('启用插件包'),
-                    subtitle: Text(
-                      current['readOnlyReason'] == null
+                    subtitle: _PluginActionStatus(
+                      controller: widget.controller,
+                      target: widget.name,
+                      idle: current['readOnlyReason'] == null
                           ? '保存后由 DSH 应用变更'
                           : '${current['readOnlyReason']}',
                     ),
@@ -443,11 +489,13 @@ class _PluginBundlePageState extends State<PluginBundlePage> {
                 ],
               ),
               PocketSection(
+                key: const ValueKey('bundle-entries'),
                 title: '包含条目',
                 divided: true,
                 children: [
                   for (final row in current['rows'] as List? ?? [])
                     Builder(
+                      key: ValueKey(row['entryId'] ?? row['rowId']),
                       builder: (context) {
                         Json? live;
                         for (final entry in widget.controller.entries) {
@@ -475,18 +523,17 @@ class _PluginBundlePageState extends State<PluginBundlePage> {
                 PluginNotice(
                   '此包还修改以下已有条目：\n${(current['overrides'] as List).join('\n')}',
                 ),
-              PocketDisclosure(
+              TextDocumentRow(
                 title: '插件包信息与诊断',
-                child: SelectableText(
-                  [
-                    '包名：${widget.name}',
-                    '位置：${current['availability']}',
-                    if (current['source'] != null) '来源：${current['source']}',
-                    if (current['error'] != null)
-                      const JsonEncoder.withIndent('  ')
-                          .convert(current['error']),
-                  ].join('\n'),
-                ),
+                text: [
+                  '包名：${widget.name}',
+                  '位置：${current['availability']}',
+                  if (current['source'] != null) '来源：${current['source']}',
+                  if (current['error'] != null)
+                    const JsonEncoder.withIndent('  ')
+                        .convert(current['error']),
+                ].join('\n'),
+                monospace: true,
               ),
               if (removeReview)
                 PocketSection(
@@ -599,11 +646,10 @@ class _PluginInstallPageState extends State<PluginInstallPage> {
                       ],
                     ),
                   ),
-                  PocketDisclosure(
+                  TextDocumentRow(
                     title: '安装请求详情',
-                    child: SelectableText(
-                      '核心阶段：${controller.installPhase}\n请求：${controller.requestId}',
-                    ),
+                    text:
+                        '核心阶段：${controller.installPhase}\n请求：${controller.requestId}',
                   ),
                 ],
               ),
@@ -645,12 +691,11 @@ class _PluginInstallPageState extends State<PluginInstallPage> {
                     ),
                   ],
                   if (result['packageResult'] != null)
-                    PocketDisclosure(
+                    TextDocumentRow(
                       title: '安装诊断',
-                      child: SelectableText(
-                        const JsonEncoder.withIndent('  ')
-                            .convert(result['packageResult']),
-                      ),
+                      text: const JsonEncoder.withIndent('  ')
+                          .convert(result['packageResult']),
+                      monospace: true,
                     ),
                 ],
               ),
@@ -729,15 +774,183 @@ class _PluginInstallPageState extends State<PluginInstallPage> {
                 ],
               ),
             if (controller.logs.isNotEmpty)
-              PocketDisclosure(
+              TextDocumentRow(
                 title: '本次安装输出',
-                child: SelectableText(
-                  '${controller.logTruncated ? '只显示最近的输出；完整结果见安装诊断。\n' : ''}'
-                  '${controller.logs.map((chunk) => chunk['text']).join()}',
-                ),
+                text:
+                    '${controller.logTruncated ? '只显示最近的输出；完整结果见安装诊断。\n' : ''}'
+                    '${controller.logs.map((chunk) => chunk['text']).join()}',
+                monospace: true,
+                helperText: '此页显示打开时的输出，返回安装页可查看最新进度。',
               ),
             if (!controller.pending)
               const PluginNotice('插件的依赖、启停及安装结果由 DSH 管理。'),
+          ],
+        ),
+      );
+    },
+  );
+}
+
+/// These single-line slots exist before, during and after a request. Feedback
+/// changes text, never inserts a banner above the scroll position or the switch.
+class _PluginReadStatus extends StatelessWidget {
+  const _PluginReadStatus({required this.controller});
+  final PluginsController controller;
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.fromLTRB(8, 0, 8, 12),
+    child: _PluginStatusLink(
+      label: controller.loading
+          ? '正在核对插件状态…'
+          : controller.fresh
+          ? '已读取当前插件状态'
+          : '当前状态待核对 · 查看详情',
+      onTap: controller.fresh && controller.error == null
+          ? null
+          : () => _openPluginStatus(context, controller),
+    ),
+  );
+}
+
+class _PluginActionStatus extends StatelessWidget {
+  const _PluginActionStatus({
+    required this.controller,
+    required this.target,
+    required this.idle,
+  });
+  final PluginsController controller;
+  final String target, idle;
+  @override
+  Widget build(BuildContext context) {
+    final action = controller.actionFor(target);
+    final label = action.running
+        ? (action.verifying ? '正在核对当前状态…' : '正在应用变更…')
+        : action.awaitingRefresh
+        ? '当前状态待核对 · 查看详情'
+        : action.unknown
+        ? '回执未确认，已核对当前状态 · 详情'
+        : action.message != null
+        ? '${switch (action.result?['application']) {
+            'applied' => action.result?['changed'] == true ? '变更已应用' : '当前配置无需更改',
+            'restart-required' => '配置已保存，重启后生效',
+            'overridden' => '配置被更高优先级覆盖',
+            'failed' => '操作失败',
+            _ => '查看操作结果',
+          }} · 详情'
+        : idle;
+    return _PluginStatusLink(
+      label: label,
+      onTap: action.message == null && !action.awaitingRefresh
+          ? null
+          : () => _openPluginStatus(context, controller, target: target),
+    );
+  }
+}
+
+class _PluginStatusLink extends StatelessWidget {
+  const _PluginStatusLink({required this.label, this.onTap});
+  final String label;
+  final VoidCallback? onTap;
+  @override
+  Widget build(BuildContext context) => Semantics(
+    button: onTap != null,
+    child: GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      child: Text(
+        label,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+          color: onTap == null
+              ? Theme.of(context).colorScheme.onSurfaceVariant
+              : Theme.of(context).colorScheme.primary,
+        ),
+      ),
+    ),
+  );
+}
+
+Future<void> _openPluginStatus(
+  BuildContext context,
+  PluginsController controller, {
+  String? target,
+}) => Navigator.of(context).push<void>(
+  PocketRoute(
+    builder: (_) => _PluginStatusPage(controller: controller, target: target),
+  ),
+);
+
+class _PluginStatusPage extends StatelessWidget {
+  const _PluginStatusPage({required this.controller, this.target});
+  final PluginsController controller;
+  final String? target;
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: Listenable.merge([
+      controller,
+      if (target != null) controller.actionFor(target!),
+    ]),
+    builder: (context, _) {
+      final action = target == null ? null : controller.actionFor(target!);
+      Json? current;
+      if (target != null) {
+        for (final row in [...controller.bundles, ...controller.entries]) {
+          if (row['name'] == target || row['entryId'] == target) {
+            current = row;
+            break;
+          }
+        }
+      }
+      return PocketScaffold(
+        title: Text(target == null ? '插件状态' : '插件操作'),
+        trailing: GlassButton(
+          icon: Icons.refresh_rounded,
+          label: '核对当前状态',
+          onPressed: controller.loading || action?.running == true
+              ? null
+              : controller.load,
+        ),
+        body: PocketList(
+          children: [
+            if (target != null)
+              PocketSection(
+                title: '插件',
+                children: [
+                  PocketRow(
+                    icon: Icons.extension_rounded,
+                    title: current == null ? target! : pluginName(current),
+                    subtitle: target,
+                  ),
+                ],
+              ),
+            PocketSection(
+              title: controller.fresh ? '当前核心状态' : '上次读取的状态',
+              children: [
+                PluginNotice(
+                  target == null
+                      ? (controller.fresh ? '插件清单已重新读取。' : '尚未确认当前插件清单。')
+                      : current == null
+                      ? '此条目已不在最近读取的清单中。'
+                      : '配置：${current['enabled'] == true
+                                ? '启用'
+                                : current['enabled'] == 'conditional'
+                                ? '按条件启用'
+                                : '停用'}'
+                            '${current['fiberPhase'] == null ? '' : '\n运行阶段：${current['fiberPhase']}'}',
+                ),
+                if (controller.error != null) PluginNotice(controller.error!),
+              ],
+            ),
+            if (action != null)
+              PocketSection(
+                title: '本次操作',
+                children: [
+                  PluginNotice(action.message ?? '正在等待核心返回结果。'),
+                  if (action.unknown)
+                    const PluginNotice('上次操作回执没有得到确认。这里显示当前核心状态，不会自动重发操作。'),
+                ],
+              ),
           ],
         ),
       );

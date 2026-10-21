@@ -3,6 +3,7 @@ import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 
+import 'configuration_edits.dart' show configurationEqual;
 import 'runtime.dart';
 
 Future<dynamic> pluginsApi(
@@ -49,10 +50,23 @@ String _installationId() {
   return '${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}';
 }
 
+/// Target-local feedback. A toggle never changes the observed inventory optimistically.
+class PluginActionState extends ChangeNotifier {
+  bool running = false, verifying = false, awaitingRefresh = false;
+  bool unknown = false;
+  String? message;
+  Json? result;
+  void publish() => notifyListeners();
+}
+
 /// App presentation cache only: all plugin changes/install lifetimes belong to
 /// the original pluginManager. Closing a page never cancels its operation.
 class PluginsController extends ChangeNotifier {
-  PluginsController(this.runtime);
+  PluginsController(this.runtime)
+    : _connection = runtime.connectionGeneration,
+      _ready = runtime.ready {
+    runtime.addListener(_runtimeChanged);
+  }
   final RuntimeController runtime;
   StreamSubscription<Json>? _events;
   int _views = 0;
@@ -67,6 +81,36 @@ class PluginsController extends ChangeNotifier {
   String? error, actionMessage;
   final actions = <String>{};
   int generation = 0;
+  final _changes = <String, PluginActionState>{};
+  Future<void>? _load;
+  bool _reload = false, _fresh = false;
+  int _connection, _writes = 0;
+  bool _ready;
+  bool get fresh =>
+      _fresh && runtime.ready && _connection == runtime.connectionGeneration;
+  PluginActionState actionFor(String key) =>
+      _changes.putIfAbsent(key, PluginActionState.new);
+  bool canChange(String key) =>
+      !_disposed &&
+      managementAvailable &&
+      fresh &&
+      !actions.contains(key) &&
+      !actionFor(key).awaitingRefresh;
+
+  void _runtimeChanged() {
+    if (_disposed ||
+        (_connection == runtime.connectionGeneration &&
+            _ready == runtime.ready)) {
+      return;
+    }
+    _connection = runtime.connectionGeneration;
+    _ready = runtime.ready;
+    generation++;
+    _fresh = false;
+    _reload = runtime.ready;
+    publish();
+    if (runtime.ready && (_views > 0 || actions.isNotEmpty)) unawaited(load());
+  }
 
   String spec = '', registry = '';
   bool enableAfterInstall = false;
@@ -97,7 +141,18 @@ class PluginsController extends ChangeNotifier {
     _events ??= runtime.remoteEvents.listen(
       receive,
       onError: (Object failure) {
+        generation++;
+        _fresh = false;
+        _reload = false;
         error = '插件变更通知中断：$failure\n请刷新核对实际状态。';
+        publish();
+      },
+      onDone: () {
+        _events = null;
+        generation++;
+        _fresh = false;
+        _reload = false;
+        error = '插件变更通知已结束，请刷新核对实际状态。';
         publish();
       },
     );
@@ -118,7 +173,9 @@ class PluginsController extends ChangeNotifier {
   void receive(Json event) {
     final name = event['event'];
     if (name == 'plugin-manager/changed' || name == 'plugin-market/changed') {
-      unawaited(load());
+      // The core emits changed before completing an App mutation. Its completion
+      // requests the authoritative refresh once; avoid racing two full inventories.
+      if (_writes == 0) unawaited(load(invalidate: true));
       return;
     }
     final args = event['args'] as List? ?? [];
@@ -157,59 +214,159 @@ class PluginsController extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     generation++;
+    runtime.removeListener(_runtimeChanged);
     unawaited(_events?.cancel());
+    for (final action in _changes.values) {
+      action.dispose();
+    }
     super.dispose();
   }
 
-  Future<void> load() async {
-    if (_disposed) return;
-    final current = ++generation;
-    loading = true;
-    publish();
+  Future<void> load({bool invalidate = false}) {
+    if (_disposed) return Future.value();
+    if (invalidate) {
+      generation++;
+      _reload = true;
+      _fresh = false;
+    }
+    if (_load != null) return _load!;
+    if (!runtime.ready) {
+      _fresh = false;
+      publish();
+      return Future.value();
+    }
+    // Publish only after installing the flight, so a listener cannot start a
+    // second request synchronously. Release it before the final notification;
+    // invalidations caused by that notification then get their own flight.
+    final completion = Completer<void>();
+    _load = completion.future;
+    unawaited(_runLoad(completion));
+    return completion.future;
+  }
+
+  Future<void> _runLoad(Completer<void> completion) async {
     try {
-      final snapshot = await runtime.call('api.call', {
-        'namespace': 'pluginInventory',
-        'method': 'list',
-        'args': {},
-      }) as Json;
-      List<Json> nextBundles = [],
-          nextEntries = (snapshot['entries'] as List).cast<Json>();
-      if (snapshot['managementAvailable'] == true) {
-        final result = await Future.wait([
-          pluginsApi(runtime, 'listBundles'),
-          pluginsApi(runtime, 'listPlugins'),
-        ]);
-        nextBundles = (result[0] as List).cast<Json>();
-        nextEntries = (result[1] as List).cast<Json>();
-      }
-      if (current != generation) return;
-      inventory = snapshot;
-      bundles = nextBundles;
-      entries = nextEntries;
-      error = null;
-    } catch (failure) {
-      if (current == generation) error = '无法刷新插件状态：$failure';
+      await _readLoop();
     } finally {
-      if (current == generation) {
-        loading = false;
-        publish();
-      }
+      _load = null;
+      loading = false;
+      publish();
+      completion.complete();
     }
   }
 
-  Future<void> change(String key, String method, Json args) async {
-    if (!managementAvailable || !actions.add(key)) return;
-    actionMessage = null;
+  List<Json> _retainRows(List<Json> before, List<Json> after, String key) {
+    final old = {for (final row in before) row[key]: row};
+    final next = [
+      for (final row in after)
+        configurationEqual(old[row[key]], row) ? old[row[key]]! : row,
+    ];
+    return listEquals(before, next) ? before : next;
+  }
+
+  Future<void> _readLoop() async {
+    loading = true;
     publish();
+    do {
+      _reload = false;
+      final current = ++generation;
+      final connection = runtime.connectionGeneration;
+      bool valid() =>
+          !_disposed &&
+          current == generation &&
+          runtime.ready &&
+          connection == runtime.connectionGeneration;
+      try {
+        final snapshot = await runtime.call('api.call', {
+          'namespace': 'pluginInventory',
+          'method': 'list',
+          'args': {},
+        }) as Json;
+        if (!valid()) continue;
+        List<Json> nextBundles = [],
+            nextEntries = (snapshot['entries'] as List).cast<Json>();
+        if (snapshot['managementAvailable'] == true) {
+          final result = await Future.wait([
+            pluginsApi(runtime, 'listBundles'),
+            pluginsApi(runtime, 'listPlugins'),
+          ]);
+          nextBundles = (result[0] as List).cast<Json>();
+          nextEntries = (result[1] as List).cast<Json>();
+        }
+        if (!valid()) continue;
+        inventory = configurationEqual(inventory, snapshot)
+            ? inventory
+            : snapshot;
+        bundles = _retainRows(bundles, nextBundles, 'name');
+        entries = _retainRows(entries, nextEntries, 'entryId');
+        _connection = connection;
+        _fresh = true;
+        error = null;
+        for (final action in List<PluginActionState>.of(_changes.values)) {
+          if (action.awaitingRefresh && (!action.running || action.verifying)) {
+            action.awaitingRefresh = false;
+            action.publish();
+          }
+        }
+      } catch (failure) {
+        if (valid()) {
+          _fresh = false;
+          error = '无法刷新插件状态：$failure';
+        }
+      }
+    } while (_reload && !_disposed && runtime.ready);
+  }
+
+  Future<void> change(String key, String method, Json args) async {
+    if (!canChange(key) || !actions.add(key)) return;
+    final action = actionFor(key);
+    final connection = runtime.connectionGeneration;
+    action.running = true;
+    action.verifying = false;
+    action.awaitingRefresh = true;
+    action.unknown = false;
+    action.message = null;
+    action.result = null;
+    actionMessage = null;
+    _writes++;
+    action.publish();
     try {
+      // Original pluginManager owns the package-file lock and reads current core
+      // state within it. These APIs do not accept a client expectedRevision.
       final result = await pluginsApi(runtime, method, args) as Json;
-      actionMessage = pluginChangeSummary(result);
+      if (_disposed) return;
+      if (connection != runtime.connectionGeneration || !runtime.ready) {
+        action.unknown = true;
+        action.message = '服务连接已变化，操作结果未确认。请核对当前状态，未自动重试。';
+      } else {
+        action.result = result;
+        action.message = pluginChangeSummary(result);
+        action.unknown = !const [
+          'applied',
+          'restart-required',
+          'overridden',
+          'cancelled',
+          'failed',
+        ].contains(result['application']);
+      }
     } catch (failure) {
-      actionMessage = '操作结果未确认：$failure\n正在重新核对实际状态，未自动重试。';
+      if (_disposed) return;
+      action.unknown = true;
+      action.message = '操作结果未确认：$failure\n正在重新核对实际状态，未自动重试。';
     } finally {
-      actions.remove(key);
-      publish();
-      await load();
+      _writes--;
+      if (!_disposed) {
+        actionMessage = action.message;
+        action.verifying = true;
+        action.publish();
+        await load(invalidate: true);
+        if (!_disposed) {
+          actions.remove(key);
+          action.running = false;
+          action.verifying = false;
+          action.publish();
+        }
+      }
     }
   }
 

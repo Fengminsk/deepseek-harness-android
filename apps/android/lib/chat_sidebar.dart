@@ -660,22 +660,8 @@ class _SidebarFade extends StatelessWidget {
   final Color color;
   final bool bottom;
   @override
-  Widget build(BuildContext context) => IgnorePointer(
-    child: DecoratedBox(
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: bottom ? Alignment.bottomCenter : Alignment.topCenter,
-          end: bottom ? Alignment.topCenter : Alignment.bottomCenter,
-          stops: const [0, .35, 1],
-          colors: [
-            color.withValues(alpha: .96),
-            color.withValues(alpha: .75),
-            color.withValues(alpha: 0),
-          ],
-        ),
-      ),
-    ),
-  );
+  Widget build(BuildContext context) =>
+      FloatingEdgeScrim(backgroundColor: color, overhang: 24, bottom: bottom);
 }
 
 class _SidebarAvatar extends StatelessWidget {
@@ -683,27 +669,22 @@ class _SidebarAvatar extends StatelessWidget {
   final VoidCallback onPressed;
   final String? url;
   @override
-  Widget build(BuildContext context) => TonalButtonTheme(
-    glass: LiquidGlassScope.of(context),
-    child: ElasticPress(
-      child: IconButton(
-        key: const ValueKey('sidebar-account'),
-        tooltip: '账号',
-        onPressed: onPressed,
-        icon: ClipOval(
-          child: SizedBox.square(
-            dimension: 30,
-            child: url == null
-                ? const Icon(Icons.person_outline_rounded)
-                : Image.network(
-                    url!,
-                    fit: BoxFit.cover,
-                    excludeFromSemantics: true,
-                    errorBuilder: (_, _, _) =>
-                        const Icon(Icons.person_outline_rounded),
-                  ),
-          ),
-        ),
+  Widget build(BuildContext context) => GlassButton.custom(
+    key: const ValueKey('sidebar-account'),
+    label: '账号',
+    onPressed: onPressed,
+    icon: ClipOval(
+      child: SizedBox.square(
+        dimension: 30,
+        child: url == null
+            ? const Icon(Icons.person_outline_rounded)
+            : Image.network(
+                url!,
+                fit: BoxFit.cover,
+                excludeFromSemantics: true,
+                errorBuilder: (_, _, _) =>
+                    const Icon(Icons.person_outline_rounded),
+              ),
       ),
     ),
   );

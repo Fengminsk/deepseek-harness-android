@@ -3,6 +3,7 @@ import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
+import 'entry_motion.dart';
 import 'flclash/surface.dart';
 import 'flclash/typography.dart';
 import 'tool_activity_data.dart';
@@ -217,7 +218,12 @@ class _ToolDetailsRoute extends PopupRoute<void> {
           position: animation
               .drive(CurveTween(curve: Curves.easeOutCubic))
               .drive(Tween(begin: const Offset(0, 1), end: Offset.zero)),
-          child: child,
+          child: PocketBlurTransition(
+            animation: animation.drive(
+              CurveTween(curve: PocketEntryMotion.curve),
+            ),
+            child: child,
+          ),
         );
   @override
   Widget buildPage(
@@ -278,6 +284,10 @@ class _ToolDetailsSheetState extends State<_ToolDetailsSheet> {
     final activity = trail.last;
     final presentation = ToolActivityPresentation.from(activity);
     final colors = Theme.of(context).colorScheme;
+    final surface = SurfaceLevel.floatingOf(colors).colorOf(colors);
+    final toolbarHeight = (MediaQuery.textScalerOf(context).scale(20) * 1.4)
+        .clamp(48.0, 88.0);
+    final headerHeight = 28 + toolbarHeight + 10;
     return Semantics(
       scopesRoute: true,
       explicitChildNodes: true,
@@ -297,7 +307,7 @@ class _ToolDetailsSheetState extends State<_ToolDetailsSheet> {
                 shouldCloseOnMinExtent: false,
                 builder: (context, scroll) => Material(
                   key: const Key('tool-details-sheet'),
-                  color: SurfaceLevel.floatingOf(colors).colorOf(colors),
+                  color: surface,
                   shape: const RoundedSuperellipseBorder(
                     borderRadius: BorderRadius.vertical(
                       top: Radius.circular(AppCorner.xxl),
@@ -306,87 +316,19 @@ class _ToolDetailsSheetState extends State<_ToolDetailsSheet> {
                   clipBehavior: Clip.antiAlias,
                   child: SurfaceScope(
                     level: SurfaceLevel.floatingOf(colors),
-                    child: Column(
+                    child: Stack(
                       children: [
-                        GestureDetector(
-                          key: const Key('tool-details-drag-handle'),
-                          behavior: HitTestBehavior.opaque,
-                          onVerticalDragUpdate: (details) {
-                            if (_extent.isAttached) {
-                              _extent.jumpTo(
-                                (_extent.size -
-                                        details.delta.dy / viewport.maxHeight)
-                                    .clamp(_minimum, _maximum),
-                              );
-                            }
-                          },
-                          onVerticalDragEnd: (details) {
-                            if (_extent.isAttached &&
-                                (_extent.size <= _minimum + .01 ||
-                                    (details.primaryVelocity ?? 0) > 900)) {
-                              _dismiss();
-                            }
-                          },
-                          child: SizedBox(
-                            height: 28,
-                            width: double.infinity,
-                            child: Center(
-                              child: Container(
-                                width: 32,
-                                height: 4,
-                                decoration: BoxDecoration(
-                                  color: colors.onSurfaceVariant.withValues(
-                                    alpha: .5,
-                                  ),
-                                  borderRadius: AppRadius.full,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
-                          child: Row(
-                            children: [
-                              SizedBox(
-                                width: 48,
-                                child: trail.length > 1
-                                    ? GlassButton(
-                                        icon: Icons.arrow_back_rounded,
-                                        label: '返回上级调用',
-                                        onPressed: () =>
-                                            setState(() => _path.removeLast()),
-                                      )
-                                    : null,
-                              ),
-                              Expanded(
-                                child: Text(
-                                  presentation.title(activity),
-                                  textAlign: TextAlign.center,
-                                  style: AppTextStyle.headline.of(context),
-                                ),
-                              ),
-                              SizedBox(
-                                width: 48,
-                                child: GlassButton(
-                                  key: const Key('tool-details-close'),
-                                  icon: Icons.close_rounded,
-                                  label: '关闭调用详情',
-                                  onPressed: _dismiss,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        Expanded(
+                        Positioned.fill(
                           child: ListView(
                             key: ValueKey(
                               'tool-details-body:${activity.identity}',
                             ),
                             controller: scroll,
+                            // This space belongs to the scrollable content;
+                            // logs continue behind the floating header.
                             padding: EdgeInsets.fromLTRB(
                               20,
-                              4,
+                              headerHeight + 4,
                               20,
                               24 + MediaQuery.paddingOf(context).bottom,
                             ),
@@ -406,6 +348,113 @@ class _ToolDetailsSheetState extends State<_ToolDetailsSheet> {
                                 }),
                               ),
                             ],
+                          ),
+                        ),
+                        Positioned(
+                          top: 0,
+                          left: 0,
+                          right: 0,
+                          child: FloatingHeader(
+                            key: const Key('tool-details-header'),
+                            backgroundColor: surface,
+                            overhang: 28,
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                GestureDetector(
+                                  key: const Key('tool-details-drag-handle'),
+                                  behavior: HitTestBehavior.opaque,
+                                  onVerticalDragUpdate: (details) {
+                                    if (_extent.isAttached) {
+                                      _extent.jumpTo(
+                                        (_extent.size -
+                                                details.delta.dy /
+                                                    viewport.maxHeight)
+                                            .clamp(_minimum, _maximum),
+                                      );
+                                    }
+                                  },
+                                  onVerticalDragEnd: (details) {
+                                    if (_extent.isAttached &&
+                                        (_extent.size <= _minimum + .01 ||
+                                            (details.primaryVelocity ?? 0) >
+                                                900)) {
+                                      _dismiss();
+                                    }
+                                  },
+                                  child: SizedBox(
+                                    height: 28,
+                                    width: double.infinity,
+                                    child: Center(
+                                      child: Container(
+                                        width: 32,
+                                        height: 4,
+                                        decoration: BoxDecoration(
+                                          color: colors.onSurfaceVariant
+                                              .withValues(alpha: .5),
+                                          borderRadius: AppRadius.full,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                                Padding(
+                                  padding: const EdgeInsets.fromLTRB(
+                                    12,
+                                    0,
+                                    12,
+                                    10,
+                                  ),
+                                  child: SizedBox(
+                                    height: toolbarHeight,
+                                    child: Row(
+                                      children: [
+                                        SizedBox(
+                                          width: 48,
+                                          child: trail.length > 1
+                                              ? GlassButton(
+                                                  icon:
+                                                      Icons.arrow_back_rounded,
+                                                  label: '返回上级调用',
+                                                  onPressed: () => setState(
+                                                    () => _path.removeLast(),
+                                                  ),
+                                                )
+                                              : null,
+                                        ),
+                                        Expanded(
+                                          child: IgnorePointer(
+                                            child: Text(
+                                              presentation.title(activity),
+                                              key: const Key(
+                                                'tool-details-title',
+                                              ),
+                                              textAlign: TextAlign.center,
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: AppTextStyle.headline.of(
+                                                context,
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                        SizedBox(
+                                          width: 48,
+                                          child: GlassButton(
+                                            key: const Key(
+                                              'tool-details-close',
+                                            ),
+                                            icon: Icons.close_rounded,
+                                            label: '关闭调用详情',
+                                            onPressed: _dismiss,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
                         ),
                       ],

@@ -13,6 +13,10 @@ class _Runtime extends RuntimeController {
   bool failUpload = false;
   Completer<void>? uploadBarrier;
   final uploadStarted = Completer<void>();
+  Json? prepared;
+  int generation = 0;
+  @override
+  int get connectionGeneration => generation;
 
   @override
   Future<dynamic> call(String method, [Json params = const {}]) async {
@@ -23,12 +27,14 @@ class _Runtime extends RuntimeController {
       if (failUpload) {
         throw PlatformException(code: 'fixture', message: '文件仍保留');
       }
-      return {
-        'id': params['id'],
-        'name': '${params['id']}.txt',
-        'bytes': 10,
-        'receiptId': 'receipt-${params['id']}',
-      };
+      return prepared ??
+          {
+            'id': params['id'],
+            'kind': 'file',
+            'name': '${params['id']}.txt',
+            'bytes': 10,
+            'receiptId': 'receipt-${params['id']}',
+          };
     }
     if (method == 'attachments.release') return {'released': true};
     throw StateError('Unexpected $method');
@@ -125,6 +131,106 @@ void main() {
     await drafts.consume('one', submitted);
     expect(drafts.snapshotIds('one'), ['later']);
     expect(runtime.calls.last.params, {'sessionId': 'one', 'id': 'first'});
+  });
+
+  test('image preparation accepts original inline-image descriptor without a file receipt', () async {
+    final runtime = _Runtime()
+      ..prepared = {
+        'id': 'photo',
+        'kind': 'image',
+        'name': 'photo.png',
+        'mediaType': 'image/png',
+        'bytes': 10,
+      };
+    final drafts = AttachmentDrafts(runtime);
+    addTearDown(drafts.dispose);
+    picker(
+      (_) async => jsonEncode({
+        'items': [
+          {...selection('photo'), 'mediaType': 'image/png'},
+        ],
+      }),
+    );
+    await drafts.pick('one');
+    expect(drafts.snapshotIds('one'), ['photo']);
+    expect(drafts.items('one').single.name, 'photo.png');
+    expect(drafts.items('one').single.isImage, isTrue);
+  });
+
+  for (final response in <Json>[
+    {
+      'id': 'photo',
+      'kind': 'image',
+      'name': 'photo.png',
+      'mediaType': 'image/jpeg',
+      'bytes': 10,
+    },
+    {
+      'id': 'photo',
+      'kind': 'file',
+      'name': 'photo.png',
+      'receiptId': 'wrong-file',
+      'bytes': 10,
+    },
+    {
+      'id': 'other',
+      'kind': 'image',
+      'name': 'photo.png',
+      'mediaType': 'image/png',
+      'bytes': 10,
+    },
+    {
+      'id': 'photo',
+      'kind': 'image',
+      'name': 'photo.png',
+      'mediaType': 'image/png',
+      'bytes': -1,
+    },
+    {
+      'id': 'photo',
+      'kind': 'image',
+      'name': 'photo.png',
+      'mediaType': 'image/png',
+      'bytes': 0,
+    },
+  ]) {
+    test(
+      'invalid image preparation cannot authorize send: $response',
+      () async {
+        final runtime = _Runtime()..prepared = response;
+        final drafts = AttachmentDrafts(runtime);
+        addTearDown(drafts.dispose);
+        picker(
+          (_) async => jsonEncode({
+            'items': [
+              {...selection('photo'), 'mediaType': 'image/png'},
+            ],
+          }),
+        );
+        await drafts.pick('one');
+        expect(drafts.ready('one'), isFalse);
+        expect(drafts.items('one').single.status, 'error');
+        expect(() => drafts.snapshotIds('one'), throwsStateError);
+      },
+    );
+  }
+
+  test('prepare response from a prior runtime generation cannot mark a draft ready', () async {
+    final runtime = _Runtime()..uploadBarrier = Completer<void>();
+    final drafts = AttachmentDrafts(runtime);
+    addTearDown(drafts.dispose);
+    picker(
+      (_) async => jsonEncode({
+        'items': [selection('first')],
+      }),
+    );
+    final picking = drafts.pick('one');
+    await runtime.uploadStarted.future;
+    runtime.generation++;
+    runtime.uploadBarrier!.complete();
+    await picking;
+    expect(drafts.ready('one'), isFalse);
+    expect(drafts.items('one').single.error, contains('服务已重启'));
   });
 
   test(

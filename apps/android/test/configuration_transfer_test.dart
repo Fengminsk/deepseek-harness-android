@@ -9,6 +9,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:dsh_android/configuration_transfer.dart';
 import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/ui.dart';
+import 'package:dsh_android/text_document_page.dart';
 
 const input =
     '{"format":"pocket-harness-settings","version":1,'
@@ -201,6 +202,7 @@ Future<void> enterPreview(WidgetTester tester) async {
   await enterInput(tester);
   await tester.enterText(source, input);
   await tester.pumpAndSettle();
+  await tap(tester, find.byTooltip('完成编辑'));
   await tap(tester, previewButton);
 }
 
@@ -251,8 +253,8 @@ void main() {
       );
       expect(find.text('agent'), findsOneWidget);
       await tap(tester, find.text('agent'));
-      await tap(tester, find.text('maxTokens'));
       expect(find.textContaining('当前：100\n导入：200'), findsOneWidget);
+      await tap(tester, find.byTooltip('返回'));
       await tap(tester, apply);
       expect(
         runtime.calls.where((call) => call.$1.endsWith('.apply')),
@@ -276,6 +278,7 @@ void main() {
       expect(apply, findsNothing);
       await tap(tester, find.text('需要修正的内容'));
       expect(find.textContaining('凭据须单独管理'), findsOneWidget);
+      await tap(tester, find.byTooltip('返回'));
       await tap(tester, find.text('编辑导入内容'));
       expect(tester.widget<TextField>(source).controller!.text, input);
       expect(
@@ -295,6 +298,7 @@ void main() {
       await tap(tester, find.text('编辑导入内容'));
       await tester.enterText(source, '$input\n');
       await tester.pumpAndSettle();
+      await tap(tester, find.byTooltip('完成编辑'));
       expect(apply, findsNothing);
       expect(find.textContaining('预览已过期'), findsOneWidget);
       await tap(tester, previewButton);
@@ -332,7 +336,6 @@ void main() {
       );
       expect(apply, findsOneWidget);
       await tap(tester, find.text('agent'));
-      await tap(tester, find.text('高级详情'));
       expect(find.textContaining('配置标识：agent\n读取版本：2'), findsOneWidget);
     },
   );
@@ -400,8 +403,9 @@ void main() {
       expect(source, findsNothing);
       expect(find.text('agent'), findsOneWidget);
       await tap(tester, find.text('未包含的设置'));
-      expect(find.text('设备设置不迁移'), findsOneWidget);
-      expect(find.text('web-startup'), findsOneWidget);
+      expect(find.textContaining('设备设置不迁移'), findsOneWidget);
+      expect(find.textContaining('web-startup'), findsOneWidget);
+      await tap(tester, find.byTooltip('返回'));
       await tap(tester, find.byKey(const Key('configuration-transfer-save')));
       expect(native.single.method, 'configurationTransfer.save');
       expect((native.single.arguments as Map)['text'], input);
@@ -433,11 +437,13 @@ void main() {
       await enterInput(tester);
       await tester.enterText(source, input);
       await tester.pumpAndSettle();
+      await tap(tester, find.byTooltip('完成编辑'));
       await tap(tester, find.text('重新选择文件'));
       expect(native, isEmpty);
       await tap(tester, find.text('继续选择并替换草稿'));
       expect(native.single.method, 'configurationTransfer.pick');
       expect((native.single.arguments as Map).keys, ['id']);
+      await tap(tester, find.text('查看或编辑 JSON'));
       expect(tester.widget<TextField>(source).controller!.text, input);
       expect(runtime.calls, isEmpty);
     },
@@ -492,10 +498,10 @@ void main() {
       expect(tester.takeException(), isNull);
       await capture(tester, 'transfer-import-preview');
       await tap(tester, find.text('agent'));
-      await tester.pump(const Duration(milliseconds: 100));
-      expect(find.byType(AnimatedSize), findsWidgets);
-      await tester.pumpAndSettle();
+      expect(find.byType(TextDocumentPage), findsOneWidget);
+      await capture(tester, 'transfer-field-detail');
       expect(tester.takeException(), isNull);
+      await tap(tester, find.byTooltip('返回'));
       await tap(tester, apply);
       expect(apply, findsNothing);
       await capture(tester, 'transfer-import-result');
@@ -527,7 +533,7 @@ void main() {
   );
 
   testWidgets(
-    'selection owns a 48 dp target independently of disclosure and reports toggle semantics',
+    'selection owns a 48 dp target independently of the document link and reports toggle semantics',
     (tester) async {
       final semantics = tester.ensureSemantics();
       try {
@@ -537,20 +543,10 @@ void main() {
         final selection = find.byKey(
           const Key('configuration-transfer-selection-target-agent'),
         );
-        final disclosure = find.byWidgetPredicate(
-          (widget) =>
-              widget is Semantics &&
-              widget.properties.expanded != null &&
-              widget.child is PocketRow &&
-              (widget.child! as PocketRow).title == 'agent',
-        );
         final bounds = tester.getRect(selection);
         expect(bounds.width, greaterThanOrEqualTo(48));
         expect(bounds.height, greaterThanOrEqualTo(48));
-        expect(
-          tester.getSemantics(disclosure),
-          isSemantics(hasExpandedState: true, isExpanded: false),
-        );
+        expect(find.byType(TextDocumentPage), findsNothing);
         expect(
           tester.getSemantics(selection),
           isSemantics(
@@ -570,9 +566,10 @@ void main() {
         await tester.tapAt(Offset(bounds.center.dx, bounds.bottom - 1));
         await tester.pumpAndSettle();
         expect(apply, findsOneWidget);
-        expect(tester.getSemantics(disclosure), isSemantics(isExpanded: false));
+        expect(find.byType(TextDocumentPage), findsNothing);
         await tap(tester, find.text('agent'));
-        expect(tester.getSemantics(disclosure), isSemantics(isExpanded: true));
+        expect(find.byType(TextDocumentPage), findsOneWidget);
+        await tap(tester, find.byTooltip('返回'));
         expect(tester.getSemantics(selection), isSemantics(isToggled: true));
       } finally {
         semantics.dispose();
@@ -581,7 +578,7 @@ void main() {
   );
 
   testWidgets(
-    'disabled selection padding does not expand the surrounding disclosure',
+    'disabled selection padding does not navigate to the surrounding document',
     (tester) async {
       final semantics = tester.ensureSemantics();
       try {
@@ -602,11 +599,11 @@ void main() {
         expect(find.text('maxTokens'), findsNothing);
         expect(apply, findsNothing);
         await tap(tester, find.text('agent'));
-        expect(find.text('maxTokens'), findsOneWidget);
+        expect(find.textContaining('maxTokens'), findsOneWidget);
         expect(find.byType(AnimatedSize), findsNothing);
         expect(tester.takeException(), isNull);
-        await tap(tester, find.text('agent'));
-        expect(find.text('maxTokens'), findsNothing);
+        await tap(tester, find.byTooltip('返回'));
+        expect(find.textContaining('maxTokens'), findsNothing);
         expect(tester.takeException(), isNull);
       } finally {
         semantics.dispose();

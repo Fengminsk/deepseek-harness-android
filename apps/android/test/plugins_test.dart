@@ -34,6 +34,18 @@ Json entry({bool protected = false}) => {
 };
 
 class PluginsRuntime extends RuntimeController {
+  PluginsRuntime() {
+    phase = 'ready';
+  }
+  int epoch = 0;
+  @override
+  int get connectionGeneration => epoch;
+  void connection({required bool ready}) {
+    epoch++;
+    phase = ready ? 'ready' : 'disconnected';
+    notifyListeners();
+  }
+
   final eventsController = StreamController<Json>.broadcast();
   @override
   Stream<Json> get remoteEvents => eventsController.stream;
@@ -41,6 +53,10 @@ class PluginsRuntime extends RuntimeController {
   List<Json> bundles = [bundle()], entries = [entry()];
   final calls = <Json>[];
   Completer<Json>? installing;
+  Completer<Json>? changing;
+  Completer<Json>? inventoryRead;
+  bool failRead = false;
+  bool failChange = false;
   bool failInstall = false;
   Json outcome = {
     'changed': true,
@@ -56,17 +72,14 @@ class PluginsRuntime extends RuntimeController {
     calls.add({'method': method, 'params': cloneConfiguration(params)});
     if (method != 'api.call') throw StateError('Unexpected method');
     if (params['namespace'] == 'pluginInventory') {
-      return {
-        'managementAvailable': managed,
-        'entries': entries,
-        'agentPresets': [],
-      };
+      if (failRead) throw StateError('read unavailable');
+      return inventoryRead?.future ?? snapshot();
     }
     switch (params['method']) {
       case 'listPlugins':
-        return entries;
+        return entries.map(cloneConfiguration).toList();
       case 'listBundles':
-        return bundles;
+        return bundles.map(cloneConfiguration).toList();
       case 'inspect':
         return {
           'status': 'accepted',
@@ -78,11 +91,13 @@ class PluginsRuntime extends RuntimeController {
         };
       case 'setPluginEnabled':
       case 'setBundleEnabled':
-        return {
-          'changed': true,
-          'application': 'restart-required',
-          'restartReason': 'no-hmr',
-        };
+        if (failChange) throw StateError('lost acknowledgement');
+        return changing?.future ??
+            {
+              'changed': true,
+              'application': 'restart-required',
+              'restartReason': 'no-hmr',
+            };
       case 'removeBundle':
         bundles = [];
         return {'changed': true, 'application': 'applied'};
@@ -101,6 +116,12 @@ class PluginsRuntime extends RuntimeController {
     }
     throw StateError('Unexpected API $params');
   }
+
+  Json snapshot() => cloneConfiguration({
+    'managementAvailable': managed,
+    'entries': entries,
+    'agentPresets': [],
+  });
 
   @override
   void dispose() {
@@ -148,6 +169,306 @@ Future<void> tap(WidgetTester tester, String label) async {
 }
 
 void main() {
+  test(
+    'toggle notifies only its target and stays locked through readback',
+    () async {
+      final runtime = PluginsRuntime()..changing = Completer<Json>();
+      final controller = await ready(runtime);
+      final original = controller.entries.single;
+      var pageNotifications = 0, targetNotifications = 0;
+      controller.addListener(() => pageNotifications++);
+      controller
+          .actionFor('include:tool')
+          .addListener(() => targetNotifications++);
+      final run = controller.change('include:tool', 'setPluginEnabled', {
+        'id': 'include:tool',
+        'enabled': true,
+      });
+      expect(pageNotifications, 0);
+      expect(targetNotifications, 1);
+      expect(controller.canChange('include:tool'), isFalse);
+      expect(controller.canChange('include:other'), isTrue);
+      expect(identical(controller.entries.single, original), isTrue);
+      expect(original['enabled'], isFalse);
+      await controller.change('include:tool', 'setPluginEnabled', {
+        'id': 'include:tool',
+        'enabled': true,
+      });
+      controller.receive({'event': 'plugin-manager/changed'});
+      expect(methods(runtime, 'list'), hasLength(1));
+      runtime.inventoryRead = Completer<Json>();
+      runtime.changing!.complete({'changed': true, 'application': 'applied'});
+      await Future<void>.delayed(Duration.zero);
+      expect(controller.actionFor('include:tool').verifying, isTrue);
+      expect(controller.canChange('include:tool'), isFalse);
+      await controller.change('include:tool', 'setPluginEnabled', {
+        'id': 'include:tool',
+        'enabled': true,
+      });
+      runtime.entries = [
+        {...entry(), 'enabled': true},
+      ];
+      runtime.inventoryRead!.complete(runtime.snapshot());
+      await run;
+      expect(controller.entries.single['enabled'], isTrue);
+      expect(controller.canChange('include:tool'), isTrue);
+      expect(methods(runtime, 'setPluginEnabled'), hasLength(1));
+      expect(methods(runtime, 'list'), hasLength(2));
+      expect(methods(runtime, 'listBundles'), hasLength(2));
+      expect(methods(runtime, 'listPlugins'), hasLength(2));
+      expect(methods(runtime, 'setPluginEnabled').single['params']['args'], {
+        'id': 'include:tool',
+        'enabled': true,
+      });
+    },
+  );
+
+  test(
+    'concurrent reads are single flight and unchanged rows retain identity',
+    () async {
+      final runtime = PluginsRuntime();
+      final controller = await ready(runtime);
+      final oldEntries = controller.entries, oldBundles = controller.bundles;
+      runtime.inventoryRead = Completer<Json>();
+      final first = controller.load(), second = controller.load();
+      expect(identical(first, second), isTrue);
+      runtime.inventoryRead!.complete(runtime.snapshot());
+      await first;
+      expect(identical(controller.entries, oldEntries), isTrue);
+      expect(identical(controller.bundles, oldBundles), isTrue);
+      expect(methods(runtime, 'list'), hasLength(2));
+    },
+  );
+
+  test(
+    'changed bursts discard an old read and coalesce into one fresh read',
+    () async {
+      final runtime = PluginsRuntime();
+      final controller = await ready(runtime);
+      final oldSnapshot = runtime.snapshot();
+      final delayed = runtime.inventoryRead = Completer<Json>();
+      final reading = controller.load();
+      controller.receive({'event': 'plugin-manager/changed'});
+      controller.receive({'event': 'plugin-market/changed'});
+      runtime.entries = [
+        {...entry(), 'enabled': true},
+      ];
+      runtime.inventoryRead = null;
+      delayed.complete(oldSnapshot);
+      await reading;
+      expect(controller.entries.single['enabled'], isTrue);
+      expect(methods(runtime, 'list'), hasLength(3));
+      // The stale snapshot never causes the two expensive management reads.
+      expect(methods(runtime, 'listBundles'), hasLength(2));
+      expect(methods(runtime, 'listPlugins'), hasLength(2));
+    },
+  );
+
+  test('a refresh requested by the completion listener is not lost', () async {
+    final runtime = PluginsRuntime();
+    final controller = await ready(runtime);
+    var requested = false;
+    Future<void>? followup;
+    controller.addListener(() {
+      if (!controller.loading && !requested) {
+        requested = true;
+        followup = controller.load(invalidate: true);
+      }
+    });
+    await controller.load();
+    await followup;
+    expect(methods(runtime, 'list'), hasLength(3));
+    expect(controller.fresh, isTrue);
+  });
+
+  test(
+    'failed readback keeps the list and blocks retry until a successful read',
+    () async {
+      final runtime = PluginsRuntime();
+      final controller = await ready(runtime);
+      final before = controller.entries;
+      runtime.failRead = true;
+      await controller.change('include:tool', 'setPluginEnabled', {
+        'id': 'include:tool',
+        'enabled': true,
+      });
+      expect(identical(controller.entries, before), isTrue);
+      expect(controller.actionFor('include:tool').awaitingRefresh, isTrue);
+      expect(controller.canChange('include:tool'), isFalse);
+      await controller.change('include:tool', 'setPluginEnabled', {
+        'id': 'include:tool',
+        'enabled': true,
+      });
+      runtime.failRead = false;
+      await controller.load();
+      expect(controller.canChange('include:tool'), isTrue);
+      expect(controller.actionFor('include:tool').message, contains('重启'));
+      expect(methods(runtime, 'setPluginEnabled'), hasLength(1));
+    },
+  );
+
+  test('unknown write is never replayed or described as a successful acknowledgement', () async {
+    final runtime = PluginsRuntime()..failChange = true;
+    final controller = await ready(runtime);
+    runtime.entries = [
+      {...entry(), 'enabled': true},
+    ];
+    await controller.change('include:tool', 'setPluginEnabled', {
+      'id': 'include:tool',
+      'enabled': true,
+    });
+    final action = controller.actionFor('include:tool');
+    expect(action.unknown, isTrue);
+    expect(action.result, isNull);
+    expect(action.message, contains('结果未确认'));
+    expect(controller.entries.single['enabled'], isTrue);
+    expect(controller.canChange('include:tool'), isTrue);
+    expect(methods(runtime, 'setPluginEnabled'), hasLength(1));
+  });
+
+  test(
+    'old service write receipt cannot claim success on a new connection',
+    () async {
+      final runtime = PluginsRuntime()..changing = Completer<Json>();
+      final controller = await ready(runtime);
+      final run = controller.change('include:tool', 'setPluginEnabled', {
+        'id': 'include:tool',
+        'enabled': true,
+      });
+      runtime.connection(ready: false);
+      expect(controller.fresh, isFalse);
+      runtime.connection(ready: true);
+      runtime.changing!.complete({'changed': true, 'application': 'applied'});
+      await run;
+      expect(controller.actionFor('include:tool').unknown, isTrue);
+      expect(controller.actionFor('include:tool').result, isNull);
+      expect(controller.entries.single['enabled'], isFalse);
+      expect(methods(runtime, 'setPluginEnabled'), hasLength(1));
+    },
+  );
+
+  test(
+    'disconnection and observation errors fence late inventory responses',
+    () async {
+      final runtime = PluginsRuntime();
+      final controller = await ready(runtime);
+      controller.attach();
+      var delayed = runtime.inventoryRead = Completer<Json>();
+      var reading = controller.load();
+      runtime.connection(ready: false);
+      delayed.complete({...runtime.snapshot(), 'entries': []});
+      await reading;
+      expect(controller.fresh, isFalse);
+      expect(controller.entries, hasLength(1));
+      runtime.inventoryRead = null;
+      runtime.connection(ready: true);
+      await controller.load();
+      delayed = runtime.inventoryRead = Completer<Json>();
+      reading = controller.load();
+      runtime.eventsController.addError(StateError('observation failed'));
+      await Future<void>.delayed(Duration.zero);
+      delayed.complete({...runtime.snapshot(), 'entries': []});
+      await reading;
+      expect(controller.fresh, isFalse);
+      expect(controller.entries, hasLength(1));
+      runtime.inventoryRead = null;
+      await controller.load();
+      expect(controller.fresh, isTrue);
+    },
+  );
+
+  testWidgets(
+    'runtime toggles preserve scrolled position and neighboring row identity',
+    (tester) async {
+      final runtime = PluginsRuntime()
+        ..changing = Completer<Json>()
+        ..entries = List.generate(
+          30,
+          (index) => {
+            ...entry(),
+            'entryId': 'entry:$index',
+            'moduleName': 'tool-$index',
+          },
+        );
+      final controller = await ready(runtime);
+      await mount(
+        tester,
+        PluginRuntimePage(controller: controller),
+        size: const Size(390, 844),
+      );
+      final row = find.byKey(const ValueKey('entry:12'));
+      await tester.ensureVisible(row);
+      await tester.pumpAndSettle();
+      final neighbor = tester.element(find.byKey(const ValueKey('entry:13')));
+      final scroll = tester
+          .state<ScrollableState>(find.byType(Scrollable).first)
+          .position;
+      final offset = scroll.pixels, top = tester.getTopLeft(row).dy;
+      final toggle = find.descendant(
+        of: row,
+        matching: find.byType(PocketSwitchRow),
+      );
+      tester.widget<PocketSwitchRow>(toggle).onChanged!(true);
+      await tester.pumpAndSettle();
+      expect(scroll.pixels, offset);
+      expect(tester.getTopLeft(row).dy, top);
+      expect(tester.widget<PocketSwitchRow>(toggle).onChanged, isNull);
+      expect(tester.widget<PocketSwitchRow>(toggle).value, isFalse);
+      runtime.inventoryRead = Completer<Json>();
+      runtime.changing!.complete({
+        'changed': true,
+        'application': 'restart-required',
+        'restartReason': 'no-hmr',
+      });
+      await tester.pumpAndSettle();
+      expect(scroll.pixels, offset);
+      expect(tester.getTopLeft(row).dy, top);
+      runtime.inventoryRead!.complete(runtime.snapshot());
+      await tester.pumpAndSettle();
+      expect(scroll.pixels, offset);
+      expect(tester.getTopLeft(row).dy, top);
+      expect(
+        identical(
+          tester.element(find.byKey(const ValueKey('entry:13'))),
+          neighbor,
+        ),
+        isTrue,
+      );
+      expect(tester.widget<PocketSwitchRow>(toggle).onChanged, isNotNull);
+      expect(find.text('配置已保存，重启后生效 · 详情'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'bundle feedback stays inline and details keep the real core outcome',
+    (tester) async {
+      final runtime = PluginsRuntime();
+      final controller = await ready(runtime);
+      await mount(
+        tester,
+        PluginBundlePage(controller: controller, name: '@example/bundle'),
+        size: const Size(390, 844),
+      );
+      final title = find.text('启用插件包');
+      final top = tester.getTopLeft(title).dy;
+      final toggle = find.ancestor(
+        of: title,
+        matching: find.byType(PocketSwitchRow),
+      );
+      tester.widget<PocketSwitchRow>(toggle).onChanged!(true);
+      await tester.pumpAndSettle();
+      expect(tester.getTopLeft(title).dy, top);
+      expect(find.textContaining('原因：no-hmr'), findsNothing);
+      await tester.tap(find.text('配置已保存，重启后生效 · 详情'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('原因：no-hmr'), findsOneWidget);
+      expect(find.textContaining('配置：停用'), findsOneWidget);
+      expect(methods(runtime, 'setBundleEnabled'), hasLength(1));
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   testWidgets('package and configured-entry rows render their original artwork', (
     tester,
   ) async {

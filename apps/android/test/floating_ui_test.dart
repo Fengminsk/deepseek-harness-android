@@ -17,6 +17,153 @@ Widget host(Widget child, {bool reduceMotion = false, double scale = 1}) =>
     );
 
 void main() {
+  for (final solid in [false, true]) {
+    for (final parentSize in [
+      const Size(140, 44),
+      const Size(44, 100),
+      const Size(28, 80),
+    ]) {
+      testWidgets(
+        'independent icon remains circular: solid=$solid parent=$parentSize',
+        (tester) async {
+          await tester.pumpWidget(
+            host(
+              Scaffold(
+                body: Center(
+                  child: SizedBox.fromSize(
+                    size: parentSize,
+                    child: LiquidGlassScope(
+                      enabled: true,
+                      child: GlassButton(
+                        icon: Icons.add_rounded,
+                        label: '很长的操作说明不会改变按钮形状或尺寸' * 3,
+                        solid: solid,
+                        onPressed: () {},
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              scale: 2.5,
+            ),
+          );
+          final button = find.byType(IconButton);
+          final box = tester.renderObject<RenderBox>(button);
+          expect(box.size.width, closeTo(box.size.height, .001));
+          expect(box.size.width, lessThanOrEqualTo(parentSize.shortestSide));
+          final shape = tester
+              .widget<IconButton>(button)
+              .style!
+              .shape!
+              .resolve({});
+          expect(shape, isA<CircleBorder>());
+          if (!solid) {
+            final glass = tester.widget<LiquidGlass>(find.byType(LiquidGlass));
+            final clip = glass.clipper!.getClip(box.size);
+            expect(clip.contains(Offset.zero), isFalse);
+            expect(clip.contains(Offset(box.size.width / 2, 1)), isTrue);
+          }
+          final gesture = await tester.startGesture(tester.getCenter(button));
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 240));
+          expect(
+            ElasticPress.paintBoundsOf(box).width,
+            greaterThan(box.size.width),
+          );
+          for (final delta in [
+            const Offset(65, 0),
+            const Offset(0, 45),
+            const Offset(-85, -70),
+          ]) {
+            await gesture.moveBy(delta);
+            await tester.pump();
+            await tester.pump(const Duration(milliseconds: 240));
+            final paint = ElasticPress.paintBoundsOf(box);
+            expect(paint.width, closeTo(paint.height, .001));
+          }
+          await gesture.cancel();
+          await tester.pumpAndSettle();
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+  }
+
+  testWidgets(
+    'color swatches keep a circle under rectangular constraints and drag',
+    (tester) async {
+      await tester.pumpWidget(
+        host(
+          Scaffold(
+            body: Center(
+              child: SizedBox(
+                width: 100,
+                height: 38,
+                child: PocketSwatch(
+                  color: Colors.blue,
+                  selected: true,
+                  onTap: () {},
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      final decoration = find.descendant(
+        of: find.byType(PocketSwatch),
+        matching: find.byType(DecoratedBox),
+      );
+      final box = tester.renderObject<RenderBox>(decoration);
+      expect(box.size, const Size.square(38));
+      expect(
+        (tester.widget<DecoratedBox>(decoration).decoration as ShapeDecoration)
+            .shape,
+        isA<CircleBorder>(),
+      );
+      final gesture = await tester.startGesture(tester.getCenter(decoration));
+      await gesture.moveBy(const Offset(60, 15));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 240));
+      final paint = ElasticPress.paintBoundsOf(box);
+      expect(paint.width, closeTo(paint.height, .001));
+      await gesture.cancel();
+      await tester.pumpAndSettle();
+    },
+  );
+
+  testWidgets(
+    'text capsules keep their own width and directional press behavior',
+    (tester) async {
+      await tester.pumpWidget(
+        host(
+          Scaffold(
+            body: Center(
+              child: PocketButton(
+                onPressed: () {},
+                child: const Text('保留文字胶囊按钮'),
+              ),
+            ),
+          ),
+        ),
+      );
+      final press = tester.widget<ElasticPress>(find.byType(ElasticPress));
+      expect(press.preserveAspectRatio, isFalse);
+      final box = tester.renderObject<RenderBox>(find.byType(FilledButton));
+      expect(box.size.width, greaterThan(box.size.height));
+      final rest = ElasticPress.paintBoundsOf(box);
+      final gesture = await tester.startGesture(
+        tester.getCenter(find.byType(FilledButton)),
+      );
+      await gesture.moveBy(const Offset(80, 0));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 240));
+      final paint = ElasticPress.paintBoundsOf(box);
+      expect(paint.width / rest.width, greaterThan(paint.height / rest.height));
+      await gesture.cancel();
+      await tester.pumpAndSettle();
+    },
+  );
+
   testWidgets(
     'glass press grows, follows a drag, cancels action and springs home',
     (tester) async {
@@ -50,6 +197,13 @@ void main() {
       expect(
         ElasticPress.paintBoundsOf(box).center.dx,
         greaterThan(rest.center.dx + 2),
+      );
+      final dragged = ElasticPress.paintBoundsOf(box);
+      expect(
+        dragged.width,
+        closeTo(dragged.height, .001),
+        reason:
+            'A standalone circular control must not stretch into an ellipse.',
       );
       // Layout and hit testing stay where the button was; its paint alone moves.
       expect(box.size.width, rest.width);
