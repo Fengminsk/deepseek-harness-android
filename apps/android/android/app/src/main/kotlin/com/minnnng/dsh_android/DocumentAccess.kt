@@ -7,6 +7,7 @@ import android.os.CancellationSignal
 import android.provider.DocumentsContract
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.IOException
 import java.security.MessageDigest
 
 /** Traversal starts from a currently persisted SAF grant, never an arbitrary URI. */
@@ -77,7 +78,7 @@ class DocumentAccess(private val context: Context) {
                         check(found == null) { "Ambiguous document name" }; found = cursor.getString(0)
                     }
                 }
-            }
+            } ?: throw IOException("文件提供方暂不可用，请重试")
             document = DocumentsContract.buildDocumentUriUsingTree(tree, found ?: throw IllegalArgumentException("File not found: $segment"))
         }
         return document
@@ -99,7 +100,7 @@ class DocumentAccess(private val context: Context) {
         check(hasGrant(root)) { "目录授权已撤销，请重新授权" }
         return items
     }
-    fun read(root: String, path: String, offset: Int): JSONObject {
+    fun read(root: String, path: String, offset: Long): JSONObject {
         val page = DocumentReadAccess.read(object : DocumentReadAccess.Source {
             override fun isGranted(root: String): Boolean = hasGrant(root)
             override fun open(root: String, path: String) = resolver.openInputStream(document(root, path))

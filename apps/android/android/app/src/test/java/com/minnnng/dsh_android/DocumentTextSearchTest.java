@@ -8,6 +8,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -95,6 +96,73 @@ public final class DocumentTextSearchTest {
         check(!worker.isAlive() && closed.get() && outcome.get() instanceof IOException, "Stream closed and worker terminated");
         fails(CancellationException.class, job::check);
         check(providerCancel.get() == 2, "Both cancellations reach provider signal");
+        blockedCleanupKeepsOwnership();
         System.out.println("DocumentTextSearch: UTF8/bounds/revocation/cancellation checks passed");
+    }
+
+    private static void blockedCleanupKeepsOwnership() throws Exception {
+        var cleanup = Executors.newFixedThreadPool(2);
+        CountDownLatch readEntered = new CountDownLatch(1), readRelease = new CountDownLatch(1),
+            cancelEntered = new CountDownLatch(1), cancelRelease = new CountDownLatch(1),
+            closeEntered = new CountDownLatch(2), closeRelease = new CountDownLatch(1),
+            requested = new CountDownLatch(1);
+        DocumentSearchJob job = new DocumentSearchJob(() -> {
+            cancelEntered.countDown();
+            try { cancelRelease.await(); }
+            catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+        });
+        InputStream provider = new InputStream() {
+            public int read() throws IOException {
+                readEntered.countDown();
+                try { readRelease.await(); }
+                catch (InterruptedException interrupted) { throw new IOException(interrupted); }
+                throw new IOException("provider cancelled");
+            }
+            public void close() throws IOException {
+                closeEntered.countDown();
+                try { closeRelease.await(); }
+                catch (InterruptedException interrupted) { throw new IOException(interrupted); }
+            }
+        };
+        AtomicReference<Throwable> outcome = new AtomicReference<>();
+        check(job.start(), "Cloud search starts");
+        Thread worker = new Thread(() -> {
+            try {
+                job.attach(provider);
+                DocumentTextSearch.scan(provider, "x", true, 99, 1, 600, job::check);
+            } catch (Throwable failure) { outcome.set(failure); }
+            finally {
+                try { provider.close(); }
+                catch (IOException failure) { outcome.set(failure); }
+                finally { job.detach(); job.finish(); }
+            }
+        });
+        Thread requester = new Thread(() -> {
+            job.requestCancel(cleanup);
+            requested.countDown();
+        });
+        try {
+            worker.start();
+            check(readEntered.await(2, TimeUnit.SECONDS), "Cloud read has started");
+            requester.start();
+            check(requested.await(2, TimeUnit.SECONDS), "Cancel request must not wait for blocked provider cleanup");
+            check(cancelEntered.await(2, TimeUnit.SECONDS), "Provider cancellation starts independently");
+            readRelease.countDown();
+            check(closeEntered.await(2, TimeUnit.SECONDS), "Both cancellation and scanning owner close the provider");
+            check(!job.awaitStopped(0), "Pending owner close must not report completed cancellation");
+            cancelRelease.countDown();
+            closeRelease.countDown();
+            check(job.awaitStopped(2000), "Released provider cleanup completes cancellation");
+            worker.join(2000);
+            check(!worker.isAlive() && outcome.get() instanceof IOException, "Cancelled provider never publishes a search result");
+        } finally {
+            readRelease.countDown();
+            cancelRelease.countDown();
+            closeRelease.countDown();
+            requester.join(2000);
+            worker.join(2000);
+            cleanup.shutdown();
+            check(cleanup.awaitTermination(2, TimeUnit.SECONDS), "Provider cleanup workers must exit");
+        }
     }
 }

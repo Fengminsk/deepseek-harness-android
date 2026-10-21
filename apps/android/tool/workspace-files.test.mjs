@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -231,4 +231,36 @@ test('a close timeout stays visible and pending cleanup remains owned until rele
   await h.service.close()
   assert.equal(openedHandle.fd, -1)
   assert.equal(h.service.pending.size, 0)
+})
+
+test('moving or replacing a file during a read never publishes the already-open content', async t => {
+  for (const replacement of [false, true]) {
+    const h = await fixture(t)
+    await h.put('moving.txt', 'old content')
+    const entered = Promise.withResolvers(), release = Promise.withResolvers()
+    const original = h.service.withFile.bind(h.service)
+    let openedHandle
+    h.service.withFile = (name, version, operation) => original(name, version, async (handle, ...rest) => {
+      openedHandle = handle
+      entered.resolve()
+      await release.promise
+      return operation(handle, ...rest)
+    })
+    const reading = h.service.call('read', { path: 'moving.txt' })
+    await entered.promise
+    try {
+      await rename(path.join(h.root, 'moving.txt'), path.join(h.root, 'moved.txt'))
+      if (replacement) await h.put('moving.txt', 'new content')
+    } finally { release.resolve() }
+    const result = await reading
+    // Metadata may expose the move before the old path lookup reports absence.
+    assert.ok((replacement ? ['workspace-files/changed'] : ['workspace-files/changed', 'workspace-files/not-found'])
+      .includes(result._pocket_error?.code))
+    assert.equal(result.text, undefined)
+    assert.equal(openedHandle.fd, -1)
+    assert.equal(await readFile(path.join(h.root, 'moved.txt'), 'utf8'), 'old content')
+    h.service.withFile = original
+    const reopened = await h.service.call('read', { path: replacement ? 'moving.txt' : 'moved.txt' })
+    assert.equal(reopened.text, replacement ? 'new content' : 'old content')
+  }
 })

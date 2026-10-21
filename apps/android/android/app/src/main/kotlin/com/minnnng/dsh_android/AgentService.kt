@@ -8,7 +8,6 @@ import android.net.Network
 import android.net.LinkProperties
 import android.net.NetworkRequest
 import org.json.JSONObject
-import java.io.BufferedWriter
 import java.io.File
 import java.util.concurrent.Executors
 import java.util.concurrent.ConcurrentHashMap
@@ -26,7 +25,7 @@ class AgentService : Service() {
     private val appClients = mutableMapOf<Messenger, AppClient>()
     private val pending = ConcurrentHashMap<String, Messenger>()
     private val nativePending = mutableMapOf<String, (Result<JSONObject>) -> Unit>()
-    private var output: BufferedWriter? = null
+    @Volatile private var output: RuntimeTransport? = null
     @Volatile private var phase = "starting"
     private var failure: String? = null
     private lateinit var recovery: RecoveryRuntime
@@ -267,7 +266,7 @@ class AgentService : Service() {
             val pair = NativeRuntime.socketPair()
             val socket = ParcelFileDescriptor.adoptFd(pair[0])
             val readSocket = ParcelFileDescriptor.dup(socket.fileDescriptor)
-            output = ParcelFileDescriptor.AutoCloseOutputStream(socket).bufferedWriter()
+            output = RuntimeTransport(lifecycle, ParcelFileDescriptor.AutoCloseOutputStream(socket).bufferedWriter())
             workers.execute {
                 try {
                     ParcelFileDescriptor.AutoCloseInputStream(readSocket).bufferedReader().useLines { lines ->
@@ -302,7 +301,7 @@ class AgentService : Service() {
                         "native.network.addresses" -> webPreferences.addresses()
                         "native.documents.roots" -> DocumentAccess(this).roots()
                         "native.documents.list" -> DocumentAccess(this).list(params.getString("root"), params.optString("path"))
-                        "native.documents.read" -> DocumentAccess(this).read(params.getString("root"), params.getString("path"), params.optInt("offset", 0))
+                        "native.documents.read" -> DocumentAccess(this).read(params.getString("root"), params.getString("path"), DocumentReadAccess.offset(params.opt("offset")))
                         "native.documents.revoke" -> {
                             val root = params.getString("root")
                             DocumentAccess(this).revoke(root).put("searchesStopped", documentSearch.revokeRoot(root))
@@ -464,9 +463,9 @@ class AgentService : Service() {
             }
         }
     }
-    @Synchronized private fun write(frame: JSONObject) {
+    private fun write(frame: JSONObject) {
         val stream = output ?: throw IllegalStateException("Runtime is not connected")
-        stream.write(frame.toString()); stream.newLine(); stream.flush()
+        stream.write(frame.toString())
     }
     private fun status() = JSONObject().put("method", "runtime.status").put("params",
         JSONObject().put("phase", phase).put("error", failure ?: JSONObject.NULL)
