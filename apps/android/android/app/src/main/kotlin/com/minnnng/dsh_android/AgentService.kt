@@ -17,6 +17,7 @@ import java.util.UUID
 /** Owns Node and its IPC endpoint; activity destruction does not terminate tasks. */
 class AgentService : Service() {
     private val main = Handler(Looper.getMainLooper())
+    private val lifecycle = RuntimeLifecycle()
     private val workers = Executors.newCachedThreadPool()
     private val recoveryWorker = Executors.newSingleThreadExecutor()
     private val transitionWrites = Executors.newSingleThreadExecutor()
@@ -283,8 +284,10 @@ class AgentService : Service() {
         finally { bootStopped = true }
     }
     private fun handle(frame: JSONObject) {
+        if (!lifecycle.acceptsFrames()) return
         if (frame.has("method") && frame.has("id")) {
             workers.execute {
+                if (!lifecycle.acceptsFrames()) return@execute
                 val id = frame.getString("id")
                 try {
                     val method = frame.getString("method")
@@ -316,6 +319,7 @@ class AgentService : Service() {
                 } catch (exception: Exception) { write(error(id, exception.message ?: "Native operation failed")) }
             }
         } else main.post {
+            if (!lifecycle.acceptsFrames()) return@post
             if (frame.optString("method") == "api.stream") {
                 val params = frame.getJSONObject("params")
                 val owner = params.getString("owner")
@@ -443,6 +447,7 @@ class AgentService : Service() {
     }
     private fun stopForTransition() {
         check(Application.getProcessName().endsWith(":agent")) { "Runtime restart requires the dedicated Agent process" }
+        lifecycle.close()
         phase = "restarting"
         background.phase(phase)
         main.removeCallbacks(summaryPoll)
@@ -455,7 +460,7 @@ class AgentService : Service() {
         main.post {
             try { Process.killProcess(Process.myPid()) }
             catch (_: Exception) {
-                fail("旧运行时停止未确认，插件管理仍暂停；请在系统设置中停止应用后重新打开")
+                reportFailure("旧运行时停止未确认，插件管理仍暂停；请在系统设置中停止应用后重新打开")
             }
         }
     }
@@ -475,7 +480,14 @@ class AgentService : Service() {
         })
     private fun error(id: String, message: String) = JSONObject().put("jsonrpc", "2.0").put("id", id)
         .put("error", JSONObject().put("code", -32603).put("message", message))
-    private fun fail(message: String) { main.post {
+    private fun fail(message: String) {
+        if (!lifecycle.fail()) return
+        main.post {
+            if (!lifecycle.failed()) return@post
+            reportFailure(message)
+        }
+    }
+    private fun reportFailure(message: String) {
         phase = "failed"; failure = message
         background.phase(phase)
         main.removeCallbacks(summaryPoll)
@@ -489,7 +501,7 @@ class AgentService : Service() {
         transitions.unavailable()
         approvals.close()
         broadcast(status())
-    } }
+    }
     private fun broadcast(frame: JSONObject) { clients.toList().forEach { send(it, frame) } }
     private fun send(client: Messenger, frame: JSONObject) {
         try {
@@ -523,6 +535,7 @@ class AgentService : Service() {
         }, "document-search-close").start()
     }
     override fun onDestroy() {
+        lifecycle.close()
         transitions.close()
         main.removeCallbacks(summaryPoll)
         main.removeCallbacks(summaryTimeout)

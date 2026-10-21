@@ -11,22 +11,20 @@ import io.flutter.plugin.common.MethodChannel
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
-import java.io.InputStream
 import java.nio.file.Files
 import java.nio.file.StandardOpenOption
 import java.util.UUID
 import java.util.concurrent.Executors
-import java.util.concurrent.atomic.AtomicBoolean
 
 /** One-time user-selected attachment copies; no URI or filesystem path crosses into Flutter. */
 class AttachmentTransfers(private val activity: Activity) : AutoCloseable {
     private class Selection(val result: MethodChannel.Result) {
-        val cancelled = AtomicBoolean(false)
-        @Volatile var input: InputStream? = null
+        val lifecycle = AttachmentImportLifecycle()
     }
 
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
+    private val closer = Executors.newSingleThreadExecutor()
     private var pending: Selection? = null
     private var closed = false
 
@@ -71,7 +69,7 @@ class AttachmentTransfers(private val activity: Activity) : AutoCloseable {
             try {
                 val root = directory(activity)
                 for (uri in uris.distinct()) {
-                    if (selection.cancelled.get()) break
+                    if (selection.lifecycle.isCancelled) break
                     var name = "附件"
                     val id = UUID.randomUUID().toString()
                     val source = File(root, "$id.bin")
@@ -85,14 +83,17 @@ class AttachmentTransfers(private val activity: Activity) : AutoCloseable {
                         val mediaType = activity.contentResolver.getType(uri) ?: "application/octet-stream"
                         val input = activity.contentResolver.openInputStream(uri)
                             ?: throw IllegalStateException("文件提供方不能读取该文件")
-                        selection.input = input
-                        val bytes = input.use { stream ->
-                            Files.newOutputStream(source.toPath(), StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE).use { output ->
-                                sourceOwned = true
-                                AttachmentCopy.copy(stream, output) { selection.cancelled.get() }
+                        val bytes = try {
+                            selection.lifecycle.attach(input)
+                            input.use { stream ->
+                                Files.newOutputStream(source.toPath(), StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE).use { output ->
+                                    sourceOwned = true
+                                    AttachmentCopy.copy(stream, output) { selection.lifecycle.isCancelled }
+                                }
                             }
+                        } finally {
+                            selection.lifecycle.detach(input)
                         }
-                        selection.input = null
                         val item = JSONObject().put("id", id).put("name", name)
                             .put("mediaType", mediaType).put("bytes", bytes)
                         Files.newOutputStream(metadata.toPath(), StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE).use {
@@ -103,15 +104,14 @@ class AttachmentTransfers(private val activity: Activity) : AutoCloseable {
                         unpublished.add(metadata)
                         items.put(item)
                     } catch (failure: Exception) {
-                        selection.input = null
                         if (sourceOwned) source.delete()
                         if (metadataOwned) metadata.delete()
-                        if (!selection.cancelled.get()) failures.put(JSONObject().put("name", name)
+                        if (!selection.lifecycle.isCancelled) failures.put(JSONObject().put("name", name)
                             .put("message", "无法读取所选文件，请检查文件提供方并重新选择。"))
                     }
                 }
                 main.post {
-                    if (selection.cancelled.get() || pending !== selection) {
+                    if (selection.lifecycle.isCancelled || pending !== selection) {
                         unpublished.forEach { it.delete() }
                     } else {
                         finish(selection, JSONObject().put("cancelled", false)
@@ -139,14 +139,17 @@ class AttachmentTransfers(private val activity: Activity) : AutoCloseable {
 
     override fun close() {
         closed = true
-        pending?.let { selection ->
-            selection.cancelled.set(true)
-            try { selection.input?.close() }
-            catch (failure: Exception) { /* Worker owns incomplete private-file cleanup. */ }
-            selection.result.error("attachment-closed", "附件选择已结束，请重新选择", null)
-        }
+        val selection = pending
         pending = null
-        worker.shutdownNow()
+        try {
+            selection?.let {
+                selection.lifecycle.requestCancel(closer)
+                selection.result.error("attachment-closed", "附件选择已结束，请重新选择", null)
+            }
+        } finally {
+            worker.shutdownNow()
+            closer.shutdown()
+        }
     }
 
     companion object {
