@@ -99,12 +99,16 @@ class TonalButtonTheme extends StatelessWidget {
     super.key,
     this.grouped = false,
     this.glass = false,
+    this.filledTonal = false,
     this.size = TonalButtonSize.bar,
     required this.child,
   });
 
   final bool grouped;
   final bool glass;
+
+  /// Secondary filled actions use a neutral pane, with readable surface text.
+  final bool filledTonal;
   final TonalButtonSize size;
   final Widget child;
 
@@ -150,7 +154,7 @@ class TonalButtonTheme extends StatelessWidget {
     ).merge(pane).merge(focusRingStyle(colorScheme, standsOff: standsOff));
     final iconPane = paneOf((states) => states.contains(WidgetState.selected));
     final filledPane = paneOf(
-      (states) => !states.contains(WidgetState.disabled),
+      (states) => !filledTonal && !states.contains(WidgetState.disabled),
     );
     final filledFeedback = feedback(
       grouped ? foreground : null,
@@ -178,14 +182,16 @@ class TonalButtonTheme extends StatelessWidget {
         data: FilledButtonThemeData(
           style: filledFeedback.merge(
             FilledButton.styleFrom(
-              backgroundColor: grouped ? fill : null,
-              foregroundColor: grouped
+              backgroundColor: grouped || filledTonal ? fill : null,
+              foregroundColor: grouped || filledTonal
                   ? foreground
                   : paned
                   ? colorScheme.onPrimary
                   : null,
-              disabledBackgroundColor: grouped ? fill : null,
-              disabledForegroundColor: grouped ? disabledForeground : null,
+              disabledBackgroundColor: grouped || filledTonal ? fill : null,
+              disabledForegroundColor: grouped || filledTonal
+                  ? disabledForeground
+                  : null,
               minimumSize: Size.square(size.button),
               padding: const EdgeInsets.symmetric(horizontal: 14),
               shape: AppShape.full,

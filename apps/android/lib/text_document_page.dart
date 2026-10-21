@@ -83,27 +83,33 @@ class _TextDocumentPageState extends State<TextDocumentPage> {
               label: '完成编辑',
               onPressed: editable ? finish : null,
             ),
-      body: PocketList(
-        children: [
-          TextDocumentField(
-            fieldKey: widget.fieldKey,
-            controller: input,
-            readOnly: !editable,
-            monospace: widget.monospace,
-            errorText: error,
-            onChanged: (_) => setState(() => error = null),
-          ),
-          if (widget.helperText != null || !widget.readOnly && !editable)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
-              child: Text(
-                !widget.readOnly && !editable
-                    ? '当前暂不能完成编辑，输入已保留。连接恢复后可继续。'
-                    : widget.helperText!,
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
+      // The body fills the viewport even when a short document leaves a large
+      // blank area. Child text/selection gestures still win their own taps.
+      body: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onTap: () => FocusScope.of(context).unfocus(),
+        child: PocketList(
+          children: [
+            TextDocumentField(
+              fieldKey: widget.fieldKey,
+              controller: input,
+              readOnly: !editable,
+              monospace: widget.monospace,
+              errorText: error,
+              onChanged: (_) => setState(() => error = null),
             ),
-        ],
+            if (widget.helperText != null || !widget.readOnly && !editable)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
+                child: Text(
+                  !widget.readOnly && !editable
+                      ? '当前暂不能完成编辑，输入已保留。连接恢复后可继续。'
+                      : widget.helperText!,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ),
+          ],
+        ),
       ),
     ),
   );
@@ -140,6 +146,9 @@ class TextDocumentField extends StatelessWidget {
     autocorrect: false,
     enableSuggestions: false,
     enableInteractiveSelection: true,
+    // Flutter's default outside action deliberately keeps focus for touch.
+    // Document editors use the same dismissal rule for touch and mouse.
+    onTapOutside: (_) => FocusScope.of(context).unfocus(),
     style: Theme.of(context).textTheme.bodyLarge
         ?.copyWith(fontFamily: monospace ? 'monospace' : null, height: 1.55),
     decoration: InputDecoration(errorText: errorText, hintText: hintText),

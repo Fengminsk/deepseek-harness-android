@@ -112,7 +112,7 @@ class GlassButton extends StatelessWidget {
   final bool solid;
   @override
   Widget build(BuildContext context) {
-    final glass = !solid && LiquidGlassScope.of(context);
+    final glass = LiquidGlassScope.of(context);
     final colors = Theme.of(context).colorScheme;
     return _CircleControl(
       builder: (side) => TonalButtonTheme(
@@ -131,13 +131,22 @@ class GlassButton extends StatelessWidget {
                   iconSize: math.min(24, side),
                   padding: EdgeInsets.zero,
                   shape: const CircleBorder(),
-                  backgroundColor: solid ? colors.primary : null,
+                  backgroundColor: glass
+                      ? Colors.transparent
+                      : solid
+                      ? colors.primary
+                      : null,
+                  disabledBackgroundColor: glass ? Colors.transparent : null,
                   foregroundColor: solid ? colors.onPrimary : null,
                 ).copyWith(
                   backgroundBuilder: glass
                       ? (context, states, child) => LiquidGlass(
-                          style: LiquidGlassStyle.regular(colors),
-                          pressed: states.contains(WidgetState.pressed),
+                          style: solid && !states.contains(WidgetState.disabled)
+                              ? LiquidGlassStyle.tinted(colors, colors.primary)
+                              : LiquidGlassStyle.regular(colors),
+                          pressed:
+                              !states.contains(WidgetState.disabled) &&
+                              states.contains(WidgetState.pressed),
                           clipper: const _CircleControlClipper(),
                           child: child,
                         )
@@ -185,13 +194,13 @@ class PocketButton extends StatelessWidget {
     required this.onPressed,
     required this.child,
     this.tonal = false,
-    this.glass = false,
+    this.glass = true,
   });
   const PocketButton.tonal({
     super.key,
     required this.onPressed,
     required this.child,
-    this.glass = false,
+    this.glass = true,
   }) : tonal = true;
   final VoidCallback? onPressed;
   final Widget child;
@@ -202,22 +211,10 @@ class PocketButton extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 5),
       child: TonalButtonTheme(
         glass: glass && LiquidGlassScope.of(context),
+        filledTonal: tonal,
         child: ElasticPress(
           enabled: onPressed != null,
-          child: Builder(
-            builder: (context) => FilledButton(
-              onPressed: onPressed,
-              style: tonal
-                  ? FilledButton.styleFrom(
-                      backgroundColor: context.raisedSurfaceLevel.colorOf(
-                        Theme.of(context).colorScheme,
-                      ),
-                      foregroundColor: Theme.of(context).colorScheme.onSurface,
-                    )
-                  : null,
-              child: child,
-            ),
-          ),
+          child: FilledButton(onPressed: onPressed, child: child),
         ),
       ),
     ),

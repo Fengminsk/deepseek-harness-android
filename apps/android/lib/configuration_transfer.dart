@@ -5,6 +5,7 @@ import 'dart:math';
 import 'package:material_ui/material_ui.dart';
 
 import 'configuration_editor.dart' show configurationNamespaceTitle;
+import 'confirmation.dart';
 import 'metadata_artwork.dart';
 import 'flclash/switch.dart';
 import 'runtime.dart';
@@ -321,6 +322,7 @@ class _ConfigurationTransferPageState extends State<ConfigurationTransferPage> {
             : _Stage.home,
       );
     } else if (sourceDirty && source.text.isNotEmpty) {
+      FocusManager.instance.primaryFocus?.unfocus();
       setState(() => leaveReview = true);
     } else {
       close();
@@ -734,76 +736,45 @@ class _ConfigurationTransferPageState extends State<ConfigurationTransferPage> {
     onPopInvokedWithResult: (didPop, _) {
       if (!didPop) back();
     },
-    child: Stack(
-      children: [
-        PocketScaffold(
-          title: Text(switch (stage) {
-            _Stage.home => '导入与导出',
-            _Stage.input => '导入设置',
-            _Stage.preview => '核对导入',
-            _Stage.result => '导入结果',
-            _Stage.export => '导出设置',
-          }),
-          leading: GlassButton(
-            icon: Icons.arrow_back_rounded,
-            label: '返回',
-            onPressed:
-                busy || stage == _Stage.home && !Navigator.canPop(context)
-                ? null
-                : back,
-          ),
-          bottom: action(),
-          body: PocketList(
-            key: ValueKey('configuration-transfer-${stage.name}'),
-            padding: const EdgeInsets.fromLTRB(20, 12, 20, 28),
-            children: switch (stage) {
-              _Stage.home => homeContent(),
-              _Stage.input => inputContent(),
-              _Stage.preview => previewContent(),
-              _Stage.result => resultContent(),
-              _Stage.export => exportContent(),
-            },
-          ),
+    child: PocketConfirmationLayer(
+      confirmation: leaveReview
+          ? PocketConfirmation(
+              title: '保留导入草稿？',
+              message: '离开此页面将清除本次草稿，已应用的设置保持不变。',
+              secondaryLabel: '继续编辑',
+              onSecondary: () => setState(() => leaveReview = false),
+              primaryLabel: '放弃草稿并返回',
+              onPrimary: busy ? null : close,
+            )
+          : null,
+      child: PocketScaffold(
+        title: Text(switch (stage) {
+          _Stage.home => '导入与导出',
+          _Stage.input => '导入设置',
+          _Stage.preview => '核对导入',
+          _Stage.result => '导入结果',
+          _Stage.export => '导出设置',
+        }),
+        leading: GlassButton(
+          icon: Icons.arrow_back_rounded,
+          label: '返回',
+          onPressed: busy || stage == _Stage.home && !Navigator.canPop(context)
+              ? null
+              : back,
         ),
-        if (leaveReview) ...[
-          const Positioned.fill(
-            child: ModalBarrier(color: Color(0x55000000), dismissible: false),
-          ),
-          Positioned.fill(
-            child: SafeArea(
-              child: Center(
-                child: Padding(
-                  padding: const EdgeInsets.all(24),
-                  child: PocketSection(
-                    title: '保留导入草稿？',
-                    children: [
-                      note('离开此页面将清除本次草稿，已应用的设置保持不变。'),
-                      Padding(
-                        padding: const EdgeInsets.all(20),
-                        child: Wrap(
-                          spacing: 8,
-                          runSpacing: 8,
-                          children: [
-                            PocketButton(
-                              onPressed: () =>
-                                  setState(() => leaveReview = false),
-                              child: const Text('继续编辑'),
-                            ),
-                            PocketButton.tonal(
-                              onPressed: close,
-                              child: const Text('放弃草稿并返回'),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ],
-      ],
+        bottom: action(),
+        body: PocketList(
+          key: ValueKey('configuration-transfer-${stage.name}'),
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 28),
+          children: switch (stage) {
+            _Stage.home => homeContent(),
+            _Stage.input => inputContent(),
+            _Stage.preview => previewContent(),
+            _Stage.result => resultContent(),
+            _Stage.export => exportContent(),
+          },
+        ),
+      ),
     ),
   );
 }

@@ -122,6 +122,7 @@ Future<void> open(
   double textScale = 1,
   Brightness brightness = Brightness.light,
   bool disableAnimations = false,
+  bool asRoute = false,
 }) async {
   tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1;
@@ -164,11 +165,33 @@ Future<void> open(
                 ),
               )
             : theme,
-        home: ConfigurationTransferPage(runtime: runtime),
+        home: asRoute
+            ? Builder(
+                builder: (context) => PocketScaffold(
+                  title: const Text('父设置'),
+                  body: PocketButton(
+                    key: const Key('configuration-transfer-host-open'),
+                    onPressed: () => Navigator.of(context).push<void>(
+                      PocketRoute(
+                        builder: (_) =>
+                            ConfigurationTransferPage(runtime: runtime),
+                      ),
+                    ),
+                    child: const Text('打开导入导出'),
+                  ),
+                ),
+              )
+            : ConfigurationTransferPage(runtime: runtime),
       ),
     ),
   );
   await tester.pumpAndSettle();
+  if (asRoute) {
+    await tap(
+      tester,
+      find.byKey(const Key('configuration-transfer-host-open')),
+    );
+  }
 }
 
 Future<void> tap(WidgetTester tester, Finder finder) async {
@@ -223,6 +246,133 @@ Future<void> capture(WidgetTester tester, String name) async {
 }
 
 void main() {
+  testWidgets(
+    'continuing a real exit keeps the source and selection until explicit discard pops the route',
+    (tester) async {
+      final runtime = TransferRuntime();
+      runtime.nextPreview['sections'] = [
+        ...runtime.nextPreview['sections'] as List,
+        {...preview()['sections'][0] as Json, 'ns': 'tool-android-shell'},
+      ];
+      await open(tester, runtime, asRoute: true);
+      await enterPreview(tester);
+      await tap(
+        tester,
+        find.byKey(const ValueKey('configuration-transfer-tool-android-shell')),
+      );
+      expect(find.text('已选 1 项设置'), findsOneWidget);
+      await tap(tester, find.byTooltip('返回'));
+      await tap(tester, find.byTooltip('返回'));
+      expect(find.text('导入与导出'), findsOneWidget);
+
+      // This is a real route pop request, rather than the preview's stage back.
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(find.text('保留导入草稿？'), findsOneWidget);
+      expect(find.text('父设置'), findsNothing);
+      await tap(tester, find.text('继续编辑'));
+      expect(find.text('保留导入草稿？'), findsNothing);
+      expect(find.byType(ConfigurationTransferPage), findsOneWidget);
+      expect(find.text('父设置'), findsNothing);
+      expect(runtime.calls.map((call) => call.$1), [
+        'configuration.transfer.preview',
+      ]);
+
+      await tap(tester, find.text('继续导入'));
+      await tap(tester, find.text('查看或编辑 JSON'));
+      expect(tester.widget<TextField>(source).controller!.text, input);
+      await tap(tester, find.byTooltip('完成编辑'));
+      await tap(tester, find.text('查看上次预览'));
+      expect(find.text('已选 1 项设置'), findsOneWidget);
+      final semantics = tester.ensureSemantics();
+      try {
+        await tester.pump();
+        expect(
+          tester.getSemantics(
+            find.byKey(
+              const Key('configuration-transfer-selection-target-agent'),
+            ),
+          ),
+          isSemantics(isToggled: true),
+        );
+        expect(
+          tester.getSemantics(
+            find.byKey(
+              const Key(
+                'configuration-transfer-selection-target-tool-android-shell',
+              ),
+            ),
+          ),
+          isSemantics(isToggled: false),
+        );
+      } finally {
+        semantics.dispose();
+      }
+      expect(runtime.calls.map((call) => call.$1), [
+        'configuration.transfer.preview',
+      ]);
+
+      await tap(tester, find.byTooltip('返回'));
+      await tap(tester, find.byTooltip('返回'));
+      await tap(tester, find.byTooltip('返回'));
+      expect(find.text('保留导入草稿？'), findsOneWidget);
+      expect(find.text('父设置'), findsNothing);
+      await tap(tester, find.text('放弃草稿并返回'));
+      expect(find.byType(ConfigurationTransferPage), findsNothing);
+      expect(find.text('父设置'), findsOneWidget);
+      expect(runtime.calls.map((call) => call.$1), [
+        'configuration.transfer.preview',
+        'configuration.transfer.release',
+      ]);
+      expect(runtime.refreshes, 0);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'continuing or discarding an uncertain import never replays its preview or apply',
+    (tester) async {
+      final runtime = TransferRuntime()..lostReply = true;
+      await open(tester, runtime, asRoute: true);
+      await enterPreview(tester);
+      await tap(tester, apply);
+      expect(find.textContaining('写入结果未确认'), findsOneWidget);
+      expect(apply, findsNothing);
+      await tap(tester, find.byTooltip('返回'));
+      await tap(tester, find.byTooltip('返回'));
+      await tap(tester, find.byTooltip('返回'));
+      expect(find.text('保留导入草稿？'), findsOneWidget);
+      expect(find.text('父设置'), findsNothing);
+      await tap(tester, find.text('继续编辑'));
+      await tap(tester, find.text('继续导入'));
+      await tap(tester, find.text('查看或编辑 JSON'));
+      expect(tester.widget<TextField>(source).controller!.text, input);
+      await tap(tester, find.byTooltip('完成编辑'));
+      await tap(tester, find.text('查看上次执行结果'));
+      expect(find.textContaining('写入结果未确认'), findsOneWidget);
+      expect(apply, findsNothing);
+      expect(runtime.calls.map((call) => call.$1), [
+        'configuration.transfer.preview',
+        'configuration.transfer.apply',
+      ]);
+
+      await tap(tester, find.byTooltip('返回'));
+      await tap(tester, find.byTooltip('返回'));
+      await tap(tester, find.byTooltip('返回'));
+      expect(find.text('父设置'), findsNothing);
+      await tap(tester, find.text('放弃草稿并返回'));
+      expect(find.byType(ConfigurationTransferPage), findsNothing);
+      expect(find.text('父设置'), findsOneWidget);
+      expect(runtime.calls.map((call) => call.$1), [
+        'configuration.transfer.preview',
+        'configuration.transfer.apply',
+        'configuration.transfer.release',
+      ]);
+      expect(runtime.refreshes, 0);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   testWidgets(
     'entry separates import and export with scope collapsed and no apply action',
     (tester) async {

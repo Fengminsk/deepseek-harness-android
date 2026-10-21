@@ -1,4 +1,5 @@
 import 'package:flutter/services.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:dsh_android/text_document_page.dart';
@@ -42,6 +43,133 @@ Future<void> mountDocument(
 }
 
 void main() {
+  testWidgets(
+    'touching viewport whitespace or the field gutter dismisses focus without losing the draft',
+    (tester) async {
+      String? result;
+      await mountDocument(
+        tester,
+        const TextDocumentPage(title: '文本编辑', text: 'before', readOnly: false),
+        onResult: (value) => result = value,
+      );
+      final input = find.byType(TextField);
+      final editable = tester.state<EditableTextState>(
+        find.byType(EditableText),
+      );
+      await tester.enterText(input, 'retained local draft');
+      tester.view.viewInsets = const FakeViewPadding(bottom: 300);
+      addTearDown(tester.view.resetViewInsets);
+      await tester.pumpAndSettle();
+      expect(editable.widget.focusNode.hasFocus, isTrue);
+      expect(tester.testTextInput.isVisible, isTrue);
+      final body = tester.getRect(find.byType(PocketList));
+      final blank = Offset(body.center.dx, body.bottom - 28);
+      expect(tester.getRect(input).contains(blank), isFalse);
+      await tester.tapAt(blank, kind: PointerDeviceKind.touch);
+      await tester.pumpAndSettle();
+      expect(editable.widget.focusNode.hasFocus, isFalse);
+      expect(tester.testTextInput.isVisible, isFalse);
+      expect(editable.widget.controller.text, 'retained local draft');
+      expect(result, isNull);
+
+      await tester.tap(input, kind: PointerDeviceKind.touch);
+      await tester.pumpAndSettle();
+      expect(editable.widget.focusNode.hasFocus, isTrue);
+      expect(tester.testTextInput.isVisible, isTrue);
+      final field = tester.getRect(input);
+      await tester.tapAt(
+        Offset(field.left - 8, field.center.dy),
+        kind: PointerDeviceKind.touch,
+      );
+      await tester.pumpAndSettle();
+      expect(editable.widget.focusNode.hasFocus, isFalse);
+      expect(tester.testTextInput.isVisible, isFalse);
+      expect(editable.widget.controller.text, 'retained local draft');
+      await tester.tap(find.byTooltip('完成编辑'));
+      await tester.pumpAndSettle();
+      expect(result, 'retained local draft');
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'body taps preserve text focus and selection while gutter drags still scroll',
+    (tester) async {
+      final text = List.filled(
+        80,
+        'selectable words remain in the draft',
+      ).join('\n');
+      await mountDocument(
+        tester,
+        TextDocumentPage(title: '文本编辑', text: text, readOnly: false),
+      );
+      final editable = tester.state<EditableTextState>(
+        find.byType(EditableText),
+      );
+      final word =
+          tester.getTopLeft(find.byType(EditableText)) + const Offset(20, 12);
+      await tester.tapAt(word, kind: PointerDeviceKind.touch);
+      await tester.pumpAndSettle();
+      expect(editable.widget.focusNode.hasFocus, isTrue);
+      expect(tester.testTextInput.isVisible, isTrue);
+      await tester.longPressAt(word, kind: PointerDeviceKind.touch);
+      await tester.pumpAndSettle();
+      expect(editable.widget.focusNode.hasFocus, isTrue);
+      expect(editable.widget.controller.selection.isCollapsed, isFalse);
+      final scroll = tester.state<ScrollableState>(
+        find
+            .descendant(
+              of: find.byType(PocketList),
+              matching: find.byType(Scrollable),
+            )
+            .first,
+      );
+      final before = scroll.position.pixels;
+      await tester.dragFrom(const Offset(8, 600), const Offset(0, -250));
+      await tester.pumpAndSettle();
+      expect(scroll.position.pixels, greaterThan(before));
+      expect(editable.widget.controller.text, text);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'shared document fields also dismiss touch focus outside a standalone host',
+    (tester) async {
+      final controller = TextEditingController(text: 'shared field');
+      addTearDown(controller.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: pocketTheme(Brightness.dark),
+          home: PocketScaffold(
+            title: const Text('共享编辑器'),
+            body: PocketList(
+              children: [TextDocumentField(controller: controller)],
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byType(TextField), kind: PointerDeviceKind.touch);
+      await tester.pumpAndSettle();
+      final editable = tester.state<EditableTextState>(
+        find.byType(EditableText),
+      );
+      expect(editable.widget.focusNode.hasFocus, isTrue);
+      expect(tester.testTextInput.isVisible, isTrue);
+      final body = tester.getRect(find.byType(PocketList));
+      await tester.tapAt(
+        Offset(body.center.dx, body.bottom - 20),
+        kind: PointerDeviceKind.touch,
+      );
+      await tester.pumpAndSettle();
+      expect(editable.widget.focusNode.hasFocus, isFalse);
+      expect(tester.testTextInput.isVisible, isFalse);
+      expect(controller.text, 'shared field');
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   testWidgets(
     'a 64 KiB readonly log scrolls to its last character and copies the full buffer',
     (tester) async {

@@ -286,27 +286,28 @@ class LiquidGlassStyle {
     );
   }
 
-  LiquidGlassStyle copyWith({double? blur}) => LiquidGlassStyle(
-    tint: tint,
-    contrast: contrast,
-    blur: blur ?? this.blur,
-    haze: haze,
-    hazeBlur: hazeBlur,
-    refraction: refraction,
-    bevel: bevel,
-    saturation: saturation,
-    brightness: brightness,
-    rim: rim,
-    rimWidth: rimWidth,
-    rimTail: rimTail,
-    rimFocus: rimFocus,
-    rimAdded: rimAdded,
-    endShade: endShade,
-    dispersion: dispersion,
-    rimBlur: rimBlur,
-    hairline: hairline,
-    hairlineSide: hairlineSide,
-  );
+  LiquidGlassStyle copyWith({double? blur, double? rim, double? hairline}) =>
+      LiquidGlassStyle(
+        tint: tint,
+        contrast: contrast,
+        blur: blur ?? this.blur,
+        haze: haze,
+        hazeBlur: hazeBlur,
+        refraction: refraction,
+        bevel: bevel,
+        saturation: saturation,
+        brightness: brightness,
+        rim: rim ?? this.rim,
+        rimWidth: rimWidth,
+        rimTail: rimTail,
+        rimFocus: rimFocus,
+        rimAdded: rimAdded,
+        endShade: endShade,
+        dispersion: dispersion,
+        rimBlur: rimBlur,
+        hairline: hairline ?? this.hairline,
+        hairlineSide: hairlineSide,
+      );
 
   static LiquidGlassStyle lerp(
     LiquidGlassStyle a,

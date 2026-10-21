@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:material_ui/material_ui.dart';
 
 import 'configuration_edits.dart';
+import 'confirmation.dart';
 import 'account.dart';
 import 'models_data.dart';
 import 'models_provider.dart';
@@ -226,70 +227,19 @@ class _ModelDraftGuardState extends State<ModelDraftGuard> {
         setState(() => review = true);
       }
     },
-    child: Stack(
-      children: [
-        ExcludeSemantics(
-          excluding: review,
-          child: ExcludeFocus(
-            excluding: review,
-            child: IgnorePointer(ignoring: review, child: widget.child),
-          ),
-        ),
-        if (review) ...[
-          const Positioned.fill(
-            child: ModalBarrier(color: Color(0x55000000), dismissible: false),
-          ),
-          Positioned.fill(
-            child: Padding(
-              padding: MediaQuery.viewInsetsOf(context),
-              child: SafeArea(
-                child: LayoutBuilder(
-                  builder: (context, constraints) => SingleChildScrollView(
-                    key: const Key('draft-review-scroll'),
-                    child: ConstrainedBox(
-                      constraints: BoxConstraints(
-                        minHeight: constraints.maxHeight,
-                      ),
-                      child: Center(
-                        child: Padding(
-                          padding: const EdgeInsets.all(24),
-                          child: ConstrainedBox(
-                            constraints: const BoxConstraints(maxWidth: 460),
-                            child: PocketSection(
-                              title: '保留当前编辑？',
-                              children: [
-                                const ModelNotice('当前内容尚未保存。继续编辑会保留所有输入。'),
-                                Padding(
-                                  padding: const EdgeInsets.all(16),
-                                  child: Wrap(
-                                    spacing: 8,
-                                    runSpacing: 8,
-                                    children: [
-                                      PocketButton(
-                                        onPressed: () =>
-                                            setState(() => review = false),
-                                        child: const Text('继续编辑'),
-                                      ),
-                                      PocketButton.tonal(
-                                        onPressed: widget.busy ? null : close,
-                                        child: const Text('放弃编辑并返回'),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ],
-      ],
+    child: PocketConfirmationLayer(
+      confirmation: review
+          ? PocketConfirmation(
+              title: '保留当前编辑？',
+              message: '当前内容尚未保存。继续编辑会保留所有输入。',
+              secondaryLabel: '继续编辑',
+              onSecondary: () => setState(() => review = false),
+              primaryLabel: '放弃编辑并返回',
+              onPrimary: widget.busy ? null : close,
+              scrollKey: const Key('draft-review-scroll'),
+            )
+          : null,
+      child: widget.child,
     ),
   );
 }

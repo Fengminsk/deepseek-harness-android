@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:material_ui/material_ui.dart';
 
 import 'automations_data.dart';
+import 'confirmation.dart';
 import 'runtime.dart';
 import 'ui.dart';
 
@@ -337,263 +338,231 @@ class _AutomationDetailPageState extends State<AutomationDetailPage> {
         if (!draft.dirty) {
           leave();
         } else {
+          FocusManager.instance.primaryFocus?.unfocus();
           setState(() => discardReview = true);
         }
       },
-      child: Stack(
-        children: [
-          PocketScaffold(
-            title: const Text('任务详情'),
-            trailing: GlassButton(
-              icon: Icons.refresh_rounded,
-              label: '刷新当前任务',
-              onPressed: catalog.loading || busy ? null : catalog.refresh,
-            ),
-            body: PocketList(
-              controller: scroll,
-              padding: const EdgeInsets.all(20),
-              children: [
-                if (notice != null) AutomationNotice(notice!),
-                if (error != null) AutomationNotice(error!),
-                if (catalog.error != null) AutomationNotice(catalog.error!),
-                if (!catalog.runtime.ready)
-                  const AutomationNotice('本地服务未就绪。草稿保留，暂不能保存。'),
-                if (missing && !deleted)
-                  const AutomationNotice('最新列表中已无此任务。保留当前草稿供查看。'),
-                if ((current ?? draft.base)['status'] == 'inactive')
-                  const AutomationNotice('任务已结束，不能修改。投递记录仍可查看。'),
-                if (stale && !deleted)
-                  PocketSection(
-                    title: '当前记录已变化',
-                    children: [
-                      const AutomationNotice('输入内容未被覆盖。比较服务中的记录，再决定是否继续编辑。'),
-                      AutomationNotice(
-                        '服务中的名称：${current!['title']}\n'
-                        '服务中的指令：${current!['prompt']}\n'
-                        '服务中的规则：${automationRule(current!)}\n'
-                        '原比较记录：${const JsonEncoder.withIndent('  ').convert(automationSnapshot(draft.base))}',
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.all(20),
-                        child: PocketButton.tonal(
-                          onPressed: editable ? rebase : null,
-                          child: const Text('保留草稿，采用当前比较记录'),
-                        ),
-                      ),
-                    ],
-                  ),
+      child: PocketConfirmationLayer(
+        confirmation: discardReview
+            ? PocketConfirmation(
+                title: '离开当前编辑？',
+                message: '尚未保存的草稿会丢弃。',
+                secondaryLabel: '继续编辑',
+                onSecondary: () => setState(() => discardReview = false),
+                primaryLabel: '放弃草稿并离开',
+                onPrimary: busy ? null : leave,
+              )
+            : null,
+        child: PocketScaffold(
+          title: const Text('任务详情'),
+          trailing: GlassButton(
+            icon: Icons.refresh_rounded,
+            label: '刷新当前任务',
+            onPressed: catalog.loading || busy ? null : catalog.refresh,
+          ),
+          body: PocketList(
+            controller: scroll,
+            padding: const EdgeInsets.all(20),
+            children: [
+              if (notice != null) AutomationNotice(notice!),
+              if (error != null) AutomationNotice(error!),
+              if (catalog.error != null) AutomationNotice(catalog.error!),
+              if (!catalog.runtime.ready)
+                const AutomationNotice('本地服务未就绪。草稿保留，暂不能保存。'),
+              if (missing && !deleted)
+                const AutomationNotice('最新列表中已无此任务。保留当前草稿供查看。'),
+              if ((current ?? draft.base)['status'] == 'inactive')
+                const AutomationNotice('任务已结束，不能修改。投递记录仍可查看。'),
+              if (stale && !deleted)
                 PocketSection(
-                  title: '任务内容',
+                  title: '当前记录已变化',
                   children: [
-                    input('title', '任务名称'),
-                    input('prompt', '任务指令', lines: 3),
+                    const AutomationNotice('输入内容未被覆盖。比较服务中的记录，再决定是否继续编辑。'),
+                    AutomationNotice(
+                      '服务中的名称：${current!['title']}\n'
+                      '服务中的指令：${current!['prompt']}\n'
+                      '服务中的规则：${automationRule(current!)}\n'
+                      '原比较记录：${const JsonEncoder.withIndent('  ').convert(automationSnapshot(draft.base))}',
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.all(20),
+                      child: PocketButton.tonal(
+                        onPressed: editable ? rebase : null,
+                        child: const Text('保留草稿，采用当前比较记录'),
+                      ),
+                    ),
                   ],
                 ),
-                PocketSection(
-                  title: '执行规则',
-                  children: [
+              PocketSection(
+                title: '任务内容',
+                children: [
+                  input('title', '任务名称'),
+                  input('prompt', '任务指令', lines: 3),
+                ],
+              ),
+              PocketSection(
+                title: '执行规则',
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 4, 20, 16),
+                    child: Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        for (final entry in const {
+                          'at': '单次',
+                          'every': '固定间隔',
+                          'daily': '每天',
+                          'weekly': '每周',
+                          'cron': 'Cron',
+                        }.entries)
+                          PocketChoice(
+                            label: Text(entry.value),
+                            selected: kind == entry.key,
+                            onSelected: editable
+                                ? (_) => setState(
+                                    () => draft.values['kind'] = entry.key,
+                                  )
+                                : null,
+                          ),
+                      ],
+                    ),
+                  ),
+                  if (kind == 'at') input('date', '日期', hint: 'YYYY-MM-DD'),
+                  if (kind == 'at' || kind == 'daily' || kind == 'weekly')
+                    input('time', '时间', hint: 'HH:mm:ss.SSS'),
+                  if (kind != 'every')
+                    input('zone', 'IANA 时区', hint: 'UTC 或 Asia/Shanghai'),
+                  if (kind == 'at')
+                    const AutomationNotice(
+                      '单次任务以 UTC 显示已保存的时刻；修改时按上方明确指定的时区解释。',
+                    ),
+                  if (kind == 'every')
+                    input('seconds', '间隔秒数', hint: '至少 60 秒'),
+                  if (kind == 'cron') ...[
+                    input('expression', 'Cron 表达式', hint: '分 时 日 月 星期'),
+                    const AutomationNotice('使用原版五字段 Cron 规则，时区与有效性由本地服务校验。'),
+                  ],
+                  if (kind == 'weekly')
                     Padding(
-                      padding: const EdgeInsets.fromLTRB(20, 4, 20, 16),
+                      padding: const EdgeInsets.all(20),
                       child: Wrap(
                         spacing: 8,
                         runSpacing: 8,
                         children: [
-                          for (final entry in const {
-                            'at': '单次',
-                            'every': '固定间隔',
-                            'daily': '每天',
-                            'weekly': '每周',
-                            'cron': 'Cron',
-                          }.entries)
+                          for (var day = 1; day <= 7; day++)
                             PocketChoice(
-                              label: Text(entry.value),
-                              selected: kind == entry.key,
+                              label: Text(
+                                const ['一', '二', '三', '四', '五', '六', '日'][day -
+                                    1],
+                              ),
+                              selected: draft.values['weekdays']!
+                                  .split(',')
+                                  .contains('$day'),
                               onSelected: editable
-                                  ? (_) => setState(
-                                      () => draft.values['kind'] = entry.key,
-                                    )
+                                  ? (_) {
+                                      final days = draft.values['weekdays']!
+                                          .split(',')
+                                          .map(int.parse)
+                                          .toSet();
+                                      if (!days.remove(day)) {
+                                        days.add(day);
+                                      } else if (days.isEmpty) {
+                                        days.add(day);
+                                      }
+                                      final ordered = days.toList()..sort();
+                                      setState(
+                                        () => draft.values['weekdays'] = ordered
+                                            .join(','),
+                                      );
+                                    }
                                   : null,
                             ),
                         ],
                       ),
                     ),
-                    if (kind == 'at') input('date', '日期', hint: 'YYYY-MM-DD'),
-                    if (kind == 'at' || kind == 'daily' || kind == 'weekly')
-                      input('time', '时间', hint: 'HH:mm:ss.SSS'),
-                    if (kind != 'every')
-                      input('zone', 'IANA 时区', hint: 'UTC 或 Asia/Shanghai'),
-                    if (kind == 'at')
-                      const AutomationNotice(
-                        '单次任务以 UTC 显示已保存的时刻；修改时按上方明确指定的时区解释。',
-                      ),
-                    if (kind == 'every')
-                      input('seconds', '间隔秒数', hint: '至少 60 秒'),
-                    if (kind == 'cron') ...[
-                      input('expression', 'Cron 表达式', hint: '分 时 日 月 星期'),
-                      const AutomationNotice('使用原版五字段 Cron 规则，时区与有效性由本地服务校验。'),
-                    ],
-                    if (kind == 'weekly')
-                      Padding(
-                        padding: const EdgeInsets.all(20),
-                        child: Wrap(
-                          spacing: 8,
-                          runSpacing: 8,
-                          children: [
-                            for (var day = 1; day <= 7; day++)
-                              PocketChoice(
-                                label: Text(
-                                  const [
-                                    '一',
-                                    '二',
-                                    '三',
-                                    '四',
-                                    '五',
-                                    '六',
-                                    '日',
-                                  ][day - 1],
-                                ),
-                                selected: draft.values['weekdays']!
-                                    .split(',')
-                                    .contains('$day'),
-                                onSelected: editable
-                                    ? (_) {
-                                        final days = draft.values['weekdays']!
-                                            .split(',')
-                                            .map(int.parse)
-                                            .toSet();
-                                        if (!days.remove(day)) {
-                                          days.add(day);
-                                        } else if (days.isEmpty) {
-                                          days.add(day);
-                                        }
-                                        final ordered = days.toList()..sort();
-                                        setState(
-                                          () => draft.values['weekdays'] =
-                                              ordered.join(','),
-                                        );
-                                      }
-                                    : null,
-                              ),
-                          ],
-                        ),
-                      ),
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
-                      child: PocketButton(
-                        onPressed: editable && draft.dirty ? save : null,
-                        child: Text(busy ? '正在处理……' : '保存任务'),
-                      ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+                    child: PocketButton(
+                      onPressed: editable && draft.dirty ? save : null,
+                      child: Text(busy ? '正在处理……' : '保存任务'),
                     ),
-                  ],
-                ),
-                PocketSection(
-                  title: '任务来源与记录',
-                  children: [
-                    PocketRow(
-                      icon: Icons.forum_outlined,
-                      title: '原会话',
-                      subtitle:
-                          '${widget.record['sessionId']}'
-                          '${canOpenSession ? '' : '\n原会话当前不可用'}',
-                      onTap: canOpenSession && !draft.dirty && !busy
-                          ? () => widget.onOpenSession(
-                              widget.record['sessionId'] as String,
-                            )
-                          : null,
-                    ),
-                    PocketRow(
-                      icon: Icons.history_rounded,
-                      title: '投递记录',
-                      subtitle: '查看已写入会话收件箱的提醒，不代表模型执行完成',
-                      onTap: deleted
-                          ? null
-                          : () => Navigator.push(
-                              context,
-                              PocketRoute<void>(
-                                builder: (_) => AutomationHistoryPage(
-                                  catalog: catalog,
-                                  record: widget.record,
-                                ),
+                  ),
+                ],
+              ),
+              PocketSection(
+                title: '任务来源与记录',
+                children: [
+                  PocketRow(
+                    icon: Icons.forum_outlined,
+                    title: '原会话',
+                    subtitle:
+                        '${widget.record['sessionId']}'
+                        '${canOpenSession ? '' : '\n原会话当前不可用'}',
+                    onTap: canOpenSession && !draft.dirty && !busy
+                        ? () => widget.onOpenSession(
+                            widget.record['sessionId'] as String,
+                          )
+                        : null,
+                  ),
+                  PocketRow(
+                    icon: Icons.history_rounded,
+                    title: '投递记录',
+                    subtitle: '查看已写入会话收件箱的提醒，不代表模型执行完成',
+                    onTap: deleted
+                        ? null
+                        : () => Navigator.push(
+                            context,
+                            PocketRoute<void>(
+                              builder: (_) => AutomationHistoryPage(
+                                catalog: catalog,
+                                record: widget.record,
                               ),
                             ),
-                    ),
-                  ],
-                ),
-                if (!deleted && !missing)
-                  PocketSection(
-                    title: '删除任务',
-                    children: [
-                      const AutomationNotice(
-                        '删除后不再产生新的提醒，并移除该任务的投递记录。已排队的会话消息保留。',
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
-                        child: Wrap(
-                          spacing: 12,
-                          children: [
-                            if (confirmingDelete) ...[
-                              PocketButton.tonal(
-                                onPressed: () =>
-                                    setState(() => confirmingDelete = false),
-                                child: const Text('保留任务'),
-                              ),
-                              PocketButton(
-                                onPressed: busy || !catalog.runtime.ready
-                                    ? null
-                                    : remove,
-                                child: const Text('确认删除任务'),
-                              ),
-                            ] else
-                              PocketButton.tonal(
-                                onPressed: busy || !catalog.runtime.ready
-                                    ? null
-                                    : () => setState(
-                                        () => confirmingDelete = true,
-                                      ),
-                                child: const Text('删除任务'),
-                              ),
-                          ],
-                        ),
-                      ),
-                    ],
+                          ),
                   ),
-              ],
-            ),
-          ),
-          if (discardReview) ...[
-            const Positioned.fill(
-              child: ModalBarrier(dismissible: false, color: Color(0x55000000)),
-            ),
-            Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: PocketSection(
-                  title: '离开当前编辑？',
+                ],
+              ),
+              if (!deleted && !missing)
+                PocketSection(
+                  title: '删除任务',
                   children: [
-                    const AutomationNotice('尚未保存的草稿会丢弃。'),
+                    const AutomationNotice(
+                      '删除后不再产生新的提醒，并移除该任务的投递记录。已排队的会话消息保留。',
+                    ),
                     Padding(
-                      padding: const EdgeInsets.all(20),
+                      padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
                       child: Wrap(
                         spacing: 12,
                         children: [
-                          PocketButton(
-                            onPressed: () =>
-                                setState(() => discardReview = false),
-                            child: const Text('继续编辑'),
-                          ),
-                          PocketButton.tonal(
-                            onPressed: leave,
-                            child: const Text('放弃草稿并离开'),
-                          ),
+                          if (confirmingDelete) ...[
+                            PocketButton.tonal(
+                              onPressed: () =>
+                                  setState(() => confirmingDelete = false),
+                              child: const Text('保留任务'),
+                            ),
+                            PocketButton(
+                              onPressed: busy || !catalog.runtime.ready
+                                  ? null
+                                  : remove,
+                              child: const Text('确认删除任务'),
+                            ),
+                          ] else
+                            PocketButton.tonal(
+                              onPressed: busy || !catalog.runtime.ready
+                                  ? null
+                                  : () =>
+                                        setState(() => confirmingDelete = true),
+                              child: const Text('删除任务'),
+                            ),
                         ],
                       ),
                     ),
                   ],
                 ),
-              ),
-            ),
-          ],
-        ],
+            ],
+          ),
+        ),
       ),
     );
   }
