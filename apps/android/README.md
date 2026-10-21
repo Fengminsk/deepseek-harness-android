@@ -41,6 +41,8 @@ Run these commands from `apps/android`. The APK is written to `build/app/outputs
 ../../.cache/flutter/bin/flutter.bat build apk --debug --target-platform android-arm64 --no-pub
 ```
 
+Before delivery, run `tool/verify-apk.ps1` from this directory with `-ApkPath build/app/outputs/flutter-apk/app-debug.apk`, `-ExpectedVersionName` and `-ExpectedVersionCode` matching the intended build. The verifier reads the compiled Manifest and ZIP entries, requires the eight native libraries for ARM64, and checks the embedded runtime against its packaged SHA256. It reports JSON and exits nonzero on a mismatch. The Gradle `disable-abi-filtering` property preserves the application's explicit ARM64 filter; the APK filename does not establish its actual architectures.
+
 <a id="runtime"></a>
 ## Runtime and storage
 
@@ -140,4 +142,6 @@ Build 16 also completed `sleep 45; echo lockedbackgroundok` while the phone rema
 
 Build 17 was installed with the native Node command and pnpm assets present. Device-side command probes returned Node 24.22.0 and pnpm 11.28.5. The App reopened the prior synthetic conversation and plugin inventory; long-pressing a reply opened the copy/text-selection menu, the selection page displayed its text, and the Shell detail panel expanded by dragging. These observations do not prove actual package installation or lifecycle-script execution in the application process. The subsequent plugin-page layout changes have only host widget-test evidence.
 
-Real subagent continuation and interruption, automation, pending-account recovery paths, consistent lock-screen timing and detached-USB background behavior still require phone acceptance. Complete App management coverage and migration of configuration outside the limited running-settings transfer remain unfinished; complex configuration still uses JSON input. Device screenshots, diagnostic logs, personal sessions and generated APKs are local-only artifacts, excluded from Git.
+Build 19 retained the existing signed-in account after upgrading from Build 17. A short real model request completed, and pressing Home then reopening the App retained the same conversation and reply. The model directory loaded again; switching the test conversation from Flash to Pro and back produced confirmed core receipts. Account details and manual refresh remained available without another login or a pending-account state. The floating sidebar displayed settings on the left and only the account avatar on the right; long-pressing different horizontal positions on the same conversation moved its menu accordingly. Device inspection also confirmed category-specific settings icons and original colored artwork in the plugin catalog. This return test did not kill either application process, interrupt the network, or disconnect USB.
+
+Real subagent continuation and interruption, automation, account recovery after network failure or process reclamation, consistent lock-screen timing and detached-USB background behavior still require phone acceptance. Complete App management coverage and migration of configuration outside the limited running-settings transfer remain unfinished; complex configuration still uses JSON input. Device screenshots, diagnostic logs, personal sessions and generated APKs are local-only artifacts, excluded from Git.
