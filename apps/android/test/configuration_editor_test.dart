@@ -11,32 +11,58 @@ import 'package:dsh_android/models_data.dart';
 import 'package:dsh_android/ui.dart';
 
 class SettingsRuntime extends RuntimeController {
-  SettingsRuntime(this.remote) {
+  SettingsRuntime(Json initial) : remote = cloneConfiguration(initial) {
     forms = [cloneConfiguration(remote)];
     phase = 'ready';
   }
   Json remote;
   final writes = <Json>[];
   final storedCredentials = <String, String>{};
+  bool failReceipt = false;
+
+  Json mutate(Json args, String revisionKey) {
+    writes.add(cloneConfiguration(args));
+    if (args[revisionKey] != remote['revision']) {
+      throw PlatformException(
+        code: revisionKey == 'revision'
+            ? 'SETTINGS_CONFLICT'
+            : 'settings/conflict',
+        message: 'changed',
+      );
+    }
+    for (final op in args['ops'] as List) {
+      applyConfigurationEdit(remote['value'] as Json, op as Json);
+      applyConfigurationEdit(remote['user'] as Json, op);
+    }
+    remote['revision'] = (remote['revision'] as int) + 1;
+    return cloneConfiguration(remote);
+  }
 
   @override
   Future<dynamic> call(String method, [Json params = const {}]) async {
     switch (method) {
+      case 'api.call':
+        if (params['namespace'] != 'settings') {
+          throw StateError('Unexpected namespace');
+        }
+        if (params['method'] == 'describe') {
+          return {
+            'writable': true,
+            'namespaces': [cloneConfiguration(remote)],
+          };
+        }
+        if (params['method'] == 'mutate') {
+          if (failReceipt) {
+            writes.add(cloneConfiguration(params['args'] as Json));
+            throw PlatformException(code: 'transport/unavailable');
+          }
+          return mutate(params['args'] as Json, 'expectedRevision');
+        }
+        throw StateError('Unexpected API method');
       case 'settings.describe':
         return [cloneConfiguration(remote)];
       case 'settings.mutate':
-        writes.add(cloneConfiguration(params));
-        if (params['revision'] != remote['revision']) {
-          throw PlatformException(
-            code: 'SETTINGS_CONFLICT',
-            message: 'changed',
-          );
-        }
-        for (final op in params['ops'] as List) {
-          applyConfigurationEdit(remote['value'] as Json, op as Json);
-        }
-        remote['revision'] = (remote['revision'] as int) + 1;
-        return [cloneConfiguration(remote)];
+        return [mutate(params, 'revision')];
       case 'credentials.describe':
         return {'configured': storedCredentials.containsKey(params['ref'])};
       case 'credentials.set':
@@ -202,10 +228,10 @@ void main() {
         tester.widget<TextField>(field('maxTokens')).controller!.text,
         '2048',
       );
-      expect(runtime.writes, hasLength(1));
+      expect(runtime.writes, isEmpty);
       await tester.tap(find.text('保存并应用'));
       await tester.pumpAndSettle();
-      expect(runtime.writes.last['revision'], 2);
+      expect(runtime.writes.last['expectedRevision'], 2);
       expect(runtime.remote['value'], {
         'baseURL': 'https://mine.example',
         'maxTokens': 2048,
@@ -245,6 +271,125 @@ void main() {
     expect(tester.widget<TextField>(field('maxTokens')).controller!.text, '-1');
     await tester.pumpWidget(const SizedBox());
   });
+
+  testWidgets(
+    'invalid field is retained after another field returns to its original value',
+    (tester) async {
+      final runtime = SettingsRuntime(fixture());
+      await openEditor(tester, runtime);
+      await tester.enterText(field('maxTokens'), 'not a number');
+      await tester.enterText(field('baseURL'), 'temporary');
+      await tester.enterText(field('baseURL'), 'https://old.example');
+      runtime.remote['revision'] = 2;
+      runtime.remote['value']['maxTokens'] = 2048;
+      await runtime.refreshForms();
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<TextField>(field('maxTokens')).controller!.text,
+        'not a number',
+      );
+      expect(find.text('请输入有效数字。'), findsOneWidget);
+      expect(find.text('编辑基于版本 1，当前版本 2。'), findsOneWidget);
+      expect(runtime.writes, isEmpty);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'uncertain save exposes the observed configuration before explicit adoption',
+    (tester) async {
+      final runtime = SettingsRuntime(fixture())..failReceipt = true;
+      await openEditor(tester, runtime);
+      await tester.enterText(field('baseURL'), 'https://mine.example');
+      await tester.tap(find.text('保存并应用'));
+      await tester.pumpAndSettle();
+      expect(find.text('核对保存结果'), findsOneWidget);
+      expect(
+        tester.widget<TextField>(field('baseURL')).controller!.text,
+        'https://mine.example',
+      );
+      expect(tester.widget<TextField>(field('baseURL')).enabled, isFalse);
+      await tester.tap(find.text('查看当前配置（凭据已隐藏）'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('https://old.example'), findsOneWidget);
+      expect(find.textContaining('此次保存没有覆盖新版本'), findsNothing);
+      await tester.ensureVisible(find.text('继续核对'));
+      await tester.tap(find.text('继续核对'));
+      await tester.pumpAndSettle();
+      expect(runtime.writes, hasLength(1));
+      await tester.ensureVisible(find.text('采用当前配置'));
+      await tester.tap(find.text('采用当前配置'));
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<TextField>(field('baseURL')).controller!.text,
+        'https://old.example',
+      );
+      expect(find.text('核对保存结果'), findsNothing);
+      expect(runtime.writes, hasLength(1));
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'invalid raw JSON survives incoming configuration and is guarded on exit',
+    (tester) async {
+      final runtime = SettingsRuntime(fixture());
+      tester.view.physicalSize = const Size(800, 1200);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      addTearDown(runtime.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: pocketTheme(Brightness.light),
+          home: Builder(
+            builder: (context) => TextButton(
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => ConfigPage(
+                    runtime: runtime,
+                    descriptor: runtime.forms.single,
+                  ),
+                ),
+              ),
+              child: const Text('open editor'),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('open editor'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('高级 JSON 编辑'));
+      await tester.pumpAndSettle();
+      final input = find.byKey(const Key('configuration-json'));
+      await tester.enterText(input, '{ invalid draft');
+      runtime.remote['revision'] = 2;
+      runtime.remote['value']['baseURL'] = 'new';
+      await runtime.refreshForms();
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<TextField>(input).controller!.text,
+        '{ invalid draft',
+      );
+      await tester.tap(find.byTooltip('返回'));
+      await tester.pumpAndSettle();
+      expect(find.text('保留当前编辑？'), findsOneWidget);
+      await tester.tap(find.text('继续编辑'));
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<TextField>(input).controller!.text,
+        '{ invalid draft',
+      );
+      await tester.tap(find.byTooltip('返回'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('放弃编辑并返回'));
+      await tester.pumpAndSettle();
+      expect(find.text('open editor'), findsOneWidget);
+      expect(runtime.writes, isEmpty);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
 
   testWidgets(
     'default model save uses the revisioned settings owner and reports persistence',

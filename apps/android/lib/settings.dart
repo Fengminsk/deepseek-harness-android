@@ -21,6 +21,7 @@ import 'background_settings.dart';
 import 'credentials.dart';
 import 'recovery.dart';
 import 'agent_presets.dart';
+import 'subagent_model_settings.dart';
 
 class SettingsPage extends StatelessWidget {
   const SettingsPage({required this.runtime, super.key});
@@ -262,7 +263,9 @@ class ConfigurationListPage extends StatelessWidget {
                     context,
                     PocketRoute<void>(
                       builder: (_) =>
-                          ConfigPage(runtime: runtime, descriptor: form),
+                          form['ns'] == 'subagent-model-selection-settings'
+                          ? SubagentModelSettingsPage(runtime: runtime)
+                          : ConfigPage(runtime: runtime, descriptor: form),
                     ),
                   ),
                 ),

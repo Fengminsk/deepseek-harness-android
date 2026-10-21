@@ -49,6 +49,10 @@ class RuntimeController extends ChangeNotifier {
   ModelsDirectoryController get models =>
       _models ??= ModelsDirectoryController(this);
   Future<void>? _resume;
+  Timer? _resumeTimer;
+  Completer<void>? _resumeWake;
+  int _resumeEpoch = 0;
+  bool _bindingDisconnected = false;
   int _statusRevision = 0;
   int get connectionGeneration => _connectionGeneration;
 
@@ -161,7 +165,9 @@ class RuntimeController extends ChangeNotifier {
   }
 
   void fail(Object exception) {
+    _bindingDisconnected = false;
     _statusRevision++;
+    _wakeResume();
     _connectionGeneration++;
     error = '$exception';
     phase = 'failed';
@@ -239,12 +245,16 @@ class RuntimeController extends ChangeNotifier {
 
   void _acceptStatus(Json data) {
     _statusRevision++;
+    _wakeResume();
+    final disconnected = data['connection'] == 'disconnected';
+    _bindingDisconnected = disconnected;
     final nextGeneration = data['generation'] as String?;
     final changedProcess =
         nextGeneration != null && nativeGeneration != nextGeneration;
     final nextPhase = data['phase'] as String;
-    final newProcess = changedProcess || nextPhase == 'starting';
-    if (newProcess || (ready && nextPhase != 'ready')) {
+    final newProcess =
+        !disconnected && (changedProcess || nextPhase == 'starting');
+    if (disconnected || newProcess || (ready && nextPhase != 'ready')) {
       _connectionGeneration++;
       _interactionsRevision = -1;
       _apiStreams.setReady(false);
@@ -259,8 +269,10 @@ class RuntimeController extends ChangeNotifier {
       streaming.clear();
     }
     phase = nextPhase;
-    nativeGeneration = nextGeneration;
-    nativeMode = data['mode'] as String?;
+    if (!disconnected) {
+      nativeGeneration = nextGeneration;
+      nativeMode = data['mode'] as String?;
+    }
     error = data['error'] as String?;
     if (!ready) _markLiveUnconfirmed();
     // Invalidate domain observations before a replacement stream can emit its
@@ -268,9 +280,10 @@ class RuntimeController extends ChangeNotifier {
     notifyListeners();
     _apiStreams.setReady(ready);
     if (ready) {
+      final generation = _connectionGeneration;
       unawaited(
         refresh().catchError((Object failure) {
-          if (!_disposed) {
+          if (!_disposed && generation == _connectionGeneration && ready) {
             error = '$failure';
             notifyListeners();
           }
@@ -282,32 +295,103 @@ class RuntimeController extends ChangeNotifier {
   /// Reconcile the existing service after returning to the foreground. Only
   /// observations are reopened; writes and model submissions are never replayed.
   Future<void> resume() {
+    if (_disposed) return Future.value();
     if (_resume != null) return _resume!;
+    final epoch = _resumeEpoch;
+    final observedGeneration = _connectionGeneration;
+    final observedReady = ready;
+    bool current() => !_disposed && epoch == _resumeEpoch;
     late final Future<void> operation;
     operation =
         () async {
-          try {
-            final statusRevision = _statusRevision;
-            final state = await call('runtime.status') as Json;
-            if (_disposed) return;
-            // A pushed service transition observed after this request is newer than
-            // the probe, even if the probe's Future completes afterwards.
-            if (statusRevision == _statusRevision) _acceptStatus(state);
-            if (!ready) return;
-            await _apiStreams.reconnect();
-            if (_disposed || !ready) return;
-            await Future.wait([
-              () async {
-                final account = await ensureAccount();
-                await account.ensureWatching();
-                if (account.connected) await account.refreshDetails();
-              }(),
-              if (_models != null) _models!.refresh(),
-            ]);
-          } catch (failure) {
-            if (!_disposed) {
-              error = '返回前台后的状态同步未完成：$failure';
+          for (var attempt = 0; current(); attempt++) {
+            var statusRevision = _statusRevision;
+            try {
+              // A foreground Activity can outlive its killed service process.
+              // Native code restores the saved service mode and binds once;
+              // this receipt alone never makes Agent observations ready.
+              await channel.invokeMethod<void>('runtime.ensureBound');
+              if (!current()) return;
+              statusRevision = _statusRevision;
+              final state = await call('runtime.status') as Json;
+              if (!current()) return;
+              // Pushed transitions supersede both late results and late errors.
+              if (statusRevision == _statusRevision) _acceptStatus(state);
+              statusRevision = _statusRevision;
+              if (!ready) {
+                if (!_bindingDisconnected &&
+                    phase != 'starting' &&
+                    phase != 'restarting') {
+                  return;
+                }
+                if (attempt >= 6) return; // Real startup remains event-driven.
+              } else {
+                final generation = _connectionGeneration;
+                bool connected() =>
+                    current() && ready && generation == _connectionGeneration;
+                // A ready transition already opens fresh observations. Only
+                // an unchanged connection needs foreground reattachment.
+                if (observedReady && generation == observedGeneration) {
+                  await _apiStreams.reconnect();
+                }
+                if (!connected()) return;
+                statusRevision = _statusRevision;
+                await Future.wait([
+                  () async {
+                    final account = await ensureAccount();
+                    if (!connected()) return;
+                    await account.ensureWatching();
+                    if (connected() && account.connected) {
+                      await account.refreshDetails();
+                    }
+                  }(),
+                  if (_models != null) _models!.refresh(),
+                ]);
+                return;
+              }
+            } catch (failure) {
+              if (!current() ||
+                  (statusRevision != _statusRevision &&
+                      !_bindingDisconnected)) {
+                return;
+              }
+              if (failure is PlatformException &&
+                  (failure.code == 'not-foreground' ||
+                      failure.code == 'busy')) {
+                return; // Backgrounding or an explicit transition owns recovery.
+              }
+              final connecting =
+                  _bindingDisconnected ||
+                  (failure is PlatformException &&
+                      (failure.code == 'starting' ||
+                          failure.code == 'disconnected'));
+              if (!connecting || attempt >= 6) {
+                error = connecting
+                    ? '尚未连接本地服务，请返回前台重试或查看诊断。'
+                    : '返回前台后的状态同步未完成：$failure';
+                notifyListeners();
+                return;
+              }
+              // Binder absence is not proof of a new Node process. Preserve
+              // existing projections as unconfirmed until native status arrives.
+              _statusRevision++;
+              _connectionGeneration++;
+              _bindingDisconnected = true;
+              phase = 'starting';
+              error = null;
+              _markLiveUnconfirmed();
+              _apiStreams.setReady(false);
               notifyListeners();
+            }
+            final revision = _statusRevision;
+            await _waitForResume(Duration(milliseconds: 250 * (1 << attempt)));
+            if (!current()) return;
+            if (revision != _statusRevision &&
+                !_bindingDisconnected &&
+                !ready &&
+                phase != 'starting' &&
+                phase != 'restarting') {
+              return;
             }
           }
         }().whenComplete(() {
@@ -316,7 +400,30 @@ class RuntimeController extends ChangeNotifier {
     return _resume = operation;
   }
 
+  Future<void> _waitForResume(Duration delay) {
+    final wake = Completer<void>();
+    _resumeWake = wake;
+    _resumeTimer = Timer(delay, _wakeResume);
+    return wake.future;
+  }
+
+  void _wakeResume() {
+    _resumeTimer?.cancel();
+    _resumeTimer = null;
+    final wake = _resumeWake;
+    _resumeWake = null;
+    if (wake != null && !wake.isCompleted) wake.complete();
+  }
+
+  void _cancelResume() {
+    _resumeEpoch++;
+    _resume = null;
+    _wakeResume();
+  }
+
   Future<void> restart() async {
+    _cancelResume();
+    _bindingDisconnected = false;
     _statusRevision++;
     phase = 'restarting';
     error = null;
@@ -372,12 +479,22 @@ class RuntimeController extends ChangeNotifier {
   }
 
   Future<void> refresh() async {
-    info = await call('runtime.info') as Json;
+    final generation = _connectionGeneration;
+    bool current() => !_disposed && generation == _connectionGeneration;
+    final nextInfo = await call('runtime.info') as Json;
+    if (!current()) return;
+    info = nextInfo;
     await refreshLive();
+    if (!current()) return;
     await refreshInteractions();
-    web = await call('web.status') as Json;
+    if (!current()) return;
+    final nextWeb = await call('web.status') as Json;
+    if (!current()) return;
+    web = nextWeb;
     await refreshSessions();
+    if (!current()) return;
     await refreshForms();
+    if (!current()) return;
     await refreshTasks();
   }
 
@@ -449,13 +566,16 @@ class RuntimeController extends ChangeNotifier {
   }
 
   Future<void> refreshInteractions() async {
+    final generation = _connectionGeneration;
+    bool current() => !_disposed && generation == _connectionGeneration;
     try {
-      _applyInteractions(await call('interactions.list') as Json);
+      final snapshot = await call('interactions.list') as Json;
+      if (current()) _applyInteractions(snapshot);
     } catch (exception) {
-      interactionsError = '$exception';
+      if (current()) interactionsError = '$exception';
       rethrow;
     } finally {
-      notifyListeners();
+      if (current()) notifyListeners();
     }
   }
 
@@ -662,6 +782,7 @@ class RuntimeController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    _cancelResume();
     _connectionGeneration++;
     _plugins?.dispose();
     _library?.dispose();

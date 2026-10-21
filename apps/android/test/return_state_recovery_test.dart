@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:dsh_android/runtime.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 class _Runtime extends RuntimeController {
@@ -9,10 +10,13 @@ class _Runtime extends RuntimeController {
   final subscriptions = <Json>[];
   Json status = {'phase': 'ready', 'generation': 'service-a', 'mode': 'active'};
   Completer<Json>? statusRead, catalogRead;
+  Completer<Json>? interactionRead;
+  Json interactionValue = {'revision': 1, 'requests': <Json>[]};
   String catalogModel = 'one';
   bool failCatalog = false;
   int catalogReads = 0;
   int failUnsubscribes = 0;
+  final statusFailures = <Object>[];
 
   // Other domains have their own baseline tests. Keep these tests focused on
   // lifecycle status and original account/catalog API traffic.
@@ -22,8 +26,14 @@ class _Runtime extends RuntimeController {
   @override
   Future<dynamic> call(String method, [Json params = const {}]) async {
     calls.add((method: method, params: params));
-    if (method == 'runtime.status') return statusRead?.future ?? status;
+    if (method == 'runtime.status') {
+      if (statusFailures.isNotEmpty) throw statusFailures.removeAt(0);
+      return statusRead?.future ?? status;
+    }
     if (method == 'settings.describe') return <Json>[];
+    if (method == 'interactions.list') {
+      return interactionRead?.future ?? interactionValue;
+    }
     if (method == 'api.subscribe') {
       final subscription = {
         ...params,
@@ -70,7 +80,357 @@ class _Runtime extends RuntimeController {
   }
 }
 
+class _NativeRecovery {
+  _NativeRecovery(this.tester, this.runtime);
+  final WidgetTester tester;
+  final _Runtime runtime;
+  late MockStreamHandlerEventSink events;
+  final methods = <String>[];
+  Future<void> Function()? ensure;
+
+  Future<void> open() async {
+    final messenger = tester.binding.defaultBinaryMessenger;
+    messenger.setMockStreamHandler(
+      RuntimeController.events,
+      MockStreamHandler.inline(
+        onListen: (_, sink) {
+          events = sink;
+        },
+      ),
+    );
+    messenger.setMockMethodCallHandler(RuntimeController.channel, (call) async {
+      methods.add(call.method);
+      if (call.method == 'start' || call.method == 'restart') return null;
+      if (call.method == 'runtime.ensureBound') {
+        await ensure?.call();
+        return null;
+      }
+      if (call.method == 'app.metadata') {
+        return '{"version":"0.1.0","build":20}';
+      }
+      throw StateError('Unexpected native method ${call.method}');
+    });
+    addTearDown(() {
+      messenger.setMockStreamHandler(RuntimeController.events, null);
+      messenger.setMockMethodCallHandler(RuntimeController.channel, null);
+    });
+    await runtime.start();
+    await tester.pump();
+  }
+
+  void status(Json value) =>
+      events.success(jsonEncode({'method': 'runtime.status', 'params': value}));
+
+  int get probes =>
+      runtime.calls.where((call) => call.method == 'runtime.status').length;
+  int get handshakes =>
+      methods.where((method) => method == 'runtime.ensureBound').length;
+
+  void expectNoBusinessReplay() {
+    expect(methods.where((method) => method == 'restart'), isEmpty);
+    expect(
+      runtime.calls.where(
+        (call) =>
+            call.method == 'session.send' ||
+            call.method == 'account.signIn' ||
+            call.method == 'session.ensure',
+      ),
+      isEmpty,
+    );
+    expect(
+      runtime.calls.where(
+        (call) => call.params['method'] == 'initializeDefaultModel',
+      ),
+      isEmpty,
+    );
+  }
+}
+
 void main() {
+  for (final eventFirst in [true, false]) {
+    testWidgets(
+      'binding death recovers in the same foreground turn with ${eventFirst ? 'status' : 'error'} first',
+      (tester) async {
+        final runtime = _Runtime();
+        final native = _NativeRecovery(tester, runtime);
+        await native.open();
+        native.status(runtime.status);
+        await tester.pump();
+        final pending = Completer<void>();
+        native.ensure = () =>
+            native.handshakes == 1 ? pending.future : Future.value();
+        final resumed = runtime.resume();
+        await tester.pump();
+        runtime.status = {...runtime.status, 'generation': 'service-b'};
+        void disconnected() => native.status({
+          'phase': 'failed',
+          'connection': 'disconnected',
+          'error': '运行时连接中断',
+        });
+        if (eventFirst) {
+          disconnected();
+          await tester.pump();
+          pending.completeError(PlatformException(code: 'disconnected'));
+          await tester.pump();
+        } else {
+          pending.completeError(PlatformException(code: 'disconnected'));
+          await tester.pump();
+          disconnected();
+          await tester.pump();
+        }
+        await tester.pump(const Duration(milliseconds: 250));
+        await resumed;
+        expect(native.handshakes, 2);
+        expect(runtime.ready, isTrue);
+        expect(runtime.nativeGeneration, 'service-b');
+        expect(runtime.error, isNull);
+        native.expectNoBusinessReplay();
+        runtime.dispose();
+        await tester.pump();
+      },
+    );
+  }
+
+  testWidgets(
+    'retired interaction snapshots and errors cannot replace a new service baseline',
+    (tester) async {
+      final runtime = _Runtime();
+      final native = _NativeRecovery(tester, runtime);
+      await native.open();
+      native.status(runtime.status);
+      await tester.pump();
+      final oldSnapshot = Completer<Json>();
+      runtime.interactionRead = oldSnapshot;
+      final oldRead = runtime.refreshInteractions();
+      native.status({...runtime.status, 'generation': 'service-b'});
+      await tester.pump();
+      runtime.interactionRead = null;
+      runtime.interactionValue = {
+        'revision': 1,
+        'requests': <Json>[
+          {'id': 'current'},
+        ],
+      };
+      await runtime.refreshInteractions();
+      oldSnapshot.complete({
+        'revision': 100,
+        'requests': <Json>[
+          {'id': 'retired'},
+        ],
+      });
+      await oldRead;
+      expect(runtime.interactions.single['id'], 'current');
+      runtime.interactionValue = {
+        'revision': 2,
+        'requests': <Json>[
+          {'id': 'next'},
+        ],
+      };
+      await runtime.refreshInteractions();
+      expect(runtime.interactions.single['id'], 'next');
+
+      final oldError = Completer<Json>();
+      runtime.interactionRead = oldError;
+      final failedRead = expectLater(
+        runtime.refreshInteractions(),
+        throwsStateError,
+      );
+      native.status({...runtime.status, 'generation': 'service-c'});
+      await tester.pump();
+      runtime.interactionRead = null;
+      await runtime.refreshInteractions();
+      var notifications = 0;
+      runtime.addListener(() => notifications++);
+      oldError.completeError(StateError('retired service failure'));
+      await failedRead;
+      expect(runtime.interactionsError, isNull);
+      expect(notifications, 0);
+      runtime.dispose();
+      await tester.pump();
+    },
+  );
+
+  testWidgets(
+    'foreground waits for native binding and actual ready before observations',
+    (tester) async {
+      final runtime = _Runtime();
+      final native = _NativeRecovery(tester, runtime);
+      await native.open();
+      final bound = Completer<void>();
+      native.ensure = () => bound.future;
+      final resumed = runtime.resume();
+      expect(runtime.resume(), same(resumed));
+      await tester.pump();
+      expect(native.handshakes, 1);
+      expect(native.probes, 0);
+      expect(runtime.subscriptions, isEmpty);
+      bound.complete();
+      await tester.pump();
+      await resumed;
+      expect(native.probes, 1);
+      expect(runtime.ready, isTrue);
+      expect(runtime.subscriptions, hasLength(1));
+      expect(
+        runtime.accountSnapshot!.connected,
+        isFalse,
+        reason: 'ready is not an account baseline',
+      );
+      native.expectNoBusinessReplay();
+      runtime.dispose();
+      await tester.pump();
+    },
+  );
+
+  testWidgets(
+    'transient starting invalidates trust then retries only binding and reads',
+    (tester) async {
+      final runtime = _Runtime();
+      final native = _NativeRecovery(tester, runtime);
+      await native.open();
+      native.status(runtime.status);
+      await tester.pump();
+      await runtime.models.refresh();
+      final known = runtime.models.snapshot;
+      runtime.statusFailures.add(
+        PlatformException(code: 'starting', message: '正在连接本地服务'),
+      );
+      final resumed = runtime.resume();
+      await tester.pump();
+      expect(runtime.phase, 'starting');
+      expect(runtime.error, isNull);
+      expect(runtime.models.fresh, isFalse);
+      expect(runtime.models.snapshot, same(known));
+      expect(runtime.accountSnapshot!.connected, isFalse);
+      expect(native.handshakes, 1);
+      await tester.pump(const Duration(milliseconds: 250));
+      await resumed;
+      expect(native.handshakes, 2);
+      expect(native.probes, 2);
+      expect(runtime.ready, isTrue);
+      expect(runtime.models.fresh, isTrue);
+      native.expectNoBusinessReplay();
+      runtime.dispose();
+      await tester.pump();
+    },
+  );
+
+  testWidgets(
+    'native starting status keeps observations closed until a ready event',
+    (tester) async {
+      final runtime = _Runtime()
+        ..status = {
+          'phase': 'starting',
+          'generation': 'service-b',
+          'mode': 'active',
+        };
+      final native = _NativeRecovery(tester, runtime);
+      await native.open();
+      final resumed = runtime.resume();
+      await tester.pump();
+      expect(native.probes, 1);
+      expect(runtime.subscriptions, isEmpty);
+      expect(runtime.ready, isFalse);
+      runtime.status = {...runtime.status, 'phase': 'ready'};
+      native.status(runtime.status);
+      await tester.pump();
+      await resumed;
+      expect(runtime.ready, isTrue);
+      expect(runtime.nativeGeneration, 'service-b');
+      expect(runtime.subscriptions, hasLength(1));
+      native.expectNoBusinessReplay();
+      runtime.dispose();
+      await tester.pump();
+    },
+  );
+
+  testWidgets(
+    'a late starting error cannot overwrite a newer ready generation',
+    (tester) async {
+      final runtime = _Runtime();
+      final native = _NativeRecovery(tester, runtime);
+      await native.open();
+      native.status(runtime.status);
+      await tester.pump();
+      final old = Completer<Json>();
+      runtime.statusRead = old;
+      final resumed = runtime.resume();
+      await tester.pump();
+      native.status({...runtime.status, 'generation': 'service-b'});
+      await tester.pump();
+      old.completeError(PlatformException(code: 'starting'));
+      await resumed;
+      expect(runtime.nativeGeneration, 'service-b');
+      expect(runtime.ready, isTrue);
+      expect(runtime.error, isNull);
+      await tester.pump(const Duration(seconds: 1));
+      expect(native.handshakes, 1);
+      native.expectNoBusinessReplay();
+      runtime.dispose();
+      await tester.pump();
+    },
+  );
+
+  testWidgets('persistent binding loss is bounded and never invents ready', (
+    tester,
+  ) async {
+    final runtime = _Runtime();
+    final native = _NativeRecovery(tester, runtime);
+    await native.open();
+    native.ensure = () async => throw PlatformException(code: 'disconnected');
+    final resumed = runtime.resume();
+    await tester.pump();
+    for (var attempt = 0; attempt < 6; attempt++) {
+      await tester.pump(Duration(milliseconds: 250 * (1 << attempt)));
+    }
+    await resumed;
+    expect(native.handshakes, 7);
+    expect(native.probes, 0);
+    expect(runtime.ready, isFalse);
+    expect(runtime.error, contains('尚未连接本地服务'));
+    expect(runtime.subscriptions, isEmpty);
+    native.expectNoBusinessReplay();
+    runtime.dispose();
+    await tester.pump();
+  });
+
+  testWidgets('dispose cancels pending connection retries', (tester) async {
+    final runtime = _Runtime();
+    final native = _NativeRecovery(tester, runtime);
+    await native.open();
+    native.ensure = () async => throw PlatformException(code: 'starting');
+    final resumed = runtime.resume();
+    await tester.pump();
+    runtime.dispose();
+    await tester.pump();
+    await resumed;
+    await tester.pump(const Duration(seconds: 30));
+    expect(native.handshakes, 1);
+    expect(native.probes, 0);
+  });
+
+  testWidgets(
+    'real failed and maintenance states do not restart or subscribe',
+    (tester) async {
+      for (final phase in ['failed', 'maintenance']) {
+        final runtime = _Runtime()
+          ..status = {
+            'phase': phase,
+            'generation': 'service-b',
+            'mode': phase == 'maintenance' ? 'maintenance' : 'active',
+          };
+        final native = _NativeRecovery(tester, runtime);
+        await native.open();
+        await runtime.resume();
+        expect(runtime.phase, phase);
+        expect(native.handshakes, 1);
+        expect(runtime.subscriptions, isEmpty);
+        native.expectNoBusinessReplay();
+        runtime.dispose();
+        await tester.pump();
+      }
+    },
+  );
+
   test(
     'directory retains last success and reloads when the service returns',
     () async {
@@ -144,7 +504,9 @@ void main() {
       messenger.setMockMethodCallHandler(RuntimeController.channel, (
         call,
       ) async {
-        if (call.method == 'start') return null;
+        if (call.method == 'start' || call.method == 'runtime.ensureBound') {
+          return null;
+        }
         if (call.method == 'app.metadata') {
           return '{"version":"0.1.0","build":18}';
         }

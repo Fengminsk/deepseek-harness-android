@@ -20,6 +20,9 @@ class MainActivity : FlutterActivity() {
     private val attachments by lazy { AttachmentTransfers(this) }
     private val configurationTransfers by lazy { ConfigurationTransfers(this) }
     private var bound = false
+    private var connection: ServiceConnection? = null
+    private var foreground = false
+    private var runtimeRequested = false
     private var notificationPermission: MethodChannel.Result? = null
     private val main = Handler(Looper.getMainLooper())
     private var restarting: MethodChannel.Result? = null
@@ -43,7 +46,51 @@ class MainActivity : FlutterActivity() {
         result.error("restart-timeout", "无法确认旧运行时退出或新模式生效；请重新读取状态，未确认退出时不会启动第二个实例。", null)
     }
     private val pending = mutableMapOf<String, MethodChannel.Result>()
-    private val replies = Messenger(Handler(Looper.getMainLooper()) { message ->
+    private val bindingHandshake by lazy { RuntimeBindingHandshake(object : RuntimeBindingHandshake.Host {
+        override fun foreground() = foreground
+        override fun transitioning() = restarting != null
+        override fun alive() = service?.binder?.isBinderAlive == true
+        override fun ensureStarted() {
+            // AgentService alone reads the persisted active/maintenance mode.
+            // Its started guard prevents a second Node boot in a live process.
+            startForegroundService(Intent(this@MainActivity, AgentService::class.java))
+        }
+        override fun bind() = bindRuntime()
+        override fun probe(completion: RuntimeBindingHandshake.Completion): Runnable {
+            val peer = service
+            val id = sendCall(JSONObject().put("method", "runtime.status").put("params", JSONObject()),
+                object : MethodChannel.Result {
+                    override fun success(result: Any?) {
+                        if (peer == null || service?.binder !== peer.binder || !peer.binder.isBinderAlive) {
+                            completion.finish("disconnected", "本地服务连接已变化，请重新核对")
+                            return
+                        }
+                        try {
+                            check(JSONObject(result as String).optString("phase").isNotEmpty())
+                            completion.finish(null, null)
+                        } catch (_: Exception) {
+                            completion.finish("binding-failed", "本地服务未返回有效状态，请重试连接")
+                        }
+                    }
+                    override fun error(code: String, message: String?, details: Any?) {
+                        completion.finish(code, message)
+                    }
+                    override fun notImplemented() {
+                        completion.finish("binding-failed", "本地服务未提供运行状态")
+                    }
+                })
+            return Runnable { if (id != null) pending.remove(id) }
+        }
+    }, object : RuntimeBindingHandshake.Scheduler {
+        override fun schedule(task: Runnable, milliseconds: Long) { main.postDelayed(task, milliseconds) }
+        override fun cancel(task: Runnable) { main.removeCallbacks(task) }
+    }) }
+    private var replies = createReplies(0)
+    private fun createReplies(generation: Long) = Messenger(Handler(Looper.getMainLooper()) { message ->
+        if (!bindingHandshake.accepts(generation)) {
+            WirePayload.close(message.data)
+            return@Handler true
+        }
         val raw = WirePayload.decode(message.data)
         val frame = JSONObject(raw)
         if (frame.has("id")) {
@@ -91,29 +138,77 @@ class MainActivity : FlutterActivity() {
         }
         true
     })
-    private val connection = object : ServiceConnection {
-        override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
-            service = Messenger(binder)
-            try { service!!.send(Message.obtain(null, 1).apply { replyTo = replies }) }
-            catch (_: RemoteException) {
-                service = null
-                // A pending transition keeps its deadline; a bind is never proof
-                // that either the old process stopped or the new mode is ready.
-                return
-            }
-            if (restartAwaitingOldConnection) {
-                restartAwaitingOldConnection = false
-                prepareTransition()
-                return
-            }
+    private fun ensureBinding(result: MethodChannel.Result? = null, opening: Boolean = false) {
+        bindingHandshake.ensure({ code, message ->
+            if (code == null) {
+                result?.success(null)
+                try { service?.send(Message.obtain(null, 5).apply { replyTo = replies }) }
+                catch (_: RemoteException) { /* The subsequent status read reports loss. */ }
+            } else result?.error(code, message, null)
+        }, opening)
+    }
+    private fun failPending(code: String, message: String) {
+        val requests = pending.values.toList()
+        pending.clear()
+        requests.forEach { it.error(code, message, null) }
+    }
+    private fun releaseBinding(code: String = "disconnected", message: String = "运行时连接已变化，操作结果需重新核对") {
+        val previous = connection
+        connection = null
+        bindingHandshake.invalidateBinding()
+        if (bound && previous != null) {
+            try { service?.send(Message.obtain(null, 3).apply { replyTo = replies }) }
+            catch (_: RemoteException) { /* Already stopped. */ }
+            try { unbindService(previous) }
+            catch (_: IllegalArgumentException) { /* Framework already removed the dead binding. */ }
         }
-        override fun onServiceDisconnected(name: ComponentName?) {
-            service = null
-            pending.values.forEach { it.error("disconnected", "运行时连接中断", null) }; pending.clear()
-            if (restarting != null) return
-            events?.success(JSONObject().put("method", "runtime.status").put("params",
-                JSONObject().put("phase", "failed").put("error", "运行时进程已停止，任务可能已中断")).toString())
+        bound = false
+        service = null
+        failPending(code, message)
+    }
+    private fun bindRuntime() {
+        releaseBinding()
+        val generation = bindingHandshake.newBinding()
+        replies = createReplies(generation)
+        val next = object : ServiceConnection {
+            override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+                if (!bindingHandshake.accepts(generation) || connection !== this) return
+                if (binder == null) { lostBinding(this); return }
+                service = Messenger(binder)
+                try { service!!.send(Message.obtain(null, 1).apply { replyTo = replies }) }
+                catch (_: RemoteException) { lostBinding(this); return }
+                if (restartAwaitingOldConnection) {
+                    restartAwaitingOldConnection = false
+                    prepareTransition()
+                    return
+                }
+                bindingHandshake.connected()
+            }
+            override fun onServiceDisconnected(name: ComponentName?) { lostBinding(this) }
+            override fun onBindingDied(name: ComponentName?) { lostBinding(this) }
+            override fun onNullBinding(name: ComponentName?) { lostBinding(this) }
         }
+        connection = next
+        try {
+            bound = bindService(Intent(this, AgentService::class.java), next, Context.BIND_AUTO_CREATE)
+            check(bound) { "Cannot bind Agent service" }
+        } catch (failure: Exception) {
+            if (connection === next) {
+                connection = null
+                bound = false
+                bindingHandshake.invalidateBinding()
+            }
+            throw failure
+        }
+    }
+    private fun lostBinding(lost: ServiceConnection) {
+        if (connection !== lost) return
+        bindingHandshake.disconnected()
+        releaseBinding()
+        if (restarting != null) return
+        events?.success(JSONObject().put("method", "runtime.status").put("params",
+            JSONObject().put("phase", "failed").put("connection", "disconnected")
+                .put("error", "运行时进程已停止，任务可能已中断")).toString())
     }
     override fun configureFlutterEngine(engine: FlutterEngine) {
         super.configureFlutterEngine(engine)
@@ -175,6 +270,7 @@ class MainActivity : FlutterActivity() {
                     } else result.success(null)
                 }
                 "restart" -> restartRuntime(result)
+                "runtime.ensureBound" -> ensureBinding(result)
                 "recovery.enter", "recovery.resume" -> {
                     val id = call.argument<String>("requestId") ?: ""
                     try {
@@ -208,10 +304,8 @@ class MainActivity : FlutterActivity() {
                     if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
                         requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 41)
                     }
-                    val intent = Intent(this, AgentService::class.java)
-                    startForegroundService(intent)
-                    if (!bound) bound = bindService(intent, connection, Context.BIND_AUTO_CREATE)
-                    result.success(null)
+                    runtimeRequested = true
+                    ensureBinding(result, opening = true)
                 }
                 "call" -> {
                     sendCall(JSONObject(call.arguments as String), result)
@@ -228,9 +322,9 @@ class MainActivity : FlutterActivity() {
             }
         }
     }
-    private fun sendCall(frame: JSONObject, result: MethodChannel.Result) {
+    private fun sendCall(frame: JSONObject, result: MethodChannel.Result): String? {
         val peer = service
-        if (peer == null) { result.error("starting", "正在连接本地服务", null); return }
+        if (peer == null) { result.error("starting", "正在连接本地服务", null); return null }
         val id = UUID.randomUUID().toString()
         frame.put("jsonrpc", "2.0").put("id", id)
         pending[id] = result
@@ -242,6 +336,7 @@ class MainActivity : FlutterActivity() {
             pending.remove(id)
             result.error("disconnected", "服务连接中断，操作结果未确认，请重新读取状态", null)
         }
+        return id
     }
     private fun clearRestartObserver() {
         val binder = restartBinder
@@ -255,6 +350,7 @@ class MainActivity : FlutterActivity() {
                                returnState: Boolean = false, token: String = UUID.randomUUID().toString()) {
         if (restarting != null) { result.error("busy", "正在重启 Agent 服务", null); return }
         restarting = result
+        bindingHandshake.transitionStarted()
         restartTargetMode = mode ?: try { recoveryControl.mode()[0] } catch (_: Exception) { "maintenance" }
         restartModeToken = token
         restartReturnsState = returnState
@@ -370,16 +466,11 @@ class MainActivity : FlutterActivity() {
         restartModeToken = null
     }
     private fun startReplacement() {
-        if (bound) {
-            unbindService(connection)
-            bound = false
-        }
-        service = null
+        releaseBinding()
         val intent = Intent(this, AgentService::class.java)
         try {
             startForegroundService(intent)
-            bound = bindService(intent, connection, Context.BIND_AUTO_CREATE)
-            check(bound) { "Cannot bind replacement Agent service" }
+            bindRuntime()
         } catch (failure: Exception) {
             val result = restarting
             restarting = null
@@ -417,8 +508,13 @@ class MainActivity : FlutterActivity() {
     }
     override fun onResume() {
         super.onResume()
-        try { service?.send(Message.obtain(null, 5).apply { replyTo = replies }) }
-        catch (_: RemoteException) { /* Service disconnect is reported by ServiceConnection. */ }
+        foreground = true
+        if (runtimeRequested && restarting == null) ensureBinding()
+    }
+    override fun onPause() {
+        foreground = false
+        bindingHandshake.backgrounded()
+        super.onPause()
     }
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
@@ -439,11 +535,10 @@ class MainActivity : FlutterActivity() {
         transfers.onActivityResult(requestCode, resultCode, data)
     }
     override fun onDestroy() {
-        if (bound) {
-            try { service?.send(Message.obtain(null, 3).apply { replyTo = replies }) } catch (_: RemoteException) { /* Service already exited. */ }
-            unbindService(connection)
-        }
-        pending.values.forEach { it.error("closed", "界面已关闭", null) }; pending.clear()
+        bindingHandshake.close()
+        // Release a pending transition while its original client still exists.
+        abortTransition()
+        releaseBinding("closed", "界面已关闭")
         notificationPermission?.error("closed", "界面已关闭", null)
         notificationPermission = null
         transfers.close()
@@ -452,7 +547,6 @@ class MainActivity : FlutterActivity() {
         configurationTransfers.close()
         restarting?.error("closed", "重启期间界面已关闭，请重新打开 App 查看运行时状态", null)
         restarting = null
-        abortTransition()
         clearRestartObserver()
         super.onDestroy()
     }

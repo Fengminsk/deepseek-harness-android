@@ -1,8 +1,11 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:material_ui/material_ui.dart';
 
 import 'configuration_edits.dart';
+import 'configuration_state.dart';
+import 'models.dart' show ModelDraftGuard;
 import 'runtime.dart';
 import 'ui.dart';
 
@@ -20,38 +23,64 @@ class ConfigPage extends StatefulWidget {
   State<ConfigPage> createState() => _ConfigPageState();
 }
 
-class _ConfigPageState extends State<ConfigPage> {
-  late Json accepted = cloneConfiguration(widget.descriptor);
-  late Json draft = cloneConfiguration(configurationObject(accepted['value']));
+class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
+  late final state = ConfigurationEditingController(
+    widget.runtime,
+    namespace: widget.descriptor['ns'] as String,
+    descriptor: widget.descriptor,
+  );
+  Json get accepted => state.accepted!;
+  Json get draft => state.draft!;
+  Json? get latest => state.latest;
+  bool get busy => state.busy;
+  String? localMessage;
+  String? get message {
+    final parts = [localMessage, state.error, state.notice].whereType<String>();
+    return parts.isEmpty ? null : parts.join('\n');
+  }
+
   late final editor = TextEditingController(text: _encoder.convert(draft));
-  Json? latest;
+  Json? observedDraft, observedAccepted;
   ConfigurationReset? resetReview;
   final choices = <String, bool>{};
   final invalidFields = <String, String>{};
   final fieldVersions = <String, int>{};
-  bool busy = false, advanced = false;
+  bool advanced = false, rawDirty = false;
   int generation = 0;
-  String? message;
 
   @override
   void initState() {
     super.initState();
-    widget.runtime.addListener(runtimeChanged);
+    WidgetsBinding.instance.addObserver(this);
+    observedDraft = draft;
+    observedAccepted = accepted;
+    state.addListener(runtimeChanged);
+    unawaited(state.start());
   }
 
   void runtimeChanged() {
-    for (final form in widget.runtime.forms) {
-      if (form['ns'] == accepted['ns'] &&
-          form['revision'] != accepted['revision'] &&
-          form['revision'] != latest?['revision']) {
-        if (mounted) {
-          setState(() {
-            latest = cloneConfiguration(form);
-            choices.clear();
-          });
-        }
+    if (!mounted) return;
+    setState(() {
+      if (!identical(observedDraft, draft)) {
+        observedDraft = draft;
+        if (!rawDirty) editor.text = _encoder.convert(draft);
       }
-    }
+      if (!identical(observedAccepted, accepted)) {
+        observedAccepted = accepted;
+        if (!rawDirty) {
+          invalidFields.clear();
+          fieldVersions.clear();
+          generation++;
+        }
+        choices.clear();
+        resetReview = null;
+      }
+    });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState lifecycle) {
+    if (lifecycle == AppLifecycleState.resumed) unawaited(state.refresh());
   }
 
   Json readDraft() => advanced
@@ -59,23 +88,17 @@ class _ConfigPageState extends State<ConfigPage> {
       : cloneConfiguration(draft);
 
   void replaceDraft(Json value) {
-    draft = cloneConfiguration(value);
-    editor.text = _encoder.convert(draft);
+    state.replaceDraft(value, holdExternalDraft: false);
+    rawDirty = false;
+    editor.text = _encoder.convert(value);
     invalidFields.clear();
     fieldVersions.clear();
     generation++;
   }
 
   void edit(List<String> path, dynamic value, {bool remove = false}) {
-    setState(() {
-      applyConfigurationEdit(draft, {
-        'op': remove ? 'unset' : 'set',
-        'path': path,
-        if (!remove) 'value': value,
-      });
-      editor.text = _encoder.convert(draft);
-      resetReview = null;
-    });
+    state.edit(path, value, remove: remove);
+    setState(() => resetReview = null);
   }
 
   void toggleEditor() {
@@ -84,126 +107,53 @@ class _ConfigPageState extends State<ConfigPage> {
       setState(() {
         if (advanced) replaceDraft(value);
         advanced = !advanced;
-        message = null;
+        localMessage = null;
       });
     } catch (error) {
-      setState(() => message = 'JSON 无法解析：$error\n输入已保留。');
+      setState(() => localMessage = 'JSON 无法解析：$error\n输入已保留。');
     }
   }
 
   Future<void> readLatest() async {
-    setState(() => busy = true);
-    try {
-      final forms = (await widget.runtime.call('settings.describe') as List)
-          .cast<Json>();
-      final remote = forms.firstWhere((form) => form['ns'] == accepted['ns']);
-      if (!mounted) return;
-      setState(() {
-        latest = cloneConfiguration(remote);
-        choices.clear();
-        message = remote['revision'] == accepted['revision']
-            ? '当前版本未变化，草稿已保留。'
-            : '配置已在其他入口更新。请比较并合并，草稿已保留。';
-      });
-    } catch (error) {
-      if (mounted) {
-        setState(() => message = '无法读取最新配置：$error\n输入已保留。');
-      }
-    } finally {
-      if (mounted) setState(() => busy = false);
-    }
+    setState(() => localMessage = null);
+    await state.refresh();
   }
 
   Future<void> save({List<Json>? operations}) async {
-    setState(() {
-      busy = true;
-      message = null;
-    });
+    setState(() => localMessage = null);
     try {
-      final ops = operations ?? configurationEdits(accepted, readDraft());
-      if (ops.isEmpty) {
-        setState(() => message = '没有需要保存的修改。');
-        return;
-      }
-      final forms = (await widget.runtime.call('settings.mutate', {
-        'ns': accepted['ns'],
-        'revision': accepted['revision'],
-        'ops': ops,
-      }) as List).cast<Json>();
-      final saved = forms.firstWhere((form) => form['ns'] == accepted['ns']);
+      if (operations == null) replaceDraft(readDraft());
+      final saved = await state.save(operations: operations);
       if (!mounted) return;
-      setState(() {
-        accepted = cloneConfiguration(saved);
-        replaceDraft(configurationObject(saved['value']));
-        latest = null;
-        choices.clear();
-        resetReview = null;
-        message = '已保存并应用。';
-      });
-      try {
-        await widget.runtime.refreshForms();
-      } catch (error) {
-        if (mounted) {
-          setState(() => message = '配置已保存；设置列表刷新失败：$error');
-        }
+      if (saved || !state.uncertain && !state.hasDraft) {
+        setState(() {
+          rawDirty = false;
+          editor.text = _encoder.convert(draft);
+          invalidFields.clear();
+          fieldVersions.clear();
+          generation++;
+          resetReview = null;
+        });
       }
     } catch (error) {
-      if (mounted) {
-        setState(() => message = '未能保存：$error\n输入已保留。');
-      }
-      // Read after any failed write: error text is not a reliable conflict tag.
-      try {
-        final forms = (await widget.runtime.call('settings.describe') as List)
-            .cast<Json>();
-        final remote = forms.firstWhere((form) => form['ns'] == accepted['ns']);
-        if (mounted && remote['revision'] != accepted['revision']) {
-          setState(() {
-            latest = cloneConfiguration(remote);
-            choices.clear();
-            resetReview = null;
-            message =
-                '配置已在其他入口更新；此次保存没有覆盖新版本。'
-                '\n输入已保留，请比较并合并后重新保存。';
-          });
-        }
-      } catch (refreshError) {
-        if (mounted) {
-          setState(() {
-            message = '$message\n无法核对最新版本：$refreshError';
-          });
-        }
-      }
-    } finally {
-      if (mounted) setState(() => busy = false);
+      if (mounted) setState(() => localMessage = '未能保存：$error\n输入已保留。');
     }
   }
 
   void mergeLatest() {
     if (invalidFields.isNotEmpty) {
-      setState(() => message = '请先修正表单中的无效输入；草稿尚未合并。');
+      setState(() => localMessage = '请先修正表单中的无效输入；草稿尚未合并。');
       return;
     }
     try {
-      final result = rebaseConfiguration(
-        accepted,
-        readDraft(),
-        latest!,
-        useLocal: choices,
-      );
-      if (result.conflicts.isNotEmpty) {
-        setState(() => message = '请先为每一处冲突选择要保留的内容。');
-        return;
-      }
+      replaceDraft(readDraft());
+      state.rebase(useLocal: Map.of(choices));
       setState(() {
-        accepted = cloneConfiguration(latest!);
-        replaceDraft(result.value);
-        latest = null;
-        choices.clear();
+        localMessage = null;
         resetReview = null;
-        message = '已合并到草稿，尚未保存；其他入口的无关修改已保留。';
       });
     } catch (error) {
-      setState(() => message = '$error\n输入已保留。');
+      setState(() => localMessage = '$error\n输入已保留。');
     }
   }
 
@@ -270,7 +220,12 @@ class _ConfigPageState extends State<ConfigPage> {
                 child: SelectableText(_encoder.convert(latest!['value'])),
               ),
               PocketButton.tonal(
-                onPressed: busy || failure != null || invalidFields.isNotEmpty
+                onPressed:
+                    busy ||
+                        !state.fresh ||
+                        state.uncertain ||
+                        failure != null ||
+                        invalidFields.isNotEmpty
                     ? null
                     : mergeLatest,
                 child: const Text('合并到草稿'),
@@ -284,176 +239,265 @@ class _ConfigPageState extends State<ConfigPage> {
 
   @override
   void dispose() {
-    widget.runtime.removeListener(runtimeChanged);
+    WidgetsBinding.instance.removeObserver(this);
+    state.removeListener(runtimeChanged);
+    state.dispose();
     editor.dispose();
     super.dispose();
   }
 
   @override
-  Widget build(BuildContext context) => PocketScaffold(
-    title: Text(configurationNamespaceTitle('${accepted['ns']}')),
-    bottom: PocketButton(
-      onPressed: busy || invalidFields.isNotEmpty ? null : save,
-      child: Text(busy ? '正在处理' : '保存并应用'),
-    ),
-    body: PocketList(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(0, 0, 0, 16),
-          child: Row(
-            children: [
-              const Expanded(child: Text('调整后保存生效')),
-              const SizedBox(width: 12),
-              PocketButton.tonal(
-                onPressed: busy || invalidFields.isNotEmpty
-                    ? null
-                    : toggleEditor,
-                child: Text(advanced ? '返回表单' : '高级 JSON 编辑'),
-              ),
-            ],
-          ),
+  Widget build(BuildContext context) => ModelDraftGuard(
+    hasEdits: () => state.hasDraft || rawDirty || invalidFields.isNotEmpty,
+    busy: busy,
+    child: PocketScaffold(
+      title: Text(configurationNamespaceTitle('${accepted['ns']}')),
+      bottom: PocketButton(
+        onPressed:
+            busy ||
+                !state.fresh ||
+                !state.writable ||
+                state.conflict ||
+                state.uncertain ||
+                invalidFields.isNotEmpty
+            ? null
+            : save,
+        child: Text(
+          busy
+              ? '正在处理'
+              : state.uncertain
+              ? '请先核对保存结果'
+              : !state.fresh
+              ? '请先刷新配置'
+              : state.conflict
+              ? '请先比较并合并'
+              : !state.writable
+              ? '配置不可写'
+              : '保存并应用',
         ),
-        if (message != null)
+      ),
+      body: PocketList(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+        children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(8, 0, 8, 20),
-            child: SelectableText(
-              message!,
-              key: const Key('configuration-message'),
+            padding: const EdgeInsets.fromLTRB(0, 0, 0, 16),
+            child: Row(
+              children: [
+                const Expanded(child: Text('调整后保存生效')),
+                const SizedBox(width: 12),
+                PocketButton.tonal(
+                  onPressed: !state.canEdit || invalidFields.isNotEmpty
+                      ? null
+                      : toggleEditor,
+                  child: Text(advanced ? '返回表单' : '高级 JSON 编辑'),
+                ),
+              ],
             ),
           ),
-        if (latest != null) comparison(),
-        if (advanced)
-          PocketSection(
-            title: '高级参数',
-            children: [
-              Padding(
-                padding: const EdgeInsets.all(16),
-                child: TextField(
-                  key: const Key('configuration-json'),
-                  controller: editor,
-                  enabled: !busy,
-                  minLines: 12,
-                  maxLines: 24,
-                  autocorrect: false,
-                  enableSuggestions: false,
-                  style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
-                  onChanged: (_) => setState(() => resetReview = null),
-                  decoration: const InputDecoration(
-                    labelText: 'JSON 配置',
-                    helperText: '移除普通字段表示取消该字段的用户覆盖。',
-                    helperMaxLines: 3,
+          if (message != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 0, 8, 20),
+              child: SelectableText(
+                message!,
+                key: const Key('configuration-message'),
+              ),
+            ),
+          if (state.uncertain)
+            PocketSection(
+              title: '核对保存结果',
+              children: [
+                const Padding(
+                  padding: EdgeInsets.all(18),
+                  child: Text('尚未取得有效回执。请继续核对，或确认采用当前配置并放弃此次草稿。'),
+                ),
+                if (latest != null)
+                  PocketDisclosure(
+                    title: '查看当前配置（凭据已隐藏）',
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '版本 ${latest!['revision']}${state.fresh ? '' : ' · 等待重新核对'}',
+                        ),
+                        const SizedBox(height: 12),
+                        SelectableText(_encoder.convert(latest!['value'])),
+                      ],
+                    ),
+                  ),
+                PocketRow(
+                  icon: Icons.sync_rounded,
+                  title: '继续核对',
+                  onTap: busy || state.loading ? null : readLatest,
+                ),
+                PocketRow(
+                  icon: Icons.undo_rounded,
+                  title: '采用当前配置',
+                  onTap: !state.fresh || busy
+                      ? null
+                      : () {
+                          rawDirty = false;
+                          state.discardDraft();
+                          editor.text = _encoder.convert(draft);
+                          setState(() => localMessage = null);
+                        },
+                ),
+              ],
+            )
+          else if (latest != null)
+            comparison(),
+          if (advanced)
+            PocketSection(
+              title: '高级参数',
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: TextField(
+                    key: const Key('configuration-json'),
+                    controller: editor,
+                    enabled: state.canEdit,
+                    minLines: 12,
+                    maxLines: 24,
+                    autocorrect: false,
+                    enableSuggestions: false,
+                    style: const TextStyle(
+                      fontFamily: 'monospace',
+                      fontSize: 13,
+                    ),
+                    onChanged: (_) {
+                      rawDirty = editor.text != _encoder.convert(draft);
+                      state.holdDraft(rawDirty || invalidFields.isNotEmpty);
+                      setState(() => resetReview = null);
+                    },
+                    decoration: const InputDecoration(
+                      labelText: 'JSON 配置',
+                      helperText: '移除普通字段表示将该字段恢复为继承值或默认值。',
+                      helperMaxLines: 3,
+                    ),
                   ),
                 ),
-              ),
-            ],
-          )
-        else
-          ConfigurationFields(
-            key: ValueKey(generation),
-            descriptor: accepted,
-            value: draft,
-            enabled: !busy,
-            fieldVersions: fieldVersions,
-            onEdit: (path, value) => edit(path, value),
-            onRemove: (path) {
-              edit(path, null, remove: true);
-              setState(() {
-                final id = jsonEncode(path);
-                fieldVersions[id] = (fieldVersions[id] ?? 0) + 1;
-                invalidFields.remove(id);
-              });
-            },
-            onError: (path, error) {
-              setState(() {
-                final id = jsonEncode(path);
-                if (error == null) {
+              ],
+            )
+          else
+            ConfigurationFields(
+              key: ValueKey(generation),
+              descriptor: accepted,
+              value: draft,
+              enabled: state.canEdit,
+              fieldVersions: fieldVersions,
+              onEdit: (path, value) => edit(path, value),
+              onRemove: (path) {
+                edit(path, null, remove: true);
+                setState(() {
+                  final id = jsonEncode(path);
+                  fieldVersions[id] = (fieldVersions[id] ?? 0) + 1;
                   invalidFields.remove(id);
-                } else {
-                  invalidFields[id] = error;
-                }
-              });
-            },
-            onAdvanced: toggleEditor,
-          ),
-        PocketSection(
-          title: '版本与默认值',
-          children: [
-            PocketDisclosure(
-              title: '配置说明',
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('只保存修改的字段。已有凭据及包含凭据的内容会保留，请在凭据入口单独管理。'),
-                  const SizedBox(height: 12),
-                  Text('${accepted['ns']} · 版本 ${accepted['revision']}',
-                      style: Theme.of(context).textTheme.bodySmall),
-                ],
-              ),
+                  state.holdDraft(rawDirty || invalidFields.isNotEmpty);
+                });
+              },
+              onError: (path, error) {
+                setState(() {
+                  final id = jsonEncode(path);
+                  if (error == null) {
+                    invalidFields.remove(id);
+                  } else {
+                    invalidFields[id] = error;
+                  }
+                  state.holdDraft(rawDirty || invalidFields.isNotEmpty);
+                });
+              },
+              onAdvanced: toggleEditor,
             ),
-            PocketRow(
-              icon: Icons.sync_rounded,
-              title: '读取最新版本并比较',
-              subtitle: '保留正在编辑的草稿',
-              onTap: busy ? null : readLatest,
-            ),
-            PocketRow(
-              icon: Icons.restore_rounded,
-              title: '恢复普通参数默认值',
-              subtitle: '先查看将清除的用户覆盖；保留凭据和含凭据数组',
-              onTap: busy
-                  ? null
-                  : () => setState(
-                      () => resetReview = configurationReset(accepted),
-                    ),
-            ),
-          ],
-        ),
-        if (resetReview != null)
           PocketSection(
-            title: '确认恢复范围',
+            title: '版本与默认值',
             children: [
-              Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 22,
-                  vertical: 12,
-                ),
+              PocketDisclosure(
+                title: '配置说明',
                 child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      resetReview!.operations.isEmpty
-                          ? '没有可恢复的普通参数覆盖。'
-                          : '以下用户覆盖将移除，并使用配置的默认值：\n'
-                                '${resetReview!.operations.map((op) => configurationPathLabel((op['path'] as List).cast<String>())).join('\n')}',
-                    ),
-                    if (resetReview!.preserved.isNotEmpty) ...[
-                      const SizedBox(height: 12),
-                      Text(
-                        '继续保留：\n'
-                        '${resetReview!.preserved.map(configurationPathLabel).join('\n')}',
-                      ),
-                    ],
+                    const Text('只保存修改的字段。已有凭据及包含凭据的内容会保留，请在凭据入口单独管理。'),
                     const SizedBox(height: 12),
-                    const Text('恢复成功后，当前页面的未保存草稿将被默认值替换。'),
-                    PocketButton(
-                      onPressed: busy || resetReview!.operations.isEmpty
-                          ? null
-                          : () => save(operations: resetReview!.operations),
-                      child: const Text('确认恢复这些普通参数'),
-                    ),
-                    PocketButton.tonal(
-                      onPressed: busy
-                          ? null
-                          : () => setState(() => resetReview = null),
-                      child: const Text('取消'),
+                    Text(
+                      '${accepted['ns']} · 版本 ${accepted['revision']}',
+                      style: Theme.of(context).textTheme.bodySmall,
                     ),
                   ],
                 ),
               ),
+              PocketRow(
+                icon: Icons.sync_rounded,
+                title: '读取最新版本并比较',
+                subtitle: '保留正在编辑的草稿',
+                onTap: busy ? null : readLatest,
+              ),
+              PocketRow(
+                icon: Icons.restore_rounded,
+                title: '恢复普通参数默认值',
+                subtitle: '先查看将恢复的参数；保留凭据和含凭据数组',
+                onTap:
+                    !state.canEdit ||
+                        !state.fresh ||
+                        !state.writable ||
+                        state.conflict
+                    ? null
+                    : () => setState(
+                        () => resetReview = configurationReset(accepted),
+                      ),
+              ),
             ],
           ),
-      ],
+          if (resetReview != null)
+            PocketSection(
+              title: '确认恢复范围',
+              children: [
+                Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 22,
+                    vertical: 12,
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text(
+                        resetReview!.operations.isEmpty
+                            ? '没有可恢复的普通参数覆盖。'
+                            : '以下参数将恢复为继承值或默认值：\n'
+                                  '${resetReview!.operations.map((op) => configurationPathLabel((op['path'] as List).cast<String>())).join('\n')}',
+                      ),
+                      if (resetReview!.preserved.isNotEmpty) ...[
+                        const SizedBox(height: 12),
+                        Text(
+                          '继续保留：\n'
+                          '${resetReview!.preserved.map(configurationPathLabel).join('\n')}',
+                        ),
+                      ],
+                      const SizedBox(height: 12),
+                      const Text('恢复成功后，当前页面的未保存草稿将被默认值替换。'),
+                      PocketButton(
+                        onPressed:
+                            busy ||
+                                !state.fresh ||
+                                !state.writable ||
+                                state.conflict ||
+                                state.uncertain ||
+                                resetReview!.operations.isEmpty
+                            ? null
+                            : () => save(operations: resetReview!.operations),
+                        child: const Text('确认恢复这些普通参数'),
+                      ),
+                      PocketButton.tonal(
+                        onPressed: busy
+                            ? null
+                            : () => setState(() => resetReview = null),
+                        child: const Text('取消'),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+        ],
+      ),
     ),
   );
 }
