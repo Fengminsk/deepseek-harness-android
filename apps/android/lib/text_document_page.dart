@@ -20,6 +20,7 @@ class TextDocumentPage extends StatefulWidget {
     this.validate,
     this.selectable = false,
     this.obscureText = false,
+    this.keyboardType = TextInputType.multiline,
   });
   final String title, text;
   final bool readOnly, monospace;
@@ -33,6 +34,7 @@ class TextDocumentPage extends StatefulWidget {
   /// enable selection and the copy action.
   final bool selectable;
   final bool obscureText;
+  final TextInputType keyboardType;
 
   @override
   State<TextDocumentPage> createState() => _TextDocumentPageState();
@@ -123,6 +125,7 @@ class _TextDocumentPageState extends State<TextDocumentPage> {
                 monospace: widget.monospace,
                 sensitive: widget.obscureText,
                 obscureText: widget.obscureText && !revealSecret,
+                keyboardType: widget.keyboardType,
                 errorText: error,
                 onChanged: (_) => setState(() => error = null),
               ),

@@ -25,6 +25,7 @@ class RuntimeController extends ChangeNotifier {
   String? error;
   Json info = {};
   Json web = {};
+  int _webRead = 0;
   List<Json> sessions = [];
   List<Json> forms = [];
   List<Json> interactions = [];
@@ -158,6 +159,74 @@ class RuntimeController extends ChangeNotifier {
   List<Json> get observationDiagnostics => _apiStreams.diagnostics;
 
   bool get ready => phase == 'ready';
+  void _invalidateWeb() {
+    _webRead++;
+    if (web.isNotEmpty) {
+      web = {
+        ...web,
+        'phase': 'unknown',
+        'host': null,
+        'url': null,
+        'error': null,
+      };
+    }
+  }
+
+  /// Listener observations belong to this connection. Keep the saved preference
+  /// but withdraw addresses as soon as the carrier can no longer confirm them.
+  Future<void> refreshWeb() async {
+    if (_disposed || !ready) return;
+    final generation = _connectionGeneration;
+    final read = ++_webRead;
+    final observed = web;
+    bool current() =>
+        !_disposed &&
+        ready &&
+        generation == _connectionGeneration &&
+        read == _webRead &&
+        identical(observed, web);
+    try {
+      final next = await call('web.status') as Json;
+      if (!current()) return;
+      web = next;
+      notifyListeners();
+    } catch (_) {
+      if (!current()) return;
+      _invalidateWeb();
+      notifyListeners();
+      rethrow;
+    }
+  }
+
+  /// A newer network notification supersedes an older mutation receipt. An
+  /// uncertain write is never replayed; only a subsequent status read reconciles it.
+  Future<void> configureWeb(Json preferences, {bool rotate = false}) async {
+    if (_disposed || !ready || web.isEmpty || web['phase'] == 'unknown') {
+      throw StateError('Web 状态尚未确认，请先刷新。');
+    }
+    final generation = _connectionGeneration;
+    final observed = web;
+    ++_webRead;
+    bool current() =>
+        !_disposed && ready && generation == _connectionGeneration;
+    try {
+      final next = await call(
+        rotate ? 'web.rotate' : 'web.configure',
+        preferences,
+      ) as Json;
+      if (!current() || !identical(observed, web)) return;
+      web = next;
+      notifyListeners();
+    } catch (_) {
+      if (!current()) return;
+      if (identical(observed, web)) {
+        _invalidateWeb();
+        notifyListeners();
+      }
+      rethrow;
+    }
+  }
+
   void _markLiveUnconfirmed() {
     for (final id in liveMessages.keys.toList()) {
       liveMessages[id] = {...liveMessages[id]!, 'unconfirmed': true};
@@ -171,6 +240,7 @@ class RuntimeController extends ChangeNotifier {
     _connectionGeneration++;
     error = '$exception';
     phase = 'failed';
+    _invalidateWeb();
     _markLiveUnconfirmed();
     _apiStreams.setReady(false);
     notifyListeners();
@@ -221,7 +291,10 @@ class RuntimeController extends ChangeNotifier {
               );
             }
           case 'web.changed':
-            web = data;
+            if (ready) {
+              _webRead++;
+              web = data;
+            }
           case 'interactions.changed':
             _applyInteractions(data);
           case 'navigation.open':
@@ -259,6 +332,7 @@ class RuntimeController extends ChangeNotifier {
       _interactionsRevision = -1;
       _apiStreams.setReady(false);
       _markLiveUnconfirmed();
+      _invalidateWeb();
     }
     if (newProcess) {
       // These projections belong to one native process. A transient disconnect
@@ -274,7 +348,10 @@ class RuntimeController extends ChangeNotifier {
       nativeMode = data['mode'] as String?;
     }
     error = data['error'] as String?;
-    if (!ready) _markLiveUnconfirmed();
+    if (!ready) {
+      _markLiveUnconfirmed();
+      _invalidateWeb();
+    }
     // Invalidate domain observations before a replacement stream can emit its
     // baseline. A synchronous first frame must not be cleared by a later notify.
     notifyListeners();
@@ -426,6 +503,7 @@ class RuntimeController extends ChangeNotifier {
     _bindingDisconnected = false;
     _statusRevision++;
     phase = 'restarting';
+    _invalidateWeb();
     error = null;
     _interactionsRevision = -1;
     _connectionGeneration++;
@@ -488,9 +566,8 @@ class RuntimeController extends ChangeNotifier {
     if (!current()) return;
     await refreshInteractions();
     if (!current()) return;
-    final nextWeb = await call('web.status') as Json;
+    await refreshWeb();
     if (!current()) return;
-    web = nextWeb;
     await refreshSessions();
     if (!current()) return;
     await refreshForms();

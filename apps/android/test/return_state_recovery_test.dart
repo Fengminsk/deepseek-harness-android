@@ -11,6 +11,7 @@ class _Runtime extends RuntimeController {
   Json status = {'phase': 'ready', 'generation': 'service-a', 'mode': 'active'};
   Completer<Json>? statusRead, catalogRead;
   Completer<Json>? interactionRead;
+  Completer<Json>? webRead;
   Json interactionValue = {'revision': 1, 'requests': <Json>[]};
   String catalogModel = 'one';
   bool failCatalog = false;
@@ -31,6 +32,7 @@ class _Runtime extends RuntimeController {
       return statusRead?.future ?? status;
     }
     if (method == 'settings.describe') return <Json>[];
+    if (method == 'web.status') return webRead!.future;
     if (method == 'interactions.list') {
       return interactionRead?.future ?? interactionValue;
     }
@@ -147,6 +149,111 @@ class _NativeRecovery {
 }
 
 void main() {
+  final webListening = <String, dynamic>{
+    'enabled': true,
+    'scope': 'local',
+    'port': 3080,
+    'phase': 'listening',
+    'host': '127.0.0.1',
+    'url': 'http://127.0.0.1:3080/?token=synthetic',
+  };
+  testWidgets(
+    'native lifecycle withdraws Web addresses until a new observation',
+    (tester) async {
+      final runtime = _Runtime();
+      final native = _NativeRecovery(tester, runtime);
+      await native.open();
+      native.status(runtime.status);
+      await tester.pump();
+      native.events.success(
+        jsonEncode({'method': 'web.changed', 'params': webListening}),
+      );
+      await tester.pump();
+      expect(runtime.web['phase'], 'listening');
+      native.status({'phase': 'failed', 'connection': 'disconnected'});
+      await tester.pump();
+      expect(runtime.web['enabled'], true);
+      expect(runtime.web['url'], isNull);
+      expect(runtime.web['phase'], 'unknown');
+      native.events.success(
+        jsonEncode({'method': 'web.changed', 'params': webListening}),
+      );
+      await tester.pump();
+      expect(runtime.web['phase'], 'unknown');
+      native.status({...runtime.status, 'generation': 'service-b'});
+      await tester.pump();
+      expect(runtime.ready, true);
+      expect(runtime.web['phase'], 'unknown');
+      native.events.success(
+        jsonEncode({
+          'method': 'web.changed',
+          'params': {
+            ...webListening,
+            'url': 'http://127.0.0.1:3080/?token=new',
+          },
+        }),
+      );
+      await tester.pump();
+      expect(runtime.web['url'], endsWith('token=new'));
+      native.expectNoBusinessReplay();
+      runtime.dispose();
+      await tester.pump();
+    },
+  );
+
+  testWidgets(
+    'pushed network state supersedes an in-flight Web status baseline',
+    (tester) async {
+      final runtime = _Runtime();
+      final native = _NativeRecovery(tester, runtime);
+      await native.open();
+      native.status(runtime.status);
+      await tester.pump();
+      runtime.webRead = Completer<Json>();
+      final read = runtime.refreshWeb();
+      native.events.success(
+        jsonEncode({
+          'method': 'web.changed',
+          'params': {
+            ...webListening,
+            'scope': 'lan',
+            'phase': 'waiting-network',
+            'host': null,
+            'url': null,
+          },
+        }),
+      );
+      await tester.pump();
+      runtime.webRead!.complete(webListening);
+      await read;
+      expect(runtime.web['phase'], 'waiting-network');
+      expect(runtime.web['url'], isNull);
+      runtime.dispose();
+      await tester.pump();
+    },
+  );
+
+  testWidgets('old Web read cannot restore a replacement service access link', (
+    tester,
+  ) async {
+    final runtime = _Runtime();
+    final native = _NativeRecovery(tester, runtime);
+    await native.open();
+    native.status(runtime.status);
+    await tester.pump();
+    runtime.web = Map.of(webListening);
+    runtime.webRead = Completer<Json>();
+    final read = runtime.refreshWeb();
+    native.status({...runtime.status, 'generation': 'service-b'});
+    await tester.pump();
+    runtime.webRead!.complete(webListening);
+    await read;
+    expect(runtime.web['phase'], 'unknown');
+    expect(runtime.web['url'], isNull);
+    runtime.dispose();
+    await tester.pump();
+  });
+
   for (final eventFirst in [true, false]) {
     testWidgets(
       'binding death recovers in the same foreground turn with ${eventFirst ? 'status' : 'error'} first',

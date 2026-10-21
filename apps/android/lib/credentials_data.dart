@@ -122,7 +122,7 @@ class CredentialsController extends ChangeNotifier {
   bool _started = false, _disposed = false;
   String? _phase;
   Object? _forms, _epoch;
-  int _connection = 0, _catalogRead = 0;
+  int _connection = 0, _catalogRead = 0, _runtimeGeneration = 0;
 
   CredentialEntry entry(String reference) =>
       entries.putIfAbsent(reference, () => CredentialEntry(reference));
@@ -143,6 +143,7 @@ class CredentialsController extends ChangeNotifier {
     _phase = runtime.phase;
     _epoch = runtime.taskState['epoch'];
     _forms = runtime.forms;
+    _runtimeGeneration = runtime.connectionGeneration;
     runtime.addListener(_runtimeChanged);
     _events = runtime.remoteEvents.listen((event) {
       if (event['event'] != 'credentials/reference-updated') return;
@@ -157,11 +158,14 @@ class CredentialsController extends ChangeNotifier {
 
   void _runtimeChanged() {
     final changed =
-        _phase != runtime.phase || _epoch != runtime.taskState['epoch'];
+        _runtimeGeneration != runtime.connectionGeneration ||
+        _phase != runtime.phase ||
+        _epoch != runtime.taskState['epoch'];
     final formsChanged = !identical(_forms, runtime.forms);
     _phase = runtime.phase;
     _epoch = runtime.taskState['epoch'];
     _forms = runtime.forms;
+    _runtimeGeneration = runtime.connectionGeneration;
     if (changed) {
       _connection++;
       _catalogRead++;

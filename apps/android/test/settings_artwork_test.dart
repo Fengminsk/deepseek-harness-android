@@ -5,6 +5,7 @@ import 'package:dsh_android/settings.dart';
 import 'package:dsh_android/ui.dart';
 import 'package:dsh_android/configuration_editor.dart';
 import 'package:dsh_android/configuration_model_destination.dart';
+import 'package:dsh_android/web_search_settings.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
@@ -16,6 +17,35 @@ class UnavailableSettingsRuntime extends RuntimeController {
 }
 
 void main() {
+  testWidgets('web settings combine three service forms into one workflow', (
+    tester,
+  ) async {
+    final runtime = UnavailableSettingsRuntime()
+      ..phase = 'ready'
+      ..forms = [
+        {'ns': 'web'},
+        {'ns': 'web-search-deepseek'},
+        {'ns': 'web-deepseek-api'},
+      ];
+    addTearDown(runtime.dispose);
+    await tester.pumpWidget(
+      MaterialApp(home: ConfigurationListPage(runtime: runtime)),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('网页搜索'), findsOneWidget);
+    for (final namespace in [
+      'web',
+      'web-search-deepseek',
+      'web-deepseek-api',
+    ]) {
+      expect(find.byKey(ValueKey('settings-entry:$namespace')), findsNothing);
+    }
+    await tester.tap(find.text('网页搜索'));
+    await tester.pumpAndSettle();
+    expect(find.byType(WebSearchSettingsPage), findsOneWidget);
+    expect(find.byType(ConfigPage), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
   testWidgets(
     'model entry uses its catalog workflow and Web preferences stay grouped',
     (tester) async {
@@ -75,7 +105,7 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      expect(find.byIcon(Icons.search_rounded), findsOneWidget);
+      expect(find.byIcon(Icons.travel_explore_rounded), findsOneWidget);
       expect(find.byIcon(Icons.palette_outlined), findsOneWidget);
       expect(find.byType(SvgPicture), findsOneWidget);
       expect(find.text('custom-tool'), findsOneWidget);

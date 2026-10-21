@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/services.dart';
@@ -11,6 +12,7 @@ import 'files.dart';
 import 'appearance.dart';
 import 'configuration_editor.dart';
 import 'configuration_model_destination.dart';
+import 'configuration_value_row.dart';
 import 'configuration_transfer.dart';
 import 'metadata_artwork.dart';
 import 'models.dart';
@@ -24,6 +26,7 @@ import 'credentials.dart';
 import 'recovery.dart';
 import 'agent_presets.dart';
 import 'subagent_model_settings.dart';
+import 'web_search_settings.dart';
 
 class SettingsPage extends StatelessWidget {
   const SettingsPage({required this.runtime, super.key});
@@ -227,6 +230,11 @@ class _InstalledVersionRowState extends State<_InstalledVersionRow> {
 class ConfigurationListPage extends StatelessWidget {
   const ConfigurationListPage({required this.runtime, super.key});
   final RuntimeController runtime;
+  static bool _sharedSearch(String namespace) => const {
+    'web',
+    'web-search-deepseek',
+    'web-deepseek-api',
+  }.contains(namespace);
   // Exact bundled entry IDs keep original Web-only preferences separate from
   // native App behavior. Unknown plugin forms stay reachable in their own group.
   static String _group(String ns) => switch (ns) {
@@ -322,9 +330,27 @@ class ConfigurationListPage extends StatelessWidget {
                 title: group,
                 divided: true,
                 children: [
+                  if (group == '联网工具' &&
+                      runtime.forms.any(
+                        (form) => _sharedSearch('${form['ns']}'),
+                      ))
+                    PocketRow(
+                      key: const ValueKey('web-search-settings'),
+                      icon: Icons.travel_explore_rounded,
+                      title: '网页搜索',
+                      subtitle: '搜索方式、服务参数与凭据',
+                      onTap: () => Navigator.push(
+                        context,
+                        PocketRoute<void>(
+                          builder: (_) =>
+                              WebSearchSettingsPage(runtime: runtime),
+                        ),
+                      ),
+                    ),
                   for (final form in runtime.forms.where(
                     (form) =>
                         form['ns'] != 'agent-preset-registry' &&
+                        !_sharedSearch('${form['ns']}') &&
                         _group('${form['ns']}') == group,
                   ))
                     _entry(context, form),
@@ -356,22 +382,48 @@ class _WebSettingsPageState extends State<WebSettingsPage> {
   String? error;
   final port = TextEditingController(text: '3080');
   bool busy = false;
-  int reads = 0;
+  int operation = 0;
+  late int observedGeneration = widget.runtime.connectionGeneration;
+  late bool wasReady = widget.runtime.ready;
+  bool get canWrite =>
+      widget.runtime.ready &&
+      !busy &&
+      state != null &&
+      state!['phase'] != 'unknown';
   @override
   void initState() {
     super.initState();
     widget.runtime.addListener(changed);
+    changed();
     load();
   }
 
   void changed() {
-    if (mounted &&
-        widget.runtime.web.isNotEmpty &&
-        !identical(observedWeb, widget.runtime.web)) {
-      observedWeb = widget.runtime.web;
-      reads++;
-      setState(() => state = widget.runtime.web);
-    }
+    if (!mounted) return;
+    final runtime = widget.runtime;
+    final restored = !wasReady && runtime.ready;
+    final generationChanged =
+        observedGeneration != runtime.connectionGeneration;
+    final webChanged =
+        runtime.web.isNotEmpty && !identical(observedWeb, runtime.web);
+    if (wasReady == runtime.ready && !generationChanged && !webChanged) return;
+    wasReady = runtime.ready;
+    setState(() {
+      if (!runtime.ready || generationChanged) {
+        observedGeneration = runtime.connectionGeneration;
+        operation++;
+        busy = false;
+        error = null;
+      }
+      if (webChanged) {
+        final cleanPort = state == null || port.text == '${state!['port']}';
+        observedWeb = runtime.web;
+        state = runtime.web;
+        if (cleanPort) port.text = '${state!['port']}';
+        if (state!['phase'] != 'unknown') error = null;
+      }
+    });
+    if (restored) unawaited(load());
   }
 
   @override
@@ -382,23 +434,13 @@ class _WebSettingsPageState extends State<WebSettingsPage> {
   }
 
   Future<void> load() async {
-    final read = ++reads;
-    final draft = port.text;
-    final updatePort = state == null || draft == '${state!['port']}';
+    final generation = widget.runtime.connectionGeneration;
     try {
-      final value = await widget.runtime.call('web.status') as Json;
-      if (mounted && read == reads) {
-        setState(() {
-          state = value;
-          error = null;
-          if (updatePort && port.text == draft) port.text = '${value['port']}';
-        });
-      }
+      await widget.runtime.refreshWeb();
     } catch (exception) {
-      if (mounted && read == reads) {
+      if (mounted && generation == widget.runtime.connectionGeneration) {
         setState(() {
           error = 'Web 状态未确认，请刷新重试：$exception';
-          state = state == null ? null : {...state!, 'phase': 'unknown'};
         });
       }
     }
@@ -410,16 +452,19 @@ class _WebSettingsPageState extends State<WebSettingsPage> {
     int? portNumber,
     bool rotate = false,
   }) async {
-    ++reads;
-    final draft = port.text;
-    final updatePort = portNumber != null || draft == '${state!['port']}';
+    if (!canWrite) return;
+    final owner = ++operation;
+    final generation = widget.runtime.connectionGeneration;
+    bool current() =>
+        mounted &&
+        owner == operation &&
+        generation == widget.runtime.connectionGeneration;
     setState(() {
       busy = true;
       error = null;
     });
     try {
-      final value = await widget.runtime.call(
-        rotate ? 'web.rotate' : 'web.configure',
+      await widget.runtime.configureWeb(
         rotate
             ? {}
             : {
@@ -427,18 +472,36 @@ class _WebSettingsPageState extends State<WebSettingsPage> {
                 'scope': scope ?? state!['scope'],
                 'port': portNumber ?? state!['port'],
               },
-      ) as Json;
-      if (mounted) {
-        setState(() {
-          state = value;
-          if (updatePort && port.text == draft) port.text = '${value['port']}';
-        });
-      }
+        rotate: rotate,
+      );
     } catch (exception) {
-      if (mounted) setState(() => error = '$exception');
+      if (current()) setState(() => error = 'Web 修改结果未确认，请刷新核对：$exception');
     } finally {
-      if (mounted) setState(() => busy = false);
+      if (current()) setState(() => busy = false);
     }
+  }
+
+  static String? validatePort(String text) {
+    final value = int.tryParse(text);
+    return value == null || value < 1024 || value > 65535
+        ? '请输入 1024–65535 之间的端口。'
+        : null;
+  }
+
+  Future<void> editPort() async {
+    final next = await Navigator.of(context).push<String>(
+      PocketRoute(
+        builder: (_) => TextDocumentPage(
+          title: '访问端口',
+          text: port.text,
+          readOnly: false,
+          keyboardType: TextInputType.number,
+          helperText: '可用范围 1024–65535，默认 3080。完成编辑后返回保存。',
+          validate: validatePort,
+        ),
+      ),
+    );
+    if (mounted && next != null) setState(() => port.text = next);
   }
 
   @override
@@ -457,9 +520,13 @@ class _WebSettingsPageState extends State<WebSettingsPage> {
             child: SelectableText(error!),
           ),
         if (state == null && error == null)
-          const Padding(
-            padding: EdgeInsets.all(20),
-            child: Text('正在读取 Web 状态…'),
+          Padding(
+            padding: const EdgeInsets.all(20),
+            child: Text(
+              widget.runtime.ready
+                  ? '正在读取 Web 状态…'
+                  : '本地服务尚未就绪，连接恢复后会重新确认 Web 状态。',
+            ),
           ),
         if (state != null) ...[
           PocketSection(
@@ -477,7 +544,7 @@ class _WebSettingsPageState extends State<WebSettingsPage> {
                       '状态尚未确认',
                 ),
                 value: state!['enabled'] == true,
-                onChanged: busy ? null : (value) => update(enabled: value),
+                onChanged: canWrite ? (value) => update(enabled: value) : null,
               ),
               if (state!['error'] != null)
                 Padding(
@@ -492,11 +559,13 @@ class _WebSettingsPageState extends State<WebSettingsPage> {
               Padding(
                 padding: const EdgeInsets.all(16),
                 child: IgnorePointer(
-                  ignoring: busy,
+                  ignoring: !canWrite,
                   child: SegmentedControl<String>(
                     segments: const [('local', '仅本机'), ('lan', '局域网')],
                     value: state!['scope'] as String,
-                    onChanged: busy ? null : (value) => update(scope: value),
+                    onChanged: canWrite
+                        ? (value) => update(scope: value)
+                        : null,
                   ),
                 ),
               ),
@@ -510,7 +579,7 @@ class _WebSettingsPageState extends State<WebSettingsPage> {
               ),
             ],
           ),
-          if (state!['phase'] == 'listening')
+          if (widget.runtime.ready && state!['phase'] == 'listening')
             PocketSection(
               title: '访问原版 Web',
               divided: true,
@@ -548,53 +617,29 @@ class _WebSettingsPageState extends State<WebSettingsPage> {
                   icon: Icons.refresh_rounded,
                   title: '重置访问凭证',
                   subtitle: '旧链接和浏览器连接会失效',
-                  onTap: busy ? null : () => update(rotate: true),
+                  onTap: canWrite ? () => update(rotate: true) : null,
                 ),
               ],
             ),
           PocketSection(
             title: '高级设置',
+            divided: true,
             children: [
-              Padding(
-                padding: const EdgeInsets.all(18),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    TextField(
-                      controller: port,
-                      enabled: !busy,
-                      keyboardType: TextInputType.number,
-                      onChanged: (_) => setState(() {}),
-                      decoration: const InputDecoration(
-                        labelText: '访问端口',
-                        helperText: '1024–65535，默认 3080',
-                      ),
-                    ),
-                    if (port.text != '${state!['port']}') ...[
-                      const SizedBox(height: 12),
-                      PocketButton.tonal(
-                        onPressed: busy
-                            ? null
-                            : () {
-                                final value = int.tryParse(port.text);
-                                if (value == null ||
-                                    value < 1024 ||
-                                    value > 65535) {
-                                  setState(
-                                    () => error = '请输入 1024–65535 之间的端口。',
-                                  );
-                                  return;
-                                }
-                                update(portNumber: value);
-                              },
-                        child: Text(
-                          state!['enabled'] == true ? '保存端口并重启 Web' : '保存端口',
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
+              ConfigurationValueRow(
+                title: '访问端口',
+                summary: port.text == '${state!['port']}'
+                    ? port.text
+                    : '${port.text} · 未保存',
+                onTap: busy ? null : editPort,
               ),
+              if (port.text != '${state!['port']}')
+                PocketRow(
+                  icon: Icons.check_rounded,
+                  title: state!['enabled'] == true ? '保存端口并重启 Web' : '保存端口',
+                  onTap: canWrite
+                      ? () => update(portNumber: int.parse(port.text))
+                      : null,
+                ),
               const TextDocumentRow(
                 title: '关于 Web 访问',
                 text: '浏览器与 App 共用 Agent、会话和配置。开关和访问范围会保留，每次开启生成新链接。关闭 Web 会断开浏览器，手机中的任务继续执行。',

@@ -38,6 +38,15 @@ class CredentialRuntime extends RuntimeController {
   final readonly = <String>{};
   final notifications = StreamController<Json>.broadcast(sync: true);
   Future<dynamic> Function(String, Json)? handle;
+  int generation = 1;
+
+  @override
+  int get connectionGeneration => generation;
+
+  void replaceGeneration() {
+    generation++;
+    notifyListeners();
+  }
 
   @override
   Stream<Json> get remoteEvents => notifications.stream;
@@ -368,6 +377,97 @@ void main() {
       expect(controller.entry('SHARED_KEY').write!.state, 'unconfirmed');
     },
   );
+
+  test('same-phase generation changes reject old key and removal receipts without replay', () async {
+    for (final removing in [false, true]) {
+      final runtime = CredentialRuntime();
+      final controller = CredentialsController(runtime);
+      addTearDown(runtime.dispose);
+      addTearDown(controller.dispose);
+      controller.start();
+      await controller.refresh();
+      final reply = Completer<dynamic>();
+      runtime.handle = (method, args) async {
+        if (method == 'set' || method == 'unset') return reply.future;
+        return {
+          'SHARED_KEY': {'configured': true, 'writable': true},
+        };
+      };
+      controller.edit('SHARED_KEY', 'keep-after-generation-change');
+      final row = controller.entry('SHARED_KEY');
+      final write = removing
+          ? controller.remove('SHARED_KEY', confirmed: true)
+          : controller.save('SHARED_KEY');
+      final action = row.write;
+      try {
+        runtime.replaceGeneration();
+        expect(runtime.phase, 'ready');
+        expect(runtime.taskState['epoch'], isNull);
+        expect(row.write, same(action));
+        expect(row.write!.state, 'unconfirmed');
+        expect(row.write!.inFlight, true);
+        await controller.save('SHARED_KEY', acknowledgeUnknown: true);
+        expect(runtime.calls(removing ? 'unset' : 'set'), hasLength(1));
+        expect(runtime.calls(removing ? 'set' : 'unset'), isEmpty);
+      } finally {
+        reply.complete(null);
+        await write;
+      }
+      await controller.refresh();
+      expect(row.write!.state, 'unconfirmed');
+      expect(row.write!.inFlight, false);
+      expect(row.draft, 'keep-after-generation-change');
+      await controller.save('SHARED_KEY');
+      expect(runtime.calls(removing ? 'unset' : 'set'), hasLength(1));
+      expect(runtime.calls(removing ? 'set' : 'unset'), isEmpty);
+    }
+  });
+
+  test('same-phase generation invalidates the catalog and discards a previous describe result', () async {
+    final runtime = CredentialRuntime();
+    final controller = CredentialsController(runtime);
+    addTearDown(runtime.dispose);
+    addTearDown(controller.dispose);
+    controller.start();
+    await controller.refresh();
+    final older = Completer<dynamic>(), newer = Completer<dynamic>();
+    final newRead = Completer<void>();
+    var calls = 0;
+    runtime.handle = (method, args) async {
+      expect(method, 'describe');
+      if (++calls == 1) return older.future;
+      if (!newRead.isCompleted) newRead.complete();
+      return newer.future;
+    };
+    final reading = controller.readReference('SHARED_KEY');
+    final row = controller.entry('SHARED_KEY');
+    try {
+      runtime.replaceGeneration();
+      expect(controller.catalogFresh, false);
+      await newRead.future.timeout(const Duration(seconds: 2));
+      older.complete({
+        'SHARED_KEY': {'configured': false, 'writable': true},
+      });
+      await reading;
+      expect(row.fresh, false);
+      expect(row.status!.configured, true);
+    } finally {
+      if (!older.isCompleted) {
+        older.complete({
+          'SHARED_KEY': {'configured': false, 'writable': true},
+        });
+      }
+      newer.complete({
+        'SHARED_KEY': {'configured': true, 'writable': false},
+      });
+      await reading;
+    }
+    await controller.refresh();
+    expect(row.fresh, true);
+    expect(row.status!.writable, false);
+    expect(runtime.calls('set'), isEmpty);
+    expect(runtime.calls('unset'), isEmpty);
+  });
 
   test(
     'out-of-order describe and shared credential events keep the newest status',
