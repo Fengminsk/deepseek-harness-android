@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:dsh_android/account_state.dart';
 import 'package:dsh_android/chat_sidebar.dart';
 import 'package:dsh_android/flclash/popup.dart';
 import 'package:dsh_android/library.dart';
@@ -10,6 +11,17 @@ import 'package:material_ui/material_ui.dart';
 
 import 'library_test.dart' show LibraryRuntime, settle, summary;
 
+class SidebarAccountRuntime extends LibraryRuntime {
+  late final observedAccount = AccountState(this, {});
+  @override
+  AccountState get accountSnapshot => observedAccount;
+  @override
+  void dispose() {
+    observedAccount.dispose();
+    super.dispose();
+  }
+}
+
 class SidebarHarness {
   SidebarHarness(this.runtime);
   final LibraryRuntime runtime;
@@ -17,15 +29,38 @@ class SidebarHarness {
   final selected = <String>[];
   int closes = 0, newChats = 0, tasks = 0, automations = 0;
 
-  Widget host({double scale = 1, bool reduceMotion = true}) => MaterialApp(
-    theme: pocketTheme(Brightness.light),
+  Widget host({
+    double scale = 1,
+    bool reduceMotion = true,
+    Size size = const Size(390, 844),
+    EdgeInsets safe = EdgeInsets.zero,
+    double keyboard = 0,
+    TextDirection direction = TextDirection.ltr,
+    Brightness brightness = Brightness.light,
+    String? fontFamily,
+    bool glass = false,
+  }) => MaterialApp(
+    debugShowCheckedModeBanner: false,
+    theme: pocketTheme(brightness).copyWith(
+      textTheme: pocketTheme(brightness).textTheme
+          .apply(fontFamily: fontFamily),
+    ),
     builder: (_, child) => MediaQuery(
       data: MediaQueryData(
-        size: const Size(390, 844),
+        size: size,
+        padding: safe,
+        viewPadding: safe,
+        viewInsets: EdgeInsets.only(bottom: keyboard),
         textScaler: TextScaler.linear(scale),
         disableAnimations: reduceMotion,
       ),
-      child: child!,
+      child: Directionality(
+        textDirection: direction,
+        child: LiquidGlassScope(
+          enabled: glass,
+          child: LiquidGlassHost(enabled: glass, child: child!),
+        ),
+      ),
     ),
     home: Scaffold(
       key: scaffold,
@@ -58,15 +93,26 @@ Future<SidebarHarness> setup(
   LibraryRuntime? runtime,
   double scale = 1,
   bool reduceMotion = true,
+  Size size = const Size(390, 844),
+  EdgeInsets safe = EdgeInsets.zero,
+  double keyboard = 0,
+  TextDirection direction = TextDirection.ltr,
 }) async {
-  tester.view.physicalSize = const Size(390, 844);
+  tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
   final harness = SidebarHarness(runtime ?? LibraryRuntime());
   addTearDown(harness.runtime.dispose);
   await tester.pumpWidget(
-    harness.host(scale: scale, reduceMotion: reduceMotion),
+    harness.host(
+      scale: scale,
+      reduceMotion: reduceMotion,
+      size: size,
+      safe: safe,
+      keyboard: keyboard,
+      direction: direction,
+    ),
   );
   await harness.open(tester);
   return harness;
@@ -83,7 +129,7 @@ Future<void> menu(WidgetTester tester, String id) async {
     ),
   );
   await tester.pumpAndSettle();
-  await tester.ensureVisible(row);
+  await Scrollable.ensureVisible(tester.element(row), alignment: .5);
   await tester.pumpAndSettle();
   await tester.longPress(row);
   await tester.pumpAndSettle();
@@ -106,7 +152,7 @@ Future<void> dispose(WidgetTester tester) async {
 }
 
 void main() {
-  testWidgets('compact destinations and fixed footer retain library groups', (
+  testWidgets('floating chrome overlays the full scrolling library viewport', (
     tester,
   ) async {
     final harness = await setup(tester);
@@ -123,6 +169,18 @@ void main() {
     expect(runtime.watches, hasLength(2));
 
     final footer = tester.getRect(key('sidebar-footer'));
+    final header = tester.getRect(key('sidebar-header'));
+    final viewport = tester.getRect(key('sidebar-scroll'));
+    expect(viewport.contains(header.center), isTrue);
+    expect(viewport.contains(footer.center), isTrue);
+    expect(viewport.top, 0);
+    expect(viewport.bottom, 844);
+    expect(
+      tester.getCenter(key('sidebar-settings')).dx,
+      lessThan(tester.getCenter(key('sidebar-account')).dx),
+    );
+    expect(find.text('账号'), findsNothing);
+    expect(find.byTooltip('账号'), findsOneWidget);
     final reads = runtime.reads;
     for (var i = 0; i < 10; i++) {
       runtime.notifyListeners();
@@ -133,8 +191,189 @@ void main() {
     await tester.drag(key('sidebar-scroll'), const Offset(0, -450));
     await tester.pumpAndSettle();
     expect(tester.getRect(key('sidebar-footer')), footer);
-    expect(find.byTooltip('设置'), findsOneWidget);
+    expect(find.text('设置'), findsOneWidget);
     expect(runtime.calls.any((call) => call.$1 == 'session.read'), isFalse);
+    await dispose(tester);
+  });
+
+  testWidgets('session menu follows the pressed point and stays on screen', (
+    tester,
+  ) async {
+    final harness = await setup(tester);
+    final row = key('sidebar-session:s2');
+    await Scrollable.ensureVisible(tester.element(row), alignment: .5);
+    await tester.pumpAndSettle();
+    final bounds = tester.getRect(row);
+    final leftPoint = Offset(bounds.left + 24, bounds.center.dy);
+    final rightPoint = Offset(bounds.right - 24, bounds.center.dy);
+
+    Future<Rect> openAt(Offset point) async {
+      await tester.longPressAt(point);
+      await tester.pumpAndSettle();
+      final popup = tester.getRect(find.byType(CommonPopupMenu));
+      expect(popup.left, greaterThanOrEqualTo(16));
+      expect(popup.right, lessThanOrEqualTo(374));
+      expect(popup.top, greaterThanOrEqualTo(16));
+      expect(popup.bottom, lessThanOrEqualTo(828));
+      Navigator.of(tester.element(find.byType(CommonPopupMenu))).pop();
+      await tester.pumpAndSettle();
+      return popup;
+    }
+
+    final left = await openAt(leftPoint);
+    final right = await openAt(rightPoint);
+    expect(right.left, greaterThan(left.left + 24));
+    expect(harness.runtime.sent('sessionPin'), isEmpty);
+    expect(harness.selected, isEmpty);
+    await dispose(tester);
+  });
+
+  testWidgets(
+    'account entry observes the shared avatar without a name or watch',
+    (tester) async {
+      final runtime = SidebarAccountRuntime();
+      await setup(tester, runtime: runtime);
+      final accountEntry = key('sidebar-account');
+      expect(
+        find.descendant(of: accountEntry, matching: find.byType(Image)),
+        findsNothing,
+      );
+      runtime.observedAccount
+        ..view = {'status': 'credential-stored'}
+        ..profile = {
+          'status': 'ready',
+          'value': {
+            'name': 'Test Account',
+            'avatarUrl': 'https://example.test/avatar.png',
+          },
+        };
+      runtime.notifyListeners();
+      await tester.pumpAndSettle();
+      final image = tester.widget<Image>(
+        find.descendant(of: accountEntry, matching: find.byType(Image)),
+      );
+      expect(
+        (image.image as NetworkImage).url,
+        'https://example.test/avatar.png',
+      );
+      expect(find.text('Test Account'), findsNothing);
+      expect(runtime.watches.where((entry) => entry.$1 == 'account'), isEmpty);
+      runtime.observedAccount.view = {'status': 'signed-out'};
+      runtime.notifyListeners();
+      await tester.pumpAndSettle();
+      expect(
+        find.descendant(of: accountEntry, matching: find.byType(Image)),
+        findsNothing,
+      );
+      expect(find.byTooltip('账号'), findsOneWidget);
+      await dispose(tester);
+    },
+  );
+
+  testWidgets('long lists continue behind both floating controls', (
+    tester,
+  ) async {
+    final runtime = LibraryRuntime();
+    (runtime.catalog['sessions'] as List).addAll([
+      for (var index = 0; index < 35; index++)
+        summary('long$index', '会话 $index'),
+    ]);
+    await setup(tester, runtime: runtime);
+    final scrollable = find.descendant(
+      of: key('sidebar-scroll'),
+      matching: find.byType(Scrollable),
+    );
+    final row = key('sidebar-session:long5');
+    await tester.scrollUntilVisible(row, 250, scrollable: scrollable);
+    await tester.pumpAndSettle();
+    final position = tester.state<ScrollableState>(scrollable).position;
+    final header = tester.getRect(key('sidebar-header'));
+    position.jumpTo(
+      position.pixels + tester.getCenter(row).dy - header.center.dy,
+    );
+    await tester.pumpAndSettle();
+    expect(tester.getRect(row).overlaps(header), isTrue);
+    final footer = tester.getRect(key('sidebar-footer'));
+    position.jumpTo(
+      position.pixels + tester.getCenter(row).dy - footer.center.dy,
+    );
+    await tester.pumpAndSettle();
+    expect(tester.getRect(row).overlaps(footer), isTrue);
+    expect(tester.getRect(key('sidebar-header')), header);
+    expect(tester.getRect(key('sidebar-footer')), footer);
+    expect(tester.takeException(), isNull);
+    await dispose(tester);
+  });
+
+  testWidgets('narrow RTL layout keeps floating controls above the keyboard', (
+    tester,
+  ) async {
+    await setup(
+      tester,
+      size: const Size(320, 740),
+      scale: 1.6,
+      safe: const EdgeInsets.only(top: 30, bottom: 24),
+      keyboard: 280,
+      direction: TextDirection.rtl,
+    );
+    final header = tester.getRect(key('sidebar-header'));
+    final footer = tester.getRect(key('sidebar-footer'));
+    expect(header.top, greaterThanOrEqualTo(30));
+    expect(footer.bottom, lessThanOrEqualTo(740 - 280));
+    expect(
+      tester.getCenter(key('sidebar-settings')).dx,
+      greaterThan(tester.getCenter(key('sidebar-account')).dx),
+    );
+    await tester.tap(key('sidebar-search-toggle'));
+    await tester.pumpAndSettle();
+    final search = tester.getRect(key('sidebar-search'));
+    expect(search.top, greaterThan(header.bottom));
+    expect(search.bottom, lessThan(footer.top));
+    expect(tester.takeException(), isNull);
+    await dispose(tester);
+  });
+
+  testWidgets('menu opens below a high press and above a low press', (
+    tester,
+  ) async {
+    final runtime = LibraryRuntime();
+    (runtime.catalog['sessions'] as List).addAll([
+      for (var index = 0; index < 30; index++)
+        summary('edge$index', '会话 $index'),
+    ]);
+    await setup(
+      tester,
+      runtime: runtime,
+      safe: const EdgeInsets.only(top: 26, bottom: 24),
+    );
+    final row = key('sidebar-session:edge8');
+    final scrollable = find.descendant(
+      of: key('sidebar-scroll'),
+      matching: find.byType(Scrollable),
+    );
+    await tester.scrollUntilVisible(row, 250, scrollable: scrollable);
+    await tester.pumpAndSettle();
+    final position = tester.state<ScrollableState>(scrollable).position;
+    final high = tester.getRect(key('sidebar-header')).bottom + 32;
+    final low = tester.getRect(key('sidebar-footer')).top - 32;
+    for (final target in [high, low]) {
+      position.jumpTo(position.pixels + tester.getCenter(row).dy - target);
+      await tester.pumpAndSettle();
+      final bounds = tester.getRect(row);
+      await tester.longPressAt(Offset(bounds.right - 24, target));
+      await tester.pumpAndSettle();
+      final popup = tester.getRect(find.byType(CommonPopupMenu));
+      expect(popup.top, greaterThanOrEqualTo(42));
+      expect(popup.bottom, lessThanOrEqualTo(804));
+      if (target == high) {
+        expect(popup.top, greaterThan(target));
+      } else {
+        expect(popup.bottom, lessThan(target));
+      }
+      Navigator.of(tester.element(find.byType(CommonPopupMenu))).pop();
+      await tester.pumpAndSettle();
+    }
+    expect(runtime.sent('sessionPin'), isEmpty);
     await dispose(tester);
   });
 

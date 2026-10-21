@@ -258,20 +258,84 @@ class _ChatSidebarState extends State<ChatSidebar> {
 
   Widget _searchField() => !_searchOpen
       ? const SizedBox(width: double.infinity)
-      : Padding(
-          padding: const EdgeInsets.fromLTRB(18, 4, 18, 10),
-          child: TextField(
-            key: const ValueKey('sidebar-search'),
-            controller: _search,
-            focusNode: _searchFocus,
-            onChanged: (_) => setState(() {}),
-            textInputAction: TextInputAction.search,
-            decoration: const InputDecoration(
-              hintText: '搜索会话与工作区',
-              prefixIcon: Icon(Icons.search_rounded, size: 20),
-            ),
+      : TextField(
+          key: const ValueKey('sidebar-search'),
+          controller: _search,
+          focusNode: _searchFocus,
+          onChanged: (_) => setState(() {}),
+          textInputAction: TextInputAction.search,
+          decoration: const InputDecoration(
+            hintText: '搜索会话与工作区',
+            prefixIcon: Icon(Icons.search_rounded, size: 20),
           ),
         );
+
+  Widget _header() => Row(
+    key: const ValueKey('sidebar-header'),
+    children: [
+      Expanded(
+        child: GlassSurface(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            child: Row(
+              children: [
+                const PocketMark(size: 23),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'Pocket Harness',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+      const SizedBox(width: 10),
+      GlassButton(
+        key: const ValueKey('sidebar-search-toggle'),
+        icon: _searchOpen ? Icons.close_rounded : Icons.search_rounded,
+        label: _searchOpen ? '关闭搜索' : '搜索对话',
+        onPressed: _toggleSearch,
+      ),
+    ],
+  );
+
+  Widget _footer() => Row(
+    key: const ValueKey('sidebar-footer'),
+    children: [
+      PocketButton.tonal(
+        key: const ValueKey('sidebar-settings'),
+        glass: true,
+        onPressed: () => _page(SettingsPage(runtime: widget.runtime)),
+        child: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.tune_rounded, size: 21),
+            SizedBox(width: 10),
+            Text('设置'),
+          ],
+        ),
+      ),
+      const Spacer(),
+      _SidebarAvatar(
+        url: _avatarUrl(),
+        onPressed: () => _page(AccountPage(runtime: widget.runtime)),
+      ),
+    ],
+  );
+
+  String? _avatarUrl() {
+    final account = widget.runtime.accountSnapshot;
+    final profile = account?.profile;
+    if (account?.signedIn != true || profile?['status'] != 'ready') return null;
+    final value = profile?['value'];
+    final url = value is Map ? value['avatarUrl'] : null;
+    return url is String && url.trim().isNotEmpty ? url : null;
+  }
 
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
@@ -340,223 +404,308 @@ class _ChatSidebarState extends State<ChatSidebar> {
         elevation: 0,
         backgroundColor: Theme.of(context).colorScheme.surface,
         shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.horizontal(right: Radius.circular(28)),
+          borderRadius: BorderRadiusDirectional.horizontal(
+            end: Radius.circular(28),
+          ),
         ),
-        child: SafeArea(
-          child: Column(
+        child: _SidebarFrame(
+          searchOpen: _searchOpen,
+          header: _header(),
+          searchField: _searchField(),
+          footer: _footer(),
+          bodyBuilder: (scrollPadding) => ListView(
+            key: const ValueKey('sidebar-scroll'),
+            padding: scrollPadding,
+            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
             children: [
               Padding(
-                padding: const EdgeInsets.fromLTRB(22, 18, 12, 10),
-                child: Row(
-                  children: [
-                    const PocketMark(size: 25),
-                    const SizedBox(width: 10),
-                    const Expanded(
-                      child: Text(
-                        'Pocket Harness',
-                        style: TextStyle(
-                          fontSize: 17,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                    GlassButton(
-                      key: const ValueKey('sidebar-search-toggle'),
-                      icon: _searchOpen
-                          ? Icons.close_rounded
-                          : Icons.search_rounded,
-                      label: _searchOpen ? '关闭搜索' : '搜索对话',
-                      onPressed: _toggleSearch,
-                    ),
-                  ],
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                child: PocketButton.tonal(
+                  key: const ValueKey('sidebar-new-chat'),
+                  onPressed: () => _leave(widget.onNewChat),
+                  child: const Row(
+                    children: [
+                      Icon(Icons.edit_square, size: 21),
+                      SizedBox(width: 12),
+                      Flexible(child: Text('新对话')),
+                    ],
+                  ),
                 ),
               ),
-              if (MediaQuery.disableAnimationsOf(context))
-                _searchField()
-              else
-                AnimatedSize(
-                  duration: const Duration(milliseconds: 220),
-                  alignment: Alignment.topCenter,
-                  child: _searchField(),
-                ),
-              Expanded(
-                child: ListView(
-                  key: const ValueKey('sidebar-scroll'),
-                  padding: const EdgeInsets.fromLTRB(10, 0, 10, 20),
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 4),
-                      child: PocketButton.tonal(
-                        key: const ValueKey('sidebar-new-chat'),
-                        onPressed: () => _leave(widget.onNewChat),
-                        child: const Row(
-                          children: [
-                            Icon(Icons.edit_square, size: 21),
-                            SizedBox(width: 12),
-                            Flexible(child: Text('新对话')),
-                          ],
-                        ),
-                      ),
-                    ),
-                    _destination(
-                      '后台任务',
-                      Icons.play_circle_outline_rounded,
-                      () => _leave(widget.onOpenTasks),
-                      trailing: running == 0 ? null : Text('$running'),
-                    ),
-                    _destination(
-                      '工作区与会话',
-                      Icons.folder_copy_outlined,
-                      () => unawaited(
-                        _browse(LibraryPage(runtime: widget.runtime)),
-                      ),
-                    ),
-                    CommonPopupBox(
-                      key: const ValueKey('sidebar-more'),
-                      placement: PopupPlacement.overAnchorStart,
-                      targetBuilder: (open) => _destination(
-                        '更多',
-                        Icons.more_horiz_rounded,
-                        open,
-                        trailing: widget.runtime.interactions.isEmpty
-                            ? null
-                            : Text(
-                                '${widget.runtime.interactions.length} 项待处理',
-                              ),
-                      ),
-                      popupBuilder: (_) => CommonPopupMenu(
-                        items: [
-                          CommonPopupMenuItem(
-                            label: '我的文件',
-                            glyph: Icons.folder_open_rounded,
-                            onPressed: () =>
-                                _page(FilesPage(runtime: widget.runtime)),
-                          ),
-                          CommonPopupMenuItem(
-                            label: '自动化任务',
-                            glyph: Icons.schedule_rounded,
-                            onPressed: () => _leave(widget.onOpenAutomations),
-                          ),
-                          CommonPopupMenuItem(
-                            label: '授权与提问',
-                            glyph: Icons.pending_actions_rounded,
-                            onPressed: () =>
-                                _page(ApprovalsPage(runtime: widget.runtime)),
-                          ),
-                          if (current != null) ...[
-                            CommonPopupMenuItem(
-                              label: '当前会话的子 Agent',
-                              glyph: Icons.account_tree_outlined,
-                              onPressed: () => _page(
-                                SubagentsPage(
-                                  runtime: widget.runtime,
-                                  parentSessionId: widget.currentSessionId,
-                                ),
-                              ),
-                            ),
-                            CommonPopupMenuItem(
-                              label: '导出当前对话',
-                              glyph: Icons.ios_share_rounded,
-                              onPressed: () => _sessionAction(
-                                _SessionAction.export,
-                                current,
-                              ),
-                            ),
-                          ],
-                        ],
-                      ),
-                    ),
-                    if (_library.readError != null)
-                      _message('会话列表同步失败，已保留上次内容。', refresh: true)
-                    else if (!_library.loading &&
-                        !_library.synchronized &&
-                        rows.isNotEmpty)
-                      _message('会话列表尚未同步，管理操作暂不可用。', refresh: true),
-                    if (notice != null) _message(notice, sessionId: noticeId),
-                    if (workspaces.isNotEmpty) ...[
-                      _label('工作区'),
-                      for (final workspace in workspaces.take(3))
-                        _destination(
-                          workspace['title'] as String? ?? '未命名工作区',
-                          Icons.folder_outlined,
-                          () => unawaited(
-                            _browse(
-                              LibraryWorkspacePage(
-                                library: _library,
-                                workspaceId: workspace['workspaceId'] as String,
-                              ),
-                            ),
-                          ),
-                          key: ValueKey(
-                            'sidebar-workspace:${workspace['workspaceId']}',
-                          ),
-                        ),
-                      if (workspaces.length > 3)
-                        _destination(
-                          '全部工作区',
-                          Icons.arrow_forward_rounded,
-                          () => unawaited(
-                            _browse(LibraryPage(runtime: widget.runtime)),
-                          ),
-                        ),
-                    ],
-                    if (pinned.isNotEmpty) ...[
-                      _label('置顶'),
-                      ...pinned.map(session),
-                    ],
-                    _label(query.isEmpty ? '最近对话' : '搜索结果'),
-                    ...recent.map(session),
-                    if (rows.isEmpty)
-                      Padding(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 14,
-                          vertical: 16,
-                        ),
-                        child: Text(
-                          query.isEmpty ? '你的对话会保存在这里' : '没有匹配的会话',
-                          style: Theme.of(context).textTheme.bodyMedium
-                              ?.copyWith(
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .onSurfaceVariant,
-                              ),
-                        ),
-                      ),
-                  ],
-                ),
+              _destination(
+                '后台任务',
+                Icons.play_circle_outline_rounded,
+                () => _leave(widget.onOpenTasks),
+                trailing: running == 0 ? null : Text('$running'),
               ),
-              Padding(
-                key: const ValueKey('sidebar-footer'),
-                padding: const EdgeInsets.fromLTRB(14, 6, 14, 10),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: PocketTile(
-                        contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 10,
-                        ),
-                        leading: const Icon(Icons.account_circle_outlined),
-                        title: const Text('账号'),
-                        onTap: () =>
-                            _page(AccountPage(runtime: widget.runtime)),
-                      ),
-                    ),
-                    GlassButton(
-                      key: const ValueKey('sidebar-settings'),
-                      icon: Icons.tune_rounded,
-                      label: '设置',
+              _destination(
+                '工作区与会话',
+                Icons.folder_copy_outlined,
+                () => unawaited(_browse(LibraryPage(runtime: widget.runtime))),
+              ),
+              CommonPopupBox(
+                key: const ValueKey('sidebar-more'),
+                placement: PopupPlacement.overAnchorStart,
+                targetBuilder: (open) => _destination(
+                  '更多',
+                  Icons.more_horiz_rounded,
+                  open,
+                  trailing: widget.runtime.interactions.isEmpty
+                      ? null
+                      : Text('${widget.runtime.interactions.length} 项待处理'),
+                ),
+                popupBuilder: (_) => CommonPopupMenu(
+                  items: [
+                    CommonPopupMenuItem(
+                      label: '我的文件',
+                      glyph: Icons.folder_open_rounded,
                       onPressed: () =>
-                          _page(SettingsPage(runtime: widget.runtime)),
+                          _page(FilesPage(runtime: widget.runtime)),
                     ),
+                    CommonPopupMenuItem(
+                      label: '自动化任务',
+                      glyph: Icons.schedule_rounded,
+                      onPressed: () => _leave(widget.onOpenAutomations),
+                    ),
+                    CommonPopupMenuItem(
+                      label: '授权与提问',
+                      glyph: Icons.pending_actions_rounded,
+                      onPressed: () =>
+                          _page(ApprovalsPage(runtime: widget.runtime)),
+                    ),
+                    if (current != null) ...[
+                      CommonPopupMenuItem(
+                        label: '当前会话的子 Agent',
+                        glyph: Icons.account_tree_outlined,
+                        onPressed: () => _page(
+                          SubagentsPage(
+                            runtime: widget.runtime,
+                            parentSessionId: widget.currentSessionId,
+                          ),
+                        ),
+                      ),
+                      CommonPopupMenuItem(
+                        label: '导出当前对话',
+                        glyph: Icons.ios_share_rounded,
+                        onPressed: () =>
+                            _sessionAction(_SessionAction.export, current),
+                      ),
+                    ],
                   ],
                 ),
               ),
+              if (_library.readError != null)
+                _message('会话列表同步失败，已保留上次内容。', refresh: true)
+              else if (!_library.loading &&
+                  !_library.synchronized &&
+                  rows.isNotEmpty)
+                _message('会话列表尚未同步，管理操作暂不可用。', refresh: true),
+              if (notice != null) _message(notice, sessionId: noticeId),
+              if (workspaces.isNotEmpty) ...[
+                _label('工作区'),
+                for (final workspace in workspaces.take(3))
+                  _destination(
+                    workspace['title'] as String? ?? '未命名工作区',
+                    Icons.folder_outlined,
+                    () => unawaited(
+                      _browse(
+                        LibraryWorkspacePage(
+                          library: _library,
+                          workspaceId: workspace['workspaceId'] as String,
+                        ),
+                      ),
+                    ),
+                    key: ValueKey(
+                      'sidebar-workspace:${workspace['workspaceId']}',
+                    ),
+                  ),
+                if (workspaces.length > 3)
+                  _destination(
+                    '全部工作区',
+                    Icons.arrow_forward_rounded,
+                    () => unawaited(
+                      _browse(LibraryPage(runtime: widget.runtime)),
+                    ),
+                  ),
+              ],
+              if (pinned.isNotEmpty) ...[_label('置顶'), ...pinned.map(session)],
+              _label(query.isEmpty ? '最近对话' : '搜索结果'),
+              ...recent.map(session),
+              if (rows.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 16,
+                  ),
+                  child: Text(
+                    query.isEmpty ? '你的对话会保存在这里' : '没有匹配的会话',
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
             ],
           ),
         ),
       );
     },
+  );
+}
+
+/// Insets keep the first and last rows reachable; the viewport itself extends
+/// underneath the floating controls, including while the keyboard is visible.
+class _SidebarFrame extends StatelessWidget {
+  const _SidebarFrame({
+    required this.searchOpen,
+    required this.header,
+    required this.searchField,
+    required this.footer,
+    required this.bodyBuilder,
+  });
+  final bool searchOpen;
+  final Widget header, searchField, footer;
+  final Widget Function(EdgeInsets padding) bodyBuilder;
+
+  @override
+  Widget build(BuildContext context) {
+    final media = MediaQuery.of(context);
+    final line = media.textScaler.scale(17) * 22 / 17;
+    final chromeHeight = math.max(48.0, line + 24);
+    final footerHeight = math.max(56.0, line + 34);
+    final fieldHeight = math.max(56.0, line + 34);
+    final color = Theme.of(context).colorScheme.surface;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // Scaffold may already resize a drawer; only consume the keyboard
+        // portion that still overlaps these actual layout constraints.
+        final keyboard = math.max(
+          0.0,
+          constraints.maxHeight - (media.size.height - media.viewInsets.bottom),
+        );
+        final bottom = keyboard + media.padding.bottom;
+        final top = media.padding.top + 14;
+        return TweenAnimationBuilder<double>(
+          tween: Tween(end: searchOpen ? fieldHeight + 12 : 0),
+          duration: media.disableAnimations
+              ? Duration.zero
+              : const Duration(milliseconds: 220),
+          curve: Curves.easeOutCubic,
+          builder: (context, searchExtent, _) {
+            final contentTop = top + chromeHeight + searchExtent;
+            return Stack(
+              fit: StackFit.expand,
+              children: [
+                bodyBuilder(
+                  EdgeInsets.fromLTRB(
+                    10 + media.padding.left,
+                    contentTop + 14,
+                    10 + media.padding.right,
+                    bottom + footerHeight + 26,
+                  ),
+                ),
+                Positioned(
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  height: contentTop + 24,
+                  child: _SidebarFade(color: color),
+                ),
+                Positioned(
+                  top: top,
+                  left: 14 + media.padding.left,
+                  right: 14 + media.padding.right,
+                  height: chromeHeight,
+                  child: header,
+                ),
+                if (searchExtent > 0)
+                  Positioned(
+                    top: top + chromeHeight + 12,
+                    left: 14 + media.padding.left,
+                    right: 14 + media.padding.right,
+                    height: math.max(0, searchExtent - 12),
+                    child: ClipRect(
+                      child: OverflowBox(
+                        alignment: Alignment.topCenter,
+                        minHeight: fieldHeight,
+                        maxHeight: fieldHeight,
+                        child: searchField,
+                      ),
+                    ),
+                  ),
+                Positioned(
+                  bottom: keyboard,
+                  left: 0,
+                  right: 0,
+                  height: media.padding.bottom + footerHeight + 36,
+                  child: _SidebarFade(color: color, bottom: true),
+                ),
+                Positioned(
+                  bottom: bottom + 10,
+                  left: 14 + media.padding.left,
+                  right: 14 + media.padding.right,
+                  height: footerHeight,
+                  child: footer,
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+}
+
+class _SidebarFade extends StatelessWidget {
+  const _SidebarFade({required this.color, this.bottom = false});
+  final Color color;
+  final bool bottom;
+  @override
+  Widget build(BuildContext context) => IgnorePointer(
+    child: DecoratedBox(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: bottom ? Alignment.bottomCenter : Alignment.topCenter,
+          end: bottom ? Alignment.topCenter : Alignment.bottomCenter,
+          stops: const [0, .35, 1],
+          colors: [
+            color.withValues(alpha: .96),
+            color.withValues(alpha: .75),
+            color.withValues(alpha: 0),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+class _SidebarAvatar extends StatelessWidget {
+  const _SidebarAvatar({required this.onPressed, this.url});
+  final VoidCallback onPressed;
+  final String? url;
+  @override
+  Widget build(BuildContext context) => TonalButtonTheme(
+    glass: LiquidGlassScope.of(context),
+    child: ElasticPress(
+      child: IconButton(
+        key: const ValueKey('sidebar-account'),
+        tooltip: '账号',
+        onPressed: onPressed,
+        icon: ClipOval(
+          child: SizedBox.square(
+            dimension: 30,
+            child: url == null
+                ? const Icon(Icons.person_outline_rounded)
+                : Image.network(
+                    url!,
+                    fit: BoxFit.cover,
+                    excludeFromSemantics: true,
+                    errorBuilder: (_, _, _) =>
+                        const Icon(Icons.person_outline_rounded),
+                  ),
+          ),
+        ),
+      ),
+    ),
   );
 }
 
@@ -586,24 +735,24 @@ class _SessionRow extends StatefulWidget {
 class _SessionRowState extends State<_SessionRow> {
   bool _opening = false;
 
-  Future<void> _menu() async {
+  Future<void> _menu([Offset? globalPosition]) async {
     if (_opening) return;
     final box = context.findRenderObject();
     final navigator = Navigator.of(context);
     final overlay = navigator.context.findRenderObject();
     if (box is! RenderBox || !box.attached || !box.hasSize) return;
-    final anchor =
-        box.localToGlobal(
-          Offset.zero,
-          ancestor: overlay is RenderBox ? overlay : null,
-        ) &
-        box.size;
+    final globalAnchor =
+        globalPosition ?? box.localToGlobal(box.size.center(Offset.zero));
+    final point = overlay is RenderBox
+        ? overlay.globalToLocal(globalAnchor)
+        : globalAnchor;
+    final anchor = Rect.fromCenter(center: point, width: 1, height: 1);
     _opening = true;
     unawaited(HapticFeedback.mediumImpact());
     _SessionAction? selected;
     final route = CommonPopupRoute<void>(
       anchorOf: () => anchor,
-      placement: PopupPlacement.overAnchorStart,
+      placement: PopupPlacement.belowPoint,
       barrierLabel: MaterialLocalizations.of(context).modalBarrierDismissLabel,
       reduceMotion: MediaQuery.disableAnimationsOf(context),
       builder: (_) => CommonPopupMenu(
@@ -658,8 +807,8 @@ class _SessionRowState extends State<_SessionRow> {
     hint: '长按管理会话',
     child: GestureDetector(
       excludeFromSemantics: true,
-      onLongPress: _menu,
-      onSecondaryTap: _menu,
+      onLongPressStart: (details) => _menu(details.globalPosition),
+      onSecondaryTapDown: (details) => _menu(details.globalPosition),
       child: ElasticPress(
         child: PocketTile(
           contentPadding: const EdgeInsets.symmetric(
