@@ -1,10 +1,12 @@
 import 'package:dsh_android/chat_messages.dart';
+import 'package:dsh_android/chat_message_actions.dart';
 import 'package:dsh_android/chat_projection.dart';
 import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/tool_activity.dart';
 import 'package:dsh_android/ui.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'chat_projection_test.dart' as fixture;
@@ -344,12 +346,191 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(find.byType(ToolActivityCard), findsOneWidget);
-      expect(find.text('android_shell'), findsOneWidget);
       expect(find.text('from device'), findsNothing);
-      await tester.tap(find.text('android_shell'));
+      await tester.tap(find.byType(ToolActivityCard));
       await tester.pumpAndSettle();
       expect(find.text('from device'), findsOneWidget);
       expect(find.textContaining('内容详情'), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'long press copies complete authored text and offers explicit selection',
+    (tester) async {
+      final clipboard = <String>[];
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        (call) async {
+          if (call.method == 'Clipboard.setData') {
+            clipboard.add((call.arguments as Map)['text'] as String);
+          }
+          return null;
+        },
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform,
+          null,
+        ),
+      );
+      final projection = ChatProjection()
+        ..reconcile([fixture.assistant(0, '**完整回复**\n\n第二段')]);
+      final scroll = ScrollController();
+      addTearDown(scroll.dispose);
+      await tester.pumpWidget(
+        host(
+          ChatTimeline(
+            sessionId: 'a',
+            projection: projection,
+            controller: scroll,
+          ),
+        ),
+      );
+      await tester.longPress(find.byType(ChatMessageActions));
+      await tester.pumpAndSettle();
+      expect(find.text('选择文本'), findsOneWidget);
+      await tester.tap(find.text('复制'));
+      await tester.pumpAndSettle();
+      expect(clipboard, ['**完整回复**\n\n第二段']);
+      await tester.longPress(find.byType(ChatMessageActions));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('选择文本'));
+      await tester.pumpAndSettle();
+      expect(find.byType(SelectableText), findsOneWidget);
+      expect(
+        tester.widget<SelectableText>(find.byType(SelectableText)).data,
+        '**完整回复**\n\n第二段',
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  test('copy excludes hidden reasoning and attachment records', () {
+    expect(
+      chatMessageText([
+        {'type': 'text', 'text': 'visible'},
+        {'type': 'reasoning', 'text': 'hidden'},
+        {
+          'type': 'image',
+          'attachment': {'id': 'private'},
+        },
+        {'type': 'text', 'text': 'second'},
+      ]),
+      'visible\n\nsecond',
+    );
+  });
+
+  testWidgets(
+    'message popup closes when its conversation changes or source disappears',
+    (tester) async {
+      final projection = ChatProjection()
+        ..reconcile([fixture.assistant(0, 'copy this message')]);
+      final scroll = ScrollController();
+      addTearDown(scroll.dispose);
+      Widget view(String session) => host(
+        ChatTimeline(
+          sessionId: session,
+          projection: projection,
+          controller: scroll,
+        ),
+      );
+      await tester.pumpWidget(view('a'));
+      await tester.longPress(find.byType(ChatMessageActions));
+      await tester.pumpAndSettle();
+      expect(find.text('复制'), findsOneWidget);
+      await tester.pumpWidget(view('b'));
+      await tester.pumpAndSettle();
+      expect(find.text('复制'), findsNothing);
+      await tester.longPress(find.byType(ChatMessageActions));
+      await tester.pumpAndSettle();
+      expect(find.text('复制'), findsOneWidget);
+      projection.reconcile([]);
+      await tester.pumpWidget(view('b'));
+      await tester.pumpAndSettle();
+      expect(find.text('复制'), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'tool details follow updates after grouping evicts the row, then close on session switch',
+    (tester) async {
+      final events = <Json>[tool_fixture.callEvent(0, id: 'first')];
+      final projection = ChatProjection()..reconcile(events);
+      final scroll = ScrollController();
+      addTearDown(scroll.dispose);
+      Widget view(String session) => host(
+        ChatTimeline(
+          sessionId: session,
+          projection: projection,
+          controller: scroll,
+        ),
+      );
+      await tester.pumpWidget(view('a'));
+      await tester.tap(find.byType(ToolActivityCard));
+      await tester.pumpAndSettle();
+      // A second call creates a collapsed group and removes the original row.
+      events.add(tool_fixture.callEvent(1, id: 'second'));
+      projection.reconcile(events);
+      await tester.pumpWidget(view('a'));
+      await tester.pumpAndSettle();
+      events.add(
+        tool_fixture.resultEvent(
+          2,
+          id: 'first',
+          text: '{"stdout":"late device output","exitCode":0}',
+        ),
+      );
+      projection.reconcile(events);
+      await tester.pumpWidget(view('a'));
+      await tester.pumpAndSettle();
+      expect(find.text('late device output'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(view('b'));
+      await tester.pumpAndSettle();
+      expect(find.text('late device output'), findsNothing);
+      expect(find.text('2 项工具调用'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'large expanded tool groups keep lazy rows and preserve folding',
+    (tester) async {
+      final projection = ChatProjection()
+        ..reconcile(
+          List.generate(
+            1500,
+            (index) => tool_fixture.callEvent(index, id: 'call-$index'),
+          ),
+        );
+      final scroll = ScrollController();
+      addTearDown(scroll.dispose);
+      await tester.pumpWidget(
+        host(
+          ChatTimeline(
+            sessionId: 'a',
+            projection: projection,
+            controller: scroll,
+          ),
+        ),
+      );
+      expect(find.byType(ToolActivityCard), findsNothing);
+      await tester.tap(find.text('1500 项工具调用'));
+      await tester.pumpAndSettle();
+      expect(
+        find.byType(ToolActivityCard).evaluate().length,
+        inInclusiveRange(1, 30),
+      );
+      scroll.jumpTo(scroll.position.maxScrollExtent);
+      await tester.pumpAndSettle();
+      expect(find.byType(ToolActivityCard).evaluate().length, lessThan(30));
+      scroll.jumpTo(0);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('1500 项工具调用'));
+      await tester.pumpAndSettle();
+      expect(find.byType(ToolActivityCard), findsNothing);
       expect(tester.takeException(), isNull);
     },
   );

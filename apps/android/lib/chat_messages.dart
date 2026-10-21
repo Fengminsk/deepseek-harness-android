@@ -2,9 +2,12 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
+import 'package:flutter/foundation.dart';
 import 'package:material_ui/material_ui.dart';
 
+import 'chat_message_actions.dart';
 import 'chat_projection.dart';
+import 'chat_tool_groups.dart';
 import 'runtime.dart';
 import 'tool_activity.dart';
 import 'ui.dart';
@@ -45,7 +48,7 @@ class ChatLiveMessage {
 }
 
 /// Lazy transcript sharing PocketScaffold's floating chrome insets.
-class ChatTimeline extends StatelessWidget {
+class ChatTimeline extends StatefulWidget {
   const ChatTimeline({
     required this.sessionId,
     required this.projection,
@@ -65,16 +68,170 @@ class ChatTimeline extends StatelessWidget {
   final ChatOpenAttachment? onOpenAttachment;
 
   @override
+  State<ChatTimeline> createState() => _ChatTimelineState();
+}
+
+class _ChatTimelineState extends State<ChatTimeline>
+    with TickerProviderStateMixin {
+  final _sources = <String, ValueNotifier<ToolActivity?>>{};
+  final _expanded = <String, bool>{};
+  final _motions = <String, AnimationController>{};
+  List<ChatDisplayItem> _groups = const [];
+  List<ChatDisplayItem> _display = const [];
+  final _positions = <String, int>{};
+  (ChatProjection, int, int)? _observed;
+  int _generation = 0;
+
+  @override
+  void didUpdateWidget(ChatTimeline oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.sessionId != widget.sessionId) {
+      _retire(_sources.values.toList());
+      _sources.clear();
+      _expanded.clear();
+      _disposeMotions();
+      _observed = null;
+      _generation++;
+    }
+  }
+
+  void _retire(List<ValueNotifier<ToolActivity?>> sources) {
+    // Route listeners may dirty the overlay; never notify during a row build.
+    scheduleMicrotask(() {
+      for (final source in sources) {
+        source.value = null;
+        source.dispose();
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _generation++;
+    _retire(_sources.values.toList());
+    _disposeMotions();
+    super.dispose();
+  }
+
+  void _disposeMotions() {
+    for (final motion in _motions.values) {
+      motion.dispose();
+    }
+    _motions.clear();
+  }
+
+  void _synchronize() {
+    final projection = widget.projection;
+    final stamp = (
+      projection,
+      projection.processedEventCount,
+      projection.entries.length,
+    );
+    if (_observed == stamp) return;
+    _observed = stamp;
+    _groups = groupChatTools(projection.entries);
+    final snapshots = <String, ToolActivity>{};
+    for (final row in projection.entries) {
+      final activity = row.tool;
+      if (activity == null) continue;
+      snapshots[activity.identity] = activity;
+      _sources.putIfAbsent(activity.identity, () => ValueNotifier(activity));
+    }
+    final retired = <ValueNotifier<ToolActivity?>>[];
+    for (final key in _sources.keys.toList()) {
+      if (!snapshots.containsKey(key)) retired.add(_sources.remove(key)!);
+    }
+    _retire(retired);
+    final generation = ++_generation;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || generation != _generation) return;
+      for (final entry in snapshots.entries) {
+        final source = _sources[entry.key];
+        if (source != null && !identical(source.value, entry.value)) {
+          source.value = entry.value;
+        }
+      }
+    });
+    for (final item in _groups) {
+      final group = item.group;
+      if (group == null || _expanded.containsKey(group.key)) continue;
+      _expanded[group.key] =
+          PageStorage.maybeOf(context)?.readState(
+            context,
+            identifier: '${widget.sessionId}:${group.key}',
+          ) ==
+          true;
+    }
+    _flatten();
+  }
+
+  void _flatten() {
+    _display = [
+      for (final item in _groups) ...[
+        item,
+        if (item.group != null &&
+            (_expanded[item.key] == true ||
+                (_motions[item.key]?.value ?? 0) > 0))
+          for (final row in item.group!.entries)
+            ChatDisplayItem.entry(row, parent: item.group),
+      ],
+    ];
+    _positions.clear();
+    for (var i = 0; i < _display.length; i++) {
+      _positions[_display[i].key] = i;
+    }
+  }
+
+  void _toggle(ChatToolGroup group) {
+    final wasExpanded = _expanded[group.key] == true;
+    final reduced = MediaQuery.disableAnimationsOf(context);
+    final motion = _motions.putIfAbsent(group.key, () {
+      final controller = AnimationController(
+        vsync: this,
+        value: wasExpanded ? 1 : 0,
+        duration: const Duration(milliseconds: 220),
+      );
+      controller.addStatusListener((status) {
+        if (status == AnimationStatus.dismissed && mounted) setState(_flatten);
+      });
+      return controller;
+    });
+    setState(() {
+      _expanded[group.key] = !wasExpanded;
+      if (reduced) motion.value = wasExpanded ? 0 : 1;
+      _flatten();
+    });
+    if (!reduced) {
+      if (wasExpanded) {
+        motion.reverse();
+      } else {
+        motion.forward();
+      }
+    }
+    PageStorage.maybeOf(context)?.writeState(
+      context,
+      _expanded[group.key],
+      identifier: '${widget.sessionId}:${group.key}',
+    );
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final rows = projection.entries;
-    final stream = live;
+    _synchronize();
+    final rows = _display;
+    final stream = widget.live;
+    final sessionId = widget.sessionId;
+    final footer = widget.footer;
     final showLive =
         stream != null &&
-        !projection.hasFinalAssistant(turn: stream.turn, step: stream.step);
+        !widget.projection.hasFinalAssistant(
+          turn: stream.turn,
+          step: stream.step,
+        );
     final liveKey = showLive ? 'live:${stream.identity}' : null;
     final count = rows.length + (showLive ? 1 : 0) + (footer == null ? 0 : 1);
     return PocketList.builder(
-      controller: controller,
+      controller: widget.controller,
       padding: const EdgeInsets.symmetric(horizontal: 24),
       itemCount: count,
       findChildIndexCallback: (key) {
@@ -84,17 +241,49 @@ class ChatTimeline extends StatelessWidget {
         final identity = key.value.$2;
         if (identity == liveKey) return rows.length;
         if (identity == 'footer' && footer != null) return count - 1;
-        return projection.indexOfKey(identity);
+        return _positions[identity];
       },
       itemBuilder: (context, index) {
         if (index < rows.length) {
-          final row = rows[index];
-          return ChatMessage(
-            key: ValueKey((sessionId, row.key)),
+          final item = rows[index];
+          if (item.group case final group?) {
+            return _ToolGroupHeader(
+              key: ValueKey((sessionId, group.key)),
+              group: group,
+              expanded: _expanded[group.key] == true,
+              onToggle: () => _toggle(group),
+            );
+          }
+          final row = item.entry!;
+          final message = ChatMessage(
             entry: row,
             storageId: '$sessionId:${row.key}',
-            onOpenLink: onOpenLink,
-            onOpenAttachment: onOpenAttachment,
+            activitySource: row.tool == null
+                ? null
+                : _sources[row.tool!.identity],
+            onOpenLink: widget.onOpenLink,
+            onOpenAttachment: widget.onOpenAttachment,
+          );
+          final group = item.parent;
+          final motion = group == null ? null : _motions[group.key];
+          Widget child = message;
+          if (motion != null) {
+            final animation = CurveTween(curve: Curves.easeOutCubic)
+                .animate(motion);
+            child = FadeTransition(opacity: animation, child: child);
+            // Shrinking thousands of row extents would make them all visible
+            // in the last frame. Large groups fade while retaining lazy layout.
+            if (group!.entries.length <= 20) {
+              child = SizeTransition(
+                sizeFactor: animation,
+                alignment: Alignment.topCenter,
+                child: child,
+              );
+            }
+          }
+          return KeyedSubtree(
+            key: ValueKey((sessionId, row.key)),
+            child: child,
           );
         }
         if (showLive && index == rows.length) {
@@ -107,8 +296,8 @@ class ChatTimeline extends StatelessWidget {
                 ChatContent(
                   content: stream.content,
                   storageId: '$sessionId:$liveKey',
-                  onOpenLink: onOpenLink,
-                  onOpenAttachment: onOpenAttachment,
+                  onOpenLink: widget.onOpenLink,
+                  onOpenAttachment: widget.onOpenAttachment,
                 ),
                 if (stream.unconfirmed)
                   Text('回复状态待确认', style: Theme.of(context).textTheme.labelSmall)
@@ -127,25 +316,60 @@ class ChatTimeline extends StatelessWidget {
   }
 }
 
+class _ToolGroupHeader extends StatelessWidget {
+  const _ToolGroupHeader({
+    super.key,
+    required this.group,
+    required this.expanded,
+    required this.onToggle,
+  });
+  final ChatToolGroup group;
+  final bool expanded;
+  final VoidCallback onToggle;
+  @override
+  Widget build(BuildContext context) => Semantics(
+    expanded: expanded,
+    child: PocketTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+      leading: const Icon(Icons.account_tree_outlined, size: 20),
+      title: Text(group.title),
+      subtitle: Text(group.status),
+      onTap: onToggle,
+      trailing: AnimatedRotation(
+        turns: expanded ? .25 : 0,
+        duration: MediaQuery.disableAnimationsOf(context)
+            ? Duration.zero
+            : const Duration(milliseconds: 200),
+        child: const Icon(Icons.chevron_right_rounded, size: 20),
+      ),
+    ),
+  );
+}
+
 class ChatMessage extends StatelessWidget {
   const ChatMessage({
     required this.entry,
     required this.storageId,
     this.onOpenLink,
     this.onOpenAttachment,
+    this.activitySource,
     super.key,
   });
   final ChatEntry entry;
   final String storageId;
   final ChatOpenLink? onOpenLink;
   final ChatOpenAttachment? onOpenAttachment;
+  final ValueListenable<ToolActivity?>? activitySource;
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     switch (entry.kind) {
       case ChatEntryKind.tool:
-        return ToolActivityCard(activity: entry.tool!);
+        return ToolActivityCard(
+          activity: entry.tool!,
+          activitySource: activitySource,
+        );
       case ChatEntryKind.systemPrompt:
       case ChatEntryKind.context:
       case ChatEntryKind.unknown:
@@ -236,20 +460,27 @@ class ChatMessage extends StatelessWidget {
                     borderRadius: BorderRadius.circular(24),
                   )
                 : null,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                ChatContent(
-                  content: entry.content,
-                  storageId: storageId,
-                  opaqueText: user,
-                  onOpenLink: onOpenLink,
-                  onOpenAttachment: onOpenAttachment,
-                ),
-                if (entry.interrupted)
-                  Text('回复已中断', style: Theme.of(context).textTheme.labelSmall),
-              ],
+            child: ChatMessageActions(
+              text: chatMessageText(entry.content),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  ChatContent(
+                    content: entry.content,
+                    storageId: storageId,
+                    opaqueText: user,
+                    selectable: false,
+                    onOpenLink: onOpenLink,
+                    onOpenAttachment: onOpenAttachment,
+                  ),
+                  if (entry.interrupted)
+                    Text(
+                      '回复已中断',
+                      style: Theme.of(context).textTheme.labelSmall,
+                    ),
+                ],
+              ),
             ),
           ),
         );
@@ -263,6 +494,7 @@ class ChatContent extends StatelessWidget {
     required this.content,
     required this.storageId,
     this.opaqueText = false,
+    this.selectable = true,
     this.onOpenLink,
     this.onOpenAttachment,
     super.key,
@@ -270,6 +502,7 @@ class ChatContent extends StatelessWidget {
   final List<dynamic> content;
   final String storageId;
   final bool opaqueText;
+  final bool selectable;
   final ChatOpenLink? onOpenLink;
   final ChatOpenAttachment? onOpenAttachment;
 
@@ -293,11 +526,20 @@ class ChatContent extends StatelessWidget {
           key: key,
           padding: const EdgeInsets.only(bottom: 6),
           child: opaqueText
-              ? SelectableText(
-                  text,
-                  style: const TextStyle(fontSize: 16, height: 1.6),
-                )
-              : PocketMarkdown(data: text, onOpenLink: onOpenLink),
+              ? selectable
+                    ? SelectableText(
+                        text,
+                        style: const TextStyle(fontSize: 16, height: 1.6),
+                      )
+                    : Text(
+                        text,
+                        style: const TextStyle(fontSize: 16, height: 1.6),
+                      )
+              : PocketMarkdown(
+                  data: text,
+                  selectable: selectable,
+                  onOpenLink: onOpenLink,
+                ),
         );
       case 'reasoning':
         final text = block!['text'] as String? ?? '';
@@ -336,8 +578,14 @@ class ChatContent extends StatelessWidget {
 /// The maintained Markdown renderer receives Pocket's explicit theme. It never
 /// invokes a default image loader, so model-authored paths cannot read files.
 class PocketMarkdown extends StatefulWidget {
-  const PocketMarkdown({required this.data, this.onOpenLink, super.key});
+  const PocketMarkdown({
+    required this.data,
+    this.onOpenLink,
+    this.selectable = true,
+    super.key,
+  });
   final String data;
+  final bool selectable;
   final ChatOpenLink? onOpenLink;
   @override
   State<PocketMarkdown> createState() => _PocketMarkdownState();
@@ -423,7 +671,7 @@ class _PocketMarkdownState extends State<PocketMarkdown> {
     children: [
       MarkdownBody(
         data: widget.data,
-        selectable: true,
+        selectable: widget.selectable,
         styleSheet: _style,
         onTapLink: (_, href, _) {
           if (href != null) unawaited(_open(href));
@@ -563,11 +811,27 @@ class _ChatDisclosureState extends State<_ChatDisclosure> {
               child: const Icon(Icons.chevron_right_rounded),
             ),
           ),
-          if (expanded)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(18, 0, 18, 18),
-              child: widget.body(context),
-            ),
+          AnimatedSize(
+            duration: MediaQuery.disableAnimationsOf(context)
+                ? Duration.zero
+                : const Duration(milliseconds: 220),
+            curve: Curves.easeOutCubic,
+            alignment: Alignment.topCenter,
+            child: expanded
+                ? TweenAnimationBuilder<double>(
+                    tween: Tween(begin: 0, end: 1),
+                    duration: MediaQuery.disableAnimationsOf(context)
+                        ? Duration.zero
+                        : const Duration(milliseconds: 180),
+                    builder: (_, opacity, child) =>
+                        Opacity(opacity: opacity, child: child),
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(18, 0, 18, 18),
+                      child: widget.body(context),
+                    ),
+                  )
+                : const SizedBox(width: double.infinity),
+          ),
         ],
       ),
     ),

@@ -6,6 +6,40 @@ class ToolActivityPresentation {
   final String kind;
   final Map<String, String> fields;
 
+  String get preview =>
+      fields['命令'] ?? fields['路径'] ?? fields['相对路径'] ?? fields['搜索表达式'] ?? '';
+
+  String title(ToolActivity activity) => switch (kind) {
+    'shell' => '执行命令',
+    'file' => '文件操作',
+    'search' => '搜索文件',
+    _ => activity.name.isEmpty ? '工具调用' : activity.name,
+  };
+
+  /// A returned tool result does not imply a successful process exit.
+  bool needsAttention(ToolActivity activity) {
+    final exitCode = int.tryParse(fields['退出码'] ?? '');
+    return activity.phase == ToolActivityPhase.failed ||
+        activity.phase == ToolActivityPhase.interrupted ||
+        fields['超时'] == '是' ||
+        fields['取消'] == '是' ||
+        (exitCode != null && exitCode != 0);
+  }
+
+  String summary(ToolActivity activity) {
+    final detail = preview.isEmpty
+        ? (activity.name.isEmpty ? '名称未记录' : activity.name)
+        : preview.replaceAll(RegExp(r'\s+'), ' ').trim();
+    final status = switch (activity.phase) {
+      ToolActivityPhase.pending => '等待结果',
+      ToolActivityPhase.completed => needsAttention(activity) ? '需要查看' : '已返回',
+      ToolActivityPhase.failed => '调用失败',
+      ToolActivityPhase.interrupted => '已中断',
+      ToolActivityPhase.unknown => '信息不完整',
+    };
+    return '$status · $detail';
+  }
+
   factory ToolActivityPresentation.from(ToolActivity activity) {
     final args = activity.args;
     final result = activity.resultValue;

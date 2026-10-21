@@ -342,6 +342,11 @@ void main() {
     expect(failedProcess.fields, containsPair('退出码', '2'));
     expect(failedProcess.fields, containsPair('stderr', 'missing'));
     expect(projection.byAnchorSeq[1]!.phase, ToolActivityPhase.completed);
+    expect(failedProcess.needsAttention(projection.byAnchorSeq[1]!), isTrue);
+    expect(
+      failedProcess.summary(projection.byAnchorSeq[1]!),
+      '需要查看 · cat missing',
+    );
     final timed = ToolActivityPresentation.from(projection.byAnchorSeq[3]!);
     expect(timed.fields['退出码'], '未知或未取得');
     expect(timed.fields['超时'], '是');
