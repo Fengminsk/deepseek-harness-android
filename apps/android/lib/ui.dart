@@ -730,7 +730,8 @@ class PocketTile extends StatelessWidget {
   final EdgeInsetsGeometry contentPadding;
   @override
   Widget build(BuildContext context) {
-    final shape = _PocketGroup.contains(context) ? AppShape.none : AppShape.xl;
+    final grouped = _PocketGroup.contains(context);
+    final shape = grouped ? AppShape.none : AppShape.xl;
     return PocketReveal(
       child: FocusRing(
         shape: shape,
@@ -741,6 +742,7 @@ class PocketTile extends StatelessWidget {
           shape: shape,
           child: InkWell(
             customBorder: shape,
+            splashFactory: grouped ? NoSplash.splashFactory : null,
             onTap: onTap,
             child: Container(
               constraints: const BoxConstraints(minHeight: 60),

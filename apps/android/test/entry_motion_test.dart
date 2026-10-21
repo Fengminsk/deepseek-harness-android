@@ -205,7 +205,8 @@ void main() {
           MaterialApp(
             theme: pocketTheme(Brightness.light).copyWith(
               highlightColor: const Color(0xff00ff00),
-              splashFactory: NoSplash.splashFactory,
+              // Grouped rows must suppress even a sparkling application theme.
+              splashFactory: InkSparkle.splashFactory,
             ),
             home: Center(
               child: RepaintBoundary(
@@ -276,6 +277,10 @@ void main() {
             find.descendant(of: tile, matching: find.byType(InkWell)),
           );
           expect(ink.customBorder, AppShape.none);
+          expect(ink.splashFactory, same(NoSplash.splashFactory));
+          expect(ink.canRequestFocus, isTrue);
+          expect(ink.excludeFromSemantics, isFalse);
+          expect(ink.enableFeedback, isTrue);
           final rect = tester.getRect(tile);
           final topCorner = rect.topLeft + const Offset(2, 2);
           final bottomCorner = rect.bottomLeft + const Offset(2, -3);
@@ -304,7 +309,9 @@ void main() {
     );
   }
 
-  testWidgets('standalone rows retain their rounded shape', (tester) async {
+  testWidgets('standalone rows retain their rounded shape and themed splash', (
+    tester,
+  ) async {
     await tester.pumpWidget(
       host(PocketTile(title: const Text('outside a group'), onTap: () {})),
     );
@@ -313,6 +320,7 @@ void main() {
       tester.widget<InkWell>(find.byType(InkWell)).customBorder,
       AppShape.xl,
     );
+    expect(tester.widget<InkWell>(find.byType(InkWell)).splashFactory, isNull);
   });
 
   testWidgets(
