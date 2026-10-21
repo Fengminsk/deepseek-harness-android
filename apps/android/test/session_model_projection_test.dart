@@ -5,6 +5,37 @@ import 'package:dsh_android/ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
+import 'support/read_only_presets.dart';
+
+class _ProjectionRuntime extends RuntimeController {
+  final presets = ReadOnlyPresets();
+
+  @override
+  Stream<Json> watchApi(
+    String namespace,
+    String method, {
+    Json args = const {},
+    Json Function()? resumeArgs,
+  }) {
+    if (!presets.observes(namespace, method)) {
+      throw StateError('Unexpected observation: $namespace.$method');
+    }
+    return presets.watch(args: args, resumeArgs: resumeArgs);
+  }
+
+  @override
+  Future<dynamic> call(String method, [Json params = const {}]) async {
+    if (presets.handles(method, params)) return presets.reply(params);
+    throw StateError('Unexpected request: $method');
+  }
+
+  @override
+  void dispose() {
+    presets.dispose();
+    super.dispose();
+  }
+}
+
 const _flash = {'provider': 'deepseek-account', 'model': 'deepseek-flash'};
 const _pro = {'provider': 'deepseek-account', 'model': 'deepseek-v4-pro'};
 
@@ -117,7 +148,7 @@ void main() {
   testWidgets(
     'chat title retains pending choice and a new Session uses its own default',
     (tester) async {
-      final runtime = RuntimeController()
+      final runtime = _ProjectionRuntime()
         ..phase = 'ready'
         ..model = 'new-session-default';
       addTearDown(runtime.dispose);

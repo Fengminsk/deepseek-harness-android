@@ -184,10 +184,13 @@ export class AppLibrary {
       case 'sessionCreate': {
         const workspaceId = identity(params.workspaceId, 'workspaceId')
         const sessionId = params.sessionId === undefined ? undefined : identity(params.sessionId, 'sessionId')
+        const agentPreset = params.agentPreset === undefined ? undefined : string(params.agentPreset, 'agentPreset')
+        if (agentPreset !== undefined && !agentPreset.trim()) throw badRequest('agentPreset must not be empty')
         if (sessionId !== undefined) await this.ordinary(sessionId, { optional: true })
         // The original may reuse a blank session or return a different new id.
         return this.mutate('session', 'create', { request: {
           workspaceId, ...(sessionId === undefined ? {} : { sessionId }),
+          ...(agentPreset === undefined ? {} : { agentPreset }),
         } })
       }
       case 'sessionRename':

@@ -55,6 +55,16 @@ function requiredString(value, label) {
   return value
 }
 
+// JSON-RPC line transport otherwise collapses thrown domain errors into -32603.
+// Preserve the original Gateway result vocabulary for native conflict handling.
+function remoteFailure(error) {
+  return { _pocket_error: {
+    code: typeof error?.code === 'string' ? error.code : error instanceof TypeError ? 'gateway/bad-request' : 'gateway/internal',
+    message: String(error?.message ?? error),
+    ...(error?.details === undefined ? {} : { details: error.details }),
+  } }
+}
+
 /** Android is an additional carrier over the same DSH services and session log. */
 export function apply(ctx, config) {
   const ipc = createRuntimeTransport()
@@ -97,7 +107,7 @@ export function apply(ctx, config) {
     (sessionId, ids) => attachments.content(sessionId, ids), {
       content: (sessionId, ids) => attachments.commandContent(sessionId, ids),
       execute: args => invoke('commands', 'execute', args),
-    })
+    }, (agentId, agentPreset) => invoke('agentPresets', 'select', { agentId, agentPreset }))
   attachments = new AppAttachments(ctx, {
     directory: () => transport.request('native.attachments.directory', {}),
     ensureSession: sessionId => sessions.ensure(sessionId),
@@ -190,13 +200,21 @@ export function apply(ctx, config) {
       case 'web.status': return web.status()
       case 'web.configure': return web.configure(params)
       case 'web.rotate': return web.rotate()
-      case 'api.call': return invoke(requiredString(params.namespace, 'namespace'),
-        requiredString(params.method, 'method'), params.args ?? {})
+      case 'api.call': {
+        try {
+          return await invoke(requiredString(params.namespace, 'namespace'),
+            requiredString(params.method, 'method'), params.args ?? {})
+        } catch (error) { return remoteFailure(error) }
+      }
       case 'api.subscribe': return streams.subscribe(params)
       case 'api.ack': return streams.ack(params)
       case 'api.unsubscribe': return streams.unsubscribe(params)
       case 'session.send': return sessions.send(params)
       case 'session.ensure': return sessions.ensure(params)
+      case 'session.selectPreset': {
+        try { return await sessions.selectPreset(params) }
+        catch (error) { return remoteFailure(error) }
+      }
       case 'session.command': return sessions.command(params)
       case 'attachments.prepare': return attachments.prepare(params)
       case 'attachments.release': return attachments.release(params)

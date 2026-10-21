@@ -6,11 +6,34 @@ import 'package:dsh_android/chat_messages.dart';
 import 'package:dsh_android/chat_projection.dart';
 import 'package:dsh_android/ui.dart';
 
+import 'support/read_only_presets.dart';
+
 class FailingRuntime extends RuntimeController {
   FailingRuntime() {
     phase = 'ready';
     info = {'workspace': '/private/workspace'};
   }
+  final presets = ReadOnlyPresets();
+
+  @override
+  Stream<Json> watchApi(
+    String namespace,
+    String method, {
+    Json args = const {},
+    Json Function()? resumeArgs,
+  }) {
+    if (!presets.observes(namespace, method)) {
+      throw StateError('Unexpected observation: $namespace.$method');
+    }
+    return presets.watch(args: args, resumeArgs: resumeArgs);
+  }
+
+  @override
+  Future<dynamic> call(String method, [Json params = const {}]) async {
+    if (presets.handles(method, params)) return presets.reply(params);
+    throw StateError('Unexpected request: $method');
+  }
+
   @override
   Future<void> send(String id, String text) async => throw StateError('连接中断');
 
@@ -20,6 +43,12 @@ class FailingRuntime extends RuntimeController {
   void reportSessionError(String id, String message) {
     sessionErrors[id] = message;
     notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    presets.dispose();
+    super.dispose();
   }
 }
 

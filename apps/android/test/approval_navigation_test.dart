@@ -5,11 +5,28 @@ import 'package:dsh_android/ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
+import 'support/read_only_presets.dart';
+
 class _NavigationRuntime extends RuntimeController {
   final calls = <String>[];
+  final presets = ReadOnlyPresets();
+
+  @override
+  Stream<Json> watchApi(
+    String namespace,
+    String method, {
+    Json args = const {},
+    Json Function()? resumeArgs,
+  }) {
+    if (!presets.observes(namespace, method)) {
+      throw StateError('Unexpected observation: $namespace.$method');
+    }
+    return presets.watch(args: args, resumeArgs: resumeArgs);
+  }
 
   @override
   Future<dynamic> call(String method, [Json params = const {}]) async {
+    if (presets.handles(method, params)) return presets.reply(params);
     calls.add(method);
     if (method == 'interactions.list') {
       return {'revision': 1, 'requests': interactions};
@@ -30,6 +47,12 @@ class _NavigationRuntime extends RuntimeController {
   void readyNow() {
     phase = 'ready';
     notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    presets.dispose();
+    super.dispose();
   }
 }
 

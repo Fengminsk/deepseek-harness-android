@@ -9,6 +9,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
+import 'support/read_only_presets.dart';
+
 Json _view({bool signed = false, Json? attempt}) => {
   'status': signed ? 'credential-stored' : 'signed-out',
   'attempt': attempt,
@@ -29,6 +31,7 @@ class _Runtime extends RuntimeController {
     phase = 'ready';
   }
   final feeds = <StreamController<Json>>[];
+  final presets = ReadOnlyPresets();
   final calls = <Json>[];
   final pendingProfiles = <Completer<Json?>>[];
   void Function()? onWatch;
@@ -47,6 +50,9 @@ class _Runtime extends RuntimeController {
     Json args = const {},
     Json Function()? resumeArgs,
   }) {
+    if (presets.observes(namespace, method)) {
+      return presets.watch(args: args, resumeArgs: resumeArgs);
+    }
     expectSync([namespace, method], ['account', 'watch']);
     final feed = StreamController<Json>(sync: true, onCancel: () async {});
     feeds.add(feed);
@@ -68,6 +74,7 @@ class _Runtime extends RuntimeController {
 
   @override
   Future<dynamic> call(String method, [Json params = const {}]) async {
+    if (presets.handles(method, params)) return presets.reply(params);
     calls.add({'rpc': method, ...params});
     if (method == 'account.signIn') {
       return _view(attempt: {'id': 'attempt-a', 'phase': 'initializing'});
@@ -139,6 +146,12 @@ class _Runtime extends RuntimeController {
     for (final feed in feeds) {
       await feed.close();
     }
+  }
+
+  @override
+  void dispose() {
+    presets.dispose();
+    super.dispose();
   }
 }
 

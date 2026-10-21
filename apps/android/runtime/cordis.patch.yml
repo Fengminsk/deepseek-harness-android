@@ -80,6 +80,8 @@
       name: '@deepseek-ai/dsh-agent-preset'
       config:
         id: android
+        name: Android 本地 Agent
+        description: 在应用权限范围内处理文件、执行 Shell 和后台任务。
         order: 0
         plugins:
           - id: persona

@@ -7,6 +7,7 @@ import 'models.dart';
 import 'models_data.dart';
 import 'runtime.dart';
 import 'ui.dart';
+import 'agent_presets.dart';
 
 /// Uses the original Session selection and the catalog default for blank Sessions.
 class SessionModelPage extends StatefulWidget {
@@ -560,6 +561,26 @@ class _SessionModelPageState extends State<SessionModelPage>
                       if (mounted) await load();
                     },
               child: const Text('管理服务商与凭据'),
+            ),
+            PocketSection(
+              children: [
+                PocketRow(
+                  key: const ValueKey('session-agent-preset'),
+                  icon: Icons.tune_rounded,
+                  title: 'Agent 预设',
+                  subtitle: '查看此会话的能力组合',
+                  onTap: busy || loading
+                      ? null
+                      : () => Navigator.of(context).push<void>(
+                          PocketRoute<void>(
+                            builder: (_) => AgentPresetsPage(
+                              runtime: widget.runtime,
+                              sessionId: widget.sessionId,
+                            ),
+                          ),
+                        ),
+                ),
+              ],
             ),
           ],
         ),

@@ -144,6 +144,24 @@ test('session creation adopts the original returned identity and never mixes wor
   assert.equal(h.writes().length, 2)
 })
 
+test('workspace creation carries an explicit preset and keeps original identities and preset refusals', async t => {
+  const receipt = { sessionId: 'reused-by-original', agentPreset: 'custom' }
+  const h = fixture(t, { invoke: () => receipt })
+  assert.equal(await h.state.call('sessionCreate', { workspaceId: 'workspace', agentPreset: 'custom' }), receipt)
+  assert.deepEqual(h.writes()[0].args, { request: { workspaceId: 'workspace', agentPreset: 'custom' } })
+  for (const agentPreset of [null, 1, false, {}, [], '', ' ']) {
+    assert.equal((await h.state.call('sessionCreate', { workspaceId: 'workspace', agentPreset }))._pocket_error.code,
+      'gateway/bad-request')
+  }
+  assert.equal(h.writes().length, 1)
+  for (const code of ['agent-preset/not-found', 'agent-preset/invalid']) {
+    const refusal = fixture(t, { invoke: () => { throw Object.assign(new Error(code), { code, details: { agentPreset: 'bad' } }) } })
+    assert.deepEqual((await refusal.state.call('sessionCreate', { workspaceId: 'workspace', agentPreset: 'bad' }))._pocket_error,
+      { code, message: code, details: { agentPreset: 'bad' } })
+    assert.equal(refusal.writes().length, 1)
+  }
+})
+
 test('ordinary operations refuse children, including blank reuse and sort anchors, without activating or writing', async t => {
   const h = fixture(t)
   for (const [method, params] of [

@@ -22,6 +22,7 @@ import 'automations.dart';
 import 'chat_projection.dart';
 import 'chat_messages.dart';
 import 'chat_sidebar.dart';
+import 'agent_presets.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -631,7 +632,13 @@ class _ChatPageState extends State<ChatPage> {
                       ),
                       textAlign: TextAlign.center,
                     ),
-                    const SizedBox(height: 30),
+                    const SizedBox(height: 18),
+                    SessionPresetChip(
+                      key: ValueKey('session-preset-$sessionId'),
+                      runtime: runtime,
+                      sessionId: sessionId,
+                    ),
+                    const SizedBox(height: 22),
                     _Suggestion(
                       icon: Icons.description_outlined,
                       title: '读一份文件',

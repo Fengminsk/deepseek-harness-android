@@ -20,6 +20,7 @@ import 'plugins.dart';
 import 'background_settings.dart';
 import 'credentials.dart';
 import 'recovery.dart';
+import 'agent_presets.dart';
 
 class SettingsPage extends StatelessWidget {
   const SettingsPage({required this.runtime, super.key});
@@ -238,7 +239,21 @@ class ConfigurationListPage extends StatelessWidget {
           if (!runtime.ready) const Text('本地服务就绪后可读取配置。'),
           PocketSection(
             children: [
-              for (final form in runtime.forms)
+              PocketRow(
+                key: const ValueKey('agent-preset-settings'),
+                icon: Icons.tune_rounded,
+                title: 'Agent 预设',
+                subtitle: '查看能力组合与默认预设',
+                onTap: () => Navigator.push(
+                  context,
+                  PocketRoute<void>(
+                    builder: (_) => AgentPresetsPage(runtime: runtime),
+                  ),
+                ),
+              ),
+              for (final form in runtime.forms.where(
+                (form) => form['ns'] != 'agent-preset-registry',
+              ))
                 PocketRow(
                   icon: Icons.tune_rounded,
                   leading: configurationArtwork(form),
