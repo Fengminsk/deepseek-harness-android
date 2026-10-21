@@ -7,6 +7,7 @@ import { restoreLegacyHoists } from '../../../scripts/executable-packaging.ts'
 import { stageQuestionCarrier } from './stage-question-carrier.mjs'
 import { stagePreset } from './stage-preset.mjs'
 import { stagePackageManager } from './stage-package-manager.mjs'
+import { stageImageRuntime } from './stage-image-runtime.mjs'
 
 const root = resolve(import.meta.dirname, '../../..')
 const staging = join(root, '.cache/android/runtime-bundle')
@@ -96,5 +97,6 @@ await writeFile(join(plugin, 'package.json'), JSON.stringify({
 await copyFile(join(root, 'apps/android/runtime/bootstrap.mjs'), join(staging, 'bootstrap.mjs'))
 await mkdir(join(staging, 'android'), { recursive: true })
 await copyFile(join(root, 'apps/android/runtime/flock.mjs'), join(staging, 'android/flock.mjs'))
+await stageImageRuntime({ repositoryRoot: root, staging })
 await stagePackageManager({ repositoryRoot: root, staging })
 console.log(`Android runtime staged: ${staging}`)

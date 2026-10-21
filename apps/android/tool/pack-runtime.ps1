@@ -8,6 +8,17 @@ if (-not (Test-Path -LiteralPath (Join-Path $staging 'android/package-manager/pa
     -not (Test-Path -LiteralPath (Join-Path $staging 'android/package-manager/pnpm/bin/pnpm.mjs'))) {
     throw 'Bundled pnpm and local core packages are missing. Run stage-runtime.ts before packaging.'
 }
+if (-not (Test-Path -LiteralPath (Join-Path $staging 'android/image-runtime.json'))) {
+    throw 'Official Sharp WASM runtime is missing. Run stage-runtime.ts before packaging.'
+}
+$imageRuntime = Get-Content -LiteralPath (Join-Path $staging 'android/image-runtime.json') -Raw | ConvertFrom-Json
+if ($imageRuntime.sharp -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid staged Sharp version.' }
+foreach ($suffix in @('js', 'wasm')) {
+    $codec = Join-Path $staging "node_modules/@img/sharp-wasm32/lib/sharp-wasm32-$($imageRuntime.sharp).node.$suffix"
+    if (-not (Test-Path -LiteralPath $codec -PathType Leaf) -or (Get-Item -LiteralPath $codec).Length -eq 0) {
+        throw "Sharp WASM payload is missing or empty: $suffix"
+    }
+}
 New-Item -ItemType Directory -Force -Path $assets | Out-Null
 $archive = Join-Path $assets 'runtime.zip'
 $temporary = Join-Path $assets 'runtime.zip.partial'

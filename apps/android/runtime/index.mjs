@@ -217,6 +217,7 @@ export function apply(ctx, config) {
       }
       case 'session.command': return sessions.command(params)
       case 'attachments.prepare': return attachments.prepare(params)
+      case 'attachments.preview': return attachments.preview(params)
       case 'attachments.release': return attachments.release(params)
       case 'session.export.prepare': return exports.prepare(params)
       case 'session.export.cancel': return exports.cancel(params)
