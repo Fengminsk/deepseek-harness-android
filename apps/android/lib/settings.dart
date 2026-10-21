@@ -10,6 +10,7 @@ import 'text_document_page.dart';
 import 'files.dart';
 import 'appearance.dart';
 import 'configuration_editor.dart';
+import 'configuration_model_destination.dart';
 import 'configuration_transfer.dart';
 import 'metadata_artwork.dart';
 import 'models.dart';
@@ -226,6 +227,52 @@ class _InstalledVersionRowState extends State<_InstalledVersionRow> {
 class ConfigurationListPage extends StatelessWidget {
   const ConfigurationListPage({required this.runtime, super.key});
   final RuntimeController runtime;
+  // Exact bundled entry IDs keep original Web-only preferences separate from
+  // native App behavior. Unknown plugin forms stay reachable in their own group.
+  static String _group(String ns) => switch (ns) {
+    'agent-default-model' ||
+    'llm-deepseek' ||
+    'llm-deepseek-account' ||
+    'llm-pi-ai' => '模型与连接',
+    'subagent' || 'subagent-model-selection-settings' => 'Agent',
+    'web' ||
+    'web-search-deepseek' ||
+    'web-deepseek-api' ||
+    'web-search-exa' ||
+    'web-fetch-http' => '联网工具',
+    'session-log-deepseek' => '会话与隐私',
+    'android-runtime' => '设备工具',
+    'ui-settings-account' => '高级维护',
+    'ui-theme' ||
+    'ui-settings' ||
+    'ui-conversation' ||
+    'ui-chat' => '原版 Web 界面',
+    _ => '扩展设置',
+  };
+
+  Widget _entry(BuildContext context, Json form) {
+    final namespace = '${form['ns']}';
+    return PocketRow(
+      key: ValueKey('settings-entry:$namespace'),
+      icon: configurationIcon(namespace),
+      leading: configurationArtwork(form),
+      title: configurationNamespaceTitle(namespace),
+      onTap: () => Navigator.push(
+        context,
+        PocketRoute<void>(
+          builder: (_) => isModelConfigurationNamespace(namespace)
+              ? ConfigurationModelDestination(
+                  runtime: runtime,
+                  namespace: namespace,
+                )
+              : namespace == 'subagent-model-selection-settings'
+              ? SubagentModelSettingsPage(runtime: runtime)
+              : ConfigPage(runtime: runtime, descriptor: form),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) => PocketScaffold(
     title: const Text('Agent 与工具'),
@@ -234,12 +281,10 @@ class ConfigurationListPage extends StatelessWidget {
       builder: (context, _) => PocketList(
         padding: const EdgeInsets.all(20),
         children: [
-          const Padding(
-            padding: EdgeInsets.fromLTRB(12, 0, 12, 24),
-            child: Text('选择要调整的功能。', style: TextStyle(fontSize: 13)),
-          ),
           if (!runtime.ready) const Text('本地服务就绪后可读取配置。'),
           PocketSection(
+            title: 'Agent',
+            divided: true,
             children: [
               PocketRow(
                 key: const ValueKey('agent-preset-settings'),
@@ -254,24 +299,37 @@ class ConfigurationListPage extends StatelessWidget {
                 ),
               ),
               for (final form in runtime.forms.where(
-                (form) => form['ns'] != 'agent-preset-registry',
+                (form) => _group('${form['ns']}') == 'Agent',
               ))
-                PocketRow(
-                  icon: Icons.tune_rounded,
-                  leading: configurationArtwork(form),
-                  title: configurationNamespaceTitle('${form['ns']}'),
-                  onTap: () => Navigator.push(
-                    context,
-                    PocketRoute<void>(
-                      builder: (_) =>
-                          form['ns'] == 'subagent-model-selection-settings'
-                          ? SubagentModelSettingsPage(runtime: runtime)
-                          : ConfigPage(runtime: runtime, descriptor: form),
-                    ),
-                  ),
-                ),
+                _entry(context, form),
             ],
           ),
+          for (final group in [
+            '模型与连接',
+            '联网工具',
+            '会话与隐私',
+            '设备工具',
+            '原版 Web 界面',
+            '高级维护',
+            '扩展设置',
+          ])
+            if (runtime.forms.any(
+              (form) =>
+                  form['ns'] != 'agent-preset-registry' &&
+                  _group('${form['ns']}') == group,
+            ))
+              PocketSection(
+                title: group,
+                divided: true,
+                children: [
+                  for (final form in runtime.forms.where(
+                    (form) =>
+                        form['ns'] != 'agent-preset-registry' &&
+                        _group('${form['ns']}') == group,
+                  ))
+                    _entry(context, form),
+                ],
+              ),
         ],
       ),
     ),

@@ -241,8 +241,11 @@ void main() {
       await tester.tap(find.text('API Key'));
       await tester.pumpAndSettle();
       expect(find.byType(ModelCredentialPage), findsOneWidget);
-      expect(find.byKey(const Key('model-key-input')), findsOneWidget);
       expect(find.text('尚未配置凭据'), findsOneWidget);
+      expect(find.byKey(const Key('model-key-input')), findsNothing);
+      await tester.tap(find.text('新的 API Key'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('model-key-input')), findsOneWidget);
       expect(runtime.ensureCalls, ensureBeforeConfiguration);
       expect(
         runtime.calls

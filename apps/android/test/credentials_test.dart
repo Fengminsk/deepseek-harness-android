@@ -8,6 +8,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
+import 'support/settings_layout_capture.dart';
+
 Json referenceForm(String namespace, String reference) => {
   'ns': namespace,
   'schema': {
@@ -85,17 +87,24 @@ class CredentialRuntime extends RuntimeController {
   }
 }
 
+final layoutCapture = SettingsLayoutCapture();
+
 Future<void> mount(
   WidgetTester tester,
-  CredentialsController controller,
-) async {
-  tester.view.physicalSize = const Size(1000, 2200);
+  CredentialsController controller, {
+  Brightness brightness = Brightness.light,
+  Size size = const Size(1000, 2200),
+  double scale = 1,
+}) async {
+  tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
   await tester.pumpWidget(
     MaterialApp(
-      theme: pocketTheme(Brightness.light),
+      theme: pocketTheme(brightness),
+      builder: (context, child) =>
+          layoutCapture.wrap(context, child, scale: scale),
       home: CredentialsPage(controller: controller),
     ),
   );
@@ -107,8 +116,64 @@ Future<void> openShared(WidgetTester tester) async {
   await tester.pumpAndSettle();
 }
 
+Future<void> editValue(WidgetTester tester) async {
+  await tester.tap(find.byKey(const ValueKey('credential-value-row')));
+  await tester.pumpAndSettle();
+}
+
+Future<void> finishEditing(WidgetTester tester) async {
+  await tester.tap(find.byTooltip('完成编辑'));
+  await tester.pumpAndSettle();
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  setUpAll(loadSettingsCaptureFonts);
+
+  for (final brightness in Brightness.values) {
+    for (final scale in [1.0, 1.8]) {
+      testWidgets(
+        'credential summaries stay private and readable ${brightness.name} $scale',
+        (tester) async {
+          final runtime = CredentialRuntime();
+          final controller = CredentialsController(runtime);
+          addTearDown(runtime.dispose);
+          addTearDown(controller.dispose);
+          await mount(
+            tester,
+            controller,
+            brightness: brightness,
+            size: const Size(420, 900),
+            scale: scale,
+          );
+          controller.edit('SHARED_KEY', 'synthetic-secret-never-in-summary');
+          await openShared(tester);
+          expect(find.byType(TextField), findsNothing);
+          expect(find.text('已填写'), findsOneWidget);
+          expect(find.text('synthetic-secret-never-in-summary'), findsNothing);
+          await layoutCapture.save(
+            tester,
+            'credentials-${brightness.name}-$scale',
+          );
+          await editValue(tester);
+          expect(
+            tester
+                .widget<TextField>(
+                  find.byKey(const ValueKey('credential-value-input')),
+                )
+                .obscureText,
+            isTrue,
+          );
+          await layoutCapture.save(
+            tester,
+            'credential-editor-${brightness.name}-$scale',
+          );
+          expect(tester.takeException(), isNull);
+          expect(runtime.calls('set'), isEmpty);
+        },
+      );
+    }
+  }
 
   test(
     'schema roles discover shared and nested references without secrets',
@@ -378,6 +443,8 @@ void main() {
       addTearDown(controller.dispose);
       await mount(tester, controller);
       await openShared(tester);
+      expect(find.byType(TextField), findsNothing);
+      await editValue(tester);
       final field = find.byKey(const ValueKey('credential-value-input'));
       expect(tester.widget<TextField>(field).obscureText, isTrue);
       expect(tester.widget<TextField>(field).controller!.text, isEmpty);
@@ -389,7 +456,10 @@ void main() {
         };
       };
       await tester.enterText(field, 'kept-draft-fixture');
-      await tester.pump();
+      await finishEditing(tester);
+      expect(find.byType(TextField), findsNothing);
+      expect(find.text('kept-draft-fixture'), findsNothing);
+      expect(find.text('已填写'), findsOneWidget);
       await tester.tap(find.byKey(const ValueKey('credential-save')));
       await tester.pumpAndSettle();
       await tester.tap(
@@ -399,16 +469,18 @@ void main() {
       );
       await tester.pumpAndSettle();
       await openShared(tester);
+      await editValue(tester);
       expect(
         tester.widget<TextField>(field).controller!.text,
         'kept-draft-fixture',
       );
+      await finishEditing(tester);
       expect(runtime.calls('set'), hasLength(1));
       await tester.ensureVisible(find.text('移除保存的凭据'));
       await tester.tap(find.text('移除保存的凭据'));
       await tester.pumpAndSettle();
       expect(runtime.calls('unset'), isEmpty);
-      final confirm = find.byKey(const ValueKey('credential-confirm-remove'));
+      final confirm = find.text('确认移除');
       await tester.ensureVisible(confirm);
       await tester.tap(confirm);
       await tester.pumpAndSettle();
@@ -428,22 +500,26 @@ void main() {
       await mount(tester, controller);
       await tester.tap(find.text('指定其他凭据引用'));
       await tester.pumpAndSettle();
+      expect(find.byType(TextField), findsNothing);
+      await tester.tap(find.byKey(const ValueKey('credential-reference-row')));
+      await tester.pumpAndSettle();
       await tester.enterText(
         find.byKey(const ValueKey('credential-reference-input')),
         'bad/key',
       );
-      await tester.tap(find.text('查看凭据'));
-      await tester.pumpAndSettle();
+      await finishEditing(tester);
       expect(find.textContaining('使用字母或下划线开头'), findsOneWidget);
       await tester.enterText(
         find.byKey(const ValueKey('credential-reference-input')),
         'PLUGIN_TOKEN',
       );
+      await finishEditing(tester);
       await tester.tap(find.text('查看凭据'));
       await tester.pumpAndSettle();
       expect(find.byType(CredentialReferencePage), findsOneWidget);
       expect(controller.entries.containsKey('PLUGIN_TOKEN'), isTrue);
       expect(runtime.sent.every((call) => call.$1 == 'describe'), isTrue);
+      await editValue(tester);
       expect(
         tester
             .widget<TextField>(
@@ -454,6 +530,97 @@ void main() {
         isEmpty,
       );
       expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'discarding a secret editor leaves its original draft untouched',
+    (tester) async {
+      final runtime = CredentialRuntime();
+      final controller = CredentialsController(runtime);
+      addTearDown(runtime.dispose);
+      addTearDown(controller.dispose);
+      await mount(tester, controller);
+      await openShared(tester);
+      await editValue(tester);
+      await tester.enterText(
+        find.byKey(const ValueKey('credential-value-input')),
+        'unsaved-secret-fixture',
+      );
+      expect(controller.entry('SHARED_KEY').draft, isEmpty);
+      await tester.tap(find.byTooltip('返回'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('放弃编辑并返回'));
+      await tester.pumpAndSettle();
+      expect(find.byType(TextField), findsNothing);
+      expect(find.text('未填写'), findsOneWidget);
+      expect(find.text('unsaved-secret-fixture'), findsNothing);
+      expect(controller.entry('SHARED_KEY').draft, isEmpty);
+      expect(runtime.calls('set'), isEmpty);
+    },
+  );
+
+  testWidgets(
+    'a changed credential draft cannot be overwritten by an older editor',
+    (tester) async {
+      final runtime = CredentialRuntime();
+      final controller = CredentialsController(runtime);
+      addTearDown(runtime.dispose);
+      addTearDown(controller.dispose);
+      await mount(tester, controller);
+      await openShared(tester);
+      await editValue(tester);
+      final field = find.byKey(const ValueKey('credential-value-input'));
+      await tester.enterText(field, 'local-secret-fixture');
+      controller.edit('SHARED_KEY', 'newer-secret-fixture');
+      await tester.pumpAndSettle();
+      final done = tester.widget<GlassButton>(
+        find.byWidgetPredicate(
+          (widget) => widget is GlassButton && widget.label == '完成编辑',
+        ),
+      );
+      expect(done.onPressed, isNull);
+      expect(
+        tester.widget<TextField>(field).controller!.text,
+        'local-secret-fixture',
+      );
+      expect(controller.entry('SHARED_KEY').draft, 'newer-secret-fixture');
+      expect(runtime.calls('set'), isEmpty);
+    },
+  );
+
+  testWidgets(
+    'unknown credential writes need a fresh explicit overwrite confirmation',
+    (tester) async {
+      final runtime = CredentialRuntime();
+      final controller = CredentialsController(runtime);
+      addTearDown(runtime.dispose);
+      addTearDown(controller.dispose);
+      await mount(tester, controller);
+      controller.edit('SHARED_KEY', 'fixture-secret');
+      runtime.handle = (method, args) async {
+        if (method == 'set') throw PlatformException(code: 'disconnected');
+        return {
+          'SHARED_KEY': {'configured': true, 'writable': true},
+        };
+      };
+      await controller.save('SHARED_KEY');
+      await tester.pumpAndSettle();
+      await openShared(tester);
+      await tester.tap(find.byKey(const ValueKey('credential-save')));
+      await tester.pumpAndSettle();
+      expect(find.text('重新保存凭据？'), findsOneWidget);
+      expect(runtime.calls('set'), hasLength(1));
+      await tester.tap(find.text('继续核对'));
+      await tester.pumpAndSettle();
+      expect(runtime.calls('set'), hasLength(1));
+      await tester.tap(find.byKey(const ValueKey('credential-save')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('确认重新保存'));
+      await tester.pumpAndSettle();
+      expect(runtime.calls('set'), hasLength(2));
+      expect(controller.entry('SHARED_KEY').draft, 'fixture-secret');
+      expect(find.text('fixture-secret'), findsNothing);
     },
   );
 }

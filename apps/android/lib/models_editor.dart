@@ -1,9 +1,11 @@
 import 'package:material_ui/material_ui.dart';
 
 import 'configuration_edits.dart';
+import 'configuration_value_row.dart';
 import 'models.dart';
 import 'models_data.dart';
 import 'runtime.dart';
+import 'text_document_page.dart';
 import 'ui.dart';
 
 class ModelListPage extends StatefulWidget {
@@ -65,6 +67,25 @@ class _ModelListPageState extends State<ModelListPage> {
     }
   }
 
+  Future<void> editProbeKey() async {
+    final result = await Navigator.push<String>(
+      context,
+      PocketRoute(
+        builder: (_) => TextDocumentPage(
+          title: '仅本次发现使用的 API Key',
+          text: probeKey.text,
+          readOnly: false,
+          obscureText: true,
+          canEdit: () => !busy,
+          helperText: '可留空；仅在你点击发现模型时使用，不会保存到凭据。',
+        ),
+      ),
+    );
+    if (result != null && mounted && !busy) {
+      setState(() => probeKey.text = result);
+    }
+  }
+
   Future<void> discover() async {
     if (busy) return;
     setState(() {
@@ -118,9 +139,11 @@ class _ModelListPageState extends State<ModelListPage> {
     busy: busy,
     child: PocketScaffold(
       title: const Text('模型列表'),
-      bottom: PocketButton(
+      trailing: GlassButton(
+        icon: Icons.check_rounded,
+        label: '应用到当前草稿',
+        solid: true,
         onPressed: busy ? null : finish,
-        child: const Text('应用到当前草稿'),
       ),
       body: PocketList(
         padding: const EdgeInsets.all(20),
@@ -181,26 +204,16 @@ class _ModelListPageState extends State<ModelListPage> {
           PocketSection(
             title: '从服务商发现',
             children: [
-              Padding(
-                padding: const EdgeInsets.all(16),
-                child: TextField(
-                  controller: probeKey,
-                  enabled: !busy,
-                  obscureText: true,
-                  autocorrect: false,
-                  enableSuggestions: false,
-                  decoration: const InputDecoration(
-                    labelText: '仅本次发现使用的 API Key',
-                    hintText: '可留空；此字段不会保存凭据',
-                  ),
-                ),
+              ConfigurationValueRow(
+                title: '仅本次发现使用的 API Key',
+                summary: probeKey.text.isEmpty ? '未填写' : '已填写',
+                protected: true,
+                onTap: busy ? null : editProbeKey,
               ),
-              Padding(
-                padding: const EdgeInsets.all(16),
-                child: PocketButton.tonal(
-                  onPressed: busy ? null : discover,
-                  child: Text(busy ? '正在读取' : '发现模型'),
-                ),
+              PocketRow(
+                icon: Icons.travel_explore_rounded,
+                title: busy ? '正在读取' : '发现模型',
+                onTap: busy ? null : discover,
               ),
               if (discovered != null && discovered!.isEmpty)
                 const ModelNotice('服务商没有返回模型。可手动添加。'),
@@ -265,6 +278,27 @@ class _ModelEntryPageState extends State<ModelEntryPage> {
       ? 'disabled'
       : 'custom';
   String? error;
+
+  Future<void> editField(TextEditingController controller, String title) async {
+    final result = await Navigator.push<String>(
+      context,
+      PocketRoute(
+        builder: (_) => TextDocumentPage(
+          title: title,
+          text: controller.text,
+          readOnly: false,
+          helperText: '完成后返回模型草稿，应用模型后再保存服务商配置。',
+        ),
+      ),
+    );
+    if (result != null && mounted) {
+      setState(() {
+        controller.text = result;
+        error = null;
+      });
+    }
+  }
+
   @override
   void dispose() {
     for (final controller in [
@@ -364,7 +398,12 @@ class _ModelEntryPageState extends State<ModelEntryPage> {
         ),
     child: PocketScaffold(
       title: const Text('编辑模型'),
-      bottom: PocketButton(onPressed: finish, child: const Text('应用模型')),
+      trailing: GlassButton(
+        icon: Icons.check_rounded,
+        label: '应用模型',
+        solid: true,
+        onPressed: finish,
+      ),
       body: PocketList(
         padding: const EdgeInsets.all(20),
         children: [
@@ -378,16 +417,14 @@ class _ModelEntryPageState extends State<ModelEntryPage> {
                 (contextSize, '上下文容量'),
                 (outputSize, '最大输出 Token'),
               ])
-                Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: TextField(
-                    controller: controller,
-                    decoration: InputDecoration(labelText: label),
-                  ),
+                ConfigurationValueRow(
+                  title: label,
+                  summary: controller.text.isEmpty ? '未设置' : controller.text,
+                  onTap: () => editField(controller, label),
                 ),
-              const ModelNotice('容量可写 256K 或 1M；留空继承服务商或模型目录的值。'),
             ],
           ),
+          const ModelNotice('容量可写 256K 或 1M；留空继承服务商或模型目录的值。'),
           if (widget.supportsInput)
             PocketSection(
               title: '输入类型',
@@ -452,12 +489,12 @@ class _ModelEntryPageState extends State<ModelEntryPage> {
                       }),
                     ),
                     if (selectedEfforts.contains(level))
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                        child: TextField(
-                          controller: efforts[level],
-                          decoration: InputDecoration(labelText: '$level 的协议值'),
-                        ),
+                      ConfigurationValueRow(
+                        title: '$level 的协议值',
+                        summary: efforts[level]!.text.isEmpty
+                            ? '未设置'
+                            : efforts[level]!.text,
+                        onTap: () => editField(efforts[level]!, '$level 的协议值'),
                       ),
                   ],
                 ],

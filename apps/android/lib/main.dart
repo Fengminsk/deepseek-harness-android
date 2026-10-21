@@ -782,10 +782,11 @@ class _ChatPageState extends State<ChatPage> {
                 ),
               ),
             GlassSurface(
+              key: const ValueKey('chat-composer'),
               child: Padding(
                 padding: const EdgeInsets.all(8),
                 child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.end,
+                  crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
                     CommonPopupBox(
                       placement: PopupPlacement.overAnchorStart,
@@ -812,15 +813,17 @@ class _ChatPageState extends State<ChatPage> {
                     const SizedBox(width: 6),
                     Expanded(
                       child: TextField(
+                        key: const ValueKey('chat-composer-input'),
                         controller: input,
                         focusNode: inputFocus,
                         minLines: 1,
                         maxLines: 5,
+                        textAlignVertical: TextAlignVertical.center,
+                        style: const TextStyle(fontSize: 15, height: 1.4),
                         decoration: InputDecoration(
                           hintText: commandDrafts[sessionId] == null
                               ? '交给 Pocket Harness'
                               : '${commandDrafts[sessionId]!['input']?['hint'] ?? commandDescription(commandDrafts[sessionId]!)}',
-                          hintStyle: const TextStyle(fontSize: 15),
                           filled: false,
                           border: InputBorder.none,
                           enabledBorder: InputBorder.none,

@@ -11,6 +11,8 @@ import 'package:dsh_android/plugins_data.dart';
 import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/ui.dart';
 
+import 'support/settings_layout_capture.dart';
+
 Json bundle() => {
   'name': '@example/bundle',
   'version': '1.0.0',
@@ -146,17 +148,26 @@ Future<void> checked(PluginsController controller) async {
   await controller.inspect();
 }
 
+final layoutCapture = SettingsLayoutCapture();
+
 Future<void> mount(
   WidgetTester tester,
   Widget child, {
   Size size = const Size(800, 1500),
+  Brightness brightness = Brightness.light,
+  double scale = 1,
 }) async {
   tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
   await tester.pumpWidget(
-    MaterialApp(theme: pocketTheme(Brightness.light), home: child),
+    MaterialApp(
+      theme: pocketTheme(brightness),
+      builder: (context, child) =>
+          layoutCapture.wrap(context, child, scale: scale),
+      home: child,
+    ),
   );
   await tester.pumpAndSettle();
 }
@@ -168,7 +179,60 @@ Future<void> tap(WidgetTester tester, String label) async {
   await tester.pumpAndSettle();
 }
 
+Future<void> editInstallValue(
+  WidgetTester tester,
+  String name,
+  String value,
+) async {
+  final row = find.byKey(ValueKey('plugin-$name-row'));
+  await tester.ensureVisible(row);
+  await tester.tap(row);
+  await tester.pumpAndSettle();
+  await tester.enterText(find.byKey(ValueKey('plugin-$name-input')), value);
+  await tester.tap(find.byTooltip('完成编辑'));
+  await tester.pumpAndSettle();
+}
+
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  setUpAll(loadSettingsCaptureFonts);
+
+  for (final brightness in Brightness.values) {
+    for (final scale in [1.0, 1.8]) {
+      testWidgets(
+        'install settings remain readable ${brightness.name} $scale',
+        (tester) async {
+          final runtime = PluginsRuntime();
+          final controller = await ready(runtime);
+          controller.editSpec('@example/new');
+          controller.editRegistry('https://registry.example.test');
+          await mount(
+            tester,
+            PluginInstallPage(controller: controller),
+            size: const Size(420, 900),
+            brightness: brightness,
+            scale: scale,
+          );
+          expect(find.byType(TextField), findsNothing);
+          await layoutCapture.save(
+            tester,
+            'plugin-install-${brightness.name}-$scale',
+          );
+          await tap(tester, '核对安装来源');
+          await tester.ensureVisible(find.text('确认安装'));
+          await tester.pumpAndSettle();
+          await layoutCapture.save(
+            tester,
+            'plugin-review-${brightness.name}-$scale',
+          );
+          expect(methods(runtime, 'inspect'), hasLength(1));
+          expect(methods(runtime, 'installBundle'), isEmpty);
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+  }
+
   test(
     'toggle notifies only its target and stays locked through readback',
     () async {
@@ -827,21 +891,11 @@ void main() {
         size: const Size(390, 844),
       );
       await tap(tester, '安装插件包');
-      await tester.enterText(
-        find.byWidgetPredicate(
-          (widget) =>
-              widget is TextField &&
-              widget.decoration?.labelText == '包名、Git 地址或设备本地路径',
-        ),
-        '@example/new',
-      );
-      await tap(tester, '安装选项');
-      await tester.enterText(
-        find.byWidgetPredicate(
-          (widget) =>
-              widget is TextField &&
-              widget.decoration?.labelText == 'Registry（可选）',
-        ),
+      expect(find.byType(TextField), findsNothing);
+      await editInstallValue(tester, 'spec', '@example/new');
+      await editInstallValue(
+        tester,
+        'registry',
         'https://registry.example.test',
       );
       await tap(tester, '核对安装来源');
@@ -890,19 +944,73 @@ void main() {
       final runtime = PluginsRuntime();
       final controller = await ready(runtime);
       await mount(tester, PluginInstallPage(controller: controller));
-      await tester.enterText(
-        find.byWidgetPredicate(
-          (widget) =>
-              widget is TextField &&
-              widget.decoration?.labelText == '包名、Git 地址或设备本地路径',
-        ),
-        '@example/new',
-      );
+      expect(find.byType(TextField), findsNothing);
+      await editInstallValue(tester, 'spec', '@example/new');
       await tap(tester, '核对安装来源');
       expect(methods(runtime, 'installBundle'), isEmpty);
       await tap(tester, '确认安装');
       expect(methods(runtime, 'installBundle'), hasLength(1));
       expect(find.text('变更已应用。'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'source and registry editors return drafts without starting package work',
+    (tester) async {
+      final runtime = PluginsRuntime();
+      final controller = await ready(runtime);
+      await mount(tester, PluginInstallPage(controller: controller));
+      await editInstallValue(tester, 'spec', '@example/first');
+      await tap(tester, '核对安装来源');
+      expect(controller.canInstall, isTrue);
+      await editInstallValue(
+        tester,
+        'registry',
+        'https://registry.example.test',
+      );
+      expect(controller.registry, 'https://registry.example.test');
+      expect(controller.canInstall, isFalse);
+      expect(find.text('确认安装'), findsNothing);
+      expect(find.byType(TextField), findsNothing);
+      expect(methods(runtime, 'inspect'), hasLength(1));
+      expect(methods(runtime, 'installBundle'), isEmpty);
+    },
+  );
+
+  testWidgets(
+    'discarded and stale package editors never replace the owned source',
+    (tester) async {
+      final runtime = PluginsRuntime();
+      final controller = await ready(runtime);
+      controller.editSpec('@example/original');
+      await mount(tester, PluginInstallPage(controller: controller));
+      await tester.tap(find.byKey(const ValueKey('plugin-spec-row')));
+      await tester.pumpAndSettle();
+      final field = find.byKey(const ValueKey('plugin-spec-input'));
+      await tester.enterText(field, '@example/local');
+      controller.editSpec('@example/newer');
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<GlassButton>(
+              find.byWidgetPredicate(
+                (widget) => widget is GlassButton && widget.label == '完成编辑',
+              ),
+            )
+            .onPressed,
+        isNull,
+      );
+      expect(
+        tester.widget<TextField>(field).controller!.text,
+        '@example/local',
+      );
+      await tester.tap(find.byTooltip('返回'));
+      await tester.pumpAndSettle();
+      await tap(tester, '放弃编辑并返回');
+      expect(controller.spec, '@example/newer');
+      expect(find.byType(TextField), findsNothing);
+      expect(methods(runtime, 'inspect'), isEmpty);
+      expect(methods(runtime, 'installBundle'), isEmpty);
     },
   );
 }

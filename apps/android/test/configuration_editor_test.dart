@@ -1,10 +1,16 @@
 import 'dart:convert';
+import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:flutter/services.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:dsh_android/configuration_editor.dart';
 import 'package:dsh_android/configuration_edits.dart';
+import 'package:dsh_android/configuration_value_row.dart';
+import 'package:dsh_android/configuration_fields_schema.dart';
+import 'package:dsh_android/configuration_presentation.dart';
 import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/models.dart';
 import 'package:dsh_android/models_data.dart';
@@ -111,27 +117,281 @@ Json fixture() => {
 Finder field(String name) =>
     find.byKey(ValueKey('configuration-field:${jsonEncode([name])}'));
 
-Future<void> openEditor(WidgetTester tester, SettingsRuntime runtime) async {
-  tester.view.physicalSize = const Size(800, 1200);
+Future<void> editField(
+  WidgetTester tester,
+  String name,
+  String text, {
+  bool complete = true,
+}) async {
+  await tester.ensureVisible(field(name));
+  await tester.tap(field(name));
+  await tester.pumpAndSettle();
+  await tester.enterText(find.byKey(const Key('structure-value')), text);
+  await tester.pumpAndSettle();
+  if (complete) {
+    await tester.tap(find.byTooltip('完成编辑'));
+    await tester.pumpAndSettle();
+  }
+}
+
+String summary(WidgetTester tester, String name) =>
+    tester.widget<ConfigurationValueRow>(field(name)).summary;
+
+final captureKey = GlobalKey();
+
+Future<void> openEditor(
+  WidgetTester tester,
+  SettingsRuntime runtime, {
+  Brightness brightness = Brightness.light,
+  double width = 800,
+  double scale = 1,
+}) async {
+  tester.view.physicalSize = Size(width, width < 500 ? 900 : 1200);
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
   addTearDown(runtime.dispose);
   await tester.pumpWidget(
     MaterialApp(
-      theme: pocketTheme(Brightness.light),
+      theme: pocketTheme(brightness),
+      builder: (context, child) => MediaQuery(
+        data: MediaQuery.of(context)
+            .copyWith(textScaler: TextScaler.linear(scale)),
+        child: RepaintBoundary(key: captureKey, child: child!),
+      ),
       home: ConfigPage(runtime: runtime, descriptor: runtime.forms.single),
     ),
   );
   await tester.pumpAndSettle();
 }
 
+Future<void> capture(WidgetTester tester, String name) async {
+  final directory = Platform.environment['POCKET_CAPTURE_DIR'];
+  if (directory == null) return;
+  await tester.runAsync(() async {
+    final image =
+        await (captureKey.currentContext!.findRenderObject()
+                as RenderRepaintBoundary)
+            .toImage(pixelRatio: 1);
+    final png = await image.toByteData(format: ui.ImageByteFormat.png);
+    await Directory(directory).create(recursive: true);
+    await File('$directory/$name.png').writeAsBytes(png!.buffer.asUint8List());
+    image.dispose();
+  });
+}
+
 void main() {
+  setUpAll(() async {
+    final path = Platform.environment['POCKET_CAPTURE_FONT'];
+    if (path != null) {
+      await (FontLoader('Roboto')..addFont(
+            Future.value(ByteData.sublistView(await File(path).readAsBytes())),
+          ))
+          .load();
+      await (FontLoader(
+        'MaterialIcons',
+      )..addFont(rootBundle.load('fonts/MaterialIcons-Regular.otf'))).load();
+    }
+  });
+
+  for (final brightness in Brightness.values) {
+    for (final scale in [1.0, 1.8]) {
+      testWidgets(
+        'compact settings ${brightness.name} $scale remain readable',
+        (tester) async {
+          final data = fixture();
+          data['schema']['refs']['1']['dict']['enabled'] = 5;
+          data['schema']['refs']['5'] = {'type': 'boolean'};
+          data['value']['enabled'] = true;
+          final runtime = SettingsRuntime(data);
+          await openEditor(
+            tester,
+            runtime,
+            brightness: brightness,
+            width: 420,
+            scale: scale,
+          );
+          await capture(tester, 'settings-mixed-${brightness.name}-$scale');
+          expect(find.byType(TextField), findsNothing);
+          expect(tester.takeException(), isNull);
+          await tester.tap(field('baseURL'));
+          await tester.pumpAndSettle();
+          await capture(tester, 'settings-text-${brightness.name}-$scale');
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+    testWidgets(
+      'default session model ${brightness.name} uses one settings group',
+      (tester) async {
+        final runtime = SettingsRuntime({
+          'ns': 'agent-default-model',
+          'revision': 1,
+          'user': {},
+          'secrets': [],
+          'value': {
+            'provider': 'deepseek-official',
+            'model': 'deepseek-flash',
+            'reasoningEffort': 'high',
+          },
+          'schema': {
+            'type': 'object',
+            'dict': {
+              'provider': {'type': 'string'},
+              'model': {'type': 'string'},
+              'reasoningEffort': {
+                'type': 'union',
+                'list': [
+                  {'type': 'const', 'value': 'low'},
+                  {'type': 'const', 'value': 'high'},
+                ],
+              },
+            },
+          },
+        });
+        await openEditor(tester, runtime, brightness: brightness, width: 420);
+        await capture(tester, 'settings-default-model-${brightness.name}');
+        expect(find.byType(TextField), findsNothing);
+        expect(find.text('使用默认值'), findsNothing);
+        expect(tester.takeException(), isNull);
+        await tester.tap(field('reasoningEffort'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('low'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byTooltip('完成编辑'));
+        await tester.pumpAndSettle();
+        expect(summary(tester, 'reasoningEffort'), 'low');
+        expect(runtime.writes, isEmpty);
+      },
+    );
+  }
+
+  for (final brightness in Brightness.values) {
+    testWidgets(
+      'session log ${brightness.name} shows a semantic switch and separate advanced tools',
+      (tester) async {
+        final runtime = SettingsRuntime({
+          'ns': 'session-log-deepseek',
+          'revision': 1,
+          'value': {'enabled': true},
+          'user': {},
+          'secrets': [],
+          'schema': {
+            'type': 'object',
+            'dict': {
+              'enabled': {'type': 'boolean'},
+            },
+          },
+        });
+        await openEditor(tester, runtime, brightness: brightness, width: 420);
+        expect(find.byType(PocketSwitchRow), findsOneWidget);
+        expect(find.text('enabled'), findsNothing);
+        expect(find.text('高级 JSON 编辑'), findsNothing);
+        await capture(tester, 'semantic-session-log-${brightness.name}');
+        await tester.tap(find.text('高级设置'));
+        await tester.pumpAndSettle();
+        expect(find.text('高级 JSON 编辑'), findsOneWidget);
+        await capture(tester, 'semantic-advanced-${brightness.name}');
+        expect(tester.takeException(), isNull);
+      },
+    );
+    testWidgets('Android tool limits ${brightness.name} display exact units', (
+      tester,
+    ) async {
+      final values = <String, dynamic>{
+        'shellTimeoutMs': 60000,
+        'shellOutputLimit': 65536,
+        'appStreamMaxSubscriptions': 32,
+        'appStreamMaxFrameBytes': 16777216,
+        'streamPublishMs': 50,
+        'documentSearchFileBytes': 8388608,
+        'documentSearchTotalBytes': 67108864,
+        'documentSearchMaxEntries': 2000,
+        'documentSearchMaxFiles': 1000,
+        'documentSearchMaxDepth': 32,
+        'documentSearchMaxMatches': 200,
+        'documentSearchPreviewChars': 600,
+        'documentSearchMaxDurationMs': 30000,
+        'documentSearchMaxRequests': 4,
+        'workspaceReadPageBytes': 65536,
+        'workspaceDirectoryMaxEntries': 5000,
+        'workspaceDirectoryPageSize': 100,
+        'workspaceFilesCloseTimeoutMs': 5000,
+        'libraryCloseTimeoutMs': 5000,
+      };
+      final runtime = SettingsRuntime({
+        'ns': 'android-runtime',
+        'revision': 1,
+        'value': values,
+        'user': {},
+        'secrets': [],
+        'schema': {
+          'type': 'object',
+          'dict': {
+            for (final name in values.keys) name: {'type': 'number'},
+          },
+        },
+      });
+      await openEditor(tester, runtime, brightness: brightness, width: 420);
+      expect(find.text('Shell 执行超时（毫秒）'), findsOneWidget);
+      expect(find.text('shellTimeoutMs'), findsNothing);
+      expect(find.byType(TextField), findsNothing);
+      await capture(tester, 'semantic-android-tools-${brightness.name}');
+      expect(tester.takeException(), isNull);
+    });
+    testWidgets('Web chat ${brightness.name} uses real finite selections', (
+      tester,
+    ) async {
+      final runtime = SettingsRuntime({
+        'ns': 'ui-chat',
+        'revision': 1,
+        'value': {'collapseTiming': 'completion', 'linkOpening': 'sidebar'},
+        'user': {},
+        'secrets': [],
+        'schema': {
+          'type': 'object',
+          'dict': {
+            'collapseTiming': {
+              'type': 'union',
+              'list': [
+                {'type': 'const', 'value': 'completion'},
+                {'type': 'const', 'value': 'next-input'},
+              ],
+            },
+            'linkOpening': {
+              'type': 'union',
+              'list': [
+                {'type': 'const', 'value': 'sidebar'},
+                {'type': 'const', 'value': 'new-tab'},
+              ],
+            },
+          },
+        },
+      });
+      await openEditor(tester, runtime, brightness: brightness, width: 420);
+      await capture(tester, 'semantic-web-chat-${brightness.name}');
+      await tester.tap(field('collapseTiming'));
+      await tester.pumpAndSettle();
+      expect(find.text('下一次输入时'), findsOneWidget);
+      expect(find.byType(TextField), findsNothing);
+      await capture(tester, 'semantic-web-choice-${brightness.name}');
+      await tester.tap(find.text('下一次输入时'));
+      await tester.tap(find.byTooltip('完成编辑'));
+      await tester.pumpAndSettle();
+      expect(runtime.writes, isEmpty);
+      await tester.tap(find.byTooltip('保存并应用'));
+      await tester.pumpAndSettle();
+      expect(runtime.remote['value']['collapseTiming'], 'next-input');
+    });
+  }
+
   testWidgets(
     'JSON subpage holds the original revision while remote updates remain reviewable',
     (tester) async {
       final runtime = SettingsRuntime(fixture());
       await openEditor(tester, runtime);
+      await tester.tap(find.text('高级设置'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('高级 JSON 编辑'));
       await tester.pumpAndSettle();
       await tester.enterText(
@@ -147,15 +407,14 @@ void main() {
       expect(runtime.writes, isEmpty);
       expect(find.text('版本比较'), findsOneWidget);
       expect(find.textContaining('编辑基于版本 1，当前版本 2'), findsOneWidget);
+      expect(summary(tester, 'baseURL'), 'https://local.example');
+      expect(summary(tester, 'maxTokens'), '1024');
       expect(
-        tester.widget<TextField>(field('baseURL')).controller!.text,
-        'https://local.example',
+        tester
+            .widget<GlassButton>(find.byKey(const Key('configuration-save')))
+            .onPressed,
+        isNull,
       );
-      expect(
-        tester.widget<TextField>(field('maxTokens')).controller!.text,
-        '1024',
-      );
-      expect(find.text('请先比较并合并'), findsOneWidget);
     },
   );
 
@@ -167,7 +426,7 @@ void main() {
       descriptor['value']['baseURL'] = original;
       final runtime = SettingsRuntime(descriptor);
       await openEditor(tester, runtime);
-      await tester.tap(find.text('编辑服务地址'));
+      await tester.tap(field('baseURL'));
       await tester.pumpAndSettle();
       expect(find.byType(TextField), findsOneWidget);
       final next = '$original\nnew line';
@@ -176,7 +435,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(runtime.writes, isEmpty);
       expect(find.text('${next.length} 个字符'), findsOneWidget);
-      await tester.tap(find.text('编辑服务地址'));
+      await tester.tap(field('baseURL'));
       await tester.pumpAndSettle();
       expect(
         tester.widget<TextField>(find.byType(TextField)).controller!.text,
@@ -190,6 +449,8 @@ void main() {
     (tester) async {
       final runtime = SettingsRuntime(fixture());
       await openEditor(tester, runtime);
+      await tester.tap(find.text('高级设置'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('高级 JSON 编辑'));
       await tester.pumpAndSettle();
       final text = find.byKey(const Key('configuration-json'));
@@ -209,11 +470,8 @@ void main() {
       await tester.pumpAndSettle();
       expect(text, findsNothing);
       expect(runtime.writes, isEmpty);
-      expect(
-        tester.widget<TextField>(field('baseURL')).controller!.text,
-        'https://draft.example',
-      );
-      await tester.tap(find.text('保存并应用'));
+      expect(summary(tester, 'baseURL'), 'https://draft.example');
+      await tester.tap(find.byTooltip('保存并应用'));
       await tester.pumpAndSettle();
       expect(runtime.writes, hasLength(1));
       expect(runtime.remote['value']['baseURL'], 'https://draft.example');
@@ -253,7 +511,7 @@ void main() {
   };
 
   Future<void> openModelField(WidgetTester tester) async {
-    await tester.tap(find.text('编辑模型目录'));
+    await tester.tap(field('models'));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('structure-item:0')));
     await tester.pumpAndSettle();
@@ -263,7 +521,7 @@ void main() {
 
   Future<void> finishStructure(WidgetTester tester) async {
     for (var i = 0; i < 3; i++) {
-      await tester.tap(find.text('完成编辑'));
+      await tester.tap(find.byTooltip('完成编辑'));
       await tester.pumpAndSettle();
     }
   }
@@ -277,7 +535,7 @@ void main() {
       await tester.enterText(find.byKey(const Key('structure-value')), 'after');
       await finishStructure(tester);
       expect(runtime.writes, isEmpty);
-      await tester.tap(find.text('保存并应用'));
+      await tester.tap(find.byTooltip('保存并应用'));
       await tester.pumpAndSettle();
       expect(runtime.writes.single['expectedRevision'], 1);
       expect(runtime.writes.single['ops'], [
@@ -316,11 +574,8 @@ void main() {
       await finishStructure(tester);
       expect(find.text('编辑基于版本 1，当前版本 2。'), findsOneWidget);
       expect(find.textContaining('local'), findsWidgets);
-      final save = find.ancestor(
-        of: find.text('请先比较并合并'),
-        matching: find.byType(PocketButton),
-      );
-      expect(tester.widget<PocketButton>(save).onPressed, isNull);
+      final save = find.byKey(const Key('configuration-save'));
+      expect(tester.widget<GlassButton>(save).onPressed, isNull);
       expect(runtime.writes, isEmpty);
       await tester.pumpWidget(const SizedBox());
     },
@@ -341,7 +596,7 @@ void main() {
       await tester.tap(find.byTooltip('返回'));
       await tester.pumpAndSettle();
     }
-    await tester.tap(find.text('保存并应用'));
+    await tester.tap(find.byTooltip('保存并应用'));
     await tester.pumpAndSettle();
     expect(runtime.writes, isEmpty);
     expect(runtime.remote['value']['models'], [
@@ -366,8 +621,11 @@ void main() {
       ];
       final runtime = SettingsRuntime(data);
       await openEditor(tester, runtime);
-      expect(find.text('编辑模型目录'), findsNothing);
-      expect(find.textContaining('此结构包含凭据'), findsOneWidget);
+      expect(
+        tester.widget<ConfigurationValueRow>(field('models')).onTap,
+        isNull,
+      );
+      expect(find.text('包含凭据 · 已保护'), findsOneWidget);
       expect(runtime.writes, isEmpty);
       await tester.pumpWidget(const SizedBox());
     },
@@ -378,7 +636,7 @@ void main() {
       'llm-deepseek': 'DeepSeek API 密钥接入',
       'llm-deepseek-account': 'DeepSeek 账号模型接入',
       'subagent-model-selection-settings': '子 Agent 模型选择',
-      'ui-settings-account': 'Web 账号界面',
+      'ui-settings-account': '原版桌面引导记录',
       'ui-theme': 'Web 主题与字体',
       'ui-settings': 'Web 开发者工具',
       'ui-conversation': 'Web 繁忙时发送行为',
@@ -425,9 +683,9 @@ void main() {
     (tester) async {
       final runtime = SettingsRuntime(fixture());
       await openEditor(tester, runtime);
-      expect(find.text('已配置；值已隐藏，请在凭据入口管理。'), findsOneWidget);
-      await tester.enterText(field('baseURL'), 'https://new.example');
-      await tester.tap(find.text('保存并应用'));
+      expect(find.text('已配置 · 凭据中管理'), findsOneWidget);
+      await editField(tester, 'baseURL', 'https://new.example');
+      await tester.tap(find.byTooltip('保存并应用'));
       await tester.pumpAndSettle();
       expect(runtime.writes.single['ops'], [
         {
@@ -447,18 +705,15 @@ void main() {
     (tester) async {
       final runtime = SettingsRuntime(fixture());
       await openEditor(tester, runtime);
-      await tester.enterText(field('baseURL'), 'https://mine.example');
+      await editField(tester, 'baseURL', 'https://mine.example');
       runtime.remote['revision'] = 2;
       runtime.remote['value'] = {
         'baseURL': 'https://remote.example',
         'maxTokens': 2048,
       };
-      await tester.tap(find.text('保存并应用'));
+      await tester.tap(find.byTooltip('保存并应用'));
       await tester.pumpAndSettle();
-      expect(
-        tester.widget<TextField>(field('baseURL')).controller!.text,
-        'https://mine.example',
-      );
+      expect(summary(tester, 'baseURL'), 'https://mine.example');
       expect(runtime.remote['value']['baseURL'], 'https://remote.example');
       await tester.ensureVisible(find.text('保留我的修改'));
       await tester.tap(find.text('保留我的修改'));
@@ -466,16 +721,10 @@ void main() {
       await tester.ensureVisible(find.text('合并到草稿'));
       await tester.tap(find.text('合并到草稿'));
       await tester.pumpAndSettle();
-      expect(
-        tester.widget<TextField>(field('baseURL')).controller!.text,
-        'https://mine.example',
-      );
-      expect(
-        tester.widget<TextField>(field('maxTokens')).controller!.text,
-        '2048',
-      );
+      expect(summary(tester, 'baseURL'), 'https://mine.example');
+      expect(summary(tester, 'maxTokens'), '2048');
       expect(runtime.writes, isEmpty);
-      await tester.tap(find.text('保存并应用'));
+      await tester.tap(find.byTooltip('保存并应用'));
       await tester.pumpAndSettle();
       expect(runtime.writes.last['expectedRevision'], 2);
       expect(runtime.remote['value'], {
@@ -487,57 +736,250 @@ void main() {
     },
   );
 
-  testWidgets('invalid numeric input prevents a write and stays in the field', (
-    tester,
-  ) async {
-    final runtime = SettingsRuntime(fixture());
-    await openEditor(tester, runtime);
-    await tester.enterText(field('maxTokens'), '-1');
-    await tester.pumpAndSettle();
-    expect(find.text('不能小于 1。'), findsOneWidget);
-    await tester.tap(find.text('保存并应用'));
-    await tester.pumpAndSettle();
-    expect(runtime.writes, isEmpty);
-    expect(tester.widget<TextField>(field('maxTokens')).controller!.text, '-1');
-    await tester.ensureVisible(find.text('使用默认值').first);
-    await tester.tap(find.text('使用默认值').first);
-    await tester.pumpAndSettle();
-    expect(tester.widget<TextField>(field('maxTokens')).controller!.text, '-1');
-    expect(find.text('不能小于 1。'), findsOneWidget);
-    expect(runtime.writes, isEmpty);
-    runtime.remote['revision'] = 2;
-    runtime.remote['value']['maxTokens'] = 2048;
-    await runtime.refreshForms();
-    await tester.pumpAndSettle();
-    final merge = find.ancestor(
-      of: find.text('合并到草稿'),
-      matching: find.byType(PocketButton),
-    );
-    expect(tester.widget<PocketButton>(merge).onPressed, isNull);
-    expect(tester.widget<TextField>(field('maxTokens')).controller!.text, '-1');
-    await tester.pumpWidget(const SizedBox());
-  });
-
   testWidgets(
-    'invalid field is retained after another field returns to its original value',
+    'invalid numeric input stays in its detached editor across remote updates',
     (tester) async {
       final runtime = SettingsRuntime(fixture());
       await openEditor(tester, runtime);
-      await tester.enterText(field('maxTokens'), 'not a number');
-      await tester.enterText(field('baseURL'), 'temporary');
-      await tester.enterText(field('baseURL'), 'https://old.example');
+      await editField(tester, 'maxTokens', '-1', complete: false);
+      expect(find.text('数值不能小于 1。'), findsOneWidget);
+      final complete = tester.widget<GlassButton>(
+        find.widgetWithIcon(GlassButton, Icons.check_rounded),
+      );
+      expect(complete.onPressed, isNull);
+      final input = find.byKey(const Key('structure-value'));
+      expect(tester.widget<TextField>(input).controller!.text, '-1');
       runtime.remote['revision'] = 2;
       runtime.remote['value']['maxTokens'] = 2048;
       await runtime.refreshForms();
       await tester.pumpAndSettle();
-      expect(
-        tester.widget<TextField>(field('maxTokens')).controller!.text,
-        'not a number',
-      );
-      expect(find.text('请输入有效数字。'), findsOneWidget);
-      expect(find.text('编辑基于版本 1，当前版本 2。'), findsOneWidget);
+      expect(tester.widget<TextField>(input).controller!.text, '-1');
       expect(runtime.writes, isEmpty);
-      await tester.pumpWidget(const SizedBox());
+      await tester.enterText(input, '4096');
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('完成编辑'));
+      await tester.pumpAndSettle();
+      expect(summary(tester, 'maxTokens'), '4096');
+      expect(find.text('编辑基于版本 1，当前版本 2。'), findsOneWidget);
+      expect(
+        tester
+            .widget<GlassButton>(find.byKey(const Key('configuration-save')))
+            .onPressed,
+        isNull,
+      );
+      expect(runtime.writes, isEmpty);
+    },
+  );
+
+  testWidgets(
+    'single-field default is only offered in detail and stages an unset',
+    (tester) async {
+      final runtime = SettingsRuntime(fixture());
+      await openEditor(tester, runtime);
+      expect(find.byType(TextField), findsNothing);
+      expect(find.text('使用默认值'), findsNothing);
+      await tester.tap(field('baseURL'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('使用默认值'));
+      await tester.pumpAndSettle();
+      expect(summary(tester, 'baseURL'), '使用默认值');
+      expect(runtime.writes, isEmpty);
+      await tester.tap(find.byTooltip('保存并应用'));
+      await tester.pumpAndSettle();
+      expect(runtime.writes.single['ops'], [
+        {
+          'op': 'unset',
+          'path': ['baseURL'],
+        },
+      ]);
+      expect(runtime.remote['value']['maxTokens'], 1024);
+      expect(runtime.remote['secrets'], fixture()['secrets']);
+    },
+  );
+
+  test('bundled labels name their actual behavior without relabeling unknown plugins', () {
+    final field = ConfigurationFieldSchema(ConfigurationSchema({}), {
+      'type': 'boolean',
+    });
+    expect(
+      const ConfigurationPresentation('session-log-deepseek')
+          .title(['enabled'], field),
+      '上传会话日志',
+    );
+    expect(
+      const ConfigurationPresentation('session-log-deepseek')
+          .description(['enabled'], field),
+      contains('不会删除'),
+    );
+    expect(
+      const ConfigurationPresentation('subagent-model-selection-settings')
+          .description(['enabled'], field),
+      contains('新建'),
+    );
+    expect(
+      const ConfigurationPresentation('custom-plugin')
+          .title(['enabled'], field),
+      'enabled',
+    );
+    expect(
+      const ConfigurationPresentation('custom-plugin')
+          .title(['maxTokens'], field),
+      'maxTokens',
+    );
+    expect(
+      const ConfigurationPresentation('android-runtime')
+          .title(['shellTimeoutMs'], field),
+      'Shell 执行超时（毫秒）',
+    );
+  });
+
+  testWidgets(
+    'boolean controls stage exact boolean edits and preserve conflict review',
+    (tester) async {
+      final runtime = SettingsRuntime({
+        'ns': 'session-log-deepseek',
+        'revision': 1,
+        'value': {'enabled': true},
+        'user': {'enabled': true},
+        'secrets': [],
+        'schema': {
+          'type': 'object',
+          'dict': {
+            'enabled': {'type': 'boolean'},
+          },
+        },
+      });
+      await openEditor(tester, runtime);
+      expect(find.text('上传会话日志'), findsOneWidget);
+      expect(
+        tester
+            .widget<GlassButton>(find.byKey(const Key('configuration-save')))
+            .onPressed,
+        isNull,
+      );
+      expect(find.byType(TextField), findsNothing);
+      expect(find.text('高级 JSON 编辑'), findsNothing);
+      expect(tester.widget<PocketSwitchRow>(field('enabled')).value, isTrue);
+      await tester.tap(field('enabled'));
+      await tester.pumpAndSettle();
+      expect(tester.widget<PocketSwitchRow>(field('enabled')).value, isFalse);
+      expect(find.text('未保存'), findsOneWidget);
+      expect(
+        tester
+            .widget<GlassButton>(find.byKey(const Key('configuration-save')))
+            .onPressed,
+        isNotNull,
+      );
+      expect(runtime.writes, isEmpty);
+      runtime.remote['revision'] = 2;
+      await runtime.refreshForms();
+      await tester.pumpAndSettle();
+      expect(tester.widget<PocketSwitchRow>(field('enabled')).value, isFalse);
+      expect(
+        tester
+            .widget<GlassButton>(find.byKey(const Key('configuration-save')))
+            .onPressed,
+        isNull,
+      );
+      await tester.ensureVisible(find.text('合并到草稿'));
+      await tester.tap(find.text('合并到草稿'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('保存并应用'));
+      await tester.pumpAndSettle();
+      expect(runtime.writes.single['ops'], [
+        {
+          'op': 'set',
+          'path': ['enabled'],
+          'value': false,
+        },
+      ]);
+      expect(runtime.writes.single['expectedRevision'], 2);
+    },
+  );
+
+  testWidgets(
+    'missing and transformed boolean values never masquerade as false switches',
+    (tester) async {
+      final runtime = SettingsRuntime({
+        'ns': 'custom-plugin',
+        'revision': 1,
+        'value': {'wrapped': true},
+        'user': {},
+        'secrets': [],
+        'schema': {
+          'type': 'object',
+          'dict': {
+            'enabled': {'type': 'boolean'},
+            'wrapped': {
+              'type': 'transform',
+              'inner': {'type': 'boolean'},
+              'callback': '(v) => !v',
+            },
+          },
+        },
+      });
+      await openEditor(tester, runtime);
+      expect(find.byType(PocketSwitchRow), findsNothing);
+      expect(summary(tester, 'enabled'), '使用默认值');
+      await tester.tap(field('wrapped'));
+      await tester.pumpAndSettle();
+      expect(find.byType(TextField), findsNothing);
+      expect(find.byType(PocketSwitchRow), findsNothing);
+      expect(find.text('高级工具'), findsOneWidget);
+      expect(runtime.writes, isEmpty);
+    },
+  );
+
+  testWidgets(
+    'compact grouped rows reveal editors without duplicate field cards',
+    (tester) async {
+      final runtime = SettingsRuntime(fixture());
+      await openEditor(tester, runtime);
+      final group = find.byKey(const Key('configuration-values'));
+      expect(
+        find.descendant(of: group, matching: find.byType(PocketSection)),
+        findsNothing,
+      );
+      expect(
+        find.descendant(
+          of: group,
+          matching: find.byType(ConfigurationValueRow),
+        ),
+        findsNWidgets(3),
+      );
+      expect(find.byType(TextField), findsNothing);
+      expect(find.text('调整后保存生效'), findsNothing);
+      expect(tester.getSize(group).height, lessThan(250));
+      expect(
+        tester.widget<ConfigurationValueRow>(field('apiKey')).onTap,
+        isNull,
+      );
+      final page = tester.widget<PocketScaffold>(find.byType(PocketScaffold));
+      expect(page.bottom, isNull);
+      final save = find.byKey(const Key('configuration-save'));
+      final saveSize = tester.getSize(save);
+      expect(saveSize.width, saveSize.height);
+      expect(tester.widget<GlassButton>(save).solid, isTrue);
+      expect(
+        tester
+            .widget<Text>(
+              find.descendant(
+                of: field('baseURL'),
+                matching: find.text('https://old.example'),
+              ),
+            )
+            .maxLines,
+        1,
+      );
+      final rowElement = tester.element(field('baseURL'));
+      await editField(tester, 'baseURL', 'https://local.example');
+      expect(summary(tester, 'baseURL'), 'https://local.example');
+      expect(runtime.writes, isEmpty);
+      expect(find.byType(TextField), findsNothing);
+      expect(tester.element(field('baseURL')), same(rowElement));
+      await tester.tap(find.byTooltip('保存并应用'));
+      await tester.pumpAndSettle();
+      expect(tester.element(field('baseURL')), same(rowElement));
     },
   );
 
@@ -546,15 +988,15 @@ void main() {
     (tester) async {
       final runtime = SettingsRuntime(fixture())..failReceipt = true;
       await openEditor(tester, runtime);
-      await tester.enterText(field('baseURL'), 'https://mine.example');
-      await tester.tap(find.text('保存并应用'));
+      await editField(tester, 'baseURL', 'https://mine.example');
+      await tester.tap(find.byTooltip('保存并应用'));
       await tester.pumpAndSettle();
       expect(find.text('核对保存结果'), findsOneWidget);
+      expect(summary(tester, 'baseURL'), 'https://mine.example');
       expect(
-        tester.widget<TextField>(field('baseURL')).controller!.text,
-        'https://mine.example',
+        tester.widget<ConfigurationValueRow>(field('baseURL')).onTap,
+        isNull,
       );
-      expect(tester.widget<TextField>(field('baseURL')).enabled, isFalse);
       await tester.tap(find.text('查看当前配置（凭据已隐藏）'));
       await tester.pumpAndSettle();
       expect(find.textContaining('https://old.example'), findsOneWidget);
@@ -568,10 +1010,7 @@ void main() {
       await tester.ensureVisible(find.text('采用当前配置'));
       await tester.tap(find.text('采用当前配置'));
       await tester.pumpAndSettle();
-      expect(
-        tester.widget<TextField>(field('baseURL')).controller!.text,
-        'https://old.example',
-      );
+      expect(summary(tester, 'baseURL'), 'https://old.example');
       expect(find.text('核对保存结果'), findsNothing);
       expect(runtime.writes, hasLength(1));
       await tester.pumpWidget(const SizedBox());
@@ -607,6 +1046,8 @@ void main() {
       );
       await tester.tap(find.text('open editor'));
       await tester.pumpAndSettle();
+      await tester.tap(find.text('高级设置'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('高级 JSON 编辑'));
       await tester.pumpAndSettle();
       final input = find.byKey(const Key('configuration-json'));
@@ -632,7 +1073,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('放弃编辑并返回'));
       await tester.pumpAndSettle();
-      expect(find.text('高级 JSON 编辑'), findsOneWidget);
+      expect(find.text('高级设置'), findsOneWidget);
       await tester.tap(find.byTooltip('返回'));
       await tester.pumpAndSettle();
       expect(find.text('open editor'), findsOneWidget);
@@ -676,8 +1117,8 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('Pro'));
       await tester.pumpAndSettle();
-      await tester.ensureVisible(find.text('保存默认模型'));
-      await tester.tap(find.text('保存默认模型'));
+      await tester.ensureVisible(find.byTooltip('保存默认模型'));
+      await tester.tap(find.byTooltip('保存默认模型'));
       await tester.pumpAndSettle();
       expect(runtime.writes.single['revision'], 4);
       expect(runtime.remote['value']['model'], 'deepseek-pro');

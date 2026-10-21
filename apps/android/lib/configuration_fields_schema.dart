@@ -7,7 +7,8 @@ class ConfigurationFieldSchema {
   final ConfigurationSchema schema;
   final ConfigurationMap node;
 
-  String get type => '${node['type'] ?? 'unknown'}';
+  String get wireType => '${node['type'] ?? 'unknown'}';
+  String get type => objectIntersection ? 'object' : wireType;
   Map get meta => node['meta'] as Map? ?? const {};
   bool get structured => const ['object', 'array', 'dict'].contains(type);
   bool get secret => schema.containsSecret(node);
@@ -21,7 +22,41 @@ class ConfigurationFieldSchema {
   bool get native =>
       structured ||
       enumType ||
+      branchChoice ||
       const ['string', 'number', 'boolean'].contains(type);
+  bool get branchChoice =>
+      wireType == 'union' &&
+      !enumType &&
+      alternatives.isNotEmpty &&
+      alternatives.every(
+        (child) => const [
+          'string',
+          'number',
+          'boolean',
+          'const',
+          'object',
+          'array',
+          'dict',
+        ].contains(child.type),
+      );
+
+  // Disjoint object intersections have one unambiguous field editor. Duplicate
+  // keys retain their complete validator in advanced tools rather than merging
+  // constraints or discarding one branch on the client.
+  bool get objectIntersection {
+    if (wireType != 'intersect') return false;
+    final seen = <String>{};
+    final branches = alternatives;
+    return branches.isNotEmpty &&
+        branches.every(
+          (branch) =>
+              branch.wireType == 'object' &&
+              (branch.node['dict'] as Map? ?? {}).keys.every(
+                (key) => seen.add('$key'),
+              ),
+        );
+  }
+
   List<ConfigurationFieldSchema> get alternatives => [
     for (final ref in node['list'] as List? ?? [])
       ConfigurationFieldSchema(schema, schema.resolve(ref)),
@@ -34,11 +69,36 @@ class ConfigurationFieldSchema {
   ConfigurationFieldSchema get keySchema =>
       ConfigurationFieldSchema(schema, schema.resolve(node['sKey']));
   Map<String, ConfigurationFieldSchema> get fields => {
+    if (objectIntersection)
+      for (final branch in alternatives) ...branch.fields,
     for (final entry in (node['dict'] as Map? ?? {}).entries)
       '${entry.key}': ConfigurationFieldSchema(
         schema,
         schema.resolve(entry.value),
       ),
+  };
+
+  /// Exact JSON kind matching is used only to preserve an existing branch
+  /// buffer. Switching branches always needs an explicit user choice.
+  bool acceptsKind(dynamic value) => switch (type) {
+    'const' => configurationEqual(value, node['value']),
+    'string' => value is String,
+    'number' => value is num && value.isFinite,
+    'boolean' => value is bool,
+    'object' || 'dict' => value is Map,
+    'array' => value is List,
+    _ => false,
+  };
+
+  String get kindLabel => switch (type) {
+    'const' => configurationStructureSummary(node['value']),
+    'string' => '文本',
+    'number' => '数字',
+    'boolean' => '开关',
+    'object' => '参数',
+    'dict' => '键值列表',
+    'array' => '项目列表',
+    _ => '高级值',
   };
   String? get description {
     final value = meta['description'];
@@ -62,6 +122,15 @@ class ConfigurationFieldSchema {
       return options.any((option) => configurationEqual(value, option))
           ? null
           : '请选择提供的选项。';
+    }
+    if (branchChoice) {
+      return alternatives.any(
+            (branch) =>
+                branch.acceptsKind(value) &&
+                branch.validate(value, depth: depth + 1) == null,
+          )
+          ? null
+          : '请选择一种支持的值类型并填写。';
     }
     String? range(num size, String noun, {bool skipMin = false}) {
       if (!skipMin && meta['min'] is num && size < meta['min']) {

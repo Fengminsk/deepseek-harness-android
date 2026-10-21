@@ -194,6 +194,7 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
               children: [
                 TextDocumentRow(
                   title: '查看错误详情',
+                  selectable: true,
                   text: lastFailure!,
                   monospace: true,
                 ),
@@ -236,6 +237,7 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
               children: [
                 TextDocumentRow(
                   title: '查看运行环境',
+                  selectable: true,
                   text: const JsonEncoder.withIndent('  ')
                       .convert(runtime.info),
                   monospace: true,

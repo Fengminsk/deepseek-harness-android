@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:material_ui/material_ui.dart';
 
+import 'configuration_value_row.dart';
 import 'plugins_data.dart';
 import 'metadata_artwork.dart';
 import 'runtime.dart';
@@ -525,6 +526,7 @@ class _PluginBundlePageState extends State<PluginBundlePage> {
                 ),
               TextDocumentRow(
                 title: '插件包信息与诊断',
+                selectable: true,
                 text: [
                   '包名：${widget.name}',
                   '位置：${current['availability']}',
@@ -589,13 +591,46 @@ class PluginInstallPage extends StatefulWidget {
 }
 
 class _PluginInstallPageState extends State<PluginInstallPage> {
-  late final input = TextEditingController(text: widget.controller.spec);
-  late final registry = TextEditingController(text: widget.controller.registry);
+  final scroll = ScrollController();
   final approved = <String>{};
+
+  Future<void> editSource({bool registry = false}) async {
+    final controller = widget.controller;
+    final before = registry ? controller.registry : controller.spec;
+    bool editable() =>
+        !controller.pending &&
+        !controller.checking &&
+        (registry ? controller.registry : controller.spec) == before;
+    if (!editable()) return;
+    final value = await Navigator.of(context).push<String>(
+      PocketRoute(
+        builder: (_) => TextDocumentPage(
+          title: registry ? '软件包仓库' : '安装来源',
+          text: before,
+          readOnly: false,
+          fieldKey: ValueKey(
+            registry ? 'plugin-registry-input' : 'plugin-spec-input',
+          ),
+          helperText: registry
+              ? '留空使用 DSH 配置。完成编辑后仍需核对来源，再确认安装。'
+              : '填写包名、Git 地址或设备本地路径。完成编辑不会开始安装。',
+          editingState: controller,
+          canEdit: editable,
+        ),
+      ),
+    );
+    if (!mounted || value == null || !editable() || value == before) return;
+    approved.clear();
+    if (registry) {
+      controller.editRegistry(value);
+    } else {
+      controller.editSpec(value);
+    }
+  }
+
   @override
   void dispose() {
-    input.dispose();
-    registry.dispose();
+    scroll.dispose();
     super.dispose();
   }
 
@@ -612,6 +647,8 @@ class _PluginInstallPageState extends State<PluginInstallPage> {
       return PocketScaffold(
         title: const Text('安装插件包'),
         body: PocketList(
+          key: const PageStorageKey('plugin-install'),
+          controller: scroll,
           padding: const EdgeInsets.all(20),
           children: [
             if (controller.installError != null)
@@ -648,6 +685,7 @@ class _PluginInstallPageState extends State<PluginInstallPage> {
                   ),
                   TextDocumentRow(
                     title: '安装请求详情',
+                    selectable: true,
                     text:
                         '核心阶段：${controller.installPhase}\n请求：${controller.requestId}',
                   ),
@@ -693,6 +731,7 @@ class _PluginInstallPageState extends State<PluginInstallPage> {
                   if (result['packageResult'] != null)
                     TextDocumentRow(
                       title: '安装诊断',
+                      selectable: true,
                       text: const JsonEncoder.withIndent('  ')
                           .convert(result['packageResult']),
                       monospace: true,
@@ -702,18 +741,19 @@ class _PluginInstallPageState extends State<PluginInstallPage> {
             PocketSection(
               title: '安装来源',
               children: [
-                Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: TextField(
-                    controller: input,
-                    enabled: !disabled,
-                    onChanged: controller.editSpec,
-                    autocorrect: false,
-                    enableSuggestions: false,
-                    decoration: const InputDecoration(
-                      labelText: '包名、Git 地址或设备本地路径',
-                    ),
-                  ),
+                ConfigurationValueRow(
+                  key: const ValueKey('plugin-spec-row'),
+                  title: '包名或地址',
+                  summary: controller.spec.isEmpty ? '未填写' : controller.spec,
+                  onTap: disabled ? null : editSource,
+                ),
+                ConfigurationValueRow(
+                  key: const ValueKey('plugin-registry-row'),
+                  title: '软件包仓库',
+                  summary: controller.registry.isEmpty
+                      ? '使用 DSH 配置'
+                      : controller.registry,
+                  onTap: disabled ? null : () => editSource(registry: true),
                 ),
                 PocketSwitchRow(
                   title: const Text('安装成功后启用'),
@@ -734,20 +774,6 @@ class _PluginInstallPageState extends State<PluginInstallPage> {
                             await controller.inspect();
                           },
                     child: Text(controller.checking ? '正在核对来源' : '核对安装来源'),
-                  ),
-                ),
-                PocketDisclosure(
-                  title: controller.registry.isEmpty
-                      ? '安装选项'
-                      : '安装选项 · 已指定 Registry',
-                  child: TextField(
-                    controller: registry,
-                    enabled: !disabled,
-                    onChanged: controller.editRegistry,
-                    decoration: const InputDecoration(
-                      labelText: 'Registry（可选）',
-                      hintText: '留空使用 DSH 配置',
-                    ),
                   ),
                 ),
               ],
@@ -776,6 +802,7 @@ class _PluginInstallPageState extends State<PluginInstallPage> {
             if (controller.logs.isNotEmpty)
               TextDocumentRow(
                 title: '本次安装输出',
+                selectable: true,
                 text:
                     '${controller.logTruncated ? '只显示最近的输出；完整结果见安装诊断。\n' : ''}'
                     '${controller.logs.map((chunk) => chunk['text']).join()}',

@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:dsh_android/chat_messages.dart';
 import 'package:dsh_android/main.dart';
@@ -7,6 +9,8 @@ import 'package:dsh_android/tasks.dart';
 import 'package:dsh_android/subagents.dart';
 import 'package:dsh_android/ui.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'chat_projection_test.dart' as fixture;
@@ -186,6 +190,128 @@ ScrollController _scroll(WidgetTester tester) =>
     tester.widget<ChatTimeline>(find.byType(ChatTimeline)).controller;
 
 void main() {
+  testWidgets('optional local composer layout captures', (tester) async {
+    final output = Platform.environment['POCKET_COMPOSER_CAPTURE_DIR'];
+    if (output == null) return;
+    _phone(tester);
+    await tester.runAsync(() async {
+      final bytes = await File(Platform.environment['POCKET_CAPTURE_FONT']!)
+          .readAsBytes();
+      await (FontLoader(
+        'PocketCapture',
+      )..addFont(Future.value(ByteData.sublistView(bytes)))).load();
+      await (FontLoader(
+        'MaterialIcons',
+      )..addFont(rootBundle.load('fonts/MaterialIcons-Regular.otf'))).load();
+      await Directory(output).create(recursive: true);
+    });
+    for (final brightness in Brightness.values) {
+      for (final layout in ['empty', 'multiline', 'keyboard', 'large']) {
+        final runtime = _ChatRuntime([]);
+        addTearDown(runtime.dispose);
+        final boundary = GlobalKey();
+        final theme = pocketTheme(brightness);
+        await tester.pumpWidget(
+          RepaintBoundary(
+            key: boundary,
+            child: MaterialApp(
+              debugShowCheckedModeBanner: false,
+              theme: theme.copyWith(
+                textTheme: theme.textTheme.apply(fontFamily: 'PocketCapture'),
+              ),
+              builder: (context, child) => MediaQuery(
+                data: MediaQuery.of(context).copyWith(
+                  disableAnimations: true,
+                  textScaler: TextScaler.linear(layout == 'large' ? 1.6 : 1),
+                  viewInsets: EdgeInsets.only(
+                    bottom: layout == 'keyboard' ? 300 : 0,
+                  ),
+                ),
+                child: LiquidGlassScope(enabled: true, child: child!),
+              ),
+              home: ChatPage(runtime: runtime),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        if (layout == 'multiline') {
+          await tester.enterText(
+            find.byKey(const ValueKey('chat-composer-input')),
+            '读取选中的文件\n整理主要内容\n列出需要确认的问题',
+          );
+          await tester.pumpAndSettle();
+        }
+        await tester.runAsync(() async {
+          final picture =
+              await (boundary.currentContext!.findRenderObject()!
+                      as RenderRepaintBoundary)
+                  .toImage(pixelRatio: 2);
+          try {
+            final data = await picture.toByteData(
+              format: ui.ImageByteFormat.png,
+            );
+            await File('$output/composer-${brightness.name}-$layout.png')
+                .writeAsBytes(data!.buffer.asUint8List());
+          } finally {
+            picture.dispose();
+          }
+        });
+        expect(tester.takeException(), isNull);
+      }
+    }
+  });
+
+  for (final scale in [1.0, 1.6]) {
+    for (final keyboard in [0.0, 300.0]) {
+      testWidgets(
+        'composer centers input and round actions: scale=$scale keyboard=$keyboard',
+        (tester) async {
+          _phone(tester);
+          final runtime = _ChatRuntime([]);
+          addTearDown(runtime.dispose);
+          await tester.pumpWidget(
+            MaterialApp(
+              theme: pocketTheme(Brightness.light),
+              builder: (context, child) => MediaQuery(
+                data: MediaQuery.of(context).copyWith(
+                  disableAnimations: true,
+                  textScaler: TextScaler.linear(scale),
+                  viewInsets: EdgeInsets.only(bottom: keyboard),
+                ),
+                child: child!,
+              ),
+              home: ChatPage(runtime: runtime),
+            ),
+          );
+          await tester.pumpAndSettle();
+          final field = find.byKey(const ValueKey('chat-composer-input'));
+          for (final draft in ['', '一行输入', '第一行\n第二行\n第三行']) {
+            await tester.enterText(field, draft);
+            await tester.pumpAndSettle();
+            final bar = tester.getRect(
+              find.byKey(const ValueKey('chat-composer')),
+            );
+            final input = tester.getRect(field);
+            final plus = tester.getRect(find.byTooltip('添加与指令'));
+            final send = tester.getRect(find.byTooltip('发送'));
+            expect(input.center.dy, closeTo(bar.center.dy, .01));
+            expect(plus.center.dy, closeTo(bar.center.dy, .01));
+            expect(send.center.dy, closeTo(bar.center.dy, .01));
+            expect(plus.size.width, closeTo(plus.size.height, .01));
+            expect(send.size.width, closeTo(send.size.height, .01));
+            expect(plus.top - bar.top, closeTo(bar.bottom - plus.bottom, .01));
+            expect(bar.bottom, lessThanOrEqualTo(844 - keyboard));
+            expect(tester.takeException(), isNull);
+          }
+          expect(
+            runtime.calls.any((call) => call.method == 'session.send'),
+            isFalse,
+          );
+        },
+      );
+    }
+  }
+
   testWidgets(
     'opening variable-height long history reaches the actual last reply',
     (tester) async {

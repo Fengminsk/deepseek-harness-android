@@ -219,33 +219,169 @@ void main() {
       );
     },
   );
-  test('opaque unions stay advanced and secret structures stay protected', () {
-    expect(
-      shape({
+  test(
+    'primitive unions have typed branches and secret structures stay protected',
+    () {
+      expect(
+        shape({
+          'type': 'union',
+          'list': [
+            {'type': 'boolean'},
+            {'type': 'object'},
+          ],
+        }).native,
+        isTrue,
+      );
+      expect(
+        shape({
+          'type': 'array',
+          'inner': {
+            'type': 'object',
+            'dict': {
+              'token': {
+                'type': 'string',
+                'meta': {'role': 'secret'},
+              },
+            },
+          },
+        }).secret,
+        isTrue,
+      );
+    },
+  );
+
+  test(
+    'mixed branch validation preserves JSON kinds and disjoint intersections',
+    () {
+      final nullable = shape({
+        'type': 'union',
+        'list': [
+          {'type': 'string'},
+          {'type': 'const', 'value': null},
+        ],
+      });
+      expect(nullable.branchChoice, isTrue);
+      expect(nullable.validate('value'), isNull);
+      expect(nullable.validate(null), isNull);
+      expect(nullable.validate(false), isNotNull);
+      final joined = shape({
+        'type': 'intersect',
+        'list': [
+          {
+            'type': 'object',
+            'dict': {
+              'enabled': {'type': 'boolean'},
+            },
+          },
+          {
+            'type': 'object',
+            'dict': {
+              'limit': {
+                'type': 'number',
+                'meta': {'min': 1},
+              },
+            },
+          },
+        ],
+      });
+      expect(joined.type, 'object');
+      expect(joined.fields.keys, ['enabled', 'limit']);
+      expect(joined.validate({'enabled': true, 'limit': 0}), contains('不能小于'));
+      expect(
+        shape({
+          'type': 'intersect',
+          'list': [
+            {
+              'type': 'object',
+              'dict': {
+                'value': {'type': 'boolean'},
+              },
+            },
+            {
+              'type': 'object',
+              'dict': {
+                'value': {'type': 'string'},
+              },
+            },
+          ],
+        }).native,
+        isFalse,
+      );
+      expect(
+        shape({
+          'type': 'transform',
+          'inner': {'type': 'boolean'},
+        }).native,
+        isFalse,
+      );
+    },
+  );
+
+  testWidgets(
+    'nullable dictionary edits choose exact types without exposing JSON',
+    (tester) async {
+      final schema = shape({
+        'type': 'union',
+        'list': [
+          {'type': 'const', 'value': false},
+          {
+            'type': 'dict',
+            'sKey': {'type': 'string'},
+            'inner': {
+              'type': 'union',
+              'list': [
+                {'type': 'string'},
+                {'type': 'const', 'value': null},
+              ],
+            },
+          },
+        ],
+      });
+      dynamic result;
+      await open(tester, schema, {
+        'high': 'wire-high',
+      }, (next) => result = next);
+      expect(find.byType(TextField), findsNothing);
+      await tap(tester, find.text('键值列表'));
+      await tap(tester, find.byKey(const Key('structure-entry:high')));
+      expect(find.byKey(const Key('structure-json')), findsNothing);
+      await tap(tester, find.text('空值'));
+      await tap(tester, find.byTooltip('完成编辑'));
+      await tap(tester, find.byTooltip('完成编辑'));
+      expect(result, isNull);
+      await tap(tester, find.byTooltip('完成编辑'));
+      expect(result, {'high': null});
+    },
+  );
+
+  testWidgets(
+    'unknown union values survive until an explicit branch replacement',
+    (tester) async {
+      dynamic result;
+      final schema = shape({
         'type': 'union',
         'list': [
           {'type': 'boolean'},
-          {'type': 'object'},
+          {'type': 'number'},
         ],
-      }).native,
-      isFalse,
-    );
-    expect(
-      shape({
-        'type': 'array',
-        'inner': {
-          'type': 'object',
-          'dict': {
-            'token': {
-              'type': 'string',
-              'meta': {'role': 'secret'},
-            },
-          },
-        },
-      }).secret,
-      isTrue,
-    );
-  });
+      });
+      await open(
+        tester,
+        schema,
+        'unknown saved string',
+        (next) => result = next,
+      );
+      expect(find.text('unknown saved string'), findsOneWidget);
+      expect(find.byType(TextField), findsNothing);
+      await tap(tester, find.text('数字'));
+      await tester.enterText(find.byKey(const Key('structure-value')), '7');
+      await tap(tester, find.byTooltip('添加到草稿'));
+      expect(result, isNull);
+      await tap(tester, find.byTooltip('完成编辑'));
+      expect(result, 7);
+      expect(result, isNot(isA<String>()));
+    },
+  );
 
   testWidgets(
     'nested object stages exact field values and preserves unknown keys',
@@ -260,11 +396,53 @@ void main() {
         find.byKey(const Key('structure-value')),
         'new-exact-id',
       );
-      await tap(tester, find.text('完成编辑'));
+      await tap(tester, find.byTooltip('完成编辑'));
       expect(result, isNull);
-      await tap(tester, find.text('完成编辑'));
+      await tap(tester, find.byTooltip('完成编辑'));
       expect(result, {
         'id': 'new-exact-id',
+        'unknown': {'keep': true},
+      });
+    },
+  );
+  testWidgets(
+    'scalar detail releases touch focus in blank space and preserves its buffer',
+    (tester) async {
+      dynamic result;
+      await open(
+        tester,
+        shape({'type': 'string'}),
+        'before',
+        (value) => result = value,
+      );
+      final input = find.byKey(const Key('structure-value'));
+      await tester.enterText(input, 'unsaved value');
+      await tester.pumpAndSettle();
+      expect(tester.testTextInput.isVisible, isTrue);
+      await tester.tapAt(const Offset(210, 600));
+      await tester.pumpAndSettle();
+      expect(tester.testTextInput.isVisible, isFalse);
+      expect(tester.widget<TextField>(input).controller!.text, 'unsaved value');
+      await tap(tester, find.byTooltip('完成编辑'));
+      expect(result, 'unsaved value');
+    },
+  );
+  testWidgets(
+    'nested field default removes only that value and preserves unknown siblings',
+    (tester) async {
+      dynamic result;
+      await open(tester, modelSchema, {
+        'id': 'kept',
+        'maxTokens': 1024,
+        'unknown': {'keep': true},
+      }, (value) => result = value);
+      expect(find.text('使用默认值'), findsNothing);
+      await tap(tester, find.byKey(const Key('structure-entry:maxTokens')));
+      await tap(tester, find.text('使用默认值'));
+      expect(result, isNull);
+      await tap(tester, find.byTooltip('完成编辑'));
+      expect(result, {
+        'id': 'kept',
         'unknown': {'keep': true},
       });
     },
@@ -281,11 +459,8 @@ void main() {
       );
       await tester.enterText(find.byKey(const Key('structure-value')), 'oops');
       await tester.pumpAndSettle();
-      final button = find.ancestor(
-        of: find.text('完成编辑'),
-        matching: find.byType(PocketButton),
-      );
-      expect(tester.widget<PocketButton>(button).onPressed, isNull);
+      final button = find.widgetWithIcon(GlassButton, Icons.check_rounded);
+      expect(tester.widget<GlassButton>(button).onPressed, isNull);
       await tap(tester, find.byTooltip('返回'));
       expect(find.text('保留当前编辑？'), findsOneWidget);
       await tap(tester, find.text('继续编辑'));
@@ -315,9 +490,9 @@ void main() {
       await tap(tester, find.text('添加项目'));
       await tap(tester, find.byKey(const Key('structure-entry:id')));
       await tester.enterText(find.byKey(const Key('structure-value')), 'third');
-      await tap(tester, find.text('完成编辑'));
-      await tap(tester, find.text('添加到草稿'));
-      await tap(tester, find.text('完成编辑'));
+      await tap(tester, find.byTooltip('完成编辑'));
+      await tap(tester, find.byTooltip('添加到草稿'));
+      await tap(tester, find.byTooltip('完成编辑'));
       expect(result, [
         {'id': 'first', 'unknown': 3},
         {'id': 'third'},
@@ -350,8 +525,8 @@ void main() {
     await tester.enterText(find.byKey(const Key('structure-key')), 'X-Client');
     await tap(tester, find.text('继续'));
     await tester.enterText(find.byKey(const Key('structure-value')), 'Pocket');
-    await tap(tester, find.text('添加到草稿'));
-    await tap(tester, find.text('完成编辑'));
+    await tap(tester, find.byTooltip('添加到草稿'));
+    await tap(tester, find.byTooltip('完成编辑'));
     expect(result, {'Authorization-Type': 'custom', 'X-Client': 'Pocket'});
   });
   testWidgets('enum arrays choose schema values without inventing defaults', (
@@ -366,8 +541,8 @@ void main() {
     );
     await tap(tester, find.text('添加项目'));
     await tap(tester, find.text('image'));
-    await tap(tester, find.text('添加到草稿'));
-    await tap(tester, find.text('完成编辑'));
+    await tap(tester, find.byTooltip('添加到草稿'));
+    await tap(tester, find.byTooltip('完成编辑'));
     expect(result, ['image']);
   });
   testWidgets(
@@ -377,8 +552,10 @@ void main() {
       await open(tester, shape({'type': 'any'}), {
         'x': 1,
       }, (value) => result = value);
+      expect(find.byKey(const Key('structure-json')), findsNothing);
+      await tap(tester, find.text('高级工具'));
       await tester.enterText(find.byKey(const Key('structure-json')), '{ bad');
-      await tap(tester, find.text('完成编辑'));
+      await tap(tester, find.byTooltip('完成编辑'));
       expect(find.text('JSON 无法解析，输入已保留。'), findsOneWidget);
       await tap(tester, find.byTooltip('返回'));
       expect(find.text('保留当前编辑？'), findsOneWidget);
@@ -387,7 +564,9 @@ void main() {
         find.byKey(const Key('structure-json')),
         '{"x":2}',
       );
-      await tap(tester, find.text('完成编辑'));
+      await tap(tester, find.byTooltip('完成编辑'));
+      expect(result, isNull);
+      await tap(tester, find.byTooltip('完成编辑'));
       expect(result, {'x': 2});
     },
   );
@@ -412,7 +591,7 @@ void main() {
           await capture(tester, 'configuration-${brightness.name}-$scale');
           expect(tester.takeException(), isNull);
           expect(
-            tester.getRect(find.text('完成编辑')).bottom,
+            tester.getRect(find.byTooltip('完成编辑')).bottom,
             lessThan(scale > 1 ? 800 : 960),
           );
           await tap(tester, find.byKey(const Key('structure-entry:input')));

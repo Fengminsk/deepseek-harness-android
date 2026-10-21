@@ -504,6 +504,7 @@ class _ConfigurationTransferPageState extends State<ConfigurationTransferPage> {
                 title: configurationNamespaceTitle('${section['ns']}'),
                 text: sectionText(section, exporting: exporting),
                 monospace: true,
+                selectable: true,
               ),
             ),
           ),

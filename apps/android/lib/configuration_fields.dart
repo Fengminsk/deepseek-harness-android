@@ -4,13 +4,17 @@ import 'package:material_ui/material_ui.dart';
 
 import 'configuration_edits.dart';
 import 'configuration_fields_schema.dart';
+import 'configuration_presentation.dart';
+import 'configuration_value_row.dart';
 import 'models.dart' show ModelDraftGuard;
 import 'ui.dart';
 import 'text_document_page.dart';
 
 class ConfigurationFieldResult {
-  const ConfigurationFieldResult(this.value);
+  const ConfigurationFieldResult(this.value) : remove = false;
+  const ConfigurationFieldResult.remove() : value = null, remove = true;
   final dynamic value;
+  final bool remove;
 }
 
 /// A detached, guarded field draft. Returning a value stages it in ConfigPage;
@@ -22,7 +26,11 @@ class ConfigurationStructurePage extends StatefulWidget {
     required this.title,
     required this.value,
     this.labels = const {},
+    this.namespace = '',
+    this.path = const [],
     this.adding = false,
+    this.allowReset = false,
+    this.resetLabel = '使用默认值',
     this.editingState,
     this.canEdit,
   });
@@ -30,7 +38,10 @@ class ConfigurationStructurePage extends StatefulWidget {
   final String title;
   final dynamic value;
   final Map<String, String> labels;
-  final bool adding;
+  final String namespace;
+  final List<String> path;
+  final bool adding, allowReset;
+  final String resetLabel;
   final Listenable? editingState;
   final bool Function()? canEdit;
 
@@ -43,11 +54,13 @@ class _ConfigurationStructurePageState
     extends State<ConfigurationStructurePage> {
   late dynamic value;
   late final TextEditingController text;
-  bool dirty = false, raw = false;
+  bool dirty = false;
   String? error;
   bool get enabled => widget.canEdit?.call() ?? true;
   bool get exists => configurationHasValue(value);
   ConfigurationFieldSchema get field => widget.field;
+  ConfigurationPresentation get presentation =>
+      ConfigurationPresentation(widget.namespace);
 
   @override
   void initState() {
@@ -64,12 +77,7 @@ class _ConfigurationStructurePageState
         _ => value,
       };
     }
-    raw = !field.native;
-    text = TextEditingController(
-      text: raw
-          ? (exists ? const JsonEncoder.withIndent('  ').convert(value) : '')
-          : (exists && value != null ? '$value' : ''),
-    );
+    text = TextEditingController(text: exists && value != null ? '$value' : '');
     widget.editingState?.addListener(ownerChanged);
   }
 
@@ -84,7 +92,8 @@ class _ConfigurationStructurePageState
     super.dispose();
   }
 
-  String label(String key) => widget.labels[key] ?? key;
+  String label(String key, ConfigurationFieldSchema schema) =>
+      widget.labels[key] ?? presentation.title([...widget.path, key], schema);
   void changed(dynamic next) => setState(() {
     value = next;
     dirty = true;
@@ -96,6 +105,9 @@ class _ConfigurationStructurePageState
     String title,
     dynamic initial, {
     bool adding = false,
+    bool allowReset = false,
+    String resetLabel = '使用默认值',
+    List<String>? path,
   }) async {
     if (!enabled) return null;
     return Navigator.of(context).push<ConfigurationFieldResult>(
@@ -105,7 +117,11 @@ class _ConfigurationStructurePageState
           title: title,
           value: initial,
           labels: widget.labels,
+          namespace: widget.namespace,
+          path: path ?? widget.path,
           adding: adding,
+          allowReset: allowReset,
+          resetLabel: resetLabel,
           editingState: widget.editingState,
           canEdit: widget.canEdit,
         ),
@@ -116,14 +132,64 @@ class _ConfigurationStructurePageState
   Future<void> editMap(String key, ConfigurationFieldSchema schema) async {
     final result = await child(
       schema,
-      label(key),
+      label(key, schema),
       configurationValueAt(value, [key]),
+      allowReset: configurationHasValue(configurationValueAt(value, [key])),
+      resetLabel: field.type == 'dict' ? '移除此项' : '使用默认值',
+      path: [...widget.path, key],
     );
     if (!mounted || !enabled || result == null) return;
-    changed(<String, dynamic>{
+    final next = <String, dynamic>{
       if (value is Map) ...Map<String, dynamic>.from(value),
-      key: result.value,
-    });
+    };
+    if (result.remove) {
+      next.remove(key);
+    } else {
+      next[key] = result.value;
+    }
+    changed(next);
+  }
+
+  Future<void> chooseBranch(ConfigurationFieldSchema branch) async {
+    if (!enabled) return;
+    if (branch.type == 'const') {
+      changed(branch.node['value']);
+      return;
+    }
+    final result = await child(
+      branch,
+      widget.title,
+      branch.acceptsKind(value)
+          ? value
+          : configurationValueAt(const {}, ['new']),
+      adding: !branch.acceptsKind(value),
+    );
+    if (mounted && enabled && result != null) changed(result.value);
+  }
+
+  Future<void> advancedValue() async {
+    if (!enabled || field.secret) return;
+    final result = await Navigator.of(context).push<String>(
+      PocketRoute(
+        builder: (_) => TextDocumentPage(
+          title: '${widget.title} · 高级编辑',
+          text: exists ? const JsonEncoder.withIndent('  ').convert(value) : '',
+          readOnly: false,
+          monospace: true,
+          fieldKey: const Key('structure-json'),
+          editingState: widget.editingState,
+          canEdit: widget.canEdit,
+          validate: (input) {
+            try {
+              return field.validate(jsonDecode(input));
+            } on FormatException {
+              return 'JSON 无法解析，输入已保留。';
+            }
+          },
+        ),
+      ),
+    );
+    if (mounted && enabled && result != null) changed(jsonDecode(result));
   }
 
   Future<void> editItem(int index) async {
@@ -173,15 +239,7 @@ class _ConfigurationStructurePageState
       Navigator.of(context).pop();
       return;
     }
-    dynamic next = value;
-    if (raw) {
-      try {
-        next = jsonDecode(text.text);
-      } catch (_) {
-        setState(() => error = 'JSON 无法解析，输入已保留。');
-        return;
-      }
-    }
+    final next = value;
     final failure = field.validate(next);
     if (failure != null || !configurationHasValue(next)) {
       setState(() => error = failure ?? '请填写此项。');
@@ -198,20 +256,27 @@ class _ConfigurationStructurePageState
 
   Widget row(String key, ConfigurationFieldSchema schema) {
     final current = configurationValueAt(value, [key]);
-    return PocketRow(
+    if (schema.type == 'boolean' && current is bool && !schema.secret) {
+      return PocketSwitchRow(
+        key: ValueKey('structure-entry:$key'),
+        title: Text(label(key, schema)),
+        value: current,
+        onChanged: enabled
+            ? (next) => changed(<String, dynamic>{
+                if (value is Map) ...Map<String, dynamic>.from(value),
+                key: next,
+              })
+            : null,
+      );
+    }
+    return ConfigurationValueRow(
       key: ValueKey('structure-entry:$key'),
-      icon: schema.structured ? Icons.folder_open_rounded : Icons.tune_rounded,
-      title: label(key),
-      subtitle: schema.secret
-          ? '包含凭据，请在凭据入口管理'
+      title: label(key, schema),
+      summary: schema.secret
+          ? '包含凭据 · 已保护'
           : configurationStructureSummary(current),
+      protected: schema.secret,
       onTap: enabled && !schema.secret ? () => editMap(key, schema) : null,
-      trailing: configurationHasValue(current) && !schema.secret
-          ? remove(label(key), () {
-              final next = Map<String, dynamic>.from(value as Map)..remove(key);
-              changed(next);
-            })
-          : null,
     );
   }
 
@@ -226,17 +291,20 @@ class _ConfigurationStructurePageState
         ],
       );
     }
-    if (raw) {
-      return TextDocumentField(
-        fieldKey: const Key('structure-json'),
-        controller: text,
-        readOnly: !enabled,
-        monospace: true,
-        errorText: error,
-        onChanged: (_) => setState(() {
-          dirty = true;
-          error = null;
-        }),
+    if (!field.native) {
+      return PocketSection(
+        children: [
+          PocketTile(
+            title: const Text('当前值已保留'),
+            subtitle: Text(configurationStructureSummary(value)),
+          ),
+          PocketRow(
+            icon: Icons.tune_rounded,
+            title: '高级工具',
+            subtitle: '此插件的特殊类型由原始校验器处理。',
+            onTap: enabled ? advancedValue : null,
+          ),
+        ],
       );
     }
     if (field.structured) {
@@ -252,15 +320,7 @@ class _ConfigurationStructurePageState
             PocketRow(
               icon: Icons.code_rounded,
               title: '高级编辑此项',
-              onTap: enabled
-                  ? () {
-                      setState(() {
-                        raw = true;
-                        text.text = const JsonEncoder.withIndent('  ')
-                            .convert(value);
-                      });
-                    }
-                  : null,
+              onTap: enabled ? advancedValue : null,
             ),
           ],
         );
@@ -324,13 +384,42 @@ class _ConfigurationStructurePageState
         divided: true,
         children: [
           for (final option in field.options)
+            if (presentation.offerOption(widget.path, option))
+              PocketTile(
+                title: Text(presentation.option(widget.path, option)),
+                selected: exists && configurationEqual(value, option),
+                trailing: exists && configurationEqual(value, option)
+                    ? const Icon(Icons.check_rounded)
+                    : null,
+                onTap: enabled ? () => changed(option) : null,
+              ),
+        ],
+      );
+    }
+    if (field.branchChoice) {
+      final matches = field.alternatives
+          .where((branch) => branch.acceptsKind(value))
+          .toList();
+      return PocketSection(
+        title: '值类型',
+        divided: true,
+        children: [
+          if (exists && matches.length != 1)
             PocketTile(
-              title: Text(configurationStructureSummary(option)),
-              selected: exists && configurationEqual(value, option),
-              trailing: exists && configurationEqual(value, option)
-                  ? const Icon(Icons.check_rounded)
-                  : null,
-              onTap: enabled ? () => changed(option) : null,
+              title: const Text('当前值已保留'),
+              subtitle: Text(configurationStructureSummary(value)),
+            ),
+          for (final branch in field.alternatives)
+            PocketTile(
+              title: Text(branch.kindLabel),
+              subtitle: branch.description == null
+                  ? null
+                  : Text(branch.description!),
+              selected:
+                  matches.length == 1 &&
+                  configurationEqual(matches.single.node, branch.node),
+              trailing: const Icon(Icons.chevron_right_rounded, size: 18),
+              onTap: enabled ? () => chooseBranch(branch) : null,
             ),
         ],
       );
@@ -338,67 +427,46 @@ class _ConfigurationStructurePageState
     if (field.type == 'boolean') {
       return PocketSection(
         children: [
-          PocketSwitchRow(
-            title: Text(widget.title),
-            value: value == true,
-            onChanged: enabled ? changed : null,
-          ),
+          if (value is bool)
+            PocketSwitchRow(
+              title: Text(widget.title),
+              value: value == true,
+              onChanged: enabled ? changed : null,
+            ),
+          if (value is! bool)
+            for (final option in [true, false])
+              PocketTile(
+                title: Text(option ? '开启' : '关闭'),
+                onTap: enabled ? () => changed(option) : null,
+              ),
         ],
       );
     }
-    if (field.type == 'string') {
+    if (field.type == 'string' || field.type == 'number') {
       return TextDocumentField(
         fieldKey: const Key('structure-value'),
         controller: text,
         readOnly: !enabled,
         errorText: error,
+        keyboardType: field.type == 'number'
+            ? const TextInputType.numberWithOptions(signed: true, decimal: true)
+            : TextInputType.multiline,
         onChanged: (input) => setState(() {
           dirty = true;
-          value = input;
-          error = field.validate(input);
+          if (field.type == 'number') {
+            final parsed = num.tryParse(input);
+            value = parsed;
+            error = parsed == null || !parsed.isFinite
+                ? '请输入有效数字。'
+                : field.validate(parsed);
+          } else {
+            value = input;
+            error = field.validate(input);
+          }
         }),
       );
     }
-    return PocketSection(
-      children: [
-        Padding(
-          padding: const EdgeInsets.all(20),
-          child: TextField(
-            key: const Key('structure-value'),
-            controller: text,
-            enabled: enabled,
-            keyboardType: field.type == 'number'
-                ? const TextInputType.numberWithOptions(
-                    signed: true,
-                    decimal: true,
-                  )
-                : TextInputType.text,
-            minLines: 1,
-            maxLines: field.type == 'string' ? 6 : 1,
-            autocorrect: false,
-            enableSuggestions: false,
-            decoration: InputDecoration(
-              labelText: widget.title,
-              errorText: error,
-            ),
-            onChanged: (input) => setState(() {
-              dirty = true;
-              if (field.type == 'number') {
-                final parsed = num.tryParse(input);
-                error = parsed == null || !parsed.isFinite
-                    ? '请输入有效数字。'
-                    : field.validate(parsed);
-                // Keep the raw invalid buffer separate from the last valid value.
-                value = parsed;
-              } else {
-                value = input;
-                error = field.validate(input);
-              }
-            }),
-          ),
-        ),
-      ],
-    );
+    return const SizedBox.shrink();
   }
 
   @override
@@ -406,36 +474,61 @@ class _ConfigurationStructurePageState
     hasEdits: () => dirty,
     child: PocketScaffold(
       title: Text(widget.title),
-      bottom: PocketButton(
+      trailing: GlassButton(
+        icon: Icons.check_rounded,
+        label: widget.adding ? '添加到草稿' : '完成编辑',
+        solid: true,
         onPressed: enabled && !field.secret && error == null ? finish : null,
-        child: Text(widget.adding ? '添加到草稿' : '完成编辑'),
       ),
-      body: PocketList(
-        children: [
-          if (field.description != null)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 0, 20, 18),
-              child: Text(field.description!),
-            ),
-          if (!enabled)
-            const Padding(
-              padding: EdgeInsets.all(20),
-              child: Text('当前配置暂不可编辑；输入已保留。'),
-            ),
-          if (error != null && !raw && (field.structured || field.enumType))
-            Padding(
-              padding: const EdgeInsets.all(20),
-              child: Text(
-                error!,
-                style: TextStyle(color: Theme.of(context).colorScheme.error),
+      body: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onTap: () => FocusScope.of(context).unfocus(),
+        child: PocketList(
+          children: [
+            if (!enabled)
+              const Padding(
+                padding: EdgeInsets.all(20),
+                child: Text('当前配置暂不可编辑；输入已保留。'),
               ),
-            ),
-          form(),
-          const Padding(
-            padding: EdgeInsets.fromLTRB(20, 12, 20, 12),
-            child: Text('完成后返回配置草稿，保存并应用后生效。'),
-          ),
-        ],
+            if (error != null &&
+                (field.structured ||
+                    field.enumType ||
+                    field.branchChoice ||
+                    !field.native))
+              Padding(
+                padding: const EdgeInsets.all(20),
+                child: Text(
+                  error!,
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+              ),
+            form(),
+            if (presentation.description(widget.path, field) != null)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(18, 12, 18, 0),
+                child: Text(
+                  presentation.description(widget.path, field)!,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ),
+            if (widget.allowReset && !field.secret)
+              Padding(
+                padding: const EdgeInsets.only(top: 24),
+                child: PocketSection(
+                  children: [
+                    PocketRow(
+                      icon: Icons.restore_rounded,
+                      title: widget.resetLabel,
+                      onTap: enabled
+                          ? () => Navigator.of(context)
+                                .pop(const ConfigurationFieldResult.remove())
+                          : null,
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
       ),
     ),
   );
@@ -517,20 +610,13 @@ class _ConfigurationKeyPageState extends State<_ConfigurationKeyPage> {
                         : null,
                   )
               else
-                Padding(
-                  padding: const EdgeInsets.all(20),
-                  child: TextField(
-                    key: const Key('structure-key'),
-                    controller: controller,
-                    enabled: enabled,
-                    autocorrect: false,
-                    enableSuggestions: false,
-                    decoration: InputDecoration(
-                      labelText: '名称',
-                      errorText: error,
-                    ),
-                    onChanged: (_) => setState(() => error = null),
-                  ),
+                TextDocumentField(
+                  fieldKey: const Key('structure-key'),
+                  controller: controller,
+                  readOnly: !enabled,
+                  hintText: '名称',
+                  errorText: error,
+                  onChanged: (_) => setState(() => error = null),
                 ),
               if (widget.field.enumType && error != null)
                 Padding(padding: const EdgeInsets.all(20), child: Text(error!)),

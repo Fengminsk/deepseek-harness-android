@@ -431,29 +431,47 @@ class _DefaultModelPageState extends ModelDraftState<DefaultModelPage> {
     busy: busy,
     child: PocketScaffold(
       title: const Text('默认模型'),
-      bottom: PocketButton(
+      trailing: GlassButton(
+        icon: Icons.check_rounded,
+        label: busy ? '正在保存' : '保存默认模型',
+        solid: true,
         onPressed: busy || latest != null || !dirty ? null : save,
-        child: Text(busy ? '正在保存' : '保存默认模型'),
       ),
       body: PocketList(
         padding: const EdgeInsets.all(20),
         children: [
           ...review(),
-          const ModelNotice('默认模型用于新建会话。已有会话继续使用自己的模型，可在会话内切换。'),
-          ModelNotice(
-            '当前选择：${draft['provider']} / ${draft['model']}'
-            '${draft['reasoningEffort'] == null ? '' : ' · ${draft['reasoningEffort']}'}',
-          ),
+          const ModelNotice('用于新建会话；已有会话可在聊天中切换模型。'),
+          if (!(widget.snapshot.catalog['groups'] as List? ?? []).any(
+            (group) =>
+                group['id'] == draft['provider'] &&
+                (group['models'] as List).any(
+                  (model) => model['id'] == draft['model'],
+                ),
+          ))
+            ModelNotice(
+              '当前保存的模型暂未出现在目录中：${draft['provider']} / ${draft['model']}。',
+            ),
           for (final group in widget.snapshot.catalog['groups'] as List? ?? [])
             PocketSection(
               title: '${group['name']}',
               children: [
                 for (final model in group['models'] as List)
                   PocketTile(
-                    title: Text('${model['name']}'),
-                    subtitle: Text(
-                      '${model['id']}${model['description'] == null ? '' : '\n${model['description']}'}',
-                    ),
+                    title: Text('${model['name'] ?? model['id']}'),
+                    subtitle: model['description'] != null
+                        ? Text('${model['description']}')
+                        : model['name'] != model['id']
+                        ? Text('${model['id']}')
+                        : null,
+                    trailing:
+                        draft['provider'] == group['id'] &&
+                            draft['model'] == model['id']
+                        ? Icon(
+                            Icons.check_rounded,
+                            color: Theme.of(context).colorScheme.primary,
+                          )
+                        : null,
                     selected:
                         draft['provider'] == group['id'] &&
                         draft['model'] == model['id'],

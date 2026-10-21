@@ -1,3 +1,7 @@
+import 'dart:io';
+import 'dart:ui' as ui;
+
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
@@ -7,6 +11,7 @@ import 'package:dsh_android/models_data.dart';
 import 'package:dsh_android/models_editor.dart';
 import 'package:dsh_android/models_provider.dart';
 import 'package:dsh_android/runtime.dart';
+import 'package:dsh_android/text_document_page.dart';
 import 'package:dsh_android/ui.dart';
 
 Json section(String ns, Json value, {int revision = 4, Json? schema}) => {
@@ -168,31 +173,198 @@ class ModelsRuntime extends RuntimeController {
   }
 }
 
-Future<void> mount(WidgetTester tester, Widget page) async {
-  tester.view.physicalSize = const Size(800, 1500);
+final captureKey = GlobalKey();
+
+Future<void> mount(
+  WidgetTester tester,
+  Widget page, {
+  Brightness brightness = Brightness.light,
+  double width = 800,
+  double scale = 1,
+}) async {
+  tester.view.physicalSize = Size(width, width < 500 ? 900 : 1500);
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
   await tester.pumpWidget(
-    MaterialApp(theme: pocketTheme(Brightness.light), home: page),
+    MaterialApp(
+      theme: pocketTheme(brightness),
+      builder: (context, child) => MediaQuery(
+        data: MediaQuery.of(context)
+            .copyWith(textScaler: TextScaler.linear(scale)),
+        child: RepaintBoundary(key: captureKey, child: child!),
+      ),
+      home: page,
+    ),
   );
   await tester.pumpAndSettle();
 }
 
+Future<void> capture(WidgetTester tester, String name) async {
+  final directory = Platform.environment['POCKET_CAPTURE_DIR'];
+  if (directory == null) return;
+  await tester.runAsync(() async {
+    final image =
+        await (captureKey.currentContext!.findRenderObject()
+                as RenderRepaintBoundary)
+            .toImage(pixelRatio: 1);
+    final png = await image.toByteData(format: ui.ImageByteFormat.png);
+    await Directory(directory).create(recursive: true);
+    await File('$directory/$name.png').writeAsBytes(png!.buffer.asUint8List());
+    image.dispose();
+  });
+}
+
 Future<void> tap(WidgetTester tester, String text) async {
-  await tester.ensureVisible(find.text(text));
+  final target = find.text(text).evaluate().isEmpty
+      ? find.byTooltip(text)
+      : find.text(text);
+  await tester.ensureVisible(target);
   await tester.pumpAndSettle();
-  await tester.tap(find.text(text));
+  await tester.tap(target);
   await tester.pumpAndSettle();
 }
 
-Finder field(String label) => find.byWidgetPredicate(
-  (widget) => widget is TextField && widget.decoration?.labelText == label,
-);
+Future<void> editValue(WidgetTester tester, String label, String value) async {
+  await tap(tester, label);
+  expect(find.byType(TextDocumentPage), findsOneWidget);
+  await tester.enterText(find.byType(TextField), value);
+  await tap(tester, '完成编辑');
+}
+
+Future<void> editSecret(WidgetTester tester, String label, String value) async {
+  await tap(tester, label);
+  final input = tester.widget<TextField>(find.byType(TextField));
+  expect(input.obscureText, isTrue);
+  expect(input.enableIMEPersonalizedLearning, isFalse);
+  expect(
+    input.enableInteractiveSelection,
+    isTrue,
+  ); // Keep credential paste available.
+  await tester.enterText(find.byType(TextField), value);
+  await tap(tester, '完成编辑');
+  expect(find.byType(TextField), findsNothing);
+  expect(find.text(value), findsNothing);
+}
+
+Future<void> expectSecretDraft(
+  WidgetTester tester,
+  String label,
+  String expected,
+) async {
+  await tap(tester, label);
+  final input = tester.widget<TextField>(find.byType(TextField));
+  expect(input.obscureText, isTrue);
+  expect(input.controller!.text, expected);
+  await tap(tester, '完成编辑');
+}
+
 List<Json> mutations(ModelsRuntime runtime) =>
     runtime.calls.where((row) => row['method'] == 'settings.mutate').toList();
 
 void main() {
+  setUpAll(() async {
+    final path = Platform.environment['POCKET_CAPTURE_FONT'];
+    if (path != null) {
+      await (FontLoader('Roboto')..addFont(
+            Future.value(ByteData.sublistView(await File(path).readAsBytes())),
+          ))
+          .load();
+      await (FontLoader(
+        'MaterialIcons',
+      )..addFont(rootBundle.load('fonts/MaterialIcons-Regular.otf'))).load();
+    }
+  });
+
+  for (final brightness in Brightness.values) {
+    for (final scale in [1.0, 1.8]) {
+      testWidgets(
+        'compact model settings ${brightness.name} $scale use summary rows',
+        (tester) async {
+          final descriptor = section('llm-pi-ai', {
+            'providers': {
+              'acme': {
+                'displayName': '示例服务商',
+                'baseURL': 'https://models.example.test/v1',
+                'api': 'openai-completions',
+                'models': [],
+              },
+            },
+          }, schema: profileSchema());
+          final runtime = ModelsRuntime([descriptor]);
+          addTearDown(runtime.dispose);
+          await mount(
+            tester,
+            ProviderSettingsPage(
+              runtime: runtime,
+              provider: ModelProvider(providerEntry(), descriptor),
+            ),
+            brightness: brightness,
+            width: 420,
+            scale: scale,
+          );
+          expect(find.byType(TextField), findsNothing);
+          expect(tester.takeException(), isNull);
+          await capture(tester, 'models-provider-${brightness.name}-$scale');
+          await mount(
+            tester,
+            DefaultModelPage(
+              runtime: runtime,
+              snapshot: ModelsSnapshot([], [
+                section('agent-default-model', {
+                  'provider': 'acme',
+                  'model': 'one',
+                }),
+              ], catalog()),
+            ),
+            brightness: brightness,
+            width: 420,
+            scale: scale,
+          );
+          expect(find.byTooltip('保存默认模型'), findsOneWidget);
+          expect(find.byType(TextField), findsNothing);
+          final selected = find.ancestor(
+            of: find.text('Model One'),
+            matching: find.byType(PocketTile),
+          );
+          expect(
+            find.descendant(
+              of: selected,
+              matching: find.byIcon(Icons.check_rounded),
+            ),
+            findsOneWidget,
+          );
+          expect(tester.takeException(), isNull);
+          await capture(tester, 'models-default-${brightness.name}-$scale');
+          await mount(
+            tester,
+            const ModelEntryPage(
+              initial: {
+                'id': 'sample-model',
+                'name': '示例模型',
+                'contextWindow': 256000,
+                'maxTokens': 8192,
+                'input': ['text', 'image'],
+              },
+              reasoningLevels: ['high'],
+              supportsInput: true,
+            ),
+            brightness: brightness,
+            width: 420,
+            scale: scale,
+          );
+          expect(find.byType(TextField), findsNothing);
+          expect(tester.takeException(), isNull);
+          await capture(tester, 'models-entry-${brightness.name}-$scale');
+          await tap(tester, '模型 ID');
+          expect(find.byType(TextField), findsOneWidget);
+          expect(tester.takeException(), isNull);
+          await capture(tester, 'models-value-${brightness.name}-$scale');
+        },
+      );
+    }
+  }
+
   test('managed reference follows Web convention and capacities preserve exact integral intent', () {
     expect(modelCredentialReference('minimax-cn'), 'MINIMAX_CN_API_KEY');
     expect(modelCapacity('2.3M'), 2300000);
@@ -390,13 +562,14 @@ void main() {
           provider: ModelProvider(providerEntry(), descriptor),
         ),
       );
-      await tester.enterText(field('新的 API Key'), 'test-key-value');
+      await editSecret(tester, '新的 API Key', 'test-key-value');
+      expect(
+        runtime.calls.where((c) => c['method'] == 'credentials.set'),
+        isEmpty,
+      );
       await tap(tester, '保存 API Key');
       expect(find.textContaining('凭据引用已绑定'), findsOneWidget);
-      expect(
-        tester.widget<TextField>(field('新的 API Key')).controller!.text,
-        'test-key-value',
-      );
+      await expectSecretDraft(tester, '新的 API Key', 'test-key-value');
       expect(mutations(runtime), hasLength(1));
       expect(mutations(runtime).single['params']['ops'], [
         {
@@ -408,10 +581,7 @@ void main() {
       runtime.failCredential = false;
       await tap(tester, '保存 API Key');
       expect(mutations(runtime), hasLength(1));
-      expect(
-        tester.widget<TextField>(field('新的 API Key')).controller!.text,
-        '',
-      );
+      await expectSecretDraft(tester, '新的 API Key', '');
       expect(
         runtime.calls.where((c) => c['method'] == 'credentials.set'),
         hasLength(2),
@@ -478,17 +648,14 @@ void main() {
           provider: ModelProvider(providerEntry(), descriptor),
         ),
       );
-      await tester.enterText(field('新的 API Key'), 'retained-key');
+      await editSecret(tester, '新的 API Key', 'retained-key');
       await tap(tester, '保存 API Key');
       expect(
         runtime.calls.where((c) => c['method'] == 'credentials.set'),
         isEmpty,
       );
       expect(find.textContaining('最新配置：REMOTE_KEY'), findsOneWidget);
-      expect(
-        tester.widget<TextField>(field('新的 API Key')).controller!.text,
-        'retained-key',
-      );
+      await expectSecretDraft(tester, '新的 API Key', 'retained-key');
       await tap(tester, '采用最新引用，保留密钥输入');
       runtime.conflict = false;
       await tap(tester, '保存 API Key');
@@ -524,7 +691,11 @@ void main() {
           provider: ModelProvider(providerEntry(), descriptor),
         ),
       );
-      await tester.enterText(field('接口地址'), 'https://new.test/v1');
+      expect(find.byType(TextField), findsNothing);
+      await editValue(tester, '接口地址', 'https://new.test/v1');
+      expect(mutations(runtime), isEmpty);
+      expect(find.text('https://new.test/v1'), findsOneWidget);
+      expect(find.byType(TextField), findsNothing);
       await tap(tester, '保存配置');
       expect(mutations(runtime).single['params']['ops'], [
         {
@@ -550,12 +721,12 @@ void main() {
       addTearDown(runtime.dispose);
       await mount(tester, ModelsPage(runtime: runtime));
       await tap(tester, '添加自定义服务商');
-      await tester.enterText(field('服务商 ID'), 'new-route');
-      await tester.enterText(field('接口地址'), 'https://gateway.test/v1');
+      await editValue(tester, '服务商 ID', 'new-route');
+      await editValue(tester, '接口地址', 'https://gateway.test/v1');
       await tap(tester, 'openai-completions');
       await tap(tester, '模型列表');
       await tap(tester, '手动添加模型');
-      await tester.enterText(field('模型 ID'), 'new-model');
+      await editValue(tester, '模型 ID', 'new-model');
       await tap(tester, '应用模型');
       await tap(tester, '应用到当前草稿');
       await tap(tester, '创建服务商');
@@ -600,7 +771,8 @@ void main() {
           supportsInput: true,
         ),
       );
-      await tester.enterText(field('仅本次发现使用的 API Key'), 'probe-key');
+      await editSecret(tester, '仅本次发现使用的 API Key', 'probe-key');
+      expect(runtime.calls, isEmpty);
       await tap(tester, '发现模型');
       expect(find.text('尚未添加模型。'), findsOneWidget);
       expect(runtime.calls.single['params'], {
@@ -653,7 +825,19 @@ void main() {
         ),
       );
       await tap(tester, 'Open');
-      await tester.enterText(field('上下文容量'), '2.3M');
+      expect(find.byType(TextField), findsNothing);
+      await tap(tester, '模型 ID');
+      await tester.enterText(find.byType(TextField), 'unaccepted-id');
+      await tap(tester, '返回');
+      await tap(tester, '继续编辑');
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller!.text,
+        'unaccepted-id',
+      );
+      await tap(tester, '返回');
+      await tap(tester, '放弃编辑并返回');
+      expect(find.text('original'), findsOneWidget);
+      await editValue(tester, '上下文容量', '2.3M');
       await tap(tester, '应用模型');
       expect(result, {
         'id': 'original',
@@ -695,16 +879,13 @@ void main() {
         ),
       );
       await tap(tester, 'Open');
-      await tester.enterText(field('新的 API Key'), 'do-not-drop-me');
+      await editSecret(tester, '新的 API Key', 'do-not-drop-me');
       await tap(tester, '保存 API Key');
       await tester.tap(find.byTooltip('返回'));
       await tester.pumpAndSettle();
       expect(find.text('保留当前编辑？'), findsOneWidget);
       await tap(tester, '继续编辑');
-      expect(
-        tester.widget<TextField>(field('新的 API Key')).controller!.text,
-        'do-not-drop-me',
-      );
+      await expectSecretDraft(tester, '新的 API Key', 'do-not-drop-me');
       await tester.tap(find.byTooltip('返回'));
       await tester.pumpAndSettle();
       await tap(tester, '放弃编辑并返回');

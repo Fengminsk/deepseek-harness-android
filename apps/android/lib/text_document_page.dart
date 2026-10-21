@@ -18,6 +18,8 @@ class TextDocumentPage extends StatefulWidget {
     this.editingState,
     this.canEdit,
     this.validate,
+    this.selectable = false,
+    this.obscureText = false,
   });
   final String title, text;
   final bool readOnly, monospace;
@@ -27,6 +29,11 @@ class TextDocumentPage extends StatefulWidget {
   final bool Function()? canEdit;
   final String? Function(String)? validate;
 
+  /// Read-only explanations are plain text. Data/log viewers can explicitly
+  /// enable selection and the copy action.
+  final bool selectable;
+  final bool obscureText;
+
   @override
   State<TextDocumentPage> createState() => _TextDocumentPageState();
 }
@@ -35,6 +42,7 @@ class _TextDocumentPageState extends State<TextDocumentPage> {
   late final input = TextEditingController(text: widget.text);
   String? error;
   bool copied = false;
+  bool revealSecret = false;
   bool get editable => !widget.readOnly && (widget.canEdit?.call() ?? true);
 
   @override
@@ -70,17 +78,20 @@ class _TextDocumentPageState extends State<TextDocumentPage> {
     child: PocketScaffold(
       title: Text(widget.title),
       trailing: widget.readOnly
-          ? GlassButton(
-              icon: copied ? Icons.check_rounded : Icons.copy_rounded,
-              label: copied ? '已复制' : '复制全文',
-              onPressed: () async {
-                await Clipboard.setData(ClipboardData(text: input.text));
-                if (mounted) setState(() => copied = true);
-              },
-            )
+          ? widget.selectable && !widget.obscureText
+                ? GlassButton(
+                    icon: copied ? Icons.check_rounded : Icons.copy_rounded,
+                    label: copied ? '已复制' : '复制全文',
+                    onPressed: () async {
+                      await Clipboard.setData(ClipboardData(text: input.text));
+                      if (mounted) setState(() => copied = true);
+                    },
+                  )
+                : null
           : GlassButton(
               icon: Icons.check_rounded,
               label: '完成编辑',
+              solid: true,
               onPressed: editable ? finish : null,
             ),
       // The body fills the viewport even when a short document leaves a large
@@ -90,14 +101,37 @@ class _TextDocumentPageState extends State<TextDocumentPage> {
         onTap: () => FocusScope.of(context).unfocus(),
         child: PocketList(
           children: [
-            TextDocumentField(
-              fieldKey: widget.fieldKey,
-              controller: input,
-              readOnly: !editable,
-              monospace: widget.monospace,
-              errorText: error,
-              onChanged: (_) => setState(() => error = null),
-            ),
+            if (widget.readOnly && !widget.selectable)
+              Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 8,
+                ),
+                child: Text(
+                  widget.obscureText ? '凭据内容已隐藏' : widget.text,
+                  style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                    fontFamily: widget.monospace ? 'monospace' : null,
+                    height: 1.6,
+                  ),
+                ),
+              )
+            else
+              TextDocumentField(
+                fieldKey: widget.fieldKey,
+                controller: input,
+                readOnly: !editable,
+                monospace: widget.monospace,
+                sensitive: widget.obscureText,
+                obscureText: widget.obscureText && !revealSecret,
+                errorText: error,
+                onChanged: (_) => setState(() => error = null),
+              ),
+            if (widget.obscureText && !widget.readOnly)
+              PocketSwitchRow(
+                title: const Text('显示凭据'),
+                value: revealSecret,
+                onChanged: (value) => setState(() => revealSecret = value),
+              ),
             if (widget.helperText != null || !widget.readOnly && !editable)
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
@@ -127,12 +161,17 @@ class TextDocumentField extends StatelessWidget {
     this.errorText,
     this.onChanged,
     this.hintText,
+    this.keyboardType = TextInputType.multiline,
+    this.sensitive = false,
+    this.obscureText = false,
   });
   final TextEditingController controller;
   final Key? fieldKey;
   final bool readOnly, monospace;
   final String? errorText, hintText;
   final ValueChanged<String>? onChanged;
+  final TextInputType keyboardType;
+  final bool sensitive, obscureText;
 
   @override
   Widget build(BuildContext context) => TextField(
@@ -140,11 +179,15 @@ class TextDocumentField extends StatelessWidget {
     controller: controller,
     readOnly: readOnly,
     minLines: 1,
-    maxLines: null,
-    keyboardType: TextInputType.multiline,
+    maxLines: sensitive ? 1 : null,
+    keyboardType: sensitive ? TextInputType.visiblePassword : keyboardType,
+    obscureText: obscureText,
+    enableIMEPersonalizedLearning: !sensitive,
     textCapitalization: TextCapitalization.none,
     autocorrect: false,
     enableSuggestions: false,
+    // Obscured fields already suppress copy/cut. Keep selection enabled so
+    // credentials can be pasted and their insertion point can be adjusted.
     enableInteractiveSelection: true,
     // Flutter's default outside action deliberately keeps focus for touch.
     // Document editors use the same dismissal rule for touch and mouse.
@@ -165,11 +208,13 @@ class TextDocumentRow extends StatelessWidget {
     this.icon = Icons.description_outlined,
     this.monospace = false,
     this.helperText,
+    this.selectable = false,
   });
   final String title, text;
   final String? subtitle, helperText;
   final IconData icon;
   final bool monospace;
+  final bool selectable;
   @override
   Widget build(BuildContext context) => PocketRow(
     icon: icon,
@@ -182,6 +227,7 @@ class TextDocumentRow extends StatelessWidget {
           text: text,
           monospace: monospace,
           helperText: helperText,
+          selectable: selectable,
         ),
       ),
     ),

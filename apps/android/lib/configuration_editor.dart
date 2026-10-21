@@ -6,7 +6,9 @@ import 'package:material_ui/material_ui.dart';
 import 'configuration_edits.dart';
 import 'configuration_fields.dart';
 import 'configuration_fields_schema.dart';
+import 'configuration_presentation.dart';
 import 'configuration_state.dart';
+import 'configuration_value_row.dart';
 import 'models.dart' show ModelDraftGuard;
 import 'runtime.dart';
 import 'text_document_page.dart';
@@ -45,10 +47,7 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
   Json? observedAccepted;
   ConfigurationReset? resetReview;
   final choices = <String, bool>{};
-  final invalidFields = <String, String>{};
-  final fieldVersions = <String, int>{};
   bool structureOpen = false;
-  int generation = 0;
 
   @override
   void initState() {
@@ -64,9 +63,6 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
     setState(() {
       if (!identical(observedAccepted, accepted)) {
         observedAccepted = accepted;
-        invalidFields.clear();
-        fieldVersions.clear();
-        generation++;
         choices.clear();
         resetReview = null;
       }
@@ -82,9 +78,6 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
 
   void replaceDraft(Json value) {
     state.replaceDraft(value, holdExternalDraft: false);
-    invalidFields.clear();
-    fieldVersions.clear();
-    generation++;
   }
 
   void edit(List<String> path, dynamic value, {bool remove = false}) {
@@ -111,24 +104,30 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
             ),
             title: title,
             value: configurationValueAt(draft, path),
-            labels: _fieldLabels,
+            allowReset: configurationHasValue(
+              configurationValueAt(draft, path),
+            ),
+            namespace: accepted['ns'] as String,
+            path: path,
             editingState: state,
             canEdit: () => state.canEdit,
           ),
         ),
       );
       if (!mounted) return;
-      if (result != null && state.canEdit) edit(path, result.value);
+      if (result != null && state.canEdit) {
+        edit(path, result.value, remove: result.remove);
+      }
     } finally {
       structureOpen = false;
       if (mounted) {
-        state.holdDraft(structureOpen || invalidFields.isNotEmpty);
+        state.holdDraft(structureOpen);
       }
     }
   }
 
   Future<void> toggleEditor() async {
-    if (!state.canEdit || invalidFields.isNotEmpty) return;
+    if (!state.canEdit) return;
     structureOpen = true;
     state.holdDraft(true);
     try {
@@ -164,33 +163,7 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
       if (mounted) setState(() => localMessage = '未能更新草稿：$error');
     } finally {
       structureOpen = false;
-      if (mounted) state.holdDraft(invalidFields.isNotEmpty);
-    }
-  }
-
-  Future<void> editText(List<String> path, String title, String value) async {
-    if (!state.canEdit ||
-        ConfigurationProtection(accepted).containsSecret(path)) {
-      return;
-    }
-    structureOpen = true;
-    state.holdDraft(true);
-    try {
-      final result = await Navigator.of(context).push<String>(
-        PocketRoute(
-          builder: (_) => TextDocumentPage(
-            title: title,
-            text: value,
-            readOnly: false,
-            editingState: state,
-            canEdit: () => state.canEdit,
-          ),
-        ),
-      );
-      if (mounted && result != null && state.canEdit) edit(path, result);
-    } finally {
-      structureOpen = false;
-      if (mounted) state.holdDraft(invalidFields.isNotEmpty);
+      if (mounted) state.holdDraft(false);
     }
   }
 
@@ -207,9 +180,6 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
       if (!mounted) return;
       if (saved || !state.uncertain && !state.hasDraft) {
         setState(() {
-          invalidFields.clear();
-          fieldVersions.clear();
-          generation++;
           resetReview = null;
         });
       }
@@ -219,10 +189,6 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
   }
 
   void mergeLatest() {
-    if (invalidFields.isNotEmpty) {
-      setState(() => localMessage = '请先修正表单中的无效输入；草稿尚未合并。');
-      return;
-    }
     try {
       replaceDraft(readDraft());
       state.rebase(useLocal: Map.of(choices));
@@ -297,14 +263,11 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
                 title: '查看最新配置（凭据已隐藏）',
                 text: _encoder.convert(latest!['value']),
                 monospace: true,
+                selectable: true,
               ),
               PocketButton.tonal(
                 onPressed:
-                    busy ||
-                        !state.fresh ||
-                        state.uncertain ||
-                        failure != null ||
-                        invalidFields.isNotEmpty
+                    busy || !state.fresh || state.uncertain || failure != null
                     ? null
                     : mergeLatest,
                 child: const Text('合并到草稿'),
@@ -316,6 +279,147 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
     );
   }
 
+  Future<void> openAdvanced() => Navigator.of(context).push<void>(
+    PocketRoute(
+      builder: (advancedContext) => StatefulBuilder(
+        builder: (context, update) => ListenableBuilder(
+          listenable: state,
+          builder: (context, _) => PocketScaffold(
+            title: const Text('高级设置'),
+            body: PocketList(children: advancedItems(advancedContext, update)),
+          ),
+        ),
+      ),
+    ),
+  );
+
+  List<Widget> advancedItems(
+    BuildContext advancedContext,
+    StateSetter update,
+  ) => [
+    if (booleanFields.isNotEmpty)
+      PocketSection(
+        title: '开关说明与默认值',
+        divided: true,
+        children: [
+          for (final field in booleanFields)
+            PocketRow(
+              icon: Icons.toggle_on_outlined,
+              title: fieldTitle(field),
+              onTap: state.canEdit
+                  ? () =>
+                        editStructure(field.path, field.node, fieldTitle(field))
+                  : null,
+            ),
+        ],
+      ),
+    PocketSection(
+      title: '版本与默认值',
+      children: [
+        PocketRow(
+          icon: Icons.code_rounded,
+          title: '高级 JSON 编辑',
+          onTap: state.canEdit
+              ? () async {
+                  await toggleEditor();
+                  if (advancedContext.mounted) {
+                    Navigator.of(advancedContext).pop();
+                  }
+                }
+              : null,
+        ),
+        TextDocumentRow(
+          title: '配置说明',
+          text:
+              '只保存修改的字段。已有凭据及包含凭据的内容会保留，请在凭据入口单独管理。\n\n${accepted['ns']} · 版本 ${accepted['revision']}',
+        ),
+        PocketRow(
+          icon: Icons.sync_rounded,
+          title: '读取最新版本并比较',
+          subtitle: '保留正在编辑的草稿',
+          onTap: busy ? null : readLatest,
+        ),
+        PocketRow(
+          icon: Icons.restore_rounded,
+          title: '恢复普通参数默认值',
+          subtitle: '先查看将恢复的参数；保留凭据和含凭据数组',
+          onTap:
+              !state.canEdit ||
+                  !state.fresh ||
+                  !state.writable ||
+                  state.conflict
+              ? null
+              : () => update(() => resetReview = configurationReset(accepted)),
+        ),
+      ],
+    ),
+    if (resetReview != null)
+      PocketSection(
+        title: '确认恢复范围',
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  resetReview!.operations.isEmpty
+                      ? '没有可恢复的普通参数覆盖。'
+                      : '以下参数将恢复为继承值或默认值：\n'
+                            '${resetReview!.operations.map((op) => configurationPathLabel((op['path'] as List).cast<String>())).join('\n')}',
+                ),
+                if (resetReview!.preserved.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  Text(
+                    '继续保留：\n'
+                    '${resetReview!.preserved.map(configurationPathLabel).join('\n')}',
+                  ),
+                ],
+                const SizedBox(height: 12),
+                const Text('恢复成功后，当前页面的未保存草稿将被默认值替换。'),
+                PocketButton(
+                  onPressed:
+                      busy ||
+                          !state.fresh ||
+                          !state.writable ||
+                          state.conflict ||
+                          state.uncertain ||
+                          resetReview!.operations.isEmpty
+                      ? null
+                      : () => save(operations: resetReview!.operations),
+                  child: const Text('确认恢复这些普通参数'),
+                ),
+                PocketButton.tonal(
+                  onPressed: busy
+                      ? null
+                      : () => update(() => resetReview = null),
+                  child: const Text('取消'),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+  ];
+
+  List<_Field> get booleanFields =>
+      _fields(ConfigurationSchema(accepted['schema']))
+          .where(
+            (field) =>
+                field.kind == 'boolean' &&
+                !ConfigurationProtection(accepted).containsSecret(field.path),
+          )
+          .toList();
+
+  String fieldTitle(_Field field) =>
+      ConfigurationPresentation(accepted['ns'] as String).title(
+        field.path,
+        ConfigurationFieldSchema(
+          ConfigurationSchema(accepted['schema']),
+          field.node,
+        ),
+      );
+
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
@@ -326,52 +430,34 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) => ModelDraftGuard(
-    hasEdits: () => state.hasDraft || invalidFields.isNotEmpty,
+    hasEdits: () => state.hasDraft,
     busy: busy,
     child: PocketScaffold(
-      title: Text(configurationNamespaceTitle('${accepted['ns']}')),
-      bottom: PocketButton(
-        onPressed:
-            busy ||
-                !state.fresh ||
-                !state.writable ||
-                state.conflict ||
-                state.uncertain ||
-                invalidFields.isNotEmpty
-            ? null
-            : save,
-        child: Text(
-          busy
-              ? '正在处理'
-              : state.uncertain
-              ? '请先核对保存结果'
-              : !state.fresh
-              ? '请先刷新配置'
-              : state.conflict
-              ? '请先比较并合并'
-              : !state.writable
-              ? '配置不可写'
-              : '保存并应用',
-        ),
+      title: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(configurationNamespaceTitle('${accepted['ns']}')),
+          const SizedBox(height: 2),
+          Text(
+            state.hasDraft ? '未保存' : '',
+            style: TextStyle(
+              fontSize: 11,
+              height: 1,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ],
+      ),
+      trailing: GlassButton(
+        key: const Key('configuration-save'),
+        icon: Icons.check_rounded,
+        label: '保存并应用',
+        solid: true,
+        onPressed: state.canSave ? save : null,
       ),
       body: PocketList(
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
         children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(0, 0, 0, 16),
-            child: Row(
-              children: [
-                const Expanded(child: Text('调整后保存生效')),
-                const SizedBox(width: 12),
-                PocketButton.tonal(
-                  onPressed: !state.canEdit || invalidFields.isNotEmpty
-                      ? null
-                      : toggleEditor,
-                  child: const Text('高级 JSON 编辑'),
-                ),
-              ],
-            ),
-          ),
           if (message != null)
             Padding(
               padding: const EdgeInsets.fromLTRB(8, 0, 8, 20),
@@ -395,6 +481,7 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
                         '版本 ${latest!['revision']}${state.fresh ? '' : ' · 等待重新核对'}',
                     text: _encoder.convert(latest!['value']),
                     monospace: true,
+                    selectable: true,
                   ),
                 PocketRow(
                   icon: Icons.sync_rounded,
@@ -416,116 +503,22 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
           else if (latest != null)
             comparison(),
           ConfigurationFields(
-            key: ValueKey(generation),
+            key: const ValueKey('configuration-fields'),
             descriptor: accepted,
             value: draft,
             enabled: state.canEdit,
-            fieldVersions: fieldVersions,
-            onEdit: (path, value) => edit(path, value),
-            onRemove: (path) {
-              edit(path, null, remove: true);
-              setState(() {
-                final id = jsonEncode(path);
-                fieldVersions[id] = (fieldVersions[id] ?? 0) + 1;
-                invalidFields.remove(id);
-                state.holdDraft(structureOpen || invalidFields.isNotEmpty);
-              });
-            },
-            onError: (path, error) {
-              setState(() {
-                final id = jsonEncode(path);
-                if (error == null) {
-                  invalidFields.remove(id);
-                } else {
-                  invalidFields[id] = error;
-                }
-                state.holdDraft(structureOpen || invalidFields.isNotEmpty);
-              });
-            },
-            onAdvanced: toggleEditor,
-            onStructure: editStructure,
-            onText: editText,
+            onOpen: editStructure,
+            onChanged: (path, value) => edit(path, value),
           ),
           PocketSection(
-            title: '版本与默认值',
             children: [
-              TextDocumentRow(
-                title: '配置说明',
-                text:
-                    '只保存修改的字段。已有凭据及包含凭据的内容会保留，请在凭据入口单独管理。\n\n${accepted['ns']} · 版本 ${accepted['revision']}',
-              ),
               PocketRow(
-                icon: Icons.sync_rounded,
-                title: '读取最新版本并比较',
-                subtitle: '保留正在编辑的草稿',
-                onTap: busy ? null : readLatest,
-              ),
-              PocketRow(
-                icon: Icons.restore_rounded,
-                title: '恢复普通参数默认值',
-                subtitle: '先查看将恢复的参数；保留凭据和含凭据数组',
-                onTap:
-                    !state.canEdit ||
-                        !state.fresh ||
-                        !state.writable ||
-                        state.conflict
-                    ? null
-                    : () => setState(
-                        () => resetReview = configurationReset(accepted),
-                      ),
+                icon: Icons.tune_rounded,
+                title: '高级设置',
+                onTap: openAdvanced,
               ),
             ],
           ),
-          if (resetReview != null)
-            PocketSection(
-              title: '确认恢复范围',
-              children: [
-                Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 22,
-                    vertical: 12,
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Text(
-                        resetReview!.operations.isEmpty
-                            ? '没有可恢复的普通参数覆盖。'
-                            : '以下参数将恢复为继承值或默认值：\n'
-                                  '${resetReview!.operations.map((op) => configurationPathLabel((op['path'] as List).cast<String>())).join('\n')}',
-                      ),
-                      if (resetReview!.preserved.isNotEmpty) ...[
-                        const SizedBox(height: 12),
-                        Text(
-                          '继续保留：\n'
-                          '${resetReview!.preserved.map(configurationPathLabel).join('\n')}',
-                        ),
-                      ],
-                      const SizedBox(height: 12),
-                      const Text('恢复成功后，当前页面的未保存草稿将被默认值替换。'),
-                      PocketButton(
-                        onPressed:
-                            busy ||
-                                !state.fresh ||
-                                !state.writable ||
-                                state.conflict ||
-                                state.uncertain ||
-                                resetReview!.operations.isEmpty
-                            ? null
-                            : () => save(operations: resetReview!.operations),
-                        child: const Text('确认恢复这些普通参数'),
-                      ),
-                      PocketButton.tonal(
-                        onPressed: busy
-                            ? null
-                            : () => setState(() => resetReview = null),
-                        child: const Text('取消'),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
         ],
       ),
     ),
@@ -536,7 +529,7 @@ String configurationNamespaceTitle(String namespace) {
   // Exact host entry IDs from the bundled profiles. In particular, ui-* forms
   // configure the original Web client, not Pocket Harness's native appearance.
   const names = {
-    'session-log-deepseek': 'DeepSeek 会话记录',
+    'session-log-deepseek': '会话日志上传',
     'agent-default-model': '默认会话模型',
     'llm-deepseek': 'DeepSeek API 密钥接入',
     'llm-deepseek-account': 'DeepSeek 账号模型接入',
@@ -549,7 +542,7 @@ String configurationNamespaceTitle(String namespace) {
     'web-search-exa': 'Exa 搜索',
     'web-fetch-http': '网页读取',
     'android-runtime': 'Android 工具',
-    'ui-settings-account': 'Web 账号界面',
+    'ui-settings-account': '原版桌面引导记录',
     'ui-theme': 'Web 主题与字体',
     'ui-settings': 'Web 开发者工具',
     'ui-conversation': 'Web 繁忙时发送行为',
@@ -560,52 +553,12 @@ String configurationNamespaceTitle(String namespace) {
   return names[namespace] ?? namespace;
 }
 
-const _fieldLabels = {
-  'id': '标识',
-  'name': '名称',
-  'displayName': '显示名称',
-  'providers': '模型提供方',
-  'indexes': '插件源',
-  'args': '启动参数',
-  'env': '环境变量',
-  'headers': '请求头',
-  'input': '输入类型',
-  'compat': '兼容选项',
-  'thinkingBudgets': '思考预算',
-  'baseURL': '服务地址',
-  'provider': '模型提供方',
-  'model': '模型 ID',
-  'models': '模型目录',
-  'thinking': '思考模式',
-  'reasoningEffort': '思考强度',
-  'maxTokens': '最大输出 Token',
-  'defaultContextWindow': '默认上下文容量',
-  'streamIdleTimeoutMs': '流式响应空闲超时（毫秒）',
-  'retryPolicy': '请求重试策略',
-  'selectedDefault': '默认 Agent 预设 ID',
-  'cwd': '工作目录',
-  'timeoutMs': '默认超时（毫秒）',
-  'maxTimeoutMs': '最大超时（毫秒）',
-  'maxOutputBytes': '输出保留上限（字节）',
-  'maxSpillBytes': '输出文件上限（字节）',
-  'graceMs': '进程退出宽限（毫秒）',
-  'searchProvider': '搜索提供方 ID',
-  'fetchProvider': '网页读取提供方 ID',
-  'apiKey': 'API Key',
-  'apiKeyEnv': '凭据引用名称',
-  'maxUses': '单次请求最大搜索次数',
-  'apiVersion': 'API 版本',
-  'enableRunInBackground': '允许后台执行',
-  'promoteOnTimeout': '超时后转为后台任务',
-};
-
 class _Field {
   const _Field(this.path, this.node, this.kind, [this.options = const []]);
   final List<String> path;
   final Json node;
   final String kind;
   final List<dynamic> options;
-  String get title => _fieldLabels[path.last] ?? path.last;
   String? get description {
     final description = (node['meta'] as Map?)?['description'];
     if (description is String) return description;
@@ -641,10 +594,13 @@ List<_Field> _fields(ConfigurationSchema schema) {
         ], depth + 1);
       }
     } else if (type == 'transform') {
-      visit(schema.resolve(node['inner']), path, depth + 1);
+      if (path.isNotEmpty) fields.add(_Field(path, node, 'complex'));
     } else if (type == 'intersect' && path.isEmpty) {
-      for (final child in node['list'] as List? ?? []) {
-        visit(schema.resolve(child), path, depth + 1);
+      final combined = ConfigurationFieldSchema(schema, node);
+      if (combined.objectIntersection) {
+        for (final entry in combined.fields.entries) {
+          visit(entry.value.node, [entry.key], depth + 1);
+        }
       }
     } else if (type == 'union' && path.isNotEmpty) {
       final alternatives = [
@@ -688,251 +644,87 @@ class ConfigurationFields extends StatelessWidget {
     required this.descriptor,
     required this.value,
     required this.enabled,
-    required this.fieldVersions,
-    required this.onEdit,
-    required this.onRemove,
-    required this.onError,
-    required this.onAdvanced,
-    required this.onStructure,
-    required this.onText,
+    required this.onOpen,
+    required this.onChanged,
   });
   final Json descriptor, value;
   final bool enabled;
-  final Map<String, int> fieldVersions;
-  final void Function(List<String>, dynamic) onEdit;
-  final void Function(List<String>) onRemove;
-  final void Function(List<String>, String?) onError;
-  final VoidCallback onAdvanced;
-  final void Function(List<String>, Json, String) onStructure;
-  final void Function(List<String>, String, String) onText;
+  final void Function(List<String>, Json, String) onOpen;
+  final void Function(List<String>, dynamic) onChanged;
 
   @override
   Widget build(BuildContext context) {
     final protection = ConfigurationProtection(descriptor);
     final fields = _fields(protection.schema);
+    final presentation = ConfigurationPresentation(descriptor['ns'] as String);
     if (fields.isEmpty) {
       return PocketSection(
         children: [
-          PocketRow(
-            icon: Icons.data_object_rounded,
-            title: '此配置需要使用高级编辑',
-            subtitle: '当前 schema 未提供可直接编辑的字段。',
-            onTap: enabled ? onAdvanced : null,
+          const PocketTile(
+            title: Text('当前配置由插件管理'),
+            subtitle: Text('此插件尚未提供普通设置；原有值保持不变。'),
           ),
         ],
       );
     }
-    return Column(
+    return PocketSection(
+      key: const Key('configuration-values'),
+      divided: true,
       children: [
-        for (final field in fields)
-          PocketSection(
-            title: field.title,
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(22, 0, 22, 12),
-                child: _ConfigurationField(
-                  key: ValueKey(
-                    '${jsonEncode(field.path)}:${fieldVersions[jsonEncode(field.path)] ?? 0}',
-                  ),
-                  field: field,
-                  value: configurationValueAt(value, field.path),
-                  configured: (descriptor['secrets'] as List? ?? []).any(
-                    (slot) =>
-                        configurationEqual(slot['path'], field.path) &&
-                        slot['set'] == true,
-                  ),
-                  protected: protection.containsSecret(field.path),
-                  enabled: enabled,
-                  onChanged: (next) => onEdit(field.path, next),
-                  onRemove: () => onRemove(field.path),
-                  onError: (error) => onError(field.path, error),
-                  onAdvanced: onAdvanced,
-                  onStructure: () =>
-                      onStructure(field.path, field.node, field.title),
-                  onText: () => onText(
-                    field.path,
-                    field.title,
-                    configurationHasValue(
-                          configurationValueAt(value, field.path),
-                        )
-                        ? '${configurationValueAt(value, field.path)}'
-                        : '',
-                  ),
-                ),
-              ),
-            ],
-          ),
+        for (final field in fields) _row(field, protection, presentation),
       ],
     );
   }
-}
 
-class _ConfigurationField extends StatefulWidget {
-  const _ConfigurationField({
-    super.key,
-    required this.field,
-    required this.value,
-    required this.configured,
-    required this.protected,
-    required this.enabled,
-    required this.onChanged,
-    required this.onRemove,
-    required this.onError,
-    required this.onAdvanced,
-    required this.onStructure,
-    required this.onText,
-  });
-  final _Field field;
-  final dynamic value;
-  final bool configured, protected, enabled;
-  final ValueChanged<dynamic> onChanged;
-  final VoidCallback onRemove, onAdvanced, onStructure, onText;
-  final ValueChanged<String?> onError;
-  @override
-  State<_ConfigurationField> createState() => _ConfigurationFieldState();
-}
-
-class _ConfigurationFieldState extends State<_ConfigurationField> {
-  late final longText =
-      widget.field.kind == 'string' &&
-      (widget.field.node['meta']?['role'] == 'textarea' ||
-          '${widget.value}'.contains('\n') ||
-          '${widget.value}'.length > 120);
-  late final controller = TextEditingController(
-    text: configurationHasValue(widget.value) ? '${widget.value}' : '',
-  );
-  String? error;
-
-  void changed(String value) {
-    dynamic parsed = value;
-    String? failure;
-    if (widget.field.kind == 'number') {
-      parsed = num.tryParse(value);
-      final meta = widget.field.node['meta'] as Map? ?? {};
-      if (parsed == null || !(parsed as num).isFinite) {
-        failure = '请输入有效数字。';
-      } else if (meta['min'] is num && parsed < meta['min']) {
-        failure = '不能小于 ${meta['min']}。';
-      } else if (meta['max'] is num && parsed > meta['max']) {
-        failure = '不能大于 ${meta['max']}。';
-      } else if (meta['step'] == 1 && parsed % 1 != 0) {
-        failure = '请输入整数。';
-      }
+  Widget _row(
+    _Field item,
+    ConfigurationProtection protection,
+    ConfigurationPresentation presentation,
+  ) {
+    final schema = ConfigurationFieldSchema(protection.schema, item.node);
+    final title = presentation.title(item.path, schema);
+    final current = configurationValueAt(value, item.path);
+    final isProtected = protection.containsSecret(item.path);
+    final key = ValueKey('configuration-field:${jsonEncode(item.path)}');
+    if (schema.type == 'boolean' && current is bool && !isProtected) {
+      final hint = presentation.description(item.path, schema);
+      return PocketSwitchRow(
+        key: key,
+        title: Text(title),
+        subtitle: hint == null ? null : Text(hint),
+        value: current,
+        onChanged: enabled ? (next) => onChanged(item.path, next) : null,
+      );
     }
-    setState(() => error = failure);
-    widget.onError(failure);
-    if (failure == null) widget.onChanged(parsed);
-  }
-
-  @override
-  void dispose() {
-    controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final field = widget.field;
-    final exists = configurationHasValue(widget.value);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        if (field.path.length > 1) ...[
-          Text(configurationPathLabel(field.path)),
-          const SizedBox(height: 8),
-        ],
-        if (field.description != null) ...[
-          Text(field.description!),
-          const SizedBox(height: 12),
-        ],
-        if (field.kind == 'secret' || widget.protected)
-          Text(
-            field.kind == 'secret'
-                ? (widget.configured ? '已配置；值已隐藏，请在凭据入口管理。' : '未配置；请在凭据入口管理。')
-                : '此结构包含凭据，保留现有值。通用编辑器不能替换或重排。',
-          )
-        else if (field.kind == 'structure')
-          PocketRow(
-            icon: field.node['type'] == 'array'
-                ? Icons.format_list_bulleted_rounded
-                : Icons.tune_rounded,
-            title: '编辑${field.title}',
-            subtitle: configurationStructureSummary(widget.value),
-            onTap: widget.enabled ? widget.onStructure : null,
-          )
-        else if (field.kind == 'boolean')
-          PocketSwitchRow(
-            contentPadding: EdgeInsets.zero,
-            title: Text(
-              exists ? (widget.value == true ? '已开启' : '已关闭') : '使用默认值',
-            ),
-            value: widget.value == true,
-            onChanged: widget.enabled ? widget.onChanged : null,
-          )
-        else if (field.kind == 'choice')
-          Wrap(
-            spacing: 8,
-            runSpacing: 4,
-            children: [
-              for (final option in field.options)
-                PocketChoice(
-                  label: Text('$option'),
-                  selected: exists && configurationEqual(widget.value, option),
-                  onSelected: widget.enabled
-                      ? (_) => widget.onChanged(option)
-                      : null,
-                ),
-            ],
-          )
-        else if (longText)
-          PocketRow(
-            icon: Icons.notes_rounded,
-            title: '编辑${field.title}',
-            subtitle: exists ? '${'${widget.value}'.length} 个字符' : '尚未设置',
-            onTap: widget.enabled ? widget.onText : null,
-          )
-        else if (field.kind == 'string' || field.kind == 'number')
-          TextField(
-            key: ValueKey('configuration-field:${jsonEncode(field.path)}'),
-            controller: controller,
-            enabled: widget.enabled,
-            autocorrect: false,
-            enableSuggestions: false,
-            keyboardType: field.kind == 'number'
-                ? const TextInputType.numberWithOptions(
-                    signed: true,
-                    decimal: true,
-                  )
-                : TextInputType.text,
-            minLines: 1,
-            maxLines: field.kind == 'string' ? 4 : 1,
-            decoration: InputDecoration(
-              labelText: field.title,
-              hintText: '未设置，使用默认值',
-              errorText: error,
-            ),
-            onChanged: changed,
-          )
-        else ...[
-          TextDocumentRow(
-            title: '查看${field.title}',
-            text: exists ? _encoder.convert(widget.value) : '尚未设置',
-            monospace: true,
-          ),
-          PocketButton.tonal(
-            onPressed: widget.enabled ? widget.onAdvanced : null,
-            child: const Text('在高级编辑中修改此结构'),
-          ),
-        ],
-        if (!widget.protected && field.kind != 'secret' && exists)
-          Align(
-            alignment: Alignment.centerLeft,
-            child: PocketButton.tonal(
-              onPressed: widget.enabled ? widget.onRemove : null,
-              child: const Text('使用默认值'),
-            ),
-          ),
-      ],
+    return ConfigurationValueRow(
+      key: key,
+      title: title,
+      summary: _summary(item, protection, presentation),
+      protected: isProtected,
+      onTap: enabled && !isProtected
+          ? () => onOpen(item.path, item.node, title)
+          : null,
     );
+  }
+
+  String _summary(
+    _Field field,
+    ConfigurationProtection protection,
+    ConfigurationPresentation presentation,
+  ) {
+    if (field.kind == 'secret') {
+      final configured = (descriptor['secrets'] as List? ?? []).any(
+        (slot) =>
+            configurationEqual(slot['path'], field.path) && slot['set'] == true,
+      );
+      return configured ? '已配置 · 凭据中管理' : '未配置 · 凭据中管理';
+    }
+    if (protection.containsSecret(field.path)) return '包含凭据 · 已保护';
+    final current = configurationValueAt(value, field.path);
+    if (!configurationHasValue(current)) return '使用默认值';
+    if (current is String && (current.contains('\n') || current.length > 80)) {
+      return '${current.length} 个字符';
+    }
+    return presentation.option(field.path, current);
   }
 }

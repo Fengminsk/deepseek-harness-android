@@ -4,10 +4,12 @@ import 'package:material_ui/material_ui.dart';
 
 import 'configuration_edits.dart';
 import 'configuration_editor.dart';
+import 'configuration_value_row.dart';
 import 'models.dart';
 import 'models_data.dart';
 import 'models_editor.dart';
 import 'runtime.dart';
+import 'text_document_page.dart';
 import 'ui.dart';
 
 class ProviderSettingsPage extends StatefulWidget {
@@ -118,10 +120,12 @@ class _ProviderSettingsPageState extends ModelDraftState<ProviderSettingsPage> {
       busy: busy,
       child: PocketScaffold(
         title: Text(provider.name),
-        bottom: exists && !provider.account
-            ? PocketButton(
+        trailing: exists && !provider.account
+            ? GlassButton(
+                icon: Icons.check_rounded,
+                label: busy ? '正在保存' : '保存配置',
+                solid: true,
                 onPressed: busy || latest != null || !dirty ? null : saveDraft,
-                child: Text(busy ? '正在保存' : '保存配置'),
               )
             : null,
         body: PocketList(
@@ -155,7 +159,7 @@ class _ProviderSettingsPageState extends ModelDraftState<ProviderSettingsPage> {
                 title: '连接设置',
                 children: [
                   if (schema.nodesAt([...path, 'baseURL']).isNotEmpty)
-                    ModelTextField(
+                    ModelValueRow(
                       key: ValueKey('endpoint:${accepted['revision']}'),
                       label: '接口地址',
                       initial: profile['baseURL'] as String? ?? '',
@@ -168,7 +172,7 @@ class _ProviderSettingsPageState extends ModelDraftState<ProviderSettingsPage> {
                       ),
                     ),
                   if (provider.entry['declared'] == true) ...[
-                    ModelTextField(
+                    ModelValueRow(
                       key: ValueKey('name:${accepted['revision']}'),
                       label: '显示名称',
                       initial: profile['displayName'] as String? ?? '',
@@ -305,7 +309,7 @@ class _ModelCredentialPageState extends State<ModelCredentialPage> {
   Json? status;
   Json? latestBinding;
   String? error;
-  bool busy = false, reveal = false, revokeReview = false;
+  bool busy = false, revokeReview = false;
   bool bindingCommitted = false;
   @override
   void initState() {
@@ -317,6 +321,26 @@ class _ModelCredentialPageState extends State<ModelCredentialPage> {
   void dispose() {
     input.dispose();
     super.dispose();
+  }
+
+  Future<void> editKey() async {
+    final result = await Navigator.push<String>(
+      context,
+      PocketRoute(
+        builder: (_) => TextDocumentPage(
+          title: '新的 API Key',
+          text: input.text,
+          readOnly: false,
+          obscureText: true,
+          fieldKey: const Key('model-key-input'),
+          canEdit: () => !busy,
+          helperText: '仅编辑本次填写内容，返回后点击保存 API Key 才会写入凭据。',
+        ),
+      ),
+    );
+    if (result != null && mounted && !busy) {
+      setState(() => input.text = result);
+    }
   }
 
   Future<void> read() async {
@@ -419,6 +443,14 @@ class _ModelCredentialPageState extends State<ModelCredentialPage> {
     busy: busy,
     child: PocketScaffold(
       title: const Text('API Key'),
+      trailing: GlassButton(
+        icon: Icons.check_rounded,
+        label: busy ? '正在处理' : '保存 API Key',
+        solid: true,
+        onPressed: busy || latestBinding != null || status?['writable'] != true
+            ? null
+            : store,
+      ),
       body: PocketList(
         padding: const EdgeInsets.all(20),
         children: [
@@ -465,42 +497,16 @@ class _ModelCredentialPageState extends State<ModelCredentialPage> {
                     ? '已有凭据 · 来源 ${status!['source'] ?? '运行时'}'
                     : '尚未配置凭据',
               ),
-              Padding(
-                padding: const EdgeInsets.all(16),
-                child: TextField(
-                  key: const Key('model-key-input'),
-                  controller: input,
-                  enabled: !busy,
-                  obscureText: !reveal,
-                  autocorrect: false,
-                  enableSuggestions: false,
-                  decoration: const InputDecoration(
-                    labelText: '新的 API Key',
-                    hintText: '仅输入新密钥，留空不会更改已有凭据',
-                  ),
-                ),
+              ConfigurationValueRow(
+                title: '新的 API Key',
+                summary: input.text.isEmpty ? '未填写' : '已填写',
+                protected: true,
+                onTap: busy ? null : editKey,
               ),
-              PocketSwitchRow(
-                title: const Text('显示本次输入'),
-                value: reveal,
-                onChanged: busy
-                    ? null
-                    : (value) => setState(() => reveal = value),
-              ),
-              Padding(
-                padding: const EdgeInsets.all(16),
-                child: PocketButton(
-                  onPressed:
-                      busy ||
-                          latestBinding != null ||
-                          status?['writable'] != true
-                      ? null
-                      : store,
-                  child: Text(busy ? '正在处理' : '保存 API Key'),
-                ),
-              ),
-              if (status?['writable'] == false)
-                const ModelNotice('当前凭据来源不接受写入。'),
+            ],
+          ),
+          PocketSection(
+            children: [
               PocketRow(
                 icon: Icons.refresh_rounded,
                 title: '重新核对状态',
@@ -516,6 +522,7 @@ class _ModelCredentialPageState extends State<ModelCredentialPage> {
                 ),
             ],
           ),
+          if (status?['writable'] == false) const ModelNotice('当前凭据来源不接受写入。'),
           if (revokeReview)
             PocketSection(
               title: '确认撤销凭据',
@@ -577,6 +584,28 @@ class _CustomProviderPageState extends State<CustomProviderPage> {
   List<Json> models = [];
   String? error;
   bool busy = false, created = false;
+
+  Future<void> editField(TextEditingController controller, String title) async {
+    final result = await Navigator.push<String>(
+      context,
+      PocketRoute(
+        builder: (_) => TextDocumentPage(
+          title: title,
+          text: controller.text,
+          readOnly: false,
+          helperText: '完成后返回服务商草稿，点击创建后生效。',
+          canEdit: () => !busy,
+        ),
+      ),
+    );
+    if (result != null && mounted && !busy) {
+      setState(() {
+        controller.text = result;
+        error = null;
+      });
+    }
+  }
+
   @override
   void dispose() {
     route.dispose();
@@ -676,9 +705,11 @@ class _CustomProviderPageState extends State<CustomProviderPage> {
     busy: busy,
     child: PocketScaffold(
       title: const Text('添加自定义服务商'),
-      bottom: PocketButton(
+      trailing: GlassButton(
+        icon: Icons.check_rounded,
+        label: '创建服务商',
+        solid: true,
         onPressed: busy || latest != null ? null : create,
-        child: const Text('创建服务商'),
       ),
       body: PocketList(
         padding: const EdgeInsets.all(20),
@@ -716,13 +747,10 @@ class _CustomProviderPageState extends State<CustomProviderPage> {
                 (name, '显示名称'),
                 (endpoint, '接口地址'),
               ])
-                Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: TextField(
-                    controller: controller,
-                    enabled: !busy,
-                    decoration: InputDecoration(labelText: label),
-                  ),
+                ConfigurationValueRow(
+                  title: label,
+                  summary: controller.text.isEmpty ? '未设置' : controller.text,
+                  onTap: busy ? null : () => editField(controller, label),
                 ),
               Padding(
                 padding: const EdgeInsets.all(16),
@@ -756,8 +784,8 @@ class _CustomProviderPageState extends State<CustomProviderPage> {
   );
 }
 
-class ModelTextField extends StatefulWidget {
-  const ModelTextField({
+class ModelValueRow extends StatelessWidget {
+  const ModelValueRow({
     required this.label,
     required this.initial,
     required this.enabled,
@@ -770,37 +798,24 @@ class ModelTextField extends StatefulWidget {
   final bool enabled;
   final ValueChanged<String> onChanged;
   @override
-  State<ModelTextField> createState() => _ModelTextFieldState();
-}
-
-class _ModelTextFieldState extends State<ModelTextField> {
-  late final controller = TextEditingController(text: widget.initial);
-  @override
-  void didUpdateWidget(ModelTextField oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.initial != controller.text &&
-        widget.initial != oldWidget.initial) {
-      controller.text = widget.initial;
-    }
-  }
-
-  @override
-  void dispose() {
-    controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.all(16),
-    child: TextField(
-      controller: controller,
-      enabled: widget.enabled,
-      decoration: InputDecoration(
-        labelText: widget.label,
-        hintText: widget.hint,
-      ),
-      onChanged: widget.onChanged,
-    ),
+  Widget build(BuildContext context) => ConfigurationValueRow(
+    title: label,
+    summary: initial.isEmpty ? hint ?? '未设置' : initial,
+    onTap: !enabled
+        ? null
+        : () async {
+            final result = await Navigator.push<String>(
+              context,
+              PocketRoute(
+                builder: (_) => TextDocumentPage(
+                  title: label,
+                  text: initial,
+                  readOnly: false,
+                  helperText: '完成后返回当前草稿，保存服务商配置后生效。',
+                ),
+              ),
+            );
+            if (result != null && context.mounted) onChanged(result);
+          },
   );
 }

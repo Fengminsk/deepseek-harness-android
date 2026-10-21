@@ -43,6 +43,89 @@ Future<void> mountDocument(
 }
 
 void main() {
+  testWidgets('explanations are plain reading pages without editor actions', (
+    tester,
+  ) async {
+    await mountDocument(
+      tester,
+      const TextDocumentPage(title: '配置说明', text: '说明配置如何影响运行。'),
+    );
+    expect(find.text('说明配置如何影响运行。'), findsOneWidget);
+    expect(find.byType(TextField), findsNothing);
+    expect(find.byType(EditableText), findsNothing);
+    expect(find.byType(SelectableText), findsNothing);
+    expect(find.byTooltip('复制全文'), findsNothing);
+    expect(find.byTooltip('完成编辑'), findsNothing);
+    await tester.longPress(find.text('说明配置如何影响运行。'));
+    await tester.pumpAndSettle();
+    expect(find.text('Select all'), findsNothing);
+    expect(tester.testTextInput.isVisible, isFalse);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'sensitive documents mask locally and disable IME learning and copy',
+    (tester) async {
+      String? result;
+      final messenger = tester.binding.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+        if (call.method == 'Clipboard.getData') {
+          return {'text': 'updated-synthetic-secret'};
+        }
+        if (call.method == 'Clipboard.hasStrings') return {'value': true};
+        if (call.method == 'Clipboard.setData') {
+          fail('Masked credentials must not be copied.');
+        }
+        return null;
+      });
+      addTearDown(
+        () => messenger.setMockMethodCallHandler(SystemChannels.platform, null),
+      );
+      await mountDocument(
+        tester,
+        const TextDocumentPage(
+          title: '凭据',
+          text: 'synthetic-secret',
+          readOnly: false,
+          obscureText: true,
+        ),
+        onResult: (value) => result = value,
+      );
+      var field = tester.widget<TextField>(find.byType(TextField));
+      expect(field.obscureText, isTrue);
+      expect(field.enableIMEPersonalizedLearning, isFalse);
+      expect(field.enableInteractiveSelection, isTrue);
+      expect(field.maxLines, 1);
+      expect(field.keyboardType, TextInputType.visiblePassword);
+      expect(find.byTooltip('复制全文'), findsNothing);
+      await tester.tap(find.byType(TextField));
+      await tester.pumpAndSettle();
+      final editable = tester.state<EditableTextState>(
+        find.byType(EditableText),
+      );
+      field.controller!.selection = TextSelection(
+        baseOffset: 0,
+        extentOffset: field.controller!.text.length,
+      );
+      expect(editable.copyEnabled, isFalse);
+      expect(editable.cutEnabled, isFalse);
+      await editable.pasteText(SelectionChangedCause.toolbar);
+      await tester.pumpAndSettle();
+      expect(field.controller!.text, 'updated-synthetic-secret');
+      await tester.tap(find.text('显示凭据'));
+      await tester.pumpAndSettle();
+      field = tester.widget<TextField>(find.byType(TextField));
+      expect(field.obscureText, isFalse);
+      expect(field.enableInteractiveSelection, isTrue);
+      expect(field.maxLines, 1);
+      expect(result, isNull);
+      await tester.tap(find.byTooltip('完成编辑'));
+      await tester.pumpAndSettle();
+      expect(result, 'updated-synthetic-secret');
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   testWidgets(
     'touching viewport whitespace or the field gutter dismisses focus without losing the draft',
     (tester) async {
@@ -195,7 +278,12 @@ void main() {
       expect(text.length, 64 * 1024);
       await mountDocument(
         tester,
-        TextDocumentPage(title: '完整诊断日志', text: text, monospace: true),
+        TextDocumentPage(
+          title: '完整诊断日志',
+          text: text,
+          monospace: true,
+          selectable: true,
+        ),
       );
       final scroll = tester.state<ScrollableState>(
         find
@@ -277,6 +365,7 @@ void main() {
         tester,
         const TextDocumentPage(
           title: '诊断原文',
+          selectable: true,
           text: '{"status":"pending"}',
           monospace: true,
         ),
@@ -416,6 +505,7 @@ void main() {
         tester,
         TextDocumentPage(
           title: '配置原文',
+          selectable: true,
           text: List.filled(80, '原始代码与详细诊断').join('\n'),
         ),
         scale: 1.8,

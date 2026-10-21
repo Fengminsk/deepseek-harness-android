@@ -479,6 +479,7 @@ class _RecoveryDocumentPageState extends State<RecoveryDocumentPage> {
                     ),
                     TextDocumentRow(
                       title: '查看最新文件',
+                      selectable: true,
                       text: doc.observed!['text'] as String,
                       monospace: true,
                     ),
@@ -601,6 +602,7 @@ class _RecoveryBackupPageState extends State<RecoveryBackupPage> {
                 if (backup!['exists'] == true)
                   TextDocumentRow(
                     title: '查看备份内容',
+                    selectable: true,
                     text: backup!['text'] as String,
                     monospace: true,
                   ),

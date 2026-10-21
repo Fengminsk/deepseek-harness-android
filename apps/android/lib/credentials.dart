@@ -2,7 +2,10 @@ import 'dart:async';
 
 import 'package:material_ui/material_ui.dart';
 
+import 'configuration_value_row.dart';
+import 'confirmation.dart';
 import 'credentials_data.dart';
+import 'text_document_page.dart';
 import 'ui.dart';
 
 String _status(CredentialEntry entry) {
@@ -121,12 +124,34 @@ class CredentialAddPage extends StatefulWidget {
 }
 
 class _CredentialAddPageState extends State<CredentialAddPage> {
-  final input = TextEditingController();
+  String reference = '';
   bool loading = false;
   String? error;
 
+  Future<void> editReference() async {
+    final value = await Navigator.of(context).push<String>(
+      PocketRoute(
+        builder: (_) => TextDocumentPage(
+          title: '凭据引用名称',
+          text: reference,
+          readOnly: false,
+          fieldKey: const ValueKey('credential-reference-input'),
+          helperText: '例如 DEEPSEEK_API_KEY。这里只填写引用名称，不填写密钥。',
+          validate: (value) => validCredentialReference(value)
+              ? null
+              : '使用字母或下划线开头，后续可包含字母、数字、下划线。',
+        ),
+      ),
+    );
+    if (mounted && value != null) {
+      setState(() {
+        reference = value;
+        error = null;
+      });
+    }
+  }
+
   Future<void> open() async {
-    final reference = input.text;
     if (!validCredentialReference(reference)) {
       setState(() => error = '使用字母或下划线开头，后续可包含字母、数字、下划线。');
       return;
@@ -148,33 +173,22 @@ class _CredentialAddPageState extends State<CredentialAddPage> {
   }
 
   @override
-  void dispose() {
-    input.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) => PocketScaffold(
     title: const Text('指定凭据引用'),
     body: PocketList(
       children: [
         PocketSection(
           children: [
-            _notice('填写工具配置中的引用名称，例如 DEEPSEEK_API_KEY。此操作只查看引用，不会自动修改工具配置。'),
-            Padding(
-              padding: const EdgeInsets.all(20),
-              child: TextField(
-                key: const ValueKey('credential-reference-input'),
-                controller: input,
-                enabled: !loading,
-                autocorrect: false,
-                enableSuggestions: false,
-                decoration: const InputDecoration(labelText: '凭据引用名称'),
-              ),
+            ConfigurationValueRow(
+              key: const ValueKey('credential-reference-row'),
+              title: '引用名称',
+              summary: reference.isEmpty ? '未填写' : reference,
+              onTap: loading ? null : editReference,
             ),
-            if (error != null) _notice(error!),
           ],
         ),
+        _notice('填写工具配置中声明的引用名称。查看引用不会修改工具配置。'),
+        if (error != null) _notice(error!),
         PocketButton(
           onPressed: loading ? null : open,
           child: Text(loading ? '正在核对' : '查看凭据'),
@@ -198,190 +212,182 @@ class CredentialReferencePage extends StatefulWidget {
 }
 
 class _CredentialReferencePageState extends State<CredentialReferencePage> {
-  late final input = TextEditingController(text: row.draft);
   CredentialEntry get row => widget.controller.entry(widget.reference);
-  bool reveal = false, removalReview = false, overwriteReview = false;
+  bool removalReview = false, overwriteReview = false;
 
   @override
   void initState() {
     super.initState();
-    input.addListener(_edited);
     widget.controller.addListener(_changed);
   }
 
-  void _edited() => widget.controller.edit(widget.reference, input.text);
-
   void _changed() {
-    if (input.text != row.draft) {
-      input.value = TextEditingValue(
-        text: row.draft,
-        selection: TextSelection.collapsed(offset: row.draft.length),
-      );
-    }
     if (mounted) setState(() {});
+  }
+
+  Future<void> editCredential() async {
+    final revision = row.draftRevision;
+    bool editable() =>
+        row.write?.inFlight != true && row.draftRevision == revision;
+    if (!editable()) return;
+    final value = await Navigator.of(context).push<String>(
+      PocketRoute(
+        builder: (_) => TextDocumentPage(
+          title: '新凭据',
+          text: row.draft,
+          readOnly: false,
+          obscureText: true,
+          fieldKey: const ValueKey('credential-value-input'),
+          helperText: '已有凭据不会回填。完成后只保留本次输入，返回管理页再保存。',
+          editingState: widget.controller,
+          canEdit: editable,
+        ),
+      ),
+    );
+    if (!mounted || value == null || !editable()) return;
+    widget.controller.edit(widget.reference, value);
   }
 
   @override
   void dispose() {
     widget.controller.removeListener(_changed);
-    input.removeListener(_edited);
-    input.dispose();
     super.dispose();
   }
+
+  void dismissReview() => setState(() {
+    removalReview = false;
+    overwriteReview = false;
+  });
 
   @override
   Widget build(BuildContext context) {
     final controller = widget.controller;
     final available = controller.canWrite(row);
     final unknown = row.write?.state == 'unconfirmed';
-    return PocketScaffold(
-      title: const Text('管理凭据'),
-      trailing: GlassButton(
-        icon: Icons.refresh_rounded,
-        label: '核对凭据状态',
-        onPressed: row.reading
-            ? null
-            : () => controller.readReference(row.reference),
-      ),
-      body: PocketList(
-        children: [
-          PocketSection(
-            title: row.reference,
+    final reviewing = removalReview || overwriteReview;
+    return PopScope(
+      canPop: !reviewing,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop && reviewing) dismissReview();
+      },
+      child: PocketConfirmationLayer(
+        confirmation: removalReview
+            ? PocketConfirmation(
+                title: '移除保存的凭据？',
+                message: '确认移除 ${row.reference}？所有使用此引用的功能都会受到影响。',
+                secondaryLabel: '保留凭据',
+                onSecondary: dismissReview,
+                primaryLabel: '确认移除',
+                onPrimary: !available
+                    ? null
+                    : () {
+                        dismissReview();
+                        unawaited(
+                          controller.remove(row.reference, confirmed: true),
+                        );
+                      },
+              )
+            : overwriteReview
+            ? PocketConfirmation(
+                title: '重新保存凭据？',
+                message: '当前配置状态不能证明此前输入已写入。再次保存将用本次填写内容覆盖此共享引用。',
+                secondaryLabel: '继续核对',
+                onSecondary: dismissReview,
+                primaryLabel: '确认重新保存',
+                onPrimary: !available || row.draft.isEmpty || !unknown
+                    ? null
+                    : () {
+                        dismissReview();
+                        unawaited(
+                          controller.save(
+                            row.reference,
+                            acknowledgeUnknown: true,
+                          ),
+                        );
+                      },
+              )
+            : null,
+        child: PocketScaffold(
+          title: const Text('管理凭据'),
+          trailing: GlassButton(
+            icon: Icons.refresh_rounded,
+            label: '核对凭据状态',
+            onPressed: row.reading
+                ? null
+                : () => controller.readReference(row.reference),
+          ),
+          body: PocketList(
+            key: PageStorageKey('credential-${row.reference}'),
             children: [
-              PocketRow(
-                icon: Icons.key_outlined,
-                title: _status(row),
-                subtitle: row.fresh && row.status?.writable == false
-                    ? '此凭据来源不接受写入或移除'
-                    : '修改会影响所有使用同名引用的功能。',
+              PocketSection(
+                title: row.reference,
+                children: [
+                  PocketRow(
+                    icon: Icons.key_outlined,
+                    title: _status(row),
+                    subtitle: row.fresh && row.status?.writable == false
+                        ? '此凭据来源不接受写入或移除'
+                        : '修改会影响所有使用同名引用的功能。',
+                  ),
+                  ConfigurationValueRow(
+                    key: const ValueKey('credential-value-row'),
+                    title: '新凭据',
+                    summary: row.draft.isEmpty ? '未填写' : '已填写',
+                    protected: true,
+                    onTap: row.write?.inFlight == true ? null : editCredential,
+                  ),
+                ],
               ),
+              _notice('已有密钥不会显示。本次填写内容只保留在 App 内存中，留空不更改。'),
               if (row.readError != null) _notice(row.readError!),
               if (row.write?.notice != null) _notice(row.write!.notice!),
-              if (row.uses.isEmpty)
-                _notice('当前配置未列出使用位置；其他手工配置也可能使用此引用。')
-              else
-                for (final use in row.uses)
-                  PocketRow(
-                    icon: Icons.link_rounded,
-                    title: use.namespace,
-                    subtitle: use.path.join('.'),
-                  ),
+              PocketButton(
+                key: const ValueKey('credential-save'),
+                onPressed: !available || row.draft.isEmpty
+                    ? null
+                    : () {
+                        if (unknown) {
+                          setState(() => overwriteReview = true);
+                        } else {
+                          unawaited(controller.save(row.reference));
+                        }
+                      },
+                child: Text(row.write?.inFlight == true ? '等待写入回执' : '保存凭据'),
+              ),
+              PocketSection(
+                title: '使用位置',
+                children: [
+                  if (row.uses.isEmpty)
+                    const PocketRow(
+                      icon: Icons.link_rounded,
+                      title: '配置中未列出使用位置',
+                      subtitle: '其他手工配置也可能使用此引用。',
+                    )
+                  else
+                    for (final use in row.uses)
+                      PocketRow(
+                        icon: Icons.link_rounded,
+                        title: use.namespace,
+                        subtitle: use.path.join('.'),
+                      ),
+                ],
+              ),
               if (!controller.catalogFresh) _notice('使用位置尚未同步，请返回目录刷新核对。'),
-            ],
-          ),
-          PocketSection(
-            title: '填写新的凭据',
-            children: [
-              _notice('已有凭据不会显示或回填。留空不更改；填写内容仅保留在本次 App 运行的内存中。'),
-              Padding(
-                padding: const EdgeInsets.all(20),
-                child: TextField(
-                  key: const ValueKey('credential-value-input'),
-                  controller: input,
-                  obscureText: !reveal,
-                  autocorrect: false,
-                  enableSuggestions: false,
-                  decoration: const InputDecoration(labelText: '新凭据'),
-                ),
-              ),
-              PocketSwitchRow(
-                title: const Text('显示本次输入'),
-                value: reveal,
-                onChanged: (value) => setState(() => reveal = value),
-              ),
-              Padding(
-                padding: const EdgeInsets.all(20),
-                child: PocketButton(
-                  key: const ValueKey('credential-save'),
-                  onPressed: !available || row.draft.isEmpty
-                      ? null
-                      : () {
-                          if (unknown) {
-                            setState(() => overwriteReview = true);
-                          } else {
-                            unawaited(controller.save(row.reference));
-                          }
-                        },
-                  child: Text(row.write?.inFlight == true ? '等待写入回执' : '保存凭据'),
-                ),
-              ),
-              if (overwriteReview && unknown) ...[
-                _notice('原服务只提供是否已配置，不能确认此前填写内容。再次保存将以当前填写内容覆盖此共享引用。'),
-                Padding(
-                  padding: const EdgeInsets.all(20),
-                  child: Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      PocketButton.tonal(
-                        onPressed: () =>
-                            setState(() => overwriteReview = false),
-                        child: const Text('继续核对'),
-                      ),
-                      PocketButton(
-                        onPressed: !available || row.draft.isEmpty
-                            ? null
-                            : () {
-                                setState(() => overwriteReview = false);
-                                unawaited(
-                                  controller.save(
-                                    row.reference,
-                                    acknowledgeUnknown: true,
-                                  ),
-                                );
-                              },
-                        child: const Text('确认重新保存'),
-                      ),
-                    ],
+              PocketSection(
+                children: [
+                  PocketRow(
+                    icon: Icons.delete_outline_rounded,
+                    title: '移除保存的凭据',
+                    subtitle: '保留引用名称，使用它的功能可能需要重新授权。',
+                    onTap: available && row.status?.configured == true
+                        ? () => setState(() => removalReview = true)
+                        : null,
                   ),
-                ),
-              ],
-            ],
-          ),
-          PocketSection(
-            children: [
-              PocketRow(
-                icon: Icons.delete_outline_rounded,
-                title: '移除保存的凭据',
-                subtitle: '保留配置中的引用名称，使用此引用的功能可能需要重新授权。',
-                onTap: available && row.status?.configured == true
-                    ? () => setState(() => removalReview = true)
-                    : null,
+                ],
               ),
-              if (removalReview) ...[
-                _notice('确认移除 ${row.reference}？所有使用此引用的功能都会受到影响。'),
-                Padding(
-                  padding: const EdgeInsets.all(20),
-                  child: Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      PocketButton.tonal(
-                        onPressed: () => setState(() => removalReview = false),
-                        child: const Text('保留凭据'),
-                      ),
-                      PocketButton(
-                        key: const ValueKey('credential-confirm-remove'),
-                        onPressed: !available
-                            ? null
-                            : () {
-                                setState(() => removalReview = false);
-                                unawaited(
-                                  controller.remove(
-                                    row.reference,
-                                    confirmed: true,
-                                  ),
-                                );
-                              },
-                        child: const Text('确认移除'),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
             ],
           ),
-        ],
+        ),
       ),
     );
   }

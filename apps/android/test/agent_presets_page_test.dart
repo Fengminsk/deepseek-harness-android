@@ -516,7 +516,12 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('暂不可用的原因'));
       await tester.pumpAndSettle();
-      expect(find.byType(TextField), findsOneWidget);
+      expect(
+        find.text(runtime.presets.last['broken'] as String),
+        findsOneWidget,
+      );
+      expect(find.byType(TextField), findsNothing);
+      expect(find.byTooltip('复制全文'), findsNothing);
       await tester.tap(find.byTooltip('返回'));
       await tester.pumpAndSettle();
       await tester.ensureVisible(
