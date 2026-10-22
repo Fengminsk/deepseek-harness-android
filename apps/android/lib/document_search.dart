@@ -3,6 +3,7 @@ import 'dart:math';
 
 import 'package:material_ui/material_ui.dart';
 
+import 'package:dsh_android/files.dart';
 import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/ui.dart';
 
@@ -213,6 +214,44 @@ class _DocumentSearchPageState extends State<DocumentSearchPage> {
     _ => code,
   };
 
+  void openMatch(String path) {
+    if (!resultCurrent || !widget.runtime.ready || requestId != null) return;
+    // Match paths are already relative to the grant, including the search
+    // subdirectory. The reader resolves the current persisted grant again.
+    unawaited(
+      Navigator.of(context).push<void>(
+        PocketRoute<void>(
+          builder: (_) => TextFilePage(
+            runtime: widget.runtime,
+            root: widget.root,
+            path: path,
+            name: path.isEmpty ? widget.name : path.split('/').last,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget matchRow(Json match) {
+    final path = match['path'];
+    final canOpen = resultCurrent && widget.runtime.ready && path is String;
+    return PocketTile(
+      leading: const Icon(Icons.description_outlined),
+      title: Text('${path == '' ? widget.name : path}'),
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('第 ${match['lineNumber']} 行'),
+          const SizedBox(height: 4),
+          Text('${match['line']}'),
+          if (match['previewTruncated'] == true) const Text('此行较长，仅显示匹配附近的片段。'),
+        ],
+      ),
+      trailing: canOpen ? const Icon(Icons.chevron_right_rounded) : null,
+      onTap: canOpen ? () => openMatch(path) : null,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final matches = (result?['matches'] as List? ?? []).cast<Json>();
@@ -317,30 +356,17 @@ class _DocumentSearchPageState extends State<DocumentSearchPage> {
                           ),
                         const SizedBox(height: 8),
                         const Text('搜索会核对提供方返回的文件信息；结果不是文件系统快照。'),
+                        if (matches.isNotEmpty)
+                          const Text('点开结果可从头阅读当前文件；搜索行号不会自动定位。'),
                       ],
                     ),
                   ),
                 ],
               ),
-              for (final match in matches)
+              if (matches.isNotEmpty)
                 PocketSection(
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.all(20),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            '${match['path'] == '' ? widget.name : match['path']} · 第 ${match['lineNumber']} 行',
-                          ),
-                          const SizedBox(height: 8),
-                          SelectableText('${match['line']}'),
-                          if (match['previewTruncated'] == true)
-                            const Text('此行较长，仅显示匹配附近的片段。'),
-                        ],
-                      ),
-                    ),
-                  ],
+                  title: '匹配内容',
+                  children: matches.map(matchRow).toList(),
                 ),
               if (skipped.isNotEmpty)
                 PocketDisclosure(

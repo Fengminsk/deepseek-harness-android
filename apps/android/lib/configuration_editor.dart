@@ -293,10 +293,122 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
     ),
   );
 
+  List<ConfigurationFieldGroup> get fieldGroups {
+    final presentation = ConfigurationPresentation(accepted['ns'] as String);
+    if (presentation.groups.isEmpty) return const [];
+    final paths = _fields(ConfigurationSchema(accepted['schema']))
+        .map((field) => field.path.join('.'))
+        .toSet();
+    final groups = presentation.groups
+        .where((group) => group.paths.any(paths.contains))
+        .toList();
+    final assigned = groups.expand((group) => group.paths).toSet();
+    final other = paths.difference(assigned);
+    if (other.isNotEmpty) {
+      // A newer runtime can introduce fields before the App has presentation
+      // metadata for them. Keep their schema-driven controls reachable.
+      groups.add(
+        ConfigurationFieldGroup(
+          id: 'other',
+          title: '其他设置',
+          summary: '当前运行时提供的其他参数',
+          description: '这些参数由当前运行时提供。修改方式及可用范围遵循它们的配置说明。',
+          symbol: ConfigurationGroupSymbol.settings,
+          paths: other,
+        ),
+      );
+    }
+    return groups;
+  }
+
+  Widget groupDirectory(List<ConfigurationFieldGroup> groups) => PocketSection(
+    divided: true,
+    children: [
+      for (final group in groups)
+        PocketRow(
+          key: ValueKey('configuration-group:${group.id}'),
+          icon: switch (group.symbol) {
+            ConfigurationGroupSymbol.shell => Icons.terminal_rounded,
+            ConfigurationGroupSymbol.search => Icons.search_rounded,
+            ConfigurationGroupSymbol.folder => Icons.folder_outlined,
+            ConfigurationGroupSymbol.attachment => Icons.attach_file_rounded,
+            ConfigurationGroupSymbol.stream => Icons.sync_rounded,
+            ConfigurationGroupSymbol.shutdown => Icons.power_settings_new,
+            ConfigurationGroupSymbol.settings => Icons.tune_rounded,
+          },
+          title: group.title,
+          subtitle: group.summary,
+          onTap: () => openGroup(group),
+        ),
+    ],
+  );
+
+  Future<void> openGroup(ConfigurationFieldGroup group) {
+    final settingsRoute = ModalRoute.of(context);
+    return Navigator.of(context).push<void>(
+      PocketRoute(
+        builder: (groupContext) => ListenableBuilder(
+          listenable: state,
+          builder: (context, _) => PocketScaffold(
+            title: Text(group.title),
+            body: PocketList(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(8, 0, 8, 20),
+                  child: Text(group.description),
+                ),
+                if (state.conflict || state.uncertain || message != null)
+                  PocketSection(
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.all(18),
+                        child: Text(
+                          state.uncertain
+                              ? '保存结果仍需核对。当前草稿已保留，请返回配置页处理。'
+                              : state.conflict
+                              ? '配置有新版本。当前草稿已保留，请返回配置页比较后再保存。'
+                              : message!,
+                          key: const Key('configuration-group-message'),
+                        ),
+                      ),
+                      PocketRow(
+                        icon: Icons.arrow_back_rounded,
+                        title: '返回配置页',
+                        onTap: () => Navigator.of(groupContext).popUntil(
+                          (route) => route == settingsRoute || route.isFirst,
+                        ),
+                      ),
+                    ],
+                  ),
+                ConfigurationFields(
+                  descriptor: accepted,
+                  value: draft,
+                  paths: group.paths,
+                  enabled: state.canEdit,
+                  onOpen: editStructure,
+                  onChanged: (path, value) => edit(path, value),
+                ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  child: Text(
+                    '修改后返回${configurationNamespaceTitle(accepted['ns'] as String)}页统一保存。',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   List<Widget> advancedItems(
     BuildContext advancedContext,
     StateSetter update,
   ) => [
+    if (fieldGroups.any((group) => group.advanced))
+      groupDirectory(fieldGroups.where((group) => group.advanced).toList()),
     if (booleanFields.isNotEmpty)
       PocketSection(
         title: '开关说明与默认值',
@@ -502,14 +614,19 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
             )
           else if (latest != null)
             comparison(),
-          ConfigurationFields(
-            key: const ValueKey('configuration-fields'),
-            descriptor: accepted,
-            value: draft,
-            enabled: state.canEdit,
-            onOpen: editStructure,
-            onChanged: (path, value) => edit(path, value),
-          ),
+          if (fieldGroups.any((group) => !group.advanced))
+            groupDirectory(
+              fieldGroups.where((group) => !group.advanced).toList(),
+            )
+          else if (fieldGroups.isEmpty)
+            ConfigurationFields(
+              key: const ValueKey('configuration-fields'),
+              descriptor: accepted,
+              value: draft,
+              enabled: state.canEdit,
+              onOpen: editStructure,
+              onChanged: (path, value) => edit(path, value),
+            ),
           PocketSection(
             children: [
               PocketRow(
@@ -646,16 +763,22 @@ class ConfigurationFields extends StatelessWidget {
     required this.enabled,
     required this.onOpen,
     required this.onChanged,
+    this.paths,
   });
   final Json descriptor, value;
   final bool enabled;
+  final Set<String>? paths;
   final void Function(List<String>, Json, String) onOpen;
   final void Function(List<String>, dynamic) onChanged;
 
   @override
   Widget build(BuildContext context) {
     final protection = ConfigurationProtection(descriptor);
-    final fields = _fields(protection.schema);
+    final fields = _fields(protection.schema)
+        .where(
+          (field) => paths == null || paths!.contains(field.path.join('.')),
+        )
+        .toList();
     final presentation = ConfigurationPresentation(descriptor['ns'] as String);
     if (fields.isEmpty) {
       return PocketSection(

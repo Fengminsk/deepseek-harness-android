@@ -6,6 +6,10 @@ class ConfigurationPresentation {
   const ConfigurationPresentation(this.namespace);
   final String namespace;
 
+  /// Groups only exact field paths. Fields introduced by a newer plugin stay
+  /// available outside these groups until their presentation is described.
+  List<ConfigurationFieldGroup> get groups => _groups[namespace] ?? const [];
+
   String title(List<String> path, ConfigurationFieldSchema field) =>
       _fields[namespace]?[path.join('.')]?.$1 ??
       _localized(field.meta['title']) ??
@@ -24,6 +28,112 @@ class ConfigurationPresentation {
           path.join('.') == 'transcriptView' &&
           const ['normal', 'expanded'].contains(value));
 }
+
+enum ConfigurationGroupSymbol {
+  shell,
+  search,
+  folder,
+  attachment,
+  stream,
+  shutdown,
+  settings,
+}
+
+class ConfigurationFieldGroup {
+  const ConfigurationFieldGroup({
+    required this.id,
+    required this.title,
+    required this.summary,
+    required this.description,
+    required this.symbol,
+    required this.paths,
+    this.advanced = false,
+  });
+
+  final String id, title, summary, description;
+  final ConfigurationGroupSymbol symbol;
+  final Set<String> paths;
+  final bool advanced;
+
+  bool contains(List<String> path) => paths.contains(path.join('.'));
+}
+
+const _groups = <String, List<ConfigurationFieldGroup>>{
+  'android-runtime': [
+    ConfigurationFieldGroup(
+      id: 'shell',
+      title: 'Shell',
+      summary: '执行时间与输出大小',
+      description: '控制 Android 普通 Shell 命令的执行时限与结果大小。新命令开始执行时采用已保存的设置。',
+      symbol: ConfigurationGroupSymbol.shell,
+      paths: {'shellTimeoutMs', 'shellOutputLimit'},
+    ),
+    ConfigurationFieldGroup(
+      id: 'file-search',
+      title: '文件搜索',
+      summary: '搜索范围、结果与读取限制',
+      description: '这些限制用于授权目录和私有工作区的文件搜索。达到限制时会说明搜索未完成；如果未能返回结果，需要缩小范围后重试。',
+      symbol: ConfigurationGroupSymbol.search,
+      paths: {
+        'documentSearchFileBytes',
+        'documentSearchTotalBytes',
+        'documentSearchMaxEntries',
+        'documentSearchMaxFiles',
+        'documentSearchMaxDepth',
+        'documentSearchMaxMatches',
+        'documentSearchPreviewChars',
+        'documentSearchMaxDurationMs',
+        'documentSearchMaxRequests',
+      },
+    ),
+    ConfigurationFieldGroup(
+      id: 'workspace',
+      title: '工作区',
+      summary: '目录分页与文件分段读取',
+      description: '控制私有工作区浏览页面的目录分页和文本分段读取。文件搜索使用文件搜索页中的限制。',
+      symbol: ConfigurationGroupSymbol.folder,
+      paths: {
+        'workspaceReadPageBytes',
+        'workspaceDirectoryMaxEntries',
+        'workspaceDirectoryPageSize',
+      },
+    ),
+    ConfigurationFieldGroup(
+      id: 'attachments',
+      title: '会话附件',
+      summary: '查看大小、文本分页与打开数量',
+      description: '控制查看和保存历史会话附件时的文件校验、临时副本与文本读取。更改后用于下一次准备或读取，不会主动关闭已打开的附件。',
+      symbol: ConfigurationGroupSymbol.attachment,
+      paths: {
+        'attachmentFileMaxBytes',
+        'attachmentFileReadPageBytes',
+        'attachmentFileMaxRequests',
+      },
+    ),
+    ConfigurationFieldGroup(
+      id: 'state-stream',
+      title: '状态同步',
+      summary: '订阅、消息大小与推送间隔',
+      description: '调节本地 Agent 服务向 App 传递状态的方式。通常保留默认值即可。',
+      symbol: ConfigurationGroupSymbol.stream,
+      advanced: true,
+      paths: {
+        'appStreamMaxSubscriptions',
+        'appStreamMaxFrameBytes',
+        'streamPublishMs',
+      },
+    ),
+    ConfigurationFieldGroup(
+      id: 'shutdown',
+      title: '服务关闭',
+      summary: '等待读取、搜索与会话操作收尾',
+      description: '仅影响 DSH 服务关闭时的等待时间。超时会报告关闭尚未完成，不会把仍在收尾的操作标记为已结束。',
+      symbol: ConfigurationGroupSymbol.shutdown,
+      advanced: true,
+      paths: {'workspaceFilesCloseTimeoutMs', 'libraryCloseTimeoutMs'},
+    ),
+  ],
+};
 
 String? _localized(dynamic value) {
   if (value is String && value.trim().isNotEmpty) return value;
@@ -88,25 +198,82 @@ const _fields = <String, Map<String, (String, String?)>>{
   },
   // apps/android/runtime/index.mjs; values retain wire milliseconds/bytes.
   'android-runtime': {
-    'shellTimeoutMs': ('Shell 执行超时（毫秒）', '已获批准的命令允许执行的最长时间。'),
-    'shellOutputLimit': ('Shell 输出上限（字节）', '单次命令保留的输出大小上限。'),
-    'appStreamMaxSubscriptions': ('状态订阅上限', null),
-    'appStreamMaxFrameBytes': ('状态消息上限（字节）', null),
-    'streamPublishMs': ('状态更新间隔（毫秒）', null),
-    'documentSearchFileBytes': ('单文件搜索上限（字节）', null),
-    'documentSearchTotalBytes': ('搜索总读取上限（字节）', null),
-    'documentSearchMaxEntries': ('搜索目录项上限', null),
-    'documentSearchMaxFiles': ('搜索文件数上限', null),
-    'documentSearchMaxDepth': ('搜索目录深度', null),
-    'documentSearchMaxMatches': ('搜索匹配数上限', null),
-    'documentSearchPreviewChars': ('搜索摘要长度（字符）', null),
-    'documentSearchMaxDurationMs': ('搜索超时（毫秒）', null),
-    'documentSearchMaxRequests': ('并行搜索上限', null),
-    'workspaceReadPageBytes': ('文件每页读取大小（字节）', null),
-    'workspaceDirectoryMaxEntries': ('工作区目录项上限', null),
-    'workspaceDirectoryPageSize': ('目录每页项目数', null),
-    'workspaceFilesCloseTimeoutMs': ('工作区文件关闭超时（毫秒）', null),
-    'libraryCloseTimeoutMs': ('文件库关闭超时（毫秒）', null),
+    'shellTimeoutMs': ('执行超时（毫秒）', '每条获准执行的命令开始时采用此值。超时后请求结束命令及其子进程。'),
+    'shellOutputLimit': ('输出上限（字节）', '标准输出和错误输出各自最多保留的字节数。超出部分会被截断，命令不会因此停止。'),
+    'appStreamMaxSubscriptions': (
+      '状态订阅上限',
+      '每个 App 连接可同时订阅的状态流数量。达到上限时需关闭无用页面后重试；不限制 Agent 任务数量。',
+    ),
+    'appStreamMaxFrameBytes': (
+      '状态消息上限（字节）',
+      '单条状态流消息序列化后的 UTF-8 大小上限。超出时该状态流报错，需要缩小请求范围；此设置不会扩大 Android 的 IPC 限制。',
+    ),
+    'streamPublishMs': (
+      '状态更新间隔（毫秒）',
+      '流式回复片段合并后向 App 推送的间隔。较小值更新更频繁，不改变模型生成速度。',
+    ),
+    'documentSearchFileBytes': (
+      '单文件搜索上限（字节）',
+      '单次搜索允许读取一个文件的最大大小。超过上限的文件会跳过并说明原因，不只搜索它的前半部分。',
+    ),
+    'documentSearchTotalBytes': (
+      '搜索总读取上限（字节）',
+      '单次搜索累计读取文件内容的大小上限。应不小于单文件上限；达到预算时保留已有结果并停止继续读取。',
+    ),
+    'documentSearchMaxEntries': (
+      '搜索目录项上限',
+      '单次搜索最多检查的目录条目数，包括文件和文件夹。此值不是搜索结果数量。',
+    ),
+    'documentSearchMaxFiles': (
+      '正文搜索文件数上限',
+      '限制单次正文搜索尝试处理的文件数，不影响名称搜索。授权目录会先排除虚拟文件和已知过大的文件；工作区中因大小跳过的文件也会计入。',
+    ),
+    'documentSearchMaxDepth': ('搜索目录深度', '以所选目录为起点；1 只检查当前目录中的项目，不进入子目录内部。'),
+    'documentSearchMaxMatches': (
+      '搜索匹配数上限',
+      '单次搜索最多保留的匹配结果数。正文搜索按匹配行计数，同一个文件可以有多条结果。',
+    ),
+    'documentSearchPreviewChars': ('搜索摘要长度（字符）', '正文匹配结果中每段摘要的最长字符数，不改变原文件内容。'),
+    'documentSearchMaxDurationMs': (
+      '搜索超时（毫秒）',
+      '单次搜索的时间预算。达到时会停止搜索并提示未完成；如果未能返回结果，需要缩小范围后重试。',
+    ),
+    'documentSearchMaxRequests': (
+      '并行搜索上限',
+      '授权目录搜索与工作区搜索各自允许同时运行的请求数。达到上限后，需要等已有搜索结束再发起新搜索。',
+    ),
+    'workspaceReadPageBytes': (
+      '文件每页读取大小（字节）',
+      '每次分段读取文本文件时最多读取的字节数。长文件可以继续读取下一段，此值不改变文件搜索的大小上限。',
+    ),
+    'workspaceDirectoryMaxEntries': (
+      '工作区目录项上限',
+      '浏览单个目录时最多收集的条目数。超出部分不会在本次列表中显示。',
+    ),
+    'workspaceDirectoryPageSize': (
+      '目录每页项目数',
+      '每次加载目录列表的条目数。这里只影响分批显示，不扩大目录项上限。',
+    ),
+    'attachmentFileMaxBytes': (
+      '附件文件大小上限（字节）',
+      '查看或保存历史会话附件时，允许校验和复制的单文件大小上限。这不是发送附件的大小限制。',
+    ),
+    'attachmentFileReadPageBytes': (
+      '附件文本每页读取大小（字节）',
+      'UTF-8 文本附件每次预览的字节预算。长文本可继续读取下一段，不改变原文件内容。',
+    ),
+    'attachmentFileMaxRequests': (
+      '同时打开附件数',
+      '允许同时打开或正在准备的附件数量。达到上限时，需要关闭已有附件再打开新的附件；降低此值不会主动关闭已打开的页面。',
+    ),
+    'workspaceFilesCloseTimeoutMs': (
+      '工作区关闭等待（毫秒）',
+      'DSH 服务关闭时，等待私有工作区读取和搜索结束的时间。超时会提示关闭尚未完成。',
+    ),
+    'libraryCloseTimeoutMs': (
+      '会话服务关闭等待（毫秒）',
+      'DSH 服务关闭时，等待工作区与会话管理中的读写操作收尾的时间。超时会报告未完成，不会重发写入。',
+    ),
   },
   'bash-sandbox': _shellFields,
   'pwsh-sandbox': _shellFields,

@@ -14,6 +14,7 @@ import { AppLiveState, presentSessionEvent } from './live-state.mjs'
 import { AppInteractions } from './interactions.mjs'
 import { AppStreams } from './streams.mjs'
 import { AppExports } from './exports.mjs'
+import { AppAttachmentFiles } from './attachment-files.mjs'
 import AndroidAccountCallback from './account-callback.mjs'
 import { AppAttachments } from './attachments.mjs'
 import { createRuntimeTransport } from './transport.mjs'
@@ -46,6 +47,9 @@ export const Config = Schema.object({
   workspaceReadPageBytes: Schema.natural().min(1024).max(1048576).default(65536).volatile(),
   workspaceDirectoryMaxEntries: Schema.natural().min(1).max(10000).default(5000).volatile(),
   workspaceDirectoryPageSize: Schema.natural().min(1).max(500).default(100).volatile(),
+  attachmentFileMaxBytes: Schema.natural().min(1024).max(2147483648).default(268435456).volatile(),
+  attachmentFileReadPageBytes: Schema.natural().min(1024).max(1048576).default(65536).volatile(),
+  attachmentFileMaxRequests: Schema.natural().min(1).max(16).default(4).volatile(),
   workspaceFilesCloseTimeoutMs: Schema.natural().min(100).max(30000).default(5000).volatile(),
   libraryCloseTimeoutMs: Schema.natural().min(100).max(30000).default(5000).volatile(),
 })
@@ -133,6 +137,11 @@ export function apply(ctx, config) {
   })
   const configurationTransfers = new AppConfigurationTransfers(ctx, { protectedNamespaces: requiredEntries })
   const exports = new AppExports(ctx, { directory: () => transport.request('native.exports.directory', {}) })
+  const attachmentFiles = new AppAttachmentFiles(ctx, {
+    directory: () => transport.request('native.attachmentFiles.directory', {}),
+    limits: () => ({ maxBytes: config.attachmentFileMaxBytes.get(),
+      readPageBytes: config.attachmentFileReadPageBytes.get(), maxRequests: config.attachmentFileMaxRequests.get() }),
+  })
   const searchLimits = () => ({
       fileBytes: config.documentSearchFileBytes.get(), totalBytes: config.documentSearchTotalBytes.get(),
       maxEntries: config.documentSearchMaxEntries.get(), maxFiles: config.documentSearchMaxFiles.get(),
@@ -163,6 +172,7 @@ export function apply(ctx, config) {
     if (method === 'native.appDisconnected') {
       void streams.closeOwner(params.owner).catch(error => console.error('App stream cleanup failed:', error))
       void documentSearch.closeOwner(params.owner).catch(error => console.error('App file search cleanup failed:', error))
+      void attachmentFiles.closeOwner(params.owner).catch(() => console.error('App attachment file cleanup failed'))
     }
   })
   const describe = () => describeAndroidSettings(ctx)
@@ -222,6 +232,11 @@ export function apply(ctx, config) {
       case 'session.export.prepare': return exports.prepare(params)
       case 'session.export.cancel': return exports.cancel(params)
       case 'session.export.release': return exports.release(params)
+      case 'session.attachmentFile.prepare': return attachmentFiles.prepare(params)
+      case 'session.attachmentFile.info': return attachmentFiles.info(params)
+      case 'session.attachmentFile.read': return attachmentFiles.read(params)
+      case 'session.attachmentFile.cancel': return attachmentFiles.cancel(params)
+      case 'session.attachmentFile.release': return attachmentFiles.release(params)
       case 'settings.describe': return describe()
       case 'configuration.transfer.export': return configurationTransfers.export()
       case 'configuration.transfer.preview': return configurationTransfers.preview(params)
@@ -323,7 +338,7 @@ export function apply(ctx, config) {
     return async () => {
       remove()
       const results = await Promise.allSettled([
-        () => documentSearch.close(), () => attachments.close(), () => exports.close(), () => tasks.close(),
+        () => documentSearch.close(), () => attachments.close(), () => attachmentFiles.close(), () => exports.close(), () => tasks.close(),
         () => packageOperations.close(),
         () => configurationTransfers.close(), () => subagents.close(), () => workspaceFiles.close(), () => library.close(),
         () => live.close(),

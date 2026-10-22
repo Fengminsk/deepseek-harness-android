@@ -13,6 +13,7 @@ import 'diagnostics.dart';
 import 'export.dart';
 import 'attachments.dart';
 import 'image_preview.dart';
+import 'attachment_file.dart';
 import 'composer_commands.dart';
 import 'session_models.dart';
 import 'session_model_projection.dart';
@@ -680,6 +681,12 @@ class _ChatPageState extends State<ChatPage> {
                   onOpenLink: (uri) => RuntimeController.channel
                       .invokeMethod<void>('openUrl', uri.toString()),
                   onOpenImage: (attachment) => showPocketSessionImage(
+                    context,
+                    widget.runtime,
+                    sessionId,
+                    attachment,
+                  ),
+                  onOpenAttachment: (attachment) => showPocketSessionFile(
                     context,
                     widget.runtime,
                     sessionId,

@@ -44,6 +44,21 @@ class AgentService : Service() {
     private lateinit var documentSearch: DocumentSearchManager
     private lateinit var background: BackgroundExecution
     private var summaryRequest: String? = null
+    // This process runs Node once. Never release its cache lease merely because Android destroys the Service.
+    private var attachmentCache: AttachmentCacheLease? = null
+    @Synchronized private fun attachmentCacheDirectory(): String {
+        check(!bootStopped) { "附件运行时已停止" }
+        val current = attachmentCache ?: AttachmentCacheLease.create(AttachmentFileSaves.directory(this)).also {
+            attachmentCache = it
+        }
+        return current.directory().canonicalPath
+    }
+    @Synchronized private fun finishAttachmentCache() {
+        bootStopped = true
+        try { attachmentCache?.close() }
+        catch (_: Exception) { /* A retained OS lock is safer than collecting a still-owned directory. */ }
+        attachmentCache = null
+    }
     private val summaryTimeout = Runnable {
         val id = summaryRequest
         summaryRequest = null
@@ -85,7 +100,9 @@ class AgentService : Service() {
             val frame = JSONObject(raw)
             val id = frame.getString("id")
             if (frame.getString("method") in setOf("api.subscribe", "api.ack", "api.unsubscribe",
-                    "documents.search", "documents.search.cancel")) {
+                    "documents.search", "documents.search.cancel", "session.attachmentFile.prepare",
+                    "session.attachmentFile.info", "session.attachmentFile.read",
+                    "session.attachmentFile.cancel", "session.attachmentFile.release")) {
                 val owner = appClients[client]?.owner
                 if (owner == null) {
                     send(client, error(id, "App stream owner is disconnected"))
@@ -261,6 +278,7 @@ class AgentService : Service() {
             bootStage = "preparing-assets"
             val runtime = RuntimeAssets.prepare(this)
             bootStage = "preparing-storage"
+            attachmentCacheDirectory()
             val home = File(noBackupFilesDir, "dsh").apply { mkdirs() }
             File(home, "workspace").mkdirs()
             val pair = NativeRuntime.socketPair()
@@ -280,7 +298,7 @@ class AgentService : Service() {
             val code = NativeRuntime.start(runtime.path, home.path, cacheDir.path, applicationInfo.nativeLibraryDir, pair[1])
             fail("运行时已退出：$code")
         } catch (exception: Throwable) { fail(exception.message ?: exception.javaClass.simpleName) }
-        finally { bootStopped = true }
+        finally { finishAttachmentCache() }
     }
     private fun handle(frame: JSONObject) {
         if (!lifecycle.acceptsFrames()) return
@@ -311,6 +329,7 @@ class AgentService : Service() {
                         "native.documents.search.cancel" -> documentSearch.cancel(params.getString("id"))
                         "native.exports.directory" -> DocumentExports.directory(this).canonicalPath
                         "native.attachments.directory" -> AttachmentTransfers.directory(this).canonicalPath
+                        "native.attachmentFiles.directory" -> attachmentCacheDirectory()
                         "native.storage.root" -> File(applicationInfo.dataDir).canonicalPath
                         else -> throw IllegalArgumentException("Unsupported native method: $method")
                     }

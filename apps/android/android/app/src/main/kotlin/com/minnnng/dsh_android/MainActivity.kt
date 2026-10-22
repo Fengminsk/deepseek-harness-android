@@ -17,6 +17,21 @@ class MainActivity : FlutterActivity() {
     private var events: EventChannel.EventSink? = null
     private val transfers by lazy { DocumentTransfers(this) }
     private val exports by lazy { DocumentExports(this) }
+    private val attachmentFiles by lazy {
+        AttachmentFileSaves(this) { id, complete ->
+            sendCall(JSONObject().put("method", "session.attachmentFile.info")
+                .put("params", JSONObject().put("id", id)), object : MethodChannel.Result {
+                override fun success(result: Any?) {
+                    try { complete(JSONObject(result as String), null) }
+                    catch (_: Exception) { complete(null, "附件状态无法确认，请重新打开") }
+                }
+                override fun error(code: String, message: String?, details: Any?) {
+                    complete(null, "附件副本已失效，请重新打开")
+                }
+                override fun notImplemented() { complete(null, "附件保存服务尚未就绪") }
+            })
+        }
+    }
     private val attachments by lazy { AttachmentTransfers(this) }
     private val configurationTransfers by lazy { ConfigurationTransfers(this) }
     private var bound = false
@@ -153,6 +168,7 @@ class MainActivity : FlutterActivity() {
         requests.forEach { it.error(code, message, null) }
     }
     private fun releaseBinding(code: String = "disconnected", message: String = "运行时连接已变化，操作结果需重新核对") {
+        attachmentFiles.cancelCurrent()
         val previous = connection
         connection = null
         bindingHandshake.invalidateBinding()
@@ -252,6 +268,11 @@ class MainActivity : FlutterActivity() {
                 "sessionExport.save" -> exports.save(call.argument<String>("id") ?: "", call.argument<String>("filename") ?: "", result)
                 "sessionExport.cancel" -> {
                     exports.cancel(call.argument<String>("id") ?: "")
+                    result.success(null)
+                }
+                "attachmentFile.save" -> attachmentFiles.save(call.argument<String>("id") ?: "",
+                    call.argument<String>("filename") ?: "", result)
+                "attachmentFile.cancelSave" -> attachmentFiles.cancel(call.argument<String>("id") ?: "") {
                     result.success(null)
                 }
                 "notifications.status" -> result.success(ApprovalNotifications.status(this).toString())
@@ -530,6 +551,7 @@ class MainActivity : FlutterActivity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (exports.onActivityResult(requestCode, resultCode, data)) return
+        if (attachmentFiles.onActivityResult(requestCode, resultCode, data)) return
         if (attachments.onActivityResult(requestCode, resultCode, data)) return
         if (configurationTransfers.onActivityResult(requestCode, resultCode, data)) return
         transfers.onActivityResult(requestCode, resultCode, data)
@@ -543,6 +565,7 @@ class MainActivity : FlutterActivity() {
         notificationPermission = null
         transfers.close()
         exports.close()
+        attachmentFiles.close()
         attachments.close()
         configurationTransfers.close()
         restarting?.error("closed", "重启期间界面已关闭，请重新打开 App 查看运行时状态", null)

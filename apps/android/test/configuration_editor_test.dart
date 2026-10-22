@@ -114,6 +114,63 @@ Json fixture() => {
   },
 };
 
+Json androidToolsFixture() {
+  final values = <String, dynamic>{
+    'shellTimeoutMs': 60000,
+    'shellOutputLimit': 65536,
+    'appStreamMaxSubscriptions': 32,
+    'appStreamMaxFrameBytes': 16777216,
+    'streamPublishMs': 50,
+    'documentSearchFileBytes': 8388608,
+    'documentSearchTotalBytes': 67108864,
+    'documentSearchMaxEntries': 2000,
+    'documentSearchMaxFiles': 1000,
+    'documentSearchMaxDepth': 32,
+    'documentSearchMaxMatches': 200,
+    'documentSearchPreviewChars': 600,
+    'documentSearchMaxDurationMs': 30000,
+    'documentSearchMaxRequests': 4,
+    'workspaceReadPageBytes': 65536,
+    'workspaceDirectoryMaxEntries': 5000,
+    'workspaceDirectoryPageSize': 100,
+    'attachmentFileMaxBytes': 268435456,
+    'attachmentFileReadPageBytes': 65536,
+    'attachmentFileMaxRequests': 4,
+    'workspaceFilesCloseTimeoutMs': 5000,
+    'libraryCloseTimeoutMs': 5000,
+  };
+  return {
+    'ns': 'android-runtime',
+    'revision': 1,
+    'value': values,
+    'user': {},
+    'secrets': [],
+    'schema': {
+      'type': 'object',
+      'dict': {
+        for (final name in values.keys)
+          name: {
+            'type': 'number',
+            'meta': {'min': 1, 'step': 1},
+          },
+      },
+    },
+  };
+}
+
+Finder group(String id) => find.byKey(ValueKey('configuration-group:$id'));
+
+Future<void> openGroup(WidgetTester tester, String id) async {
+  await tester.ensureVisible(group(id));
+  await tester.tap(group(id));
+  await tester.pumpAndSettle();
+}
+
+Future<void> back(WidgetTester tester) async {
+  await tester.tap(find.byTooltip('返回'));
+  await tester.pumpAndSettle();
+}
+
 Finder field(String name) =>
     find.byKey(ValueKey('configuration-field:${jsonEncode([name])}'));
 
@@ -295,50 +352,65 @@ void main() {
         expect(tester.takeException(), isNull);
       },
     );
-    testWidgets('Android tool limits ${brightness.name} display exact units', (
-      tester,
-    ) async {
-      final values = <String, dynamic>{
-        'shellTimeoutMs': 60000,
-        'shellOutputLimit': 65536,
-        'appStreamMaxSubscriptions': 32,
-        'appStreamMaxFrameBytes': 16777216,
-        'streamPublishMs': 50,
-        'documentSearchFileBytes': 8388608,
-        'documentSearchTotalBytes': 67108864,
-        'documentSearchMaxEntries': 2000,
-        'documentSearchMaxFiles': 1000,
-        'documentSearchMaxDepth': 32,
-        'documentSearchMaxMatches': 200,
-        'documentSearchPreviewChars': 600,
-        'documentSearchMaxDurationMs': 30000,
-        'documentSearchMaxRequests': 4,
-        'workspaceReadPageBytes': 65536,
-        'workspaceDirectoryMaxEntries': 5000,
-        'workspaceDirectoryPageSize': 100,
-        'workspaceFilesCloseTimeoutMs': 5000,
-        'libraryCloseTimeoutMs': 5000,
-      };
-      final runtime = SettingsRuntime({
-        'ns': 'android-runtime',
-        'revision': 1,
-        'value': values,
-        'user': {},
-        'secrets': [],
-        'schema': {
-          'type': 'object',
-          'dict': {
-            for (final name in values.keys) name: {'type': 'number'},
-          },
-        },
-      });
-      await openEditor(tester, runtime, brightness: brightness, width: 420);
-      expect(find.text('Shell 执行超时（毫秒）'), findsOneWidget);
-      expect(find.text('shellTimeoutMs'), findsNothing);
-      expect(find.byType(TextField), findsNothing);
-      await capture(tester, 'semantic-android-tools-${brightness.name}');
-      expect(tester.takeException(), isNull);
-    });
+    testWidgets(
+      'Android tool groups ${brightness.name} separate tuning and explain exact units',
+      (tester) async {
+        final runtime = SettingsRuntime(androidToolsFixture());
+        await openEditor(tester, runtime, brightness: brightness, width: 420);
+        for (final id in ['shell', 'file-search', 'workspace', 'attachments']) {
+          expect(group(id), findsOneWidget);
+        }
+        expect(group('state-stream'), findsNothing);
+        expect(group('shutdown'), findsNothing);
+        expect(find.text('高级 JSON 编辑'), findsNothing);
+        expect(find.byType(ConfigurationValueRow), findsNothing);
+        expect(find.text('shellTimeoutMs'), findsNothing);
+        expect(find.byType(TextField), findsNothing);
+        await capture(tester, 'semantic-android-tools-${brightness.name}');
+        const presentation = ConfigurationPresentation('android-runtime');
+        for (final definition in presentation.groups.where(
+          (item) => !item.advanced,
+        )) {
+          await openGroup(tester, definition.id);
+          expect(find.text(definition.description), findsOneWidget);
+          final controls = tester.widget<ConfigurationFields>(
+            find.byType(ConfigurationFields),
+          );
+          expect(controls.paths, definition.paths);
+          expect(find.byTooltip('保存并应用'), findsNothing);
+          expect(find.text('高级 JSON 编辑'), findsNothing);
+          if (definition.id == 'shell') {
+            expect(find.text('执行超时（毫秒）'), findsOneWidget);
+            expect(find.text('输出上限（字节）'), findsOneWidget);
+            await capture(tester, 'semantic-android-shell-${brightness.name}');
+            await tester.tap(field('shellOutputLimit'));
+            await tester.pumpAndSettle();
+            expect(find.textContaining('标准输出和错误输出各自'), findsOneWidget);
+            await back(tester);
+          }
+          await back(tester);
+        }
+        await tester.ensureVisible(find.text('高级设置'));
+        await tester.tap(find.text('高级设置'));
+        await tester.pumpAndSettle();
+        expect(group('shell'), findsNothing);
+        for (final definition in presentation.groups.where(
+          (item) => item.advanced,
+        )) {
+          await openGroup(tester, definition.id);
+          expect(find.text(definition.description), findsOneWidget);
+          expect(
+            tester
+                .widget<ConfigurationFields>(find.byType(ConfigurationFields))
+                .paths,
+            definition.paths,
+          );
+          await back(tester);
+        }
+        expect(runtime.writes, isEmpty);
+        expect(tester.takeException(), isNull);
+      },
+    );
     testWidgets('Web chat ${brightness.name} uses real finite selections', (
       tester,
     ) async {
@@ -384,6 +456,228 @@ void main() {
       expect(runtime.remote['value']['collapseTiming'], 'next-input');
     });
   }
+
+  testWidgets(
+    'Android groups share one draft and preserve future settings and protected fields',
+    (tester) async {
+      final data = androidToolsFixture();
+      data['schema']['dict'].addAll({
+        'futureEnabled': {
+          'type': 'boolean',
+          'meta': {'title': '未来功能'},
+        },
+        'futureMode': {
+          'type': 'transform',
+          'meta': {'title': '扩展参数'},
+        },
+        'futureKey': {
+          'type': 'string',
+          'meta': {'role': 'secret', 'title': '扩展凭据'},
+        },
+      });
+      data['value'].addAll({
+        'futureEnabled': true,
+        'futureMode': {
+          'opaque': [1, 2],
+        },
+        'notInSchema': {'keep': true},
+      });
+      data['secrets'] = [
+        {
+          'path': ['futureKey'],
+          'set': true,
+        },
+      ];
+      final runtime = SettingsRuntime(data);
+      await openEditor(tester, runtime, width: 420, scale: 1.8);
+      await openGroup(tester, 'shell');
+      await editField(tester, 'shellTimeoutMs', '90000');
+      expect(summary(tester, 'shellTimeoutMs'), '90000');
+      expect(find.byTooltip('保存并应用'), findsNothing);
+      await back(tester);
+      await openGroup(tester, 'workspace');
+      await editField(tester, 'workspaceDirectoryPageSize', '77');
+      await back(tester);
+      await openGroup(tester, 'attachments');
+      await editField(tester, 'attachmentFileMaxRequests', '8');
+      await back(tester);
+      await openGroup(tester, 'other');
+      expect(find.text('未来功能'), findsOneWidget);
+      expect(field('futureMode'), findsOneWidget);
+      expect(
+        tester.widget<ConfigurationValueRow>(field('futureMode')).onTap,
+        isNotNull,
+      );
+      expect(
+        tester.widget<ConfigurationValueRow>(field('futureKey')).onTap,
+        isNull,
+      );
+      await tester.ensureVisible(field('futureEnabled'));
+      await tester.tap(field('futureEnabled'));
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<PocketSwitchRow>(field('futureEnabled')).value,
+        isFalse,
+      );
+      await back(tester);
+      await openGroup(tester, 'shell');
+      expect(summary(tester, 'shellTimeoutMs'), '90000');
+      await back(tester);
+      expect(runtime.writes, isEmpty);
+      await tester.tap(find.byTooltip('保存并应用'));
+      await tester.pumpAndSettle();
+      expect(runtime.writes, hasLength(1));
+      expect(runtime.writes.single['expectedRevision'], 1);
+      expect(
+        runtime.writes.single['ops'],
+        unorderedEquals([
+          {
+            'op': 'set',
+            'path': ['shellTimeoutMs'],
+            'value': 90000,
+          },
+          {
+            'op': 'set',
+            'path': ['workspaceDirectoryPageSize'],
+            'value': 77,
+          },
+          {
+            'op': 'set',
+            'path': ['attachmentFileMaxRequests'],
+            'value': 8,
+          },
+          {
+            'op': 'set',
+            'path': ['futureEnabled'],
+            'value': false,
+          },
+        ]),
+      );
+      expect(
+        runtime.remote['value']['futureMode'],
+        data['value']['futureMode'],
+      );
+      expect(runtime.remote['value']['notInSchema'], {'keep': true});
+      expect(runtime.remote['value'].containsKey('futureKey'), isFalse);
+      expect(runtime.remote['secrets'], data['secrets']);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'group navigation accepts fresh state until editing then preserves the buffer and version conflict',
+    (tester) async {
+      final runtime = SettingsRuntime(androidToolsFixture());
+      await openEditor(tester, runtime);
+      await openGroup(tester, 'shell');
+      runtime.remote['revision'] = 2;
+      runtime.remote['value']['shellTimeoutMs'] = 80000;
+      await runtime.refreshForms();
+      await tester.pumpAndSettle();
+      expect(summary(tester, 'shellTimeoutMs'), '80000');
+      expect(
+        find.byKey(const Key('configuration-group-message')),
+        findsNothing,
+      );
+
+      await editField(tester, 'shellTimeoutMs', '-1', complete: false);
+      runtime.remote['revision'] = 3;
+      runtime.remote['value']['shellTimeoutMs'] = 120000;
+      runtime.remote['value']['workspaceDirectoryPageSize'] = 80;
+      await runtime.refreshForms();
+      await tester.pumpAndSettle();
+      final input = find.byKey(const Key('structure-value'));
+      expect(tester.widget<TextField>(input).controller!.text, '-1');
+      expect(find.text('数值不能小于 1。'), findsOneWidget);
+      expect(runtime.writes, isEmpty);
+      await tester.enterText(input, '90000');
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('完成编辑'));
+      await tester.pumpAndSettle();
+      expect(summary(tester, 'shellTimeoutMs'), '90000');
+      expect(find.textContaining('配置有新版本'), findsOneWidget);
+      await tester.tap(find.text('返回配置页'));
+      await tester.pumpAndSettle();
+      expect(find.text('编辑基于版本 2，当前版本 3。'), findsOneWidget);
+      expect(
+        tester
+            .widget<GlassButton>(find.byKey(const Key('configuration-save')))
+            .onPressed,
+        isNull,
+      );
+      await tester.ensureVisible(find.text('保留我的修改'));
+      await tester.tap(find.text('保留我的修改'));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('合并到草稿'));
+      await tester.tap(find.text('合并到草稿'));
+      await tester.pumpAndSettle();
+      await openGroup(tester, 'workspace');
+      expect(summary(tester, 'workspaceDirectoryPageSize'), '80');
+      await back(tester);
+      expect(runtime.writes, isEmpty);
+      await tester.tap(find.byTooltip('保存并应用'));
+      await tester.pumpAndSettle();
+      expect(runtime.writes.single['expectedRevision'], 3);
+      expect(runtime.writes.single['ops'], [
+        {
+          'op': 'set',
+          'path': ['shellTimeoutMs'],
+          'value': 90000,
+        },
+      ]);
+      expect(runtime.remote['value']['workspaceDirectoryPageSize'], 80);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'advanced groups preserve staged edits and return to parent for uncertain save recovery',
+    (tester) async {
+      final runtime = SettingsRuntime(androidToolsFixture());
+      await openEditor(tester, runtime);
+      await tester.tap(find.text('高级设置'));
+      await tester.pumpAndSettle();
+      await openGroup(tester, 'state-stream');
+      await editField(tester, 'streamPublishMs', '75');
+      await back(tester);
+      await back(tester);
+      expect(runtime.writes, isEmpty);
+      runtime.failReceipt = true;
+      await tester.tap(find.byTooltip('保存并应用'));
+      await tester.pumpAndSettle();
+      expect(runtime.writes, hasLength(1));
+      expect(find.text('核对保存结果'), findsOneWidget);
+      await tester.ensureVisible(find.text('高级设置'));
+      await tester.tap(find.text('高级设置'));
+      await tester.pumpAndSettle();
+      await openGroup(tester, 'state-stream');
+      expect(summary(tester, 'streamPublishMs'), '75');
+      expect(
+        tester.widget<ConfigurationValueRow>(field('streamPublishMs')).onTap,
+        isNull,
+      );
+      expect(find.textContaining('保存结果仍需核对'), findsOneWidget);
+      await tester.tap(find.text('返回配置页'));
+      await tester.pumpAndSettle();
+      expect(find.text('核对保存结果'), findsOneWidget);
+      expect(find.text('高级 JSON 编辑'), findsNothing);
+      expect(runtime.writes, hasLength(1));
+      await tester.ensureVisible(find.text('采用当前配置'));
+      await tester.tap(find.text('采用当前配置'));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('高级设置'));
+      await tester.tap(find.text('高级设置'));
+      await tester.pumpAndSettle();
+      await openGroup(tester, 'state-stream');
+      expect(summary(tester, 'streamPublishMs'), '50');
+      expect(
+        tester.widget<ConfigurationValueRow>(field('streamPublishMs')).onTap,
+        isNotNull,
+      );
+      expect(runtime.writes, hasLength(1));
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets(
     'JSON subpage holds the original revision while remote updates remain reviewable',
@@ -829,7 +1123,7 @@ void main() {
     expect(
       const ConfigurationPresentation('android-runtime')
           .title(['shellTimeoutMs'], field),
-      'Shell 执行超时（毫秒）',
+      '执行超时（毫秒）',
     );
   });
 
