@@ -100,6 +100,65 @@ void main() {
     },
   );
 
+  testWidgets('each completed reply branches at its own inclusive turn end', (
+    tester,
+  ) async {
+    final events = <Json>[
+      fixture.input(0, 'first'),
+      fixture.assistant(1, 'first answer'),
+      fixture.event(2, 'turn/end', {
+        'turn': 1,
+        'reason': {'kind': 'completed'},
+      }),
+      fixture.input(3, 'second'),
+      fixture.assistant(4, 'second answer', turn: 2),
+      fixture.event(5, 'turn/end', {
+        'turn': 2,
+        'reason': {'kind': 'completed'},
+      }),
+    ];
+    final cuts = <int>[];
+    final scroll = ScrollController();
+    addTearDown(scroll.dispose);
+    await tester.pumpWidget(
+      host(
+        ChatTimeline(
+          sessionId: 'source',
+          projection: ChatProjection()..reconcile(events),
+          events: events,
+          controller: scroll,
+          onBranch: (atSeq) async {
+            cuts.add(atSeq);
+            return null;
+          },
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    for (final index in [0, 1]) {
+      if (index == 1) {
+        await tester.scrollUntilVisible(
+          find.text('second answer', findRichText: true),
+          200,
+        );
+        await tester.pumpAndSettle();
+      }
+      final bar = find.byWidgetPredicate(
+        (widget) =>
+            widget is ChatReplyBar &&
+            widget.text == (index == 0 ? 'first answer' : 'second answer'),
+      );
+      await tester.tap(
+        find.descendant(of: bar, matching: find.byTooltip('更多回答操作')),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('在新会话中创建分支'));
+      await tester.pumpAndSettle();
+    }
+    expect(cuts, [2, 5]);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets(
     'busy indicator hides after settlement and does not count previous user turn',
     (tester) async {

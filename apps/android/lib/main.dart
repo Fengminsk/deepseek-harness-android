@@ -672,6 +672,54 @@ class _ChatPageState extends State<ChatPage> {
     }
   }
 
+  Future<String?> forkConversationAt(
+    String sourceId,
+    int atSeq,
+    int connectionGeneration,
+  ) async {
+    if (!mounted || sessionId != sourceId) return '会话已切换，请从原会话重新选择回复。';
+    if (runtime.connectionGeneration != connectionGeneration) {
+      return '连接已变化，请刷新原会话后重新选择回复。';
+    }
+    final library = runtime.library..start();
+    if (!library.canWrite) return '会话目录尚未同步，请稍后重试。';
+    final key = 'fork:$sourceId:$atSeq';
+    if (!library.allowed(key)) {
+      return library.actions[key]?.message ?? '此前的分支结果尚未确认，请先核对工作区与会话。';
+    }
+    final receipt = await library.mutate(key, 'sessionFork', {
+      'sessionId': sourceId,
+      'atSeq': atSeq,
+      'increaseTitle': true,
+    });
+    if (receipt == null) {
+      return library.actions[key]?.message ?? '分支结果尚未确认，请先核对工作区与会话。';
+    }
+    final childId = receipt['sessionId'];
+    if (childId is! String || childId.isEmpty) {
+      return '分支已创建，但无法读取新会话编号。请从工作区与会话打开。';
+    }
+    // The mutation is already confirmed. A failed or interrupted history read
+    // must not turn it into a retryable fork or replace the source conversation.
+    if (!mounted || sessionId != sourceId) {
+      return '已创建分支会话 $childId，请从工作区与会话打开。';
+    }
+    final generation = runtime.connectionGeneration;
+    try {
+      await runtime.openSession(childId);
+    } catch (_) {
+      return '已创建分支会话 $childId，但暂时无法打开。请从工作区与会话打开。';
+    }
+    if (!mounted ||
+        sessionId != sourceId ||
+        runtime.connectionGeneration != generation ||
+        !runtime.timelines.containsKey(childId)) {
+      return '已创建分支会话 $childId，请从工作区与会话打开。';
+    }
+    activateSession(childId);
+    return null;
+  }
+
   void followReply(int count, Object? streaming) {
     final next = (sessionId, count, streaming);
     if (next == observedTimeline) return;
@@ -739,6 +787,7 @@ class _ChatPageState extends State<ChatPage> {
     builder: (context, _) {
       synchronizeNotificationViewing();
       final viewedSessionId = sessionId;
+      final viewedConnectionGeneration = runtime.connectionGeneration;
       final colors = Theme.of(context).colorScheme;
       final events = runtime.timelines[sessionId] ?? [];
       final hasSession =
@@ -977,6 +1026,11 @@ class _ChatPageState extends State<ChatPage> {
                   running: running,
                   onOpenSkill: (name) =>
                       openSkillReference(viewedSessionId, name),
+                  onBranch: (atSeq) => forkConversationAt(
+                    viewedSessionId,
+                    atSeq,
+                    viewedConnectionGeneration,
+                  ),
                   onOpenLink: (uri) => RuntimeController.channel
                       .invokeMethod<void>('openUrl', uri.toString()),
                   onOpenFile: (file) async {

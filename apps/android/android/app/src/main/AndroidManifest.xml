@@ -27,6 +27,8 @@
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="User-started local AI agent tasks and optional local Web interface" />
         </service>
+        <service android:name=".IsolatedWorkerService" android:exported="false"
+            android:isolatedProcess="true" android:process=":ptc_isolated" />
         <receiver android:name=".ApprovalActionReceiver" android:exported="false"
             android:process=":agent" />
         <!-- The official completion page only requests focus; it carries no credentials. -->

@@ -409,22 +409,6 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
   ) => [
     if (fieldGroups.any((group) => group.advanced))
       groupDirectory(fieldGroups.where((group) => group.advanced).toList()),
-    if (booleanFields.isNotEmpty)
-      PocketSection(
-        title: '开关说明与默认值',
-        divided: true,
-        children: [
-          for (final field in booleanFields)
-            PocketRow(
-              icon: Icons.toggle_on_outlined,
-              title: fieldTitle(field),
-              onTap: state.canEdit
-                  ? () =>
-                        editStructure(field.path, field.node, fieldTitle(field))
-                  : null,
-            ),
-        ],
-      ),
     PocketSection(
       title: '版本与默认值',
       children: [
@@ -513,24 +497,6 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
         ],
       ),
   ];
-
-  List<_Field> get booleanFields =>
-      _fields(ConfigurationSchema(accepted['schema']))
-          .where(
-            (field) =>
-                field.kind == 'boolean' &&
-                !ConfigurationProtection(accepted).containsSecret(field.path),
-          )
-          .toList();
-
-  String fieldTitle(_Field field) =>
-      ConfigurationPresentation(accepted['ns'] as String).title(
-        field.path,
-        ConfigurationFieldSchema(
-          ConfigurationSchema(accepted['schema']),
-          field.node,
-        ),
-      );
 
   @override
   void dispose() {
@@ -809,13 +775,20 @@ class ConfigurationFields extends StatelessWidget {
     final current = configurationValueAt(value, item.path);
     final isProtected = protection.containsSecret(item.path);
     final key = ValueKey('configuration-field:${jsonEncode(item.path)}');
-    if (schema.type == 'boolean' && current is bool && !isProtected) {
+    final inherited = !configurationHasValue(current)
+        ? schema.explicitBooleanDefault
+        : null;
+    if (schema.booleanChoice &&
+        (current is bool || inherited != null) &&
+        !isProtected) {
       final hint = presentation.description(item.path, schema);
       return PocketSwitchRow(
         key: key,
         title: Text(title),
-        subtitle: hint == null ? null : Text(hint),
-        value: current,
+        subtitle: hint == null && inherited == null
+            ? null
+            : Text([if (inherited != null) '使用默认值', ?hint].join(' · ')),
+        value: current is bool ? current : inherited!,
         onChanged: enabled ? (next) => onChanged(item.path, next) : null,
       );
     }

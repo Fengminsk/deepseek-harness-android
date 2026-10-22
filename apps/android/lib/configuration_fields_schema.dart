@@ -19,6 +19,17 @@ class ConfigurationFieldSchema {
           alternatives.every(
             (child) => child.type == 'const' && child.node.containsKey('value'),
           );
+
+  /// Only an exact boolean schema or the two boolean constants can use a
+  /// switch. A transform can change the value and remains runtime-owned.
+  bool get booleanChoice =>
+      type == 'boolean' ||
+      enumType &&
+          options.length == 2 &&
+          options.contains(true) &&
+          options.contains(false);
+  bool? get explicitBooleanDefault =>
+      booleanChoice && meta['default'] is bool ? meta['default'] as bool : null;
   bool get native =>
       structured ||
       enumType ||

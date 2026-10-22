@@ -218,6 +218,47 @@ test('rename, within-workspace order and exact fork boundaries use original meth
   ])
 })
 
+test('reply fork applies original title increment only after confirmed child creation', async t => {
+  for (const [title, expected] of [
+    ['Saved', 'Saved (1)'],
+    ['Saved (2)', 'Saved (3)'],
+    ['Saved（2）', 'Saved（3）'],
+  ]) {
+    const source = { ...root, projections: { kind: 'cached', values: { title } } }
+    const h = fixture(t, {
+      sessions: [source],
+      invoke: (_namespace, method) => method === 'fork' ? { sessionId: 'created' } : { receipt: 'original' },
+    })
+    assert.deepEqual(await h.state.call('sessionFork', { sessionId: 'root', atSeq: 7, increaseTitle: true }),
+      { sessionId: 'created' })
+    assert.deepEqual(h.writes().map(({ namespace, method, args }) => [namespace, method, args]), [
+      ['session', 'fork', { request: { sessionId: 'root', atSeq: 7 } }],
+      ['session', 'rename', { request: { sessionId: 'created', title: expected } }],
+    ])
+  }
+  const untitled = fixture(t, {
+    sessions: [{ ...root, projections: undefined }],
+    invoke: (_namespace, method) => method === 'fork' ? { sessionId: 'created' } : { receipt: 'original' },
+  })
+  await untitled.state.call('sessionFork', { sessionId: 'root', increaseTitle: true })
+  assert.deepEqual(untitled.writes().map(({ method }) => method), ['fork'])
+})
+
+test('title-update failure preserves created child identity and never repeats the fork', async t => {
+  const h = fixture(t, { invoke: (_namespace, method) => {
+    if (method === 'fork') return { sessionId: 'created' }
+    if (method === 'rename') throw Object.assign(new Error('rename failed'), { code: 'session/title-invalid' })
+  } })
+  assert.deepEqual(await h.state.call('sessionFork', { sessionId: 'root', atSeq: 7, increaseTitle: true }), {
+    _pocket_error: {
+      code: 'session/fork-title-failed',
+      message: 'Fork created but its title could not be updated',
+      details: { sessionId: 'created', cause: 'session/title-invalid' },
+    },
+  })
+  assert.deepEqual(h.writes().map(({ method }) => method), ['fork', 'rename'])
+})
+
 test('partial creation and uncertain fork failures preserve evidence and never replay', async t => {
   const error = { code: 'session/workspace-attach-failed', message: 'created before attach failed',
     details: { sessionId: 'created', workspaceId: 'workspace' } }
@@ -235,6 +276,7 @@ test('invalid booleans/cursors and unsupported destructive/move operations canno
     ['sessionArchive', { sessionId: 'root', archived: false, stopActivity: true }],
     ['sessionFork', { sessionId: 'root', atSeq: -1 }],
     ['sessionFork', { sessionId: 'root', atSeq: 1.5 }],
+    ['sessionFork', { sessionId: 'root', increaseTitle: 'true' }],
     ['sessionFork', { sessionId: 'root', allowMigration: 'true' }],
     ['workspaceDelete', { workspaceId: 'workspace' }],
     ['sessionDelete', { sessionId: 'root' }],

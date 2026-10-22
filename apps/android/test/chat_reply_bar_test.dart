@@ -129,6 +129,48 @@ void main() {
     },
   );
 
+  testWidgets('branch reports uncertain write without reissuing the request', (
+    tester,
+  ) async {
+    final pending = Completer<String?>();
+    final cuts = <int>[];
+    await tester.pumpWidget(
+      app(
+        ChatReplyBar(
+          text: 'answer',
+          branchSeq: 42,
+          onBranch: (seq) {
+            cuts.add(seq);
+            return pending.future;
+          },
+          onShare: (_) async {},
+          onOpenSource: (_) async {},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('更多回答操作'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('在新会话中创建分支'));
+    await tester.pumpAndSettle();
+    expect(cuts, [42]);
+    expect(
+      tester
+          .widget<IconButton>(
+            find.ancestor(
+              of: find.byIcon(Icons.more_horiz_rounded),
+              matching: find.byType(IconButton),
+            ),
+          )
+          .onPressed,
+      isNull,
+    );
+    pending.complete('分支结果未确认，请先核对工作区与会话。');
+    await tester.pumpAndSettle();
+    expect(find.text('分支结果未确认，请先核对工作区与会话。'), findsOneWidget);
+    expect(cuts, [42]);
+  });
+
   testWidgets(
     'stale more menu is removed when reply changes; no wrong owner action',
     (tester) async {

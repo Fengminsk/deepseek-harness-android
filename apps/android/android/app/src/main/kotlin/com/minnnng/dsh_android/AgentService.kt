@@ -12,6 +12,9 @@ import java.io.File
 import java.util.concurrent.Executors
 import java.util.concurrent.ConcurrentHashMap
 import java.util.UUID
+import java.security.MessageDigest
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.RejectedExecutionException
 
 /** Owns Node and its IPC endpoint; activity destruction does not terminate tasks. */
 class AgentService : Service() {
@@ -25,6 +28,7 @@ class AgentService : Service() {
     private data class AppClient(val owner: String, val death: IBinder.DeathRecipient)
     private val appClients = mutableMapOf<Messenger, AppClient>()
     private val pending = ConcurrentHashMap<String, Messenger>()
+    private val isolationProbeBusy = AtomicBoolean(false)
     private val nativePending = mutableMapOf<String, (Result<JSONObject>) -> Unit>()
     @Volatile private var output: RuntimeTransport? = null
     @Volatile private var phase = "starting"
@@ -152,6 +156,24 @@ class AgentService : Service() {
                 }
             } else if (frame.getString("method") == "runtime.status") {
                 send(client, JSONObject().put("id", id).put("result", status().getJSONObject("params")))
+            } else if (frame.getString("method") == "runtime.isolation.probe") {
+                if (!appClients.containsKey(client)) {
+                    send(client, error(id, "App isolation probe owner is disconnected"))
+                } else if (!isolationProbeBusy.compareAndSet(false, true)) {
+                    send(client, error(id, "Isolated worker probe is already running"))
+                } else {
+                    try { workers.execute {
+                        try {
+                            val evidence = isolationProbe()
+                            main.post { send(client, JSONObject().put("id", id).put("result", evidence)) }
+                        } catch (exception: Exception) {
+                            main.post { send(client, error(id, exception.message ?: "Isolated worker probe failed")) }
+                        } finally { isolationProbeBusy.set(false) }
+                    } } catch (_: RejectedExecutionException) {
+                        isolationProbeBusy.set(false)
+                        send(client, error(id, "Isolated worker probe host is stopping"))
+                    }
+                }
             } else if (frame.getString("method").startsWith("runtime.transition.")) {
                 send(client, error(id, "服务切换必须通过原生维护入口执行"))
             } else if (frame.getString("method") == "runtime.background.configure") {
@@ -545,6 +567,27 @@ class AgentService : Service() {
     private fun write(frame: JSONObject) {
         val stream = output ?: throw IllegalStateException("Runtime is not connected")
         stream.write(frame.toString())
+    }
+    private fun isolationProbe(): JSONObject {
+        val payload = "PTC isolation probe".toByteArray(Charsets.UTF_8)
+        val file = File.createTempFile("ptc-isolation-input-", ".bin", cacheDir)
+        try {
+            file.writeBytes(payload)
+            val evidence = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use {
+                IsolatedWorkerProbe.inspect(this, it)
+            }
+            val hash = MessageDigest.getInstance("SHA-256").digest(payload).joinToString("") {
+                (it.toInt() and 0xff).toString(16).padStart(2, '0')
+            }
+            check(evidence.bytes == payload.size && evidence.sha256 == hash) {
+                "Isolated worker changed the granted descriptor content"
+            }
+            return JSONObject().put("workerUid", evidence.workerUid)
+                .put("hostUid", Process.myUid()).put("bytes", evidence.bytes)
+                .put("sha256", evidence.sha256).put("privateReadDenied", true)
+        } finally {
+            check(file.delete() || !file.exists()) { "Could not remove isolation probe input" }
+        }
     }
     private fun status() = JSONObject().put("method", "runtime.status").put("params",
         JSONObject().put("phase", phase).put("error", failure ?: JSONObject.NULL)

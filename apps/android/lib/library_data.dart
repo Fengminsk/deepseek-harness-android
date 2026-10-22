@@ -344,6 +344,14 @@ class LibraryController extends ChangeNotifier {
           ..state = 'partial'
           ..result = {'sessionId': action.details['sessionId']}
           ..message = '会话已创建，但工作区关联未完成。请打开已有会话核对，不会重新创建。';
+      } else if (action.code == 'session/fork-title-failed') {
+        final childId = action.details['sessionId'];
+        action
+          ..state = 'partial'
+          ..result = childId is String ? {'sessionId': childId} : {}
+          ..message = childId is String
+              ? '分支会话 $childId 已创建，但标题更新未完成。请从工作区与会话打开，不会重新创建。'
+              : '分支会话可能已创建，但无法读取新会话编号。请从工作区与会话核对，不会重新创建。';
       } else if (const {
         'gateway/bad-request',
         'gateway/arguments-invalid',

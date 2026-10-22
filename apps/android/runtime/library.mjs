@@ -23,6 +23,15 @@ function boolean(value, label) {
   return value
 }
 
+// Match the original ClientSessions.fork title policy, including both bracket styles.
+function increasedForkTitle(title) {
+  const ascii = /^(.*?)\((\d+)\)$/u.exec(title)
+  if (ascii?.[1] !== undefined && ascii[2] !== undefined) return `${ascii[1]}(${BigInt(ascii[2]) + 1n})`
+  const fullWidth = /^(.*?)（(\d+)）$/u.exec(title)
+  if (fullWidth?.[1] !== undefined && fullWidth[2] !== undefined) return `${fullWidth[1]}（${BigInt(fullWidth[2]) + 1n}）`
+  return `${title} (1)`
+}
+
 /** App management carrier. The original registry and controllers own every write. */
 export class AppLibrary {
   constructor(ctx, { invoke, follow, closeTimeoutMs = () => 5000 }) {
@@ -145,6 +154,7 @@ export class AppLibrary {
       throw failure('session/agent-busy', `session "${sessionId}" is owned by subagent routing`,
         { reason: 'use subagent delivery for this child session' })
     }
+    return session
   }
 
   /** Preserve original failure vocabulary, including partial creation receipts. */
@@ -204,7 +214,7 @@ export class AppLibrary {
 
   async sessionOperation(method, params) {
     const sessionId = identity(params.sessionId, 'sessionId')
-    await this.ordinary(sessionId)
+    const source = await this.ordinary(sessionId)
     switch (method) {
       case 'sessionRename': return this.mutate('session', 'rename', { request: {
         sessionId, title: string(params.title, 'title'),
@@ -227,16 +237,39 @@ export class AppLibrary {
           workspaceId, sessionId, ...(beforeSessionId === undefined ? {} : { beforeSessionId }),
         } })
       }
-      case 'sessionFork':
+      case 'sessionFork': {
         if (params.atSeq !== undefined && (!Number.isSafeInteger(params.atSeq) || params.atSeq < 0)) {
           throw badRequest('atSeq must be a non-negative safe integer')
         }
         if (params.allowMigration !== undefined) boolean(params.allowMigration, 'allowMigration')
+        if (params.increaseTitle !== undefined) boolean(params.increaseTitle, 'increaseTitle')
+        const sourceTitle = params.increaseTitle === true && typeof source.projections?.values?.title === 'string'
+          ? source.projections.values.title : undefined
         // No inferred cursor, generated request id, or automatic retry: fork is not idempotent.
-        return this.mutate('session', 'fork', { request: {
+        const result = await this.mutate('session', 'fork', { request: {
           sessionId, ...(params.atSeq === undefined ? {} : { atSeq: params.atSeq }),
           ...(params.allowMigration === undefined ? {} : { allowMigration: params.allowMigration }),
         } })
+        if (sourceTitle !== undefined) {
+          const childId = result?.sessionId
+          if (typeof childId !== 'string' || !childId.trim()) {
+            throw failure('session/fork-title-failed', 'Fork returned without a child identity', {
+              cause: 'gateway/missing-receipt',
+            })
+          }
+          try {
+            await this.mutate('session', 'rename', { request: {
+              sessionId: childId, title: increasedForkTitle(sourceTitle),
+            } })
+          } catch (error) {
+            // The child exists even though its optional title update failed.
+            throw failure('session/fork-title-failed', 'Fork created but its title could not be updated', {
+              sessionId: childId, cause: error?.code ?? 'gateway/internal',
+            })
+          }
+        }
+        return result
+      }
     }
   }
 

@@ -137,6 +137,7 @@ class ChatTimeline extends StatefulWidget {
     this.onOpenFile,
     this.onOpenAttachment,
     this.onOpenImage,
+    this.onBranch,
     super.key,
   });
   final String sessionId;
@@ -154,6 +155,7 @@ class ChatTimeline extends StatefulWidget {
   final ChatOpenFile? onOpenFile;
   final ChatOpenAttachment? onOpenAttachment;
   final ChatOpenAttachment? onOpenImage;
+  final Future<String?> Function(int atSeq)? onBranch;
 
   @override
   State<ChatTimeline> createState() => _ChatTimelineState();
@@ -516,6 +518,7 @@ class _ChatTimelineState extends State<ChatTimeline>
             row.key,
             onOpenFile: widget.onOpenFile,
             onOpenLink: widget.onOpenLink,
+            onBranch: widget.onBranch,
           );
           if (extra != null) {
             return KeyedSubtree(

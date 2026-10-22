@@ -94,6 +94,7 @@ class ChatTurnExtras {
     String key, {
     ChatOpenFile? onOpenFile,
     ChatOpenLink? onOpenLink,
+    Future<String?> Function(int atSeq)? onBranch,
   }) {
     final plan = _planRows[key];
     if (plan != null) {
@@ -124,6 +125,8 @@ class ChatTurnExtras {
         onInspect: _records.isEmpty
             ? null
             : () => openChatRecords(context, _records),
+        branchSeq: onBranch == null ? null : target.turnEndSeq,
+        onBranch: onBranch,
       ),
     );
   }

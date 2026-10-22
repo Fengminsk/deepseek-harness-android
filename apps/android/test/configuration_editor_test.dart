@@ -1192,6 +1192,67 @@ void main() {
   );
 
   testWidgets(
+    'explicit default and binary boolean choices use switches without duplicate advanced rows',
+    (tester) async {
+      final runtime = SettingsRuntime({
+        'ns': 'custom-plugin',
+        'revision': 1,
+        'value': {'binary': false},
+        'user': {},
+        'secrets': [],
+        'schema': {
+          'type': 'object',
+          'dict': {
+            'enabled': {
+              'type': 'boolean',
+              'meta': {'default': true},
+            },
+            'binary': {
+              'type': 'union',
+              'list': [
+                {'type': 'const', 'value': true},
+                {'type': 'const', 'value': false},
+              ],
+            },
+          },
+        },
+      });
+      await openEditor(tester, runtime);
+      expect(tester.widget<PocketSwitchRow>(field('enabled')).value, isTrue);
+      expect(find.text('使用默认值'), findsOneWidget);
+      expect(tester.widget<PocketSwitchRow>(field('binary')).value, isFalse);
+      await tester.tap(find.text('高级设置'));
+      await tester.pumpAndSettle();
+      expect(find.text('开关说明与默认值'), findsNothing);
+      expect(find.text('enabled'), findsNothing);
+      await back(tester);
+      await tester.tap(field('enabled'));
+      await tester.pumpAndSettle();
+      await tester.tap(field('binary'));
+      await tester.pumpAndSettle();
+      expect(runtime.writes, isEmpty);
+      await tester.tap(find.byTooltip('保存并应用'));
+      await tester.pumpAndSettle();
+      expect(
+        runtime.writes.single['ops'],
+        unorderedEquals([
+          {
+            'op': 'set',
+            'path': ['enabled'],
+            'value': false,
+          },
+          {
+            'op': 'set',
+            'path': ['binary'],
+            'value': true,
+          },
+        ]),
+      );
+      expect(runtime.writes.single['expectedRevision'], 1);
+    },
+  );
+
+  testWidgets(
     'missing and transformed boolean values never masquerade as false switches',
     (tester) async {
       final runtime = SettingsRuntime({

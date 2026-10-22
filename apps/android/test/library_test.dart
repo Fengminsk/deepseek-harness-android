@@ -699,6 +699,37 @@ void main() {
   );
 
   testWidgets(
+    'created fork with failed title keeps child ID and blocks retry',
+    (tester) async {
+      final runtime = LibraryRuntime();
+      await prepare(tester, runtime);
+      runtime.handlers['library.sessionFork'] = (_) async =>
+          throw PlatformException(
+            code: 'session/fork-title-failed',
+            details: {
+              'sessionId': 'created-child',
+              'cause': 'session/title-invalid',
+            },
+          );
+      expect(
+        await runtime.library.mutate('fork:s1:7', 'sessionFork', {
+          'sessionId': 's1',
+          'atSeq': 7,
+          'increaseTitle': true,
+        }),
+        isNull,
+      );
+      final action = runtime.library.actions['fork:s1:7'];
+      expect(action?.state, 'partial');
+      expect(action?.result['sessionId'], 'created-child');
+      expect(action?.message, contains('created-child'));
+      expect(runtime.library.allowed('fork:s1:7'), isFalse);
+      expect(runtime.sent('sessionFork'), hasLength(1));
+      await settle(tester);
+    },
+  );
+
+  testWidgets(
     'routine runtime updates and token projections do not reread the catalog',
     (tester) async {
       final runtime = LibraryRuntime();

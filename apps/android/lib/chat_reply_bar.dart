@@ -12,7 +12,7 @@ import 'entry_motion.dart';
 import 'flclash/popup.dart';
 import 'ui.dart';
 
-enum _ReplyAction { select, positive, negative, inspect }
+enum _ReplyAction { select, branch, positive, negative, inspect }
 
 /// One row for an original completed reply. The caller supplies its exact Turn
 /// sources and durable message identity; this widget never guesses either.
@@ -25,8 +25,11 @@ class ChatReplyBar extends StatefulWidget {
     this.feedbackController,
     this.messageId,
     this.onInspect,
+    this.branchSeq,
+    this.onBranch,
     super.key,
-  }) : assert((feedbackController == null) == (messageId == null));
+  }) : assert((feedbackController == null) == (messageId == null)),
+       assert((branchSeq == null) == (onBranch == null));
   final String text;
   final Future<void> Function(String) onShare;
   final Future<void> Function(Uri) onOpenSource;
@@ -34,6 +37,12 @@ class ChatReplyBar extends StatefulWidget {
   final ChatFeedbackController? feedbackController;
   final String? messageId;
   final VoidCallback? onInspect;
+
+  /// Exact inclusive turn/end cut for the original sessionFork API.
+  final int? branchSeq;
+
+  /// Null confirms a new session; a message reports a rejected or uncertain write.
+  final Future<String?> Function(int atSeq)? onBranch;
   @override
   State<ChatReplyBar> createState() => _ChatReplyBarState();
 }
@@ -73,6 +82,7 @@ class _ChatReplyBarState extends State<ChatReplyBar> {
     }
     if (oldWidget.messageId != widget.messageId ||
         oldWidget.feedbackController != widget.feedbackController ||
+        oldWidget.branchSeq != widget.branchSeq ||
         oldWidget.text != widget.text ||
         sourcesChanged) {
       _generation++;
@@ -167,6 +177,7 @@ class _ChatReplyBarState extends State<ChatReplyBar> {
     final owner = widget.feedbackController, messageId = widget.messageId;
     final connection = owner?.runtime.connectionGeneration;
     final text = widget.text, inspect = widget.onInspect;
+    final branch = widget.onBranch, branchSeq = widget.branchSeq;
     final point = _pressPosition == null
         ? box.localToGlobal(box.size.center(Offset.zero), ancestor: overlay)
         : overlay.globalToLocal(_pressPosition!);
@@ -182,6 +193,12 @@ class _ChatReplyBarState extends State<ChatReplyBar> {
               label: '选择文本',
               glyph: Icons.text_fields_rounded,
               onPressed: () => action = _ReplyAction.select,
+            ),
+          if (branch != null && branchSeq != null)
+            CommonPopupMenuItem(
+              label: '在新会话中创建分支',
+              glyph: Icons.fork_right_rounded,
+              onPressed: () => action = _ReplyAction.branch,
             ),
           if (owner != null && !owner.retired) ...[
             CommonPopupMenuItem(
@@ -232,6 +249,26 @@ class _ChatReplyBarState extends State<ChatReplyBar> {
         await showChatMessageSelection(context, text);
       case _ReplyAction.inspect:
         inspect?.call();
+      case _ReplyAction.branch:
+        if (branch == null || branchSeq == null) return;
+        setState(() {
+          _busy = true;
+          _notice = null;
+        });
+        try {
+          final issue = await branch(branchSeq);
+          if (mounted && generation == _generation) {
+            setState(() => _notice = issue);
+          }
+        } catch (_) {
+          if (mounted && generation == _generation) {
+            setState(() => _notice = '无法确认分支结果，请先核对工作区与会话。');
+          }
+        } finally {
+          if (mounted && generation == _generation) {
+            setState(() => _busy = false);
+          }
+        }
       case _ReplyAction.positive:
       case _ReplyAction.negative:
         if (owner == null ||

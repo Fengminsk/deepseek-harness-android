@@ -256,11 +256,17 @@ class _ConfigurationStructurePageState
 
   Widget row(String key, ConfigurationFieldSchema schema) {
     final current = configurationValueAt(value, [key]);
-    if (schema.type == 'boolean' && current is bool && !schema.secret) {
+    final inherited = !configurationHasValue(current)
+        ? schema.explicitBooleanDefault
+        : null;
+    if (schema.booleanChoice &&
+        (current is bool || inherited != null) &&
+        !schema.secret) {
       return PocketSwitchRow(
         key: ValueKey('structure-entry:$key'),
         title: Text(label(key, schema)),
-        value: current,
+        subtitle: inherited == null ? null : const Text('使用默认值'),
+        value: current is bool ? current : inherited!,
         onChanged: enabled
             ? (next) => changed(<String, dynamic>{
                 if (value is Map) ...Map<String, dynamic>.from(value),
@@ -378,6 +384,26 @@ class _ConfigurationStructurePageState
         ],
       );
     }
+    if (field.booleanChoice) {
+      final inherited = !exists ? field.explicitBooleanDefault : null;
+      return PocketSection(
+        children: [
+          if (value is bool || inherited != null)
+            PocketSwitchRow(
+              title: Text(widget.title),
+              subtitle: inherited == null ? null : const Text('使用默认值'),
+              value: value is bool ? value as bool : inherited!,
+              onChanged: enabled ? changed : null,
+            )
+          else
+            for (final option in [true, false])
+              PocketTile(
+                title: Text(option ? '开启' : '关闭'),
+                onTap: enabled ? () => changed(option) : null,
+              ),
+        ],
+      );
+    }
     if (field.enumType) {
       return PocketSection(
         title: '选项',
@@ -421,24 +447,6 @@ class _ConfigurationStructurePageState
               trailing: const Icon(Icons.chevron_right_rounded, size: 18),
               onTap: enabled ? () => chooseBranch(branch) : null,
             ),
-        ],
-      );
-    }
-    if (field.type == 'boolean') {
-      return PocketSection(
-        children: [
-          if (value is bool)
-            PocketSwitchRow(
-              title: Text(widget.title),
-              value: value == true,
-              onChanged: enabled ? changed : null,
-            ),
-          if (value is! bool)
-            for (final option in [true, false])
-              PocketTile(
-                title: Text(option ? '开启' : '关闭'),
-                onTap: enabled ? () => changed(option) : null,
-              ),
         ],
       );
     }

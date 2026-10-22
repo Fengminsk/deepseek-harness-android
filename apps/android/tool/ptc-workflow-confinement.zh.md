@@ -6,6 +6,6 @@
 
 Android 配置保持 PTC 提供方、工作流引擎和工作流工具为禁用状态。[`stage-preset.mjs`](stage-preset.mjs) 拒绝打包时启用这三项。[`host-guard.mjs`](../runtime/host-guard.mjs) 在原生宿主启动前检查合成配置，拒绝配置目录和主目录覆盖、常规模块别名及预设内的激活项。Android 运行时还使用 `pluginManager.protectModules` 保留这三项已打包的模块标识，普通插件管理操作也不能在启动后开启它们。这些检查只验证已打包的配置和模块标识；它们无法隔离任意第三方插件代码，也无法阻止另一个模块自行实现类似行为。
 
-Android 上实现这项能力需要将执行程序隔离于 App UID，通过明确的桥接接口访问已授权工作文件和工具调用，限制输出，并在结束时确认全部子进程退出。Android 的 [`isolatedProcess` Service](https://developer.android.com/guide/topics/manifest/service-element) 可让服务在没有自身权限的独立进程运行，但当前 Node 子进程提供方和 PTC 控制通道还不能经由该 Service 启动，也没有通过 Binder 授权工作文件访问。独立的 Android JavaScript 隔离环境可以考虑承载工作流脚本的受限子集，却不等同于 PTC 所承诺的直接 Node API。两条路径目前都未接入，也没有真机验证。
+Android 上实现这项能力需要将执行程序隔离于 App UID，通过明确的桥接接口访问已授权工作文件和工具调用，限制输出，并在结束时确认全部子进程退出。App 已声明一个 [`isolatedProcess` Service](https://developer.android.com/guide/topics/manifest/service-element)，并提供仅限 App 调用的 `runtime.isolation.probe` 一次性文件描述符探针：宿主通过 Binder 授予不超过 256 KiB 的普通文件，再检查工作进程 UID、内容摘要，以及能否通过路径读取另一份 App 私有标记。[`IsolatedWorkerProbe`](../android/app/src/main/kotlin/com/minnnng/dsh_android/IsolatedWorkerProbe.kt) 在完成或失败时解绑；它是设备诊断入口，不是 PTC 执行器，主机测试也不能证明设备隔离。当前 Node 子进程提供方和 PTC 控制通道仍不能通过该 Service 启动，也没有通过 Binder 授权工作目录操作。独立的 Android JavaScript 隔离环境可以考虑承载工作流脚本的受限子集，但不等同于 PTC 所承诺的直接 Node API。
 
 启用原版能力前，需要在 Android 设备验证独立 UID 启动、允许的工作目录读写、拒绝访问应用私有文件及工作目录外文件、受控的网络与子进程行为、嵌套工具的审批和记录、取消及超时后的后代进程清理、持有者释放和重启恢复。主机上的配置拒绝测试不能证明这些设备行为。

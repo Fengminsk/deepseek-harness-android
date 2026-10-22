@@ -406,6 +406,73 @@ void main() {
     },
   );
   testWidgets(
+    'nested boolean choices and explicit defaults stage values without JSON',
+    (tester) async {
+      dynamic result;
+      final schema = shape({
+        'type': 'object',
+        'dict': {
+          'active': {
+            'type': 'union',
+            'list': [
+              {'type': 'const', 'value': true},
+              {'type': 'const', 'value': false},
+            ],
+          },
+          'preview': {
+            'type': 'boolean',
+            'meta': {'default': false},
+          },
+        },
+      });
+      await open(tester, schema, {
+        'active': true,
+        'unknown': 'keep',
+      }, (next) => result = next);
+      final active = find.byKey(const ValueKey('structure-entry:active'));
+      final preview = find.byKey(const ValueKey('structure-entry:preview'));
+      expect(tester.widget<PocketSwitchRow>(active).value, isTrue);
+      expect(tester.widget<PocketSwitchRow>(preview).value, isFalse);
+      expect(find.byKey(const Key('structure-json')), findsNothing);
+      await tap(tester, active);
+      await tap(tester, preview);
+      await tap(tester, find.byTooltip('完成编辑'));
+      expect(result, {'active': false, 'preview': true, 'unknown': 'keep'});
+    },
+  );
+  testWidgets('explicit boolean default stays inherited until toggled', (
+    tester,
+  ) async {
+    dynamic result;
+    final schema = shape({
+      'type': 'boolean',
+      'meta': {'default': true},
+    });
+    await open(
+      tester,
+      schema,
+      configurationValueAt(const {}, ['missing']),
+      (next) => result = next,
+    );
+    expect(
+      tester.widget<PocketSwitchRow>(find.byType(PocketSwitchRow)).value,
+      isTrue,
+    );
+    expect(find.text('使用默认值'), findsOneWidget);
+    await tap(tester, find.byTooltip('完成编辑'));
+    expect(result, isNull);
+
+    await open(
+      tester,
+      schema,
+      configurationValueAt(const {}, ['missing']),
+      (next) => result = next,
+    );
+    await tap(tester, find.byType(PocketSwitchRow));
+    await tap(tester, find.byTooltip('完成编辑'));
+    expect(result, isFalse);
+  });
+  testWidgets(
     'scalar detail releases touch focus in blank space and preserves its buffer',
     (tester) async {
       dynamic result;

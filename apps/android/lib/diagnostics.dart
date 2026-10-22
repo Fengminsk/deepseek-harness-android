@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/services.dart';
@@ -18,18 +19,31 @@ class DiagnosticsPage extends StatefulWidget {
 class _DiagnosticsPageState extends State<DiagnosticsPage> {
   bool confirming = false, dispatching = false, awaitingReady = false;
   String? lastFailure, actionError, notice;
+  bool checkingIsolation = false;
+  String? isolationNotice;
+  Json? isolationEvidence;
+  int isolationAttempt = 0;
+  late int observedConnection;
   RuntimeController get runtime => widget.runtime;
 
   @override
   void initState() {
     super.initState();
     lastFailure = runtime.error;
+    observedConnection = runtime.connectionGeneration;
     runtime.addListener(changed);
   }
 
   void changed() {
     if (!mounted) return;
     setState(() {
+      if (observedConnection != runtime.connectionGeneration) {
+        observedConnection = runtime.connectionGeneration;
+        isolationAttempt++;
+        checkingIsolation = false;
+        isolationEvidence = null;
+        isolationNotice = '连接已变化，请重新验证隔离进程。';
+      }
       if (runtime.error != null) lastFailure = runtime.error;
       if (awaitingReady && runtime.ready) {
         awaitingReady = false;
@@ -74,12 +88,56 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
             'lastFailure': lastFailure,
             'environment': runtime.info,
             'observations': runtime.observationDiagnostics,
+            'isolation': isolationEvidence,
           }),
         ),
       );
       if (mounted) setState(() => notice = '已复制运行诊断。');
     } catch (failure) {
       if (mounted) setState(() => actionError = '无法复制诊断：$failure');
+    }
+  }
+
+  Future<void> checkIsolation() async {
+    if (!runtime.ready || checkingIsolation) return;
+    final attempt = ++isolationAttempt;
+    final connection = runtime.connectionGeneration;
+    bool current() =>
+        mounted &&
+        attempt == isolationAttempt &&
+        connection == runtime.connectionGeneration;
+    setState(() {
+      checkingIsolation = true;
+      isolationEvidence = null;
+      isolationNotice = null;
+    });
+    try {
+      final raw = await runtime
+          .call('runtime.isolation.probe')
+          .timeout(const Duration(seconds: 10));
+      if (raw is! Json ||
+          raw['workerUid'] is! int ||
+          raw['hostUid'] is! int ||
+          raw['workerUid'] == raw['hostUid'] ||
+          raw['privateReadDenied'] != true ||
+          raw['bytes'] is! int ||
+          raw['bytes'] <= 0 ||
+          raw['sha256'] is! String ||
+          !RegExp(r'^[0-9a-f]{64}$').hasMatch(raw['sha256'] as String)) {
+        throw const FormatException('隔离验证回执不完整');
+      }
+      if (current()) {
+        setState(() {
+          isolationEvidence = raw;
+          isolationNotice = '独立进程与受限文件读取已通过本次检查。';
+        });
+      }
+    } catch (_) {
+      if (current()) {
+        setState(() => isolationNotice = '隔离验证未通过或结果未确认。程序化工具仍不可用，请稍后重试。');
+      }
+    } finally {
+      if (current()) setState(() => checkingIsolation = false);
     }
   }
 
@@ -244,6 +302,31 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
                 ),
               ],
             ),
+          PocketSection(
+            title: '隔离运行环境',
+            children: [
+              PocketRow(
+                icon: Icons.security_rounded,
+                title: '检查独立进程',
+                subtitle: '核对独立 UID、应用私有文件拒绝与受限输入',
+                trailing: checkingIsolation
+                    ? const Text('检查中…')
+                    : const Icon(Icons.chevron_right_rounded),
+                onTap: runtime.ready && !checkingIsolation
+                    ? checkIsolation
+                    : null,
+              ),
+              if (isolationNotice != null)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(22, 4, 22, 12),
+                  child: Text(isolationNotice!),
+                ),
+              const Padding(
+                padding: EdgeInsets.fromLTRB(22, 0, 22, 14),
+                child: Text('这项检查仅验证隔离基础；程序化工具与工作流尚未启用。'),
+              ),
+            ],
+          ),
         ],
       ),
     );

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:dsh_android/diagnostics.dart';
@@ -16,12 +17,18 @@ class _Runtime extends RuntimeController {
   bool reject = false;
   List<Json> observations = [];
   int calls = 0;
+  dynamic isolationReply;
+  Completer<dynamic>? isolationPending;
   @override
   List<Json> get observationDiagnostics => observations;
 
   @override
   Future<dynamic> call(String method, [Json params = const {}]) async {
     calls++;
+    if (method == 'runtime.isolation.probe') {
+      if (isolationPending != null) return isolationPending!.future;
+      if (isolationReply != null) return isolationReply;
+    }
     throw StateError('Diagnostics must not make runtime calls');
   }
 
@@ -115,6 +122,7 @@ void main() {
           'sequence': 2,
         },
       ],
+      'isolation': null,
     });
     expect(runtime.calls, 0);
   });
@@ -125,6 +133,72 @@ void main() {
     expect(observationStage('waiting-first-frame'), '等待首帧');
     expect(observationStage('received'), '已接收');
     expect(observationStage('disconnected'), '已断开，等待重连');
+  });
+
+  testWidgets(
+    'isolation check accepts only independent UID and private denial',
+    (tester) async {
+      final runtime = _Runtime()
+        ..error = null
+        ..isolationReply = {
+          'hostUid': 10100,
+          'workerUid': 99100,
+          'privateReadDenied': true,
+          'bytes': 19,
+          'sha256': 'a' * 64,
+        }
+        ..readyNow();
+      addTearDown(runtime.dispose);
+      await tester.pumpWidget(_host(runtime));
+      await tester.scrollUntilVisible(find.text('检查独立进程'), 200);
+      await tester.ensureVisible(find.text('检查独立进程'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('检查独立进程'));
+      await tester.pumpAndSettle();
+      expect(find.text('独立进程与受限文件读取已通过本次检查。'), findsOneWidget);
+      expect(runtime.calls, 1);
+
+      runtime.isolationReply = {
+        'hostUid': 10100,
+        'workerUid': 10100,
+        'privateReadDenied': true,
+        'bytes': 19,
+        'sha256': 'a' * 64,
+      };
+      await tester.tap(find.text('检查独立进程'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('隔离验证未通过'), findsOneWidget);
+      expect(find.text('独立进程与受限文件读取已通过本次检查。'), findsNothing);
+    },
+  );
+
+  testWidgets('connection change discards an in-flight isolation result', (
+    tester,
+  ) async {
+    final pending = Completer<dynamic>();
+    final runtime = _Runtime()
+      ..error = null
+      ..isolationPending = pending
+      ..readyNow();
+    addTearDown(runtime.dispose);
+    await tester.pumpWidget(_host(runtime));
+    await tester.scrollUntilVisible(find.text('检查独立进程'), 200);
+    await tester.ensureVisible(find.text('检查独立进程'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('检查独立进程'));
+    await tester.pump();
+    expect(find.text('检查中…'), findsOneWidget);
+    runtime.fail(StateError('Service disconnected'));
+    pending.complete({
+      'hostUid': 10100,
+      'workerUid': 99100,
+      'privateReadDenied': true,
+      'bytes': 19,
+      'sha256': 'a' * 64,
+    });
+    await tester.pumpAndSettle();
+    expect(find.text('连接已变化，请重新验证隔离进程。'), findsOneWidget);
+    expect(find.text('独立进程与受限文件读取已通过本次检查。'), findsNothing);
   });
 
   testWidgets('recovery requires a decision and actual ready after admission', (
