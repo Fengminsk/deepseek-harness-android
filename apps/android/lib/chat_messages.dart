@@ -3,7 +3,9 @@ import 'dart:convert';
 
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:material_ui/material_ui.dart';
+import 'package:markdown/markdown.dart' as md;
 
 import 'chat_message_actions.dart';
 import 'chat_projection.dart';
@@ -14,7 +16,67 @@ import 'tool_activity.dart';
 import 'ui.dart';
 
 typedef ChatOpenLink = Future<void> Function(Uri uri);
+typedef ChatOpenFile = Future<void> Function(ChatFileLink file);
 typedef ChatOpenAttachment = Future<void> Function(Json attachment);
+
+@immutable
+class ChatFileLink {
+  const ChatFileLink({required this.sessionId, required this.path, this.line});
+  final String sessionId, path;
+  final int? line;
+}
+
+/// Mirrors ui-primitives/markdown/file-link.ts and workspace-path/file-address.ts.
+/// Paths remain unresolved: only the original Session Host decides their scope.
+ChatFileLink? chatFileLink(String value, {required String sessionId}) {
+  if (sessionId.isEmpty) return null;
+  const resourcePrefix = 'dsh-resource://file/session/';
+  try {
+    if (value.startsWith(resourcePrefix)) {
+      final end = value.indexOf(RegExp(r'[?#]'));
+      final segments = value
+          .substring(resourcePrefix.length, end < 0 ? null : end)
+          .split('/');
+      if (segments.length < 2 || segments.first.isEmpty) return null;
+      final owner = Uri.decodeComponent(segments.first);
+      if (owner != sessionId) return null;
+      return ChatFileLink(
+        sessionId: owner,
+        path: segments.skip(1).map(Uri.decodeComponent).join('/'),
+      );
+    }
+    final hash = value.indexOf('#');
+    final destination = hash < 0 ? value : value.substring(0, hash);
+    if (destination.contains('?')) return null;
+    final path = Uri.decodeComponent(destination);
+    if (path.isEmpty ||
+        RegExp(r'[\x00-\x1f\x7f]').hasMatch(path) ||
+        RegExp(r'^[\\/]{2}').hasMatch(path) ||
+        (RegExp(r'^[a-z][a-z\d+.-]*:', caseSensitive: false).hasMatch(path) &&
+            !RegExp(r'^[a-z]:[\\/]', caseSensitive: false).hasMatch(path))) {
+      return null;
+    }
+    if (hash < 0) return ChatFileLink(sessionId: sessionId, path: path);
+    final match = RegExp(r'^L([1-9]\d*)(?:-L([1-9]\d*))?$')
+        .firstMatch(value.substring(hash + 1));
+    if (match == null) return null;
+    final line = int.tryParse(match[1]!);
+    final end = int.tryParse(match[2] ?? match[1]!);
+    const maxSafeInteger = 9007199254740991;
+    if (line == null ||
+        end == null ||
+        line > maxSafeInteger ||
+        end > maxSafeInteger ||
+        end < line) {
+      return null;
+    }
+    return ChatFileLink(sessionId: sessionId, path: path, line: line);
+  } on FormatException {
+    return null;
+  } on ArgumentError {
+    return null;
+  }
+}
 
 /// Only ordinary web destinations may reach MainActivity.openUrl. Relative
 /// document paths and content/file/intent URLs require an explicit file flow.
@@ -57,6 +119,7 @@ class ChatTimeline extends StatefulWidget {
     this.live,
     this.footer,
     this.onOpenLink,
+    this.onOpenFile,
     this.onOpenAttachment,
     this.onOpenImage,
     super.key,
@@ -67,6 +130,7 @@ class ChatTimeline extends StatefulWidget {
   final ChatLiveMessage? live;
   final Widget? footer;
   final ChatOpenLink? onOpenLink;
+  final ChatOpenFile? onOpenFile;
   final ChatOpenAttachment? onOpenAttachment;
   final ChatOpenAttachment? onOpenImage;
 
@@ -260,11 +324,13 @@ class _ChatTimelineState extends State<ChatTimeline>
           final row = item.entry!;
           final message = ChatMessage(
             entry: row,
+            sessionId: sessionId,
             storageId: '$sessionId:${row.key}',
             activitySource: row.tool == null
                 ? null
                 : _sources[row.tool!.identity],
             onOpenLink: widget.onOpenLink,
+            onOpenFile: widget.onOpenFile,
             onOpenAttachment: widget.onOpenAttachment,
             onOpenImage: widget.onOpenImage,
           );
@@ -299,6 +365,7 @@ class _ChatTimelineState extends State<ChatTimeline>
               children: [
                 ChatContent(
                   content: stream.content,
+                  sessionId: sessionId,
                   storageId: '$sessionId:$liveKey',
                   onOpenLink: widget.onOpenLink,
                   onOpenAttachment: widget.onOpenAttachment,
@@ -355,7 +422,9 @@ class ChatMessage extends StatelessWidget {
   const ChatMessage({
     required this.entry,
     required this.storageId,
+    this.sessionId,
     this.onOpenLink,
+    this.onOpenFile,
     this.onOpenAttachment,
     this.onOpenImage,
     this.activitySource,
@@ -363,7 +432,9 @@ class ChatMessage extends StatelessWidget {
   });
   final ChatEntry entry;
   final String storageId;
+  final String? sessionId;
   final ChatOpenLink? onOpenLink;
+  final ChatOpenFile? onOpenFile;
   final ChatOpenAttachment? onOpenAttachment;
   final ChatOpenAttachment? onOpenImage;
   final ValueListenable<ToolActivity?>? activitySource;
@@ -409,9 +480,11 @@ class ChatMessage extends StatelessWidget {
                   ? SelectableText(entry.text!)
                   : ChatContent(
                       content: entry.content,
+                      sessionId: sessionId,
                       storageId: storageId,
                       opaqueText: true,
                       onOpenLink: onOpenLink,
+                      onOpenFile: onOpenFile,
                       onOpenAttachment: onOpenAttachment,
                       onOpenImage: onOpenImage,
                     ),
@@ -435,7 +508,12 @@ class ChatMessage extends StatelessWidget {
                 ),
                 if (entry.text?.isNotEmpty == true) ...[
                   const SizedBox(height: 8),
-                  PocketMarkdown(data: entry.text!, onOpenLink: onOpenLink),
+                  PocketMarkdown(
+                    data: entry.text!,
+                    sessionId: sessionId,
+                    onOpenLink: onOpenLink,
+                    onOpenFile: onOpenFile,
+                  ),
                 ],
                 if (entry.details != null)
                   _ChatDisclosure(
@@ -476,10 +554,12 @@ class ChatMessage extends StatelessWidget {
                 children: [
                   ChatContent(
                     content: entry.content,
+                    sessionId: sessionId,
                     storageId: storageId,
                     opaqueText: user,
                     selectable: false,
                     onOpenLink: onOpenLink,
+                    onOpenFile: onOpenFile,
                     onOpenAttachment: onOpenAttachment,
                     onOpenImage: onOpenImage,
                   ),
@@ -502,18 +582,22 @@ class ChatContent extends StatelessWidget {
   const ChatContent({
     required this.content,
     required this.storageId,
+    this.sessionId,
     this.opaqueText = false,
     this.selectable = true,
     this.onOpenLink,
+    this.onOpenFile,
     this.onOpenAttachment,
     this.onOpenImage,
     super.key,
   });
   final List<dynamic> content;
   final String storageId;
+  final String? sessionId;
   final bool opaqueText;
   final bool selectable;
   final ChatOpenLink? onOpenLink;
+  final ChatOpenFile? onOpenFile;
   final ChatOpenAttachment? onOpenAttachment;
   final ChatOpenAttachment? onOpenImage;
 
@@ -548,8 +632,10 @@ class ChatContent extends StatelessWidget {
                       )
               : PocketMarkdown(
                   data: text,
+                  sessionId: sessionId,
                   selectable: selectable,
                   onOpenLink: onOpenLink,
+                  onOpenFile: onOpenFile,
                 ),
         );
       case 'reasoning':
@@ -560,7 +646,12 @@ class ChatContent extends StatelessWidget {
           storageId: '$storageId:reasoning:$index',
           title: '思考过程',
           icon: Icons.psychology_outlined,
-          body: (context) => PocketMarkdown(data: text, onOpenLink: onOpenLink),
+          body: (context) => PocketMarkdown(
+            data: text,
+            sessionId: sessionId,
+            onOpenLink: onOpenLink,
+            onOpenFile: onOpenFile,
+          ),
         );
       case 'image':
       case 'file':
@@ -593,13 +684,17 @@ class ChatContent extends StatelessWidget {
 class PocketMarkdown extends StatefulWidget {
   const PocketMarkdown({
     required this.data,
+    this.sessionId,
     this.onOpenLink,
+    this.onOpenFile,
     this.selectable = true,
     super.key,
   });
   final String data;
+  final String? sessionId;
   final bool selectable;
   final ChatOpenLink? onOpenLink;
+  final ChatOpenFile? onOpenFile;
   @override
   State<PocketMarkdown> createState() => _PocketMarkdownState();
 }
@@ -607,6 +702,32 @@ class PocketMarkdown extends StatefulWidget {
 class _PocketMarkdownState extends State<PocketMarkdown> {
   late MarkdownStyleSheet _style;
   String? _linkError;
+  int _openGeneration = 0;
+  final _linkRecognizers = <String, TapGestureRecognizer>{};
+
+  void _disposeLinkRecognizers() {
+    for (final recognizer in _linkRecognizers.values) {
+      recognizer.dispose();
+    }
+    _linkRecognizers.clear();
+  }
+
+  @override
+  void dispose() {
+    _disposeLinkRecognizers();
+    super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(PocketMarkdown oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.sessionId != widget.sessionId ||
+        oldWidget.data != widget.data) {
+      _openGeneration++;
+      _linkError = null;
+      _disposeLinkRecognizers();
+    }
+  }
 
   @override
   void didChangeDependencies() {
@@ -659,22 +780,42 @@ class _PocketMarkdownState extends State<PocketMarkdown> {
     );
   }
 
-  Future<void> _open(String destination) async {
+  ChatFileLink? _file(String destination) => widget.sessionId == null
+      ? null
+      : chatFileLink(destination, sessionId: widget.sessionId!);
+
+  bool _canOpen(String destination) =>
+      (chatExternalUri(destination) != null && widget.onOpenLink != null) ||
+      (_file(destination) != null && widget.onOpenFile != null);
+
+  Future<void> _open(String destination, {bool allowFile = true}) async {
     final uri = chatExternalUri(destination);
-    if (uri == null || widget.onOpenLink == null) {
+    final file = allowFile ? _file(destination) : null;
+    final openLink = widget.onOpenLink, openFile = widget.onOpenFile;
+    final generation = ++_openGeneration;
+    if ((uri == null || openLink == null) &&
+        (file == null || openFile == null)) {
       setState(
-        () => _linkError = uri == null
-            ? '此链接不能直接打开；本地文件请通过文件授权入口访问。'
+        () => _linkError = uri == null && file == null
+            ? '此链接不能直接打开。'
             : '当前无法打开链接。',
       );
       return;
     }
     try {
-      await widget.onOpenLink!(uri);
-      if (mounted) setState(() => _linkError = null);
+      if (uri != null && openLink != null) {
+        await openLink(uri);
+      } else {
+        await openFile!(file!);
+      }
+      if (mounted && generation == _openGeneration) {
+        setState(() => _linkError = null);
+      }
     } catch (_) {
       // The opener owns platform diagnostics; avoid echoing a URL's secrets.
-      if (mounted) setState(() => _linkError = '链接打开失败，请重试。');
+      if (mounted && generation == _openGeneration) {
+        setState(() => _linkError = '链接打开失败，请重试。');
+      }
     }
   }
 
@@ -683,9 +824,29 @@ class _PocketMarkdownState extends State<PocketMarkdown> {
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
       MarkdownBody(
+        key: ValueKey((
+          widget.sessionId,
+          widget.onOpenFile != null,
+          widget.onOpenLink != null,
+          widget.selectable,
+        )),
         data: widget.data,
         selectable: widget.selectable,
         styleSheet: _style,
+        builders: {
+          'a': _PocketLinkBuilder(
+            style: _style,
+            selectable: widget.selectable,
+            linkRecognizer: (destination) => !_canOpen(destination)
+                ? null
+                : _linkRecognizers.putIfAbsent(
+                    destination,
+                    () =>
+                        TapGestureRecognizer()
+                          ..onTap = () => unawaited(_open(destination)),
+                  ),
+          ),
+        },
         onTapLink: (_, href, _) {
           if (href != null) unawaited(_open(href));
         },
@@ -700,7 +861,7 @@ class _PocketMarkdownState extends State<PocketMarkdown> {
           subtitle: Text(
             chatExternalUri(uri.toString()) == null ? '需要通过文件入口访问' : '点击打开图片链接',
           ),
-          onTap: () => unawaited(_open(uri.toString())),
+          onTap: () => unawaited(_open(uri.toString(), allowFile: false)),
         ),
       ),
       if (_linkError != null)
@@ -713,6 +874,65 @@ class _PocketMarkdownState extends State<PocketMarkdown> {
         ),
     ],
   );
+}
+
+/// Unavailable links keep their inline formatting, without a link gesture or
+/// link color. Images inside labels contribute alt text, never an implicit read.
+class _PocketLinkBuilder extends MarkdownElementBuilder {
+  _PocketLinkBuilder({
+    required this.style,
+    required this.selectable,
+    required this.linkRecognizer,
+  });
+  final MarkdownStyleSheet style;
+  final bool selectable;
+  final TapGestureRecognizer? Function(String) linkRecognizer;
+
+  @override
+  Widget visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    final destination = element.attributes['href'] ?? '';
+    final recognizer = linkRecognizer(destination);
+    final textStyle = recognizer == null
+        ? parentStyle
+        : parentStyle?.merge(preferredStyle);
+    final span = TextSpan(
+      children: [
+        for (final node in element.children ?? const <md.Node>[])
+          ..._spans(node, textStyle, recognizer),
+      ],
+    );
+    return selectable
+        ? SelectableText.rich(span, textScaler: style.textScaler)
+        : Text.rich(span, textScaler: style.textScaler);
+  }
+
+  Iterable<TextSpan> _spans(
+    md.Node node,
+    TextStyle? inherited,
+    TapGestureRecognizer? recognizer,
+  ) sync* {
+    if (node is md.Text) {
+      yield TextSpan(text: node.text, style: inherited, recognizer: recognizer);
+      return;
+    }
+    final element = node as md.Element;
+    final textStyle = inherited?.merge(style.styles[element.tag]);
+    if (element.tag == 'img' || element.tag == 'br') {
+      yield TextSpan(
+        text: element.tag == 'img' ? element.attributes['alt'] ?? '' : '\n',
+        style: textStyle,
+        recognizer: recognizer,
+      );
+    }
+    for (final child in element.children ?? const <md.Node>[]) {
+      yield* _spans(child, textStyle, recognizer);
+    }
+  }
 }
 
 class _AttachmentRow extends StatefulWidget {

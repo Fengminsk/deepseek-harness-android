@@ -17,6 +17,7 @@ import 'attachment_file.dart';
 import 'composer_commands.dart';
 import 'session_models.dart';
 import 'session_model_projection.dart';
+import 'session_document.dart';
 import 'models.dart';
 import 'account.dart';
 import 'flclash/popup.dart';
@@ -680,6 +681,19 @@ class _ChatPageState extends State<ChatPage> {
                   live: live,
                   onOpenLink: (uri) => RuntimeController.channel
                       .invokeMethod<void>('openUrl', uri.toString()),
+                  onOpenFile: (file) async {
+                    await Navigator.push<void>(
+                      context,
+                      PocketRoute<void>(
+                        builder: (_) => SessionDocumentPage(
+                          runtime: widget.runtime,
+                          sessionId: file.sessionId,
+                          path: file.path,
+                          line: file.line,
+                        ),
+                      ),
+                    );
+                  },
                   onOpenImage: (attachment) => showPocketSessionImage(
                     context,
                     widget.runtime,

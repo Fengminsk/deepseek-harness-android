@@ -21,7 +21,9 @@ Pocket Harness 的目标是在 App 内覆盖完整的 DSH 产品流程，当前�
 
 [迁移清单](tool/parity-manifest.json)记录原版条目及对应的 Android 代码和证据。在仓库根目录运行 `node apps/android/tool/parity-audit.mjs`，检查未分类的源码变化和无效引用。这项清单检查不会执行功能，也不代表功能通过验收。核心组合、App 交互、行为测试和真机验收分别记录，部分实现仍标为部分实现。
 
-DSH 已有[会话工作目录文件树](../../packages/client/ui-sidebar-files/README.zh.md)，以及文本、代码、Markdown、图片、PDF、HTML、Excel 和 Office 的[文档预览](../../packages/client/ui-sidebar-documentpreview/README.zh.md)。Android 当前固定私有目录浏览和 UTF-8 阅读不能替代这些能力。文件迁移沿用原版 [workspaceFiles 服务](../../packages/api/workspace-files/README.zh.md)，包括按会话解析、二进制读取、版本、取消和变更订阅。SAF 授权仍是独立的 Android 文件来源；附件 ID 仍使用独立的会话授权来源。
+DSH 已有[会话工作目录文件树](../../packages/client/ui-sidebar-files/README.zh.md)，以及文本、代码、Markdown、图片、PDF、HTML、Excel 和 Office 的[文档预览](../../packages/client/ui-sidebar-documentpreview/README.zh.md)。当前会话菜单通过原版 [workspaceFiles 服务](../../packages/api/workspace-files/README.zh.md)打开会话文件，保留工作目录、文件权限、版本和变更订阅。目录在同一原生页面中切换，支持面包屑与滚动位置恢复。这与 App 私有文件、SAF 授权及会话附件 ID 是不同入口，各自保留独立授权。
+
+会话文档在专用 Android WebView 内使用原版阅读器资源，导航采用原生悬浮组件。内置资源与绑定会话的读取接口在 Web 访问关闭时也可工作。二进制数据按有限大小分片传输；关闭或取消页面会释放请求、订阅和保留的数据。Markdown 本地图片使用同一会话文件服务和原版媒体大小限制。Office 转换、远程资源、交互式 HTML 偏好及阅读器内部的文档间导航仍未完成。主机渲染测试与 Kotlin 编译不能代替 Android WebView 真机验收。
 
 [Android 配置补丁](runtime/cordis.patch.yml)与[预设暂存](tool/stage-preset.mjs)目前缺少 Office 转换、持久终端、部分标准工具和预设等能力。这些是迁移缺口，不能解释成 DSH 没有相应功能。Root、设备 ADB 控制、离线模型推理和开机自启动仍不属于已约定的本期范围；其他平台差异需要明确的适配与验收记录，不能静默删去原版行为。
 
@@ -53,7 +55,7 @@ node apps/android/tool/smoke-runtime.mjs
 ../../.cache/flutter/bin/flutter.bat build apk --debug --target-platform android-arm64 --no-pub
 ```
 
-交付前，在本目录运行 `tool/verify-apk.ps1`，传入 `-ApkPath build/app/outputs/flutter-apk/app-debug.apk`，并用 `-ExpectedVersionName` 和 `-ExpectedVersionCode` 指定本次构建的预期版本。校验器读取编译后的 Manifest 与 ZIP 条目，检查 ARM64 的八个必需原生库，并核对内嵌运行时与包内 SHA256 是否一致。结果以 JSON 输出，不一致时以非零状态退出。Gradle 的 `disable-abi-filtering` 属性保留应用明确设置的 ARM64 过滤；APK 文件名不能证明实际包含的架构。
+交付前，在本目录运行 `tool/verify-apk.ps1`，传入 `-ApkPath build/app/outputs/flutter-apk/app-debug.apk`，并用 `-ExpectedVersionName` 和 `-ExpectedVersionCode` 指定本次构建的预期版本。校验器读取编译后的 Manifest 与 ZIP 条目，检查 ARM64 的八个必需原生库，并核对内嵌运行时与包内 SHA256 是否一致。还需运行 `node tool/verify-document-preview.mjs build/app/outputs/flutter-apk/app-debug.apk`，按资源清单与原模块哈希核对包内阅读器资源。两个校验器都以 JSON 输出结果，不一致时以非零状态退出。Gradle 的 `disable-abi-filtering` 属性保留应用明确设置的 ARM64 过滤；APK 文件名不能证明实际包含的架构。
 
 <a id="runtime"></a>
 ## 运行时与存储
@@ -215,5 +217,7 @@ Flutter 测试覆盖草稿保留、主题、悬浮控件、弹层拖选、大字
 暂存 Android profile 的主机会话目录冒烟测试验证了正文索引按需建立、受限的匹配摘要、冷重启后保留搜索结果，以及搜索不改写会话日志、不激活 Agent、不增加模型请求。原生搜索控件与连接替换回归已有主机测试证据。构建 29 在手机上搜索 `BACKGROUND`，返回三个既有合成会话；打开结果后显示了原始提示、Shell 命令及输出。Android 包元数据确认构建号为 29。Agent 设置目录与子 Agent 参数条目也能够打开，没有修改配置。这次短时、连接 USB 的检查确认了内嵌搜索实际执行，尚不能证明响应时间、冷启动恢复或拔线后台运行。
 
 附件阅读、搜索结果打开源文件及 Android 设置分组通过了 181 项定向 Flutter 测试和全量 Flutter 静态检查。测试覆盖草稿保留、连接替换、迟到回执、取消保存、清理重试、原授权路径及授权撤销。放行旧保存回执的负向验证按预期断言失败。主机上检查了手机尺寸的浅深色阅读页和设置分组。构建 30 已安装到手机并确认实际包版本。Android 工具分组和 Shell 二级页面能够打开，私有工作区阅读页显示了既有合成文件 `acceptance.txt` 的正文，没有修改配置或文件。历史附件另存为、搜索结果打开源文件及连接恢复仍需真机验收。
+
+构建 32 已成功安装，Android 包信息确认了对应版本。原生“会话文件”入口列出了现有测试会话的实际工作目录和其中 54 字节的 `acceptance.txt`。内嵌原版阅读器在原生悬浮标题下显示了两行合成文本，包括 `POCKET14_FILE_OK`。这次短时真机检查没有覆盖嵌套目录、PDF/Excel worker、Markdown 配图、文件变更通知和服务替换；这些行为仍分别保留主机证据或待真机验证状态。APK 校验按资源清单和原模块哈希检查了全部 131 个文档资源，并核对内嵌运行时校验值与 ARM64 库。
 
 真实子 Agent 续聊与中断、自动化、断网后的账号恢复、锁屏执行的时效稳定性，以及拔线后台运行仍需手机验收。App 全量管理覆盖及限定运行设置之外的配置迁移仍未完成；引用选择、消息评价和部分文档预览仍有缺口。设备截图、诊断日志、个人会话和生成的 APK 是本地文件，不进入 Git。

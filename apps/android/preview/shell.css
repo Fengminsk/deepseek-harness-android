@@ -1,0 +1,37 @@
+html, body, #document-root { margin: 0; width: 100%; height: 100%; min-height: 0; overflow: hidden; }
+body { background: var(--document-background, #fff); color: var(--document-foreground, #151515); font-family: var(--dsw-font-family); }
+#document-root { position: relative; }
+/* The native title floats above the document. The original controls become a
+   small floating toolbar instead of reserving a rectangular header band. */
+[data-textpreview-state] > div:has(> [data-textpreview-path]) {
+  position: absolute; z-index: 4; top: var(--document-top-inset, 0px); right: 12px;
+  height: 38px; border: 0; border-radius: 19px; padding: 0 6px;
+  background: color-mix(in srgb, var(--document-background, #fff) 80%, transparent);
+  backdrop-filter: blur(16px); box-shadow: 0 1px 5px #0002;
+}
+[data-textpreview-path] { display: none; }
+/* Standalone source files keep the original language/copy controls. Their
+   sibling banner floats beside the viewer controls instead of clipping source
+   beneath a second opaque header. Markdown code-card banners stay unchanged. */
+[data-code-preview] .md-code-block > div:has(> [data-code-block-banner]) {
+  position: absolute; z-index: 4; top: var(--document-top-inset, 0px); left: 12px;
+  max-width: calc(50% - 24px); border-radius: 19px;
+  background: color-mix(in srgb, var(--document-background, #fff) 80%, transparent);
+  backdrop-filter: blur(16px); box-shadow: 0 1px 5px #0002;
+}
+[data-code-preview] [data-code-block-banner] { box-sizing: border-box; height: 38px; padding: 0 10px; }
+/* Insets belong to scroll CONTENT, including the renderer-owned scrollports,
+   so all documents continue behind the native floating title while scrolling. */
+[data-textpreview-body]:not(:has([data-document-zoom-scrollport], [data-code-preview], [data-excel-preview])) {
+  box-sizing: border-box; padding-top: calc(var(--document-top-inset, 0px) + 46px); padding-bottom: var(--document-bottom-inset, 0px);
+}
+[data-document-zoom-scrollport], [data-code-preview] [data-code-block-content] {
+  box-sizing: border-box; padding-top: calc(var(--document-top-inset, 0px) + 46px); padding-bottom: var(--document-bottom-inset, 0px);
+  scroll-padding-top: calc(var(--document-top-inset, 0px) + 46px);
+}
+[data-textpreview-state="loading"], .document-failure { box-sizing: border-box; padding: calc(var(--document-top-inset, 0px) + 48px) 24px 24px; }
+/* The spreadsheet owns canvas-based scroll geometry: preserve that renderer,
+   keeping its tool and formula strip below the overlay without moving WebView. */
+[data-excel-preview] { box-sizing: border-box; padding-top: calc(var(--document-top-inset, 0px) + 46px); padding-bottom: var(--document-bottom-inset, 0px); }
+@media (prefers-reduced-motion: no-preference) { [data-textpreview-state] { animation: document-enter 180ms ease-out; } }
+@keyframes document-enter { from { opacity: .5; filter: blur(3px); } to { opacity: 1; filter: blur(0); } }

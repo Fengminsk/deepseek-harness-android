@@ -192,17 +192,20 @@
       ],
       "status": "partial",
       "android": [
-        "apps/android/lib/workspace_files.dart",
-        "apps/android/lib/image_preview.dart",
-        "apps/android/lib/attachment_file.dart"
+        "apps/android/lib/session_document.dart",
+        "apps/android/runtime/document-preview.mjs",
+        "apps/android/preview/main.mjs",
+        "apps/android/preview/browser.test.mjs",
+        "apps/android/tool/smoke-document-preview.mjs",
+        "apps/android/tool/verify-document-preview.mjs"
       ],
       "evidence": {
-        "core": "unverified",
+        "core": "partial",
         "ui": "partial",
-        "behavior": "unverified",
-        "device": "unverified"
+        "behavior": "partial",
+        "device": "partial"
       },
-      "note": "Some text and attachment image readers exist; Session-bound PDF, Office, Excel, HTML, Markdown and code preview parity is missing."
+      "note": "Original reader bundles run in a Session-bound document-only surface with host rendering and original Gateway evidence. Build 32 displayed the existing synthetic text file on the phone; other Android renderers, Office, interactive HTML preferences and nested resource navigation remain gaps."
     },
     {
       "key": "webUi/ui-sidebar-browser",
@@ -250,16 +253,23 @@
       ],
       "status": "partial",
       "android": [
-        "apps/android/lib/workspace_files.dart",
-        "apps/android/lib/files.dart"
+        "apps/android/lib/session_files.dart",
+        "apps/android/lib/chat_sidebar.dart",
+        "apps/android/test/session_files_test.dart",
+        "apps/android/test/session_files_sidebar_test.dart"
       ],
       "evidence": {
-        "core": "unverified",
+        "core": "verified",
         "ui": "partial",
-        "behavior": "unverified",
-        "device": "unverified"
+        "behavior": "partial",
+        "device": "partial"
       },
-      "note": "Private-root and SAF browsing exist, but do not implement the original Session-cwd tree and change feed."
+      "evidenceRefs": {
+        "core": ["apps/android/tool/smoke-document-preview.mjs"],
+        "ui": ["apps/android/test/session_files_sidebar_test.dart"],
+        "behavior": ["apps/android/test/session_files_test.dart"]
+      },
+      "note": "Current Session files use the original cold Session cwd and workspaceFiles list/change feed. Native same-page navigation and original-service host smoke pass. Build 32 listed the test Session cwd and opened its existing text file on the phone; nested device navigation and remaining file interactions are unverified."
     },
     {
       "key": "webUi/ui-settings",

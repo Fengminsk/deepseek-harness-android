@@ -1,5 +1,6 @@
 import Schema from '@deepseek-ai/schemastery'
 import { randomUUID } from 'node:crypto'
+import { createRequire } from 'node:module'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { SessionId } from '@deepseek-ai/dsh-session'
@@ -19,6 +20,7 @@ import AndroidAccountCallback from './account-callback.mjs'
 import { AppAttachments } from './attachments.mjs'
 import { createRuntimeTransport } from './transport.mjs'
 import { AppDocumentSearch } from './document-search.mjs'
+import { AppDocumentPreview } from './document-preview.mjs'
 import { AppTasks } from './tasks.mjs'
 import { AppPackageOperations } from './package-operations.mjs'
 import { AppConfigurationTransfers } from './configuration-transfer.mjs'
@@ -44,6 +46,13 @@ export const Config = Schema.object({
   documentSearchPreviewChars: Schema.natural().min(512).max(2000).default(600).volatile(),
   documentSearchMaxDurationMs: Schema.natural().min(100).max(300000).default(30000).volatile(),
   documentSearchMaxRequests: Schema.natural().min(1).max(4).default(4).volatile(),
+  documentPreviewMaxRequests: Schema.natural().min(1).max(32).default(8).volatile(),
+  documentPreviewMaxOwnerRequests: Schema.natural().min(1).max(16).default(4).volatile(),
+  documentPreviewMaxLeaseBytes: Schema.natural().min(1024).max(268435456).default(67108864).volatile(),
+  documentPreviewMaxLeases: Schema.natural().min(1).max(128).default(32).volatile(),
+  documentPreviewLeaseTimeoutMs: Schema.natural().min(1000).max(600000).default(120000).volatile(),
+  documentPreviewRequestTimeoutMs: Schema.natural().min(100).max(300000).default(90000).volatile(),
+  documentPreviewCloseTimeoutMs: Schema.natural().min(100).max(30000).default(5000).volatile(),
   workspaceReadPageBytes: Schema.natural().min(1024).max(1048576).default(65536).volatile(),
   workspaceDirectoryMaxEntries: Schema.natural().min(1).max(10000).default(5000).volatile(),
   workspaceDirectoryPageSize: Schema.natural().min(1).max(500).default(100).volatile(),
@@ -151,6 +160,16 @@ export function apply(ctx, config) {
   const documentSearch = new AppDocumentSearch(transport, {
     maxRequests: () => config.documentSearchMaxRequests.get(), limits: searchLimits,
   })
+  // Resolve the original media route's MIME dependency from its owning package.
+  const mediaMime = createRequire(import.meta.resolve('@deepseek-ai/dsh-api-session-controller/package.json'))('mime-types')
+  const documentPreview = new AppDocumentPreview({ invoke,
+    mediaPolicy: path => ({ maxBytes: ctx.get('attachments')?.imageLimits?.maxImageBytes,
+      mimeType: mediaMime.lookup(path) || 'application/octet-stream' }), limits: () => ({
+    maxRequests: config.documentPreviewMaxRequests.get(), maxOwnerRequests: config.documentPreviewMaxOwnerRequests.get(),
+    maxLeaseBytes: config.documentPreviewMaxLeaseBytes.get(), maxLeases: config.documentPreviewMaxLeases.get(),
+    leaseTimeoutMs: config.documentPreviewLeaseTimeoutMs.get(), requestTimeoutMs: config.documentPreviewRequestTimeoutMs.get(),
+    closeTimeoutMs: config.documentPreviewCloseTimeoutMs.get(),
+  }) })
   const workspaceFiles = new AppWorkspaceFiles({
     root: process.cwd(),
     limits: () => ({
@@ -172,6 +191,7 @@ export function apply(ctx, config) {
     if (method === 'native.appDisconnected') {
       void streams.closeOwner(params.owner).catch(error => console.error('App stream cleanup failed:', error))
       void documentSearch.closeOwner(params.owner).catch(error => console.error('App file search cleanup failed:', error))
+      void documentPreview.closeOwner(params.owner).catch(error => console.error('App document preview cleanup failed:', error))
       void attachmentFiles.closeOwner(params.owner).catch(() => console.error('App attachment file cleanup failed'))
     }
   })
@@ -179,6 +199,7 @@ export function apply(ctx, config) {
   transport.onRequest(async (method, params) => {
     if (method.startsWith('library.')) return library.call(method.slice('library.'.length), params)
     if (method.startsWith('workspace.files.')) return workspaceFiles.call(method.slice('workspace.files.'.length), params)
+    if (method.startsWith('document.')) return documentPreview.call(method.slice('document.'.length), params)
     switch (method) {
       case 'runtime.info': return { node: process.version, platform: process.platform, arch: process.arch,
         uid: process.getuid?.(), workspace: process.cwd(), profile: 'android' }
@@ -342,7 +363,7 @@ export function apply(ctx, config) {
         () => packageOperations.close(),
         () => configurationTransfers.close(), () => subagents.close(), () => workspaceFiles.close(), () => library.close(),
         () => live.close(),
-        () => streams.close(), () => interactions.close(), () => web.close(),
+        () => streams.close(), () => documentPreview.close(), () => interactions.close(), () => web.close(),
       ].map(close => Promise.resolve().then(close)))
       // Stream and interaction owners release their peer before the shared API peer.
       results.push(...await Promise.allSettled([Promise.resolve().then(() => appPeer?.dispose())]))

@@ -63,4 +63,5 @@ flutter {
 
 dependencies {
     implementation("androidx.browser:browser:1.10.0")
+    implementation("androidx.webkit:webkit:1.15.0")
 }

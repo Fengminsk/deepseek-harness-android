@@ -15,6 +15,7 @@ import java.util.UUID
 class MainActivity : FlutterActivity() {
     private var service: Messenger? = null
     private var events: EventChannel.EventSink? = null
+    private var documentPreviews: DocumentPreviewFactory? = null
     private val transfers by lazy { DocumentTransfers(this) }
     private val exports by lazy { DocumentExports(this) }
     private val attachmentFiles by lazy {
@@ -149,6 +150,7 @@ class MainActivity : FlutterActivity() {
                     restartModeToken = null
                 }
             }
+            documentPreviews?.receive(frame)
             events?.success(raw)
         }
         true
@@ -168,6 +170,7 @@ class MainActivity : FlutterActivity() {
         requests.forEach { it.error(code, message, null) }
     }
     private fun releaseBinding(code: String = "disconnected", message: String = "运行时连接已变化，操作结果需重新核对") {
+        documentPreviews?.disconnected()
         attachmentFiles.cancelCurrent()
         val previous = connection
         connection = null
@@ -228,6 +231,9 @@ class MainActivity : FlutterActivity() {
     }
     override fun configureFlutterEngine(engine: FlutterEngine) {
         super.configureFlutterEngine(engine)
+        documentPreviews = DocumentPreviewFactory { frame, result -> sendCall(frame, result); Unit }.also {
+            engine.platformViewsController.registry.registerViewFactory("dsh/document-preview", it)
+        }
         EventChannel(engine.dartExecutor.binaryMessenger, "dsh/events").setStreamHandler(object : EventChannel.StreamHandler {
             override fun onListen(arguments: Any?, sink: EventChannel.EventSink) { events = sink; deliverNavigation() }
             override fun onCancel(arguments: Any?) { events = null }
@@ -557,6 +563,8 @@ class MainActivity : FlutterActivity() {
         transfers.onActivityResult(requestCode, resultCode, data)
     }
     override fun onDestroy() {
+        documentPreviews?.close()
+        documentPreviews = null
         bindingHandshake.close()
         // Release a pending transition while its original client still exists.
         abortTransition()

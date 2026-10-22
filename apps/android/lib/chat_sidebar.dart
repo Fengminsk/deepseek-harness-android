@@ -13,6 +13,8 @@ import 'library.dart';
 import 'library_data.dart';
 import 'runtime.dart';
 import 'settings.dart';
+import 'session_document.dart';
+import 'session_files.dart';
 import 'session_search.dart';
 import 'subagents.dart';
 import 'ui.dart';
@@ -492,6 +494,27 @@ class _ChatSidebarState extends State<ChatSidebar> {
                           _page(ApprovalsPage(runtime: widget.runtime)),
                     ),
                     if (current != null) ...[
+                      CommonPopupMenuItem(
+                        label: '会话文件',
+                        glyph: Icons.folder_open_outlined,
+                        onPressed: () => _page(
+                          SessionFilesPage(
+                            runtime: widget.runtime,
+                            sessionId: widget.currentSessionId,
+                            onOpenDocument: (context, sessionId, path) async {
+                              await Navigator.of(context).push<void>(
+                                PocketRoute(
+                                  builder: (_) => SessionDocumentPage(
+                                    runtime: widget.runtime,
+                                    sessionId: sessionId,
+                                    path: path,
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                      ),
                       CommonPopupMenuItem(
                         label: '当前会话的子 Agent',
                         glyph: Icons.account_tree_outlined,

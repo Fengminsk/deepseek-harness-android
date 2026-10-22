@@ -1,0 +1,13 @@
+# Bilingual-pair consistency record for README.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write apps/android/preview/README.md
+/android-document-preview:
+  en: 624900c1dc9d1a9a
+  zh: 6898f74ed053aa10
+/android-document-preview/native-contract:
+  en: bb7d9aa38c9ffdc5
+  zh: b656ba4ce4b5a8cb
+/android-document-preview/current-verification-boundary:
+  en: e9a867f19a18b514
+  zh: 65052c42510c67ec

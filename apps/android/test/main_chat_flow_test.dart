@@ -5,6 +5,7 @@ import 'dart:ui' as ui;
 import 'package:dsh_android/chat_messages.dart';
 import 'package:dsh_android/main.dart';
 import 'package:dsh_android/runtime.dart';
+import 'package:dsh_android/session_document.dart';
 import 'package:dsh_android/tasks.dart';
 import 'package:dsh_android/subagents.dart';
 import 'package:dsh_android/ui.dart';
@@ -190,6 +191,43 @@ ScrollController _scroll(WidgetTester tester) =>
     tester.widget<ChatTimeline>(find.byType(ChatTimeline)).controller;
 
 void main() {
+  testWidgets(
+    'assistant file link opens the original document route with its Session and line',
+    (tester) async {
+      _phone(tester);
+      final runtime = _ChatRuntime([
+        fixture.input(0, 'Show the report'),
+        fixture.assistant(1, '[查看报告](../reports/report.md#L12-L18)'),
+      ]);
+      addTearDown(runtime.dispose);
+      await tester.pumpWidget(_host(runtime));
+      await _openHistory(tester);
+      await tester.tap(find.text('查看报告', findRichText: true).last);
+      await tester.pumpAndSettle();
+      final page = tester.widget<SessionDocumentPage>(
+        find.byType(SessionDocumentPage),
+      );
+      expect(
+        (page.sessionId, page.path, page.line),
+        ('history', '../reports/report.md', 12),
+      );
+      expect(
+        runtime.calls.any(
+          (call) =>
+              call.method == 'session.ensure' ||
+              call.method == 'session.send' ||
+              call.method.startsWith('attachments.'),
+        ),
+        false,
+      );
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(find.byType(ChatTimeline), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+    variant: TargetPlatformVariant({TargetPlatform.linux}),
+  );
+
   testWidgets('optional local composer layout captures', (tester) async {
     final output = Platform.environment['POCKET_COMPOSER_CAPTURE_DIR'];
     if (output == null) return;
