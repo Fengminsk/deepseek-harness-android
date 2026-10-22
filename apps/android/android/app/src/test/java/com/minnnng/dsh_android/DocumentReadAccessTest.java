@@ -88,10 +88,11 @@ public final class DocumentReadAccessTest {
         rejects(IOException.class, () -> DocumentReadAccess.read(new Source(new byte[] {'a', 0, 'b'}), ROOT, "", 0));
         check(provider.closed == provider.opened, "failed provider read leaked stream");
         largeOffsets();
+        nonSeekableLargeOffset();
         revokedWhileSeeking();
         interruptedWhileReading();
         unavailableOrMoved();
-        System.out.println("DocumentReadAccess: grants, UTF-8 pages, >2GiB positions, strict JSON offsets, in-flight revoke/interrupt, and provider failures passed");
+        System.out.println("DocumentReadAccess: grants, UTF-8 pages, >2GiB positions, bounded non-seekable fallback, strict JSON offsets, in-flight revoke/interrupt, and provider failures passed");
     }
 
     private static void largeOffsets() throws Exception {
@@ -106,11 +107,16 @@ public final class DocumentReadAccessTest {
         class SparseSource implements DocumentReadAccess.Source {
             int opened, closed, reads, seeks;
             public boolean isGranted(String root) { return ROOT.equals(root); }
-            public InputStream open(String root, String path) {
+            public InputStream open(String root, String path) { return streamAt(0); }
+            public DocumentReadAccess.Opened openAt(String root, String path, long offset) {
+                seeks++;
+                return new DocumentReadAccess.Opened(streamAt(offset), offset);
+            }
+            private InputStream streamAt(long start) {
                 opened++;
                 return new InputStream() {
-                    long position;
-                    public long skip(long count) { seeks++; position += count; return count; }
+                    long position = start;
+                    public long skip(long count) { throw new AssertionError("Directly positioned stream must not skip"); }
                     public int read() { throw new AssertionError("Unexpected byte-at-a-time read"); }
                     public int read(byte[] buffer, int at, int count) {
                         reads++;
@@ -133,23 +139,106 @@ public final class DocumentReadAccessTest {
             "large offset scanning was not bounded or leaked streams");
     }
 
-    private static void revokedWhileSeeking() throws Exception {
-        class RevokingSource implements DocumentReadAccess.Source {
-            boolean granted = true;
-            int seeks, reads, closed;
-            public boolean isGranted(String root) { return granted; }
+    private static void nonSeekableLargeOffset() throws Exception {
+        class NonSeekableSource implements DocumentReadAccess.Source {
+            int bulkReads, singleReads, closed;
+            public boolean isGranted(String root) { return ROOT.equals(root); }
             public InputStream open(String root, String path) {
                 return new InputStream() {
-                    public long skip(long count) { seeks++; granted = false; return 1; }
-                    public int read() { reads++; return 'x'; }
+                    public long skip(long count) { return 0; }
+                    public int read() { singleReads++; return 'x'; }
+                    public int read(byte[] bytes, int at, int count) {
+                        bulkReads++;
+                        java.util.Arrays.fill(bytes, at, at + count, (byte) 'x');
+                        return count;
+                    }
                     public void close() { closed++; }
                 };
             }
         }
+        NonSeekableSource source = new NonSeekableSource();
+        var page = DocumentReadAccess.read(source, ROOT, "large.txt", 8L * 1024 * 1024);
+        check(page.offset == 8L * 1024 * 1024 && page.text.length() == 262144,
+            "non-seekable provider lost the page position");
+        check(source.bulkReads < 140 && source.singleReads == 0,
+            "non-seekable provider was read byte by byte");
+        try {
+            DocumentReadAccess.read(source, ROOT, "large.txt", 64L * 1024 * 1024 + 1);
+            throw new AssertionError("Expected bounded non-seekable position failure");
+        } catch (IOException expected) {
+            check(expected.getMessage().contains("64 MiB"), "large-file fallback has no recovery guidance");
+        }
+        check(source.bulkReads < 1200 && source.closed == 2,
+            "bounded seek failure kept scanning or leaked a provider stream");
+
+        class RevokingFallbackSource implements DocumentReadAccess.Source {
+            boolean granted = true;
+            int reads, closed;
+            public boolean isGranted(String root) { return granted; }
+            public InputStream open(String root, String path) {
+                return new InputStream() {
+                    public long skip(long count) { return 0; }
+                    public int read() { throw new AssertionError("Revoked fallback must not continue"); }
+                    public int read(byte[] bytes, int at, int count) {
+                        reads++;
+                        granted = false;
+                        return count;
+                    }
+                    public void close() { closed++; }
+                };
+            }
+        }
+        RevokingFallbackSource revoked = new RevokingFallbackSource();
+        rejects(SecurityException.class, () -> DocumentReadAccess.read(revoked, ROOT, "", 1024));
+        check(revoked.reads == 1 && revoked.closed == 1, "revoked fallback read continued or leaked stream");
+
+        DocumentReadAccess.Source noSkip = new DocumentReadAccess.Source() {
+            public boolean isGranted(String root) { return true; }
+            public InputStream open(String root, String path) {
+                return new InputStream() {
+                    int next;
+                    public long skip(long count) { throw new AssertionError("Provider skip must never be called"); }
+                    public int read() { return next++ < 8 ? 'x' : -1; }
+                };
+            }
+        };
+        check(DocumentReadAccess.read(noSkip, ROOT, "", 2).text.equals("xxxxxx"),
+            "bounded fallback accidentally called provider skip");
+
+        class InvalidPosition implements DocumentReadAccess.Source {
+            int closed;
+            public boolean isGranted(String root) { return true; }
+            public InputStream open(String root, String path) { throw new AssertionError("Invalid direct position must not reopen"); }
+            public DocumentReadAccess.Opened openAt(String root, String path, long offset) {
+                return new DocumentReadAccess.Opened(new ByteArrayInputStream(new byte[] {'x'}) {
+                    public void close() { closed++; }
+                }, offset + 1);
+            }
+        }
+        InvalidPosition invalidPosition = new InvalidPosition();
+        rejects(IOException.class, () -> DocumentReadAccess.read(invalidPosition, ROOT, "", 2));
+        check(invalidPosition.closed == 1, "invalid direct position leaked stream");
+    }
+
+    private static void revokedWhileSeeking() throws Exception {
+        class RevokingSource implements DocumentReadAccess.Source {
+            boolean granted = true;
+            int positions, reads, closed;
+            public boolean isGranted(String root) { return granted; }
+            public InputStream open(String root, String path) { throw new AssertionError("Positioned source must not reopen"); }
+            public DocumentReadAccess.Opened openAt(String root, String path, long offset) {
+                positions++;
+                granted = false;
+                return new DocumentReadAccess.Opened(new InputStream() {
+                    public int read() { reads++; return 'x'; }
+                    public void close() { closed++; }
+                }, offset);
+            }
+        }
         RevokingSource source = new RevokingSource();
         rejects(SecurityException.class, () -> DocumentReadAccess.read(source, ROOT, "", 16));
-        check(source.seeks == 1 && source.reads == 0 && source.closed == 1,
-            "revocation during seek must prevent further provider reads and close the stream");
+        check(source.positions == 1 && source.reads == 0 && source.closed == 1,
+            "revocation during direct positioning must prevent provider reads and close the stream");
     }
 
     private static void interruptedWhileReading() throws Exception {

@@ -14,6 +14,20 @@ public final class DocumentReadAccess {
     public interface Source {
         boolean isGranted(String root);
         InputStream open(String root, String path) throws IOException;
+        /** Return an OS-positioned stream only when the provider proves random access. */
+        default Opened openAt(String root, String path, long offset) throws IOException {
+            return new Opened(open(root, path), 0);
+        }
+    }
+
+    public static final class Opened {
+        public final InputStream stream;
+        public final long position;
+
+        public Opened(InputStream stream, long position) {
+            this.stream = stream;
+            this.position = position;
+        }
     }
 
     public static final class Page {
@@ -31,6 +45,8 @@ public final class DocumentReadAccess {
     }
 
     private static final int PAGE_BYTES = 262144;
+    private static final int SEEK_BUFFER_BYTES = 65536;
+    private static final long MAX_UNSEEKABLE_BYTES = 67108864L;
     private static final long MAX_OFFSET = 9007199254740991L;
 
     private DocumentReadAccess() {}
@@ -55,19 +71,33 @@ public final class DocumentReadAccess {
         checkpoint(source, root);
         byte[] bytes = new byte[PAGE_BYTES + 4];
         int total = 0;
-        try (InputStream stream = source.open(root, path)) {
+        Opened opened = source.openAt(root, path, offset);
+        if (opened == null) throw new IOException("文件提供方暂不可用，请重试或重新授权");
+        try (InputStream stream = opened.stream) {
             if (stream == null) throw new IOException("文件提供方暂不可用，请重试或重新授权");
-            long remaining = offset;
+            if (opened.position != 0 && opened.position != offset) {
+                throw new IOException("文件提供方返回了无效的定位结果，请重新打开文件");
+            }
+            long remaining = offset - opened.position;
+            long scanned = 0;
+            byte[] seekBuffer = null;
             while (remaining > 0) {
                 checkpoint(source, root);
-                long skipped = stream.skip(remaining);
-                checkpoint(source, root);
-                if (skipped == 0) {
-                    if (stream.read() < 0) throw new IOException("读取位置已超出文件末尾，文件可能已变化");
-                    remaining--;
-                } else {
-                    remaining -= skipped;
+                if (scanned >= MAX_UNSEEKABLE_BYTES) {
+                    throw new IOException("文件提供方不支持快速定位；已扫描 64 MiB，请从头读取或改用支持定位的文件提供方");
                 }
+                if (seekBuffer == null) seekBuffer = new byte[SEEK_BUFFER_BYTES];
+                int amount = (int) Math.min(Math.min(remaining, seekBuffer.length), MAX_UNSEEKABLE_BYTES - scanned);
+                int count = stream.read(seekBuffer, 0, amount);
+                checkpoint(source, root);
+                if (count < 0) throw new IOException("读取位置已超出文件末尾，文件可能已变化");
+                if (count == 0) {
+                    if (stream.read() < 0) throw new IOException("读取位置已超出文件末尾，文件可能已变化");
+                    checkpoint(source, root);
+                    count = 1;
+                }
+                remaining -= count;
+                scanned += count;
             }
             while (total < bytes.length) {
                 checkpoint(source, root);

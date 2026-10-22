@@ -317,8 +317,14 @@ class _JobOutputPageState extends State<JobOutputPage> {
 
   Future<void> copy() async {
     try {
-      await Clipboard.setData(ClipboardData(text: output.text));
-      if (mounted) setState(() => notice = '已复制当前保留的输出。');
+      await Clipboard.setData(ClipboardData(text: output.copyText));
+      if (mounted) {
+        setState(
+          () => notice = output.gapBefore
+              ? '已复制当前保留的输出，并标出了缺失位置。'
+              : '已复制当前保留的输出。',
+        );
+      }
     } catch (failure) {
       if (mounted) setState(() => actionError = '无法复制：$failure');
     }
@@ -335,6 +341,7 @@ class _JobOutputPageState extends State<JobOutputPage> {
   Widget build(BuildContext context) {
     final job = output.job ?? widget.job;
     final active = job['status'] == 'running' || job['status'] == 'stopping';
+    final colors = Theme.of(context).colorScheme;
     return PocketScaffold(
       title: const Text('任务输出'),
       trailing: GlassButton(
@@ -395,12 +402,39 @@ class _JobOutputPageState extends State<JobOutputPage> {
           if (output.gapBefore)
             const Padding(
               padding: EdgeInsets.all(12),
-              child: Text('只显示当前保留的输出，前面的部分已不在此视图中。'),
+              child: Text('部分输出已不在当前视图中；有保留文本时会标出断点。'),
             ),
           PocketCard(
             padding: const EdgeInsets.all(18),
-            child: SelectableText(
-              output.text.isEmpty ? '暂时没有输出。' : output.text,
+            child: SelectableText.rich(
+              TextSpan(
+                children: output.parts.isEmpty
+                    ? [const TextSpan(text: '暂时没有输出。')]
+                    : [
+                        for (final part in output.parts) ...[
+                          if (part.gapBefore)
+                            TextSpan(
+                              text: JobOutput.gapMarker,
+                              style: TextStyle(color: colors.error),
+                            ),
+                          if (part.channel == 'stderr' || part.channel == 'log')
+                            TextSpan(
+                              text: part.channel == 'stderr'
+                                  ? '[stderr] '
+                                  : '[日志] ',
+                              style: TextStyle(color: colors.secondary),
+                            ),
+                          TextSpan(
+                            text: part.text,
+                            style: part.channel == 'stderr'
+                                ? TextStyle(color: colors.error)
+                                : part.channel == 'log'
+                                ? TextStyle(color: colors.secondary)
+                                : null,
+                          ),
+                        ],
+                      ],
+              ),
               style: const TextStyle(
                 fontFamily: 'monospace',
                 fontSize: 13,

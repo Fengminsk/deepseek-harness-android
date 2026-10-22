@@ -99,6 +99,49 @@ void main() {
       expect(group.pendingCount, 0);
     },
   );
+  testWidgets(
+    'mixed group shows pending and failed counts without calling every command running',
+    (tester) async {
+      final projection = ChatProjection()
+        ..reconcile([
+          tool.callEvent(0, id: 'completed'),
+          tool.resultEvent(
+            1,
+            id: 'completed',
+            text: jsonEncode({'stdout': 'ok', 'exitCode': 0}),
+          ),
+          tool.callEvent(2, id: 'pending'),
+          tool.callEvent(3, id: 'failed'),
+          tool.resultEvent(
+            4,
+            id: 'failed',
+            text: jsonEncode({'stdout': '', 'exitCode': 7}),
+          ),
+        ]);
+      final group = groupChatTools(projection.entries).single.group!;
+      expect(group.title, '3 条命令 · 1 项需查看 · 1 项等待结果');
+      expect(group.status, '1 项等待结果 · 2 项已返回');
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: ChatToolGroupHeader(
+              group: group,
+              expanded: false,
+              onToggle: () {},
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('正在调用 '), findsNothing);
+      expect(find.text(' 条命令 · 1 项需查看 · 1 项等待结果'), findsOneWidget);
+      expect(
+        tester.widget<ChatRollingCount>(find.byType(ChatRollingCount)).value,
+        3,
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
   test(
     'consecutive original calls group within one turn, across steps only',
     () {

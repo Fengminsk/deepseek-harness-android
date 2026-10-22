@@ -86,6 +86,7 @@ void main() {
         'next': 10,
       });
       expect(output.text, '中文🙂');
+      expect(output.copyText, '中文🙂');
       expect(output.cursor, 10);
       expect(output.settled, isFalse);
       output.apply({'type': 'status', 'job': _job('completed')});
@@ -110,6 +111,126 @@ void main() {
     });
     expect(output.text, 'x' * (JobOutput.renderTailLimit - 1));
     expect(output.cursor, 999999);
+  });
+
+  test(
+    'reconnect loss stays at its byte position and channels remain distinct',
+    () {
+      final output = JobOutput();
+      output.apply({'type': 'opened', 'job': _job('running'), 'from': 0});
+      output.apply({
+        'type': 'output',
+        'chunks': [
+          {'at': 0, 'text': 'before', 'channel': 'stdout'},
+        ],
+        'next': 6,
+      });
+      output.apply({
+        'type': 'opened',
+        'job': _job('running', earliest: 20),
+        'from': 6,
+      });
+      output.apply({
+        'type': 'output',
+        'lossy': true,
+        'chunks': [
+          {'at': 20, 'text': 'error', 'channel': 'stderr'},
+          {'at': 25, 'text': 'phase', 'channel': 'log'},
+          {'at': 30, 'text': 'after', 'channel': 'stdout'},
+        ],
+        'next': 35,
+      });
+      expect(output.cursor, 35);
+      expect(output.text, 'beforeerrorphaseafter');
+      expect(output.parts.map((part) => part.channel), [
+        'stdout',
+        'stderr',
+        'log',
+        'stdout',
+      ]);
+      expect(output.parts.map((part) => part.gapBefore), [
+        false,
+        true,
+        false,
+        false,
+      ]);
+      expect(output.copyText, 'before${JobOutput.gapMarker}errorphaseafter');
+    },
+  );
+
+  test(
+    'loss without retained chunks marks the next output after reconnect',
+    () {
+      final output = JobOutput();
+      output.apply({'type': 'opened', 'job': _job('running'), 'from': 0});
+      output.apply({
+        'type': 'output',
+        'chunks': [
+          {'at': 0, 'text': 'old'},
+        ],
+        'next': 3,
+      });
+      output.apply({
+        'type': 'output',
+        'chunks': <Json>[],
+        'lossy': true,
+        'next': 24,
+      });
+      output.apply({
+        'type': 'opened',
+        'job': _job('running', earliest: 24),
+        'from': 24,
+      });
+      output.apply({
+        'type': 'output',
+        'chunks': [
+          {'at': 24, 'text': 'new'},
+        ],
+        'next': 27,
+      });
+      expect(output.copyText, 'old${JobOutput.gapMarker}new');
+    },
+  );
+
+  test(
+    'producer-side loss inside one frame is not hidden by concatenation',
+    () {
+      final output = JobOutput();
+      output.apply({'type': 'opened', 'job': _job('running'), 'from': 0});
+      output.apply({
+        'type': 'output',
+        'chunks': [
+          {'at': 0, 'text': 'first', 'channel': 'stdout'},
+          {'at': 5, 'text': 'last', 'channel': 'stdout', 'gapBefore': true},
+        ],
+        'next': 9,
+      });
+      expect(output.parts.map((part) => part.gapBefore), [false, true]);
+      expect(output.copyText, 'first${JobOutput.gapMarker}last');
+    },
+  );
+
+  test('alternating streams retain bounded annotated output', () {
+    final output = JobOutput();
+    output.apply({'type': 'opened', 'job': _job('running'), 'from': 0});
+    for (var index = 0; index < JobOutput.renderPartLimit + 8; index++) {
+      output.apply({
+        'type': 'output',
+        'chunks': [
+          {
+            'at': index,
+            'text': 'x',
+            'channel': index.isEven ? 'stdout' : 'stderr',
+          },
+        ],
+        'next': index + 1,
+      });
+    }
+    expect(output.parts.length, JobOutput.renderPartLimit);
+    expect(output.text.length, JobOutput.renderPartLimit);
+    expect(output.parts.first.gapBefore, isTrue);
+    expect(output.copyText, startsWith(JobOutput.gapMarker));
+    expect(output.cursor, JobOutput.renderPartLimit + 8);
   });
 
   testWidgets(
@@ -212,6 +333,66 @@ void main() {
       });
     },
   );
+
+  testWidgets('job output view marks missing middle bytes and stderr', (
+    tester,
+  ) async {
+    final runtime = _JobsRuntime();
+    addTearDown(() async {
+      await tester.pumpWidget(const SizedBox());
+      for (final feed in runtime.feeds) {
+        await feed.close();
+      }
+      runtime.dispose();
+    });
+    await tester.pumpWidget(
+      _host(
+        JobOutputPage(
+          runtime: runtime,
+          sessionId: 'session-a',
+          job: _job('running'),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    runtime.feeds.single.add({
+      'type': 'item',
+      'value': {'type': 'opened', 'job': _job('running'), 'from': 0},
+    });
+    runtime.feeds.single.add({
+      'type': 'item',
+      'value': {
+        'type': 'output',
+        'chunks': [
+          {'at': 0, 'text': 'before', 'channel': 'stdout'},
+        ],
+        'next': 6,
+      },
+    });
+    runtime.feeds.single.add({
+      'type': 'item',
+      'value': {
+        'type': 'output',
+        'lossy': true,
+        'chunks': [
+          {'at': 20, 'text': 'failure', 'channel': 'stderr'},
+        ],
+        'next': 27,
+      },
+    });
+    await tester.pumpAndSettle();
+    final outputView = tester
+        .widgetList<SelectableText>(find.byType(SelectableText))
+        .firstWhere(
+          (widget) =>
+              widget.textSpan?.toPlainText().contains('before') ?? false,
+        );
+    expect(
+      outputView.textSpan!.toPlainText(),
+      contains('before${JobOutput.gapMarker}[stderr] failure'),
+    );
+    expect(find.textContaining('部分输出已不在当前视图中'), findsOneWidget);
+  });
 
   for (final replacement in [
     'watch',

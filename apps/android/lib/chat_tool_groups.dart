@@ -26,13 +26,26 @@ class ChatToolGroup {
   bool get needsAttention => attentionCount > 0 || unknownCount > 0;
   String get countUnit =>
       family == 'shell' ? '条命令' : '次${toolActivityName(entries.first.tool!)}';
-  String get titlePrefix =>
-      needsAttention ? '' : '${pendingCount > 0 ? '正在调用' : '已运行'} ';
-  String get titleSuffix => attentionCount > 0
-      ? ' · $attentionCount 项需查看'
-      : unknownCount > 0
-      ? ' · 状态待确认'
-      : '';
+  // A group can contain both settled and pending calls. Never label its full
+  // count as running when only some members are still awaiting a result.
+  String get titlePrefix => needsAttention
+      ? ''
+      : pendingCount == entries.length
+      ? '正在调用 '
+      : pendingCount > 0
+      ? ''
+      : '已运行 ';
+  String get titleSuffix {
+    final parts = [
+      if (attentionCount > 0) '$attentionCount 项需查看',
+      if (unknownCount > 0) '$unknownCount 项待确认',
+      if (pendingCount > 0 &&
+          (pendingCount < entries.length || needsAttention))
+        '$pendingCount 项等待结果',
+    ];
+    return parts.isEmpty ? '' : ' · ${parts.join(' · ')}';
+  }
+
   String get title {
     return '$titlePrefix${entries.length} $countUnit$titleSuffix';
   }
