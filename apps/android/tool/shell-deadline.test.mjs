@@ -13,14 +13,18 @@ function fixture(t, { rows = { 972301: 'S' }, unreadable = false, rowOwners = {}
   groupError, directSignal = false } = {}) {
   const platform = Object.getOwnPropertyDescriptor(process, 'platform')
   const getuid = Object.getOwnPropertyDescriptor(process, 'getuid')
+  const nativeDirectory = process.env.DSH_ANDROID_NATIVE_LIBRARY_DIR
   Object.defineProperty(process, 'platform', { ...platform, value: 'android' })
   Object.defineProperty(process, 'getuid', { configurable: true, value: () => 10496 })
+  process.env.DSH_ANDROID_NATIVE_LIBRARY_DIR = '/app/native'
   const child = new EventEmitter()
   child.pid = 972301
   child.exitCode = null
   child.signalCode = null
   child.stdout = new PassThrough()
   child.stderr = new PassThrough()
+  child.stdio = [null, child.stdout, child.stderr, new PassThrough()]
+  child.stdio[3].write('S\n')
   child.exit = (code = 0, signal = null) => {
     child.exitCode = code
     child.signalCode = signal
@@ -29,6 +33,7 @@ function fixture(t, { rows = { 972301: 'S' }, unreadable = false, rowOwners = {}
   child.finish = (code = child.exitCode ?? 0, signal = child.signalCode) => {
     child.stdout.end()
     child.stderr.end()
+    child.stdio[3].end()
     child.exit(code, signal)
     child.emit('close', code, signal)
   }
@@ -68,9 +73,40 @@ function fixture(t, { rows = { 972301: 'S' }, unreadable = false, rowOwners = {}
     Object.defineProperty(process, 'platform', platform)
     if (getuid) Object.defineProperty(process, 'getuid', getuid)
     else delete process.getuid
+    if (nativeDirectory === undefined) delete process.env.DSH_ANDROID_NATIVE_LIBRARY_DIR
+    else process.env.DSH_ANDROID_NATIVE_LIBRARY_DIR = nativeDirectory
   })
-  return { child, calls, rows }
+  return { child, calls, rows, spawn }
 }
+
+test('Android command starts only through a native parent-death supervisor', async t => {
+  const f = fixture(t)
+  const result = runShell('printf ready', '/private/work', { timeoutMs: 100 })
+  f.child.finish()
+  await result
+  assert.equal(f.spawn.mock.callCount(), 1)
+  const [file, args, options] = f.spawn.mock.calls[0].arguments
+  assert.equal(file, '/app/native/libpocket_shell_supervisor.so')
+  assert.deepEqual(args, [String(process.pid), '/system/bin/sh', '-c', 'printf ready'])
+  assert.equal(options.cwd, '/private/work')
+  assert.equal(options.detached, true)
+  assert.deepEqual(options.stdio, ['ignore', 'pipe', 'pipe', 'pipe'])
+})
+
+test('Android refuses to run directly when the native supervisor path is absent', t => {
+  const f = fixture(t)
+  delete process.env.DSH_ANDROID_NATIVE_LIBRARY_DIR
+  assert.throws(() => runShell('printf unsafe', '/private/work'), /supervisor directory is unavailable/)
+  assert.equal(f.spawn.mock.callCount(), 0)
+})
+
+test('an unacknowledged native supervisor cannot report a Shell result', async t => {
+  const f = fixture(t)
+  f.child.stdio[3].read()
+  const result = runShell('printf unsafe', '/private/work', { timeoutMs: 100 })
+  f.child.finish(70)
+  await assert.rejects(result, { code: 'SHELL_SUPERVISOR_UNAVAILABLE' })
+})
 
 test('late deadline after process disappearance does not invent a timeout', async t => {
   const f = fixture(t, { rows: {}, groupError: 'ESRCH' })

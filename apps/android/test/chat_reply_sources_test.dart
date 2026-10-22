@@ -170,4 +170,49 @@ void main() {
     ]).entries.single;
     expect(source.label, 'actual.example');
   });
+
+  test(
+    'answer links require explicit Markdown links to observed safe URLs',
+    () {
+      final sources = ChatReplySources.fromActivities([
+        sourceActivity('search', 'web_search', {
+          'sources': [
+            {'url': 'https://example.org/a', 'title': 'A'},
+            {'url': 'https://example.org/b', 'title': 'B'},
+            {'url': 'javascript:alert(1)', 'title': 'Unsafe'},
+          ],
+          'truncated': false,
+        }),
+      ]);
+      expect(
+        sources.answerLinks('''
+[原始结果](https://example.org/a) 与 https://example.org/b。
+`[代码](https://example.org/b)`
+
+```md
+[示例](https://example.org/b)
+```
+[未观察](https://unobserved.example/)
+[不安全](javascript:alert(1))
+'''),
+        {'https://example.org/a'},
+      );
+      expect(sources.answerLinks(''), isEmpty);
+    },
+  );
+
+  test('equivalent reprojected facts keep an open source snapshot', () {
+    ChatReplySources project(String title) => ChatReplySources.fromActivities([
+      sourceActivity('search', 'web_search', {
+        'sources': [
+          {'url': 'https://example.org/a', 'title': title},
+        ],
+        'truncated': false,
+      }),
+    ]);
+    final first = project('A');
+    expect(first.sameResultsAs(project('A')), isTrue);
+    expect(first.sameResultsAs(project('B')), isFalse);
+    expect(first.sameResultsAs(ChatReplySources.empty), isFalse);
+  });
 }

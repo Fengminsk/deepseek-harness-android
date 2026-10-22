@@ -19,6 +19,12 @@ export async function stagePreset(root, destination) {
     'packages/bundle/web-app/presets/standard.patch.yml'), 'utf8'), { schema })
   const target = load(await readFile(join(root,
     'apps/android/runtime/cordis.patch.yml'), 'utf8'), { schema })
+  for (const id of ['ptc-runtime', 'workflow-ptc', 'tool-workflow']) {
+    const rows = Array.isArray(target) ? target.filter(row => row.id === id) : []
+    if (rows.length !== 1 || rows[0].disabled !== true) {
+      throw new Error(`Android ${id} requires an unavailable per-process sandbox; keep it disabled`)
+    }
+  }
   const pluginsFor = (document, id) => {
     if (!Array.isArray(document)) throw new Error('Preset patch must be a sequence')
     const entry = document.flatMap(row => row.insert ?? []).find(item => item.id === id)

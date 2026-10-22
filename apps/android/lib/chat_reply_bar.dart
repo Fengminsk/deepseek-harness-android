@@ -46,10 +46,12 @@ class _ChatReplyBarState extends State<ChatReplyBar> {
   bool _busy = false;
   String? _notice;
   Offset? _pressPosition;
+  late Set<String> _answerLinks;
 
   @override
   void initState() {
     super.initState();
+    _answerLinks = widget.sources.answerLinks(widget.text);
     _seed();
   }
 
@@ -65,9 +67,14 @@ class _ChatReplyBarState extends State<ChatReplyBar> {
   @override
   void didUpdateWidget(ChatReplyBar oldWidget) {
     super.didUpdateWidget(oldWidget);
+    final sourcesChanged = !widget.sources.sameResultsAs(oldWidget.sources);
+    if (oldWidget.text != widget.text || sourcesChanged) {
+      _answerLinks = widget.sources.answerLinks(widget.text);
+    }
     if (oldWidget.messageId != widget.messageId ||
         oldWidget.feedbackController != widget.feedbackController ||
-        oldWidget.text != widget.text) {
+        oldWidget.text != widget.text ||
+        sourcesChanged) {
       _generation++;
       _busy = false;
       _notice = null;
@@ -124,6 +131,7 @@ class _ChatReplyBarState extends State<ChatReplyBar> {
     final route = chatReplySourcesRoute(
       context,
       widget.sources,
+      answerLinks: _answerLinks,
       onOpenSource: widget.onOpenSource,
     );
     await _present(route);

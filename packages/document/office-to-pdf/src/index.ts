@@ -15,6 +15,7 @@ import { OfficeToPdfGeneration, type OfficeSourceKey } from './identity.ts'
 import type { OfficeExtension, OfficeToPdfRequest, OfficeToPdfResult, OfficeToPdfPriority, RenderedDocumentBytes } from './types.ts'
 import { readPdf } from './output.ts'
 import { ConversionQueue } from './queue.ts'
+import { convertInSubprocess } from './subprocess.ts'
 
 export * from './errors.ts'
 export * from './identity.ts'
@@ -67,6 +68,8 @@ export interface Config {
   maxFontFileBytes: number
   /** Maximum original font bytes loaded for a conversion. */
   maxLoadedFontBytes: number
+  /** Run each conversion in a child process so WASM memory leaves the Host when it exits. */
+  subprocessConversions: boolean
 }
 
 /** Deployment defaults resolved before provider construction. */
@@ -90,6 +93,7 @@ export const Config: z<Partial<Config>, Config> = z.object({
   maxFontFiles: z.natural().min(1).max(Number.MAX_SAFE_INTEGER).default(20_000),
   maxFontFileBytes: z.natural().min(1).max(Number.MAX_SAFE_INTEGER).default(256 * 1024 * 1024),
   maxLoadedFontBytes: z.natural().min(1).max(Number.MAX_SAFE_INTEGER).default(512 * 1024 * 1024),
+  subprocessConversions: z.boolean().default(false),
 })
 
 interface Slot {
@@ -116,8 +120,11 @@ export class OfficeToPdf extends TypertRemoteService {
     super(ctx, 'officeToPdf')
     if (config.fontDirectories?.some(path => !isAbsolute(path))) throw new Error('fontDirectories must contain absolute paths.')
     if (config.maxSourceBytes < config.maxInputBytes) throw new Error('maxSourceBytes must be at least maxInputBytes.')
-    const { fontDirectories, fontFallbacks, timeoutMs, maxInputBytes, maxOutputBytes, maxImageResolution,
+    const { fontFallbacks, timeoutMs, maxInputBytes, maxOutputBytes, maxImageResolution,
       maxArchiveEntries, maxUncompressedBytes, maxFontFiles, maxFontFileBytes, maxLoadedFontBytes } = config
+    // The kit's generic Unix search excludes Android's system font root.
+    // Keep desktop discovery unchanged and avoid a host-only path in YAML.
+    const fontDirectories = config.fontDirectories ?? (process.platform === 'android' ? ['/system/fonts'] : undefined)
     this.options = { timeoutMs, maxInputBytes, maxOutputBytes, maxImageResolution, maxArchiveEntries, maxUncompressedBytes,
       maxFontFiles, maxFontFileBytes, maxLoadedFontBytes,
       ...(fontDirectories === undefined ? {} : { fontDirectories }),
@@ -237,20 +244,26 @@ export class OfficeToPdf extends TypertRemoteService {
     slot.busy = true
     let directory: string | undefined
     try {
-      if (slot.converter === undefined) {
-        slot.converter = createConverter(this.options).catch((error: unknown) => {
-          delete slot.converter
-          throw error
-        })
-      }
-      const converter = await slot.converter
       signal.throwIfAborted()
       directory = await mkdtemp(join(tmpdir(), 'dsh-office-to-pdf-'))
       const inputPath = join(directory, `source.${extension}`)
       const outputPath = join(directory, 'converted.pdf')
       await writeFile(inputPath, bytes, { flag: 'wx', mode: 0o600, signal })
       signal.throwIfAborted()
-      const result = await converter.render({ inputPath, outputPath }, signal)
+      let result: { readonly missingFonts: string[] }
+      if (this.config.subprocessConversions) {
+        result = await convertInSubprocess(inputPath, outputPath, this.options, signal)
+      } else {
+        if (slot.converter === undefined) {
+          slot.converter = createConverter(this.options).catch((error: unknown) => {
+            delete slot.converter
+            throw error
+          })
+        }
+        const converter = await slot.converter
+        signal.throwIfAborted()
+        result = await converter.render({ inputPath, outputPath }, signal)
+      }
       signal.throwIfAborted()
       let pdf: Uint8Array
       try { pdf = await readPdf(outputPath, this.config.maxOutputBytes, signal) }

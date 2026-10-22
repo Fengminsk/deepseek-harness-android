@@ -15,6 +15,7 @@ import 'chat_skills.dart';
 import 'chat_tool_groups.dart';
 import 'chat_user_references.dart';
 import 'chat_turn_extras.dart';
+import 'chat_workflow_runs.dart';
 import 'chat_reading.dart';
 import 'chat_progress.dart';
 import 'chat_stream_reveal.dart';
@@ -171,11 +172,13 @@ class _ChatTimelineState extends State<ChatTimeline>
   final _artifactRows = <String, ChatArtifact>{};
   ChatChangesProjection _changes = ChatChangesProjection();
   ChatSkillNameProjection _references = ChatSkillNameProjection();
+  ChatWorkflowRunProjection _workflows = ChatWorkflowRunProjection();
+  final _workflowRows = <String, WorkflowRunRecord>{};
   WorkspaceChangesController? _changesController;
   late ChatTurnExtras _extras;
   List<ToolActivity> _progressCalls = const [];
   final _changeRows = <String, ChatChangesTurn>{};
-  (ChatProjection, int, int, int, int, int, int?)? _observed;
+  (ChatProjection, int, int, int, int, int, int, int?)? _observed;
   int _generation = 0;
 
   @override
@@ -222,8 +225,10 @@ class _ChatTimelineState extends State<ChatTimeline>
       _artifacts = ChatArtifactsProjection();
       _changes = ChatChangesProjection();
       _references = ChatSkillNameProjection();
+      _workflows = ChatWorkflowRunProjection();
       _artifactRows.clear();
       _changeRows.clear();
+      _workflowRows.clear();
       _observed = null;
       _generation++;
     }
@@ -260,6 +265,7 @@ class _ChatTimelineState extends State<ChatTimeline>
     _artifacts.reconcile(widget.events);
     _changes.reconcile(widget.events);
     _references.reconcile(entries: projection.entries, events: widget.events);
+    _workflows.reconcile(widget.events);
     _extras.reconcile(widget.events, widget.projection.entries);
     final stamp = (
       projection,
@@ -268,6 +274,7 @@ class _ChatTimelineState extends State<ChatTimeline>
       _artifacts.revision,
       _changes.revision,
       _extras.revision,
+      _workflows.revision,
       widget.live?.turn,
     );
     if (_observed == stamp) return;
@@ -295,6 +302,11 @@ class _ChatTimelineState extends State<ChatTimeline>
       ..addEntries(
         _artifacts.entries.map((entry) => MapEntry(entry.key, entry)),
       );
+    _workflowRows
+      ..clear()
+      ..addEntries(
+        _workflows.records.map((record) => MapEntry(record.key, record)),
+      );
     final entries = [
       ...projection.entries.where(chatReadingEntry),
       ..._extras.rows,
@@ -311,6 +323,13 @@ class _ChatTimelineState extends State<ChatTimeline>
           seq: artifact.seq,
           kind: ChatEntryKind.notice,
           event: artifact.event,
+        ),
+      for (final workflow in _workflows.records)
+        ChatEntry(
+          key: workflow.key,
+          seq: workflow.seq,
+          kind: ChatEntryKind.notice,
+          event: workflow.event,
         ),
     ];
     final orderByKey = {
@@ -534,6 +553,13 @@ class _ChatTimelineState extends State<ChatTimeline>
                         ),
                 ),
               },
+            );
+          }
+          final workflow = _workflowRows[row.key];
+          if (workflow != null) {
+            return ChatWorkflowRunCard(
+              key: ValueKey((sessionId, row.key)),
+              record: workflow,
             );
           }
           final message = ChatMessage(

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
-import { glob, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { copyFile, glob, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import { FixtureProcesses } from './fixture-processes.mjs'
@@ -139,6 +139,8 @@ async function scenario() {
   await writeFile(join(workspace, 'a', 'empty.bin'), Buffer.alloc(0))
   await writeFile(join(workspace, 'a', 'cancel.bin'), Buffer.from([1, 2, 3]))
   await writeFile(join(workspace, 'a', 'nested', 'readme.md'), '# Original resource base\n')
+  await copyFile(join(root, 'packages/bundle/web-app/tests/fixtures/document-conversion.docx'),
+    join(workspace, 'a', 'document.docx'))
 
   checkpoint('persisted Session headers and cold profile restart')
   const first = launch(true)
@@ -234,7 +236,7 @@ async function scenario() {
   rejected(await runtime.request('document.bytes', { owner, id: held.data.id, offset: 0, length: 1 }), 'gateway/cancelled')
   rejected(await runtime.request('document.bytes', { owner: 'new-owner', id: held.data.id, offset: 0, length: 1 }), 'document-preview/lease-unavailable')
 
-  checkpoint('existing stream carrier and disabled Office remain explicit')
+  checkpoint('existing stream carrier and original Office provider')
   const subscriptionId = randomUUID(), streamOwner = randomUUID()
   const subscription = await runtime.request('api.subscribe', { owner: streamOwner, subscriptionId,
     namespace: 'workspaceFiles', method: 'changes', args: { workspaceFileScopeId: 'document-fixture-a', path: 'same.txt' } })
@@ -244,7 +246,17 @@ async function scenario() {
   await runtime.request('api.ack', { owner: streamOwner, subscriptionId, generation: subscription.generation, sequence: ready.sequence })
   await runtime.request('api.unsubscribe', { owner: streamOwner, subscriptionId, generation: subscription.generation })
   const office = await call('generation', {}, { owner: 'new-owner', namespace: 'officeToPdf' })
-  rejected(office)
+  assert.ok(typeof value(office) === 'string')
+  const rendered = value(await call('render', { path: 'document.docx', priority: 'foreground' },
+    { owner: 'new-owner', namespace: 'officeToPdf' }))
+  assert.ok(rendered.bytes > 1000)
+  const pdf = value(await runtime.request('document.bytes', { owner: 'new-owner', id: rendered.data.id,
+    offset: 0, length: 256 }))
+  assert.equal(Buffer.from(pdf.data, 'base64').subarray(0, 5).toString(), '%PDF-')
+  assert.deepEqual(value(await runtime.request('document.release', { owner: 'new-owner', id: rendered.data.id })),
+    { released: true })
+  rejected(await call('render', { path: 'same.txt', priority: 'foreground' },
+    { owner: 'new-owner', namespace: 'officeToPdf' }), 'document-render/failed')
   await assertCold(runtime)
   assert.deepEqual(await snapshotLogs(), before, 'preview must not change original history')
   await runtime.close()
@@ -252,7 +264,7 @@ async function scenario() {
     binaryChunks: chunks.length, binarySha256: hash(source), originalRangeAndBaseFile: true, emptyFile: true,
     cancellation: true, cancellationTiming: 'fixture barrier inside original fs-local readBytes', ownerIsolation: true,
     ownerDisconnect: true, existingChangesStream: true, coldReadDoesNotActivateOrRewrite: true,
-    officeDisabledCode: office.error.code, androidBinderAndWebView: false, home }
+    officeWasmPdfBytes: rendered.bytes, androidBinderAndWebView: false, home }
 }
 
 let report

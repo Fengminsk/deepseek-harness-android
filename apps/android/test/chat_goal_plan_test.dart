@@ -171,6 +171,23 @@ void main() {
     await runtime.closeTest();
   });
 
+  test('new goal forwards an explicit round cap through the original create request', () async {
+    final runtime = _Runtime()..projection = null;
+    final state = ChatGoalPlanController(
+      runtime: runtime,
+      sessionId: 'session',
+    );
+    await state.start();
+    expect(await state.create('分阶段完成', maxGoalRounds: 12), isTrue);
+    final request = runtime.calls
+        .singleWhere((call) => call.$2['method'] == 'create')
+        .$2['args'];
+    expect(request['request'], {'objective': '分阶段完成', 'maxGoalRounds': 12});
+    expect(runtime.ensured, ['session']);
+    state.dispose();
+    await runtime.closeTest();
+  });
+
   test('clear confirmation uses captured identity even when a newer goal replaces it', () async {
     final runtime = _Runtime();
     final state = ChatGoalPlanController(
@@ -233,6 +250,37 @@ void main() {
   });
 
   test(
+    'a restored durable active goal stays disarmed until explicit resume',
+    () async {
+      final runtime = _Runtime()..statuses['session'] = 'idle';
+      runtime.live = {...goalValue()['goal'], 'activation': 'disarmed'};
+      final state = ChatGoalPlanController(
+        runtime: runtime,
+        sessionId: 'session',
+      );
+      await state.start();
+      expect(state.goal!.phase, 'active');
+      expect(state.activation, 'disarmed');
+      expect(state.canPause, isFalse);
+      expect(state.canResume, isTrue);
+      expect(runtime.ensured, isEmpty);
+      runtime.mutate = (method, args) async {
+        expect(method, 'resume');
+        expect(args['ref'], {'id': 'g1', 'revision': 1});
+        return {...goalValue()['goal'], 'revision': 2, 'activation': 'armed'};
+      };
+      expect(await state.resume(), isTrue);
+      expect(runtime.ensured, ['session']);
+      expect(
+        runtime.calls.where((call) => call.$2['method'] == 'resume').length,
+        1,
+      );
+      state.dispose();
+      await runtime.closeTest();
+    },
+  );
+
+  test(
     'live activation event supersedes a delayed get and matches exact revision',
     () async {
       final runtime = _Runtime()..statuses['session'] = 'idle';
@@ -261,6 +309,51 @@ void main() {
       expect(state.activation, isNull);
       await flush();
       expect(state.activation, isNull);
+      state.dispose();
+      await runtime.closeTest();
+    },
+  );
+
+  test(
+    'a cleared or mismatched live activation event withdraws stale armed state',
+    () async {
+      final runtime = _Runtime()..statuses['session'] = 'idle';
+      runtime.live = {...goalValue()['goal'], 'activation': 'armed'};
+      final state = ChatGoalPlanController(
+        runtime: runtime,
+        sessionId: 'session',
+      );
+      await state.start();
+      expect(state.canPause, isTrue);
+      runtime.remote.add({
+        'event': 'goal/activation-changed',
+        'args': [
+          {'sessionId': 'session'},
+        ],
+      });
+      expect(state.activation, isNull);
+      expect(state.canPause, isFalse);
+      runtime.remote.add({
+        'event': 'goal/activation-changed',
+        'args': [
+          {
+            'sessionId': 'session',
+            'goal': {'id': 'g1', 'revision': 1, 'activation': 'armed'},
+          },
+        ],
+      });
+      expect(state.canPause, isTrue);
+      runtime.remote.add({
+        'event': 'goal/activation-changed',
+        'args': [
+          {
+            'sessionId': 'session',
+            'goal': {'id': 'g1', 'revision': 2, 'activation': 'armed'},
+          },
+        ],
+      });
+      expect(state.activation, isNull);
+      expect(state.canPause, isFalse);
       state.dispose();
       await runtime.closeTest();
     },
@@ -486,6 +579,44 @@ void main() {
       await runtime.closeTest();
     },
   );
+
+  testWidgets('new goal editor exposes optional round cap on its detail page', (
+    tester,
+  ) async {
+    final runtime = _Runtime()..projection = null;
+    final state = ChatGoalPlanController(
+      runtime: runtime,
+      sessionId: 'session',
+    );
+    await state.start();
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: pocketTheme(Brightness.dark),
+        home: ChatGoalEditorPage(controller: state),
+      ),
+    );
+    expect(find.text('使用服务默认值'), findsOneWidget);
+    await tester.tap(find.text('最多执行轮次'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), '12');
+    await tester.tap(find.byTooltip('完成编辑'));
+    await tester.pumpAndSettle();
+    expect(find.text('12'), findsOneWidget);
+    await tester.tap(find.text('任务目标'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), '完成迁移');
+    await tester.tap(find.byTooltip('完成编辑'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('保存目标'));
+    await tester.pumpAndSettle();
+    final request = runtime.calls
+        .singleWhere((call) => call.$2['method'] == 'create')
+        .$2['args'];
+    expect(request['request'], {'objective': '完成迁移', 'maxGoalRounds': 12});
+    await tester.pumpWidget(const SizedBox());
+    state.dispose();
+    await runtime.closeTest();
+  });
 
   testWidgets(
     'plan document is read-only Markdown and large text does not overflow controls',

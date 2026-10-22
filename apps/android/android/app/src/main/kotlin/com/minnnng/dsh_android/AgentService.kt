@@ -18,6 +18,7 @@ class AgentService : Service() {
     private val main = Handler(Looper.getMainLooper())
     private val lifecycle = RuntimeLifecycle()
     private val workers = Executors.newCachedThreadPool()
+    private val networkChanges = NetworkChangeDispatch(lifecycle, workers)
     private val recoveryWorker = Executors.newSingleThreadExecutor()
     private val transitionWrites = Executors.newSingleThreadExecutor()
     private val clients = mutableSetOf<Messenger>()
@@ -79,9 +80,13 @@ class AgentService : Service() {
         override fun onLinkPropertiesChanged(network: Network, properties: LinkProperties) = networkChanged()
     }
     private fun networkChanged() {
-        workers.execute {
-            try { if (output != null) write(JSONObject().put("jsonrpc", "2.0").put("method", "native.networkChanged").put("params", JSONObject())) }
-            catch (exception: Exception) { if (phase == "ready") fail(exception.message ?: "Network notification failed") }
+        networkChanges.changed {
+            try {
+                if (output != null) write(JSONObject().put("jsonrpc", "2.0")
+                    .put("method", "native.networkChanged").put("params", JSONObject()))
+            } catch (exception: Exception) {
+                if (phase == "ready") fail(exception.message ?: "Network notification failed")
+            }
         }
     }
     private val messenger = Messenger(Handler(Looper.getMainLooper()) { message ->
@@ -299,6 +304,26 @@ class AgentService : Service() {
         return START_NOT_STICKY
     }
     override fun onBind(intent: Intent?): IBinder = messenger.binder
+
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        // The current specialUse declaration has no fixed quota. A future
+        // service type timeout must stop this dedicated Node process before
+        // Android's grace period expires. Detached children need separate
+        // process-group supervision after an abrupt process death.
+        lifecycle.close()
+        try {
+            phase = "failed"
+            failure = "系统已结束后台运行时段，正在停止任务；重新打开 App 后核对中断记录"
+            background.phase(phase)
+            broadcast(status())
+        } finally {
+            try { stopForeground(STOP_FOREGROUND_REMOVE) }
+            finally {
+                try { stopSelf() }
+                finally { Process.killProcess(Process.myPid()) }
+            }
+        }
+    }
 
     private fun boot() {
         try {

@@ -3,6 +3,8 @@ package com.minnnng.dsh_android;
 import java.io.File;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.UUID;
@@ -10,6 +12,9 @@ import java.util.concurrent.TimeUnit;
 
 /** Uses real JVM/FileChannel locks, including a second process simulating an Activity save worker. */
 public final class AttachmentCacheLeaseTest {
+    private static void writeString(Path path, String text) throws IOException {
+        Files.write(path, text.getBytes(StandardCharsets.UTF_8));
+    }
     public static void main(String[] args) throws Exception {
         if (args.length == 3 && args[0].equals("hold")) {
             try (var lease = AttachmentCacheLease.acquire(new File(args[1]), args[2])) {
@@ -21,12 +26,12 @@ public final class AttachmentCacheLeaseTest {
         }
         Path root = Files.createTempDirectory("pocket-file-lease-test-");
         Path foreign = root.resolve("unowned-notes.txt");
-        Files.writeString(foreign, "retain");
+        writeString(foreign, "retain");
         try {
             var service = AttachmentCacheLease.create(root.toFile());
             Path instance = service.directory().toPath();
             Path source = instance.resolve(UUID.randomUUID() + ".file");
-            Files.writeString(source, "verified");
+            writeString(source, "verified");
             var sameJvmSave = AttachmentCacheLease.acquire(root.toFile(), service.instance());
             AttachmentCacheLease.collect(root.toFile());
             check(Files.exists(source), "collector touched active service");
@@ -61,12 +66,12 @@ public final class AttachmentCacheLeaseTest {
             Path publish = abandonedDirectory.resolve(".pocket-publish-" + UUID.randomUUID());
             Path unknown = abandonedDirectory.resolve("user-content.txt");
             Path nested = abandonedDirectory.resolve(UUID.randomUUID() + ".file");
-            Files.writeString(partial, "incomplete");
-            Files.writeString(publish, "publishing");
-            Files.writeString(unknown, "preserve unknown content");
+            writeString(partial, "incomplete");
+            writeString(publish, "publishing");
+            writeString(unknown, "preserve unknown content");
             Files.createDirectory(nested);
             Path nestedContent = nested.resolve("keep.txt");
-            Files.writeString(nestedContent, "no recursive deletion");
+            writeString(nestedContent, "no recursive deletion");
             abandoned.close();
             AttachmentCacheLease.collect(root.toFile());
             check(!Files.exists(partial) && !Files.exists(publish), "owned incomplete files were not collected");

@@ -1,0 +1,310 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
+import { PassThrough } from 'node:stream'
+import { once } from 'node:events'
+import { AppTerminals } from '../runtime/terminals.mjs'
+
+function fixture({ acknowledge = true, resolveDirectory, workdirTimeoutMs, closeTimeoutMs, onKill,
+  makeScreen } = {}) {
+  const children = []
+  const owners = new Map()
+  const scope = sessionId => {
+    let owner = owners.get(sessionId)
+    if (!owner) {
+      const effects = []
+      owner = {
+        effect: register => { effects.push(register()) },
+        dispose: async () => {
+          const results = await Promise.allSettled(effects.map(cleanup => cleanup()))
+          const errors = results.filter(result => result.status === 'rejected').map(result => result.reason)
+          if (errors.length) throw new AggregateError(errors, 'Agent scope cleanup failed')
+        },
+      }
+      owners.set(sessionId, owner)
+    }
+    return owner
+  }
+  const spawn = (path, args, options) => {
+    const child = new EventEmitter()
+    child.stdin = new PassThrough()
+    child.stdout = new PassThrough()
+    child.stderr = new PassThrough()
+    child.stdio = [child.stdin, child.stdout, child.stderr, new PassThrough(), new PassThrough()]
+    child.killed = false
+    child.kill = signal => {
+      if (onKill?.(child, signal) === false) return true
+      if (child.killed) return false
+      child.killed = true
+      queueMicrotask(() => {
+        child.stdout.end()
+        child.emit('close', signal === 'SIGKILL' ? null : 143, signal)
+      })
+      return true
+    }
+    children.push({ child, path, args, options })
+    if (acknowledge) queueMicrotask(() => child.stdio[4].write('S123\n'))
+    return child
+  }
+  const service = new AppTerminals({
+    resolveDirectory: resolveDirectory ?? (async id => ({
+      cwd: id === 'session-A' ? '/app/workspace' : '/app/second', owner: scope(id),
+    })),
+    spawn,
+    helper: () => '/app/libpocket_terminal_helper.so',
+    workdirTimeoutMs, closeTimeoutMs,
+    makeScreen: makeScreen ?? (() => {
+      let output = ''
+      return { screen: {
+        write(text, done) { output += text; done() },
+        resize() {},
+      }, serializer: { serialize: () => output } }
+    }),
+  })
+  return { service, children, owners, scope }
+}
+
+test('one Session owns its PTY and reconnecting reads a complete screen', async () => {
+  const { service, children } = fixture()
+  const opened = await service.create({ sessionId: 'session-A', id: 'terminal-1', cols: 80, rows: 24 })
+  assert.equal(opened.state, 'running')
+  assert.equal(children[0].path, '/app/libpocket_terminal_helper.so')
+  assert.deepEqual(children[0].args, ['/app/workspace', '80', '24', '/system/bin/sh'])
+  assert.equal(children[0].options.env.TERM, 'xterm-256color')
+  assert.deepEqual(Object.keys(children[0].options.env).filter(key => /TOKEN|KEY|PASSWORD/.test(key)), [])
+  children[0].child.stdout.write(Buffer.from([0xe4, 0xbd]))
+  children[0].child.stdout.write(Buffer.from([0xa0]))
+  await new Promise(resolve => setImmediate(resolve))
+  const first = await service.read({ sessionId: 'session-A', id: 'terminal-1' })
+  assert.equal(first.screen, '你')
+  assert.equal((await service.create({ sessionId: 'session-A', id: 'terminal-1' })).state, 'running')
+  assert.equal(children.length, 1)
+  assert.deepEqual(service.list({ sessionId: 'session-B' }), [])
+  assert.throws(() => service.read({ sessionId: 'session-B', id: 'terminal-1' }), /unavailable/)
+  await service.close({ sessionId: 'session-A', id: 'terminal-1' })
+  assert.equal(children[0].child.killed, true)
+  assert.deepEqual(service.list({ sessionId: 'session-A' }), [])
+  await assert.rejects(service.create({ sessionId: 'session-A', id: 'terminal-1' }), /closed/)
+})
+
+test('raw input is bounded and resize waits for native acceptance', async () => {
+  const { service, children } = fixture()
+  await service.create({ sessionId: 'session-A', id: 't' })
+  const child = children[0].child
+  const inputFrame = new Promise(resolve => child.stdio[3].once('data', resolve))
+  const input = service.write({ sessionId: 'session-A', id: 't', data: '\t' })
+  assert.deepEqual([...await inputFrame], [87, 0, 0, 0, 1, 9])
+  child.stdio[4].write('W0\n')
+  assert.deepEqual(await input, { accepted: true })
+  await assert.rejects(service.write({ sessionId: 'session-A', id: 't', data: 'x'.repeat(65537) }), /64 KiB/)
+  const frame = new Promise(resolve => child.stdio[3].once('data', resolve))
+  const resized = service.resize({ sessionId: 'session-A', id: 't', cols: 120, rows: 35 })
+  assert.deepEqual([...await frame], [82, 0, 120, 0, 35])
+  child.stdio[4].write('R0\n')
+  assert.equal((await resized).cols, 120)
+  const refused = service.resize({ sessionId: 'session-A', id: 't', cols: 130, rows: 40 })
+  await new Promise(resolve => child.stdio[3].once('data', resolve))
+  child.stdio[4].write('R1\n')
+  await assert.rejects(refused, /refused/)
+  assert.equal((await service.read({ sessionId: 'session-A', id: 't' })).cols, 120)
+  await service.dispose()
+})
+
+test('startup failure does not leave an exposed terminal', async () => {
+  const { service, children } = fixture({ acknowledge: false })
+  const opening = service.create({ sessionId: 'session-A', id: 'bad' })
+  await new Promise(resolve => setImmediate(resolve))
+  children[0].child.stderr.write('forkpty denied')
+  children[0].child.kill('SIGTERM')
+  await assert.rejects(opening)
+  assert.deepEqual(service.list({ sessionId: 'session-A' }), [])
+})
+
+test('closing pending allocation and Host disposal cannot publish a late process', async () => {
+  let release
+  const deferred = new Promise(resolve => { release = resolve })
+  const { service, children } = fixture({ resolveDirectory: () => deferred })
+  const opening = service.create({ sessionId: 'session-A', id: 'late' })
+  const closing = service.close({ sessionId: 'session-A', id: 'late' })
+  release({ cwd: '/app/workspace', owner: { effect: () => {} } })
+  await assert.rejects(opening, /closed/)
+  await closing
+  assert.equal(children.length, 0)
+  assert.deepEqual(service.list({ sessionId: 'session-A' }), [])
+  await service.dispose()
+  await assert.rejects(service.create({ sessionId: 'session-A', id: 'new' }), /stopped/)
+})
+
+test('unresponsive Session directory lookup fails without spawning or blocking disposal', async () => {
+  const { service, children } = fixture({
+    resolveDirectory: () => new Promise(() => {}), workdirTimeoutMs: 10,
+  })
+  await assert.rejects(service.create({ sessionId: 'session-A', id: 'missing' }), /timed out/)
+  assert.equal(children.length, 0)
+  await service.dispose()
+})
+
+test('page detachment keeps the PTY, while Agent owner disposal closes only its Session', async () => {
+  const { service, children, owners } = fixture()
+  await service.create({ sessionId: 'session-A', id: 'terminal-1' })
+  await service.create({ sessionId: 'session-B', id: 'terminal-2' })
+  assert.equal(service.list({ sessionId: 'session-A' }).length, 1)
+  // The page has no teardown call; reconnecting the same Session reuses its process.
+  assert.equal((await service.create({ sessionId: 'session-A', id: 'terminal-1' })).state, 'running')
+  assert.equal(children.length, 2)
+  await owners.get('session-A').dispose()
+  assert.equal(children[0].child.killed, true)
+  assert.deepEqual(service.list({ sessionId: 'session-A' }), [])
+  assert.equal(children[1].child.killed, false)
+  assert.equal(service.list({ sessionId: 'session-B' }).length, 1)
+  await service.dispose()
+})
+
+test('Agent teardown during pending PTY startup cannot publish a late terminal', async () => {
+  const { service, children, owners } = fixture({ acknowledge: false })
+  const opening = service.create({ sessionId: 'session-A', id: 'late' })
+  await new Promise(resolve => setImmediate(resolve))
+  const teardown = owners.get('session-A').dispose()
+  children[0].child.stdio[4].write('S123\n')
+  await assert.rejects(opening, /closed during allocation/)
+  await teardown
+  assert.equal(children[0].child.killed, true)
+  assert.deepEqual(service.list({ sessionId: 'session-A' }), [])
+  await service.dispose()
+})
+
+test('a replacement Agent scope can use its Session identity after old owner teardown', async () => {
+  const { service, children, owners, scope } = fixture()
+  await service.create({ sessionId: 'session-A', id: 'terminal-1' })
+  await owners.get('session-A').dispose()
+  owners.delete('session-A')
+  const reopened = await service.create({ sessionId: 'session-A', id: 'terminal-1' })
+  assert.equal(reopened.state, 'running')
+  assert.notEqual(scope('session-A'), undefined)
+  assert.equal(children.length, 2)
+  assert.equal(children[0].child.killed, true)
+  assert.equal(children[1].child.killed, false)
+  await service.dispose()
+})
+
+test('owner disposal waits for process exit after escalating an unresponsive SIGTERM', async () => {
+  const signals = []
+  const { service, children, owners } = fixture({ closeTimeoutMs: 10,
+    onKill: (_child, signal) => {
+      signals.push(signal)
+      return signal !== 'SIGTERM'
+    },
+  })
+  await service.create({ sessionId: 'session-A', id: 'stubborn' })
+  await owners.get('session-A').dispose()
+  assert.deepEqual(signals, ['SIGTERM', 'SIGKILL'])
+  assert.equal(children[0].child.killed, true)
+  assert.deepEqual(service.list({ sessionId: 'session-A' }), [])
+  await service.dispose()
+})
+
+test('inactive Agent scope refuses terminal creation before spawning', async () => {
+  const { service, children } = fixture({ resolveDirectory: async () => ({
+    cwd: '/app/workspace', owner: { effect: () => { throw new Error('inactive Agent scope') } },
+  }) })
+  await assert.rejects(service.create({ sessionId: 'session-A', id: 'no-owner' }), /inactive Agent scope/)
+  assert.equal(children.length, 0)
+  await service.dispose()
+})
+
+test('failed control acknowledgement still escalates an unresponsive PTY on owner disposal', async () => {
+  const signals = []
+  const { service, children, owners } = fixture({ closeTimeoutMs: 10,
+    onKill: (_child, signal) => {
+      signals.push(signal)
+      return signal !== 'SIGTERM'
+    },
+  })
+  await service.create({ sessionId: 'session-A', id: 'bad-control' })
+  children[0].child.stdio[4].write('invalid\n')
+  assert.equal(service.list({ sessionId: 'session-A' })[0].state, 'failed')
+  await owners.get('session-A').dispose()
+  assert.deepEqual(signals, ['SIGTERM', 'SIGKILL'])
+  assert.deepEqual(service.list({ sessionId: 'session-A' }), [])
+})
+
+test('failed PTY close returns an error after both bounded termination deadlines', async () => {
+  const signals = []
+  const { service, children } = fixture({ closeTimeoutMs: 10,
+    onKill: (_child, signal) => { signals.push(signal); return false },
+  })
+  await service.create({ sessionId: 'session-A', id: 'stuck' })
+  children[0].child.stdio[4].write('invalid\n')
+  await assert.rejects(service.close({ sessionId: 'session-A', id: 'stuck' }),
+    /Terminal process cleanup did not complete/)
+  assert.deepEqual(signals, ['SIGTERM', 'SIGKILL'])
+})
+
+test('spawn error cleanup finishes whether close has fired or the child is still alive', async () => {
+  for (const alreadyClosed of [false, true]) {
+    const signals = []
+    const { service, children } = fixture({ acknowledge: false, closeTimeoutMs: 10,
+      onKill: (_child, signal) => {
+        signals.push(signal)
+        return signal !== 'SIGTERM'
+      },
+    })
+    const opening = service.create({ sessionId: 'session-A', id: 'spawn-error' })
+    await new Promise(resolve => setImmediate(resolve))
+    const child = children[0].child
+    child.emit('error', new Error('spawn failed'))
+    if (alreadyClosed) child.emit('close', null, null)
+    await assert.rejects(opening, /spawn failed/)
+    assert.deepEqual(signals, alreadyClosed ? [] : ['SIGTERM', 'SIGKILL'])
+    assert.deepEqual(service.list({ sessionId: 'session-A' }), [])
+    await service.dispose()
+  }
+})
+
+test('fast stdout producer waits for xterm consumption instead of queuing writes', async () => {
+  const callbacks = []
+  let accepted = 0
+  const { service, children } = fixture({ makeScreen: () => ({
+    screen: { write(_text, done) { accepted++; callbacks.push(done) }, resize() {} },
+    serializer: { serialize: () => '' },
+  }) })
+  await service.create({ sessionId: 'session-A', id: 'noisy' })
+  const stdout = children[0].child.stdout
+  const producer = (async () => {
+    for (let index = 0; index < 64; index++) {
+      if (!stdout.write(Buffer.alloc(4096, 0x78))) await once(stdout, 'drain')
+    }
+  })()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(stdout.isPaused(), true)
+  assert.equal(accepted, 1)
+  assert.equal(service._get('session-A', 'noisy')._pendingOutputBytes, 4096)
+  for (let index = 0; index < 64; index++) {
+    while (callbacks.length === 0) await new Promise(resolve => setImmediate(resolve))
+    assert.equal(service._get('session-A', 'noisy')._pendingOutputBytes, 4096)
+    callbacks.shift()()
+    await new Promise(resolve => setImmediate(resolve))
+  }
+  await producer
+  assert.equal(accepted, 64)
+  assert.equal(service._get('session-A', 'noisy')._pendingOutputBytes, 0)
+  await service.dispose()
+})
+
+test('output that evades stream pause fails at a bounded pending byte limit', async () => {
+  const signals = []
+  const { service, children } = fixture({
+    onKill: (_child, signal) => { signals.push(signal) },
+    makeScreen: () => ({
+      screen: { write(_text, _done) {}, resize() {} },
+      serializer: { serialize: () => '' },
+    }),
+  })
+  await service.create({ sessionId: 'session-A', id: 'overflow' })
+  const child = children[0].child
+  child.stdout.emit('data', Buffer.alloc(200000, 0x78))
+  child.stdout.emit('data', Buffer.alloc(200000, 0x78))
+  assert.match(service.list({ sessionId: 'session-A' })[0].error, /256 KiB/)
+  assert.deepEqual(signals, ['SIGTERM'])
+  await service.dispose()
+})

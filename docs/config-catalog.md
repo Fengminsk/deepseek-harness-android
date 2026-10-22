@@ -2283,7 +2283,7 @@ export interface Config {
 
 ## `@deepseek-ai/dsh-office-to-pdf`
 
-- `source`: [`packages/document/office-to-pdf/src/index.ts:31`](../packages/document/office-to-pdf/src/index.ts)
+- `source`: [`packages/document/office-to-pdf/src/index.ts:32`](../packages/document/office-to-pdf/src/index.ts)
 
 ```ts config-catalog
 /** Provider concurrency and kit rendering/font configuration. */
@@ -2326,6 +2326,8 @@ export interface Config {
   maxFontFileBytes: number
   /** Maximum original font bytes loaded for a conversion. */
   maxLoadedFontBytes: number
+  /** Run each conversion in a child process so WASM memory leaves the Host when it exits. */
+  subprocessConversions: boolean
 }
 ```
 <!-- END GENERATED config-catalog:@deepseek-ai/dsh-office-to-pdf -->

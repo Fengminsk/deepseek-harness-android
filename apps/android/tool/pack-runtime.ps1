@@ -71,6 +71,28 @@ foreach ($suffix in @('js', 'wasm')) {
         throw "Sharp WASM payload is missing or empty: $suffix"
     }
 }
+$officeDescriptorPath = Join-Path $staging 'android/office-runtime.json'
+if (-not (Test-Path -LiteralPath $officeDescriptorPath -PathType Leaf)) {
+    throw 'Pinned Office WASM runtime is missing. Run stage-runtime.ts before packaging.'
+}
+$office = Get-Content -LiteralPath $officeDescriptorPath -Raw | ConvertFrom-Json
+$officeRoot = Join-Path $staging 'node_modules/@deepseek-ai/libreoffice-kit-wasm'
+$officeAdapter = Get-Content -LiteralPath (Join-Path $staging 'node_modules/@deepseek-ai/libreoffice-kit/package.json') -Raw | ConvertFrom-Json
+$officeEngine = Get-Content -LiteralPath (Join-Path $officeRoot 'prebuilds.json') -Raw | ConvertFrom-Json
+if ($office.backend -cne 'wasm' -or $office.version -cne $officeAdapter.version -or
+    $office.version -cne $officeEngine.version -or $officeEngine.engine.kind -cne 'wasm') {
+    throw 'Staged Office WASM identity does not match its adapter and engine.'
+}
+foreach ($item in $office.assets) {
+    if ($item.path -cnotmatch '^assets/[a-zA-Z0-9._-]+$' -or $item.sha256 -cnotmatch '^[a-f0-9]{64}$') {
+        throw 'Invalid Office WASM asset descriptor.'
+    }
+    $source = Join-Path $officeRoot $item.path
+    if (-not (Test-Path -LiteralPath $source -PathType Leaf) -or (Get-Item -LiteralPath $source).Length -eq 0 -or
+        (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant() -cne $item.sha256) {
+        throw "Office WASM asset changed before packaging: $($item.path)"
+    }
+}
 New-Item -ItemType Directory -Force -Path $assets | Out-Null
 $archive = Join-Path $assets 'runtime.zip'
 $temporary = Join-Path $assets 'runtime.zip.partial'
@@ -88,7 +110,35 @@ try {
     }
 } finally { $zip.Dispose(); $file.Dispose() }
 Move-Item -LiteralPath $temporary -Destination $archive -Force
+# Verify the actual ZIP entries, rather than trusting the staging tree after
+# packaging. Android extracts exactly these bytes before Node loads the kit.
+$archiveHandle = [IO.File]::OpenRead($archive)
+$packed = [IO.Compression.ZipArchive]::new($archiveHandle, [IO.Compression.ZipArchiveMode]::Read)
+try {
+    foreach ($required in @('android/office-runtime.json',
+        'node_modules/@deepseek-ai/libreoffice-kit/package.json',
+        'node_modules/@deepseek-ai/libreoffice-kit-wasm/package.json',
+        'node_modules/@deepseek-ai/libreoffice-kit-wasm/prebuilds.json',
+        'node_modules/@deepseek-ai/libreoffice-kit-wasm/licenses/LICENSE')) {
+        $entry = $packed.GetEntry($required)
+        if (-not $entry -or $entry.Length -eq 0) { throw "Office runtime ZIP is missing: $required" }
+    }
+    foreach ($item in $office.assets) {
+        $path = "node_modules/@deepseek-ai/libreoffice-kit-wasm/$($item.path)"
+        $entry = $packed.GetEntry($path)
+        if (-not $entry -or $entry.Length -eq 0) { throw "Office runtime ZIP is missing: $path" }
+        $stream = $entry.Open()
+        try {
+            $actual = [BitConverter]::ToString([Security.Cryptography.SHA256]::HashData($stream)).Replace('-', '').ToLowerInvariant()
+        } finally { $stream.Dispose() }
+        if ($actual -cne $item.sha256) { throw "Office runtime ZIP checksum mismatch: $path" }
+    }
+    if ($packed.GetEntry('node_modules/@deepseek-ai/libreoffice-kit-win32-x64/package.json')) {
+        throw 'Desktop Office engine was packaged into the Android runtime.'
+    }
+} finally { $packed.Dispose(); $archiveHandle.Dispose() }
 $checksum = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
 [IO.File]::WriteAllText((Join-Path $assets 'runtime.sha256'), $checksum + "`n")
 Write-Output "Runtime archive SHA256: $checksum"
 Write-Output "Runtime archive bytes: $((Get-Item -LiteralPath $archive).Length)"
+Write-Output "Office WASM runtime verified in archive: $($office.version), $($office.assets.Count) hashed assets"

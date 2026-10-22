@@ -56,6 +56,16 @@ it('preserves the kit font defaults when font configuration is omitted', async (
   expect(() => Config({ fontDirectories: [''] })).toThrow()
 })
 
+it('uses Android system fonts when running on Android without an explicit font directory', async () => {
+  const platform = Object.getOwnPropertyDescriptor(process, 'platform')!
+  Object.defineProperty(process, 'platform', { ...platform, value: 'android' })
+  try {
+    const provider = await mount()
+    await provider.convert(request)
+    expect(kit.create.mock.calls[0]![0]).toHaveProperty('fontDirectories', ['/system/fonts'])
+  } finally { Object.defineProperty(process, 'platform', platform) }
+})
+
 it.each([
   [[]],
   [['sans-serif']],
@@ -89,7 +99,7 @@ it('passes configured limits to the kit, reuses the converter, and removes all s
   await provider.convert(request)
   const { maxConcurrentConversions: _count, maxQueuedJobs: _queued, maxReaders: _readers, maxSourceBytes: _source,
     maxBackgroundConversions: _background, maxCachedEntries: _entries, maxCachedBytes: _cached,
-    maxSourceEntries: _aliases, ...options } = config
+    maxSourceEntries: _aliases, subprocessConversions: _subprocess, ...options } = config
   expect(kit.create).toHaveBeenCalledExactlyOnceWith(options)
   await ctx.fiber.dispose()
   expect(dispose).toHaveBeenCalledOnce()

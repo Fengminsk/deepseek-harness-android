@@ -40,7 +40,27 @@
 - id: ui-open-in-app
   disabled: true
 - id: office-to-pdf
-  disabled: true
+  config:
+    # A separate Node process releases LibreOffice WASM memory after each render.
+    # It does not lower conversion peak RSS or guarantee survival under the OS LMK.
+    subprocessConversions: true
+    maxConcurrentConversions: 1
+    maxQueuedJobs: 2
+    maxReaders: 4
+    maxSourceBytes: 10485760
+    maxBackgroundConversions: 0
+    maxCachedEntries: 2
+    maxCachedBytes: 33554432
+    maxSourceEntries: 8
+    timeoutMs: 90000
+    maxInputBytes: 10485760
+    maxOutputBytes: 20971520
+    maxImageResolution: 96
+    maxArchiveEntries: 2000
+    maxUncompressedBytes: 67108864
+    maxFontFiles: 1024
+    maxFontFileBytes: 16777216
+    maxLoadedFontBytes: 67108864
 - id: directory-picker
   disabled: true
 - id: sandbox-policy
@@ -55,6 +75,10 @@
 - id: fs-sandbox
   disabled: true
 - id: ptc-runtime
+  disabled: true
+- id: workflow-ptc
+  disabled: true
+- id: tool-workflow
   disabled: true
 - id: session-persistence-jsonl
   disabled: true

@@ -4,8 +4,10 @@ import 'package:material_ui/material_ui.dart';
 
 import 'chat_changes.dart';
 import 'runtime.dart';
+import 'session_browser.dart';
 import 'session_document.dart';
 import 'session_files.dart';
+import 'session_terminal.dart';
 import 'skills.dart';
 import 'tasks.dart';
 import 'ui.dart';
@@ -84,6 +86,24 @@ class SessionResourcesPage extends StatelessWidget {
               onTap: () => _open(
                 context,
                 TasksPage(runtime: runtime, sessionId: sessionId),
+              ),
+            ),
+            PocketRow(
+              key: const ValueKey('resource-browser'),
+              icon: Icons.public_rounded,
+              title: '浏览器',
+              onTap: () => _open(
+                context,
+                SessionBrowserPage(runtime: runtime),
+              ),
+            ),
+            PocketRow(
+              key: const ValueKey('resource-terminal'),
+              icon: Icons.terminal_rounded,
+              title: '终端',
+              onTap: () => _open(
+                context,
+                SessionTerminalsPage(runtime: runtime, sessionId: sessionId),
               ),
             ),
           ],

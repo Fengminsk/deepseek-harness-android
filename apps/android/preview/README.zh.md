@@ -30,4 +30,8 @@ node --test apps/android/preview/browser.test.mjs
 
 宿主浏览器检查覆盖原版文本、含本地图片的 Markdown、源代码、图片、PDF、CSV、XLSX 和静态 HTML 渲染器，以及 PDF/Excel worker、实时文件变更、字节租约释放和 HTML 隔离。原版 PDF 资源和 Excel worker 保留在未改动的渲染器代码块内；清单包含打包字体及许可证。Excel 保留原版网格、公式栏和工作表标签，包括桌面尺寸的单元格字体及横向滚动。
 
-Word 和 PowerPoint 仍需要将原版 Office 转换提供方适配到 Android。在完成适配之前，客户端显示原版不可用结果；不会仅因客户端完成注册就将这些格式标为已支持。
+Word 和 PowerPoint 沿用原版 `office-to-pdf` 提供方，配套锁定版本 0.2.0 的 LibreOffice-kit WASM 引擎。Android 配置限制单个活动转换、10 MiB 输入、20 MiB 输出、队列与缓存、字体加载及 90 秒转换期限。原版会话文件授权、取消、来源版本检查、字节租约与 PDF 渲染器均保留在调用链内。运行时 staging 校验 npm SHA-512 和引擎资产 SHA-256，打包时重新校验实际 ZIP 文件及许可证。
+
+宿主检查已通过 staging 引擎将真实 DOCX 与 XLSX 样本转为 PDF，并通过原版授权提供方转换 DOCX，同时验证缓存复用、损坏或超限输入拒绝及 runtime ZIP 内容。引擎每次转换结束后会终止 worker。重复宿主测试中，转换 DOCX 时进程峰值 RSS 达到约 958 MiB，继续转换 XLSX 后约 1.26 GiB；转换结束、释放转换器并显式 GC 后，当前 RSS 仍约为 439 MiB。这是显著的常驻内存，宿主内存表现不能证明 Android 应用在系统限制下能存活。
+
+Office 功能仍须标记为待验收：必须在 ARM64 真机的文档界面打开 DOCX 和 PPTX，重复转换，取消一次转换，在转换中切到后台再返回，并确认进程未被杀、Agent 任务未丢失。还要检查 Android 系统字体替换与 PDF 页面内容，不能只检查 `%PDF-` 文件头。若手机杀进程或转换无法在配置限制内完成，应保留明确的失败/重试状态，不得宣称 Office 预览已验收；需重新评估低内存引擎或需用户明确选择的外部转换路径。完整文档预览 profile 测试在调用 Office 前，被 Windows 测试宿主对原版 workspace 存储原子重命名的 `EPERM` 阻断。宿主转换与 APK 包内存在都不能证明 WebView 或真机 Office 阅读成功。

@@ -10,9 +10,11 @@ import 'ui.dart';
 PopupRoute<void> chatReplySourcesRoute(
   BuildContext context,
   ChatReplySources sources, {
+  required Set<String> answerLinks,
   required Future<void> Function(Uri) onOpenSource,
 }) => _ReplySourcesRoute(
   sources: sources,
+  answerLinks: answerLinks,
   onOpenSource: onOpenSource,
   themes: InheritedTheme.capture(
     from: context,
@@ -25,12 +27,14 @@ PopupRoute<void> chatReplySourcesRoute(
 class _ReplySourcesRoute extends PopupRoute<void> {
   _ReplySourcesRoute({
     required this.sources,
+    required this.answerLinks,
     required this.onOpenSource,
     required this.themes,
     required this.reduceMotion,
     required this.barrierLabel,
   });
   final ChatReplySources sources;
+  final Set<String> answerLinks;
   final Future<void> Function(Uri) onOpenSource;
   final CapturedThemes themes;
   final bool reduceMotion;
@@ -66,13 +70,22 @@ class _ReplySourcesRoute extends PopupRoute<void> {
     Animation<double> animation,
     Animation<double> secondaryAnimation,
   ) => themes.wrap(
-    _ReplySourcesSheet(sources: sources, onOpenSource: onOpenSource),
+    _ReplySourcesSheet(
+      sources: sources,
+      answerLinks: answerLinks,
+      onOpenSource: onOpenSource,
+    ),
   );
 }
 
 class _ReplySourcesSheet extends StatefulWidget {
-  const _ReplySourcesSheet({required this.sources, required this.onOpenSource});
+  const _ReplySourcesSheet({
+    required this.sources,
+    required this.answerLinks,
+    required this.onOpenSource,
+  });
   final ChatReplySources sources;
+  final Set<String> answerLinks;
   final Future<void> Function(Uri) onOpenSource;
   @override
   State<_ReplySourcesSheet> createState() => _ReplySourcesSheetState();
@@ -164,6 +177,9 @@ class _ReplySourcesSheetState extends State<_ReplySourcesSheet> {
                                   for (final source in widget.sources.entries)
                                     _SourceRow(
                                       source: source,
+                                      answerLinked: widget.answerLinks.contains(
+                                        source.url,
+                                      ),
                                       failure:
                                           source.destination?.toString() ==
                                               _failureUrl
@@ -290,13 +306,20 @@ class _ReplySourcesSheetState extends State<_ReplySourcesSheet> {
 }
 
 class _SourceRow extends StatelessWidget {
-  const _SourceRow({required this.source, required this.onTap, this.failure});
+  const _SourceRow({
+    required this.source,
+    required this.answerLinked,
+    required this.onTap,
+    this.failure,
+  });
   final ChatReplySource source;
+  final bool answerLinked;
   final VoidCallback? onTap;
   final String? failure;
   @override
   Widget build(BuildContext context) {
     final facts = <String>{
+      if (answerLinked) '回答链接',
       for (final record in source.records)
         record.kind == ChatReplySourceKind.search
             ? '搜索结果'

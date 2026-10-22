@@ -287,6 +287,9 @@ class ChatGoalPlanController extends ChangeNotifier {
   }
 
   void _acceptActivation(dynamic value) {
+    // A clear or a different revision withdraws the previous live authority.
+    // The durable projection may arrive after this process-local event.
+    activation = null;
     if (value is Map &&
         value['id'] == goal?.id &&
         value['revision'] == goal?.revision &&
@@ -322,9 +325,13 @@ class ChatGoalPlanController extends ChangeNotifier {
     'ref': base.ref,
     'request': {'objective': objective.trim(), 'maxGoalRounds': maxGoalRounds},
   });
-  Future<bool> create(String objective) => _mutate('create', {
-    'request': {'objective': objective.trim()},
-  });
+  Future<bool> create(String objective, {int? maxGoalRounds}) =>
+      _mutate('create', {
+        'request': {
+          'objective': objective.trim(),
+          'maxGoalRounds': ?maxGoalRounds,
+        },
+      });
   Future<bool> pause() =>
       goal == null ? Future.value(false) : _mutate('pause', {'ref': goal!.ref});
   Future<bool> resume() => goal == null

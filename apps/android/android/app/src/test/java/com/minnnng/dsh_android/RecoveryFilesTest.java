@@ -46,6 +46,14 @@ public final class RecoveryFilesTest {
     private static Path fresh(String name) throws IOException { return Files.createDirectory(root.resolve(name)); }
     private static Path patch(Path base) { return base.resolve("dsh/profiles/android/cordis.patch.yml"); }
     private static String sha(String text) { return RecoveryFiles.hash(text.getBytes(StandardCharsets.UTF_8)); }
+    // Gradle compiles Android unit-test sources against its Android Java API.
+    // Files.readString/writeString are not available there, even on a JDK 17 host.
+    private static void writeString(Path path, String text) throws IOException {
+        Files.write(path, text.getBytes(StandardCharsets.UTF_8));
+    }
+    private static String readString(Path path) throws IOException {
+        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
+    }
 
     public static void main(String[] args) throws Exception {
         root = Paths.get(args[0]).toAbsolutePath().normalize();
@@ -70,7 +78,7 @@ public final class RecoveryFilesTest {
         String request = id();
         Map<String, Object> saved = files.write(PATCH, "missing", "locale: 中文\n", request);
         check(saved.get("state").equals("saved"), "save receipt");
-        check(Files.readString(patch(base)).equals("locale: 中文\n"), "saved exact text");
+        check(readString(patch(base)).equals("locale: 中文\n"), "saved exact text");
         String backup = (String) saved.get("backupId");
         check(files.readBackup(backup).get("exists").equals(false), "absent backup represented");
         check(files.backups().size() == 1, "one backup");
@@ -83,10 +91,10 @@ public final class RecoveryFilesTest {
         Path base = fresh("cas");
         Files.createDirectories(patch(base).getParent());
         String old = "# 原样\ncredential: private-test-marker\n";
-        Files.writeString(patch(base), old);
+        writeString(patch(base), old);
         RecoveryFiles files = store(base, "g1", new Sync());
         rejects("recovery/conflict", () -> files.write(PATCH, "missing", "wrong", id()));
-        check(Files.readString(patch(base)).equals(old), "conflict changed source");
+        check(readString(patch(base)).equals(old), "conflict changed source");
         String request = id();
         Map<String, Object> receipt = files.write(PATCH, sha(old), "updated: true\n", request);
         String backup = (String) receipt.get("backupId");
@@ -97,20 +105,20 @@ public final class RecoveryFilesTest {
         rejects("recovery/request-conflict", () -> files.write(PATCH, sha(old), "other", request));
         check(!files.operations().toString().contains("private-test-marker"), "journal exposed source text");
         files.restore(backup, sha("updated: true\n"), id());
-        check(Files.readString(patch(base)).equals(old), "restore exact bytes");
+        check(readString(patch(base)).equals(old), "restore exact bytes");
         check(files.backups().size() == 2, "restore did not preserve replaced content");
     }
 
     private static void uncertainCommitAndRestart() throws Exception {
         Path base = fresh("unknown");
         Files.createDirectories(patch(base).getParent());
-        Files.writeString(patch(base), "old");
+        writeString(patch(base), "old");
         Sync sync = new Sync();
         sync.fail = patch(base).getParent();
         RecoveryFiles files = store(base, "g1", sync);
         String request = id();
         rejects("recovery/write-unconfirmed", () -> files.write(PATCH, sha("old"), "new", request));
-        check(Files.readString(patch(base)).equals("new"), "fault did not follow rename");
+        check(readString(patch(base)).equals("new"), "fault did not follow rename");
         check(files.receipt(request).get("state").equals("unknown"), "late failure claimed saved");
         RecoveryFiles replacement = store(base, "g2", new Sync());
         check(replacement.receipt(request).get("state").equals("unknown"), "unknown lost on restart");
@@ -121,7 +129,7 @@ public final class RecoveryFilesTest {
     private static void journalBeforeTouch() throws Exception {
         Path base = fresh("pending");
         Files.createDirectories(patch(base).getParent());
-        Files.writeString(patch(base), "unchanged");
+        writeString(patch(base), "unchanged");
         Sync sync = new Sync();
         RecoveryFiles files = store(base, "first", sync);
         files.setMode("maintenance", id());
@@ -129,12 +137,12 @@ public final class RecoveryFilesTest {
         sync.fail = base.resolve("pocket-recovery/operations");
         String request = id();
         try { files.write(PATCH, sha("unchanged"), "would-change", request); throw new AssertionError("missing fault"); }
-        catch (IOException expected) { check(Files.readString(patch(base)).equals("unchanged"), "write before durable journal"); }
+        catch (IOException expected) { check(readString(patch(base)).equals("unchanged"), "write before durable journal"); }
         check(files.receipt(request).get("state").equals("unknown"), "failed begin still claimed pending in same generation");
         RecoveryFiles replacement = store(base, "replacement", new Sync());
         check(replacement.receipt(request).get("state").equals("unknown"), "old pending reported running");
         check(replacement.write(PATCH, sha("unchanged"), "would-change", request).get("state").equals("unknown"), "pending replayed");
-        check(Files.readString(patch(base)).equals("unchanged"), "pending mutated file on read");
+        check(readString(patch(base)).equals("unchanged"), "pending mutated file on read");
     }
 
     private static void repairOnlyAssets() throws Exception {
@@ -143,16 +151,16 @@ public final class RecoveryFilesTest {
         String hash = sha("runtime");
         Path runtime = base.resolve("runtimes").resolve(hash);
         Files.createDirectories(runtime);
-        Files.writeString(runtime.resolve(".complete"), hash);
+        writeString(runtime.resolve(".complete"), hash);
         Files.createDirectories(base.resolve("dsh/sessions"));
-        Files.writeString(base.resolve("dsh/sessions/kept"), "private-history");
+        writeString(base.resolve("dsh/sessions/kept"), "private-history");
         String request = id();
         Map<String, Object> receipt = files.runtimeRepair(hash, request);
         check(receipt.get("state").equals("saved"), "repair receipt");
         check(!Files.exists(runtime), "runtime not quarantined");
-        check(Files.readString(base.resolve("dsh/sessions/kept")).equals("private-history"), "repair touched sessions");
+        check(readString(base.resolve("dsh/sessions/kept")).equals("private-history"), "repair touched sessions");
         Path quarantine = base.resolve("pocket-recovery/runtime-cache").resolve((String) receipt.get("backupId"));
-        check(Files.readString(quarantine.resolve(".complete")).equals(hash), "quarantine removed contents");
+        check(readString(quarantine.resolve(".complete")).equals(hash), "quarantine removed contents");
         check(files.runtimeRepair(hash, request).get("backupId").equals(receipt.get("backupId")), "repair replayed");
     }
 
@@ -181,20 +189,20 @@ public final class RecoveryFilesTest {
         rejects("recovery/mode-invalid", () -> files.setMode("unknown", id()));
         Files.createDirectories(base.resolve("dsh"));
         String log = "x".repeat(RecoveryFiles.LOG_BYTES + 20) + "END";
-        Files.writeString(base.resolve("dsh/runtime-stderr.log"), log);
+        writeString(base.resolve("dsh/runtime-stderr.log"), log);
         Map<String, Object> tail = replacement.log();
         check(tail.get("truncated").equals(true), "tail truncation missing");
         check(((String) tail.get("text")).length() == RecoveryFiles.LOG_BYTES, "log unbounded");
         check(((String) tail.get("text")).endsWith("END"), "wrong log end");
         check(tail.get("private").equals(true), "private log marker");
-        Files.writeString(base.resolve("pocket-recovery-mode"), "damaged");
+        writeString(base.resolve("pocket-recovery-mode"), "damaged");
         rejects("recovery/control-damaged", files::mode);
     }
 
     private static void serialOwnership() throws Exception {
         Path base = fresh("serial");
         Files.createDirectories(patch(base).getParent());
-        Files.writeString(patch(base), "old");
+        writeString(patch(base), "old");
         Sync sync = new Sync();
         sync.fail = patch(base).getParent();
         sync.reached = new CountDownLatch(1);

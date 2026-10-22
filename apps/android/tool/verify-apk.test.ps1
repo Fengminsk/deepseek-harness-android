@@ -24,7 +24,7 @@ $owner = [IO.File]::Open((Join-Path $testRoot '.owner'), [IO.FileMode]::CreateNe
 $owner.Dispose()
 $cases = [Collections.Generic.List[object]]::new()
 
-function Invoke-Verifier([string]$Path, [string]$VersionName = $ExpectedVersionName, [long]$VersionCode = $ExpectedVersionCode) {
+function Invoke-Verifier([string]$Path, [string]$VersionName = $ExpectedVersionName, [long]$VersionCode = $ExpectedVersionCode, [string]$RuntimeSha256 = '') {
     $start = [Diagnostics.ProcessStartInfo]::new((Get-Process -Id $PID).Path)
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
@@ -34,6 +34,7 @@ function Invoke-Verifier([string]$Path, [string]$VersionName = $ExpectedVersionN
         $start.ArgumentList.Add($argument)
     }
     if ($Aapt2Path) { $start.ArgumentList.Add('-Aapt2Path'); $start.ArgumentList.Add($Aapt2Path) }
+    if ($RuntimeSha256) { $start.ArgumentList.Add('-ExpectedRuntimeSha256'); $start.ArgumentList.Add($RuntimeSha256) }
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $start
     try {
@@ -64,13 +65,16 @@ function New-Fixture([string]$Name, [string]$Mutation = '') {
     $zip = [IO.Compression.ZipArchive]::new($file, [IO.Compression.ZipArchiveMode]::Create)
     try {
         foreach ($metadata in $manifestResources.GetEnumerator()) { Write-ZipEntry $zip $metadata.Key $metadata.Value }
+        foreach ($resource in $pinnedResources.GetEnumerator()) { Write-ZipEntry $zip $resource.Key $resource.Value }
         Write-ZipEntry $zip 'assets/runtime/runtime.zip' $runtimeBytes
         $checksum = if ($Mutation -eq 'checksum') { '0' * 64 } else { $runtimeHash }
         Write-ZipEntry $zip 'assets/runtime/runtime.sha256' ([Text.Encoding]::UTF8.GetBytes("$checksum`n"))
         $abis = if ($Mutation -eq 'extra-abi') { @('arm64-v8a', 'x86_64') } else { @('arm64-v8a') }
         foreach ($abi in $abis) {
-            foreach ($library in @('libflutter.so', 'libnode.so', 'libc++_shared.so', 'libdsh_runtime.so', 'libdsh_system.so', 'libpocket_file_publish.so', 'libpocket_node_cli.so', 'libpocket_require_builtin.so')) {
+            foreach ($library in @('libflutter.so', 'libnode.so', 'libc++_shared.so', 'libdsh_runtime.so', 'libdsh_system.so', 'libpocket_file_publish.so', 'libpocket_node_cli.so', 'libpocket_terminal_helper.so', 'libpocket_shell_supervisor.so', 'libpocket_require_builtin.so')) {
                 if ($Mutation -eq 'missing-library' -and $library -eq 'libflutter.so') { continue }
+                if ($Mutation -eq 'missing-terminal-helper' -and $library -eq 'libpocket_terminal_helper.so') { continue }
+                if ($Mutation -eq 'missing-shell-supervisor' -and $library -eq 'libpocket_shell_supervisor.so') { continue }
                 # Nonempty fixtures validate packaging, not native executable correctness.
                 Write-ZipEntry $zip "lib/$abi/$library" ([byte[]]@(127, 69, 76, 70))
             }
@@ -88,6 +92,7 @@ function Assert-Rejected([string]$Name, [hashtable]$Outcome, [string]$ErrorPatte
 
 try {
     $manifestResources = @{}
+    $pinnedResources = @{}
     $source = [IO.Compression.ZipFile]::OpenRead((Resolve-Path -LiteralPath $SourceApkPath).Path)
     try {
         foreach ($name in @('AndroidManifest.xml', 'resources.arsc')) {
@@ -96,6 +101,18 @@ try {
             $input = $entry.Open()
             $buffer = [IO.MemoryStream]::new()
             try { $input.CopyTo($buffer); $manifestResources[$name] = $buffer.ToArray() }
+            finally { $input.Dispose(); $buffer.Dispose() }
+        }
+        # The pinned native ripgrep identity is checked by content hash, so a
+        # valid synthetic APK must carry the actual bytes from the source APK.
+        foreach ($name in @('lib/arm64-v8a/libpocket_ripgrep.so',
+                'assets/licenses/ripgrep/NOTICE.txt', 'assets/licenses/ripgrep/COPYING',
+                'assets/licenses/ripgrep/LICENSE-MIT', 'assets/licenses/ripgrep/UNLICENSE')) {
+            $entry = $source.GetEntry($name)
+            if ($null -eq $entry) { throw "The source APK lacks $name." }
+            $input = $entry.Open()
+            $buffer = [IO.MemoryStream]::new()
+            try { $input.CopyTo($buffer); $pinnedResources[$name] = $buffer.ToArray() }
             finally { $input.Dispose(); $buffer.Dispose() }
         }
     } finally { $source.Dispose() }
@@ -120,10 +137,16 @@ try {
     $cases.Add(@{ name = 'valid APK with actual compiled Manifest and unchanged input'; passed = $true })
     Assert-Rejected 'runtime checksum mismatch' (Invoke-Verifier (New-Fixture 'bad-checksum' 'checksum')) 'Embedded runtime SHA256 mismatch'
     Assert-Rejected 'missing Flutter engine' (Invoke-Verifier (New-Fixture 'missing-library' 'missing-library')) 'Required native library.*libflutter\.so'
+    Assert-Rejected 'missing terminal helper' (Invoke-Verifier (New-Fixture 'missing-terminal-helper' 'missing-terminal-helper')) 'Required native library.*libpocket_terminal_helper\.so'
+    Assert-Rejected 'missing shell supervisor' (Invoke-Verifier (New-Fixture 'missing-shell-supervisor' 'missing-shell-supervisor')) 'Required native library.*libpocket_shell_supervisor\.so'
     Assert-Rejected 'unexpected ABI with complete native libraries' (Invoke-Verifier (New-Fixture 'extra-abi' 'extra-abi')) 'Unexpected ABI: x86_64'
     Assert-Rejected 'Manifest versionName mismatch' (Invoke-Verifier $baseline 'wrong-version') 'Version name mismatch'
     Assert-Rejected 'Manifest versionCode mismatch' (Invoke-Verifier $baseline $ExpectedVersionName ($ExpectedVersionCode + 1)) 'Version code mismatch'
     Assert-Rejected 'duplicate runtime checksum entry' (Invoke-Verifier (New-Fixture 'duplicate' 'duplicate')) 'Duplicate ZIP entry'
+    $trusted = Invoke-Verifier $baseline $ExpectedVersionName $ExpectedVersionCode $runtimeHash
+    if ($trusted.exitCode -ne 0 -or -not $trusted.report.success) { throw 'Matching trusted runtime digest was rejected.' }
+    $cases.Add(@{ name = 'trusted runtime digest matches packaged runtime'; passed = $true })
+    Assert-Rejected 'trusted runtime digest mismatch' (Invoke-Verifier $baseline $ExpectedVersionName $ExpectedVersionCode ('0' * 64)) 'Embedded runtime differs from the trusted build archive'
     @{ success = $true; cases = $cases.ToArray() } | ConvertTo-Json -Depth 5
 } finally {
     # Only remove this invocation's uniquely owned fixture directory.

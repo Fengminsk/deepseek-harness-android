@@ -10,6 +10,7 @@ param(
     [Parameter(Mandatory)][long]$ExpectedVersionCode,
     [string[]]$ExpectedAbi = @('arm64-v8a'),
     [string]$ExpectedPackageName = 'com.minnnng.dsh_android',
+    [string]$ExpectedRuntimeSha256 = '',
     [string]$Aapt2Path = ''
 )
 
@@ -19,7 +20,8 @@ $failures = [Collections.Generic.List[string]]::new()
 $requiredLibraries = @(
     'libflutter.so', 'libnode.so', 'libc++_shared.so',
     'libdsh_runtime.so', 'libdsh_system.so', 'libpocket_file_publish.so',
-    'libpocket_node_cli.so', 'libpocket_require_builtin.so', 'libpocket_ripgrep.so'
+    'libpocket_node_cli.so', 'libpocket_terminal_helper.so', 'libpocket_shell_supervisor.so',
+    'libpocket_require_builtin.so', 'libpocket_ripgrep.so'
 )
 $result = [ordered]@{
     schemaVersion = 1
@@ -115,6 +117,9 @@ function Get-StreamSha256([IO.Stream]$Stream) {
 
 try {
     if ($ExpectedVersionCode -lt 1) { throw 'ExpectedVersionCode must be positive.' }
+    if ($ExpectedRuntimeSha256 -and $ExpectedRuntimeSha256 -cnotmatch '^[a-fA-F0-9]{64}$') {
+        throw 'ExpectedRuntimeSha256 must be a 64-character hexadecimal SHA256 digest.'
+    }
     if ($ExpectedAbi.Count -eq 0 -or @($ExpectedAbi | Where-Object { $_ -notmatch '^[a-zA-Z0-9_-]+$' }).Count -gt 0) {
         throw 'ExpectedAbi must contain one or more Android ABI names.'
     }
@@ -185,6 +190,9 @@ try {
                 $result.runtime = [ordered]@{ path = $runtimeName; bytes = $runtimeEntry.Length; sha256 = $runtimeHash; expectedSha256 = $expectedHash }
                 if ($runtimeEntry.Length -eq 0) { $failures.Add('The embedded runtime archive is empty.') }
                 if ($expectedHash -and $runtimeHash -cne $expectedHash) { $failures.Add('Embedded runtime SHA256 mismatch.') }
+                if ($ExpectedRuntimeSha256 -and $runtimeHash -cne $ExpectedRuntimeSha256.ToLowerInvariant()) {
+                    $failures.Add('Embedded runtime differs from the trusted build archive.')
+                }
             }
         } finally { $zip.Dispose() }
 

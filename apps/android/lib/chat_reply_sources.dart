@@ -1,3 +1,5 @@
+import 'package:markdown/markdown.dart' as md;
+
 import 'tool_activity_data.dart';
 
 enum ChatReplySourceKind { search, fetch }
@@ -66,6 +68,63 @@ class ChatReplySources {
   final List<ChatReplySource> entries;
   final bool truncated;
   bool get isEmpty => entries.isEmpty;
+
+  /// Tool projections may replace objects while the same result stays visible.
+  /// Compare recorded facts before invalidating a reply's open sources route.
+  bool sameResultsAs(ChatReplySources other) {
+    if (identical(this, other)) return true;
+    if (truncated != other.truncated ||
+        entries.length != other.entries.length) {
+      return false;
+    }
+    for (var i = 0; i < entries.length; i++) {
+      final a = entries[i], b = other.entries[i];
+      if (a.url != b.url ||
+          a.title != b.title ||
+          a.snippet != b.snippet ||
+          a.publishedAt != b.publishedAt ||
+          a.records.length != b.records.length) {
+        return false;
+      }
+      for (var j = 0; j < a.records.length; j++) {
+        final ar = a.records[j], br = b.records[j];
+        if (ar.activityId != br.activityId ||
+            ar.kind != br.kind ||
+            ar.truncated != br.truncated ||
+            ar.statusCode != br.statusCode) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  /// Only explicit Markdown links to this Turn's validated web results count
+  /// as answer links. Plain URLs, code samples and unobserved links do not.
+  Set<String> answerLinks(String text) {
+    if (entries.isEmpty || text.isEmpty) return const {};
+    final observed = {
+      for (final source in entries)
+        if (source.destination != null) source.url,
+    };
+    if (observed.isEmpty) return const {};
+    final linked = <String>{};
+    void visit(md.Node node) {
+      if (node is! md.Element) return;
+      if (node.tag == 'a') {
+        final href = node.attributes['href'];
+        if (href != null && observed.contains(href)) linked.add(href);
+      }
+      for (final child in node.children ?? const <md.Node>[]) {
+        visit(child);
+      }
+    }
+
+    for (final node in md.Document().parseLines(text.split('\n'))) {
+      visit(node);
+    }
+    return Set.unmodifiable(linked);
+  }
 
   factory ChatReplySources.fromActivities(Iterable<ToolActivity> activities) {
     final byUrl = <String, ChatReplySource>{};

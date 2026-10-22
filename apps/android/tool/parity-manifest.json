@@ -195,7 +195,7 @@
         "behavior": "partial",
         "device": "unverified"
       },
-      "note": "A per-session mobile resource page links real files, saved changes, skill catalog and tasks; focused Flutter tests cover navigation without starting work. Original docked tabs, persistent terminal and embedded browser remain missing, and device behavior is unverified."
+      "note": "A per-session mobile resource page links real files, saved changes, skill catalog, tasks, process-backed terminals and a separate remote browser. Focused Flutter tests cover navigation without starting Agent work. Original docked-tab composition and terminal/browser device behavior remain unverified."
     },
     {
       "key": "webUi/ui-sidebar-documentpreview",
@@ -222,7 +222,7 @@
         "behavior": "partial",
         "device": "partial"
       },
-      "note": "Original reader bundles run in a Session-bound document-only surface with host rendering and original Gateway evidence. Same-Session links, line navigation, source-position restoration and rejected cross-Session links have host coverage. Build 32 displayed synthetic text; Build 33 displayed Markdown, followed same-Session links to text line 220 and returned at the source position. Other Android renderers and connection replacement need device acceptance. Office and interactive HTML preferences remain gaps."
+      "note": "Original reader bundles run in a Session-bound document-only surface with host rendering and original Gateway evidence. Same-Session links, line navigation, source-position restoration and rejected cross-Session links have host coverage. Build 32 displayed synthetic text; Build 33 displayed Markdown, followed same-Session links to text line 220 and returned at the source position. The original Office provider converted a synthetic DOCX through authorized Session reads, the Android-profile Gateway and bounded PDF byte transfer on the host; Android runs the pinned kit in a child process so its WASM heap is released on exit. This does not reduce conversion-time device memory pressure. Android WebView rendering and device memory behavior remain unverified. Interactive HTML preferences are still a gap."
     },
     {
       "key": "webUi/ui-sidebar-browser",
@@ -232,15 +232,23 @@
         "packages/bundle/web-app/cordis.patch.yml",
         "packages/client/ui-sidebar-browser/README.md"
       ],
-      "status": "not-migrated",
-      "android": [],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/session_browser.dart",
+        "apps/android/lib/browser_url.dart",
+        "apps/android/lib/resource_hub.dart",
+        "apps/android/android/app/src/main/kotlin/com/minnnng/dsh_android/MainActivity.kt",
+        "apps/android/android/app/src/main/java/com/minnnng/dsh_android/BrowserUrlPolicy.java",
+        "apps/android/test/session_browser_test.dart",
+        "apps/android/test/browser_url_test.dart"
+      ],
       "evidence": {
         "core": "unverified",
-        "ui": "unverified",
-        "behavior": "unverified",
+        "ui": "partial",
+        "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Original surface is desktop-conditional; Android browser-panel compatibility has not been implemented or waived."
+      "note": "Session resources offer remote HTTP(S) address entry and page-local launch history. AndroidX Custom Tabs owns network loading, navigation and cookies, keeping untrusted pages outside the App WebView/document bridge; direct local/private-address input is rejected. A remote redirect can still contact a local service, whose protection is server-side authentication and origin checks. The original embedded/docked browser is not migrated. Custom Tabs launch and lifecycle have host compile evidence only, no device acceptance."
     },
     {
       "key": "webUi/ui-sidebar-terminal",
@@ -250,15 +258,21 @@
         "packages/bundle/web-app/cordis.patch.yml",
         "packages/client/ui-sidebar-terminal/README.md"
       ],
-      "status": "not-migrated",
-      "android": [],
+      "status": "partial",
+      "android": [
+        "apps/android/runtime/terminals.mjs",
+        "apps/android/android/app/src/main/cpp/terminal_helper.cpp",
+        "apps/android/lib/session_terminal.dart",
+        "apps/android/lib/resource_hub.dart",
+        "apps/android/tool/terminals-runtime.test.mjs"
+      ],
       "evidence": {
-        "core": "unverified",
-        "ui": "unverified",
+        "core": "partial",
+        "ui": "partial",
         "behavior": "unverified",
         "device": "unverified"
       },
-      "note": "Persistent terminal UI is absent and the Android terminal controller is disabled; ordinary Shell is not equivalent."
+      "note": "The mobile Session resource page now opens process-backed terminals with restored text viewport, command entry and control keys. It does not reproduce the original xterm color/cursor renderer, raw keyboard input, advanced retention, or desktop dock layout. Host protocol tests and cross-compilation do not establish device execution or process-tree cleanup."
     },
     {
       "key": "webUi/ui-sidebar-files",
@@ -633,15 +647,21 @@
         "packages/bundle/web-app/cordis.patch.yml",
         "packages/client/ui-workflow-run/README.md"
       ],
-      "status": "not-migrated",
-      "android": [],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/chat_workflow_runs.dart",
+        "apps/android/lib/chat_projection.dart",
+        "apps/android/lib/chat_messages.dart",
+        "apps/android/test/chat_workflow_runs_test.dart",
+        "apps/android/tool/workflow-run-readonly.md"
+      ],
       "evidence": {
         "core": "unverified",
-        "ui": "unverified",
-        "behavior": "unverified",
+        "ui": "partial",
+        "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Original durable workflow controls and projections are absent; Android PTC runtime is disabled."
+      "note": "Existing Session workflow run/start/end and member events now replay into a read-only run/stage/member view, including pagination and interruption semantics. Android still cannot create runs because PTC/workflow execution is disabled; original guarded child-Session navigation and device behavior remain unverified."
     },
     {
       "key": "webUi/ui-input-trigger",
@@ -863,7 +883,7 @@
         "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Native goal presentation and pause, resume, edit and clear actions use the original goal calls; focused Flutter tests cover these states. Complete original behavior and device interaction remain unverified."
+      "note": "Native goal creation with an optional round cap, current-goal presentation, edit, pause, resume and clear use the original goal service and sequenced Session projection. Host lifecycle, stale-revision and process-local activation transitions have focused Flutter tests. Complete original behavior and device interaction remain unverified."
     },
     {
       "key": "webUi/ui-message-feedback",
@@ -1427,7 +1447,11 @@
       ],
       "status": "partial",
       "android": [
-        "apps/android/tool/stage-preset.mjs"
+        "apps/android/tool/stage-preset.mjs",
+        "apps/android/lib/composer_commands.dart",
+        "apps/android/lib/chat_goal.dart",
+        "apps/android/lib/chat_goal_plan_state.dart",
+        "apps/android/test/chat_goal_plan_test.dart"
       ],
       "evidence": {
         "core": "partial",
@@ -1435,7 +1459,7 @@
         "behavior": "unverified",
         "device": "unverified"
       },
-      "note": "Original goal command is copied; native full goal controls are missing."
+      "note": "The original /goal command is staged and exposed in the native composer. Native goal controls use the same goal service, with focused lifecycle and CAS tests; full command-flow and device acceptance remain unverified."
     },
     {
       "key": "standardPreset/tool-goal",
@@ -1446,7 +1470,10 @@
       ],
       "status": "partial",
       "android": [
-        "apps/android/tool/stage-preset.mjs"
+        "apps/android/tool/stage-preset.mjs",
+        "apps/android/lib/chat_goal.dart",
+        "apps/android/lib/chat_goal_plan_state.dart",
+        "apps/android/test/chat_goal_plan_test.dart"
       ],
       "evidence": {
         "core": "partial",
@@ -1454,7 +1481,7 @@
         "behavior": "unverified",
         "device": "unverified"
       },
-      "note": "Original goal tool is copied; full native goal management and recovery acceptance remain open."
+      "note": "The original model-facing goal tool is staged. Native controls read the same durable goal projection and call the original goal service; focused tests cover cold reads, reconnects, CAS conflicts and process-local activation. Full model-tool behavior and device recovery remain unverified."
     },
     {
       "key": "standardPreset/planning",
@@ -1983,17 +2010,20 @@
       "sources": [
         "apps/android/runtime/cordis.patch.yml"
       ],
-      "status": "not-migrated",
+      "status": "partial",
       "android": [
-        "apps/android/runtime/cordis.patch.yml"
+        "apps/android/runtime/cordis.patch.yml",
+        "apps/android/runtime/terminals.mjs",
+        "apps/android/android/app/src/main/cpp/terminal_helper.cpp",
+        "apps/android/lib/session_terminal.dart"
       ],
       "evidence": {
-        "core": "unverified",
-        "ui": "unverified",
+        "core": "partial",
+        "ui": "partial",
         "behavior": "unverified",
         "device": "unverified"
       },
-      "note": "Persistent terminal controller is disabled; an ordinary Shell tool is not a replacement."
+      "note": "The original controller remains disabled because node-pty has no packaged Android binary. A separate Android PTY backend and basic mobile page provide Session-bound process, bounded screen and command input. Original Client stream control, full VT rendering, retention and device behavior are not migrated or validated."
     },
     {
       "key": "androidDisabled/open-in-app",
@@ -2038,25 +2068,6 @@
         "device": "unverified"
       },
       "note": "Native file and document actions replace the desktop UI plugin through a guarded chooser. Route/background cancellation has host tests; device chooser and all file providers remain unverified."
-    },
-    {
-      "key": "androidDisabled/office-to-pdf",
-      "plugin": null,
-      "sourceDigest": "3608d3315b48114ffb119e54c142811e6d14584e2f4f8af739ccaac693da0430",
-      "sources": [
-        "apps/android/runtime/cordis.patch.yml"
-      ],
-      "status": "not-migrated",
-      "android": [
-        "apps/android/runtime/cordis.patch.yml"
-      ],
-      "evidence": {
-        "core": "unverified",
-        "ui": "unverified",
-        "behavior": "unverified",
-        "device": "unverified"
-      },
-      "note": "Original Office converter is disabled; LibreOffice-kit runtime compatibility must be investigated rather than assumed unavailable."
     },
     {
       "key": "androidDisabled/directory-picker",
@@ -2121,7 +2132,47 @@
         "behavior": "unverified",
         "device": "unverified"
       },
-      "note": "Original programmatic tool execution runtime is disabled; this is an open migration gap."
+      "note": "Original programmatic tool execution remains disabled. Its Node child requires per-run workspace confinement, but the original sandbox-local provider has no Android runner. Host startup and plugin-management guards prevent accidental activation; a distinct execution UID and authorized file bridge remain an open migration gap."
+    },
+    {
+      "key": "androidDisabled/workflow-ptc",
+      "plugin": null,
+      "sourceDigest": "458fd6037076b44d2c7e077eb4e62e3911be51b9c433979d916545c4c3ddb5ad",
+      "sources": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "status": "not-migrated",
+      "android": [
+        "apps/android/runtime/host-guard.mjs",
+        "apps/android/tool/ptc-workflow-confinement.md"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Original PTC workflow engine remains disabled because the available per-run OS sandbox has no Android runner. Package, startup and plugin-management checks reject accidental activation; a distinct execution UID and authorized file bridge are still required."
+    },
+    {
+      "key": "androidDisabled/tool-workflow",
+      "plugin": null,
+      "sourceDigest": "21bae1479e62082498ef2c266d51a6a2489845edf7d232cb78ccb794bb019bce",
+      "sources": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "status": "not-migrated",
+      "android": [
+        "apps/android/runtime/host-guard.mjs",
+        "apps/android/tool/ptc-workflow-confinement.md"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "The original workflow tool is intentionally unavailable until its PTC process and descendant confinement are implemented on Android; enabling it under App UID would not preserve workspace-write isolation."
     },
     {
       "key": "androidDisabled/session-persistence-jsonl",

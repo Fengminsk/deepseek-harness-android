@@ -31,6 +31,7 @@ import { AppConfigurationTransfers } from './configuration-transfer.mjs'
 import { AppSubagents } from './subagents.mjs'
 import { AppLibrary } from './library.mjs'
 import { AppWorkspaceFiles } from './workspace-files.mjs'
+import { AppTerminals } from './terminals.mjs'
 import { describeAndroidSettings } from './settings-presentation.mjs'
 
 export const name = 'android-runtime'
@@ -109,7 +110,10 @@ export function apply(ctx, config) {
     'web-startup', 'webserver', 'web-runtime', 'connection', 'session-controller',
     'session-persistence-jsonl', 'android-session-persistence', 'settings', 'file-upload',
     'attachment-local', 'android-attachment-store', 'working-directory', 'agent-loop',
-    'workspace', 'workspace-controller', 'android-directory-picker', 'android-filesystem'])
+    'workspace', 'workspace-controller', 'android-directory-picker', 'android-filesystem',
+    // Disabled model-authored programs must remain disabled after boot too.
+    // Android lacks the original per-run OS confinement for these modules.
+    'ptc-runtime', 'workflow-ptc', 'tool-workflow'])
   const loaderEntries = [...ctx.get('loader').entries()]
   ctx.pluginManager.protectModules(loaderEntries.filter(entry => requiredEntries.has(entry.options.id))
     .map(entry => entry.options.name))
@@ -206,6 +210,15 @@ export function apply(ctx, config) {
       maxSearches: config.documentSearchMaxRequests.get(), search: searchLimits(),
     }),
   })
+  const terminals = new AppTerminals({
+    resolveDirectory: async sessionId => {
+      const found = await ctx.sessionController.resolveAgent(sessionId)
+      if ('error' in found) throw found.error
+      const directory = found.agent.ctx.get('workingDirectory')
+      if (!directory) throw new Error('Session working directory is unavailable')
+      return { cwd: await directory.ensure(found.agent), owner: found.agent.ctx }
+    },
+  })
   const streams = new AppStreams(ctx, transport, peer, {
     maxSubscriptions: () => config.appStreamMaxSubscriptions.get(),
     maxFrameBytes: () => config.appStreamMaxFrameBytes.get(),
@@ -235,6 +248,13 @@ export function apply(ctx, config) {
     if (method.startsWith('library.')) return library.call(method.slice('library.'.length), params)
     if (method.startsWith('workspace.files.')) return workspaceFiles.call(method.slice('workspace.files.'.length), params)
     if (method.startsWith('document.')) return documentPreview.call(method.slice('document.'.length), params)
+    if (method.startsWith('terminal.')) {
+      const action = method.slice('terminal.'.length)
+      if (!['list', 'create', 'read', 'write', 'resize', 'close'].includes(action)) {
+        throw new Error(`Unsupported terminal action: ${action}`)
+      }
+      return terminals[action](params)
+    }
     switch (method) {
       case 'runtime.info': return { node: process.version, platform: process.platform, arch: process.arch,
         uid: process.getuid?.(), workspace: process.cwd(), profile: 'android' }
@@ -387,6 +407,7 @@ export function apply(ctx, config) {
         () => documentSearch.close(), () => attachments.close(), () => attachmentFiles.close(), () => exports.close(), () => tasks.close(),
         () => packageOperations.close(),
         () => configurationTransfers.close(), () => subagents.close(), () => workspaceFiles.close(), () => library.close(),
+        () => terminals.dispose(),
         () => live.close(),
         () => history.close(),
         () => streams.close(), () => documentPreview.close(), () => references.close(), () => workspaceChanges.close(),

@@ -1,5 +1,16 @@
 import { spawn } from 'node:child_process'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { posix } from 'node:path'
+
+function shellInvocation(command) {
+  if (process.platform !== 'android') return { executable: '/bin/sh', args: ['-c', command] }
+  const nativeDirectory = process.env.DSH_ANDROID_NATIVE_LIBRARY_DIR
+  if (typeof nativeDirectory !== 'string' || !posix.isAbsolute(nativeDirectory)) {
+    throw new Error('Android Shell supervisor directory is unavailable')
+  }
+  return { executable: posix.join(nativeDirectory, 'libpocket_shell_supervisor.so'),
+    args: [String(process.pid), '/system/bin/sh', '-c', command] }
+}
 
 /**
  * kill(-pgid, SIGKILL) also succeeds for an unreaped zombie-only group. Inspect
@@ -38,18 +49,26 @@ function groupState(pid) {
   return matched && !incomplete ? 'quiescent' : 'unknown'
 }
 
-/** Non-interactive app-UID shell; cancellation also terminates its process group. */
+/**
+ * Non-interactive app-UID shell. Android requires a native supervisor before
+ * execution; cancellation, deadline and Node process death terminate its
+ * detached process group. A command which creates a new session can escape
+ * that group, and a process group is not a filesystem or permission sandbox.
+ */
 export function runShell(command, cwd, { timeoutMs = 60000, outputLimit = 65536, signal } = {}) {
   if (typeof command !== 'string' || command.length === 0) throw new TypeError('command must be non-empty')
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 3600000) throw new TypeError('Invalid timeout')
   if (!Number.isInteger(outputLimit) || outputLimit < 1024 || outputLimit > 1048576) throw new TypeError('Invalid output limit')
+  const { executable, args } = shellInvocation(command)
+  const android = process.platform === 'android'
   return new Promise((resolve, reject) => {
-    const child = spawn(process.platform === 'android' ? '/system/bin/sh' : '/bin/sh', ['-c', command], {
-      cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
+    const child = spawn(executable, args, {
+      cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe', ...(android ? ['pipe'] : [])],
       env: Object.fromEntries(Object.entries(process.env).filter(([name]) => !/KEY|SECRET|TOKEN|PASSWORD/i.test(name))),
     })
     let stdout = Buffer.alloc(0), stderr = Buffer.alloc(0)
     let truncated = false, settled = false, stopReason, stopResult
+    let supervisorReady = !android, startup = '', supervisorInvalid = false
     const stop = () => {
       if (child.pid === undefined) return { state: 'absent' }
       const observed = groupState(child.pid)
@@ -84,6 +103,20 @@ export function runShell(command, cwd, { timeoutMs = 60000, outputLimit = 65536,
     }
     child.stdout.on('data', chunk => { stdout = collect(stdout, chunk) })
     child.stderr.on('data', chunk => { stderr = collect(stderr, chunk) })
+    if (android) {
+      const acknowledgement = child.stdio?.[3]
+      if (!acknowledgement) {
+        supervisorInvalid = true
+        requestStop('infrastructure')
+      } else acknowledgement.on('data', chunk => {
+        startup += chunk.toString('utf8')
+        if (startup === 'S\n') supervisorReady = true
+        else if (!'S\n'.startsWith(startup) || startup.length > 2) {
+          supervisorInvalid = true
+          requestStop('infrastructure')
+        }
+      })
+    }
     signal?.addEventListener('abort', abort, { once: true })
     if (signal?.aborted) abort()
     const cleanup = () => { clearTimeout(timer); signal?.removeEventListener('abort', abort) }
@@ -97,6 +130,12 @@ export function runShell(command, cwd, { timeoutMs = 60000, outputLimit = 65536,
       if (settled) return
       settled = true
       cleanup()
+      if (!supervisorReady || supervisorInvalid) {
+        const error = new Error('Android Shell supervisor failed to confirm process ownership')
+        error.code = 'SHELL_SUPERVISOR_UNAVAILABLE'
+        reject(error)
+        return
+      }
       // Keep the deadline until close: a shell can exit successfully while a
       // descendant still holds its output pipes. Exit code 0 alone therefore
       // cannot disprove timeout termination of the remaining process group.

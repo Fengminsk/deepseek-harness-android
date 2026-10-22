@@ -254,11 +254,14 @@ class _ChatGoalEditorPageState extends State<ChatGoalEditorPage> {
       PocketRoute(
         builder: (_) => TextDocumentPage(
           title: '最多执行轮次',
-          text: '$roundLimit',
+          text: roundLimit?.toString() ?? '',
           readOnly: false,
           keyboardType: TextInputType.number,
-          helperText: '达到轮次上限后停止自动继续，可增加上限后继续。',
+          helperText: base == null
+              ? '留空则使用服务默认值。达到上限后，可编辑目标增加轮次再继续。'
+              : '达到轮次上限后停止自动继续，可增加上限后继续。',
           validate: (value) {
+            if (base == null && value.trim().isEmpty) return null;
             final number = int.tryParse(value.trim());
             return number == null || number < 1 || number > 9007199254740991
                 ? '请输入大于 0 的有效整数。'
@@ -268,14 +271,17 @@ class _ChatGoalEditorPageState extends State<ChatGoalEditorPage> {
       ),
     );
     if (mounted && value != null) {
-      setState(() => roundLimit = int.parse(value.trim()));
+      setState(
+        () =>
+            roundLimit = value.trim().isEmpty ? null : int.parse(value.trim()),
+      );
     }
   }
 
   Future<void> save() async {
     if (objective.trim().isEmpty || conflict || !state.canMutate) return;
     final accepted = base == null
-        ? await state.create(objective)
+        ? await state.create(objective, maxGoalRounds: roundLimit)
         : await state.edit(
             base!,
             objective: objective,
@@ -313,13 +319,12 @@ class _ChatGoalEditorPageState extends State<ChatGoalEditorPage> {
                   subtitle: objective.isEmpty ? '描述需要完成的工作' : objective,
                   onTap: state.busy ? null : editObjective,
                 ),
-                if (roundLimit != null)
-                  PocketRow(
-                    icon: Icons.repeat_rounded,
-                    title: '最多执行轮次',
-                    subtitle: '$roundLimit',
-                    onTap: state.busy ? null : editLimit,
-                  ),
+                PocketRow(
+                  icon: Icons.repeat_rounded,
+                  title: '最多执行轮次',
+                  subtitle: roundLimit?.toString() ?? '使用服务默认值',
+                  onTap: state.busy ? null : editLimit,
+                ),
               ],
             ),
             if (conflict) ...[

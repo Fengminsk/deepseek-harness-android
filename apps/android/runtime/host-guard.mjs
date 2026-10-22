@@ -26,6 +26,10 @@ const HOST_ENTRIES = new Set([
   'config-editor', 'plugin-manager',
 ])
 
+// Model-authored programs require a per-execution OS sandbox. The original
+// sandbox-local runner has no Android platform chain; app UID is not that sandbox.
+const CONFINED_EXECUTION_ENTRIES = new Set(['ptc-runtime', 'workflow-ptc', 'tool-workflow'])
+
 function reject(reason, entry) {
   const error = new Error(`Pocket Harness startup refused: ${reason}${entry ? ` (${entry})` : ''}. `
     + 'Restore the Android host configuration in App recovery, then resume.')
@@ -42,6 +46,15 @@ function flatten(entries, parents = []) {
   ])
 }
 
+function executionEntries(entries, parentDisabled = false) {
+  return entries.flatMap(entry => {
+    const disabled = parentDisabled || entry.disabled === true
+    const children = entry.group && Array.isArray(entry.config) ? entry.config
+      : Array.isArray(entry.config?.plugins) ? entry.config.plugins : []
+    return [{ entry, disabled }, ...executionEntries(children, disabled)]
+  })
+}
+
 function structure(entry) {
   const { config: _config, ...value } = entry
   return value
@@ -49,6 +62,18 @@ function structure(entry) {
 
 function assertComposition(canonical, effective, moduleIdentity) {
   const original = flatten(canonical), actual = flatten(effective)
+  const confinedModules = new Set(original.filter(({ entry }) => CONFINED_EXECUTION_ENTRIES.has(entry.id))
+    .map(({ entry }) => moduleIdentity(entry.name)))
+  const agentPresetModule = moduleIdentity('@deepseek-ai/dsh-agent-preset')
+  for (const { entry, disabled } of executionEntries(effective)) {
+    const identity = moduleIdentity(entry.name)
+    if (!disabled && identity === agentPresetModule && !Array.isArray(entry.config?.plugins)) {
+      reject('an active agent preset has an unreadable plugin list', entry.id)
+    }
+    if ((CONFINED_EXECUTION_ENTRIES.has(entry.id) || confinedModules.has(identity)) && !disabled) {
+      reject('model-authored program execution lacks Android process confinement', entry.id)
+    }
+  }
   const protectedModules = new Set(original
     .filter(({ entry }) => HOST_ENTRIES.has(entry.id)).map(({ entry }) => moduleIdentity(entry.name)))
   for (const id of HOST_ENTRIES) {

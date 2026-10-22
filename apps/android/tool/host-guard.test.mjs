@@ -77,6 +77,56 @@ test('another row cannot instantiate the same Web module by name or absolute fil
   }
 })
 
+test('PTC and workflow execution cannot be enabled through profile or home overlays', () => {
+  for (const layer of ['profile', 'home']) {
+    for (const id of ['ptc-runtime', 'workflow-ptc', 'tool-workflow']) {
+      const f = fixture()
+      const directory = layer === 'profile' ? f.profile : f.home
+      const patch = `- id: ${id}\n  disabled: false\n`
+      writeFileSync(join(directory, 'cordis.patch.yml'), patch)
+      assert.throws(f.check, { code: 'ANDROID_HOST_CONFIGURATION', entry: id })
+      assert.equal(readFileSync(join(directory, 'cordis.patch.yml'), 'utf8'), patch)
+    }
+  }
+})
+
+test('PTC and workflow execution cannot be reintroduced under new IDs or module aliases', () => {
+  for (const id of ['ptc-runtime', 'workflow-ptc', 'tool-workflow']) {
+    const name = {
+      'ptc-runtime': '@deepseek-ai/dsh-ptc-runtime-node',
+      'workflow-ptc': '@deepseek-ai/dsh-workflow-ptc',
+      'tool-workflow': '@deepseek-ai/dsh-tool-workflow',
+    }[id]
+    const modulePath = join(root, '.cache/android/runtime-bundle/node_modules', name, 'lib/index.js')
+    for (const alias of [name, pathToFileURL(modulePath).href]) {
+      const f = fixture()
+      writeFileSync(join(f.profile, 'cordis.patch.yml'),
+        `- insert:\n    - id: alternate-${id}\n      name: '${alias}'\n`)
+      assert.throws(f.check, { code: 'ANDROID_HOST_CONFIGURATION', entry: `alternate-${id}` })
+    }
+  }
+})
+
+test('unknown PTC activation expressions fail closed before evaluation', () => {
+  const f = fixture()
+  writeFileSync(join(f.profile, 'cordis.patch.yml'), '- id: ptc-runtime\n  disabled: !!js false\n')
+  assert.throws(f.check, { code: 'ANDROID_HOST_CONFIGURATION', entry: 'ptc-runtime' })
+})
+
+test('an active Android preset cannot hide PTC under nested plugins', () => {
+  const f = fixture()
+  writeFileSync(join(f.profile, 'cordis.patch.yml'),
+    "- id: preset-android\n  config:\n    id: android\n    plugins:\n      - id: nested-runner\n        name: '@deepseek-ai/dsh-ptc-runtime-node'\n")
+  assert.throws(f.check, { code: 'ANDROID_HOST_CONFIGURATION', entry: 'nested-runner' })
+})
+
+test('an active Android preset cannot hide PTC in a computed plugin list', () => {
+  const f = fixture()
+  writeFileSync(join(f.profile, 'cordis.patch.yml'),
+    "- id: preset-android\n  config:\n    id: android\n    plugins: !!js '[]'\n")
+  assert.throws(f.check, { code: 'ANDROID_HOST_CONFIGURATION', entry: 'preset-android' })
+})
+
 test('duplicate host ID and a host row inside a new group are rejected', () => {
   for (const patch of [
     "- insert:\n    - id: android-runtime\n      name: '@minnnng/dsh-android-runtime'\n",

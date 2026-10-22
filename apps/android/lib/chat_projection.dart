@@ -400,6 +400,10 @@ class ChatProjection {
       case 'tool/result':
       case 'tool/ptc-dispatch':
       case 'tool/ptc-dispatch-start':
+      case 'tool-workflow/run-start':
+      case 'tool-workflow/agent-start':
+      case 'tool-workflow/agent-end':
+      case 'tool-workflow/run-end':
         return;
       default:
         // Merge-extensible surface events must stay inspectable. Lifecycle and

@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.*
 import android.os.*
 import android.net.Uri
+import androidx.browser.customtabs.CustomTabsIntent
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -388,6 +389,20 @@ class MainActivity : FlutterActivity() {
                     val uri = Uri.parse(call.arguments as String)
                     if (uri.scheme != "http" && uri.scheme != "https") result.error("url", "不支持的链接", null) else {
                         startActivity(Intent(Intent.ACTION_VIEW, uri)); result.success(null)
+                    }
+                }
+                "browser.open" -> {
+                    try {
+                        val target = BrowserUrlPolicy.parse(call.arguments as? String, null, null)
+                        CustomTabsIntent.Builder().setShowTitle(true).build()
+                            .launchUrl(this, Uri.parse(target))
+                        result.success(null)
+                    } catch (_: IllegalArgumentException) {
+                        result.error("browser/address", "请输入有效的远程网页地址。", null)
+                    } catch (_: ActivityNotFoundException) {
+                        result.error("browser/unavailable", "未找到可打开网页的浏览器。", null)
+                    } catch (_: SecurityException) {
+                        result.error("browser/unavailable", "浏览器无法打开此网页。", null)
                     }
                 }
                 else -> result.notImplemented()

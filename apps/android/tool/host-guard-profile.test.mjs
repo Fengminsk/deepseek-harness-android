@@ -59,6 +59,36 @@ for (const layer of ['profile', 'home']) {
   })
 }
 
+test('real bootstrap rejects an enabled PTC worker before the native carrier starts', { timeout: 30000 }, async t => {
+  const home = await mkdtemp(join(root, '.cache/android/guard-ptc-'))
+  const profile = join(home, 'profiles/android')
+  await mkdir(profile, { recursive: true })
+  await writeFile(join(profile, 'package.json'), JSON.stringify({
+    name: 'guard-ptc', type: 'module', dsh: { profile: { bundles: ANDROID_BUNDLES } },
+  }))
+  await writeFile(join(profile, 'cordis.patch.yml'), '- id: ptc-runtime\n  disabled: false\n')
+  const child = spawn(process.execPath, ['--import', loader,
+    join(root, '.cache/android/runtime-bundle/bootstrap.mjs')], {
+    cwd: home, env: { ...process.env, DSH_HOME: home, DSH_TELEMETRY_DISABLED: '1' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  const closed = once(child, 'close')
+  t.after(async () => { if (child.exitCode === null) child.kill(); await closed })
+  let stdout = '', stderr = ''
+  child.stdout.on('data', bytes => { stdout += bytes; assert.ok(stdout.length < 65536) })
+  child.stderr.on('data', bytes => { stderr += bytes; assert.ok(stderr.length < 65536) })
+  let deadline
+  try {
+    const [code] = await Promise.race([closed, new Promise((_, reject) => {
+      deadline = setTimeout(() => reject(new Error('PTC profile preflight did not exit')), 20000)
+    })])
+    assert.notEqual(code, 0)
+    assert.match(stderr, /ANDROID_HOST_CONFIGURATION/)
+    assert.match(stderr, /model-authored program execution lacks Android process confinement/)
+    assert.equal(stdout, '', 'No native request is admitted before preflight')
+  } finally { clearTimeout(deadline) }
+})
+
 test('real profile keeps ordinary host settings and original credential reference RPCs', { timeout: 60000 }, async t => {
   const home = await mkdtemp(join(root, '.cache/android/guard-ready-'))
   const profile = join(home, 'profiles/android')

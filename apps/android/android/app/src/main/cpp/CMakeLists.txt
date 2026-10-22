@@ -30,6 +30,20 @@ target_link_options(pocket_node_cli PRIVATE
   "-Wl,@${NODE_CLI_LINKER_OPTIONS}"
 )
 
+# A separate short-lived executable owns each PTY. Fork happens here before
+# any Node or Android service threads exist, then the shell is exec'd at once.
+add_executable(pocket_terminal_helper terminal_helper.cpp)
+set_target_properties(pocket_terminal_helper PROPERTIES PREFIX "lib" SUFFIX ".so"
+  POSITION_INDEPENDENT_CODE TRUE)
+target_link_options(pocket_terminal_helper PRIVATE "-pie" "-Wl,-z,max-page-size=16384")
+
+# One-shot shell commands use a distinct supervisor so PTY sessions and
+# command execution retain their own I/O and exit-status contracts.
+add_executable(pocket_shell_supervisor shell_supervisor.c)
+set_target_properties(pocket_shell_supervisor PROPERTIES PREFIX "lib" SUFFIX ".so"
+  POSITION_INDEPENDENT_CODE TRUE)
+target_link_options(pocket_shell_supervisor PRIVATE "-pie" "-Wl,-z,max-page-size=16384")
+
 add_library(dsh_runtime SHARED runtime.cpp)
 target_include_directories(dsh_runtime PRIVATE "${NODE_ROOT}/include/node")
 target_link_libraries(dsh_runtime node log)

@@ -71,6 +71,8 @@ test('Android stages original local delegation without enabling PTC or changing 
   assert.deepEqual(delegated.config.find(entry => entry.id === 'tool-subagent-fork').config,
     { provider: 'fork', toolName: 'subagent_fork' })
   assert.equal(staged.find(entry => entry.id === 'ptc-runtime').disabled, true)
+  assert.equal(staged.find(entry => entry.id === 'workflow-ptc').disabled, true)
+  assert.equal(staged.find(entry => entry.id === 'tool-workflow').disabled, true)
   assert.equal(delegated.config.some(entry => entry.id.startsWith('workflow')
     || entry.id === 'tool-workflow'), false)
   for (const id of portableIds) {
@@ -165,3 +167,17 @@ test('an Android delegation override rejects staging instead of registering tool
   await world.save()
   await assert.rejects(stagePreset(world.directory, world.destination), /Android preset overrides original delegation/)
 })
+
+for (const id of ['ptc-runtime', 'workflow-ptc', 'tool-workflow']) {
+  for (const disabled of [false, new JsExpression('false')]) {
+    test(`Android staging rejects ${id} without literal disabled: true`, async t => {
+      const world = await fixture(t)
+      world.target.find(row => row.id === id).disabled = disabled
+      await world.save()
+      const output = join(world.destination, 'cordis.patch.yml')
+      await writeFile(output, '# previously staged profile\n')
+      await assert.rejects(stagePreset(world.directory, world.destination), new RegExp(id))
+      assert.equal(await readFile(output, 'utf8'), '# previously staged profile\n')
+    })
+  }
+}

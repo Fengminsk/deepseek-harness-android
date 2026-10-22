@@ -1,6 +1,7 @@
 import 'package:dsh_android/resource_hub.dart';
 import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/session_files.dart';
+import 'package:dsh_android/session_terminal.dart';
 import 'package:dsh_android/tasks.dart';
 import 'package:dsh_android/ui.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -15,6 +16,8 @@ class _ResourceRuntime extends RuntimeController {
 
   final calls = <(String, Json)>[];
   int historyReads = 0;
+  String? terminalId;
+  int terminalRevision = 1;
 
   @override
   Future<void> openSession(String id) async {
@@ -44,6 +47,33 @@ class _ResourceRuntime extends RuntimeController {
   @override
   Future<dynamic> call(String method, [Json params = const {}]) async {
     calls.add((method, params));
+    if (method == 'terminal.list') {
+      return terminalId == null
+          ? <Json>[]
+          : <Json>[
+              {'id': terminalId, 'cwd': '/work', 'state': 'running'},
+            ];
+    }
+    if (method == 'terminal.create') {
+      terminalId = params['id'] as String;
+      return {'id': terminalId, 'state': 'running'};
+    }
+    if (method == 'terminal.read') {
+      return {
+        'id': terminalId,
+        'state': 'running',
+        'revision': terminalRevision,
+        'display': 'ready\n/work prompt',
+      };
+    }
+    if (method == 'terminal.write') {
+      terminalRevision++;
+      return {'accepted': true};
+    }
+    if (method == 'terminal.close') {
+      terminalId = null;
+      return {'closed': true};
+    }
     if (method == 'workspaceChanges.summary') {
       expectSync(params['sessionId'], 'session');
       expectSync(params['seq'], 2);
@@ -135,6 +165,7 @@ void main() {
       expect(find.byKey(const ValueKey('resource-changes')), findsOneWidget);
       expect(find.byKey(const ValueKey('resource-skills')), findsOneWidget);
       expect(find.byKey(const ValueKey('resource-tasks')), findsOneWidget);
+      expect(find.byKey(const ValueKey('resource-terminal')), findsOneWidget);
       expect(runtime.calls, isEmpty);
       expect(runtime.historyReads, 0);
 
@@ -195,4 +226,41 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
     runtime.dispose();
   });
+
+  testWidgets(
+    'terminal entry creates a Session PTY, sends input and closes it',
+    (tester) async {
+      final runtime = _ResourceRuntime();
+      await _mount(tester, runtime);
+      await tester.tap(find.byKey(const ValueKey('resource-terminal')));
+      await tester.pumpAndSettle();
+      expect(find.byType(SessionTerminalsPage), findsOneWidget);
+      expect(
+        runtime.calls
+            .where((call) => call.$1 == 'terminal.list')
+            .single
+            .$2['sessionId'],
+        'session',
+      );
+      await tester.tap(find.byTooltip('新建终端'));
+      await tester.pumpAndSettle();
+      expect(find.byType(SessionTerminalView), findsOneWidget);
+      expect(find.textContaining('ready'), findsOneWidget);
+      await tester.enterText(find.byType(TextField).last, 'pwd');
+      await tester.tap(find.byTooltip('发送命令'));
+      await tester.pump();
+      expect(
+        runtime.calls
+            .lastWhere((call) => call.$1 == 'terminal.write')
+            .$2['data'],
+        'pwd\n',
+      );
+      await tester.tap(find.byTooltip('关闭终端进程'));
+      await tester.pumpAndSettle();
+      expect(runtime.terminalId, isNull);
+      expect(runtime.calls.any((call) => call.$1 == 'session.ensure'), false);
+      await tester.pumpWidget(const SizedBox.shrink());
+      runtime.dispose();
+    },
+  );
 }

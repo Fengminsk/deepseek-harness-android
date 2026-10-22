@@ -8,6 +8,7 @@ import { stageQuestionCarrier } from './stage-question-carrier.mjs'
 import { stagePreset } from './stage-preset.mjs'
 import { stagePackageManager } from './stage-package-manager.mjs'
 import { stageImageRuntime } from './stage-image-runtime.mjs'
+import { stageOfficeRuntime } from './stage-office-runtime.mjs'
 import { stageSecretMask } from './stage-secret-mask.mjs'
 import { stageRipgrep } from './stage-ripgrep.mjs'
 
@@ -102,5 +103,6 @@ await copyFile(join(root, 'apps/android/runtime/bootstrap.mjs'), join(staging, '
 await mkdir(join(staging, 'android'), { recursive: true })
 await copyFile(join(root, 'apps/android/runtime/flock.mjs'), join(staging, 'android/flock.mjs'))
 await stageImageRuntime({ repositoryRoot: root, staging })
+await stageOfficeRuntime({ repositoryRoot: root, staging })
 await stagePackageManager({ repositoryRoot: root, staging })
 console.log(`Android runtime staged: ${staging}`)

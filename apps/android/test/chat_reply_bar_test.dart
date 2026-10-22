@@ -253,4 +253,46 @@ void main() {
       text.dispose();
     },
   );
+
+  testWidgets(
+    'source drawer marks actual answer links and retires changed snapshots',
+    (tester) async {
+      ChatReplySources sources(String title) =>
+          ChatReplySources.fromActivities([
+            sourceActivity('search', 'web_search', {
+              'sources': [
+                {'url': 'https://example.org/a', 'title': title},
+                {'url': 'https://example.org/b', 'title': 'B'},
+              ],
+              'truncated': false,
+            }),
+          ]);
+      final current = ValueNotifier(sources('A'));
+      await tester.pumpWidget(
+        app(
+          ValueListenableBuilder<ChatReplySources>(
+            valueListenable: current,
+            builder: (_, value, _) => ChatReplyBar(
+              text: '[证据](https://example.org/a) 与 https://example.org/b',
+              sources: value,
+              onShare: (_) async {},
+              onOpenSource: (_) async {},
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('来源'));
+      await tester.pumpAndSettle();
+      expect(find.text('回答链接 · 搜索结果'), findsOneWidget);
+      current.value = sources('A');
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('reply-sources-sheet')), findsOneWidget);
+      current.value = sources('Changed');
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('reply-sources-sheet')), findsNothing);
+      await tester.pumpWidget(const SizedBox());
+      current.dispose();
+    },
+  );
 }

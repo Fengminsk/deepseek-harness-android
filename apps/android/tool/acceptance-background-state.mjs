@@ -11,6 +11,8 @@ try {
   const sources = [
     'android/app/src/main/java/com/minnnng/dsh_android/BackgroundTaskState.java',
     'android/app/src/test/java/com/minnnng/dsh_android/BackgroundTaskStateTest.java',
+    'android/app/src/main/java/com/minnnng/dsh_android/NetworkChangeDispatch.java',
+    'android/app/src/test/java/com/minnnng/dsh_android/NetworkChangeDispatchTest.java',
     'android/app/src/main/java/com/minnnng/dsh_android/PackageOperationTransitions.java',
     'android/app/src/test/java/com/minnnng/dsh_android/PackageOperationTransitionsTest.java',
     'android/app/src/main/java/com/minnnng/dsh_android/RuntimeLifecycle.java',
@@ -20,6 +22,9 @@ try {
   ].map(path => join(project, path))
   execFileSync('javac', ['-encoding', 'UTF-8', '-d', output, ...sources], { stdio: 'inherit', windowsHide: true })
   execFileSync('java', ['-cp', output, 'com.minnnng.dsh_android.BackgroundTaskStateTest'], {
+    stdio: 'inherit', windowsHide: true,
+  })
+  execFileSync('java', ['-cp', output, 'com.minnnng.dsh_android.NetworkChangeDispatchTest'], {
     stdio: 'inherit', windowsHide: true,
   })
   execFileSync('java', ['-cp', output, 'com.minnnng.dsh_android.PackageOperationTransitionsTest'], {
