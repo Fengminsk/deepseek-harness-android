@@ -661,7 +661,7 @@ String configurationNamespaceTitle(String namespace) {
     'android-runtime': 'Android 工具',
     'ui-settings-account': '原版桌面引导记录',
     'ui-theme': 'Web 主题与字体',
-    'ui-settings': 'Web 开发者工具',
+    'ui-settings': '开发者工具',
     'ui-conversation': 'Web 繁忙时发送行为',
     'ui-chat': 'Web 聊天展示',
   };

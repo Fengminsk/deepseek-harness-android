@@ -21,6 +21,8 @@ import { AppAttachments } from './attachments.mjs'
 import { createRuntimeTransport } from './transport.mjs'
 import { AppDocumentSearch } from './document-search.mjs'
 import { AppDocumentPreview } from './document-preview.mjs'
+import { AppReferenceDiscovery } from './reference-discovery.mjs'
+import { AppWorkspaceChanges } from './workspace-changes.mjs'
 import { AppTasks } from './tasks.mjs'
 import { AppPackageOperations } from './package-operations.mjs'
 import { AppConfigurationTransfers } from './configuration-transfer.mjs'
@@ -53,6 +55,13 @@ export const Config = Schema.object({
   documentPreviewLeaseTimeoutMs: Schema.natural().min(1000).max(600000).default(120000).volatile(),
   documentPreviewRequestTimeoutMs: Schema.natural().min(100).max(300000).default(90000).volatile(),
   documentPreviewCloseTimeoutMs: Schema.natural().min(100).max(30000).default(5000).volatile(),
+  referenceMaxRequests: Schema.natural().min(1).max(16).default(4).volatile(),
+  referenceRequestTimeoutMs: Schema.natural().min(100).max(300000).default(15000).volatile(),
+  referenceCloseTimeoutMs: Schema.natural().min(100).max(30000).default(5000).volatile(),
+  workspaceChangesMaxRequests: Schema.natural().min(1).max(32).default(8).volatile(),
+  workspaceChangesMaxOwnerRequests: Schema.natural().min(1).max(16).default(4).volatile(),
+  workspaceChangesRequestTimeoutMs: Schema.natural().min(100).max(300000).default(90000).volatile(),
+  workspaceChangesCloseTimeoutMs: Schema.natural().min(100).max(30000).default(5000).volatile(),
   workspaceReadPageBytes: Schema.natural().min(1024).max(1048576).default(65536).volatile(),
   workspaceDirectoryMaxEntries: Schema.natural().min(1).max(10000).default(5000).volatile(),
   workspaceDirectoryPageSize: Schema.natural().min(1).max(500).default(100).volatile(),
@@ -108,6 +117,19 @@ export function apply(ctx, config) {
   const invoke = (namespace, method, args, signal) => {
     return ctx.typertGateway.invoke({ namespace, method, args, peer: peer(), signal })
   }
+  const references = new AppReferenceDiscovery({ invoke, limits: () => ({
+    maxRequests: config.referenceMaxRequests.get(), requestTimeoutMs: config.referenceRequestTimeoutMs.get(),
+    closeTimeoutMs: config.referenceCloseTimeoutMs.get(),
+  }) })
+  const changesHandler = ctx.connection.createSharedFetchHandler('/api')
+  const workspaceChanges = new AppWorkspaceChanges({
+    fetch: request => changesHandler.fetch(request, peer()),
+    available: () => !!ctx.get('workspaceChanges'),
+    limits: () => ({ maxRequests: config.workspaceChangesMaxRequests.get(),
+      maxOwnerRequests: config.workspaceChangesMaxOwnerRequests.get(),
+      requestTimeoutMs: config.workspaceChangesRequestTimeoutMs.get(),
+      closeTimeoutMs: config.workspaceChangesCloseTimeoutMs.get() }),
+  })
   const library = new AppLibrary(ctx, {
     invoke,
     closeTimeoutMs: () => config.libraryCloseTimeoutMs.get(),
@@ -189,6 +211,8 @@ export function apply(ctx, config) {
       void web.refresh().catch(error => web.publish({ phase: 'failed', host: null, url: null, error: String(error) }))
     }
     if (method === 'native.appDisconnected') {
+      void references.closeOwner(params.owner).catch(error => console.error('App reference cleanup failed:', error))
+      void workspaceChanges.closeOwner(params.owner).catch(error => console.error('App change comparison cleanup failed:', error))
       void streams.closeOwner(params.owner).catch(error => console.error('App stream cleanup failed:', error))
       void documentSearch.closeOwner(params.owner).catch(error => console.error('App file search cleanup failed:', error))
       void documentPreview.closeOwner(params.owner).catch(error => console.error('App document preview cleanup failed:', error))
@@ -197,6 +221,11 @@ export function apply(ctx, config) {
   })
   const describe = () => describeAndroidSettings(ctx)
   transport.onRequest(async (method, params) => {
+    if (method.startsWith('workspaceChanges.')) return workspaceChanges.call(method.slice('workspaceChanges.'.length), params)
+    if (method.startsWith('references.')) {
+      try { return await references.call(method.slice('references.'.length), params) }
+      catch (error) { return remoteFailure(error) }
+    }
     if (method.startsWith('library.')) return library.call(method.slice('library.'.length), params)
     if (method.startsWith('workspace.files.')) return workspaceFiles.call(method.slice('workspace.files.'.length), params)
     if (method.startsWith('document.')) return documentPreview.call(method.slice('document.'.length), params)
@@ -363,7 +392,8 @@ export function apply(ctx, config) {
         () => packageOperations.close(),
         () => configurationTransfers.close(), () => subagents.close(), () => workspaceFiles.close(), () => library.close(),
         () => live.close(),
-        () => streams.close(), () => documentPreview.close(), () => interactions.close(), () => web.close(),
+        () => streams.close(), () => documentPreview.close(), () => references.close(), () => workspaceChanges.close(),
+        () => interactions.close(), () => web.close(),
       ].map(close => Promise.resolve().then(close)))
       // Stream and interaction owners release their peer before the shared API peer.
       results.push(...await Promise.allSettled([Promise.resolve().then(() => appPeer?.dispose())]))

@@ -280,9 +280,7 @@ const _fields = <String, Map<String, (String, String?)>>{
   'agent-preset-registry': {
     'selectedDefault': ('默认 Agent 预设', '新建会话使用的预设 ID。'),
   },
-  'ui-settings': {
-    'enabled': ('启用 Web 开发者工具', '控制原版 Web 的诊断、预设选择、变更摘要和脚本化 HTML 预览。'),
-  },
+  'ui-settings': {'enabled': ('启用开发者工具', '控制聊天中的文件改动，并与原版 Web 的开发者工具共用开关。')},
   'ui-settings-account': {
     'version': ('引导数据版本', '原版桌面端首次引导的记录格式版本。'),
     'step': ('当前引导步骤', '已保存的桌面端引导进度，不代表账号登录状态。'),
@@ -290,7 +288,7 @@ const _fields = <String, Map<String, (String, String?)>>{
     'process': ('工作详情偏好记录', '仅修改引导记录。实际显示方式请在 Web 聊天展示中设置。'),
     'completion': ('引导完成方式', '首次引导的完成原因，不代表账号授权状态。'),
     'usage': ('用量详情偏好记录', '仅修改引导记录，不改变实际用量展示。'),
-    'developerTools': ('开发者功能偏好记录', '仅修改引导记录。实际开关请在 Web 开发者工具中设置。'),
+    'developerTools': ('开发者功能偏好记录', '仅修改引导记录。实际开关请在开发者工具中设置。'),
   },
   'ui-conversation': {'busyEnter': ('运行时按回车', '原版 Web 在 Agent 繁忙时如何处理新消息。')},
   'ui-chat': {

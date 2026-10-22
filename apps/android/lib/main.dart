@@ -27,6 +27,7 @@ import 'chat_messages.dart';
 import 'chat_sidebar.dart';
 import 'agent_presets.dart';
 import 'skills.dart';
+import 'chat_references.dart';
 import 'chat_deliverables.dart';
 
 void main() {
@@ -135,6 +136,7 @@ class _ChatPageState extends State<ChatPage> {
   final inputFocus = FocusNode();
   final scaffold = GlobalKey<ScaffoldState>();
   late String sessionId = widget.runtime.newSession();
+  int sessionNavigationEpoch = 0;
   final drafts = <String, TextEditingValue>{};
   final errors = <String, String>{};
   final submissions = <String>{};
@@ -174,6 +176,7 @@ class _ChatPageState extends State<ChatPage> {
   void didUpdateWidget(ChatPage oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.runtime != runtime) {
+      sessionNavigationEpoch++;
       for (final catalog in skillCatalogs.values) {
         catalog.dispose();
       }
@@ -261,6 +264,7 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   void activateSession(String id) {
+    sessionNavigationEpoch++;
     drafts[sessionId] = input.value;
     setState(() {
       sessionId = id;
@@ -288,6 +292,11 @@ class _ChatPageState extends State<ChatPage> {
     });
   }
 
+  Future<void> Function() prepareReferences(String id) =>
+      () => localDraftSessions.contains(id)
+      ? prepareSkillDraft(id)
+      : runtime.ensureSession(id).then((_) {});
+
   Future<void> pickSkill() async {
     final id = sessionId;
     final skill = await Navigator.of(context).push<SessionSkill>(
@@ -309,6 +318,37 @@ class _ChatPageState extends State<ChatPage> {
           : null,
     )..start(),
   );
+
+  Future<void> openSkillReference(String id, String name) async {
+    final owner = runtime;
+    final connection = owner.connectionGeneration;
+    final navigation = sessionNavigationEpoch;
+    final catalog = skillsFor(id);
+    await catalog.load();
+    if (!mounted ||
+        sessionId != id ||
+        navigation != sessionNavigationEpoch ||
+        owner != runtime ||
+        connection != runtime.connectionGeneration ||
+        !runtime.ready) {
+      return;
+    }
+    final skill = catalog.skills
+        .where((entry) => entry.name == name)
+        .firstOrNull;
+    if (!catalog.current || skill?.path == null) {
+      throw StateError('此技能的说明当前不可访问');
+    }
+    await Navigator.of(context).push<void>(
+      PocketRoute<void>(
+        builder: (_) => SessionDocumentPage(
+          runtime: runtime,
+          sessionId: id,
+          path: skill!.path!,
+        ),
+      ),
+    );
+  }
 
   void insertSkill(String id, SessionSkill skill) {
     setState(() {
@@ -575,6 +615,7 @@ class _ChatPageState extends State<ChatPage> {
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: runtime,
     builder: (context, _) {
+      final viewedSessionId = sessionId;
       final colors = Theme.of(context).colorScheme;
       final events = runtime.timelines[sessionId] ?? [];
       final projection = chatProjections.putIfAbsent(
@@ -745,11 +786,14 @@ class _ChatPageState extends State<ChatPage> {
                   return false;
                 },
                 child: ChatTimeline(
+                  runtime: runtime,
                   sessionId: sessionId,
                   events: runtime.timelines[sessionId] ?? const [],
                   projection: projection,
                   controller: messageScroll,
                   live: live,
+                  onOpenSkill: (name) =>
+                      openSkillReference(viewedSessionId, name),
                   onOpenLink: (uri) => RuntimeController.channel
                       .invokeMethod<void>('openUrl', uri.toString()),
                   onOpenFile: (file) async {
@@ -824,6 +868,14 @@ class _ChatPageState extends State<ChatPage> {
             ChatTodoDock(
               sessionId: sessionId,
               events: runtime.timelines[sessionId] ?? const [],
+            ),
+            ComposerReferenceSuggestions(
+              key: ValueKey((runtime, sessionId)),
+              runtime: runtime,
+              sessionId: sessionId,
+              input: input,
+              focus: inputFocus,
+              prepare: prepareReferences(sessionId),
             ),
             ValueListenableBuilder<TextEditingValue>(
               valueListenable: input,

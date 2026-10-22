@@ -85,6 +85,26 @@ test('Android stages original local delegation without enabling PTC or changing 
   assert.equal(staged.find(entry => entry.id === 'approval').config.policy, 'ask')
 })
 
+test('Android file mutations use one original confining provider and retain real Shell capability limits', async t => {
+  const world = await fixture(t)
+  await stagePreset(root, world.destination)
+  const staged = await readPatch(join(world.destination, 'cordis.patch.yml'))
+  const inserted = staged.flatMap(row => row.insert ?? [])
+  assert.deepEqual(inserted.filter(entry => entry.id === 'android-filesystem'), [
+    { id: 'android-filesystem', name: './android-filesystem.mjs' },
+  ])
+  assert.equal(staged.find(entry => entry.id === 'fs-sandbox').disabled, true,
+    'the base provider must remain disabled instead of registering ctx.fs twice')
+  assert.equal(staged.find(entry => entry.id === 'sandbox-policy').config.mode, 'workspace-write')
+  assert.deepEqual(plugins(staged, 'preset-android').find(entry => entry.id === 'tool-fs').config,
+    { read: true, readImage: true, write: true, edit: true })
+  for (const id of ['permission', 'ui-permission', 'bash-sandbox', 'pwsh-sandbox']) {
+    assert.equal(staged.find(entry => entry.id === id).disabled, true, `${id} must not claim Android Shell confinement`)
+  }
+  assert.equal(staged.some(entry => entry.id === 'fs-observation-policy'), false,
+    'the original base observation policy must not be disabled or replaced')
+})
+
 for (const id of portableIds) {
   for (const kind of ['missing', 'duplicate', 'overridden']) {
     test(`${kind} ${id} rejects staging before replacing the current patch`, async t => {

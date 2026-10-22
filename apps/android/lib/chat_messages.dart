@@ -10,11 +10,15 @@ import 'package:markdown/markdown.dart' as md;
 import 'chat_message_actions.dart';
 import 'chat_projection.dart';
 import 'chat_deliverables.dart';
+import 'chat_changes.dart';
+import 'chat_skills.dart';
 import 'chat_tool_groups.dart';
+import 'chat_user_references.dart';
 import 'entry_motion.dart';
 import 'runtime.dart';
 import 'tool_activity.dart';
 import 'ui.dart';
+import 'workspace_changes.dart';
 
 typedef ChatOpenLink = Future<void> Function(Uri uri);
 typedef ChatOpenFile = Future<void> Function(ChatFileLink file);
@@ -118,6 +122,8 @@ class ChatTimeline extends StatefulWidget {
     required this.projection,
     required this.controller,
     this.events = const [],
+    this.runtime,
+    this.onOpenSkill,
     this.live,
     this.footer,
     this.onOpenLink,
@@ -127,6 +133,8 @@ class ChatTimeline extends StatefulWidget {
     super.key,
   });
   final String sessionId;
+  final RuntimeController? runtime;
+  final Future<void> Function(String name)? onOpenSkill;
   final ChatProjection projection;
   final ScrollController controller;
 
@@ -153,19 +161,56 @@ class _ChatTimelineState extends State<ChatTimeline>
   final _positions = <String, int>{};
   ChatArtifactsProjection _artifacts = ChatArtifactsProjection();
   final _artifactRows = <String, ChatArtifact>{};
-  (ChatProjection, int, int, int)? _observed;
+  ChatChangesProjection _changes = ChatChangesProjection();
+  ChatSkillNameProjection _references = ChatSkillNameProjection();
+  WorkspaceChangesController? _changesController;
+  final _changeRows = <String, ChatChangesTurn>{};
+  (ChatProjection, int, int, int, int)? _observed;
   int _generation = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _attachChanges();
+  }
+
+  void _attachChanges() {
+    final runtime = widget.runtime;
+    if (runtime == null) return;
+    _changesController = WorkspaceChangesController(
+      runtime: runtime,
+      sessionId: widget.sessionId,
+    )..addListener(_changesChanged);
+  }
+
+  void _changesChanged() {
+    if (mounted) setState(() {});
+  }
+
+  void _detachChanges() {
+    _changesController?.removeListener(_changesChanged);
+    _changesController?.dispose();
+    _changesController = null;
+  }
 
   @override
   void didUpdateWidget(ChatTimeline oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.sessionId != widget.sessionId ||
+        oldWidget.runtime != widget.runtime) {
+      _detachChanges();
+      _attachChanges();
+    }
     if (oldWidget.sessionId != widget.sessionId) {
       _retire(_sources.values.toList());
       _sources.clear();
       _expanded.clear();
       _disposeMotions();
       _artifacts = ChatArtifactsProjection();
+      _changes = ChatChangesProjection();
+      _references = ChatSkillNameProjection();
       _artifactRows.clear();
+      _changeRows.clear();
       _observed = null;
       _generation++;
     }
@@ -184,6 +229,7 @@ class _ChatTimelineState extends State<ChatTimeline>
   @override
   void dispose() {
     _generation++;
+    _detachChanges();
     _retire(_sources.values.toList());
     _disposeMotions();
     super.dispose();
@@ -199,14 +245,20 @@ class _ChatTimelineState extends State<ChatTimeline>
   void _synchronize() {
     final projection = widget.projection;
     _artifacts.reconcile(widget.events);
+    _changes.reconcile(widget.events);
+    _references.reconcile(entries: projection.entries, events: widget.events);
     final stamp = (
       projection,
       projection.processedEventCount,
       projection.entries.length,
       _artifacts.revision,
+      _changes.revision,
     );
     if (_observed == stamp) return;
     _observed = stamp;
+    _changeRows
+      ..clear()
+      ..addEntries(_changes.entries.map((entry) => MapEntry(entry.key, entry)));
     _artifactRows
       ..clear()
       ..addEntries(
@@ -214,6 +266,13 @@ class _ChatTimelineState extends State<ChatTimeline>
       );
     final entries = [
       ...projection.entries,
+      for (final change in _changes.entries)
+        ChatEntry(
+          key: change.key,
+          seq: change.seq,
+          kind: ChatEntryKind.notice,
+          event: change.event,
+        ),
       for (final artifact in _artifacts.entries)
         ChatEntry(
           key: artifact.key,
@@ -358,6 +417,20 @@ class _ChatTimelineState extends State<ChatTimeline>
             );
           }
           final row = item.entry!;
+          final change = _changeRows[row.key];
+          if (change != null) {
+            final controller = _changesController;
+            return KeyedSubtree(
+              key: ValueKey((sessionId, row.key)),
+              child: controller == null
+                  ? const SizedBox.shrink()
+                  : ChatChangesCard(
+                      controller: controller,
+                      change: change,
+                      enabled: controller.enabled,
+                    ),
+            );
+          }
           final artifact = _artifactRows[row.key];
           if (artifact != null) {
             return KeyedSubtree(
@@ -387,6 +460,9 @@ class _ChatTimelineState extends State<ChatTimeline>
             onOpenFile: widget.onOpenFile,
             onOpenAttachment: widget.onOpenAttachment,
             onOpenImage: widget.onOpenImage,
+            onOpenSkill: widget.onOpenSkill,
+            skillNames: _references.namesFor(row.seq),
+            sessionLabels: _references.sessionLabelsFor(row.seq),
           );
           final group = item.parent;
           final motion = group == null ? null : _motions[group.key];
@@ -482,6 +558,9 @@ class ChatMessage extends StatelessWidget {
     this.onOpenAttachment,
     this.onOpenImage,
     this.activitySource,
+    this.onOpenSkill,
+    this.skillNames = const [],
+    this.sessionLabels = const [],
     super.key,
   });
   final ChatEntry entry;
@@ -492,12 +571,20 @@ class ChatMessage extends StatelessWidget {
   final ChatOpenAttachment? onOpenAttachment;
   final ChatOpenAttachment? onOpenImage;
   final ValueListenable<ToolActivity?>? activitySource;
+  final Future<void> Function(String name)? onOpenSkill;
+  final List<String> skillNames, sessionLabels;
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     switch (entry.kind) {
       case ChatEntryKind.tool:
+        if (ChatSkillToolPresentation.supports(entry.tool!)) {
+          return ChatSkillToolCard(
+            activity: entry.tool!,
+            activitySource: activitySource,
+          );
+        }
         return ToolActivityCard(
           activity: entry.tool!,
           activitySource: activitySource,
@@ -611,6 +698,10 @@ class ChatMessage extends StatelessWidget {
                     sessionId: sessionId,
                     storageId: storageId,
                     opaqueText: user,
+                    userReferences: user,
+                    onOpenSkill: onOpenSkill,
+                    skillNames: skillNames,
+                    sessionLabels: sessionLabels,
                     selectable: false,
                     onOpenLink: onOpenLink,
                     onOpenFile: onOpenFile,
@@ -639,6 +730,10 @@ class ChatContent extends StatelessWidget {
     this.sessionId,
     this.opaqueText = false,
     this.selectable = true,
+    this.userReferences = false,
+    this.onOpenSkill,
+    this.skillNames = const [],
+    this.sessionLabels = const [],
     this.onOpenLink,
     this.onOpenFile,
     this.onOpenAttachment,
@@ -650,6 +745,9 @@ class ChatContent extends StatelessWidget {
   final String? sessionId;
   final bool opaqueText;
   final bool selectable;
+  final bool userReferences;
+  final Future<void> Function(String name)? onOpenSkill;
+  final List<String> skillNames, sessionLabels;
   final ChatOpenLink? onOpenLink;
   final ChatOpenFile? onOpenFile;
   final ChatOpenAttachment? onOpenAttachment;
@@ -675,7 +773,20 @@ class ChatContent extends StatelessWidget {
           key: key,
           padding: const EdgeInsets.only(bottom: 6),
           child: opaqueText
-              ? selectable
+              ? userReferences
+                    ? ChatUserText(
+                        text: text,
+                        storageId: '$storageId:block:$index',
+                        skillNames: skillNames,
+                        sessionLabels: sessionLabels,
+                        onOpenSkill: onOpenSkill,
+                        onOpenFile: onOpenFile == null || sessionId == null
+                            ? null
+                            : (path) => onOpenFile!(
+                                ChatFileLink(sessionId: sessionId!, path: path),
+                              ),
+                      )
+                    : selectable
                     ? SelectableText(
                         text,
                         style: const TextStyle(fontSize: 16, height: 1.6),

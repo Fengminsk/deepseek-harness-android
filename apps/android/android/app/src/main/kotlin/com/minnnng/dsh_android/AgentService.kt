@@ -103,7 +103,9 @@ class AgentService : Service() {
                     "documents.search", "documents.search.cancel", "session.attachmentFile.prepare",
                     "session.attachmentFile.info", "session.attachmentFile.read",
                     "session.attachmentFile.cancel", "session.attachmentFile.release",
-                    "document.call", "document.bytes", "document.cancel", "document.release", "document.mediaPolicy")) {
+                    "document.call", "document.bytes", "document.cancel", "document.release", "document.mediaPolicy",
+                    "references.list", "references.cancel",
+                    "workspaceChanges.summary", "workspaceChanges.diff", "workspaceChanges.cancel")) {
                 val owner = appClients[client]?.owner
                 if (owner == null) {
                     send(client, error(id, "App stream owner is disconnected"))

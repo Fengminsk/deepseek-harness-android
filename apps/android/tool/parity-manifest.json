@@ -1,7 +1,7 @@
 {
   "version": 1,
   "scope": "Declaration inventory only: web-app ui-* roster, standard preset top-level plugins, standard delegation children, and Android disabled entries. This is not an exhaustive inventory of all DSH behaviors, optional bundles, CLI surfaces, or nested non-delegation groups.",
-  "evidencePolicy": "Each evidence level is a manual, scoped claim. partial records known overlap without certifying equivalence; unverified is explicit. The portable skill, todo and present entries cite executed host composition and behavior checks, not device acceptance. Other entries retain their source-audit status. File existence never upgrades evidence; inventory validation is not feature completion.",
+  "evidencePolicy": "Each evidence level is a manual, scoped claim. partial records known overlap without certifying equivalence; unverified is explicit. Portable tools, native references, recorded skill rows and workspace changes and filesystem tools cite executed host composition or behavior checks, not device acceptance for their new controls. Existing device observations remain narrowly described. File existence never upgrades evidence; inventory validation is not feature completion.",
   "entries": [
     {
       "key": "webUi/ui-open-in-app",
@@ -290,15 +290,22 @@
       "status": "partial",
       "android": [
         "apps/android/lib/settings.dart",
-        "apps/android/lib/configuration_editor.dart"
+        "apps/android/lib/configuration_editor.dart",
+        "apps/android/lib/workspace_changes_preference.dart"
       ],
       "evidence": {
         "core": "unverified",
         "ui": "partial",
-        "behavior": "unverified",
+        "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Native structured configuration pages exist; schema accessibility does not establish the complete original settings workflow."
+      "note": "Native structured configuration pages exist. Workspace-change visibility and reads use the original ui-settings/enabled value with no App-only default; scoped tests cover invalidation and shared-setting changes. Schema accessibility does not establish complete settings workflow parity.",
+      "evidenceRefs": {
+        "behavior": [
+          "apps/android/test/workspace_changes_test.dart",
+          "apps/android/test/workspace_diff_test.dart"
+        ]
+      }
     },
     {
       "key": "webUi/ui-settings-general",
@@ -439,15 +446,26 @@
       "status": "partial",
       "android": [
         "apps/android/lib/chat_messages.dart",
-        "apps/android/lib/chat_projection.dart"
+        "apps/android/lib/chat_projection.dart",
+        "apps/android/lib/chat_user_references.dart",
+        "apps/android/lib/chat_skills.dart",
+        "apps/android/lib/chat_changes.dart"
       ],
       "evidence": {
         "core": "unverified",
         "ui": "partial",
-        "behavior": "unverified",
+        "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Native transcript renders text, Markdown and tool rows; feedback, deliveries, reference navigation and other original actions remain incomplete."
+      "note": "Native transcript renders authored text, Markdown, tool rows, recorded skill and Session reference chips, delivered files and original workspace-change summaries. Confirmed skill names and Session labels come from the original log, not the current catalog. New reference and diff controls have host integration evidence but no phone acceptance; feedback and other original actions remain incomplete.",
+      "evidenceRefs": {
+        "behavior": [
+          "apps/android/test/chat_messages_test.dart",
+          "apps/android/test/chat_user_references_test.dart",
+          "apps/android/test/chat_skills_test.dart",
+          "apps/android/test/workspace_diff_test.dart"
+        ]
+      }
     },
     {
       "key": "webUi/ui-brand-official",
@@ -545,7 +563,12 @@
       "android": [
         "apps/android/lib/chat_deliverables.dart",
         "apps/android/lib/chat_messages.dart",
-        "apps/android/lib/session_document.dart"
+        "apps/android/lib/session_document.dart",
+        "apps/android/lib/chat_changes.dart",
+        "apps/android/lib/workspace_changes.dart",
+        "apps/android/lib/workspace_changes_preference.dart",
+        "apps/android/lib/workspace_diff.dart",
+        "apps/android/runtime/workspace-changes.mjs"
       ],
       "evidence": {
         "core": "partial",
@@ -553,11 +576,16 @@
         "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Native present cards fold original persisted events by completed turn, preserve exact file paths and open the Session reader. Changed-file summaries and diff review are still missing; these new cards have host tests but no device acceptance.",
+      "note": "Native present cards fold original persisted events by completed turn, preserve exact file paths and open the Session reader. Changed-file cards and native diffs use the original announcement coordinates and summary/diff service, gated by shared ui-settings/enabled. Captured bytes do not survive a service restart; outside Git, file-operation capture excludes arbitrary Shell changes. Original-profile host smoke and widget tests cover read-only behavior, cancellation, cold unavailable results and shared preference changes; device acceptance remains unverified.",
       "evidenceRefs": {
         "behavior": [
           "apps/android/test/chat_deliverables_test.dart",
-          "apps/android/test/chat_deliverables_widgets_test.dart"
+          "apps/android/test/chat_deliverables_widgets_test.dart",
+          "apps/android/tool/workspace-changes-runtime.test.mjs",
+          "apps/android/tool/smoke-workspace-changes.mjs",
+          "apps/android/test/workspace_changes_test.dart",
+          "apps/android/test/workspace_diff_test.dart",
+          "apps/android/test/chat_messages_test.dart"
         ]
       }
     },
@@ -654,7 +682,9 @@
       "android": [
         "apps/android/lib/skills.dart",
         "apps/android/lib/composer_commands.dart",
-        "apps/android/lib/main.dart"
+        "apps/android/lib/main.dart",
+        "apps/android/lib/chat_skills.dart",
+        "apps/android/lib/chat_user_references.dart"
       ],
       "evidence": {
         "core": "partial",
@@ -662,12 +692,15 @@
         "behavior": "partial",
         "device": "partial"
       },
-      "note": "Native slash suggestions and a searchable picker use original skills/list, preserve user-only skills, insert literal /name text and keep command precedence. Cold directory reads and original injection have host evidence. Build 33 displayed a synthetic user-only skill and opened its provider file on the phone; composer insertion and invocation still need device acceptance. Sent-reference highlighting and the dedicated recorded skill row remain gaps.",
+      "note": "Native slash suggestions and a searchable picker use original skills/list, preserve user-only skills, insert literal /name text and keep command precedence. Recorded injection batches confirm sent skill chips; dedicated skill rows use original call/result data and open recorded instructions, while reference previews open the current provider file. Host replay and widget checks cover these distinctions. Build 33 displayed a synthetic user-only skill and opened its provider file on the phone; composer invocation and the new historical chips/rows still need device acceptance.",
       "evidenceRefs": {
         "behavior": [
           "apps/android/test/skills_test.dart",
           "apps/android/test/composer_commands_test.dart",
-          "apps/android/tool/smoke-skill-catalog.mjs"
+          "apps/android/tool/smoke-skill-catalog.mjs",
+          "apps/android/test/chat_skills_test.dart",
+          "apps/android/test/chat_user_references_test.dart",
+          "apps/android/test/main_chat_flow_test.dart"
         ]
       }
     },
@@ -700,15 +733,33 @@
         "packages/bundle/web-app/cordis.patch.yml",
         "packages/client/ui-reference/README.md"
       ],
-      "status": "not-migrated",
-      "android": [],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/chat_references.dart",
+        "apps/android/lib/chat_user_references.dart",
+        "apps/android/lib/chat_skills.dart",
+        "apps/android/runtime/reference-discovery.mjs",
+        "apps/android/lib/main.dart"
+      ],
       "evidence": {
-        "core": "unverified",
-        "ui": "unverified",
-        "behavior": "unverified",
+        "core": "partial",
+        "ui": "partial",
+        "behavior": "partial",
         "device": "unverified"
       },
-      "note": "No native file/folder/session reference candidate picker or canonical mention editor is wired."
+      "note": "Native @ discovery calls the original fileReferences and sessionReferenceResolver services, retains exact path/canonical Session mentions, and separates folder selection from descent. Owner-bound cancellation and query/connection invalidation reject late results. Sent references follow original UTF-16 and recorded-label rules; file chips open the source Session reader, while folder/Session chips remain labels. Real Android-profile host discovery and focused widgets pass; phone acceptance is unverified.",
+      "evidenceRefs": {
+        "core": [
+          "apps/android/tool/smoke-workspace-changes.mjs"
+        ],
+        "behavior": [
+          "apps/android/tool/reference-discovery.test.mjs",
+          "apps/android/test/chat_references_test.dart",
+          "apps/android/test/chat_user_references_test.dart",
+          "apps/android/test/main_chat_flow_test.dart",
+          "apps/android/tool/smoke-workspace-changes.mjs"
+        ]
+      }
     },
     {
       "key": "webUi/ui-secret-mask",
@@ -1189,10 +1240,19 @@
       "evidence": {
         "core": "partial",
         "ui": "unverified",
-        "behavior": "unverified",
+        "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Original filesystem tool is composed with write/edit disabled; mobile read-only configuration is not full original tool parity."
+      "note": "Original read/write/edit tools are enabled with the original filesystem sandbox and observed-version policy. Staged Android-profile host checks exercise real filesystem mutations, blind/stale overwrite rejection, unique-match and replace_all edits, workspace/symlink bounds, one-invocation approval outcomes, publication cancellation and cold recovery without replay. SAF remains read-only, image/tool presentation parity is not certified, and Android Binder/device acceptance remains unverified.",
+      "evidenceRefs": {
+        "core": [
+          "apps/android/tool/stage-preset.test.mjs",
+          "apps/android/tool/smoke-file-tools.mjs"
+        ],
+        "behavior": [
+          "apps/android/tool/smoke-file-tools.mjs"
+        ]
+      }
     },
     {
       "key": "standardPreset/tool-fs-search",
@@ -1290,7 +1350,8 @@
       "status": "partial",
       "android": [
         "apps/android/tool/stage-preset.mjs",
-        "apps/android/lib/skills.dart"
+        "apps/android/lib/skills.dart",
+        "apps/android/lib/chat_skills.dart"
       ],
       "evidence": {
         "core": "verified",
@@ -1298,7 +1359,7 @@
         "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Original skill invocation is staged unchanged. Host profile checks cover cold catalog reads without Agent activation or log writes and the literal user-only invocation injection. Native discovery uses that directory; device acceptance remains pending.",
+      "note": "Original skill invocation is staged unchanged. Host profile checks cover cold catalog reads without Agent activation or log writes and literal user-only invocation. Native discovery uses that directory; recorded call/result rows preserve historical name, output and failure independently of the current catalog. Full invocation and recorded-row device acceptance remain pending.",
       "evidenceRefs": {
         "core": [
           "apps/android/tool/stage-preset.test.mjs",
@@ -1307,7 +1368,8 @@
         "behavior": [
           "apps/android/tool/smoke-preset-portable-tools.mjs",
           "apps/android/tool/smoke-skill-catalog.mjs",
-          "apps/android/test/skills_test.dart"
+          "apps/android/test/skills_test.dart",
+          "apps/android/test/chat_skills_test.dart"
         ]
       }
     },
@@ -1971,17 +2033,25 @@
       "sources": [
         "apps/android/runtime/cordis.patch.yml"
       ],
-      "status": "not-migrated",
+      "status": "partial",
       "android": [
         "apps/android/runtime/cordis.patch.yml"
       ],
       "evidence": {
-        "core": "unverified",
+        "core": "partial",
         "ui": "unverified",
-        "behavior": "unverified",
+        "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Desktop process/filesystem confinement is disabled; application UID isolation does not supply the original per-operation sandbox modes."
+      "note": "The original fs-sandbox loader id is disabled, but android-filesystem mounts the same @deepseek-ai/dsh-fs-sandbox provider with workspace-write defaults. Original file tools retain mutation containment, observed-version checks and one-invocation escalation; host profile smoke exercises these operations and cancellation. This does not add kernel confinement to android_shell or migrate the original permission menu. Device acceptance is unverified.",
+      "evidenceRefs": {
+        "core": [
+          "apps/android/tool/smoke-file-tools.mjs"
+        ],
+        "behavior": [
+          "apps/android/tool/smoke-file-tools.mjs"
+        ]
+      }
     },
     {
       "key": "androidDisabled/ptc-runtime",

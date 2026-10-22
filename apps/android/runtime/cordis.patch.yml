@@ -45,7 +45,9 @@
   disabled: true
 - id: sandbox-policy
   config:
-    mode: danger-full-access
+    # Original file tools enforce this policy. Android Shell still runs with
+    # the App UID after approval; it does not gain a kernel sandbox here.
+    mode: workspace-write
     workspaceRoot: !!js process.cwd()
 - id: approval
   config:
@@ -76,7 +78,7 @@
         root: !!js dshHomePath('sessions')
         compression: none
     - id: android-filesystem
-      name: '@deepseek-ai/dsh-fs-local'
+      name: ./android-filesystem.mjs
     - id: android-directory-picker
       name: '@deepseek-ai/dsh-host-directory-picker-browse'
     - id: android-runtime
@@ -100,8 +102,8 @@
             config:
               read: true
               readImage: true
-              write: false
-              edit: false
+              write: true
+              edit: true
           - id: tool-web
             name: '@deepseek-ai/dsh-tool-web'
           - id: tool-ask-user
