@@ -26,6 +26,13 @@ function offsetOf(value = 0) {
   if (!Number.isSafeInteger(value) || value < 0) refuse('invalid-page', '分页位置无效，请从头读取。')
   return value
 }
+function documentInteger(value, fallback, maximum) {
+  const result = value === undefined ? fallback : value
+  if (!Number.isSafeInteger(result) || result < 0 || result > maximum) {
+    refuse('invalid-page', '文档读取范围无效，请重新打开文件。')
+  }
+  return result
+}
 function versionOf(info) { return `${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}:${info.ctimeMs}` }
 function sameIdentity(left, right) { return left.dev === right.dev && left.ino === right.ino }
 function samePath(left, right) {
@@ -230,6 +237,59 @@ export class AppWorkspaceFiles {
       await this.verify(target)
       return result
     } finally { await handle.close() }
+  }
+
+  /** Trusted document renderer reads through the same private-root and identity checks as the file browser. */
+  async document(method, args, signal, { maxFileBytes, maxWindowBytes }) {
+    this.checkOpen()
+    signal?.throwIfAborted()
+    if (args === null || typeof args !== 'object' || Array.isArray(args)) {
+      refuse('invalid-request', '文档读取参数无效。')
+    }
+    const raw = args.path
+    if (typeof raw !== 'string' || !raw) refuse('invalid-path', '请选择工作区中的文件。')
+    const root = await this.root()
+    const source = path.isAbsolute(raw)
+      ? contained(root.canonical, raw) ? path.relative(root.canonical, raw).split(path.sep).join('/') : null
+      : raw
+    if (!source) refuse('outside-workspace', '此文档不在 App 私有工作区内。')
+    if (method === 'stat') {
+      return this.withFile(source, undefined, async (_, target, version) => {
+        signal?.throwIfAborted()
+        return { absolutePath: target.absolute, version, bytes: target.info.size }
+      })
+    }
+    if (method !== 'readBytes') refuse('invalid-request', '该文档读取方式暂不可用。')
+    const options = args.options ?? {}
+    if (options === null || typeof options !== 'object' || Array.isArray(options) || options.baseFile !== undefined) {
+      refuse('invalid-request', '文档读取参数无效。')
+    }
+    const window = options.range !== undefined
+    if (window && (options.range === null || typeof options.range !== 'object' || Array.isArray(options.range))) {
+      refuse('invalid-request', '文档字节范围无效。')
+    }
+    const range = options.range ?? {}
+    const offset = documentInteger(range.offset, 0, Number.MAX_SAFE_INTEGER)
+    const length = documentInteger(range.length, maxWindowBytes, maxWindowBytes)
+    if (window && length === 0) refuse('invalid-page', '文档字节范围不能为空。')
+    return this.withFile(source, undefined, async (handle, target, version) => {
+      signal?.throwIfAborted()
+      const size = target.info.size
+      if (!window && size > maxFileBytes) refuse('file-bytes', '文档超过完整预览上限，请在其他应用中打开。')
+      const count = window ? Math.min(length, Math.max(0, size - offset)) : size
+      const data = Buffer.alloc(count)
+      let read = 0
+      while (read < count) {
+        this.checkOpen()
+        signal?.throwIfAborted()
+        const frame = await handle.read(data, read, count - read, (window ? offset : 0) + read)
+        if (frame.bytesRead === 0) refuse('changed', '读取期间文件已变化，请重新打开。')
+        read += frame.bytesRead
+      }
+      signal?.throwIfAborted()
+      return { absolutePath: target.absolute, version, bytes: size,
+        offset: window ? offset : 0, data, eof: (window ? offset : 0) + count >= size }
+    })
   }
 
   /** Byte offsets are opaque continuation positions at valid UTF-8 boundaries. */

@@ -12,6 +12,9 @@ import { SearchNativeFixture, verifyDocumentSearch } from './smoke-document-sear
 const root = resolve(import.meta.dirname, '../../..')
 const home = await mkdtemp(join(root, '.cache/android/interactions-'))
 const copiedPublication = process.argv.includes('--copied-publication')
+// A restricted Windows host may forbid hard links even inside its own temp tree.
+// Exercise Android's copied-publication carrier there; the native rename remains device-only.
+const hostCopiedPublication = copiedPublication || process.platform === 'win32'
 const publicationReport = join(home, 'publication-report.json')
 await mkdir(join(home, 'workspace'))
 await mkdir(join(home, 'native-attachment-cache'))
@@ -39,11 +42,11 @@ const model = createServer((request, response) => {
 model.listen(0, '127.0.0.1')
 await once(model, 'listening')
 const child = spawn(process.execPath, ['--import', new URL('./interaction-smoke-loader.mjs', import.meta.url).href,
-  ...copiedPublication ? ['--import', new URL('./copied-publication-smoke-loader.mjs', import.meta.url).href] : [],
+  ...hostCopiedPublication ? ['--import', new URL('./copied-publication-smoke-loader.mjs', import.meta.url).href] : [],
   join(root, '.cache/android/runtime-bundle/bootstrap.mjs')], {
   cwd: join(home, 'workspace'), env: { ...process.env, DSH_HOME: home,
     DSH_TELEMETRY_DISABLED: '1', DEEPSEEK_BASE_URL: `http://127.0.0.1:${model.address().port}`,
-    ...copiedPublication ? { POCKET_SMOKE_PUBLICATION_REPORT: publicationReport } : {} }, stdio: ['pipe', 'pipe', 'pipe'],
+    ...hostCopiedPublication ? { POCKET_SMOKE_PUBLICATION_REPORT: publicationReport } : {} }, stdio: ['pipe', 'pipe', 'pipe'],
 })
 const exited = once(child, 'exit')
 const records = new Map(), pending = new Map(), notices = [], waiters = []
@@ -133,8 +136,9 @@ try {
     }
     assert.equal((await request('web.status')).enabled, false)
     assert.ok(Array.isArray(await request('api.call', { namespace: 'pluginManager', method: 'listBundles', args: {} })))
-    await assert.rejects(request('api.call', { namespace: 'llm', method: 'discoverModels',
-      args: { settingsNs: 'unregistered-fixture', request: { baseURL: `http://127.0.0.1:${model.address().port}` } } }), /no model discovery/i)
+    const discoveryFailure = await request('api.call', { namespace: 'llm', method: 'discoverModels',
+      args: { settingsNs: 'unregistered-fixture', request: { baseURL: `http://127.0.0.1:${model.address().port}` } } })
+    assert.match(discoveryFailure._pocket_error?.message ?? '', /no model discovery/i)
     const observe = async (subscriptionId, namespace, method, args) => {
       const admitted = await request('api.subscribe', { owner: 'fixture-activity', subscriptionId, namespace, method, args })
       const notification = await waitFor(frame => frame.method === 'api.stream'
@@ -176,9 +180,10 @@ try {
     }))
     const initialUpload = await request('attachments.prepare', { sessionId: initialSession, id: initialFile })
     assert.equal(typeof initialUpload.receiptId, 'string')
-    await assert.rejects(request('api.call', { namespace: 'session', method: 'selectModel', args: {
+    const selectFailure = await request('api.call', { namespace: 'session', method: 'selectModel', args: {
       request: { sessionId: initialSession, provider: 'deepseek-official', model: 'deepseek-flash' },
-    } }), /Select an available model/)
+    } })
+    assert.match(selectFailure._pocket_error?.message ?? '', /Select an available model/)
     const admission = await request('session.send', { sessionId: initialSession, requestId: 'needs-config',
       provider: 'deepseek-official', model: 'deepseek-flash', text: '', attachmentIds: [initialFile] })
     assert.equal(admission.accepted, true)
@@ -245,6 +250,18 @@ try {
     assert.equal((await request('interactions.reply', { id: question.id, version: question.version, response: answer })).accepted, true)
     await finish('question-direct')
     checkpoint('direct question complete')
+    const dismissed = await run('question-dismiss', { id: 'question-dismiss-call', tool: 'ask_user_question',
+      args: { timeout: -1, questions: [{ id: 'decision', question: 'Keep this request answerable?' }] } })
+    assert.equal(dismissed.kind, 'question')
+    assert.ok(dismissed.callId, 'the named original tool question must retain its call identity')
+    assert.deepEqual(await request('interactions.dismiss', { id: dismissed.id, version: dismissed.version }),
+      { accepted: true, requestStillPending: true })
+    assert.ok((await request('interactions.list')).requests.some(item => item.id === dismissed.id))
+    assert.equal((await request('interactions.reply', { id: dismissed.id, version: dismissed.version,
+      response: { answers: [{ id: 'decision', selected: [], custom: 'continue after dismiss' }] } })).accepted, true)
+    await finish('question-dismiss')
+    assert.equal((await request('interactions.list')).requests.some(item => item.id === dismissed.id), false)
+    checkpoint('dismissed named question remains answerable')
     const attachmentId = randomUUID()
     const attachmentBytes = Buffer.from('Pocket Harness local attachment fixture')
     await writeFile(join(home, 'native-attachment-cache', `${attachmentId}.bin`), attachmentBytes)
@@ -374,6 +391,7 @@ try {
       console.log(JSON.stringify({ copiedPublication: copies }))
     }
     console.log(JSON.stringify({ questionTool: true, invalidAnswerPreserved: true, textAnswer: true,
+      dismissedQuestionStillAnswerable: true,
       originalQuestionEditHold: true, originalTimeoutContinues: true, continuedAnswer: true,
       actualApprovalAudit: true, sharedWebRequestId: true, appAnswerCancelsWeb: true,
       webFirstAnswerWins: true, turnCancellationWithdraws: true,

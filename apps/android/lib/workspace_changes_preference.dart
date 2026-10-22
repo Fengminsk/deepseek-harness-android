@@ -1,5 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
+import 'agent_preset_default_reconciliation.dart';
 import 'configuration_state.dart';
 import 'runtime.dart';
 
@@ -9,14 +12,18 @@ import 'runtime.dart';
 /// DeveloperToolsPreference and this adapter both keep capabilities disabled.
 class WorkspaceChangesPreference extends ChangeNotifier {
   WorkspaceChangesPreference(RuntimeController runtime)
-    : _form = ConfigurationEditingController(
-        runtime,
-        namespace: 'ui-settings',
-      ) {
+    : _form = ConfigurationEditingController(runtime, namespace: 'ui-settings'),
+      defaultReconciler = AgentPresetDefaultReconciler.forRuntime(runtime) {
+    _releaseReconciler = defaultReconciler.attach(
+      () => !_disposed && _confirmed && !_enabled,
+    );
     _form.addListener(_changed);
   }
   final ConfigurationEditingController _form;
+  final AgentPresetDefaultReconciler defaultReconciler;
+  late final VoidCallback _releaseReconciler;
   bool _enabled = false, _confirmed = false;
+  bool _disposed = false;
   bool get enabled => _enabled;
   bool get confirmed => _confirmed;
   Future<void> start() => _form.start();
@@ -29,16 +36,23 @@ class WorkspaceChangesPreference extends ChangeNotifier {
         value is Map &&
         value['enabled'] is bool;
     final enabled = confirmed && value['enabled'] == true;
-    if (_enabled == enabled && _confirmed == confirmed) return;
+    final changed = _enabled != enabled || _confirmed != confirmed;
     _enabled = enabled;
     _confirmed = confirmed;
-    notifyListeners();
+    if (confirmed && !enabled && !_form.busy) {
+      // The Host accepted false. Recheck the roster and default even when an
+      // unrelated settings invalidation arrives while this view stays mounted.
+      unawaited(defaultReconciler.reconcile());
+    }
+    if (changed) notifyListeners();
   }
 
   @override
   void dispose() {
+    _disposed = true;
     _form.removeListener(_changed);
     _form.dispose();
+    _releaseReconciler();
     super.dispose();
   }
 }

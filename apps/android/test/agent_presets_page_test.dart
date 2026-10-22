@@ -38,6 +38,8 @@ class PresetPageRuntime extends RuntimeController {
   String? currentPreset = 'android';
   bool exists = false, started = false, readFails = false, conflictOnce = false;
   bool loseWriteReply = false;
+  bool codingToolsEnabled = true;
+  bool includeCodingTools = true;
   int revision = 1;
   Completer<dynamic>? documentReply;
 
@@ -72,7 +74,15 @@ class PresetPageRuntime extends RuntimeController {
       case 'settings.describe':
         return {
           'writable': true,
-          'namespaces': [descriptor],
+          'namespaces': [
+            descriptor,
+            if (includeCodingTools)
+              {
+                'ns': 'ui-settings',
+                'revision': revision,
+                'value': {'enabled': codingToolsEnabled},
+              },
+          ],
         };
       case 'session.list':
         return {
@@ -237,6 +247,77 @@ Future<void> capture(WidgetTester tester, String name) async {
 }
 
 void main() {
+  testWidgets('Coding Tools hides only shipped PTC and Minimal presets', (
+    tester,
+  ) async {
+    final runtime = PresetPageRuntime()
+      ..codingToolsEnabled = false
+      ..presets = [
+        {'id': 'android', 'name': '手机 Agent', 'isDefault': true},
+        {'id': 'ptc', 'isDefault': false},
+        {'id': 'minimal', 'isDefault': false},
+        {'id': 'ptc-custom', 'name': '自定义 PTC', 'isDefault': false},
+      ];
+    await openPage(tester, runtime);
+    expect(option('ptc'), findsNothing);
+    expect(option('minimal'), findsNothing);
+    expect(option('ptc-custom'), findsOneWidget);
+    expect(runtime.writes, isEmpty);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('missing Coding Tools descriptor keeps original enabled default', (
+    tester,
+  ) async {
+    final runtime = PresetPageRuntime()
+      ..includeCodingTools = false
+      ..presets = [
+        {'id': 'android', 'name': '手机 Agent', 'isDefault': true},
+        {'id': 'ptc', 'isDefault': false},
+      ];
+    await openPage(tester, runtime);
+    expect(option('ptc'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('a named preset with a shipped id remains visible', (
+    tester,
+  ) async {
+    final runtime = PresetPageRuntime()
+      ..codingToolsEnabled = false
+      ..presets = [
+        {'id': 'android', 'name': '手机 Agent', 'isDefault': true},
+        {'id': 'ptc', 'name': '我的批处理助手', 'isDefault': false},
+      ];
+    await openPage(tester, runtime);
+    expect(option('ptc'), findsOneWidget);
+    await tap(tester, option('ptc'));
+    expect(find.text('待应用 · 我的批处理助手'), findsOneWidget);
+    expect(runtime.writes, isEmpty);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('disabling Coding Tools clears a staged built-in choice', (
+    tester,
+  ) async {
+    final runtime = PresetPageRuntime()
+      ..presets = [
+        {'id': 'android', 'name': '手机 Agent', 'isDefault': true},
+        {'id': 'ptc', 'isDefault': false},
+      ];
+    await openPage(tester, runtime);
+    await tap(tester, option('ptc'));
+    expect(find.text('待应用 · ptc'), findsOneWidget);
+    runtime.codingToolsEnabled = false;
+    runtime.forms = [{}];
+    runtime.notifyListeners();
+    await tester.pumpAndSettle();
+    expect(option('ptc'), findsNothing);
+    expect(find.text('待应用 · ptc'), findsNothing);
+    expect(runtime.writes, isEmpty);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('default selection stages without writing until explicit apply', (
     tester,
   ) async {

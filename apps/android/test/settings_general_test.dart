@@ -4,6 +4,8 @@ import 'package:dsh_android/configuration_edits.dart';
 import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/settings_general.dart';
 import 'package:dsh_android/ui.dart';
+import 'package:dsh_android/workspace_changes_preference.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
@@ -67,6 +69,49 @@ class GeneralRuntime extends RuntimeController {
       return cloneConfiguration(remote);
     }
     throw StateError('Unexpected method ${params['method']}');
+  }
+}
+
+class FallbackRuntime extends GeneralRuntime {
+  FallbackRuntime() {
+    remote = settingsDescriptor(enabled: false);
+    onRead = () async => {
+      'writable': true,
+      'namespaces': [
+        cloneConfiguration(remote),
+        {
+          'ns': 'agent-preset-registry',
+          'revision': 7,
+          'value': {'selectedDefault': 'minimal'},
+        },
+      ],
+    };
+  }
+
+  int defaultWrites = 0;
+
+  @override
+  Future<dynamic> call(String method, [Json params = const {}]) async {
+    if (method == 'api.call' &&
+        params['namespace'] == 'settings' &&
+        params['method'] == 'describe') {
+      return onRead!();
+    }
+    if (method == 'api.call' && params['namespace'] == 'agentPresets') {
+      return {
+        'presets': [
+          {'id': 'standard', 'isDefault': false},
+          {'id': 'minimal', 'isDefault': true},
+        ],
+      };
+    }
+    if (method == 'api.call' &&
+        params['namespace'] == 'settings' &&
+        params['method'] == 'update') {
+      defaultWrites++;
+      throw PlatformException(code: 'disconnected');
+    }
+    return super.call(method, params);
   }
 }
 
@@ -207,5 +252,44 @@ void main() {
       find.byKey(const ValueKey('developer-tools-switch')),
       findsOneWidget,
     );
+  });
+
+  testWidgets('unknown default fallback is visible and review never resends', (
+    tester,
+  ) async {
+    final runtime = FallbackRuntime();
+    final owner = WorkspaceChangesPreference(runtime);
+    tester.view.physicalSize = const Size(1000, 1600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(() {
+      owner.dispose();
+      runtime.dispose();
+    });
+    await owner.start();
+    for (var i = 0; i < 8; i++) {
+      await tester.pump();
+    }
+    expect(runtime.defaultWrites, 1);
+    expect(owner.defaultReconciler.uncertain, isTrue);
+    expect(owner.defaultReconciler.error, contains('不会自动重发'));
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: pocketTheme(Brightness.dark),
+        home: Scaffold(body: DeveloperToolsSettingsRow(runtime: runtime)),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('coding-tools-default-review')),
+      findsOneWidget,
+    );
+    expect(find.text(owner.defaultReconciler.error!), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('coding-tools-default-review')));
+    await tester.pump();
+    expect(runtime.defaultWrites, 1);
+    expect(owner.defaultReconciler.uncertain, isTrue);
   });
 }

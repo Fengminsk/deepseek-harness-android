@@ -11,7 +11,16 @@ class IncompleteQuestionDraft implements Exception {
 
 /// Unsaved presentation state only. The DSH request owns whether it is pending.
 class QuestionAnswerDraft {
-  QuestionAnswerDraft(this.question);
+  QuestionAnswerDraft(this.question) {
+    final options = question['options'];
+    if (options is List && options.isNotEmpty) {
+      final first = options.first;
+      if (first is Map && first['label'] is String) {
+        final label = first['label'] as String;
+        if (recommendedOptionLabel(label).recommended) selected.add(label);
+      }
+    }
+  }
   final Json question;
   final List<String> selected = [];
   String custom = '';
@@ -65,18 +74,100 @@ class QuestionAnswerDraft {
   }
 }
 
+/// Display a recommendation badge without changing the option label sent to DSH.
+({String label, bool recommended}) recommendedOptionLabel(String label) {
+  final suffix = RegExp(
+    r'\s*(?:\((?:recommended|推荐)\)|（(?:recommended|推荐)）)\s*$',
+    caseSensitive: false,
+  );
+  final match = suffix.firstMatch(label);
+  return match == null
+      ? (label: label, recommended: false)
+      : (label: label.substring(0, match.start), recommended: true);
+}
+
 /// Echoes the original question ids and option labels without interpreting
 /// their order, including plan-review options named by intent.approve.
 Json questionDraftAnswer(List<QuestionAnswerDraft> drafts) => {
   'answers': drafts.map((draft) => draft.answer()).toList(),
 };
 
-/// Session-local UI progress, never a registry of pending or settled requests.
-/// Entries are usable only for the exact question batch and delivery version.
+/// Only the original single-question plan intent gets a dedicated decision UI.
+({String id, String approve, String plan})? planReviewOf(
+  List<QuestionAnswerDraft> drafts,
+) {
+  if (drafts.length != 1) return null;
+  final question = drafts.single.question;
+  final intent = question['intent'];
+  final options = question['options'];
+  if (intent is! Map ||
+      intent['kind'] != 'plan-review' ||
+      intent['approve'] is! String ||
+      question['id'] is! String ||
+      question['question'] is! String ||
+      question['detail'] is! String ||
+      question['multiSelect'] == true ||
+      options is! List ||
+      options.isEmpty ||
+      options.length > 2 ||
+      !options.any(
+        (option) => option is Map && option['label'] == intent['approve'],
+      )) {
+    return null;
+  }
+  return (
+    id: question['id'] as String,
+    approve: intent['approve'] as String,
+    plan: question['detail'] as String,
+  );
+}
+
+/// Keep the full review document in the request; only this card's copy is brief.
+({String title, String summary}) planReviewPreview(String markdown) {
+  final lines = markdown.trim().split(RegExp(r'\r?\n'));
+  final title = lines.first.replaceFirst(RegExp(r'^\s*#{1,6}\s+'), '').trim();
+  final summary = lines
+      .skip(1)
+      .join(' ')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+  return (title: title, summary: summary);
+}
+
+/// Session-local UI progress and a guard against replaying an unconfirmed write.
+/// Neither map decides whether DSH still owns a request. A pending read cannot
+/// prove an earlier answer was not delivered. Only an explicit rejected write
+/// or a confirmed panel-only dismissal releases the same request/version.
+enum SubmissionEvidence { unconfirmed, accepted }
+
 class QuestionDraftStore {
   final _entries = <String, ({String questions, List<Json> progress})>{};
+  final _submissionAttempts = <String, SubmissionEvidence>{};
 
   String _key(String id, int version) => jsonEncode([id, version]);
+
+  bool submissionBlocked(String id, int version) =>
+      _submissionAttempts.containsKey(_key(id, version));
+
+  SubmissionEvidence? submissionEvidence(String id, int version) =>
+      _submissionAttempts[_key(id, version)];
+
+  /// Called before crossing the native bridge. An exception or lost receipt
+  /// leaves this entry blocked even if a later snapshot still shows pending.
+  bool beginSubmission(String id, int version) {
+    final key = _key(id, version);
+    if (_submissionAttempts.containsKey(key)) return false;
+    _submissionAttempts[key] = SubmissionEvidence.unconfirmed;
+    return true;
+  }
+
+  void confirmSubmission(String id, int version) =>
+      _submissionAttempts[_key(id, version)] = SubmissionEvidence.accepted;
+
+  /// The bridge explicitly said it did not accept this write and the exact
+  /// request is still pending. A read-only snapshot is never sufficient.
+  void releaseRejectedSubmission(String id, int version) =>
+      _submissionAttempts.remove(_key(id, version));
 
   void save(String id, int version, List<QuestionAnswerDraft> drafts) {
     _entries[_key(id, version)] = (
@@ -102,6 +193,7 @@ class QuestionDraftStore {
     return [
       for (var index = 0; index < questions.length; index++)
         QuestionAnswerDraft(questions[index])
+          ..selected.clear()
           ..selected.addAll(
             (entry.progress[index]['selected'] as List).cast<String>(),
           )
@@ -118,5 +210,7 @@ class QuestionDraftStore {
         _key(request['id'] as String, request['version'] as int),
     };
     _entries.removeWhere((key, _) => !keys.contains(key));
+    // A transient empty/replayed snapshot does not establish non-delivery.
+    // Keep submission evidence even after pruning visual draft progress.
   }
 }

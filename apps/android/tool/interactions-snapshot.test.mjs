@@ -15,9 +15,13 @@ const hook = registerHooks({
   },
 })
 let AppInteractions
+let PendingQuestion, createWaterfallRequest
 try {
   const module = await import(source)
   AppInteractions = module.AppInteractions
+  const carrier = await import(generated)
+  PendingQuestion = carrier.PendingQuestion
+  createWaterfallRequest = carrier.createWaterfallRequest
 } finally { hook.deregister() }
 
 function fixture(request, events = []) {
@@ -122,4 +126,49 @@ test('shared credential, preset and goal activation changes reach native observe
   } }, { method: 'api.event', params: {
     event: 'goal/activation-changed', args: [{ sessionId: 'session', goal: { id: 'goal-1', revision: 7, activation: 'disarmed' } }],
   } }])
+})
+
+test('dismissing a named question preserves its answerable request', async () => {
+  const carrier = Object.create(AppInteractions.prototype)
+  const record = { id: 'named', version: 1, kind: 'question', callId: 'call-1', sending: false,
+    card: { async dismiss() {} } }
+  Object.assign(carrier, { records: new Map([[record.id, record]]), error: null })
+  assert.deepEqual(await carrier.dismiss({ id: 'named', version: 1 }),
+    { accepted: true, requestStillPending: true })
+  assert.equal(record.sending, false)
+  assert.equal(carrier.records.get(record.id), record)
+})
+
+test('dismissing an unnamed question waits for cancellation delivery', async () => {
+  const carrier = Object.create(AppInteractions.prototype)
+  const card = new PendingQuestion('session', [{ id: 'one', question: 'Continue?' }])
+  const waterfall = createWaterfallRequest(undefined, undefined,
+    channel => card.detachWaterfall(channel))
+  card.attachWaterfall(waterfall.channel)
+  let rejection
+  const delivery = waterfall.result.then(() => false, error => {
+    rejection = error
+    return true
+  })
+  const record = { id: 'unnamed', version: 2, kind: 'question', sending: false,
+    card, delivery }
+  Object.assign(carrier, { records: new Map([[record.id, record]]), error: null })
+  assert.deepEqual(await carrier.dismiss({ id: 'unnamed', version: 2 }),
+    { accepted: true, requestStillPending: false })
+  assert.equal(rejection.code, 'ASK_CANCELLED')
+  assert.deepEqual(await carrier.dismiss({ id: 'unnamed', version: 3 }),
+    { accepted: false, requestStillPending: false, message: '该提问已处理或失效' })
+})
+
+test('dismissal failure remains uncertain and cannot be replayed', async () => {
+  const carrier = Object.create(AppInteractions.prototype)
+  const record = { id: 'unnamed', version: 2, kind: 'question', sending: false,
+    card: { async dismiss() { throw new Error('ack lost') } } }
+  let published = 0
+  Object.assign(carrier, { records: new Map([[record.id, record]]), error: null, publish() { published++ } })
+  await assert.rejects(carrier.dismiss({ id: 'unnamed', version: 2 }), /ack lost/)
+  assert.equal(record.sending, true)
+  assert.match(carrier.error, /结果未确认/)
+  assert.equal(published, 1)
+  await assert.rejects(carrier.dismiss({ id: 'unnamed', version: 2 }), /勿重复提交/)
 })

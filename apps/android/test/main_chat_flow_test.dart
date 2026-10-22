@@ -30,6 +30,7 @@ class _ChatRuntime extends RuntimeController {
   final List<Json> history;
   final calls = <({String method, Json params})>[];
   int draft = 0;
+  bool codingToolsEnabled = true;
   String catalogTitle = '历史会话';
   final libraryStreams = <String, List<StreamController<Json>>>{};
 
@@ -77,6 +78,21 @@ class _ChatRuntime extends RuntimeController {
       case 'userText.mask':
         return {'ranges': <Json>[]};
       case 'api.call':
+        if (params['namespace'] == 'settings' &&
+            params['method'] == 'describe') {
+          return {
+            'writable': true,
+            'namespaces': [
+              {
+                'ns': 'ui-settings',
+                'revision': 1,
+                'value': {'enabled': codingToolsEnabled},
+                'schema': <String, dynamic>{},
+                'secrets': <String>[],
+              },
+            ],
+          };
+        }
         if (params['namespace'] == 'session' &&
             params['method'] == 'projections') {
           return null;
@@ -494,6 +510,36 @@ void main() {
     expect(runtime.calls.any((call) => call.method == 'session.send'), isFalse);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'Coding Tools hides the trajectory entry without changing session data',
+    (tester) async {
+      _phone(tester);
+      final runtime = _ChatRuntime([fixture.input(0, 'Question')])
+        ..codingToolsEnabled = false;
+      addTearDown(runtime.dispose);
+      await tester.pumpWidget(_host(runtime));
+      await _openHistory(tester);
+      await tester.tap(find.byTooltip('会话更多'));
+      await tester.pumpAndSettle();
+      expect(find.text('会话轨迹'), findsNothing);
+      expect(find.text('会话资源'), findsOneWidget);
+      await tester.tapAt(const Offset(10, 500));
+      await tester.pumpAndSettle();
+      runtime.codingToolsEnabled = true;
+      runtime.forms = <Json>[];
+      runtime.notifyListeners();
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('会话更多'));
+      await tester.pumpAndSettle();
+      expect(find.text('会话轨迹'), findsOneWidget);
+      expect(
+        runtime.calls.any((call) => call.method == 'session.send'),
+        isFalse,
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets(
     'reading older messages is not displaced by live deltas or appended replies',

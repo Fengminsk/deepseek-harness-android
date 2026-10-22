@@ -26,6 +26,7 @@ import java.util.concurrent.TimeoutException
 class DocumentPreviewMedia(
     private val sessionId: String,
     private val send: (JSONObject, MethodChannel.Result) -> Unit,
+    private val privateWorkspace: Boolean = false,
 ) : AutoCloseable {
     private class MediaFailure(val status: Int, val code: String) : IOException(code)
     private class Pending(val requestId: String?) {
@@ -110,6 +111,7 @@ class DocumentPreviewMedia(
     private fun call(method: String, path: String): JSONObject {
         val id = prefix + UUID.randomUUID().toString()
         return rpc("document.call", JSONObject().put("requestId", id).put("sessionId", sessionId)
+            .put("privateWorkspace", privateWorkspace)
             .put("namespace", "workspaceFiles").put("method", method).put("args", JSONObject().put("path", path)))
     }
 
@@ -131,7 +133,8 @@ class DocumentPreviewMedia(
             while (true) {
                 length = minOf(window.toLong(), maxOf(1L, size - offset)).toInt()
                 val request = JSONObject().put("requestId", prefix + UUID.randomUUID().toString())
-                    .put("sessionId", sessionId).put("namespace", "workspaceFiles").put("method", "readBytes")
+                    .put("sessionId", sessionId).put("privateWorkspace", privateWorkspace)
+                    .put("namespace", "workspaceFiles").put("method", "readBytes")
                     .put("args", JSONObject().put("path", path)
                         .put("options", JSONObject().put("range", JSONObject().put("offset", offset).put("length", length))))
                 try {

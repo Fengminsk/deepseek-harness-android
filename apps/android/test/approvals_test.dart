@@ -20,17 +20,22 @@ class InteractionRuntime extends RuntimeController {
   late List<Json> remote;
   final replies = <Json>[];
   final waits = <Json>[];
+  final dismissals = <Json>[];
   bool failReply = false;
   bool rejectReply = false;
   bool failRefresh = false;
   String? snapshotError;
   bool applyBeforeLostAck = false;
   Completer<Json>? replyBarrier;
+  Completer<void>? nextRefreshBarrier;
   Completer<Json>? notificationDraftBarrier;
   String? notificationDraft;
 
   @override
   Future<void> refreshInteractions() async {
+    final barrier = nextRefreshBarrier;
+    nextRefreshBarrier = null;
+    if (barrier != null) await barrier.future;
     if (failRefresh) {
       interactionsError = 'transport unavailable';
       notifyListeners();
@@ -70,6 +75,16 @@ class InteractionRuntime extends RuntimeController {
       case 'interactions.wait':
         waits.add(clone(params));
         return {};
+      case 'interactions.dismiss':
+        dismissals.add(clone(params));
+        final pending = remote.any(
+          (request) =>
+              request['id'] == params['id'] &&
+              request['version'] == params['version'] &&
+              request['callId'] != null,
+        );
+        if (!pending) remote.clear();
+        return {'accepted': true, 'requestStillPending': pending};
       case 'notifications.draft':
         return notificationDraftBarrier?.future ?? {'text': notificationDraft};
       default:
@@ -259,6 +274,43 @@ void main() {
   );
 
   testWidgets(
+    'recommended choice is visibly selected without editing the timed wait',
+    (tester) async {
+      final runtime = InteractionRuntime([
+        question([
+          {
+            'id': 'scope',
+            'question': 'Choose scope',
+            'options': [
+              {'label': 'Local (Recommended)'},
+              {'label': 'Remote'},
+            ],
+          },
+        ], timed: true),
+      ]);
+      await openRequest(tester, runtime);
+      expect(find.text('Local'), findsOneWidget);
+      expect(find.text('推荐'), findsOneWidget);
+      expect(find.text('Local (Recommended)'), findsNothing);
+      expect(
+        runtime.waits.where((item) => item['action'] == 'engage'),
+        isEmpty,
+      );
+      await tester.tap(find.text('提交回答'));
+      await tester.pumpAndSettle();
+      expect(runtime.replies.single['response'], {
+        'answers': [
+          {
+            'id': 'scope',
+            'selected': ['Local (Recommended)'],
+          },
+        ],
+      });
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
     'a rejected answer retains text and selection for correction and explicit resubmission',
     (tester) async {
       final runtime = InteractionRuntime([
@@ -350,13 +402,14 @@ void main() {
         tester.widget<TextField>(custom('details')).controller!.text,
         'Keep across navigation',
       );
+      expect(button(tester, '提交回答').onPressed, isNull);
       expect(runtime.replies, hasLength(1));
       await tester.pumpWidget(const SizedBox());
     },
   );
 
   testWidgets(
-    'an unknown reply result blocks retries until a successful state refresh',
+    'an unknown reply result remains blocked after a settled-state refresh',
     (tester) async {
       final runtime = InteractionRuntime([
         question([
@@ -382,6 +435,126 @@ void main() {
         tester.widget<TextField>(custom('details')).controller!.text,
         'Keep me',
       );
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'a still-pending snapshot cannot unlock an unconfirmed approval across navigation',
+    (tester) async {
+      final runtime = InteractionRuntime([approval()])..failReply = true;
+      await openRequest(tester, runtime);
+      await tester.tap(find.text('允许一次'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('不能证明先前的答复未送达'), findsOneWidget);
+      expect(button(tester, '允许一次').onPressed, isNull);
+      expect(button(tester, '拒绝').onPressed, isNull);
+      expect(runtime.replies, hasLength(1));
+
+      await tester.tap(find.byTooltip('核对请求状态'));
+      await tester.pumpAndSettle();
+      expect(button(tester, '允许一次').onPressed, isNull);
+      expect(runtime.replies, hasLength(1));
+
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: pocketTheme(Brightness.light),
+          home: ApprovalsPage(
+            runtime: runtime,
+            requestId: 'approval-1',
+            requestVersion: 1,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.textContaining('已有一次提交，结果尚未确认'), findsOneWidget);
+      expect(button(tester, '允许一次').onPressed, isNull);
+      expect(button(tester, '拒绝').onPressed, isNull);
+      expect(runtime.replies, hasLength(1));
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'a confirmed reply after page disposal remains submitted when the page reopens',
+    (tester) async {
+      final runtime = InteractionRuntime([approval()]);
+      final barrier = Completer<Json>();
+      runtime.replyBarrier = barrier;
+      addTearDown(() {
+        if (!barrier.isCompleted) {
+          barrier.complete({'accepted': false, 'requestStillPending': false});
+        }
+      });
+      await openRequest(tester, runtime);
+      await tester.tap(find.text('允许一次'));
+      await tester.pump();
+      await tester.pumpWidget(const SizedBox());
+      barrier.complete({'accepted': true, 'requestStillPending': false});
+      await tester.pumpAndSettle();
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: pocketTheme(Brightness.light),
+          home: ApprovalsPage(
+            runtime: runtime,
+            requestId: 'approval-1',
+            requestVersion: 1,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.textContaining('操作已发送，等待 DSH 完成处理'), findsOneWidget);
+      expect(button(tester, '允许一次').onPressed, isNull);
+      expect(runtime.replies, hasLength(1));
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'a disappearing and reappearing cached request cannot clear an unknown write',
+    (tester) async {
+      final runtime = InteractionRuntime([approval()])..failReply = true;
+      await openRequest(tester, runtime);
+      await tester.tap(find.text('拒绝'));
+      await tester.pumpAndSettle();
+      runtime.remote.clear();
+      await tester.tap(find.byTooltip('核对请求状态'));
+      await tester.pumpAndSettle();
+      runtime.remote.add(approval());
+      await tester.tap(find.byTooltip('核对请求状态'));
+      await tester.pumpAndSettle();
+      expect(button(tester, '允许一次').onPressed, isNull);
+      expect(button(tester, '拒绝').onPressed, isNull);
+      expect(runtime.replies, hasLength(1));
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'a refresh begun before an unconfirmed reply cannot unlock another answer',
+    (tester) async {
+      final runtime = InteractionRuntime([approval()]);
+      await openRequest(tester, runtime);
+      final staleRead = Completer<void>();
+      addTearDown(() {
+        if (!staleRead.isCompleted) staleRead.complete();
+      });
+      runtime.nextRefreshBarrier = staleRead;
+      await tester.tap(find.byTooltip('核对请求状态'));
+      await tester.pump();
+      runtime.failReply = true;
+      runtime.failRefresh = true;
+      await tester.tap(find.text('允许一次'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('答复结果暂不确定'), findsOneWidget);
+      expect(runtime.replies, hasLength(1));
+      runtime.failRefresh = false;
+      staleRead.complete();
+      await tester.pumpAndSettle();
+      expect(button(tester, '允许一次').onPressed, isNull);
+      expect(button(tester, '拒绝').onPressed, isNull);
+      expect(runtime.replies, hasLength(1));
       await tester.pumpWidget(const SizedBox());
     },
   );
@@ -442,7 +615,7 @@ void main() {
   });
 
   testWidgets(
-    'plan review displays the complete detail and never infers approval from option order',
+    'plan review opens its document and requests changes without submitting a choice',
     (tester) async {
       final runtime = InteractionRuntime([
         question([
@@ -459,19 +632,28 @@ void main() {
         ]),
       ]);
       await openRequest(tester, runtime);
+      expect(find.textContaining('Step 1: inspect files'), findsOneWidget);
+      expect(runtime.replies, isEmpty);
+      await tapVisible(tester, find.text('单独查看完整计划'));
       expect(
         find.textContaining('Step 2: wait for a decision'),
         findsOneWidget,
       );
+      await tester.tap(find.byTooltip('返回'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('请求修改'));
+      await tester.pumpAndSettle();
+      expect(runtime.dismissals, [
+        {'id': 'question-1', 'version': 3},
+      ]);
       expect(runtime.replies, isEmpty);
-      await tapVisible(tester, find.text('Revise'));
-      await tester.tap(find.text('提交回答'));
+      await tester.tap(find.text('批准计划'));
       await tester.pumpAndSettle();
       expect(runtime.replies.single['response'], {
         'answers': [
           {
             'id': 'plan',
-            'selected': ['Revise'],
+            'selected': ['Proceed'],
           },
         ],
       });

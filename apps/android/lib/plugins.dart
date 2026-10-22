@@ -264,51 +264,325 @@ class PluginRuntimePage extends StatelessWidget {
   );
 }
 
-class _PluginRuntimeSections extends StatelessWidget {
+class _PluginRuntimeSections extends StatefulWidget {
   const _PluginRuntimeSections({required this.controller});
   final PluginsController controller;
 
   @override
-  Widget build(BuildContext context) => Column(
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: [
-      PocketSection(
-        key: const ValueKey('runtime-entries'),
-        title: '运行时条目',
-        divided: true,
-        children: [
-          for (final entry in controller.entries)
-            PluginEntryRow(
-              key: ValueKey<String>(entry['entryId'] as String),
-              controller: controller,
-              entry: entry,
-            ),
-        ],
-      ),
-      for (final preset in controller.inventory?['agentPresets'] as List? ?? [])
-        PocketSection(
-          key: ValueKey('preset:${preset['id'] ?? preset['name']}'),
-          title: '预设 · ${preset['name'] ?? preset['id']}',
+  State<_PluginRuntimeSections> createState() => _PluginRuntimeSectionsState();
+}
+
+class _PluginRuntimeSectionsState extends State<_PluginRuntimeSections> {
+  String? selectedPresetId;
+  String query = '';
+  bool globalOpen = false;
+
+  Future<void> choosePreset(BuildContext context, List<Json> presets) async {
+    final chosen = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheet) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
           children: [
-            if (preset['broken'] != null) PluginNotice('${preset['broken']}'),
-            for (final entry in preset['rows'] as List? ?? [])
-              PocketRow(
-                icon: Icons.extension_outlined,
-                leading: pluginArtwork(entry as Json),
-                title: pluginName(entry),
-                subtitle:
-                    '${entry['moduleName']}\n'
-                    '${entry['enabled'] == 'conditional'
-                        ? '按条件启用'
-                        : entry['enabled'] == true
-                        ? '启用'
-                        : '停用'}'
-                    ' · ${entry['fiberPhase'] ?? '未加载'}',
+            for (final preset in presets)
+              ListTile(
+                title: Text('${preset['name'] ?? preset['id']}'),
+                subtitle: preset['broken'] == null
+                    ? (preset['isDefault'] == true ? const Text('默认预设') : null)
+                    : const Text('加载失败'),
+                onTap: () => Navigator.pop(sheet, '${preset['id']}'),
               ),
           ],
         ),
-    ],
-  );
+      ),
+    );
+    if (mounted && chosen != null) setState(() => selectedPresetId = chosen);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = widget.controller;
+    final snapshot = controller.inventory;
+    final presets = (snapshot?['agentPresets'] as List? ?? const [])
+        .cast<Json>();
+    final globals = (snapshot?['entries'] as List? ?? const []).cast<Json>();
+    final selected =
+        presets
+            .where((preset) => preset['id'] == selectedPresetId)
+            .firstOrNull ??
+        presets.where((preset) => preset['isDefault'] == true).firstOrNull ??
+        presets.firstOrNull;
+    final searching = query.trim().isNotEmpty;
+    final selectedRows = (selected?['rows'] as List? ?? const [])
+        .cast<Json>()
+        .where((row) => inventoryMatches(row, query))
+        .toList();
+    final globalRows = globals
+        .where((row) => inventoryMatches(row, query))
+        .toList();
+    final otherMatches = presets
+        .where((preset) => preset != selected)
+        .where(
+          (preset) => (preset['rows'] as List? ?? const []).cast<Json>().any(
+            (row) => inventoryMatches(row, query),
+          ),
+        )
+        .toList();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (snapshot != null) ...[
+          PocketSection(
+            title: '插件列表',
+            children: [
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 18),
+                child: TextField(
+                  key: const ValueKey('plugin-inventory-search'),
+                  decoration: const InputDecoration(
+                    hintText: '搜索插件',
+                    prefixIcon: Icon(Icons.search_rounded),
+                    border: InputBorder.none,
+                  ),
+                  onChanged: (value) => setState(() => query = value),
+                ),
+              ),
+            ],
+          ),
+          if (selected != null)
+            PocketSection(
+              key: ValueKey('preset:${selected['id']}'),
+              title: '会话插件',
+              divided: true,
+              children: [
+                PocketRow(
+                  icon: Icons.account_tree_outlined,
+                  title: 'Agent 预设',
+                  subtitle:
+                      '${selected['name'] ?? selected['id']}'
+                      '${selected['isDefault'] == true ? '（默认）' : ''}'
+                      '${selected['broken'] == null ? '' : ' · 加载失败'}',
+                  onTap: presets.length > 1
+                      ? () => choosePreset(context, presets)
+                      : null,
+                ),
+                if (selected['broken'] != null)
+                  Padding(
+                    padding: const EdgeInsets.all(18),
+                    child: Text('预设加载失败：${selected['broken']}'),
+                  ),
+                for (final entry in selectedRows)
+                  _PluginInventoryRow(
+                    key: ValueKey(
+                      'preset:${selected['id']}:${entry['entryId'] ?? entry['moduleName']}',
+                    ),
+                    entry: entry,
+                    preset: selected,
+                  ),
+                if (searching)
+                  for (final preset in otherMatches)
+                    PocketRow(
+                      icon: Icons.search_rounded,
+                      title: '${preset['name'] ?? preset['id']}',
+                      subtitle: '其他预设中有匹配的插件',
+                      onTap: () =>
+                          setState(() => selectedPresetId = '${preset['id']}'),
+                    ),
+              ],
+            ),
+          if (globals.isNotEmpty)
+            PocketSection(
+              key: const ValueKey('global-plugin-inventory'),
+              title: '全局插件',
+              divided: true,
+              children: [
+                PocketRow(
+                  icon: Icons.layers_outlined,
+                  title: '系统与所有会话共用',
+                  subtitle: '${globals.length} 个条目',
+                  trailing: Icon(
+                    globalOpen || searching
+                        ? Icons.expand_less_rounded
+                        : Icons.expand_more_rounded,
+                  ),
+                  onTap: () => setState(() => globalOpen = !globalOpen),
+                ),
+                if (globalOpen || searching)
+                  for (final entry in [
+                    ...globalRows.where((row) => row['fiberPhase'] == 'failed'),
+                    ...globalRows.where((row) => row['fiberPhase'] != 'failed'),
+                  ])
+                    _PluginInventoryRow(
+                      key: ValueKey('inventory:${entry['entryId']}'),
+                      entry: entry,
+                      providers: inventoryEnabledPresets(entry, presets),
+                    ),
+              ],
+            ),
+          if (globals.isEmpty && presets.isEmpty)
+            const PluginNotice('当前没有插件条目。'),
+          if (searching &&
+              globalRows.isEmpty &&
+              selectedRows.isEmpty &&
+              otherMatches.isEmpty)
+            const PluginNotice('没有匹配的插件。'),
+        ],
+        if (controller.managementAvailable)
+          PocketSection(
+            key: const ValueKey('runtime-entries'),
+            title: '插件启用设置',
+            divided: true,
+            children: [
+              for (final entry in controller.entries)
+                PluginEntryRow(
+                  key: ValueKey<String>(entry['entryId'] as String),
+                  controller: controller,
+                  entry: entry,
+                ),
+            ],
+          ),
+      ],
+    );
+  }
+}
+
+class _PluginInventoryRow extends StatelessWidget {
+  const _PluginInventoryRow({
+    required this.entry,
+    this.preset,
+    this.providers = const [],
+    super.key,
+  });
+  final Json entry;
+  final Json? preset;
+  final List<String> providers;
+
+  @override
+  Widget build(BuildContext context) {
+    final state = inventoryStateLabel(
+      entry,
+      providedByPreset: providers.isNotEmpty,
+    );
+    final phase = entry['fiberPhase'];
+    final description = pluginText(entry['meta']?['description'], '');
+    return PocketRow(
+      icon: Icons.extension_outlined,
+      leading: pluginArtwork(entry),
+      title: inventoryPluginName(entry),
+      subtitle: [
+        state,
+        if (entry['enabled'] == true && phase != null && phase != 'failed')
+          inventoryPhaseLabel(phase),
+        if (entry['meta']?['error'] != null) '包元信息错误',
+        if (description.isNotEmpty) description,
+      ].join(' · '),
+      onTap: () => Navigator.push<void>(
+        context,
+        PocketRoute(
+          builder: (_) => _PluginInventoryDetailPage(
+            entry: entry,
+            preset: preset,
+            providers: providers,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PluginInventoryDetailPage extends StatelessWidget {
+  const _PluginInventoryDetailPage({
+    required this.entry,
+    this.preset,
+    required this.providers,
+  });
+  final Json entry;
+  final Json? preset;
+  final List<String> providers;
+
+  @override
+  Widget build(BuildContext context) {
+    final description = pluginText(entry['meta']?['description'], '');
+    final state = inventoryStateLabel(
+      entry,
+      providedByPreset: providers.isNotEmpty,
+    );
+    return PocketScaffold(
+      title: Text(inventoryPluginName(entry)),
+      body: PocketList(
+        children: [
+          PocketSection(
+            title: '插件清单',
+            divided: true,
+            children: [
+              PocketRow(
+                icon: Icons.info_outline_rounded,
+                title: '配置状态',
+                subtitle: providers.isEmpty ? state : '全局已停用，由 Agent 预设按会话提供',
+              ),
+              if (preset != null)
+                PocketRow(
+                  icon: Icons.account_tree_outlined,
+                  title: '来自预设',
+                  subtitle: '${preset!['name'] ?? preset!['id']}',
+                ),
+              if (providers.isNotEmpty)
+                PocketRow(
+                  icon: Icons.account_tree_outlined,
+                  title: '启用于',
+                  subtitle: providers.join(' · '),
+                ),
+              if (entry['fiberPhase'] != null &&
+                  (preset != null || entry['enabled'] == true))
+                PocketRow(
+                  icon: Icons.circle_outlined,
+                  title: '运行状态',
+                  subtitle: inventoryPhaseLabel(entry['fiberPhase']),
+                ),
+              if (preset != null && entry['condition'] != null)
+                PocketRow(
+                  icon: Icons.rule_outlined,
+                  title: '禁用条件',
+                  subtitle: '${entry['condition']}',
+                ),
+              if (entry['entryId'] != null)
+                PocketRow(
+                  icon: Icons.tag_rounded,
+                  title: '条目 ID',
+                  subtitle: '${entry['entryId']}',
+                ),
+              PocketRow(
+                icon: Icons.extension_outlined,
+                title: '完整名称',
+                subtitle: '${entry['moduleName']}',
+              ),
+            ],
+          ),
+          if (description.isNotEmpty)
+            PocketSection(
+              title: '说明',
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(18),
+                  child: Text(description),
+                ),
+              ],
+            ),
+          if (entry['meta']?['error'] != null)
+            PocketSection(
+              title: '元信息诊断',
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(18),
+                  child: Text('包元信息错误：${entry['meta']['error']}'),
+                ),
+              ],
+            ),
+        ],
+      ),
+    );
+  }
 }
 
 class PluginEntryRow extends StatelessWidget {
@@ -333,16 +607,11 @@ class PluginEntryRow extends StatelessWidget {
         subtitle: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              '${entry['moduleName']}',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
             _PluginActionStatus(
               controller: controller,
               target: id,
               idle: entry['readOnlyReason'] == null
-                  ? '$id · ${entry['fiberPhase'] ?? '未加载'}'
+                  ? '${inventoryStateLabel(entry)} · ${inventoryPhaseLabel(entry['fiberPhase'])}'
                   : '${entry['readOnlyReason']}',
             ),
           ],
@@ -964,7 +1233,7 @@ class _PluginStatusPage extends StatelessWidget {
                                 : current['enabled'] == 'conditional'
                                 ? '按条件启用'
                                 : '停用'}'
-                            '${current['fiberPhase'] == null ? '' : '\n运行阶段：${current['fiberPhase']}'}',
+                            '${current['fiberPhase'] == null ? '' : '\n运行状态：${inventoryPhaseLabel(current['fiberPhase'])}'}',
                 ),
                 if (controller.error != null) PluginNotice(controller.error!),
               ],

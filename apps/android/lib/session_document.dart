@@ -15,10 +15,12 @@ class SessionDocumentPage extends StatefulWidget {
     required this.sessionId,
     required this.path,
     this.line,
+    this.privateWorkspace = false,
   });
   final RuntimeController runtime;
   final String sessionId, path;
   final int? line;
+  final bool privateWorkspace;
 
   @override
   State<SessionDocumentPage> createState() => _SessionDocumentPageState();
@@ -86,6 +88,7 @@ class _SessionDocumentPageState extends State<SessionDocumentPage> {
           sessionId: widget.sessionId,
           path: path,
           line: line,
+          privateWorkspace: widget.privateWorkspace,
         ),
       );
       _opening = true;
@@ -126,7 +129,7 @@ class _SessionDocumentPageState extends State<SessionDocumentPage> {
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            GlassButton(
+            if (!widget.privateWorkspace) GlassButton(
               icon: Icons.open_in_new_rounded,
               label: '在其他应用中打开',
               onPressed: !widget.runtime.ready || _openingExternal
@@ -159,6 +162,7 @@ class _SessionDocumentPageState extends State<SessionDocumentPage> {
                   widget.sessionId,
                   widget.path,
                   widget.line,
+                  widget.privateWorkspace,
                   generation,
                   theme.brightness,
                   safe.top,
@@ -172,6 +176,7 @@ class _SessionDocumentPageState extends State<SessionDocumentPage> {
                 creationParams: {
                   'sessionId': widget.sessionId,
                   'path': widget.path,
+                  'privateWorkspace': widget.privateWorkspace,
                   if (_line != null) 'line': _line,
                   'locale': Localizations.localeOf(context).toLanguageTag(),
                   'dark': theme.brightness == Brightness.dark,

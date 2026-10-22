@@ -68,6 +68,8 @@ public final class DocumentPreviewMediaPolicyTest {
         check(DocumentPreviewMediaPolicy.statusFor("FS_SANDBOX_DENIED") == 403, "original fs authority");
         check(DocumentPreviewMediaPolicy.statusFor("workspace-file/not-regular-file") == 403, "directories rejected by original stat");
         check(DocumentPreviewMediaPolicy.statusFor("workspace-file/too-large") == 413, "original read cap");
+        check(DocumentPreviewMediaPolicy.statusFor("workspace-files/outside-workspace") == 403, "private root refusal");
+        check(DocumentPreviewMediaPolicy.statusFor("workspace-files/file-bytes") == 413, "private preview cap");
         check(DocumentPreviewMediaPolicy.statusFor("gateway/cancelled") == 499, "cancelled");
         check(DocumentPreviewMediaPolicy.statusFor("document-preview/timeout") == 504, "timeout");
         check(DocumentPreviewMediaPolicy.statusFor("document-media/disconnected") == 503, "disconnected");

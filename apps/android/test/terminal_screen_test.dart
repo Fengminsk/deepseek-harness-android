@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/session_terminal.dart';
 import 'package:dsh_android/terminal_screen.dart';
@@ -48,7 +50,19 @@ class _TerminalRuntime extends RuntimeController {
   final resizes = <({int cols, int rows})>[];
   int cols = 8, rows = 2, revision = 1;
   bool failWrites = false;
+  bool failHeldWrite = false;
+  bool failReadAfterWrite = false;
   bool advanceRevisionOnRead = false;
+  Completer<void>? holdFirstWrite;
+  int testConnection = 0;
+
+  @override
+  int get connectionGeneration => testConnection;
+
+  void reconnect() {
+    testConnection++;
+    notifyListeners();
+  }
 
   _TerminalRuntime() {
     phase = 'ready';
@@ -57,6 +71,9 @@ class _TerminalRuntime extends RuntimeController {
   @override
   Future<dynamic> call(String method, [Json params = const {}]) async {
     if (method == 'terminal.read') {
+      if (failReadAfterWrite && writes.isNotEmpty) {
+        throw StateError('Read unavailable');
+      }
       if (advanceRevisionOnRead) revision++;
       final view = terminalView();
       view['cols'] = cols;
@@ -71,6 +88,12 @@ class _TerminalRuntime extends RuntimeController {
     if (method == 'terminal.write') {
       if (failWrites) throw StateError('Acknowledgement unavailable');
       writes.add(params['data'] as String);
+      final hold = holdFirstWrite;
+      holdFirstWrite = null;
+      if (hold != null) await hold.future;
+      if (hold != null && failHeldWrite) {
+        throw StateError('Acknowledgement unavailable');
+      }
       return {'accepted': true};
     }
     if (method == 'terminal.resize') {
@@ -427,6 +450,228 @@ void main() {
       await tester.pump();
       expect(runtime.writes.length, sentCount);
       expect(find.textContaining('不能超过 64 KiB'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  testWidgets(
+    'PTY control keys keep order and input focus during a pending write',
+    (tester) async {
+      final runtime = _TerminalRuntime();
+      addTearDown(runtime.dispose);
+      final hold = Completer<void>();
+      runtime.holdFirstWrite = hold;
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: pocketTheme(Brightness.dark),
+          home: SessionTerminalView(
+            runtime: runtime,
+            sessionId: 'session',
+            id: 'pty',
+          ),
+        ),
+      );
+      await tester.pump();
+      final field = find.byType(TextField);
+      await tester.tap(field);
+      await tester.pump();
+      final focus = tester.widget<TextField>(field).focusNode!;
+      expect(focus.hasFocus, true);
+      await tester.tap(find.text('↑'));
+      await tester.tap(find.text('↓'));
+      await tester.tap(find.text('←'));
+      await tester.pump();
+      expect(runtime.writes, ['\u001b[A']);
+      expect(tester.widget<TextField>(field).enabled, true);
+      expect(focus.hasFocus, true);
+      hold.complete();
+      await tester.pump();
+      await tester.pump();
+      expect(runtime.writes, ['\u001b[A', '\u001b[B', '\u001b[D']);
+      expect(focus.hasFocus, true);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  testWidgets(
+    'hardware PTY keys preserve bytes without consuming IME composition',
+    (tester) async {
+      final runtime = _TerminalRuntime();
+      addTearDown(runtime.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: pocketTheme(Brightness.dark),
+          home: SessionTerminalView(
+            runtime: runtime,
+            sessionId: 'session',
+            id: 'pty',
+          ),
+        ),
+      );
+      await tester.pump();
+      final field = find.byType(TextField);
+      await tester.tap(field);
+      await tester.pump();
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyC);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyC);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pump();
+      expect(runtime.writes, ['\u0003']);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.arrowUp);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.arrowUp);
+      await tester.pump();
+      expect(runtime.writes.last, '\u001b[A');
+      final controller = tester.widget<TextField>(field).controller!;
+      controller.value = const TextEditingValue(
+        text: '中',
+        selection: TextSelection.collapsed(offset: 1),
+        composing: TextRange(start: 0, end: 1),
+      );
+      await tester.pump();
+      final before = runtime.writes.length;
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyC);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyC);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pump();
+      expect(runtime.writes.length, before);
+      expect(controller.text, '中');
+      await tester.tap(find.byTooltip('发送命令'));
+      await tester.pump();
+      expect(runtime.writes.length, before);
+      expect(find.textContaining('请先确认正在输入的文字'), findsOneWidget);
+      controller.value = const TextEditingValue(
+        text: '中文',
+        selection: TextSelection.collapsed(offset: 2),
+      );
+      await tester.tap(find.byTooltip('发送命令'));
+      await tester.pump();
+      expect(runtime.writes.last, '中文\r');
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  testWidgets(
+    'acknowledged input leaves the next draft and uncertain writes stop queued keys',
+    (tester) async {
+      final runtime = _TerminalRuntime();
+      addTearDown(runtime.dispose);
+      final hold = Completer<void>();
+      runtime.holdFirstWrite = hold;
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: pocketTheme(Brightness.dark),
+          home: SessionTerminalView(
+            runtime: runtime,
+            sessionId: 'session',
+            id: 'pty',
+          ),
+        ),
+      );
+      await tester.pump();
+      final field = find.byType(TextField);
+      await tester.enterText(field, 'pwd');
+      await tester.tap(find.byTooltip('发送命令'));
+      await tester.pump();
+      expect(runtime.writes, ['pwd\r']);
+      await tester.enterText(field, 'pwd下一条');
+      await tester.pump();
+      expect(tester.widget<TextField>(field).enabled, true);
+      hold.complete();
+      await tester.pump();
+      expect(tester.widget<TextField>(field).controller!.text, '下一条');
+      await tester.pumpWidget(const SizedBox.shrink());
+
+      final failure = _TerminalRuntime()..failHeldWrite = true;
+      addTearDown(failure.dispose);
+      final failedHold = Completer<void>();
+      failure.holdFirstWrite = failedHold;
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: pocketTheme(Brightness.dark),
+          home: SessionTerminalView(
+            runtime: failure,
+            sessionId: 'session',
+            id: 'pty',
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.tap(find.text('↑'));
+      await tester.tap(find.text('↓'));
+      failedHold.complete();
+      await tester.pump();
+      expect(failure.writes, ['\u001b[A']);
+      expect(find.textContaining('后续按键未发送'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  testWidgets('failed post-write read discards queued control keys', (
+    tester,
+  ) async {
+    final runtime = _TerminalRuntime()..failReadAfterWrite = true;
+    addTearDown(runtime.dispose);
+    final hold = Completer<void>();
+    runtime.holdFirstWrite = hold;
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: pocketTheme(Brightness.dark),
+        home: SessionTerminalView(
+          runtime: runtime,
+          sessionId: 'session',
+          id: 'pty',
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.tap(find.text('↑'));
+    await tester.tap(find.text('↓'));
+    expect(runtime.writes, ['\u001b[A']);
+    hold.complete();
+    await tester.pump();
+    expect(find.textContaining('排队按键未发送'), findsOneWidget);
+    runtime.failReadAfterWrite = false;
+    runtime.notifyListeners();
+    await tester.pump();
+    await tester.tap(find.text('←'));
+    await tester.pump();
+    expect(runtime.writes, ['\u001b[A', '\u001b[D']);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets(
+    'an old write acknowledgement cannot clear a new connection input',
+    (tester) async {
+      final runtime = _TerminalRuntime();
+      addTearDown(runtime.dispose);
+      final oldWrite = Completer<void>();
+      runtime.holdFirstWrite = oldWrite;
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: pocketTheme(Brightness.dark),
+          home: SessionTerminalView(
+            runtime: runtime,
+            sessionId: 'session',
+            id: 'pty',
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.tap(find.text('↑'));
+      expect(runtime.writes, ['\u001b[A']);
+      runtime.reconnect();
+      await tester.pump();
+      await tester.tap(find.text('↓'));
+      await tester.pump();
+      expect(runtime.writes, ['\u001b[A', '\u001b[B']);
+      oldWrite.complete();
+      await tester.pump();
+      await tester.tap(find.text('←'));
+      await tester.pump();
+      expect(runtime.writes, ['\u001b[A', '\u001b[B', '\u001b[D']);
+      expect(find.textContaining('送达状态未知'), findsNothing);
       await tester.pumpWidget(const SizedBox.shrink());
     },
   );

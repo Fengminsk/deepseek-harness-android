@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:material_ui/material_ui.dart';
 
+import 'agent_preset_default_reconciliation.dart';
 import 'configuration_state.dart';
 import 'runtime.dart';
 import 'ui.dart';
@@ -99,11 +100,13 @@ class DeveloperToolsSettingsRow extends StatefulWidget {
 
 class _DeveloperToolsSettingsRowState extends State<DeveloperToolsSettingsRow> {
   late DeveloperToolsPreference preference;
+  late AgentPresetDefaultReconciler defaultReconciler;
 
   @override
   void initState() {
     super.initState();
     preference = DeveloperToolsPreference(widget.runtime);
+    defaultReconciler = AgentPresetDefaultReconciler.forRuntime(widget.runtime);
     unawaited(preference.start());
   }
 
@@ -113,6 +116,7 @@ class _DeveloperToolsSettingsRowState extends State<DeveloperToolsSettingsRow> {
     if (oldWidget.runtime == widget.runtime) return;
     preference.dispose();
     preference = DeveloperToolsPreference(widget.runtime);
+    defaultReconciler = AgentPresetDefaultReconciler.forRuntime(widget.runtime);
     unawaited(preference.start());
   }
 
@@ -124,7 +128,7 @@ class _DeveloperToolsSettingsRowState extends State<DeveloperToolsSettingsRow> {
 
   @override
   Widget build(BuildContext context) => ListenableBuilder(
-    listenable: preference,
+    listenable: Listenable.merge([preference, defaultReconciler]),
     builder: (context, _) => Column(
       children: [
         PocketSwitchRow(
@@ -156,6 +160,15 @@ class _DeveloperToolsSettingsRowState extends State<DeveloperToolsSettingsRow> {
             title: '以当前配置为准',
             subtitle: '放弃尚未确认的本次修改',
             onTap: preference.adoptCurrent,
+          ),
+        if (defaultReconciler.error != null &&
+            (!preference.confirmed || !preference.enabled))
+          PocketRow(
+            key: const ValueKey('coding-tools-default-review'),
+            icon: Icons.refresh_rounded,
+            title: '核对默认 Agent 预设',
+            subtitle: defaultReconciler.error,
+            onTap: () => unawaited(defaultReconciler.review()),
           ),
       ],
     ),

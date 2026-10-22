@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/session_models.dart';
+import 'package:dsh_android/models_label.dart';
 import 'package:dsh_android/ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
@@ -206,6 +207,21 @@ Future<void> refresh(WidgetTester tester) =>
     tap(tester, find.byTooltip('刷新会话模型'));
 
 void main() {
+  testWidgets('official Flash badge appears on current and selectable model', (
+    tester,
+  ) async {
+    final runtime = _Runtime();
+    await _open(tester, runtime);
+    expect(
+      find.descendant(of: model(flash), matching: find.text('1017')),
+      findsOneWidget,
+    );
+    expect(find.byType(ModelReleaseLabel), findsNWidgets(3));
+    expect(find.text('1017'), findsNWidgets(2));
+    expect(runtime.current, pick(flash));
+    expect(runtime.applied, isEmpty);
+  });
+
   testWidgets(
     'refresh preserves a live observer while transport recovery is pending',
     (tester) async {

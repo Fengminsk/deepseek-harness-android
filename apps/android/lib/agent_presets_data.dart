@@ -22,6 +22,9 @@ class AgentPresetOption {
   final bool isDefault;
   String get label => name?.trim().isNotEmpty == true ? name! : id;
   bool get available => broken == null;
+  /// Mirrors the shipped roster display rule; a named override owns its ID.
+  bool get requiresCodingTools =>
+      name == null && (id == 'ptc' || id == 'minimal');
 
   factory AgentPresetOption.fromJson(dynamic value) {
     final row = _object(value, '预设目录');
@@ -82,10 +85,12 @@ class _PresetSnapshot {
     required this.revision,
     required this.sessionExists,
     required this.sessionStarted,
+    required this.codingToolsEnabled,
   });
   final List<AgentPresetOption> options;
   final String? defaultId, appliedId;
   final bool writable, sessionExists;
+  final bool codingToolsEnabled;
   final bool? sessionStarted;
   final int? revision;
 }
@@ -114,6 +119,9 @@ class AgentPresetsController extends ChangeNotifier {
   }
 
   bool loading = false, busy = false, fresh = false;
+  // The original ui-settings schema defaults to enabled. A missing descriptor
+  // cannot be interpreted as an explicit decision to hide shipped presets.
+  bool codingToolsEnabled = true;
   bool conflict = false, uncertain = false, sessionExists = false;
   bool? sessionStarted;
   bool get isSession => sessionId != null;
@@ -130,7 +138,12 @@ class AgentPresetsController extends ChangeNotifier {
       !conflict &&
       !uncertain &&
       (isSession || _writable && _revision != null) &&
-      options.any((option) => option.id == draftId && option.available);
+      options.any(
+        (option) =>
+            option.id == draftId &&
+            option.available &&
+            (codingToolsEnabled || !option.requiresCodingTools),
+      );
 
   bool _disposed = false, _observing = false, _writing = false;
   bool _refreshAgain = false, _refreshScheduled = false, _writable = false;
@@ -269,9 +282,16 @@ class AgentPresetsController extends ChangeNotifier {
       throw const FormatException('预设设置状态缺失');
     }
     Json? descriptor;
+    var codingToolsEnabled = true;
     for (final raw in settings['namespaces'] as List) {
       final row = _object(raw, '配置项');
       if (row['ns'] == agentPresetSettingsNamespace) descriptor = row;
+      if (row['ns'] == 'ui-settings') {
+        final value = row['value'];
+        if (value is Map && value['enabled'] is bool) {
+          codingToolsEnabled = value['enabled'] == true;
+        }
+      }
     }
     final revision = descriptor?['revision'];
     if (descriptor != null && (revision is! int || revision < 0)) {
@@ -332,6 +352,7 @@ class AgentPresetsController extends ChangeNotifier {
       revision: revision as int?,
       sessionExists: exists,
       sessionStarted: started,
+      codingToolsEnabled: codingToolsEnabled,
     );
   }
 
@@ -339,6 +360,7 @@ class AgentPresetsController extends ChangeNotifier {
     final keepDraft = hasDraft || uncertain;
     final oldApplied = appliedId;
     options = next.options;
+    codingToolsEnabled = next.codingToolsEnabled;
     defaultId = next.defaultId;
     appliedId = next.appliedId;
     _writable = next.writable;
@@ -358,6 +380,18 @@ class AgentPresetsController extends ChangeNotifier {
     } else if (oldApplied != appliedId ||
         !isSession && _draftRevision != _revision) {
       conflict = true;
+    }
+    if (!uncertain &&
+        draftId != appliedId &&
+        options.any(
+          (option) =>
+              option.id == draftId &&
+              option.requiresCodingTools &&
+              !codingToolsEnabled,
+        )) {
+      draftId = appliedId;
+      conflict = false;
+      notice = '代码工作视图已关闭，未应用的预设选择已清除。';
     }
     fresh = true;
   }
@@ -421,7 +455,14 @@ class AgentPresetsController extends ChangeNotifier {
 
   void select(String id) {
     if (!canChoose || uncertain) return;
-    if (!options.any((row) => row.id == id && row.available)) return;
+    if (!options.any(
+      (row) =>
+          row.id == id &&
+          row.available &&
+          (codingToolsEnabled || !row.requiresCodingTools),
+    )) {
+      return;
+    }
     draftId = id;
     _draftRevision = _revision;
     conflict = false;
@@ -463,7 +504,12 @@ class AgentPresetsController extends ChangeNotifier {
           conflict ||
           uncertain ||
           sessionStarted == true ||
-          !options.any((row) => row.id == wanted && row.available)) {
+          !options.any(
+            (row) =>
+                row.id == wanted &&
+                row.available &&
+                (codingToolsEnabled || !row.requiresCodingTools),
+          )) {
         return;
       }
       if (!isSession && (!_writable || _revision == null)) {

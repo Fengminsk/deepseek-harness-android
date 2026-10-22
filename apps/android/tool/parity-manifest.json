@@ -367,9 +367,9 @@
         "behavior": "partial",
         "device": "unverified"
       },
-      "note": "General Settings now reads and writes the original revisioned ui-settings.enabled preference through a native switch, keeps the accepted value visible during pending writes, and requires explicit review after uncertain results. Installed version and recovery entries exist. Contributed General rows and onboarding remain incomplete; device acceptance is unverified.",
+      "note": "General Settings reads and writes the original revisioned ui-settings.enabled preference through a native switch. The shared value gates Session trajectory visibility and built-in uncustomized PTC/Minimal preset choices as well as workspace-change presentation; it is not a tool permission. Disabling conditionally changes an uncustomized built-in PTC/Minimal default to a healthy Standard preset through the original revisioned settings service; customized, unknown or changed defaults require manual review. Contributed General rows, onboarding and device acceptance remain incomplete.",
       "evidenceRefs": {
-        "behavior": ["apps/android/test/settings_general_test.dart"]
+        "behavior": ["apps/android/test/settings_general_test.dart", "apps/android/test/agent_preset_default_reconciliation_test.dart"]
       }
     },
     {
@@ -432,15 +432,19 @@
       "status": "partial",
       "android": [
         "apps/android/lib/plugins.dart",
+        "apps/android/lib/plugins_data.dart",
         "apps/android/lib/metadata_artwork.dart"
       ],
       "evidence": {
         "core": "unverified",
         "ui": "partial",
-        "behavior": "unverified",
+        "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Native inventory and artwork exist; original inventory details need behavior-level comparison."
+      "note": "Native Host snapshot inventory shows preset-first entries, optional global entries, full entry and module identities, conditional disablement, runtime phase, discovery failures and preset-provider relationships in read-only detail. Focused widget tests cover these projections; device behavior and remaining original presentation interactions are unverified.",
+      "evidenceRefs": {
+        "behavior": ["apps/android/test/plugins_test.dart"]
+      }
     },
     {
       "key": "webUi/ui-conversation",
@@ -480,10 +484,13 @@
       "evidence": {
         "core": "unverified",
         "ui": "partial",
-        "behavior": "unverified",
+        "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Native decisions and notification actions use original interaction values; full original request variants remain to be compared."
+      "note": "Native decisions, plan-review request-changes/approve actions, recommended question option display and exact original answer labels are covered by focused tests. Uncertain replies require refresh before another action. Full request-variant comparison and device behavior remain incomplete.",
+      "evidenceRefs": {
+        "behavior": ["apps/android/test/approvals_test.dart", "apps/android/test/approvals_draft_test.dart", "apps/android/tool/interactions-snapshot.test.mjs"]
+      }
     },
     {
       "key": "webUi/ui-chat",
@@ -963,15 +970,19 @@
       ],
       "status": "partial",
       "android": [
-        "apps/android/lib/session_models.dart"
+        "apps/android/lib/session_models.dart",
+        "apps/android/lib/models_label.dart"
       ],
       "evidence": {
         "core": "unverified",
         "ui": "partial",
-        "behavior": "unverified",
+        "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Native model labels exist; exact original 1017 label-decoration behavior has not been audited."
+      "note": "Native Session model labels use the original exact provider, model ID and catalog-name predicate for the presentation-only 1017 badge; positive and negative cases have focused widget coverage. Home trigger integration, live plugin-disabled state and device presentation remain incomplete.",
+      "evidenceRefs": {
+        "behavior": ["apps/android/test/models_label_test.dart", "apps/android/test/session_models_test.dart"]
+      }
     },
     {
       "key": "webUi/ui-permission",

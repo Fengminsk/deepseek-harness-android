@@ -48,6 +48,39 @@ test('only the trusted root is exposed and relative path traversal is refused', 
   assert.equal(await readFile(path.join(h.root, 'notes.txt'), 'utf8'), 'inside')
 })
 
+test('private document bytes keep root authority, exact version and bounded binary windows', async t => {
+  const h = await fixture(t)
+  const signal = new AbortController().signal
+  const limits = { maxFileBytes: 8, maxWindowBytes: 3 }
+  const original = Buffer.from([0, 255, 1, 2, 3])
+  await h.put('image.png', original)
+  const source = await h.service.document('stat', { path: 'image.png' }, signal, limits)
+  assert.equal(source.bytes, 5)
+  assert.equal(source.absolutePath, path.join(h.root, 'image.png'))
+  const complete = await h.service.document('readBytes', { path: source.absolutePath }, signal, limits)
+  assert.deepEqual(complete.data, original)
+  assert.equal(complete.version, source.version)
+  assert.equal(complete.eof, true)
+  const window = await h.service.document('readBytes', {
+    path: 'image.png', options: { range: { offset: 2, length: 3 } },
+  }, signal, limits)
+  assert.deepEqual(window.data, original.subarray(2))
+  assert.equal(window.offset, 2)
+  for (const target of ['../outside.png', path.join(h.parent, 'outside.png'), 'a/../image.png']) {
+    await assert.rejects(h.service.document('stat', { path: target }, signal, limits),
+      error => error.code === 'workspace-files/outside-workspace' || error.code === 'workspace-files/invalid-path')
+  }
+  await assert.rejects(h.service.document('readBytes', {
+    path: 'image.png', options: { range: { offset: 0, length: 4 } },
+  }, signal, limits), { code: 'workspace-files/invalid-page' })
+  await h.put('large.pdf', Buffer.alloc(9))
+  await assert.rejects(h.service.document('readBytes', { path: 'large.pdf' }, signal, limits),
+    { code: 'workspace-files/file-bytes' })
+  const stopped = new AbortController()
+  stopped.abort(new Error('cancelled'))
+  await assert.rejects(h.service.document('readBytes', { path: 'image.png' }, stopped.signal, limits), /cancelled/)
+})
+
 test('directory pages have stable ordering and a changed directory invalidates the next page', async t => {
   const h = await fixture(t)
   for (const name of ['z.txt', 'b.txt', 'a.txt', 'nested/n.txt']) await h.put(name, 'text')

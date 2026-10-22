@@ -5,6 +5,7 @@ import 'package:material_ui/material_ui.dart';
 
 import 'approvals_draft.dart';
 import 'approvals_notifications.dart';
+import 'chat_plan.dart';
 import 'runtime.dart';
 import 'ui.dart';
 
@@ -182,6 +183,8 @@ class _RequestDetailState extends State<_RequestDetail>
   bool engaged = false;
   bool hasLocalEdits = false;
   bool notificationDraftRead = false;
+  int refreshEpoch = 0;
+  int replyEpoch = 0;
   String? error;
   String? status;
 
@@ -190,6 +193,9 @@ class _RequestDetailState extends State<_RequestDetail>
       !sending &&
       !submitted &&
       !uncertain &&
+      (version == null ||
+          !_draftsFor(widget.runtime)
+              .submissionBlocked(widget.requestId, version!)) &&
       widget.runtime.interactionsError == null;
 
   @override
@@ -221,6 +227,17 @@ class _RequestDetailState extends State<_RequestDetail>
       return;
     }
     version ??= match['version'] as int;
+    if (!sending && !submitted) {
+      final evidence = _draftsFor(widget.runtime)
+          .submissionEvidence(widget.requestId, version!);
+      if (evidence == SubmissionEvidence.unconfirmed) {
+        uncertain = true;
+        error ??= '此请求已有一次提交，结果尚未确认。刷新只能读取待处理状态，不能证明此前的答复未送达；请勿重复提交。';
+      } else if (evidence == SubmissionEvidence.accepted) {
+        submitted = true;
+        status ??= '操作已发送，等待 DSH 完成处理。';
+      }
+    }
     if (lastRequest == null && match['kind'] == 'question') {
       final questions = (match['questions'] as List).cast<Json>();
       final restored = _draftsFor(widget.runtime)
@@ -236,22 +253,37 @@ class _RequestDetailState extends State<_RequestDetail>
   }
 
   Future<void> refresh() async {
+    final currentRefresh = ++refreshEpoch;
+    final replyAtStart = replyEpoch;
+    final startedDuringSend = sending;
     try {
       await widget.runtime.refreshInteractions();
-      if (!mounted) return;
+      if (!mounted || currentRefresh != refreshEpoch) return;
       setState(() {
         synchronize();
-        uncertain = false;
-        if (!sending) error = null;
+        // A pending snapshot does not prove a prior write was not delivered.
+        // The same request/version remains blocked until the write itself
+        // returns an explicit rejection, even after a process reconnect.
+        if (replyAtStart == replyEpoch &&
+            !startedDuringSend &&
+            !uncertain &&
+            !sending &&
+            (version == null ||
+                !_draftsFor(widget.runtime)
+                    .submissionBlocked(widget.requestId, version!))) {
+          error = null;
+        }
       });
       if (available && hasLocalEdits && !engaged) beginEditing();
       await restoreNotificationDraft();
     } catch (failure) {
-      if (mounted) {
+      if (mounted && currentRefresh == refreshEpoch) {
         setState(() => error = '无法核对请求状态：$failure\n当前输入已保留。');
       }
     } finally {
-      if (mounted) setState(() => loading = false);
+      if (mounted && currentRefresh == refreshEpoch) {
+        setState(() => loading = false);
+      }
     }
   }
 
@@ -322,25 +354,52 @@ class _RequestDetailState extends State<_RequestDetail>
     unawaited(waitAction('engage'));
   }
 
-  Future<void> reply(dynamic response) async {
+  Future<void> reply(dynamic response) =>
+      _submit('interactions.reply', response: response);
+
+  Future<void> dismissPlan() => _submit('interactions.dismiss');
+
+  Future<void> _submit(String method, {dynamic response}) async {
     if (!canReply) return;
+    final submittedVersion = version!;
+    if (!_draftsFor(widget.runtime)
+        .beginSubmission(widget.requestId, submittedVersion)) {
+      return;
+    }
+    ++replyEpoch;
     setState(() {
       sending = true;
       error = null;
       status = null;
     });
     try {
-      final result = await widget.runtime.call('interactions.reply', {
+      final result = await widget.runtime.call(method, {
         'id': widget.requestId,
         'version': version,
-        'response': response,
+        'response': ?response,
       }) as Json;
+      final hidden =
+          method == 'interactions.dismiss' &&
+          result['accepted'] == true &&
+          result['requestStillPending'] == true;
+      final explicitlyRejected =
+          result['accepted'] != true && result['requestStillPending'] == true;
+      if (hidden || explicitlyRejected) {
+        // A named dismissal or an explicit rejection sent no answer.
+        _draftsFor(widget.runtime)
+            .releaseRejectedSubmission(widget.requestId, submittedVersion);
+      } else if (result['accepted'] == true) {
+        _draftsFor(widget.runtime)
+            .confirmSubmission(widget.requestId, submittedVersion);
+      }
       if (!mounted) return;
       setState(() {
-        if (result['accepted'] == true) {
+        if (hidden) {
+          status = '计划仍等待决定；可返回会话提出修改意见。';
+        } else if (result['accepted'] == true) {
           _draftsFor(widget.runtime).remove(widget.requestId, version!);
           submitted = true;
-          status = '答复已发送，正在核对 DSH 状态。';
+          status = '操作已发送，正在核对 DSH 状态。';
         } else if (result['requestStillPending'] != true) {
           _draftsFor(widget.runtime).remove(widget.requestId, version!);
           submitted = true;
@@ -354,10 +413,13 @@ class _RequestDetailState extends State<_RequestDetail>
         if (!mounted) return;
         setState(() {
           synchronize();
-          if (result['accepted'] == true) {
+          if (result['accepted'] == true && !hidden) {
             status = available ? '答复已提交，等待 DSH 完成处理。' : '答复已提交。';
           }
         });
+        if (hidden && Navigator.of(context).canPop()) {
+          Navigator.of(context).pop();
+        }
       } catch (failure) {
         if (mounted) {
           setState(() {
@@ -377,12 +439,10 @@ class _RequestDetailState extends State<_RequestDetail>
         if (!mounted) return;
         setState(() {
           synchronize();
-          uncertain = widget.runtime.interactionsError != null;
-          error = uncertain
-              ? '答复结果尚未确认：$failure\n输入已保留，请刷新核对，避免重复发送。'
-              : available
-              ? '答复未得到确认：$failure\n当前请求仍显示待处理，输入已保留。'
-              : '请求已处理或撤回，当前输入未再次发送。';
+          uncertain = true;
+          error = available
+              ? '答复结果尚未确认：$failure\n当前请求仍显示待处理，但这不能证明先前的答复未送达。输入已保留，请勿重复提交。'
+              : '答复结果尚未确认：$failure\n请求已处理或撤回，当前输入未再次发送。';
         });
       } catch (refreshFailure) {
         if (mounted) {
@@ -428,6 +488,12 @@ class _RequestDetailState extends State<_RequestDetail>
   Widget build(BuildContext context) {
     final request = lastRequest;
     final approval = request?['kind'] == 'approval';
+    final planReview = request?['kind'] == 'question'
+        ? planReviewOf(drafts)
+        : null;
+    final preview = planReview == null
+        ? null
+        : planReviewPreview(planReview.plan);
     return PocketScaffold(
       title: Text(approval ? '授权请求' : 'Agent 提问'),
       trailing: GlassButton(
@@ -451,6 +517,33 @@ class _RequestDetailState extends State<_RequestDetail>
                   child: PocketButton(
                     onPressed: canReply ? () => reply('allowed-once') : null,
                     child: Text(sending ? '正在提交' : '允许一次'),
+                  ),
+                ),
+              ],
+            )
+          : planReview != null
+          ? Row(
+              children: [
+                Expanded(
+                  child: PocketButton.tonal(
+                    onPressed: canReply ? dismissPlan : null,
+                    child: const Text('请求修改'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: PocketButton(
+                    onPressed: canReply
+                        ? () => reply({
+                            'answers': [
+                              {
+                                'id': planReview.id,
+                                'selected': [planReview.approve],
+                              },
+                            ],
+                          })
+                        : null,
+                    child: Text(sending ? '正在提交' : '批准计划'),
                   ),
                 ),
               ],
@@ -553,7 +646,52 @@ class _RequestDetailState extends State<_RequestDetail>
                 ),
               ],
             ),
-            if (!approval)
+            if (planReview != null)
+              PocketSection(
+                title: '计划审核',
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(22, 10, 22, 14),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Text(
+                          preview!.title.isEmpty
+                              ? drafts.single.question['question'] as String
+                              : preview.title,
+                          style: Theme.of(context).textTheme.titleMedium,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        if (preview.summary.isNotEmpty) ...[
+                          const SizedBox(height: 8),
+                          Text(
+                            preview.summary,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                        const SizedBox(height: 12),
+                        PocketButton.tonal(
+                          onPressed: () => Navigator.of(context).push<void>(
+                            PocketRoute(
+                              builder: (_) => ChatPlanDocumentPage(
+                                title:
+                                    drafts.single.question['question']
+                                        as String,
+                                markdown: planReview.plan,
+                                sessionId: request['sessionId'] as String?,
+                              ),
+                            ),
+                          ),
+                          child: const Text('单独查看完整计划'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              )
+            else if (!approval)
               Focus(
                 onFocusChange: (focused) {
                   unawaited(
@@ -682,7 +820,21 @@ class _QuestionInputState extends State<_QuestionInput> {
                         horizontal: 14,
                         vertical: 14,
                       ),
-                      title: Text(option['label'] as String),
+                      title: Row(
+                        children: [
+                          Flexible(
+                            child: Text(
+                              recommendedOptionLabel(option['label'] as String)
+                                  .label,
+                            ),
+                          ),
+                          if (recommendedOptionLabel(option['label'] as String)
+                              .recommended) ...[
+                            const SizedBox(width: 8),
+                            const Text('推荐', style: TextStyle(fontSize: 12)),
+                          ],
+                        ],
+                      ),
                       subtitle: option['description'] is String
                           ? Text(option['description'] as String)
                           : null,

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { randomUUID } from 'node:crypto'
-import { AppDocumentPreview } from '../runtime/document-preview.mjs'
+import { AppDocumentPreview, PRIVATE_WORKSPACE_SCOPE } from '../runtime/document-preview.mjs'
 
 const budgets = { maxRequests: 8, maxOwnerRequests: 4, maxLeaseBytes: 1024 * 1024,
   maxLeases: 8, leaseTimeoutMs: 2000, requestTimeoutMs: 1000, closeTimeoutMs: 100 }
@@ -59,6 +59,28 @@ test('only original read-only methods enter Gateway with the selected Session sc
     input({ sessionId: '' }), input({ owner: '' }), input({ requestId: '' }),
   ]) rejected(await bridge.call('call', request), 'gateway/bad-request')
   assert.equal(seen.length, 3, 'invalid requests must never enter Gateway')
+})
+
+test('private workspace preview never enters a Session Gateway and rejects scope confusion', async t => {
+  const calls = []
+  const bridge = new AppDocumentPreview({
+    invoke: () => { throw new Error('Private files must not borrow Session authority') },
+    privateWorkspace: async (...args) => { calls.push(args); return bytes(Buffer.from([1, 2]),
+      { offset: 0, bytes: 2, eof: true }) },
+    limits: () => budgets,
+  })
+  t.after(() => bridge.close())
+  const request = input({ sessionId: PRIVATE_WORKSPACE_SCOPE, privateWorkspace: true })
+  const result = value(await bridge.call('call', request))
+  assert.equal(result.data.encoding, 'android-byte-lease')
+  assert.equal(calls.length, 1)
+  assert.deepEqual(calls[0].slice(0, 3), ['workspaceFiles', 'readBytes',
+    { path: 'report.bin', options: {}, workspaceFileScopeId: PRIVATE_WORKSPACE_SCOPE }])
+  rejected(await bridge.call('call', input({ sessionId: PRIVATE_WORKSPACE_SCOPE })), 'gateway/bad-request')
+  rejected(await bridge.call('call', input({ privateWorkspace: true })), 'gateway/bad-request')
+  rejected(await bridge.call('call', input({ sessionId: PRIVATE_WORKSPACE_SCOPE,
+    privateWorkspace: true, method: 'read' })), 'gateway/invocation-unavailable')
+  assert.equal(calls.length, 1)
 })
 
 test('binary lease preserves original metadata and exact bytes in bounded chunks', async t => {

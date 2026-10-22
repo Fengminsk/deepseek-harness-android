@@ -141,9 +141,15 @@ class _AgentPresetsPageState extends State<AgentPresetsPage>
     listenable: controller,
     builder: (context, _) {
       final started = controller.isSession && controller.sessionStarted == true;
-      final available = controller.options.where((option) => option.available);
+      final visible = controller.options.where(
+        (option) =>
+            controller.codingToolsEnabled || !option.requiresCodingTools,
+      );
+      final available = visible.where((option) => option.available);
       final unavailable = controller.options.where(
-        (option) => !option.available,
+        (option) =>
+            !option.available &&
+            (controller.codingToolsEnabled || !option.requiresCodingTools),
       );
       return ModelDraftGuard(
         hasEdits: () => controller.hasDraft,

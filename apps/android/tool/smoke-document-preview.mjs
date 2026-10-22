@@ -224,6 +224,36 @@ async function scenario() {
   assert.deepEqual(value(await runtime.request('document.bytes', { owner, id: empty.data.id, offset: 0, length: 1 })), { offset: 0, data: '', eof: true })
   await release(empty.data.id)
 
+  checkpoint('App-private document scope reads original renderer bytes without Session authority')
+  const privateOwner = randomUUID()
+  const privateCall = (method, args, extra = {}) => runtime.request('document.call', {
+    owner: privateOwner, requestId: randomUUID(), sessionId: 'pocket-private-workspace',
+    privateWorkspace: true, namespace: 'workspaceFiles', method, args, ...extra,
+  })
+  const privateStat = value(await privateCall('stat', { path: 'a/image.bin' }))
+  assert.equal(privateStat.absolutePath, join(workspace, 'a', 'image.bin'))
+  const privateBytes = value(await privateCall('readBytes', { path: privateStat.absolutePath,
+    options: { range: { offset: 250, length: 10 } } }))
+  assert.equal(privateBytes.version, privateStat.version)
+  assert.equal(privateBytes.offset, 250)
+  const privateFrame = value(await runtime.request('document.bytes', {
+    owner: privateOwner, id: privateBytes.data.id, offset: 0, length: 10,
+  }))
+  assert.deepEqual(Buffer.from(privateFrame.data, 'base64'), source.subarray(250, 260))
+  await runtime.request('document.release', { owner: privateOwner, id: privateBytes.data.id })
+  rejected(await privateCall('stat', { path: '../outside.txt' }), 'workspace-files/invalid-path')
+  rejected(await privateCall('stat', { path: join(home, 'outside.txt') }), 'workspace-files/outside-workspace')
+  rejected(await runtime.request('document.call', { owner: privateOwner, requestId: randomUUID(),
+    sessionId: 'pocket-private-workspace', namespace: 'workspaceFiles', method: 'stat',
+    args: { path: 'a/image.bin' } }), 'gateway/bad-request')
+  const privateOffice = value(await privateCall('render', { path: 'a/document.docx', priority: 'foreground' },
+    { namespace: 'officeToPdf' }))
+  assert.ok(privateOffice.bytes > 1000)
+  const privatePdf = value(await runtime.request('document.bytes', { owner: privateOwner,
+    id: privateOffice.data.id, offset: 0, length: 128 }))
+  assert.equal(Buffer.from(privatePdf.data, 'base64').subarray(0, 5).toString(), '%PDF-')
+  await runtime.request('document.release', { owner: privateOwner, id: privateOffice.data.id })
+
   checkpoint('real original filesystem read cancellation and owner disconnect')
   const cancelledRequest = request('readBytes', { path: 'cancel.bin' })
   const pending = runtime.request('document.call', cancelledRequest)
@@ -264,7 +294,8 @@ async function scenario() {
     binaryChunks: chunks.length, binarySha256: hash(source), originalRangeAndBaseFile: true, emptyFile: true,
     cancellation: true, cancellationTiming: 'fixture barrier inside original fs-local readBytes', ownerIsolation: true,
     ownerDisconnect: true, existingChangesStream: true, coldReadDoesNotActivateOrRewrite: true,
-    officeWasmPdfBytes: rendered.bytes, androidBinderAndWebView: false, home }
+    officeWasmPdfBytes: rendered.bytes, privateWorkspacePreview: true,
+    androidBinderAndWebView: false, home }
 }
 
 let report

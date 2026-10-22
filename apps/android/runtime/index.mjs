@@ -20,7 +20,7 @@ import AndroidAccountCallback from './account-callback.mjs'
 import { AppAttachments } from './attachments.mjs'
 import { createRuntimeTransport } from './transport.mjs'
 import { AppDocumentSearch } from './document-search.mjs'
-import { AppDocumentPreview } from './document-preview.mjs'
+import { AppDocumentPreview, PRIVATE_WORKSPACE_SCOPE } from './document-preview.mjs'
 import { AppReferenceDiscovery } from './reference-discovery.mjs'
 import { AppWorkspaceChanges } from './workspace-changes.mjs'
 import { maskUserText } from './user-text-mask.mjs'
@@ -66,6 +66,9 @@ export const Config = Schema.object({
   workspaceChangesRequestTimeoutMs: Schema.natural().min(100).max(300000).default(90000).volatile(),
   workspaceChangesCloseTimeoutMs: Schema.natural().min(100).max(30000).default(5000).volatile(),
   workspaceReadPageBytes: Schema.natural().min(1024).max(1048576).default(65536).volatile(),
+  workspacePreviewMaxFileBytes: Schema.natural().min(1024).max(104857600).default(33554432).volatile(),
+  workspacePreviewWindowBytes: Schema.natural().min(1024).max(2097152).default(2097152).volatile(),
+  workspacePreviewOfficeInputBytes: Schema.natural().min(1024).max(104857600).default(52428800).volatile(),
   workspaceDirectoryMaxEntries: Schema.natural().min(1).max(10000).default(5000).volatile(),
   workspaceDirectoryPageSize: Schema.natural().min(1).max(500).default(100).volatile(),
   attachmentFileMaxBytes: Schema.natural().min(1024).max(2147483648).default(268435456).volatile(),
@@ -192,14 +195,6 @@ export function apply(ctx, config) {
   })
   // Resolve the original media route's MIME dependency from its owning package.
   const mediaMime = createRequire(import.meta.resolve('@deepseek-ai/dsh-api-session-controller/package.json'))('mime-types')
-  const documentPreview = new AppDocumentPreview({ invoke,
-    mediaPolicy: path => ({ maxBytes: ctx.get('attachments')?.imageLimits?.maxImageBytes,
-      mimeType: mediaMime.lookup(path) || 'application/octet-stream' }), limits: () => ({
-    maxRequests: config.documentPreviewMaxRequests.get(), maxOwnerRequests: config.documentPreviewMaxOwnerRequests.get(),
-    maxLeaseBytes: config.documentPreviewMaxLeaseBytes.get(), maxLeases: config.documentPreviewMaxLeases.get(),
-    leaseTimeoutMs: config.documentPreviewLeaseTimeoutMs.get(), requestTimeoutMs: config.documentPreviewRequestTimeoutMs.get(),
-    closeTimeoutMs: config.documentPreviewCloseTimeoutMs.get(),
-  }) })
   const workspaceFiles = new AppWorkspaceFiles({
     root: process.cwd(),
     limits: () => ({
@@ -210,6 +205,64 @@ export function apply(ctx, config) {
       maxSearches: config.documentSearchMaxRequests.get(), search: searchLimits(),
     }),
   })
+  const privateDocument = async (namespace, method, args, signal) => {
+    signal.throwIfAborted()
+    if (namespace === 'workspaceFiles') {
+      return workspaceFiles.document(method, args, signal, {
+        maxFileBytes: config.workspacePreviewMaxFileBytes.get(),
+        maxWindowBytes: config.workspacePreviewWindowBytes.get(),
+      })
+    }
+    if (namespace === 'officeToPdf' && method === 'generation') {
+      const service = ctx.get('officeToPdf')
+      if (!service) throw new Error('Office renderer is unavailable')
+      return service.getGeneration(signal)
+    }
+    if (namespace === 'officeToPdf' && method === 'render') {
+      const source = await workspaceFiles.document('stat', { path: args.path }, signal, {
+        maxFileBytes: config.workspacePreviewMaxFileBytes.get(), maxWindowBytes: config.workspacePreviewWindowBytes.get(),
+      })
+      const service = ctx.get('officeToPdf')
+      if (!service) throw new Error('Office renderer is unavailable')
+      const extension = args.path.split('.').at(-1)?.toLowerCase()
+      if (!['doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'].includes(extension)) {
+        throw new TypeError('Unsupported Office document format')
+      }
+      const rendered = await service.convert({ extension, priority: args.priority,
+        source: { key: JSON.stringify([PRIVATE_WORKSPACE_SCOPE, source.absolutePath]),
+          version: source.version, bytes: source.bytes,
+          read: async (readSignal, maxBytes) => {
+            const current = await workspaceFiles.document('readBytes', { path: args.path }, readSignal, {
+              maxFileBytes: Math.min(maxBytes, config.workspacePreviewOfficeInputBytes.get()),
+              maxWindowBytes: config.workspacePreviewWindowBytes.get(),
+            })
+            if (current.version !== source.version || current.absolutePath !== source.absolutePath) {
+              throw new Error('Office document changed during conversion')
+            }
+            return { bytes: current.data, version: current.version }
+          } },
+      }, signal)
+      signal.throwIfAborted()
+      const current = await workspaceFiles.document('stat', { path: args.path }, signal, {
+        maxFileBytes: config.workspacePreviewMaxFileBytes.get(), maxWindowBytes: config.workspacePreviewWindowBytes.get(),
+      })
+      if (current.version !== source.version || current.absolutePath !== source.absolutePath) {
+        throw new Error('Office document changed during conversion')
+      }
+      return { absolutePath: source.absolutePath, version: source.version,
+        offset: 0, eof: true, bytes: rendered.pdf.byteLength, data: rendered.pdf,
+        missingFonts: rendered.missingFonts, generation: rendered.generation }
+    }
+    throw new TypeError('Unsupported private document method')
+  }
+  const documentPreview = new AppDocumentPreview({ invoke, privateWorkspace: privateDocument,
+    mediaPolicy: path => ({ maxBytes: ctx.get('attachments')?.imageLimits?.maxImageBytes,
+      mimeType: mediaMime.lookup(path) || 'application/octet-stream' }), limits: () => ({
+    maxRequests: config.documentPreviewMaxRequests.get(), maxOwnerRequests: config.documentPreviewMaxOwnerRequests.get(),
+    maxLeaseBytes: config.documentPreviewMaxLeaseBytes.get(), maxLeases: config.documentPreviewMaxLeases.get(),
+    leaseTimeoutMs: config.documentPreviewLeaseTimeoutMs.get(), requestTimeoutMs: config.documentPreviewRequestTimeoutMs.get(),
+    closeTimeoutMs: config.documentPreviewCloseTimeoutMs.get(),
+  }) })
   const terminals = new AppTerminals({
     resolveDirectory: async sessionId => {
       const found = await ctx.sessionController.resolveAgent(sessionId)
@@ -287,6 +340,7 @@ export function apply(ctx, config) {
       }
       case 'interactions.list': return interactions.snapshot()
       case 'interactions.reply': return interactions.reply(params)
+      case 'interactions.dismiss': return interactions.dismiss(params)
       case 'interactions.wait': return interactions.wait(params)
       case 'web.status': return web.status()
       case 'web.configure': return web.configure(params)

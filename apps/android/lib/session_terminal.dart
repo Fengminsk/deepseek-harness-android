@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:math' as math;
 
@@ -228,7 +229,10 @@ class SessionTerminalView extends StatefulWidget {
 class _SessionTerminalViewState extends State<SessionTerminalView>
     with WidgetsBindingObserver {
   final input = TextEditingController();
+  late final FocusNode inputFocus = FocusNode(onKeyEvent: _handleInputKey);
   final outputScroll = ScrollController();
+  final Queue<String> pendingKeys = Queue<String>();
+  String? acknowledgedDraft;
   Timer? polling, resizeTimer, cursorTimer;
   bool reading = false, sending = false, closing = false, resizing = false;
   bool visible = true;
@@ -236,7 +240,7 @@ class _SessionTerminalViewState extends State<SessionTerminalView>
   String display = '', state = 'starting';
   TerminalScreenData? screenView;
   String? error, operationError;
-  int revision = -1, epoch = 0;
+  int revision = -1, epoch = 0, sendSequence = 0;
   late int connection;
   ({int cols, int rows})? pendingSize, attemptedSize;
 
@@ -271,7 +275,72 @@ class _SessionTerminalViewState extends State<SessionTerminalView>
   }
 
   void _draftChanged() {
+    final sent = acknowledgedDraft;
+    if (sent != null && !input.value.composing.isValid) {
+      acknowledgedDraft = null;
+      _removeAcknowledgedDraft(sent);
+    }
     if (mounted) setState(() {});
+  }
+
+  void _removeAcknowledgedDraft(String sent) {
+    if (!input.text.startsWith(sent)) {
+      setState(() => operationError = '已发送的输入被修改，请检查草稿，避免重复发送。');
+      return;
+    }
+    final selection = input.selection;
+    input.value = TextEditingValue(
+      text: input.text.substring(sent.length),
+      selection: TextSelection.collapsed(
+        offset: selection.isValid
+            ? (selection.extentOffset - sent.length).clamp(
+                0,
+                input.text.length - sent.length,
+              )
+            : input.text.length - sent.length,
+      ),
+    );
+  }
+
+  KeyEventResult _handleInputKey(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+    if (!mounted ||
+        !visible ||
+        state != 'running' ||
+        !widget.runtime.ready ||
+        input.value.composing.isValid) {
+      return KeyEventResult.ignored;
+    }
+    final keyboard = HardwareKeyboard.instance;
+    if (keyboard.isAltPressed || keyboard.isMetaPressed) {
+      return KeyEventResult.ignored;
+    }
+    final key = event.logicalKey;
+    String? bytes;
+    if (keyboard.isControlPressed) {
+      bytes = switch (key) {
+        LogicalKeyboardKey.keyC => '\u0003',
+        LogicalKeyboardKey.keyD => '\u0004',
+        LogicalKeyboardKey.keyZ => '\u001a',
+        _ => null,
+      };
+    } else {
+      bytes = switch (key) {
+        LogicalKeyboardKey.escape => '\u001b',
+        LogicalKeyboardKey.tab => keyboard.isShiftPressed ? '\u001b[Z' : '\t',
+        LogicalKeyboardKey.arrowUp when input.text.isEmpty => '\u001b[A',
+        LogicalKeyboardKey.arrowDown when input.text.isEmpty => '\u001b[B',
+        LogicalKeyboardKey.arrowLeft when input.text.isEmpty => '\u001b[D',
+        LogicalKeyboardKey.arrowRight when input.text.isEmpty => '\u001b[C',
+        LogicalKeyboardKey.backspace when input.text.isEmpty => '\u007f',
+        _ => null,
+      };
+    }
+    if (bytes == null) return KeyEventResult.ignored;
+    unawaited(send(bytes));
+    return KeyEventResult.handled;
   }
 
   @override
@@ -288,12 +357,16 @@ class _SessionTerminalViewState extends State<SessionTerminalView>
     if (connection != widget.runtime.connectionGeneration) {
       connection = widget.runtime.connectionGeneration;
       epoch++;
+      sendSequence++;
       revision = -1;
       resizeTimer?.cancel();
+      pendingKeys.clear();
+      acknowledgedDraft = null;
       pendingSize = null;
       attemptedSize = null;
       setState(() {
         state = 'unconfirmed';
+        sending = false;
         screenView = null;
         cursorPhase = true;
         display = '';
@@ -307,11 +380,15 @@ class _SessionTerminalViewState extends State<SessionTerminalView>
     }
     if (!widget.runtime.ready && state != 'unconfirmed') {
       epoch++;
+      sendSequence++;
       resizeTimer?.cancel();
+      pendingKeys.clear();
+      acknowledgedDraft = null;
       pendingSize = null;
       attemptedSize = null;
       setState(() {
         state = 'unconfirmed';
+        sending = false;
         error = '服务未连接，终端状态待确认。';
       });
     } else if (widget.runtime.ready && state == 'unconfirmed') {
@@ -380,16 +457,29 @@ class _SessionTerminalViewState extends State<SessionTerminalView>
   }
 
   Future<void> send(String data, {bool clear = false}) async {
-    if (sending || state != 'running' || !widget.runtime.ready) return;
+    if (!mounted || state != 'running' || !widget.runtime.ready) return;
     if (utf8.encode(data).length > 65536) {
       setState(() => operationError = '单次终端输入不能超过 64 KiB，请分段发送。');
       return;
     }
+    if (sending) {
+      if (clear) return;
+      if (pendingKeys.length >= 64) {
+        setState(() => operationError = '按键队列已满，请等待终端响应。');
+        return;
+      }
+      pendingKeys.addLast(data);
+      return;
+    }
     final draft = input.text;
+    final request = epoch;
+    final sequence = ++sendSequence;
+    final requestConnection = widget.runtime.connectionGeneration;
     setState(() {
       sending = true;
       operationError = null;
     });
+    var accepted = false;
     try {
       await widget.runtime
           .call('terminal.write', {
@@ -398,18 +488,59 @@ class _SessionTerminalViewState extends State<SessionTerminalView>
             'data': data,
           })
           .timeout(const Duration(seconds: 7));
-      if (clear && input.text == draft) input.clear();
+      if (!mounted ||
+          sequence != sendSequence ||
+          request != epoch ||
+          requestConnection != widget.runtime.connectionGeneration) {
+        return;
+      }
+      accepted = true;
+      if (clear) {
+        if (input.value.composing.isValid) {
+          acknowledgedDraft = draft;
+        } else {
+          _removeAcknowledgedDraft(draft);
+        }
+      }
       await read();
     } catch (_) {
-      if (mounted) {
-        setState(() => operationError = '输入送达状态未知。先检查终端输出，再决定是否重试。');
+      if (mounted &&
+          sequence == sendSequence &&
+          request == epoch &&
+          requestConnection == widget.runtime.connectionGeneration) {
+        setState(() => operationError = '输入送达状态未知，后续按键未发送。先检查终端输出，再决定是否重试。');
       }
     } finally {
-      if (mounted) setState(() => sending = false);
+      if (sequence == sendSequence) {
+        if (!accepted ||
+            request != epoch ||
+            requestConnection != widget.runtime.connectionGeneration ||
+            state != 'running' ||
+            !widget.runtime.ready) {
+          final dropped = pendingKeys.isNotEmpty;
+          pendingKeys.clear();
+          if (accepted && dropped && mounted) {
+            operationError = '终端状态待确认，排队按键未发送；请检查输出后重新输入。';
+          }
+        }
+        if (mounted) {
+          setState(() => sending = false);
+          if (accepted &&
+              pendingKeys.isNotEmpty &&
+              state == 'running' &&
+              widget.runtime.ready) {
+            unawaited(send(pendingKeys.removeFirst()));
+          }
+        }
+      }
     }
   }
 
   Future<void> sendDraft({required bool enter}) async {
+    if (input.value.composing.isValid) {
+      setState(() => operationError = '请先确认正在输入的文字，再发送到终端。');
+      return;
+    }
     final draft = input.text;
     if (draft.isEmpty && !enter) return;
     await send(enter ? '$draft\r' : draft, clear: true);
@@ -498,12 +629,16 @@ class _SessionTerminalViewState extends State<SessionTerminalView>
   @override
   void dispose() {
     epoch++;
+    sendSequence++;
     polling?.cancel();
     resizeTimer?.cancel();
     cursorTimer?.cancel();
+    pendingKeys.clear();
+    acknowledgedDraft = null;
     WidgetsBinding.instance.removeObserver(this);
     widget.runtime.removeListener(_runtimeChanged);
     input.dispose();
+    inputFocus.dispose();
     outputScroll.dispose();
     super.dispose();
   }
@@ -652,7 +787,7 @@ class _SessionTerminalViewState extends State<SessionTerminalView>
                     ('Ctrl-Z', '\u001a'),
                   ]) ...[
                     PocketButton.tonal(
-                      onPressed: state == 'running' && !sending
+                      onPressed: state == 'running' && widget.runtime.ready
                           ? () => send(key.$2)
                           : null,
                       child: Text(key.$1),
@@ -668,7 +803,8 @@ class _SessionTerminalViewState extends State<SessionTerminalView>
                 Expanded(
                   child: TextField(
                     controller: input,
-                    enabled: state == 'running' && !sending,
+                    focusNode: inputFocus,
+                    enabled: state == 'running',
                     maxLines: 1,
                     textInputAction: TextInputAction.send,
                     decoration: const InputDecoration(

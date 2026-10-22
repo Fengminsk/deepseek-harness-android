@@ -8,6 +8,7 @@ import 'runtime.dart';
 import 'ui.dart';
 import 'file_browser_chrome.dart';
 import 'external_file_action.dart';
+import 'session_document.dart';
 import 'flclash/popup.dart';
 
 String workspaceFileFailure(Object error) => error is PlatformException
@@ -41,6 +42,13 @@ String workspaceSkipReason(String? reason) => switch (reason) {
   'outside-workspace' => '路径不在 App 私有工作区内',
   _ => '暂时无法读取',
 };
+
+const privateWorkspaceDocumentScope = 'pocket-private-workspace';
+
+bool privateWorkspacePreviewSupported(String name) => const {
+  'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'pdf',
+  'xls', 'xlsx', 'doc', 'docx', 'ppt', 'pptx',
+}.contains(name.toLowerCase().split('.').last);
 
 Future<Json> _call(
   RuntimeController runtime,
@@ -242,6 +250,20 @@ class _WorkspaceFilesPageState extends State<WorkspaceFilesPage>
       '${row['name']}',
       mimeType: row['mediaType'] as String?,
     )) {
+      if (privateWorkspacePreviewSupported('${row['name']}')) {
+        await Navigator.of(context).push(
+          PocketRoute<void>(
+            builder: (_) => SessionDocumentPage(
+              runtime: widget.runtime,
+              sessionId: privateWorkspaceDocumentScope,
+              path: target,
+              privateWorkspace: true,
+            ),
+          ),
+        );
+        if (mounted) unawaited(load());
+        return;
+      }
       await externalOpen.open(context, path: target);
       return;
     }
@@ -270,9 +292,12 @@ class _WorkspaceFilesPageState extends State<WorkspaceFilesPage>
     final textFile =
         !directory &&
         fileLikelyText('${row['name']}', mimeType: row['mediaType'] as String?);
+    final previewFile =
+        !directory && privateWorkspacePreviewSupported('${row['name']}');
     final actions = <_WorkspaceEntryAction>[
       if (!blocked) _WorkspaceEntryAction.open,
-      if (!blocked && textFile) _WorkspaceEntryAction.openExternal,
+      if (!blocked && (textFile || previewFile))
+        _WorkspaceEntryAction.openExternal,
       if (!blocked && (directory || textFile)) _WorkspaceEntryAction.search,
       _WorkspaceEntryAction.copyPath,
       _WorkspaceEntryAction.info,
@@ -284,6 +309,8 @@ class _WorkspaceFilesPageState extends State<WorkspaceFilesPage>
             label: directory
                 ? '打开文件夹'
                 : textFile
+                ? '预览文件'
+                : previewFile
                 ? '预览文件'
                 : '在其他应用中打开',
             glyph: directory

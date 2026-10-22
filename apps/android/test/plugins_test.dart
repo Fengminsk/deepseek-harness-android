@@ -53,6 +53,7 @@ class PluginsRuntime extends RuntimeController {
   Stream<Json> get remoteEvents => eventsController.stream;
   bool managed = true;
   List<Json> bundles = [bundle()], entries = [entry()];
+  Json? inventoryOverride;
   final calls = <Json>[];
   Completer<Json>? installing;
   Completer<Json>? changing;
@@ -119,11 +120,14 @@ class PluginsRuntime extends RuntimeController {
     throw StateError('Unexpected API $params');
   }
 
-  Json snapshot() => cloneConfiguration({
-    'managementAvailable': managed,
-    'entries': entries,
-    'agentPresets': [],
-  });
+  Json snapshot() => cloneConfiguration(
+    inventoryOverride ??
+        {
+          'managementAvailable': managed,
+          'entries': entries,
+          'agentPresets': [],
+        },
+  );
 
   @override
   void dispose() {
@@ -196,6 +200,156 @@ Future<void> editInstallValue(
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   setUpAll(loadSettingsCaptureFonts);
+
+  test('inventory labels distinguish observed phase and preset enablement', () {
+    final global = {
+      'entryId': 'include:example',
+      'moduleName': '@deepseek-ai/dsh-client-example',
+      'enabled': false,
+      'fiberPhase': null,
+    };
+    final presets = <Json>[
+      {
+        'id': 'daily',
+        'name': '日常',
+        'rows': [
+          {...global, 'enabled': 'conditional'},
+        ],
+      },
+      {
+        'id': 'code',
+        'name': '开发',
+        'rows': [
+          {...global, 'enabled': true},
+        ],
+      },
+    ];
+    expect(inventoryPluginName(global), 'example');
+    expect(inventoryEnabledPresets(global, presets), ['开发']);
+    expect(inventoryStateLabel(global, providedByPreset: true), '预设中启用');
+    expect(inventoryStateLabel(presets.first['rows'][0] as Json), '条件启用');
+    expect(inventoryPhaseLabel('pending'), '等待依赖');
+    expect(inventoryPhaseLabel('unloading'), '卸载中');
+    expect(inventoryMatches(global, 'include:example'), isTrue);
+    expect(inventoryMatches(global, 'unrelated'), isFalse);
+    expect(
+      inventoryEnabledPresets({...global, 'fiberPhase': 'failed'}, presets),
+      isEmpty,
+    );
+  });
+
+  testWidgets(
+    'read-only inventory shows preset facts without changing plugins',
+    (tester) async {
+      final runtime = PluginsRuntime()
+        ..managed = false
+        ..inventoryOverride = {
+          'managementAvailable': false,
+          'entries': [
+            {
+              'entryId': 'include:tool',
+              'moduleName': '@example/dsh-client-tool',
+              'enabled': false,
+              'fiberPhase': null,
+              'meta': {'title': '工具', 'description': '会话工具'},
+            },
+            {
+              'entryId': 'failed:plugin',
+              'moduleName': '@example/dsh-client-broken',
+              'enabled': true,
+              'fiberPhase': 'failed',
+              'meta': {'error': 'bad package'},
+            },
+          ],
+          'agentPresets': [
+            {
+              'id': 'coding',
+              'name': '编程',
+              'isDefault': true,
+              'rows': [
+                {
+                  'entryId': 'include:tool',
+                  'moduleName': '@example/dsh-client-tool',
+                  'enabled': 'conditional',
+                  'condition': '!!js ctx.env.TEST',
+                  'fiberPhase': null,
+                  'meta': {'title': '工具'},
+                },
+              ],
+            },
+            {
+              'id': 'research',
+              'name': '研究',
+              'isDefault': false,
+              'rows': [
+                {
+                  'entryId': 'include:tool',
+                  'moduleName': '@example/dsh-client-tool',
+                  'enabled': true,
+                  'fiberPhase': 'loading',
+                  'meta': {'title': '工具'},
+                },
+              ],
+            },
+          ],
+        };
+      final controller = await ready(runtime);
+      await mount(
+        tester,
+        PluginRuntimePage(controller: controller),
+        size: const Size(390, 844),
+      );
+      expect(find.text('条件启用'), findsOneWidget);
+      expect(find.text('failed:plugin'), findsNothing);
+      await tap(tester, '工具');
+      expect(find.text('禁用条件'), findsOneWidget);
+      expect(find.text('!!js ctx.env.TEST'), findsOneWidget);
+      expect(find.text('include:tool'), findsOneWidget);
+      expect(find.text('@example/dsh-client-tool'), findsOneWidget);
+      await tester.tap(find.byTooltip('返回'));
+      await tester.pumpAndSettle();
+      await tap(tester, 'Agent 预设');
+      await tester.tap(find.text('研究').last);
+      await tester.pumpAndSettle();
+      expect(find.textContaining('已启用'), findsOneWidget);
+      await tap(tester, '系统与所有会话共用');
+      expect(find.textContaining('启动失败'), findsWidgets);
+      expect(find.textContaining('预设中启用'), findsOneWidget);
+      await tap(tester, 'broken');
+      expect(find.text('包元信息错误：bad package'), findsOneWidget);
+      expect(methods(runtime, 'setPluginEnabled'), isEmpty);
+      expect(methods(runtime, 'setBundleEnabled'), isEmpty);
+    },
+  );
+
+  testWidgets('inventory search opens the global group and matches exact IDs', (
+    tester,
+  ) async {
+    final runtime = PluginsRuntime()
+      ..managed = false
+      ..inventoryOverride = {
+        'managementAvailable': false,
+        'entries': [
+          {
+            'entryId': 'include:unique-needle',
+            'moduleName': '@example/dsh-host-searchable',
+            'enabled': true,
+            'fiberPhase': 'active',
+          },
+        ],
+      };
+    final controller = await ready(runtime);
+    await mount(tester, PluginRuntimePage(controller: controller));
+    expect(find.text('searchable'), findsNothing);
+    await tester.enterText(
+      find.byKey(const ValueKey('plugin-inventory-search')),
+      'unique-needle',
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('searchable'), findsOneWidget);
+    expect(find.textContaining('运行中'), findsOneWidget);
+    expect(methods(runtime, 'setPluginEnabled'), isEmpty);
+  });
 
   for (final brightness in Brightness.values) {
     for (final scale in [1.0, 1.8]) {

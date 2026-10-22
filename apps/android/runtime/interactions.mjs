@@ -274,6 +274,32 @@ export class AppInteractions {
     }
   }
 
+  async dismiss(params) {
+    const record = this.find(params)
+    if (!record || record.kind !== 'question') {
+      return { accepted: false, requestStillPending: false, message: '该提问已处理或失效' }
+    }
+    if (record.sending) throw new Error('答复正在提交，请等待状态更新，勿重复提交')
+    record.sending = true
+    try {
+      const delivery = record.delivery
+      // Original DSH keeps a tool-call-keyed question pending so its tool row
+      // can reopen it. An unnamed request has no return path and is rejected.
+      await record.card.dismiss()
+      if (record.callId) {
+        record.sending = false
+        return { accepted: true, requestStillPending: this.records.get(record.id) === record }
+      }
+      if (delivery && await delivery === false) return { accepted: false, requestStillPending: false }
+      return { accepted: true, requestStillPending: false }
+    } catch (error) {
+      // A lost acknowledgement after cancellation is uncertain; never replay.
+      this.error = `提问取消结果未确认：${error.message}`
+      this.publish()
+      throw error
+    }
+  }
+
   wait(params) {
     const record = this.find(params)
     if (!record || record.kind !== 'question') return { accepted: false, requestStillPending: false }

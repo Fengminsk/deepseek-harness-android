@@ -4,6 +4,7 @@ import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/file_browser_chrome.dart';
 import 'package:dsh_android/ui.dart';
 import 'package:dsh_android/workspace_files.dart';
+import 'package:dsh_android/session_document.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
@@ -150,7 +151,7 @@ Future<void> close(WidgetTester tester) async {
 }
 
 void main() {
-  testWidgets('binary workspace file opens through native system viewer', (
+  testWidgets('supported binary workspace file opens in the private document reader', (
     tester,
   ) async {
     final runtime = WorkspaceRuntime();
@@ -181,19 +182,29 @@ void main() {
       ],
     );
     await open(tester, WorkspaceFilesPage(runtime: runtime));
-    await tap(tester, find.text('report.pdf'));
-    expect(calls, hasLength(2));
-    expect(calls.first.method, 'file.openWorkspace');
-    final arguments = calls.first.arguments as Map;
-    expect(arguments['path'], 'report.pdf');
-    expect(arguments['requestId'], isA<String>());
-    expect(calls.last.method, 'file.launchPrepared');
-    expect(calls.last.arguments, {'requestId': arguments['requestId']});
+    await tester.longPress(find.byKey(const ValueKey('workspace-entry-report.pdf')));
+    await tester.pumpAndSettle();
+    expect(find.text('在其他应用中打开'), findsOneWidget);
+    await tap(tester, find.text('预览文件'));
+    final page = tester.widget<SessionDocumentPage>(find.byType(SessionDocumentPage));
+    expect(page.privateWorkspace, isTrue);
+    expect(page.sessionId, privateWorkspaceDocumentScope);
+    expect(page.path, 'report.pdf');
+    expect(calls, isEmpty);
     expect(
       runtime.calls.where((call) => call.$1 == 'workspace.files.read'),
       isEmpty,
     );
     await close(tester);
+  });
+
+  test('private reader chooses the original renderer formats, not arbitrary binary', () {
+    for (final name in ['photo.png', 'report.pdf', 'slides.pptx', 'sheet.xlsx', 'picture.webp']) {
+      expect(privateWorkspacePreviewSupported(name), isTrue);
+    }
+    for (final name in ['archive.zip', 'app.apk', 'binary.dat']) {
+      expect(privateWorkspacePreviewSupported(name), isFalse);
+    }
   });
 
   testWidgets('changing folders cancels a slow private-file copy', (
@@ -222,13 +233,13 @@ void main() {
       params['path'] as String? ?? '',
       entries: params['path'] == ''
           ? [
-              {'name': 'report.pdf', 'path': 'report.pdf', 'kind': 'file'},
+              {'name': 'archive.zip', 'path': 'archive.zip', 'kind': 'file'},
               {'name': 'notes', 'path': 'notes', 'kind': 'directory'},
             ]
           : [],
     );
     await open(tester, WorkspaceFilesPage(runtime: runtime));
-    await tester.tap(find.text('report.pdf'));
+    await tester.tap(find.text('archive.zip'));
     await tester.pump();
     await tester.tap(find.text('notes'));
     await tester.pump();

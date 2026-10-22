@@ -57,7 +57,8 @@ private class DocumentPreviewView(
     private var webDestroyed = false
     private var listenerRegistered = false
     private val session = options.getString("sessionId")
-    private val media = DocumentPreviewMedia(session, send)
+    private val privateWorkspace = options.optBoolean("privateWorkspace", false)
+    private val media = DocumentPreviewMedia(session, send, privateWorkspace)
     private val assets = WebViewAssetLoader.AssetsPathHandler(context)
     private val loader = WebViewAssetLoader.Builder()
         .addPathHandler("/document/") { path -> assets.handle("document-preview/$path") }.build()
@@ -167,6 +168,7 @@ private class DocumentPreviewView(
                     val args = boundArgs(message.optJSONObject("args") ?: JSONObject(), removeScope = true)
                     require(requests.size < 32 && requests.add(id)) { "Too many or duplicate document requests" }
                     invoke("document.call", JSONObject().put("requestId", prefix + id).put("sessionId", session)
+                        .put("privateWorkspace", privateWorkspace)
                         .put("namespace", namespace).put("method", method).put("args", args)) { value, failure ->
                         val active = requests.remove(id)
                         val lease = (value as? JSONObject)?.optJSONObject("value")?.optJSONObject("data")
@@ -241,6 +243,7 @@ private class DocumentPreviewView(
     }
 
     private fun subscribe(id: String, message: JSONObject, proxy: JavaScriptReplyProxy) {
+        if (privateWorkspace) { error(proxy, id, "App 私有文件不提供自动变更订阅，请手动刷新。"); return }
         require(message.getString("namespace") == "workspaceFiles" && message.getString("method") == "changes")
         val args = boundArgs(message.optJSONObject("args") ?: JSONObject(), removeScope = false)
         require(args.keys().asSequence().all { it == "path" || it == "workspaceFileScopeId" })

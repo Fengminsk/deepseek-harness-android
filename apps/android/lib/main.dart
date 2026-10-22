@@ -38,6 +38,7 @@ import 'chat_shortcuts.dart';
 import 'resource_hub.dart';
 import 'session_trajectory.dart';
 import 'subagents.dart';
+import 'workspace_changes_preference.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -158,6 +159,7 @@ class _ChatPageState extends State<ChatPage> {
   final chatProjections = <String, ChatProjection>{};
   late AttachmentDrafts attachments;
   late ChatGoalPlanController goalPlan;
+  late WorkspaceChangesPreference codingTools;
   final messageScroll = ScrollController();
   bool navigationScheduled = false;
   bool drawerOpen = false;
@@ -180,6 +182,8 @@ class _ChatPageState extends State<ChatPage> {
   @override
   void initState() {
     super.initState();
+    codingTools = WorkspaceChangesPreference(runtime);
+    unawaited(codingTools.start());
     keyboardShortcuts = ChatKeyboardShortcuts(
       isActive: () => mounted && (ModalRoute.of(context)?.isCurrent ?? false),
       isComposing: () {
@@ -242,6 +246,9 @@ class _ChatPageState extends State<ChatPage> {
   void didUpdateWidget(ChatPage oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.runtime != runtime) {
+      codingTools.dispose();
+      codingTools = WorkspaceChangesPreference(runtime);
+      unawaited(codingTools.start());
       sessionNavigationEpoch++;
       goalPlan.dispose();
       connectGoalPlan();
@@ -326,6 +333,7 @@ class _ChatPageState extends State<ChatPage> {
   @override
   void dispose() {
     keyboardShortcuts.dispose();
+    codingTools.dispose();
     unawaited(publishNotificationViewing(null));
     goalPlan.dispose();
     for (final catalog in skillCatalogs.values) {
@@ -896,45 +904,49 @@ class _ChatPageState extends State<ChatPage> {
             ),
             if (hasSession) ...[
               const SizedBox(width: 4),
-              CommonPopupBox(
-                onOpen: inputFocus.unfocus,
-                popupBuilder: (_) => CommonPopupMenu(
-                  items: [
-                    CommonPopupMenuItem(
-                      label: '会话资源',
-                      glyph: Icons.folder_copy_outlined,
-                      onPressed: () => navigate(
-                        SessionResourcesPage(
-                          runtime: runtime,
-                          sessionId: sessionId,
-                        ),
-                      ),
-                    ),
-                    CommonPopupMenuItem(
-                      label: '会话轨迹',
-                      glyph: Icons.route_outlined,
-                      onPressed: () => navigate(
-                        SessionTrajectoryPage(
-                          runtime: runtime,
-                          sessionId: sessionId,
-                        ),
-                      ),
-                    ),
-                    if (projection.entries.any(
-                      (entry) => !chatReadingEntry(entry),
-                    ))
+              ListenableBuilder(
+                listenable: codingTools,
+                builder: (context, _) => CommonPopupBox(
+                  onOpen: inputFocus.unfocus,
+                  popupBuilder: (_) => CommonPopupMenu(
+                    items: [
                       CommonPopupMenuItem(
-                        label: '会话记录',
-                        glyph: Icons.history_rounded,
-                        onPressed: () =>
-                            openChatRecords(context, projection.entries),
+                        label: '会话资源',
+                        glyph: Icons.folder_copy_outlined,
+                        onPressed: () => navigate(
+                          SessionResourcesPage(
+                            runtime: runtime,
+                            sessionId: sessionId,
+                          ),
+                        ),
                       ),
-                  ],
-                ),
-                targetBuilder: (open) => GlassButton(
-                  icon: Icons.more_horiz_rounded,
-                  label: '会话更多',
-                  onPressed: open,
+                      if (codingTools.enabled)
+                        CommonPopupMenuItem(
+                          label: '会话轨迹',
+                          glyph: Icons.route_outlined,
+                          onPressed: () => navigate(
+                            SessionTrajectoryPage(
+                              runtime: runtime,
+                              sessionId: sessionId,
+                            ),
+                          ),
+                        ),
+                      if (projection.entries.any(
+                        (entry) => !chatReadingEntry(entry),
+                      ))
+                        CommonPopupMenuItem(
+                          label: '会话记录',
+                          glyph: Icons.history_rounded,
+                          onPressed: () =>
+                              openChatRecords(context, projection.entries),
+                        ),
+                    ],
+                  ),
+                  targetBuilder: (open) => GlassButton(
+                    icon: Icons.more_horiz_rounded,
+                    label: '会话更多',
+                    onPressed: open,
+                  ),
                 ),
               ),
             ],

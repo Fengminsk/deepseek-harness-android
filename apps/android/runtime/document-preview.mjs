@@ -3,6 +3,7 @@ import { isAbsolute } from 'node:path'
 
 // A transport limit, independent of the original workspaceFiles read window.
 const MAX_CHUNK_BYTES = 256 * 1024
+export const PRIVATE_WORKSPACE_SCOPE = 'pocket-private-workspace'
 const METHODS = {
   workspaceFiles: { stat: ['path'], list: ['path'], read: ['path', 'range'], readBytes: ['path', 'options'] },
   officeToPdf: { render: ['path', 'priority'], generation: [] },
@@ -60,10 +61,11 @@ export class AppDocumentPreview {
    * @param options.limits deployment budgets, resolved by the runtime Config.
    * @param options.report unexpected failures and cleanup failures, without file bytes.
    */
-  constructor({ invoke, limits, mediaPolicy, report = error => console.error('Document preview:', error) }) {
+  constructor({ invoke, limits, mediaPolicy, privateWorkspace, report = error => console.error('Document preview:', error) }) {
     this.invoke = invoke
     this.limits = limits
     this.mediaPolicy = mediaPolicy
+    this.privateWorkspace = privateWorkspace
     this.report = report
   }
 
@@ -117,7 +119,13 @@ export class AppDocumentPreview {
     if (namespace === 'workspaceFiles' && method === 'read' && args.range === undefined) args.range = {}
     if (namespace === 'workspaceFiles' && method === 'readBytes' && args.options === undefined) args.options = {}
     if (namespace === 'officeToPdf' && method === 'render' && args.priority === undefined) args.priority = 'foreground'
-    return { requestId, sessionId, namespace, method, args }
+    if (params.privateWorkspace === true && sessionId !== PRIVATE_WORKSPACE_SCOPE) {
+      throw failure('gateway/bad-request', 'Private workspace document scope is invalid.')
+    }
+    if (params.privateWorkspace !== true && sessionId === PRIVATE_WORKSPACE_SCOPE) {
+      throw failure('gateway/bad-request', 'Private workspace document scope is required.')
+    }
+    return { requestId, sessionId, namespace, method, args, privateWorkspace: params.privateWorkspace === true }
   }
 
   async #invoke(owner, params) {
@@ -144,7 +152,9 @@ export class AppDocumentPreview {
     // when a non-cooperative provider outlives the caller's deadline.
     record.done = Promise.resolve().then(async () => {
       controller.signal.throwIfAborted()
-      const value = await this.invoke(request.namespace, request.method, request.args, controller.signal)
+      const value = request.privateWorkspace
+        ? await this.#privateRead(request, controller.signal)
+        : await this.invoke(request.namespace, request.method, request.args, controller.signal)
       controller.signal.throwIfAborted()
       if (this.#closed || this.#closedOwners.has(owner)) throw failure('gateway/cancelled', 'The document preview owner has disconnected.')
       if ((request.namespace === 'workspaceFiles' && request.method === 'readBytes')
@@ -159,6 +169,22 @@ export class AppDocumentPreview {
       if (this.#requests.get(key) === record) this.#requests.delete(key)
     })
     return Promise.race([record.done, aborted.promise])
+  }
+
+  async #privateRead(request, signal) {
+    if (!this.privateWorkspace) throw failure('gateway/invocation-unavailable', 'Private workspace reader is unavailable.')
+    if (!(request.namespace === 'workspaceFiles' && ['stat', 'readBytes'].includes(request.method))
+      && !(request.namespace === 'officeToPdf' && ['render', 'generation'].includes(request.method))) {
+      throw failure('gateway/invocation-unavailable', 'This private workspace document method is unavailable.')
+    }
+    try { return await this.privateWorkspace(request.namespace, request.method, request.args, signal) }
+    catch (error) {
+      if (error?.code?.startsWith('workspace-files/')) throw failure(error.code, error.message)
+      if (error?.name === 'OfficeToPdfError' && typeof error.code === 'string') {
+        throw failure('document-render/failed', 'Office conversion failed.', { reason: error.code })
+      }
+      throw error
+    }
   }
 
   #lease(record, data) {

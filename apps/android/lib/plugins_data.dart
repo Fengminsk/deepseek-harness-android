@@ -28,6 +28,70 @@ String pluginName(Json item) => pluginText(
   '${item['name'] ?? item['moduleName'] ?? item['entryId']}',
 );
 
+/// Inventory copy comes from the Host snapshot; these labels never imply a
+/// mutable plugin-manager configuration.
+String inventoryPluginName(Json item) {
+  final title = item['meta']?['title'];
+  if (title is Map) return pluginText(title, '${item['moduleName']}');
+  final literal = title is String ? title : '${item['moduleName']}';
+  final unscoped = literal.startsWith('@')
+      ? literal.substring(literal.indexOf('/') + 1)
+      : literal;
+  return unscoped
+      .replaceFirst(RegExp(r'^cordis:'), '')
+      .replaceFirst(RegExp(r'^cordis-plugin-'), '')
+      .replaceFirst(RegExp(r'^dsh-(?:host-|client-)?'), '');
+}
+
+String inventoryPhaseLabel(dynamic phase) => switch (phase) {
+  'pending' => '等待依赖',
+  'loading' => '加载中',
+  'active' => '运行中',
+  'failed' => '启动失败',
+  'unloading' => '卸载中',
+  _ => '未运行',
+};
+
+String inventoryStateLabel(Json row, {bool providedByPreset = false}) {
+  if (row['fiberPhase'] == 'failed') return '启动失败';
+  if (providedByPreset) return '预设中启用';
+  return switch (row['enabled']) {
+    true => '已启用',
+    'conditional' => '条件启用',
+    _ => '已停用',
+  };
+}
+
+/// Only explicitly enabled preset rows can provide a disabled global module.
+List<String> inventoryEnabledPresets(Json entry, List<Json> presets) {
+  if (entry['enabled'] == true || entry['fiberPhase'] == 'failed') return [];
+  final names = <String>[];
+  for (final preset in presets) {
+    final rows = preset['rows'] as List? ?? const [];
+    if (rows.any(
+      (row) =>
+          row is Map &&
+          row['moduleName'] == entry['moduleName'] &&
+          row['enabled'] == true,
+    )) {
+      names.add('${preset['name'] ?? preset['id']}');
+    }
+  }
+  return names;
+}
+
+bool inventoryMatches(Json row, String query) {
+  final needle = query.trim().toLowerCase();
+  if (needle.isEmpty) return true;
+  final fields = [
+    row['moduleName'],
+    row['entryId'],
+    inventoryPluginName(row),
+    pluginText(row['meta']?['description'], ''),
+  ];
+  return fields.any((value) => '$value'.toLowerCase().contains(needle));
+}
+
 String pluginChangeSummary(Json result) => switch (result['application']) {
   'applied' => result['changed'] == true ? '变更已应用。' : '当前配置无需更改。',
   'restart-required' =>

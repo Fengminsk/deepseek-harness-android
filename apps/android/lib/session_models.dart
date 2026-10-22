@@ -5,6 +5,7 @@ import 'package:material_ui/material_ui.dart';
 
 import 'models.dart';
 import 'models_data.dart';
+import 'models_label.dart';
 import 'runtime.dart';
 import 'ui.dart';
 import 'agent_presets.dart';
@@ -58,6 +59,19 @@ class _SessionModelPageState extends State<SessionModelPage>
     if (pick == null) return '尚未取得会话模型';
     return '${modelFor(pick)?['name'] ?? pick['model']}'
         '${pick['reasoningEffort'] == null ? '' : ' · ${effortLabel(pick)}'}';
+  }
+
+  Widget selectionLabel(Json? pick) {
+    if (pick == null) return const Text('尚未取得会话模型');
+    final model = modelFor(pick);
+    return ModelReleaseLabel(
+      providerId: '${pick['provider']}',
+      modelId: '${pick['model']}',
+      modelName: '${model?['name'] ?? pick['model']}',
+      suffix: pick['reasoningEffort'] == null
+          ? null
+          : ' · ${effortLabel(pick)}',
+    );
   }
 
   String effortLabel(Json pick) {
@@ -438,14 +452,16 @@ class _SessionModelPageState extends State<SessionModelPage>
             PocketSection(
               title: '当前会话',
               children: [
-                PocketRow(
-                  icon: Icons.check_circle_rounded,
-                  title: label(appliedSelection),
-                  subtitle: appliedSelection == null
-                      ? '等待会话状态'
-                      : '${route(appliedSelection!)}\n'
-                            '${inherited ? '尚未单独设置，继承默认模型' : '已选择，供后续请求使用'}'
-                            '${modelFor(appliedSelection) == null ? '\n此模型暂不在可用目录中，请选择其他模型或检查凭据。' : ''}',
+                PocketTile(
+                  leading: const Icon(Icons.check_circle_rounded),
+                  title: selectionLabel(appliedSelection),
+                  subtitle: Text(
+                    appliedSelection == null
+                        ? '等待会话状态'
+                        : '${route(appliedSelection!)}\n'
+                              '${inherited ? '尚未单独设置，继承默认模型' : '已选择，供后续请求使用'}'
+                              '${modelFor(appliedSelection) == null ? '\n此模型暂不在可用目录中，请选择其他模型或检查凭据。' : ''}',
+                  ),
                 ),
                 if (modelView?['lastUsed'] is Json &&
                     !mapEquals(
@@ -601,7 +617,11 @@ class _SessionModelPageState extends State<SessionModelPage>
       inMutuallyExclusiveGroup: true,
       child: PocketTile(
         key: ValueKey('session-model-${group['id']}-${model['id']}'),
-        title: Text('${model['name']}'),
+        title: ModelReleaseLabel(
+          providerId: '${group['id']}',
+          modelId: '${model['id']}',
+          modelName: '${model['name']}',
+        ),
         subtitle: Text(
           '${model['id']}${current ? '\n当前会话使用' : ''}'
           '${selected && hasDraft ? '\n已选中 · 待应用' : ''}'

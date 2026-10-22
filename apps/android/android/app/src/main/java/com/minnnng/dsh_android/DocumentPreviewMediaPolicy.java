@@ -97,10 +97,11 @@ public final class DocumentPreviewMediaPolicy {
     /** Preserve original file refusal statuses and distinguish unavailable transport from absent files. */
     public static int statusFor(String code) {
         return switch (code) {
-            case "FS_NOT_FOUND", "workspace-file/not-found" -> 404;
+            case "FS_NOT_FOUND", "workspace-file/not-found", "workspace-files/not-found" -> 404;
             case "FS_NOT_REGULAR_FILE", "FS_PERMISSION_DENIED", "FS_SANDBOX_DENIED",
-                 "workspace-file/not-regular-file", "workspace-file/outside-workspace" -> 403;
-            case "FS_TOO_LARGE", "workspace-file/too-large" -> 413;
+                 "workspace-file/not-regular-file", "workspace-file/outside-workspace",
+                 "workspace-files/outside-workspace", "workspace-files/symlink", "workspace-files/not-file" -> 403;
+            case "FS_TOO_LARGE", "workspace-file/too-large", "workspace-files/file-bytes" -> 413;
             case "FS_ABORTED", "gateway/cancelled" -> 499;
             case "gateway/bad-request" -> 400;
             case "document-preview/busy", "document-preview/capacity" -> 429;
