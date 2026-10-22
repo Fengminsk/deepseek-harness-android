@@ -28,6 +28,7 @@ import 'agent_presets.dart';
 import 'subagent_model_settings.dart';
 import 'web_search_settings.dart';
 import 'permission_policy.dart';
+import 'settings_general.dart';
 
 class SettingsPage extends StatelessWidget {
   const SettingsPage({required this.runtime, super.key});
@@ -67,6 +68,13 @@ class SettingsPage extends StatelessWidget {
                   ),
                 ],
               ),
+            ),
+            PocketSection(
+              title: '通用',
+              children: [
+                DeveloperToolsSettingsRow(runtime: runtime),
+                const _InstalledVersionRow(),
+              ],
             ),
             PocketSection(
               title: '你的 Agent',
@@ -178,7 +186,6 @@ class SettingsPage extends StatelessWidget {
                   subtitle: '原始配置、备份与启动故障处理',
                   onTap: () => open(RecoveryPage(controller: runtime.recovery)),
                 ),
-                const _InstalledVersionRow(),
               ],
             ),
           ],

@@ -95,4 +95,40 @@ void main() {
     await Future.wait([old, changed]);
     expect(runtime.sessions.single['header']['id'], 'after-change');
   });
+
+  for (final staleFails in [false, true]) {
+    test('replacement connection reads its list before the old read '
+        '${staleFails ? 'fails' : 'finishes'}', () async {
+      final runtime = _Runtime()..phase = 'ready';
+      addTearDown(runtime.dispose);
+      final old = runtime.refreshSessions();
+      final queuedOld = runtime.refreshSessions();
+      expect(runtime.reads, hasLength(1));
+
+      runtime.fail(StateError('old connection closed'));
+      runtime.phase = 'ready';
+      final replacement = runtime.refreshSessions();
+      expect(runtime.reads, hasLength(2));
+      runtime.reads.last.complete([
+        {
+          'header': {'id': 'new-connection'},
+        },
+      ]);
+      await replacement;
+      expect(runtime.sessions.single['header']['id'], 'new-connection');
+
+      if (staleFails) {
+        runtime.reads.first.completeError(StateError('old connection failed'));
+      } else {
+        runtime.reads.first.complete([
+          {
+            'header': {'id': 'stale-connection'},
+          },
+        ]);
+      }
+      await Future.wait([old, queuedOld]);
+      expect(runtime.reads, hasLength(2));
+      expect(runtime.sessions.single['header']['id'], 'new-connection');
+    });
+  }
 }

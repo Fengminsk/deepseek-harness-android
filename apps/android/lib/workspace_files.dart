@@ -261,6 +261,121 @@ class _WorkspaceFilesPageState extends State<WorkspaceFilesPage>
     ),
   );
 
+  Future<void> entryMenu(Json row, Offset position) async {
+    if (menuOpen || !current || !widget.runtime.ready) return;
+    final target = row['path'];
+    if (target is! String) return;
+    final directory = row['kind'] == 'directory';
+    final blocked = row['blockedReason'] != null;
+    final textFile =
+        !directory &&
+        fileLikelyText('${row['name']}', mimeType: row['mediaType'] as String?);
+    final actions = <_WorkspaceEntryAction>[
+      if (!blocked) _WorkspaceEntryAction.open,
+      if (!blocked && textFile) _WorkspaceEntryAction.openExternal,
+      if (!blocked && (directory || textFile)) _WorkspaceEntryAction.search,
+      _WorkspaceEntryAction.copyPath,
+      _WorkspaceEntryAction.info,
+    ];
+    final menuItems = <CommonPopupMenuItem>[
+      for (final action in actions)
+        switch (action) {
+          _WorkspaceEntryAction.open => CommonPopupMenuItem(
+            label: directory
+                ? '打开文件夹'
+                : textFile
+                ? '预览文件'
+                : '在其他应用中打开',
+            glyph: directory
+                ? Icons.folder_open_rounded
+                : Icons.open_in_new_rounded,
+            onPressed: () {},
+          ),
+          _WorkspaceEntryAction.openExternal => CommonPopupMenuItem(
+            label: '在其他应用中打开',
+            glyph: Icons.open_in_new_rounded,
+            onPressed: () {},
+          ),
+          _WorkspaceEntryAction.search => CommonPopupMenuItem(
+            label: directory ? '搜索此文件夹' : '搜索文件内容',
+            glyph: Icons.search_rounded,
+            onPressed: () {},
+          ),
+          _WorkspaceEntryAction.copyPath => CommonPopupMenuItem(
+            label: '复制工作区路径',
+            glyph: Icons.copy_rounded,
+            onPressed: () {},
+          ),
+          _WorkspaceEntryAction.info => CommonPopupMenuItem(
+            label: '文件信息',
+            glyph: Icons.info_outline_rounded,
+            onPressed: () {},
+          ),
+        },
+    ];
+    menuOpen = true;
+    final attempt = generation, listedVersion = version, listedPath = path;
+    try {
+      final selected = await showFileBrowserMenu(
+        context,
+        menuItems,
+        position: position,
+      );
+      if (!mounted ||
+          selected == null ||
+          !current ||
+          attempt != generation ||
+          listedVersion != version ||
+          listedPath != path ||
+          !widget.runtime.ready ||
+          !entries.any((entry) => identical(entry, row))) {
+        return;
+      }
+      switch (actions[selected]) {
+        case _WorkspaceEntryAction.open:
+          await open(row);
+        case _WorkspaceEntryAction.openExternal:
+          await externalOpen.open(context, path: target);
+        case _WorkspaceEntryAction.search:
+          await Navigator.push<void>(
+            context,
+            PocketRoute<void>(
+              builder: (_) => WorkspaceSearchPage(
+                runtime: widget.runtime,
+                path: target,
+                contentOnly: !directory,
+              ),
+            ),
+          );
+        case _WorkspaceEntryAction.copyPath:
+          try {
+            await Clipboard.setData(ClipboardData(text: target));
+          } catch (_) {
+            if (mounted) {
+              ScaffoldMessenger.of(context)
+                ..hideCurrentSnackBar()
+                ..showSnackBar(const SnackBar(content: Text('无法复制路径，请重试。')));
+            }
+            return;
+          }
+          if (mounted) {
+            ScaffoldMessenger.of(context)
+              ..hideCurrentSnackBar()
+              ..showSnackBar(const SnackBar(content: Text('已复制工作区路径')));
+          }
+        case _WorkspaceEntryAction.info:
+          await Navigator.push<void>(
+            context,
+            PocketRoute<void>(
+              builder: (_) => _WorkspaceEntryInfo(row: Map.of(row)),
+            ),
+          );
+      }
+    } finally {
+      menuOpen = false;
+    }
+  }
+
   Future<void> menu(BuildContext anchor) async {
     if (menuOpen) return;
     menuOpen = true;
@@ -367,6 +482,10 @@ class _WorkspaceFilesPageState extends State<WorkspaceFilesPage>
                     row['blockedReason'] == null
                 ? () => open(row)
                 : null,
+            onLongPress:
+                current && widget.runtime.ready && row['path'] is String
+                ? (position) => entryMenu(row, position)
+                : null,
           ),
         if (nextOffset != null)
           PocketButton.tonal(
@@ -377,6 +496,68 @@ class _WorkspaceFilesPageState extends State<WorkspaceFilesPage>
       ],
     ),
   );
+}
+
+enum _WorkspaceEntryAction { open, openExternal, search, copyPath, info }
+
+class _WorkspaceEntryInfo extends StatelessWidget {
+  const _WorkspaceEntryInfo({required this.row});
+  final Json row;
+
+  @override
+  Widget build(BuildContext context) {
+    final bytes = row['bytes'];
+    final modified = fileModifiedDate(row['modifiedAt']);
+    final blocked = row['blockedReason'];
+    final kind = row['kind'] == 'directory'
+        ? '文件夹'
+        : row['kind'] == 'file'
+        ? '文件'
+        : '其他项目';
+    return PocketScaffold(
+      title: const Text('文件信息'),
+      body: PocketList(
+        children: [
+          PocketSection(
+            children: [
+              PocketRow(
+                icon: fileTypeIcon(
+                  '${row['name']}',
+                  directory: row['kind'] == 'directory',
+                  mediaType: row['mediaType'] as String?,
+                ),
+                title: '${row['name']}',
+                subtitle: kind,
+              ),
+              PocketRow(
+                icon: Icons.route_rounded,
+                title: '工作区路径',
+                subtitle: '${row['path']}',
+              ),
+              if (bytes is int && row['kind'] == 'file')
+                PocketRow(
+                  icon: Icons.data_usage_rounded,
+                  title: '大小',
+                  subtitle: workspaceFileSize(bytes),
+                ),
+              if (modified.isNotEmpty)
+                PocketRow(
+                  icon: Icons.schedule_rounded,
+                  title: '修改时间',
+                  subtitle: modified,
+                ),
+              if (blocked is String)
+                PocketRow(
+                  icon: Icons.block_rounded,
+                  title: '读取状态',
+                  subtitle: workspaceSkipReason(blocked),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class WorkspaceTextPage extends StatefulWidget {

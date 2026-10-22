@@ -318,6 +318,7 @@ void main() {
           find.byKey(const ValueKey('workspace-entry-notes')),
         );
         expect(row.onTap, isNull);
+        expect(row.onLongPress, isNull);
         expect(runtime.calls, hasLength(2));
         latest.complete(listing('', entries: []));
         await tester.pumpAndSettle();
@@ -418,6 +419,130 @@ void main() {
         isTrue,
       );
       expect(tester.takeException(), isNull);
+      await close(tester);
+    },
+  );
+
+  testWidgets('folder context menu searches the selected directory', (
+    tester,
+  ) async {
+    final runtime = WorkspaceRuntime();
+    addTearDown(runtime.dispose);
+    await open(tester, WorkspaceFilesPage(runtime: runtime));
+    await tester.longPress(find.byKey(const ValueKey('workspace-entry-notes')));
+    await tester.pumpAndSettle();
+    expect(find.text('搜索此文件夹'), findsOneWidget);
+    await tap(tester, find.text('搜索此文件夹'));
+    final page = tester.widget<WorkspaceSearchPage>(
+      find.byType(WorkspaceSearchPage),
+    );
+    expect(page.path, 'notes');
+    expect(page.contentOnly, isFalse);
+    expect(
+      runtime.calls.where((call) => call.$1 == 'workspace.files.search'),
+      isEmpty,
+    );
+    await close(tester);
+  });
+
+  testWidgets(
+    'text file context menu offers scoped search and external opening',
+    (tester) async {
+      final runtime = WorkspaceRuntime();
+      addTearDown(runtime.dispose);
+      await open(tester, WorkspaceFilesPage(runtime: runtime));
+      await tap(tester, find.text('notes'));
+      await tester.longPress(
+        find.byKey(const ValueKey('workspace-entry-notes/report.txt')),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('预览文件'), findsOneWidget);
+      expect(find.text('在其他应用中打开'), findsOneWidget);
+      await tap(tester, find.text('搜索文件内容'));
+      final page = tester.widget<WorkspaceSearchPage>(
+        find.byType(WorkspaceSearchPage),
+      );
+      expect(page.path, 'notes/report.txt');
+      expect(page.contentOnly, isTrue);
+      await close(tester);
+    },
+  );
+
+  testWidgets('blocked workspace item exposes information but no opening', (
+    tester,
+  ) async {
+    final runtime = WorkspaceRuntime();
+    addTearDown(runtime.dispose);
+    await open(tester, WorkspaceFilesPage(runtime: runtime));
+    await tester.longPress(
+      find.byKey(const ValueKey('workspace-entry-escape')),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('打开文件夹'), findsNothing);
+    expect(find.text('搜索此文件夹'), findsNothing);
+    await tap(tester, find.text('文件信息'));
+    expect(find.text('符号链接不在此入口的读取范围内'), findsOneWidget);
+    expect(find.text('escape'), findsWidgets);
+    expect(runtime.calls, hasLength(1));
+    await close(tester);
+  });
+
+  testWidgets('copy action uses the relative workspace path', (tester) async {
+    final runtime = WorkspaceRuntime();
+    addTearDown(runtime.dispose);
+    String? copied;
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'Clipboard.setData') {
+          copied = (call.arguments as Map)['text'] as String?;
+        }
+        return null;
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        null,
+      ),
+    );
+    await open(tester, WorkspaceFilesPage(runtime: runtime));
+    await tap(tester, find.text('notes'));
+    await tester.longPress(
+      find.byKey(const ValueKey('workspace-entry-notes/report.txt')),
+    );
+    await tester.pumpAndSettle();
+    await tap(tester, find.text('复制工作区路径'));
+    expect(copied, 'notes/report.txt');
+    await close(tester);
+  });
+
+  testWidgets(
+    'a menu opened on an old directory cannot navigate after reconnect',
+    (tester) async {
+      final runtime = WorkspaceRuntime();
+      addTearDown(runtime.dispose);
+      await open(tester, WorkspaceFilesPage(runtime: runtime));
+      await tester.longPress(
+        find.byKey(const ValueKey('workspace-entry-notes')),
+      );
+      await tester.pumpAndSettle();
+      runtime.handle = (method, params) async => listing(
+        params['path'] as String,
+        version: 'directory-2',
+        entries: [
+          {'name': 'replacement', 'path': 'replacement', 'kind': 'directory'},
+        ],
+      );
+      runtime.replaceConnection();
+      await tester.pumpAndSettle();
+      await tap(tester, find.text('打开文件夹'));
+      expect(find.text('notes'), findsNothing);
+      expect(find.text('replacement'), findsOneWidget);
+      expect(
+        runtime.calls.where((call) => call.$2['path'] == 'notes'),
+        isEmpty,
+      );
       await close(tester);
     },
   );

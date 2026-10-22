@@ -127,6 +127,8 @@ class RuntimeController extends ChangeNotifier {
   String? tasksError;
   Future<void>? _tasksRefresh;
   Future<void>? _sessionsRefresh;
+  int _sessionsRefreshGeneration = -1;
+  Object? _sessionsRefreshToken;
   bool _sessionsRefreshAgain = false;
   int _tasksRefreshGeneration = -1;
   int _connectionGeneration = 0;
@@ -781,37 +783,46 @@ class RuntimeController extends ChangeNotifier {
   }
 
   Future<void> refreshSessions() {
-    if (_sessionsRefresh != null) {
+    final generation = _connectionGeneration;
+    if (_sessionsRefresh != null && _sessionsRefreshGeneration == generation) {
       _sessionsRefreshAgain = true;
       return _sessionsRefresh!;
     }
+    final token = Object();
+    _sessionsRefreshGeneration = generation;
+    _sessionsRefreshToken = token;
+    _sessionsRefreshAgain = false;
     late final Future<void> operation;
-    operation = _readSessions().whenComplete(() {
-      if (identical(_sessionsRefresh, operation)) _sessionsRefresh = null;
+    operation = _readSessions(generation, token).whenComplete(() {
+      if (identical(_sessionsRefreshToken, token)) {
+        _sessionsRefresh = null;
+        _sessionsRefreshToken = null;
+      }
     });
     return _sessionsRefresh = operation;
   }
 
-  Future<void> _readSessions() async {
+  Future<void> _readSessions(int generation, Object token) async {
+    bool current() =>
+        !_disposed &&
+        generation == _connectionGeneration &&
+        identical(_sessionsRefreshToken, token);
     do {
+      if (!current()) return;
       _sessionsRefreshAgain = false;
-      final generation = _connectionGeneration;
       List<Json> next;
       try {
         next = (await call('sessions.list') as List).cast<Json>();
       } catch (_) {
+        if (!current()) return;
         // A queued invalidation still owns a fresh read after this one fails.
         if (_sessionsRefreshAgain && ready && !_disposed) continue;
         rethrow;
       }
-      if (_disposed) return;
-      if (generation != _connectionGeneration) {
-        _sessionsRefreshAgain = ready;
-        continue;
-      }
+      if (!current()) return;
       sessions = next;
       notifyListeners();
-    } while (_sessionsRefreshAgain && !_disposed);
+    } while (_sessionsRefreshAgain && current());
   }
 
   String newSession() {
@@ -848,8 +859,9 @@ class RuntimeController extends ChangeNotifier {
         offset = (records.last['seq'] as int) + 1;
       }
       // Merge notifications received while the historical pages were loading.
+      final seen = {for (final event in accumulated) event['seq'] as int};
       for (final event in timelines[id] ?? <Json>[]) {
-        if (!accumulated.any((record) => record['seq'] == event['seq'])) {
+        if (seen.add(event['seq'] as int)) {
           accumulated.add(event);
         }
       }

@@ -49,8 +49,7 @@ class BackgroundExecution(private val service: Service) {
 
     fun phase(value: String) {
         if (closed) return
-        state.phase(value)
-        main.removeCallbacks(expire)
+        if (state.phase(value)) main.removeCallbacks(expire)
         render()
     }
 
@@ -86,6 +85,12 @@ class BackgroundExecution(private val service: Service) {
         state.stale()
         main.removeCallbacks(expire)
         render()
+    }
+
+    /** A summary read can time out while a newer pushed observation remains valid. */
+    fun pollUnavailable() {
+        if (closed) return
+        if (!state.fresh()) unavailable()
     }
 
     fun configure(enabled: Boolean): JSONObject {

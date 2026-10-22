@@ -15,13 +15,16 @@ public final class BackgroundTaskState {
         this.keepAwake = keepAwake;
     }
 
-    public void phase(String value) {
+    /** Returns whether a new phase invalidated the current observation. */
+    public boolean phase(String value) {
         if (!value.equals(phase)) {
             phase = value;
             fresh = false;
             epoch = null;
             revision = -1;
+            return true;
         }
+        return false;
     }
 
     public boolean accept(String sourceEpoch, long sourceRevision, int running, int queued,
@@ -34,6 +37,12 @@ public final class BackgroundTaskState {
         }
         if (!phase.equals("ready") || (epoch != null && !epoch.equals(sourceEpoch))
                 || sourceRevision < revision) return false;
+        if (sourceRevision == revision && (running != this.running || queued != this.queued
+                || waiting != this.waiting || failed != this.failed
+                || !java.util.Objects.equals(backgroundJobs, this.backgroundJobs)
+                || !java.util.Objects.equals(packageOperations, this.packageOperations))) {
+            throw new IllegalArgumentException("Conflicting task summary revision");
+        }
         epoch = sourceEpoch;
         revision = sourceRevision;
         this.running = running;

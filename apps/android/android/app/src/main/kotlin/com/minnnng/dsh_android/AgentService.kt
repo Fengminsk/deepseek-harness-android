@@ -69,7 +69,7 @@ class AgentService : Service() {
         val id = summaryRequest
         summaryRequest = null
         if (id != null) nativePending.remove(id)
-        background.unavailable()
+        background.pollUnavailable()
     }
     private val summaryPoll = object : Runnable {
         override fun run() {
@@ -472,9 +472,9 @@ class AgentService : Service() {
                     result.fold(
                         onSuccess = { snapshot ->
                             try { background.observe(snapshot) }
-                            catch (_: Exception) { background.unavailable() }
+                            catch (_: Exception) { background.pollUnavailable() }
                         },
-                        onFailure = { background.unavailable() },
+                        onFailure = { background.pollUnavailable() },
                     )
                 }
             }

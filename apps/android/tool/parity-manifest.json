@@ -358,15 +358,19 @@
       "status": "partial",
       "android": [
         "apps/android/lib/settings.dart",
+        "apps/android/lib/settings_general.dart",
         "apps/android/lib/recovery.dart"
       ],
       "evidence": {
         "core": "unverified",
         "ui": "partial",
-        "behavior": "unverified",
+        "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Version and recovery entries exist; original coding-tools and contributed onboarding/general rows need individual migration review."
+      "note": "General Settings now reads and writes the original revisioned ui-settings.enabled preference through a native switch, keeps the accepted value visible during pending writes, and requires explicit review after uncertain results. Installed version and recovery entries exist. Contributed General rows and onboarding remain incomplete; device acceptance is unverified.",
+      "evidenceRefs": {
+        "behavior": ["apps/android/test/settings_general_test.dart"]
+      }
     },
     {
       "key": "webUi/ui-settings-models",

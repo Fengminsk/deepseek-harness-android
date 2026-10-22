@@ -231,6 +231,36 @@ void main() {
     expect(runtime.requests.contains('session.read.release'), isFalse);
   });
 
+  test(
+    'paged history includes live events without duplicating page overlap',
+    () async {
+      final runtime = _Runtime();
+      addTearDown(runtime.dispose);
+      final lastPage = Completer<Json>();
+      runtime.historyPage = (params) {
+        if (params['offset'] == 0) {
+          return Future.value({
+            'events': [for (var i = 0; i < 200; i++) _event(i, 'x', {})],
+            'snapshot': 'stable-history',
+          });
+        }
+        return lastPage.future;
+      };
+      runtime.timelines['s'] = [_event(199, 'x', {}), _event(201, 'x', {})];
+      final read = runtime.openSession('s');
+      await Future<void>.delayed(Duration.zero);
+      expect(runtime.historyParams.last['offset'], 200);
+      runtime.timelines['s']!.add(_event(202, 'x', {}));
+      lastPage.complete({
+        'events': [_event(200, 'x', {})],
+      });
+      await read;
+      expect(runtime.timelines['s']!.map((event) => event['seq']), [
+        for (var i = 0; i <= 202; i++) i,
+      ]);
+    },
+  );
+
   test('failed later history page releases its snapshot', () async {
     final runtime = _Runtime();
     addTearDown(runtime.dispose);

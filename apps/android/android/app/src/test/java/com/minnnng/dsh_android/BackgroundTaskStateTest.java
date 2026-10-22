@@ -9,8 +9,13 @@ public final class BackgroundTaskStateTest {
         state.phase("ready");
         check(state.accept("first", 2, 1, 2, 0, 0, 0, 0), "running frame rejected");
         check(state.shouldHoldWakeLock(), "running task did not acquire CPU");
+        check(!state.phase("ready") && state.fresh(), "duplicate ready phase revoked the observation lease");
         check(!state.accept("first", 1, 0, 0, 0, 0, 0, 1), "stale revision replaced active state");
         check(!state.accept("other", 3, 0, 0, 0, 0, 0, 1), "foreign runtime replaced state");
+        boolean conflictingRevision = false;
+        try { state.accept("first", 2, 0, 0, 0, 0, 0, 0); }
+        catch (IllegalArgumentException expected) { conflictingRevision = true; }
+        check(conflictingRevision && state.shouldHoldWakeLock(), "conflicting same-revision frame replaced running work");
         state.accept("first", 3, 0, 0, 1, 0, 0, 0);
         check(!state.shouldHoldWakeLock() && state.presentation().equals("waiting"), "approval held CPU");
         state.accept("first", 4, 0, 0, 1, 0, 1, 0);
@@ -22,7 +27,7 @@ public final class BackgroundTaskStateTest {
         check(!state.shouldHoldWakeLock() && state.presentation().equals("unconfirmed"), "stale feed held CPU");
         check(state.accept("first", 4, 0, 0, 1, 0, 1, 0), "same-revision fresh observation rejected");
         check(state.shouldHoldWakeLock(), "verified reconnection did not recover CPU ownership");
-        state.phase("failed");
+        check(state.phase("failed"), "failure phase did not invalidate the running observation");
         check(!state.shouldHoldWakeLock() && state.presentation().equals("failed"), "runtime failure remained running");
         state.phase("ready");
         state.accept("replacement", 0, 0, 0, 0, 0, null, 0);
