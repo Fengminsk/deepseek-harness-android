@@ -6,6 +6,8 @@ import 'package:material_ui/material_ui.dart';
 
 import 'runtime.dart';
 import 'ui.dart';
+import 'file_browser_chrome.dart';
+import 'flclash/popup.dart';
 
 String workspaceFileFailure(Object error) => error is PlatformException
     ? error.message ?? '读取未完成，请刷新后重试。错误：${error.code}'
@@ -52,7 +54,7 @@ Future<Json> _call(
   return value;
 }
 
-/// This page has no root-path parameter: only the native App workspace is browsable.
+/// Browses the runtime-provided workspace without accepting an arbitrary root.
 class WorkspaceFilesPage extends StatefulWidget {
   const WorkspaceFilesPage({required this.runtime, this.path = '', super.key});
   final RuntimeController runtime;
@@ -66,10 +68,14 @@ class _WorkspaceFilesPageState extends State<WorkspaceFilesPage>
   List<Json> entries = [];
   String? root, version, error;
   int? nextOffset;
-  bool loading = false, current = false, truncated = false;
+  bool loading = false, current = false, truncated = false, menuOpen = false;
   int generation = 0;
   late String phase;
   late int connection;
+  late String path = widget.path;
+  final scroll = ScrollController();
+  final positions = <String, double>{};
+  final loadedCounts = <String, int>{};
 
   @override
   void initState() {
@@ -101,32 +107,81 @@ class _WorkspaceFilesPageState extends State<WorkspaceFilesPage>
     if (state == AppLifecycleState.resumed) unawaited(load());
   }
 
-  Future<void> load({bool more = false}) async {
-    if (loading || !widget.runtime.ready || more && nextOffset == null) return;
-    final attempt = generation;
+  Future<void> load({bool more = false, double? restoreOffset}) async {
+    if (loading ||
+        !widget.runtime.ready ||
+        more && (!current || nextOffset == null)) {
+      return;
+    }
+    final attempt = generation, requestedPath = path;
+    final requestedOffset = more ? nextOffset! : 0;
+    final requestedVersion = version;
+    final targetCount = more
+        ? 0
+        : max(loadedCounts[requestedPath] ?? 0, entries.length);
     setState(() => loading = true);
     try {
-      final result = await _call(widget.runtime, 'list', {
-        'path': widget.path,
-        'offset': more ? nextOffset : 0,
-        if (more) 'version': version,
+      var result = await _call(widget.runtime, 'list', {
+        'path': requestedPath,
+        'offset': requestedOffset,
+        if (more) 'version': requestedVersion,
       });
       if (!mounted || attempt != generation) return;
-      if (result['path'] != widget.path ||
+      if (result['path'] != requestedPath ||
           result['root'] is! String ||
-          result['version'] is! String) {
+          result['version'] is! String ||
+          result['offset'] != requestedOffset ||
+          more && result['version'] != requestedVersion) {
         throw const FormatException('Unexpected directory');
       }
-      final rows = (result['entries'] as List).cast<Json>();
+      final rows = List<Json>.from((result['entries'] as List).cast<Json>());
+      var next = result['nextOffset'] as int?;
+      if (next != null && next <= requestedOffset) {
+        throw const FormatException('Invalid directory continuation');
+      }
+      final directoryVersion = result['version'];
+      final directoryRoot = result['root'];
+      while (!more && next != null && rows.length < targetCount) {
+        final continuation = next;
+        result = await _call(widget.runtime, 'list', {
+          'path': requestedPath,
+          'offset': continuation,
+          'version': directoryVersion,
+        });
+        if (!mounted || attempt != generation) return;
+        if (result['path'] != requestedPath ||
+            result['root'] != directoryRoot ||
+            result['version'] != directoryVersion ||
+            result['offset'] != continuation) {
+          throw const FormatException(
+            'Directory changed while restoring position',
+          );
+        }
+        rows.addAll((result['entries'] as List).cast<Json>());
+        next = result['nextOffset'] as int?;
+        if (next != null && next <= continuation) {
+          throw const FormatException('Invalid directory continuation');
+        }
+      }
       setState(() {
         entries = [if (more) ...entries, ...rows];
+        loadedCounts[requestedPath] = entries.length;
         root = result['root'] as String;
         version = result['version'] as String;
-        nextOffset = result['nextOffset'] as int?;
+        nextOffset = next;
         truncated = result['truncated'] == true;
         current = true;
         error = null;
       });
+      if (restoreOffset != null) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && attempt == generation && scroll.hasClients) {
+            scroll.jumpTo(
+              restoreOffset.clamp(0, scroll.position.maxScrollExtent),
+            );
+          }
+        });
+      }
     } catch (failure) {
       if (mounted && attempt == generation) {
         setState(() {
@@ -139,18 +194,95 @@ class _WorkspaceFilesPageState extends State<WorkspaceFilesPage>
     }
   }
 
+  void navigate(String target) {
+    if (scroll.hasClients) positions[path] = scroll.offset;
+    if (current) loadedCounts[path] = entries.length;
+    generation++;
+    setState(() {
+      path = target;
+      entries = [];
+      version = null;
+      nextOffset = null;
+      error = null;
+      current = false;
+      loading = false;
+      truncated = false;
+    });
+    if (scroll.hasClients) scroll.jumpTo(0);
+    unawaited(load(restoreOffset: positions[path] ?? 0));
+  }
+
+  void back() {
+    if (path.isEmpty) {
+      Navigator.maybePop(context);
+      return;
+    }
+    navigate(path.split('/').take(path.split('/').length - 1).join('/'));
+  }
+
   Future<void> open(Json row) async {
-    final path = row['path'] as String?;
-    if (path == null || row['blockedReason'] != null) return;
-    await Navigator.push<void>(
-      context,
+    if (!current || !widget.runtime.ready) return;
+    final target = row['path'] as String?;
+    if (target == null || row['blockedReason'] != null) return;
+    if (row['kind'] == 'directory') {
+      navigate(target);
+      return;
+    }
+    await Navigator.of(context).push(
       PocketRoute<void>(
-        builder: (_) => row['kind'] == 'directory'
-            ? WorkspaceFilesPage(runtime: widget.runtime, path: path)
-            : WorkspaceTextPage(runtime: widget.runtime, path: path),
+        builder: (_) =>
+            WorkspaceTextPage(runtime: widget.runtime, path: target),
       ),
     );
     if (mounted) unawaited(load());
+  }
+
+  void search() => Navigator.push<void>(
+    context,
+    PocketRoute<void>(
+      builder: (_) => WorkspaceSearchPage(runtime: widget.runtime, path: path),
+    ),
+  );
+
+  Future<void> menu(BuildContext anchor) async {
+    if (menuOpen) return;
+    menuOpen = true;
+    final attempt = generation;
+    final selected = await showFileBrowserMenu(anchor, [
+      CommonPopupMenuItem(
+        label: '刷新工作区目录',
+        glyph: Icons.refresh_rounded,
+        onPressed: loading || !widget.runtime.ready ? null : () {},
+      ),
+      CommonPopupMenuItem(
+        label: '位置信息',
+        glyph: Icons.info_outline_rounded,
+        onPressed: () {},
+      ),
+    ]);
+    menuOpen = false;
+    if (!mounted || attempt != generation) return;
+    if (selected == 0) unawaited(load());
+    if (selected == 1) {
+      Navigator.push<void>(
+        context,
+        PocketRoute<void>(
+          builder: (_) => PocketScaffold(
+            title: const Text('位置信息'),
+            body: PocketList(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Text(
+                    '${root ?? '连接服务后显示实际路径'}${path.isEmpty ? '' : '\n$path'}\n\n此入口浏览 App 的工作区文件。符号链接不跟随，设备上的其他文件需要先授权。',
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
   }
 
   @override
@@ -158,79 +290,65 @@ class _WorkspaceFilesPageState extends State<WorkspaceFilesPage>
     generation++;
     widget.runtime.removeListener(runtimeChanged);
     WidgetsBinding.instance.removeObserver(this);
+    scroll.dispose();
     super.dispose();
   }
 
   @override
-  Widget build(BuildContext context) => PocketScaffold(
-    title: Text(
-      widget.path.isEmpty ? '工作区文件' : widget.path.split('/').last,
-      maxLines: 1,
-      overflow: TextOverflow.ellipsis,
-    ),
-    trailing: GlassButton(
-      icon: Icons.refresh_rounded,
-      label: '刷新工作区目录',
-      onPressed: loading || !widget.runtime.ready ? null : load,
-    ),
-    body: PocketList(
-      padding: const EdgeInsets.all(20),
-      children: [
-        PocketSection(
-          title: 'App 私有工作区',
-          children: [
-            _Note(root ?? '连接服务后显示实际路径'),
-            if (widget.path.isNotEmpty) _Note('当前目录：${widget.path}'),
-            if (!current && entries.isNotEmpty)
-              const _Note('显示上次读取的目录，当前状态未确认。'),
-            const _Note('只读浏览。符号链接不跟随，手机其他文件通过“授权文件”访问。'),
-            PocketRow(
-              icon: Icons.search_rounded,
-              title: '搜索此目录',
-              subtitle: '按文件名或 UTF-8 文本内容查找，包括子目录',
-              onTap: widget.runtime.ready
-                  ? () => Navigator.push<void>(
-                      context,
-                      PocketRoute<void>(
-                        builder: (_) => WorkspaceSearchPage(
-                          runtime: widget.runtime,
-                          path: widget.path,
-                        ),
-                      ),
-                    )
-                  : null,
+  Widget build(BuildContext context) => PopScope(
+    canPop: path.isEmpty,
+    onPopInvokedWithResult: (didPop, _) {
+      if (!didPop) back();
+    },
+    child: FileBrowserChrome(
+      title: path.isEmpty ? 'App 私有文件' : path.split('/').last,
+      count: version == null
+          ? (loading ? '正在读取…' : '尚未读取')
+          : '${nextOffset != null || truncated ? '已载入' : '共'} ${entries.length} 项${!current ? ' · 待刷新' : ''}',
+      breadcrumbs: [
+        FileBreadcrumb('App 私有文件', path.isEmpty ? null : () => navigate('')),
+        if (path.isNotEmpty)
+          for (var i = 0; i < path.split('/').length; i++)
+            FileBreadcrumb(
+              path.split('/')[i],
+              i == path.split('/').length - 1
+                  ? null
+                  : () => navigate(path.split('/').take(i + 1).join('/')),
             ),
-          ],
-        ),
+      ],
+      controller: scroll,
+      onBack: back,
+      onMore: menu,
+      onSearch: widget.runtime.ready ? search : null,
+      children: [
+        if (!current && entries.isNotEmpty) const _Note('显示上次读取的目录，当前状态未确认。'),
         if (!widget.runtime.ready) const _Note('运行时尚未连接，稍后重试。'),
         if (error != null) _ErrorNotice(error!, onRetry: loading ? null : load),
         if (loading) const _Note('正在读取工作区…'),
-        if (current && entries.isEmpty) const _Note('此目录为空。'),
+        if (current && entries.isEmpty && !loading) const FileBrowserEmpty(),
         for (final row in entries)
-          PocketSection(
-            children: [
-              PocketRow(
-                key: ValueKey('workspace-entry-${row['name']}'),
-                icon: row['kind'] == 'directory'
-                    ? Icons.folder_outlined
-                    : row['kind'] == 'link'
-                    ? Icons.link_rounded
-                    : Icons.description_outlined,
-                title: '${row['name']}',
-                subtitle: row['blockedReason'] != null
-                    ? workspaceSkipReason(row['blockedReason'] as String?)
-                    : row['kind'] == 'directory'
-                    ? '目录'
-                    : workspaceFileSize(row['bytes'] as int?),
-                onTap:
-                    current &&
-                        widget.runtime.ready &&
-                        row['path'] is String &&
-                        row['blockedReason'] == null
-                    ? () => open(row)
-                    : null,
-              ),
-            ],
+          FileBrowserEntry(
+            key: ValueKey(
+              'workspace-entry-${row['path'] ?? '$path/${row['name']}'}',
+            ),
+            name: '${row['name']}',
+            directory: row['kind'] == 'directory',
+            blocked: row['blockedReason'] != null,
+            mediaType: row['mediaType'] as String?,
+            detail: row['blockedReason'] != null
+                ? workspaceSkipReason(row['blockedReason'] as String?)
+                : [
+                    if (row['kind'] != 'directory')
+                      workspaceFileSize(row['bytes'] as int?),
+                    fileModifiedDate(row['modifiedAt']),
+                  ].where((part) => part.isNotEmpty).join('  |  '),
+            onTap:
+                current &&
+                    widget.runtime.ready &&
+                    row['path'] is String &&
+                    row['blockedReason'] == null
+                ? () => open(row)
+                : null,
           ),
         if (nextOffset != null)
           PocketButton.tonal(

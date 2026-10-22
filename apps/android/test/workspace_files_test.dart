@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:dsh_android/runtime.dart';
+import 'package:dsh_android/file_browser_chrome.dart';
 import 'package:dsh_android/ui.dart';
 import 'package:dsh_android/workspace_files.dart';
 import 'package:flutter/services.dart';
@@ -221,7 +222,7 @@ void main() {
         runtime.replaceConnection();
         await tester.pumpAndSettle();
         expect(find.text('显示上次读取的目录，当前状态未确认。'), findsOneWidget);
-        final row = tester.widget<PocketRow>(
+        final row = tester.widget<FileBrowserEntry>(
           find.byKey(const ValueKey('workspace-entry-notes')),
         );
         expect(row.onTap, isNull);
@@ -308,8 +309,8 @@ void main() {
       final runtime = WorkspaceRuntime();
       addTearDown(runtime.dispose);
       await open(tester, WorkspaceFilesPage(runtime: runtime));
-      expect(find.text(workspaceRoot), findsOneWidget);
-      final link = tester.widget<PocketRow>(
+      expect(find.text(workspaceRoot), findsNothing);
+      final link = tester.widget<FileBrowserEntry>(
         find.byKey(const ValueKey('workspace-entry-escape')),
       );
       expect(link.onTap, isNull);
@@ -363,7 +364,8 @@ void main() {
       expect(find.text('original.txt'), findsOneWidget);
       expect(find.text('目录已变化，请从头刷新。'), findsOneWidget);
       expect(find.text('此目录为空。'), findsNothing);
-      await tap(tester, find.byTooltip('刷新工作区目录'));
+      await tap(tester, find.byTooltip('文件菜单'));
+      await tap(tester, find.text('刷新工作区目录'));
       expect(find.text('refreshed.txt'), findsOneWidget);
       expect(find.text('original.txt'), findsNothing);
       expect(runtime.calls.last.$2.containsKey('version'), isFalse);

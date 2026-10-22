@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:dsh_android/files.dart';
+import 'package:dsh_android/file_browser_chrome.dart';
 import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/ui.dart';
 import 'package:flutter/services.dart';
@@ -104,7 +105,7 @@ void main() {
         runtime.rootsBarrier = null;
         runtime.replaceConnection();
         await tester.pumpAndSettle();
-        expect(find.textContaining('这里还没有文件'), findsOneWidget);
+        expect(find.text('还没有设备文件'), findsOneWidget);
         older.complete([
           {'id': 'old', 'name': '已撤销.txt', 'directory': false},
         ]);
@@ -127,14 +128,16 @@ void main() {
       await tester.pumpWidget(_host(FilesPage(runtime: runtime)));
       await tester.pumpAndSettle();
       runtime.rootsError = StateError('provider unavailable');
-      await tester.tap(find.byTooltip('刷新授权文件'));
+      await tester.tap(find.byTooltip('文件菜单'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('刷新授权文件'));
       await tester.pumpAndSettle();
       expect(find.text('笔记.txt'), findsOneWidget);
       expect(find.textContaining('当前状态尚未核实'), findsOneWidget);
-      final entry = tester.widget<PocketRow>(
+      final entry = tester.widget<FileBrowserEntry>(
         find.ancestor(
           of: find.text('笔记.txt'),
-          matching: find.byType(PocketRow),
+          matching: find.byType(FileBrowserEntry),
         ),
       );
       expect(entry.onTap, isNull);
@@ -265,6 +268,8 @@ void main() {
       );
       await tester.pumpWidget(_host(FilesPage(runtime: runtime)));
       await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('添加文件位置'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('选择文件'));
       await tester.pumpAndSettle();
       expect(methods, ['pickDocument']);
@@ -287,13 +292,17 @@ void main() {
       });
       await tester.pumpWidget(_host(FilesPage(runtime: runtime)));
       await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const ValueKey('revoke-file-id')));
+      await tester.longPress(find.byKey(const ValueKey('file-entry-file-id')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('撤销授权'));
       await tester.pumpAndSettle();
       expect(runtime.revocations, isEmpty);
       await tester.tap(find.text('保留授权'));
       await tester.pumpAndSettle();
       expect(runtime.revocations, isEmpty);
-      await tester.tap(find.byKey(const ValueKey('revoke-file-id')));
+      await tester.longPress(find.byKey(const ValueKey('file-entry-file-id')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('撤销授权'));
       await tester.pumpAndSettle();
       await tester.ensureVisible(find.text('确认撤销'));
       await tester.tap(find.text('确认撤销'));
@@ -359,7 +368,9 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('笔记.txt'), findsOneWidget);
       expect(find.textContaining('授权失效'), findsOneWidget);
-      expect(find.byKey(const ValueKey('revoke-file-id')), findsOneWidget);
+      await tester.longPress(find.byKey(const ValueKey('file-entry-file-id')));
+      await tester.pumpAndSettle();
+      expect(find.text('撤销授权'), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );

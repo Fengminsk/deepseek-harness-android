@@ -180,7 +180,9 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      await tester.tap(find.byKey(ValueKey('search-${'a' * 64}')));
+      await tester.longPress(find.byKey(ValueKey('file-entry-${'a' * 64}')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('搜索文字'));
       await tester.pumpAndSettle();
       final page = tester.widget<DocumentSearchPage>(
         find.byType(DocumentSearchPage),
@@ -209,7 +211,7 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    await tester.tap(find.text('搜索此目录的文字'));
+    await tester.tap(find.byTooltip('搜索此目录'));
     await tester.pumpAndSettle();
     final page = tester.widget<DocumentSearchPage>(
       find.byType(DocumentSearchPage),

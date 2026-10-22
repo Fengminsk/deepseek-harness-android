@@ -1,0 +1,2058 @@
+{
+  "version": 1,
+  "scope": "Declaration inventory only: web-app ui-* roster, standard preset top-level plugins, standard delegation children, and Android disabled entries. This is not an exhaustive inventory of all DSH behaviors, optional bundles, CLI surfaces, or nested non-delegation groups.",
+  "evidencePolicy": "Each evidence level is a manual, scoped claim. partial records known overlap without certifying equivalence; unverified is explicit. The portable skill, todo and present entries cite executed host composition and behavior checks, not device acceptance. Other entries retain their source-audit status. File existence never upgrades evidence; inventory validation is not feature completion.",
+  "entries": [
+    {
+      "key": "webUi/ui-open-in-app",
+      "plugin": "@deepseek-ai/dsh-client-ui-open-in-app",
+      "sourceDigest": "ecebd5730ca078add8e3d41c9d7cbd6020a50fa8e457d7ddf5410d76fc3ee7fb",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-open-in-app/README.md"
+      ],
+      "status": "not-migrated",
+      "android": [],
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Host application associations and file reveal are disabled; Android ACTION_VIEW adaptation is not wired."
+    },
+    {
+      "key": "webUi/ui-settings-account",
+      "plugin": "@deepseek-ai/dsh-client-ui-settings-account",
+      "sourceDigest": "ed7f20af487f1e8a2029f323688d1ad5c100f52ba7840018166aba2afd369ab9",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-settings-account/README.md"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/account.dart",
+        "apps/android/lib/account_state.dart"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "partial",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Native account reads and sign-in exist; full original settings/onboarding parity has not been established."
+    },
+    {
+      "key": "webUi/ui-theme",
+      "plugin": "@deepseek-ai/dsh-client-ui-theme",
+      "sourceDigest": "e12b976a69c6f31a781c3996cd767ec1ca3100f05dd92d5a3d6e288249ebf41f",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-theme/README.md"
+      ],
+      "status": "adapted",
+      "android": [
+        "apps/android/lib/appearance.dart"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "partial",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Native theme preferences and FlClash surfaces implement the requested mobile presentation; original preference equivalence remains unverified."
+    },
+    {
+      "key": "webUi/ui-shortcuts",
+      "plugin": "@deepseek-ai/dsh-client-ui-shortcuts",
+      "sourceDigest": "0bba40d68d38393efee22de1432dd97213f05a06342f33b5b7435aab217ffa49",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-shortcuts/README.md"
+      ],
+      "status": "not-migrated",
+      "android": [],
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "No native shortcut reference or external-keyboard action mapping was located."
+    },
+    {
+      "key": "webUi/ui-layout",
+      "plugin": "@deepseek-ai/dsh-client-ui-layout",
+      "sourceDigest": "ce0b86c6b50d312036f1f653ac1d4b12eb9c2f4b708fe42dac0ae42d3249df1a",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-layout/README.md"
+      ],
+      "status": "adapted",
+      "android": [
+        "apps/android/lib/ui.dart",
+        "apps/android/lib/main.dart"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "partial",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Native floating shell exists; the original complete layout/navigation surface remains to be checked."
+    },
+    {
+      "key": "webUi/ui-renderer",
+      "plugin": "@deepseek-ai/dsh-client-ui-renderer",
+      "sourceDigest": "cc888d88c39ef8b0854260c00cc82400d160ebcbccf0d4f820f67524eefd3d68",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-renderer/README.md"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/ui.dart",
+        "apps/android/lib/chat_messages.dart"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "partial",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Flutter renders mapped surfaces, but arbitrary original client-plugin slot registrations do not automatically become native UI."
+    },
+    {
+      "key": "webUi/ui-session",
+      "plugin": "@deepseek-ai/dsh-client-ui-session",
+      "sourceDigest": "48defdfcd937074a078e425c3d343dd1ef27adc11e503811b9a2e7fa307bee63",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-session/README.md"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/runtime.dart",
+        "apps/android/lib/chat_projection.dart"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "partial",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Native session observations exist; full original paging and all projections require feature-level review."
+    },
+    {
+      "key": "webUi/ui-sidebar",
+      "plugin": "@deepseek-ai/dsh-client-ui-sidebar",
+      "sourceDigest": "8302ddbacf8be3772e2b2aa4e328de83d650bd863b264a7225a13bc24a433f31",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-sidebar/README.md"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/chat_sidebar.dart",
+        "apps/android/lib/library.dart"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "partial",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Native workspace and conversation navigation exists; per-action parity and restoration remain separately verified."
+    },
+    {
+      "key": "webUi/ui-sidebar-right",
+      "plugin": "@deepseek-ai/dsh-client-ui-sidebar-right",
+      "sourceDigest": "5e751fca7dc58860ae64c5293958145e93a2d9f7e8d0826208d50aa367711d34",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-sidebar-right/README.md"
+      ],
+      "status": "not-migrated",
+      "android": [],
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Original per-session docked resource tabs have no equivalent native resource navigation owner."
+    },
+    {
+      "key": "webUi/ui-sidebar-documentpreview",
+      "plugin": "@deepseek-ai/dsh-client-ui-sidebar-documentpreview",
+      "sourceDigest": "32d2b8465030b0e6af0d9ece6b9d7d2529d365b7ea5f061738484da16153fb8f",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-sidebar-documentpreview/README.md"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/workspace_files.dart",
+        "apps/android/lib/image_preview.dart",
+        "apps/android/lib/attachment_file.dart"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "partial",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Some text and attachment image readers exist; Session-bound PDF, Office, Excel, HTML, Markdown and code preview parity is missing."
+    },
+    {
+      "key": "webUi/ui-sidebar-browser",
+      "plugin": "@deepseek-ai/dsh-client-ui-sidebar-browser",
+      "sourceDigest": "56907bf2f3b1ec5d3f0e940ed05d25d858669b96cceaca9a34f77b3a5d99028a",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-sidebar-browser/README.md"
+      ],
+      "status": "not-migrated",
+      "android": [],
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Original surface is desktop-conditional; Android browser-panel compatibility has not been implemented or waived."
+    },
+    {
+      "key": "webUi/ui-sidebar-terminal",
+      "plugin": "@deepseek-ai/dsh-client-ui-sidebar-terminal",
+      "sourceDigest": "0fa86b6d23b050455fc6591db8e22cac15cf6a4715d5a0294d8d25388b15dca9",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-sidebar-terminal/README.md"
+      ],
+      "status": "not-migrated",
+      "android": [],
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Persistent terminal UI is absent and the Android terminal controller is disabled; ordinary Shell is not equivalent."
+    },
+    {
+      "key": "webUi/ui-sidebar-files",
+      "plugin": "@deepseek-ai/dsh-client-ui-sidebar-files",
+      "sourceDigest": "2a289c08ed600b37fa1091c1465a1390630c79254e80021fc56b3401f78e46a7",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-sidebar-files/README.md"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/workspace_files.dart",
+        "apps/android/lib/files.dart"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "partial",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Private-root and SAF browsing exist, but do not implement the original Session-cwd tree and change feed."
+    },
+    {
+      "key": "webUi/ui-settings",
+      "plugin": "@deepseek-ai/dsh-client-ui-settings",
+      "sourceDigest": "1870fcaf12760aa3c98f7aa2d400761eb89db6b81072cfacd6bf36492903237d",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-settings/README.md"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/settings.dart",
+        "apps/android/lib/configuration_editor.dart"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "partial",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Native structured configuration pages exist; schema accessibility does not establish the complete original settings workflow."
+    },
+    {
+      "key": "webUi/ui-settings-general",
+      "plugin": "@deepseek-ai/dsh-client-ui-settings-general",
+      "sourceDigest": "c09ce800870cbcece940c6c927d9a5986b51fc6edb6c1116aff82c67179cf0cd",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-settings-general/README.md"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/settings.dart",
+        "apps/android/lib/recovery.dart"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "partial",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Version and recovery entries exist; original coding-tools and contributed onboarding/general rows need individual migration review."
+    },
+    {
+      "key": "webUi/ui-settings-models",
+      "plugin": "@deepseek-ai/dsh-client-ui-settings-models",
+      "sourceDigest": "538b9f4d0f376201ca27f73e0eee7ca29bbc30d439c9f492b9df1db43358181a",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-settings-models/README.md"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/models.dart",
+        "apps/android/lib/models_provider.dart",
+        "apps/android/lib/models_editor.dart"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "partial",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Native provider/model/credential forms call shared services; full original action and recovery coverage is not certified here."
+    },
+    {
+      "key": "webUi/ui-plugin-manager",
+      "plugin": "@deepseek-ai/dsh-client-ui-plugin-manager",
+      "sourceDigest": "4b00ad0c52a7805db91a4d5bc8635cb81472a476a846dcd0153f6f360cadc953",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-plugin-manager/README.md"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/plugins.dart",
+        "apps/android/lib/plugins_data.dart"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "partial",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Native shared package operations exist; device install, lifecycle scripts, and third-party compatibility remain unverified."
+    },
+    {
+      "key": "webUi/ui-settings-plugin-inventory",
+      "plugin": "@deepseek-ai/dsh-client-ui-settings-plugin-inventory",
+      "sourceDigest": "dc8ead68bc5ccd98be97a83129e997633211dbc8fa031922774b03ac095ce630",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-settings-plugin-inventory/README.md"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/plugins.dart",
+        "apps/android/lib/metadata_artwork.dart"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "partial",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Native inventory and artwork exist; original inventory details need behavior-level comparison."
+    },
+    {
+      "key": "webUi/ui-conversation",
+      "plugin": "@deepseek-ai/dsh-client-ui-conversation",
+      "sourceDigest": "ab7a20b6275f4f043767911894e6ce5673edd5b9f4b42e9170aff724b643ea3e",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-conversation/README.md"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/main.dart",
+        "apps/android/lib/chat_messages.dart",
+        "apps/android/lib/chat_projection.dart"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "partial",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Native composer and transcript exist; resource actions, all context projections and view switching remain incomplete."
+    },
+    {
+      "key": "webUi/ui-approval",
+      "plugin": "@deepseek-ai/dsh-client-ui-approval",
+      "sourceDigest": "afaa4a720c4703a8ed9aee11934edca15ea9c6a608daf0e676d6500aa9e74982",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-approval/README.md"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/approvals.dart",
+        "apps/android/lib/approvals_notifications.dart"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "partial",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Native decisions and notification actions use original interaction values; full original request variants remain to be compared."
+    },
+    {
+      "key": "webUi/ui-chat",
+      "plugin": "@deepseek-ai/dsh-client-ui-chat",
+      "sourceDigest": "53dcdd1ce7bcfb70ea1ae1ce62ff4b8d3eb0efa9ce938470175d82c96e2a4d64",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-chat/README.md"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/chat_messages.dart",
+        "apps/android/lib/chat_projection.dart"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "partial",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Native transcript renders text, Markdown and tool rows; feedback, deliveries, reference navigation and other original actions remain incomplete."
+    },
+    {
+      "key": "webUi/ui-brand-official",
+      "plugin": "@deepseek-ai/dsh-client-ui-brand-official",
+      "sourceDigest": "b838d64df6a53a144ead94d2e62e3820ccc5ae91d7d40ab4bf6f3f7553c12b89",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-brand-official/README.md"
+      ],
+      "status": "adapted",
+      "android": [
+        "apps/android/lib/ui.dart",
+        "apps/android/lib/main.dart"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "partial",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "The user-requested Pocket Harness branding replaces the original visible brand in native UI."
+    },
+    {
+      "key": "webUi/ui-attachment",
+      "plugin": "@deepseek-ai/dsh-client-ui-attachment",
+      "sourceDigest": "68f875da485c1adbfcbfe5ea39656584efaebc9bed4826393928fa60980c0012",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-attachment/README.md"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/attachments.dart",
+        "apps/android/lib/attachment_file.dart",
+        "apps/android/lib/image_preview.dart"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "partial",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Original attachment receipts are used with Android picking and historical reads; all media/limit/recovery device paths remain open."
+    },
+    {
+      "key": "webUi/ui-tool",
+      "plugin": "@deepseek-ai/dsh-client-ui-tool",
+      "sourceDigest": "805e7e712fdbdcc2dbdb8506e25bc572730e676f354c6522c4fcd005f0b6e295",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-tool/README.md"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/tool_activity.dart",
+        "apps/android/lib/tool_activity_details.dart",
+        "apps/android/lib/tool_activity_presentation.dart"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "partial",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Native paired tool records and details exist; generic fallback does not implement every original keyed tool presentation."
+    },
+    {
+      "key": "webUi/ui-cordis",
+      "plugin": "@deepseek-ai/dsh-client-ui-cordis",
+      "sourceDigest": "a6a1b377b1b191b9f1af56dd642cd327ccf758a0bf58c6234273995052ac2bbb",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/tool_activity_details.dart"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "partial",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Only generic tool details are available; original Cordis-specific editing and workflow presentation are not fully migrated."
+    },
+    {
+      "key": "webUi/ui-deliverables",
+      "plugin": "@deepseek-ai/dsh-client-ui-deliverables",
+      "sourceDigest": "c87227139eec7c0a197047381e050763610e8892a74ad6a7cb4ce75a9850a414",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-deliverables/README.md"
+      ],
+      "status": "not-migrated",
+      "android": [],
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Present cards, recorded file-link actions, changed-file summaries and diff review are not implemented in native chat."
+    },
+    {
+      "key": "webUi/ui-workspace",
+      "plugin": "@deepseek-ai/dsh-client-ui-workspace",
+      "sourceDigest": "952cf181985e7c4d4c0eec8a66623d01f09294cc07dea385edf991f4f5b2b5d1",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-workspace/README.md"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/library.dart",
+        "apps/android/lib/library_data.dart"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "partial",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Shared workspace/session registry operations exist; all original lifecycle actions remain subject to individual acceptance."
+    },
+    {
+      "key": "webUi/ui-workflow-run",
+      "plugin": "@deepseek-ai/dsh-client-ui-workflow-run",
+      "sourceDigest": "fae89ea69a01d4819013741ca82e1cf781796823054eab9d75f43ea82d8c0e4e",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-workflow-run/README.md"
+      ],
+      "status": "not-migrated",
+      "android": [],
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Original durable workflow controls and projections are absent; Android PTC runtime is disabled."
+    },
+    {
+      "key": "webUi/ui-input-trigger",
+      "plugin": "@deepseek-ai/dsh-client-ui-input-trigger",
+      "sourceDigest": "dae09dcb66f19ec25e5006275fe2287a78a90356dce08612265f56d06f46d902",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-input-trigger/README.md"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/main.dart",
+        "apps/android/lib/composer_commands.dart"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "partial",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Slash execution and plus menu exist; inline trigger candidates and at-reference selection are incomplete."
+    },
+    {
+      "key": "webUi/ui-commands",
+      "plugin": "@deepseek-ai/dsh-client-ui-commands",
+      "sourceDigest": "87d219be6a1d85fa7c3b0f67578d941b331bd12dd5f8a51b8320d4bbc38c2aaf",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-commands/README.md"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/composer_commands.dart",
+        "apps/android/lib/main.dart"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "partial",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Runtime command catalog and dispatch are reused; command-specific status and result surfaces need individual parity review."
+    },
+    {
+      "key": "webUi/ui-skill",
+      "plugin": "@deepseek-ai/dsh-client-ui-skill",
+      "sourceDigest": "fa12b69cc88c53e7028e14abfbaad113ecb94fd3c94271957093264b62acea03",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-skill/README.md"
+      ],
+      "status": "not-migrated",
+      "android": [],
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Native skill discovery and explicit invocation chooser are absent."
+    },
+    {
+      "key": "webUi/ui-subagent",
+      "plugin": "@deepseek-ai/dsh-client-ui-subagent",
+      "sourceDigest": "2c0b7539c1503e875f18657d87e53a768c0b7a99ca31d58996990fd9b08c972e",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-subagent/README.md"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/subagents.dart",
+        "apps/android/lib/subagents_data.dart"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "partial",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Native child tree/history and control exist; at-reference source and full original observations remain incomplete."
+    },
+    {
+      "key": "webUi/ui-reference",
+      "plugin": "@deepseek-ai/dsh-client-ui-reference",
+      "sourceDigest": "8040d1da042385809acf242c9d703cadc86eab9408d3d9808a9b07b07abbe2f7",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-reference/README.md"
+      ],
+      "status": "not-migrated",
+      "android": [],
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "No native file/folder/session reference candidate picker or canonical mention editor is wired."
+    },
+    {
+      "key": "webUi/ui-secret-mask",
+      "plugin": "@deepseek-ai/dsh-client-ui-secret-mask",
+      "sourceDigest": "875fc42023e133eb5964d2462cce52397bb02fdd54efa103f709aaa0963ef50d",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-secret-mask/README.md"
+      ],
+      "status": "not-migrated",
+      "android": [],
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Original sent-user-text secret masking has no identified native equivalent; settings secret masking is a different surface."
+    },
+    {
+      "key": "webUi/ui-jobs",
+      "plugin": "@deepseek-ai/dsh-client-ui-jobs",
+      "sourceDigest": "d07564fb8bc008f4ea7a1ac7b7fa11d7e561aeed592b99b262831a0e108ca2bd",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-jobs/README.md"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/jobs.dart",
+        "apps/android/lib/job_output.dart"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "partial",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Shared job record streaming and stop requests exist; complete original output/terminal behavior remains unverified."
+    },
+    {
+      "key": "webUi/ui-schedule",
+      "plugin": "@deepseek-ai/dsh-client-ui-schedule",
+      "sourceDigest": "0281ee021a504814efc16243c4142a24318eec245fbbe7d78a9ac5ac70915feb",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-schedule/README.md"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/automations.dart",
+        "apps/android/lib/automations_data.dart"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "partial",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Shared schedule listing/edit/delete and delivery records exist; complete original lifecycle/device acceptance remains open."
+    },
+    {
+      "key": "webUi/ui-goal",
+      "plugin": "@deepseek-ai/dsh-client-ui-goal",
+      "sourceDigest": "04ca8a989a29519660fdce2574725a116fdcacc4ee2f347c344f83fb63d961de",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-goal/README.md"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/composer_commands.dart"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "partial",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "The original goal command is reachable, but its dedicated pause/resume/edit/clear strip is not migrated."
+    },
+    {
+      "key": "webUi/ui-message-feedback",
+      "plugin": "@deepseek-ai/dsh-client-ui-message-feedback",
+      "sourceDigest": "0fa758d385f689231dd57d4f8aff8eacde45c8c8f0e107d97e9c4ee25fefe7f2",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-message-feedback/README.md"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/chat_message_actions.dart"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "partial",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Native message actions only copy/select text; original like/dislike feedback is absent."
+    },
+    {
+      "key": "webUi/ui-model-selection",
+      "plugin": "@deepseek-ai/dsh-client-ui-model-selection",
+      "sourceDigest": "7b3fa411d660f812a5d3538584dae2dce2aa39f20a0d8da69b24b2f5f7621b55",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-model-selection/README.md"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/session_models.dart",
+        "apps/android/lib/session_model_projection.dart"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "partial",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Native model selection and original projections exist; the ledger does not certify every original action or concurrent edit path."
+    },
+    {
+      "key": "webUi/ui-deepseek-model-label-1017",
+      "plugin": "@deepseek-ai/dsh-client-ui-deepseek-model-label-1017",
+      "sourceDigest": "645e9575a941f7786ad92bd42158ce2586e1e16a99d3d407bf9d2d17d4f4efd2",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-deepseek-model-label-1017/README.md"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/session_models.dart"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "partial",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Native model labels exist; exact original 1017 label-decoration behavior has not been audited."
+    },
+    {
+      "key": "webUi/ui-permission",
+      "plugin": "@deepseek-ai/dsh-client-ui-permission-presets",
+      "sourceDigest": "9f9a3b5e912eb5a2a7b6dcb56d78fb29d13bead31c78d7aeb8d3962cea99f30d",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-permission-presets/README.md"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/approvals.dart"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "partial",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Desktop permission presets are disabled; per-call Android approval is a distinct platform capability, not equivalent sandbox choices."
+    },
+    {
+      "key": "webUi/ui-agent-preset",
+      "plugin": "@deepseek-ai/dsh-client-ui-agent-preset",
+      "sourceDigest": "227b7ec3498438e6015746b103b0a330bb561d7f15d38d2c451a420073cddb48",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-agent-preset/README.md"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/agent_presets.dart",
+        "apps/android/lib/agent_presets_data.dart"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "partial",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Native preset selection exists, but only the Android preset is supported; original preset capabilities remain incomplete."
+    },
+    {
+      "key": "webUi/ui-settings-session-log",
+      "plugin": "@deepseek-ai/dsh-client-ui-settings-session-log",
+      "sourceDigest": "d7d56303dfe666702c306ff04cafc26864e9c2dbcd2ca08461c52d1b32191345",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-settings-session-log/README.md"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/settings.dart",
+        "apps/android/lib/configuration_editor.dart"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "partial",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Shared session-log settings are exposed through native fields; original control behavior has not been fully checked."
+    },
+    {
+      "key": "webUi/ui-settings-plugins",
+      "plugin": "@deepseek-ai/dsh-client-ui-settings-plugins",
+      "sourceDigest": "097ade53e45fc8c8e61a25a4ab985810415bb1e8be3820a3a41431d8ed1627a3",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-settings-plugins/README.md"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/settings.dart",
+        "apps/android/lib/configuration_editor.dart"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "partial",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Plugin settings schemas are accessible, but full original semantic controls and contributed UI are not implied."
+    },
+    {
+      "key": "webUi/ui-settings-shell",
+      "plugin": "@deepseek-ai/dsh-client-ui-settings-shell",
+      "sourceDigest": "1c83d336aad49eb81ca7a7c43246e3bd5d2c9468c611aa6405a77328195517fb",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-settings-shell/README.md"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/settings.dart",
+        "apps/android/lib/configuration_presentation.dart"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "partial",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Native Android Shell settings exist; desktop Bash/PowerShell/sandbox settings require explicit platform adaptation."
+    },
+    {
+      "key": "webUi/ui-settings-agent-loop",
+      "plugin": "@deepseek-ai/dsh-client-ui-settings-agent-loop",
+      "sourceDigest": "671ce6fc3909f85c5d41a481dc6d60d0425880ee40cc82ba8889c5e70f59f5d4",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-settings-agent-loop/README.md"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/settings.dart",
+        "apps/android/lib/configuration_editor.dart"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "partial",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Loop settings are exposed through native forms; original semantic workflow parity is unverified."
+    },
+    {
+      "key": "webUi/ui-settings-subagent",
+      "plugin": "@deepseek-ai/dsh-client-ui-settings-subagent",
+      "sourceDigest": "e1d170ac8d18b29821f602de7c2d3aa761556725953490c3960aa19d24f48167",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-settings-subagent/README.md"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/subagent_model_settings.dart",
+        "apps/android/lib/settings.dart"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "partial",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Native child-model selection and parameters exist; complete original settings coverage remains unverified."
+    },
+    {
+      "key": "webUi/ui-settings-web-search",
+      "plugin": "@deepseek-ai/dsh-client-ui-settings-web-search",
+      "sourceDigest": "0426ce7de5a2b7d4636cd01868bdbb7cbd5df1b4e6bb97c8f57c19c17ba588cc",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-settings-web-search/README.md"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/web_search_settings.dart",
+        "apps/android/lib/web_search_settings_data.dart"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "partial",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Native shared search-provider/credential workflow exists; every provider path still requires original behavior comparison."
+    },
+    {
+      "key": "webUi/ui-plan",
+      "plugin": "@deepseek-ai/dsh-client-ui-plan",
+      "sourceDigest": "eec720d7063268a30ced90cb45d2d61ed5d3c0772a90ddcef4cb969e778b7f60",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-plan/README.md"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/composer_commands.dart",
+        "apps/android/lib/approvals.dart"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "partial",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Original plan command and interactions are reachable; persistent mode chip, submitted-plan cards and reading workflow are incomplete."
+    },
+    {
+      "key": "webUi/ui-user-questions",
+      "plugin": "@deepseek-ai/dsh-client-ui-user-questions",
+      "sourceDigest": "424a91cc7f44f79e4656f60828b3279359506e615ff5840f28f93e33ee8e35f4",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-user-questions/README.md"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/approvals.dart",
+        "apps/android/lib/approvals_draft.dart",
+        "apps/android/lib/approvals_notifications.dart"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "partial",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Native form and notification answers use original requests; all original question variants and lifecycle paths remain to be accepted."
+    },
+    {
+      "key": "webUi/ui-trajectory",
+      "plugin": "@deepseek-ai/dsh-client-ui-trajectory",
+      "sourceDigest": "7b97904f300c4f436e145ca853ae641ea2ed0d43b99394db2afc7474bb044b63",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-trajectory/README.md"
+      ],
+      "status": "not-migrated",
+      "android": [],
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Native tool details do not provide the original timeline, record inspector, cumulative usage or request navigation."
+    },
+    {
+      "key": "standardPreset/persona",
+      "plugin": "@deepseek-ai/dsh-persona",
+      "sourceDigest": "d8ae024443d0c101f9ae45d7f7e81fadee27b9066a21abdac1da49a793a419dc",
+      "sources": [
+        "packages/bundle/web-app/presets/standard.patch.yml"
+      ],
+      "status": "adapted",
+      "android": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "evidence": {
+        "core": "partial",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Android persona describes the actual app UID, Shell and SAF capabilities; exact desktop persona is intentionally not claimed."
+    },
+    {
+      "key": "standardPreset/agent-instructions",
+      "plugin": "@deepseek-ai/dsh-agent-instructions",
+      "sourceDigest": "86658e8f310324bbf1f7a1e87a3501e8cedbd7565211a4bcfffc0e4dd1357e10",
+      "sources": [
+        "packages/bundle/web-app/presets/standard.patch.yml"
+      ],
+      "status": "not-migrated",
+      "android": [
+        "apps/android/tool/stage-preset.mjs"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Original per-directory agent instructions are not copied by the audited Android staging list."
+    },
+    {
+      "key": "standardPreset/time-context",
+      "plugin": "@deepseek-ai/dsh-time-context",
+      "sourceDigest": "8408864e4e57c664825768af5b44652b1ea68ef446dc05036d1a1c127839a252",
+      "sources": [
+        "packages/bundle/web-app/presets/standard.patch.yml"
+      ],
+      "status": "not-migrated",
+      "android": [
+        "apps/android/tool/stage-preset.mjs"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Original time-context entry is not copied by the audited Android staging list."
+    },
+    {
+      "key": "standardPreset/tool-bash",
+      "plugin": "@deepseek-ai/dsh-tool-bash",
+      "sourceDigest": "062bdfee19a3f40220c8a0eff09e8f256f056272dc4a51d103f00e1c9e4a2cf7",
+      "sources": [
+        "packages/bundle/web-app/presets/standard.patch.yml"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/runtime/android-shell.mjs",
+        "apps/android/runtime/tool-android-shell.mjs"
+      ],
+      "evidence": {
+        "core": "partial",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Android app-UID Shell exists; desktop Bash command capabilities and sandbox behavior are not equivalent."
+    },
+    {
+      "key": "standardPreset/tool-pwsh",
+      "plugin": "@deepseek-ai/dsh-tool-pwsh",
+      "sourceDigest": "227126101ada49cddaba68adba9fa420fd0172329a2619aaebc5bbcb6d076f2f",
+      "sources": [
+        "packages/bundle/web-app/presets/standard.patch.yml"
+      ],
+      "status": "not-migrated",
+      "android": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "PowerShell tool is platform-conditional upstream; Android equivalent behavior is not implemented or waived."
+    },
+    {
+      "key": "standardPreset/tool-fs",
+      "plugin": "@deepseek-ai/dsh-tool-fs",
+      "sourceDigest": "336f2d92bf19b910c7f0bac6a84ed0f543789f02cc2f04b8545418456e5fbdb0",
+      "sources": [
+        "packages/bundle/web-app/presets/standard.patch.yml"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "evidence": {
+        "core": "partial",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Original filesystem tool is composed with write/edit disabled; mobile read-only configuration is not full original tool parity."
+    },
+    {
+      "key": "standardPreset/tool-fs-search",
+      "plugin": "@deepseek-ai/dsh-tool-fs-search",
+      "sourceDigest": "74d45ac7150a7084cf49b18f187658a58c187fa1d0e8d8a6d11fc8aef592096d",
+      "sources": [
+        "packages/bundle/web-app/presets/standard.patch.yml"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/runtime/document-search.mjs",
+        "apps/android/runtime/workspace-files.mjs"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Android SAF/private-root literal search exists, but original Session filesystem search tools are not composed equivalently."
+    },
+    {
+      "key": "standardPreset/tool-jobs",
+      "plugin": "@deepseek-ai/dsh-tool-jobs",
+      "sourceDigest": "f9b3008aee92de21e6746313ee030c8bb59284f7f50c1f2d2ac9df1a1b17766e",
+      "sources": [
+        "packages/bundle/web-app/presets/standard.patch.yml"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/runtime/tasks.mjs"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Native job observations exist; original model-visible jobs tool is not in the audited Android preset."
+    },
+    {
+      "key": "standardPreset/tool-schedule",
+      "plugin": "@deepseek-ai/dsh-tool-schedule",
+      "sourceDigest": "3acc15da067517a29170212c7931008e4293faaee612df6686e71468ad865791",
+      "sources": [
+        "packages/bundle/web-app/presets/standard.patch.yml"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/tool/stage-preset.mjs"
+      ],
+      "evidence": {
+        "core": "partial",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Original schedule tool is copied from standard; native UI and actual delivery paths require separate acceptance."
+    },
+    {
+      "key": "standardPreset/skill-filesystem",
+      "plugin": "@deepseek-ai/dsh-skill-filesystem",
+      "sourceDigest": "89f9f3f141e23ab0c56a24c94fd514ac527d4e486aedf5b43c62a4bf7ccf9ed1",
+      "sources": [
+        "packages/bundle/web-app/presets/standard.patch.yml"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/tool/stage-preset.mjs"
+      ],
+      "evidence": {
+        "core": "verified",
+        "ui": "unverified",
+        "behavior": "partial",
+        "device": "unverified"
+      },
+      "note": "Original filesystem skill discovery is staged unchanged. The shipped Android profile discovers a synthetic project skill on the host; native skill selection and device filesystem acceptance remain open.",
+      "evidenceRefs": {
+        "core": [
+          "apps/android/tool/stage-preset.test.mjs",
+          "apps/android/tool/smoke-preset-portable-tools.mjs"
+        ],
+        "behavior": [
+          "apps/android/tool/smoke-preset-portable-tools.mjs"
+        ]
+      }
+    },
+    {
+      "key": "standardPreset/tool-skill",
+      "plugin": "@deepseek-ai/dsh-tool-skill",
+      "sourceDigest": "ddd02ca941494328c6452b36622aa840e2f8ef8f2042c9212d86d1b9d31f92d1",
+      "sources": [
+        "packages/bundle/web-app/presets/standard.patch.yml"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/tool/stage-preset.mjs"
+      ],
+      "evidence": {
+        "core": "verified",
+        "ui": "unverified",
+        "behavior": "partial",
+        "device": "unverified"
+      },
+      "note": "Original skill invocation is staged unchanged. The host profile smoke reads the discovered skill body through the real tool; native skill selection and device acceptance remain open.",
+      "evidenceRefs": {
+        "core": [
+          "apps/android/tool/stage-preset.test.mjs",
+          "apps/android/tool/smoke-preset-portable-tools.mjs"
+        ],
+        "behavior": [
+          "apps/android/tool/smoke-preset-portable-tools.mjs"
+        ]
+      }
+    },
+    {
+      "key": "standardPreset/command-goal",
+      "plugin": "@deepseek-ai/dsh-command-goal",
+      "sourceDigest": "3bd8be0b7d7c53fef3dc782a1defa165a9525692c7ac6448f0e1b4a846b484de",
+      "sources": [
+        "packages/bundle/web-app/presets/standard.patch.yml"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/tool/stage-preset.mjs"
+      ],
+      "evidence": {
+        "core": "partial",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Original goal command is copied; native full goal controls are missing."
+    },
+    {
+      "key": "standardPreset/tool-goal",
+      "plugin": "@deepseek-ai/dsh-tool-goal",
+      "sourceDigest": "42247578c0c4d8ce92d0fcb1d1548b1e828e34322d48ba1ba11e2e02b11e77d1",
+      "sources": [
+        "packages/bundle/web-app/presets/standard.patch.yml"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/tool/stage-preset.mjs"
+      ],
+      "evidence": {
+        "core": "partial",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Original goal tool is copied; full native goal management and recovery acceptance remain open."
+    },
+    {
+      "key": "standardPreset/planning",
+      "plugin": "cordis:group",
+      "sourceDigest": "04af5adb08936d7fce3d4fb94f2d2d140f5a489e495c4612ada09088dc35febd",
+      "sources": [
+        "packages/bundle/web-app/presets/standard.patch.yml"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/tool/stage-preset.mjs"
+      ],
+      "evidence": {
+        "core": "partial",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Original isolated planning group is copied; native plan artifacts and status controls remain incomplete."
+    },
+    {
+      "key": "standardPreset/compaction",
+      "plugin": "cordis:group",
+      "sourceDigest": "174ca81ba3a1525ace505a435bf895dd069f93b58c145da2f67f0b36f7312776",
+      "sources": [
+        "packages/bundle/web-app/presets/standard.patch.yml"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/tool/stage-preset.mjs"
+      ],
+      "evidence": {
+        "core": "partial",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Original compaction group is copied; complete command/status behavior is not certified by inventory checks."
+    },
+    {
+      "key": "standardPreset/delegation",
+      "plugin": "cordis:group",
+      "sourceDigest": "517b39d52792ef8c22919437ca870f22345995c83218297b56febf0c580bc409",
+      "sources": [
+        "packages/bundle/web-app/presets/standard.patch.yml"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/tool/stage-preset.mjs"
+      ],
+      "evidence": {
+        "core": "partial",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Only four original local subagent tools are copied; workflow-ptc and tool-workflow are omitted."
+    },
+    {
+      "key": "standardPreset/tool-ask-user",
+      "plugin": "@deepseek-ai/dsh-tool-ask-user",
+      "sourceDigest": "08ccb0fd2ea2f7c8352f7e3f271e85cfe269b87f6471d927f8dad097dde6645e",
+      "sources": [
+        "packages/bundle/web-app/presets/standard.patch.yml"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "evidence": {
+        "core": "partial",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Original user-question tool is composed with Android timed mode; native/notification lifecycle needs individual coverage."
+    },
+    {
+      "key": "standardPreset/tool-todo",
+      "plugin": "@deepseek-ai/dsh-tool-todo",
+      "sourceDigest": "f1b572590da758ac6173c2b3278fa4401ea5a3fdcb9f7edfc0586bf342bc7f1d",
+      "sources": [
+        "packages/bundle/web-app/presets/standard.patch.yml"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/tool/stage-preset.mjs"
+      ],
+      "evidence": {
+        "core": "verified",
+        "ui": "unverified",
+        "behavior": "partial",
+        "device": "unverified"
+      },
+      "note": "Original todo_write is staged unchanged. The host profile smoke writes parallel in-progress items and rereads durable events after restart; native todo presentation and device acceptance remain open.",
+      "evidenceRefs": {
+        "core": [
+          "apps/android/tool/stage-preset.test.mjs",
+          "apps/android/tool/smoke-preset-portable-tools.mjs"
+        ],
+        "behavior": [
+          "apps/android/tool/smoke-preset-portable-tools.mjs"
+        ]
+      }
+    },
+    {
+      "key": "standardPreset/tool-web",
+      "plugin": "@deepseek-ai/dsh-tool-web",
+      "sourceDigest": "74f6dad40e9662c185f0311d112ee85052bed0d13371e8b4bbaecd0192e45957",
+      "sources": [
+        "packages/bundle/web-app/presets/standard.patch.yml"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "evidence": {
+        "core": "partial",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Original web tool is composed; provider configuration and platform network behavior still require acceptance."
+    },
+    {
+      "key": "standardPreset/present",
+      "plugin": "@deepseek-ai/dsh-tool-present",
+      "sourceDigest": "39c978db30d4b955aa03a372d10e74a959f6569cbe3481ade96f238d99748590",
+      "sources": [
+        "packages/bundle/web-app/presets/standard.patch.yml"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/tool/stage-preset.mjs"
+      ],
+      "evidence": {
+        "core": "verified",
+        "ui": "unverified",
+        "behavior": "partial",
+        "device": "unverified"
+      },
+      "note": "Original present is staged unchanged. The host profile smoke publishes an existing file, rejects a missing file without publishing, and cold-reads the event without replay; native delivery cards and previews remain absent.",
+      "evidenceRefs": {
+        "core": [
+          "apps/android/tool/stage-preset.test.mjs",
+          "apps/android/tool/smoke-preset-portable-tools.mjs"
+        ],
+        "behavior": [
+          "apps/android/tool/smoke-preset-portable-tools.mjs"
+        ]
+      }
+    },
+    {
+      "key": "standardPreset/tool-plugin-manager",
+      "plugin": "@deepseek-ai/dsh-plugin-manager/tools",
+      "sourceDigest": "04b438eb4485aaa07e12cd232996d0215b6e26fdd17d8f590fe1bf488314119b",
+      "sources": [
+        "packages/bundle/web-app/presets/standard.patch.yml"
+      ],
+      "status": "upstream-disabled",
+      "android": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "This model-visible tool is disabled in original standard too; native human plugin management is a separate feature."
+    },
+    {
+      "key": "standardPreset/tool-plugin-market",
+      "plugin": "@deepseek-ai/dsh-plugin-market/tools",
+      "sourceDigest": "edf3523fef62f54692c68686501b80ae87de5b7b64fa32a81be2a53682c7851c",
+      "sources": [
+        "packages/bundle/web-app/presets/standard.patch.yml"
+      ],
+      "status": "upstream-disabled",
+      "android": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "This model-visible market tool is disabled in original standard too; optional bundle behavior needs a separate inventory."
+    },
+    {
+      "key": "standardDelegation/tool-subagent-control",
+      "plugin": "@deepseek-ai/dsh-tool-subagent-control",
+      "sourceDigest": "8832739314a82ed24959d41a5d2f12f8f7e9428263196a4d124d73686ddad7d0",
+      "sources": [
+        "packages/bundle/web-app/presets/standard.patch.yml"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/tool/stage-preset.mjs"
+      ],
+      "evidence": {
+        "core": "partial",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Original local delegation declaration is copied; provider-specific control/history and device behavior require separate acceptance."
+    },
+    {
+      "key": "standardDelegation/tool-subagent-list-agents",
+      "plugin": "@deepseek-ai/dsh-tool-subagent-control/list-agents",
+      "sourceDigest": "9f033a8bec397c608a6abe1b2d3bc7b46df579cc65911ca41c3b05eed1964e0f",
+      "sources": [
+        "packages/bundle/web-app/presets/standard.patch.yml"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/tool/stage-preset.mjs"
+      ],
+      "evidence": {
+        "core": "partial",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Original local delegation declaration is copied; provider-specific control/history and device behavior require separate acceptance."
+    },
+    {
+      "key": "standardDelegation/tool-subagent",
+      "plugin": "@deepseek-ai/dsh-tool-subagent",
+      "sourceDigest": "82fbc4f2c16612a6c58ae1bd1b34b9c01fdde33aa484d890a7bcdafd218c98b2",
+      "sources": [
+        "packages/bundle/web-app/presets/standard.patch.yml"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/tool/stage-preset.mjs"
+      ],
+      "evidence": {
+        "core": "partial",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Original local delegation declaration is copied; provider-specific control/history and device behavior require separate acceptance."
+    },
+    {
+      "key": "standardDelegation/tool-subagent-fork",
+      "plugin": "@deepseek-ai/dsh-tool-subagent",
+      "sourceDigest": "241c1d5a5ebf24ebb2144dba957153a3d37181fbb845bc5706390722cea57c17",
+      "sources": [
+        "packages/bundle/web-app/presets/standard.patch.yml"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/tool/stage-preset.mjs"
+      ],
+      "evidence": {
+        "core": "partial",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Original local delegation declaration is copied; provider-specific control/history and device behavior require separate acceptance."
+    },
+    {
+      "key": "standardDelegation/workflow-ptc",
+      "plugin": "@deepseek-ai/dsh-workflow-ptc",
+      "sourceDigest": "d3944846e09d203da867e4155cf512d4cd39b15a5c24c858acc2a5b7ad9c5439",
+      "sources": [
+        "packages/bundle/web-app/presets/standard.patch.yml"
+      ],
+      "status": "not-migrated",
+      "android": [
+        "apps/android/tool/stage-preset.mjs"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Not copied into Android delegation; the PTC workflow runtime remains disabled, not waived from migration."
+    },
+    {
+      "key": "standardDelegation/tool-workflow",
+      "plugin": "@deepseek-ai/dsh-tool-workflow",
+      "sourceDigest": "c422f99238504cca59863ada64cc269ecff505ed180f1157916fa7be75b4fcf4",
+      "sources": [
+        "packages/bundle/web-app/presets/standard.patch.yml"
+      ],
+      "status": "not-migrated",
+      "android": [
+        "apps/android/tool/stage-preset.mjs"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Not copied into Android delegation; the PTC workflow runtime remains disabled, not waived from migration."
+    },
+    {
+      "key": "androidDisabled/web-startup",
+      "plugin": null,
+      "sourceDigest": "71e675852eff3bca19b1ca585c033e6a22585e49b0327faa66da4bff402902c2",
+      "sources": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "status": "adapted",
+      "android": [
+        "apps/android/runtime/web-access.mjs"
+      ],
+      "evidence": {
+        "core": "partial",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Static Web startup is replaced by the App-owned optional listener; shared frontend/runtime semantics need independent acceptance."
+    },
+    {
+      "key": "androidDisabled/webserver",
+      "plugin": null,
+      "sourceDigest": "8aba854d2029a78140a1cb3fa75674e55daa6edee87910af638394e194de2c3b",
+      "sources": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "status": "adapted",
+      "android": [
+        "apps/android/runtime/web-access.mjs"
+      ],
+      "evidence": {
+        "core": "partial",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Static Web startup is replaced by the App-owned optional listener; shared frontend/runtime semantics need independent acceptance."
+    },
+    {
+      "key": "androidDisabled/web-runtime",
+      "plugin": null,
+      "sourceDigest": "23c8aff5c94643c2029e735ccc4d86068d49dc7b44eeb41f157a9d2106e4672f",
+      "sources": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "status": "adapted",
+      "android": [
+        "apps/android/runtime/web-access.mjs"
+      ],
+      "evidence": {
+        "core": "partial",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Static Web startup is replaced by the App-owned optional listener; shared frontend/runtime semantics need independent acceptance."
+    },
+    {
+      "key": "androidDisabled/harness-dev-context",
+      "plugin": null,
+      "sourceDigest": "8b67fa86460cd27bd377b00efd0f7964d66b1626a9c8539f468337a128a86b6f",
+      "sources": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "status": "not-migrated",
+      "android": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Desktop development-context composition is disabled; whether and how to retain its portable context remains unaudited."
+    },
+    {
+      "key": "androidDisabled/client-hmr",
+      "plugin": null,
+      "sourceDigest": "47541307ad83d6333f5b3f52ba04396715a02f9eacaff5cb7e614bfbade4a4a1",
+      "sources": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "status": "not-migrated",
+      "android": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Development client hot reload is disabled in the packaged profile; production client update behavior needs explicit scope review."
+    },
+    {
+      "key": "androidDisabled/permission",
+      "plugin": null,
+      "sourceDigest": "e1edda83e112b30defcf038750cb1f6e3755ddbf769665b639b916810222a332",
+      "sources": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/runtime/android-shell.mjs",
+        "apps/android/runtime/interactions.mjs"
+      ],
+      "evidence": {
+        "core": "partial",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Original desktop permission presets are disabled; Android app UID and per-call approval do not implement equivalent confinement."
+    },
+    {
+      "key": "androidDisabled/ui-permission",
+      "plugin": null,
+      "sourceDigest": "b4b884098b1ba4afc41b3bf07b75399052cadf3db1a93680a041dc0d03b80f5e",
+      "sources": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/runtime/android-shell.mjs",
+        "apps/android/runtime/interactions.mjs"
+      ],
+      "evidence": {
+        "core": "partial",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Original desktop permission presets are disabled; Android app UID and per-call approval do not implement equivalent confinement."
+    },
+    {
+      "key": "androidDisabled/credentials",
+      "plugin": null,
+      "sourceDigest": "1d603ad75e3f5783ab00fe1b6642ceccffbb7282a8982a2fb3ff16c4b9d1c9dd",
+      "sources": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "status": "adapted",
+      "android": [
+        "apps/android/runtime/credentials.mjs"
+      ],
+      "evidence": {
+        "core": "partial",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Original credential service uses Android Keystore-backed provider adaptation; full provider/device recovery remains separately verified."
+    },
+    {
+      "key": "androidDisabled/attachment-local",
+      "plugin": null,
+      "sourceDigest": "a711a8cf4479ca9b61e8e5093bd1058bfe85aa8896bb4fc27499253043b06910",
+      "sources": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "status": "adapted",
+      "android": [
+        "apps/android/runtime/android-attachment-store.mjs"
+      ],
+      "evidence": {
+        "core": "partial",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Original attachment lifecycle uses Android-safe immutable file publication; full media/device parity is not inferred."
+    },
+    {
+      "key": "androidDisabled/bash-sandbox",
+      "plugin": null,
+      "sourceDigest": "95b08e94fa3e94136d08eb4f43bcdb7acceb4b2174eb10f5a31278de9b5eb0b0",
+      "sources": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "status": "not-migrated",
+      "android": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Desktop process/filesystem confinement is disabled; application UID isolation does not supply the original per-operation sandbox modes."
+    },
+    {
+      "key": "androidDisabled/pwsh-sandbox",
+      "plugin": null,
+      "sourceDigest": "4bfc0bbc43bd4c970109e470b57d2be1bd6c986a28de8c4e754d9a790a7e49c7",
+      "sources": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "status": "not-migrated",
+      "android": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Desktop process/filesystem confinement is disabled; application UID isolation does not supply the original per-operation sandbox modes."
+    },
+    {
+      "key": "androidDisabled/terminal-controller",
+      "plugin": null,
+      "sourceDigest": "7a841f176891becd1465b0f4e537a904ba6469a7358d0fff3f5b9cca7e4fa498",
+      "sources": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "status": "not-migrated",
+      "android": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Persistent terminal controller is disabled; an ordinary Shell tool is not a replacement."
+    },
+    {
+      "key": "androidDisabled/open-in-app",
+      "plugin": null,
+      "sourceDigest": "8632c9f15bddc3cf737f143888120842bddc85dfb33cce08c6c02f368f8e1a63",
+      "sources": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "status": "not-migrated",
+      "android": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Original host file associations and reveal are disabled; Android system-open integration remains missing."
+    },
+    {
+      "key": "androidDisabled/ui-open-in-app",
+      "plugin": null,
+      "sourceDigest": "c63a5e7adbe34ad64c36233853f845b1fc32a3351547169a760dde56df92af27",
+      "sources": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "status": "not-migrated",
+      "android": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Original host file associations and reveal are disabled; Android system-open integration remains missing."
+    },
+    {
+      "key": "androidDisabled/office-to-pdf",
+      "plugin": null,
+      "sourceDigest": "3608d3315b48114ffb119e54c142811e6d14584e2f4f8af739ccaac693da0430",
+      "sources": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "status": "not-migrated",
+      "android": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Original Office converter is disabled; LibreOffice-kit runtime compatibility must be investigated rather than assumed unavailable."
+    },
+    {
+      "key": "androidDisabled/directory-picker",
+      "plugin": null,
+      "sourceDigest": "718412e881879ee7062947bf3c4c4ba8e3f201cbd919956b5aa20147673f247c",
+      "sources": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "status": "adapted",
+      "android": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "evidence": {
+        "core": "partial",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Original auto picker is replaced by the browse provider plus Android SAF picking; the authorities remain distinct."
+    },
+    {
+      "key": "androidDisabled/fs-sandbox",
+      "plugin": null,
+      "sourceDigest": "212f001be2fec3c1a85e419f9278b25057a511ccc1cddff5d1557336fa6efa8b",
+      "sources": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "status": "not-migrated",
+      "android": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Desktop process/filesystem confinement is disabled; application UID isolation does not supply the original per-operation sandbox modes."
+    },
+    {
+      "key": "androidDisabled/ptc-runtime",
+      "plugin": null,
+      "sourceDigest": "7c2f7f5a84c0dabe2be428f785db08abdc04cee52016f1e046aa470174505f66",
+      "sources": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "status": "not-migrated",
+      "android": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Original programmatic tool execution runtime is disabled; this is an open migration gap."
+    },
+    {
+      "key": "androidDisabled/session-persistence-jsonl",
+      "plugin": null,
+      "sourceDigest": "caa1019e8b4ee81979bc524ea91e3564b7e2ee24056a4ddf7c30cf3c4f661371",
+      "sources": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "status": "adapted",
+      "android": [
+        "apps/android/runtime/android-session-persistence.mjs"
+      ],
+      "evidence": {
+        "core": "partial",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Original persistence uses Android publication adaptation and no compression; full lifecycle parity requires acceptance beyond source presence."
+    },
+    {
+      "key": "androidDisabled/preset-standard",
+      "plugin": null,
+      "sourceDigest": "9b4f664166915c4d581efb14f384261556d87f806ff3e854866cfb6ef4038732",
+      "sources": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/runtime/cordis.patch.yml",
+        "apps/android/tool/stage-preset.mjs"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Original preset is disabled in favor of the Android preset; supported portable features must be migrated individually, not silently removed."
+    },
+    {
+      "key": "androidDisabled/preset-minimal",
+      "plugin": null,
+      "sourceDigest": "d6f81d02eb9ee7b0a87c9251a79122bc95d7681c9bb8d2c58556c9e18f2316b6",
+      "sources": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/runtime/cordis.patch.yml",
+        "apps/android/tool/stage-preset.mjs"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Original preset is disabled in favor of the Android preset; supported portable features must be migrated individually, not silently removed."
+    },
+    {
+      "key": "androidDisabled/preset-ptc",
+      "plugin": null,
+      "sourceDigest": "c98c5e4ffe6c9b8f6885f4106b33a8f91776bb902ca3425b558520ea8f5d844c",
+      "sources": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/runtime/cordis.patch.yml",
+        "apps/android/tool/stage-preset.mjs"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Original preset is disabled in favor of the Android preset; supported portable features must be migrated individually, not silently removed."
+    },
+    {
+      "key": "androidDisabled/preset-cordis",
+      "plugin": null,
+      "sourceDigest": "b467d223dea030019b1b81c883fd4e1537076faa3ea56a01cbb6ccf960ca408b",
+      "sources": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/runtime/cordis.patch.yml",
+        "apps/android/tool/stage-preset.mjs"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Original preset is disabled in favor of the Android preset; supported portable features must be migrated individually, not silently removed."
+    }
+  ],
+  "sourceDigestPolicy": "SHA256 of the corresponding inert YAML row encoded as sorted object keys, preserved array order and typed scalar values. Comments and YAML key order do not affect the digest; config, disabled expressions and nested declarations do."
+}

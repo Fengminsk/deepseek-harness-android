@@ -24,6 +24,8 @@ const plugins = (patch, id) => patch.flatMap(row => row.insert ?? [])
 const delegationIds = [
   'tool-subagent-control', 'tool-subagent-list-agents', 'tool-subagent', 'tool-subagent-fork',
 ]
+const portableIds = ['skill-filesystem', 'tool-skill', 'tool-todo', 'present',
+  'command-goal', 'tool-goal', 'planning', 'compaction', 'tool-schedule']
 
 async function fixture(t) {
   const base = resolve(tmpdir())
@@ -70,13 +72,36 @@ test('Android stages original local delegation without enabling PTC or changing 
   assert.equal(staged.find(entry => entry.id === 'ptc-runtime').disabled, true)
   assert.equal(delegated.config.some(entry => entry.id.startsWith('workflow')
     || entry.id === 'tool-workflow'), false)
-  for (const id of ['command-goal', 'tool-goal', 'planning', 'compaction', 'tool-schedule']) {
+  for (const id of portableIds) {
     assert.deepEqual(android.find(entry => entry.id === id), original.find(entry => entry.id === id))
   }
+  assert.deepEqual(android.find(entry => entry.id === 'tool-todo').config,
+    { allowParallelInProgress: true })
+  assert.deepEqual(android.find(entry => entry.id === 'tool-fs'),
+    plugins(world.target, 'preset-android').find(entry => entry.id === 'tool-fs'),
+    'restoring portable tools must not change Android filesystem mutation permissions')
   assert.deepEqual(staged.find(entry => entry.id === 'sandbox-policy'),
     world.target.find(entry => entry.id === 'sandbox-policy'), '!!js expressions must survive staging')
   assert.equal(staged.find(entry => entry.id === 'approval').config.policy, 'ask')
 })
+
+for (const id of portableIds) {
+  for (const kind of ['missing', 'duplicate', 'overridden']) {
+    test(`${kind} ${id} rejects staging before replacing the current patch`, async t => {
+      const world = await fixture(t)
+      const original = plugins(world.source, 'preset-standard')
+      const index = original.findIndex(entry => entry.id === id)
+      if (kind === 'missing') original.splice(index, 1)
+      else if (kind === 'duplicate') original.push(original[index])
+      else plugins(world.target, 'preset-android').push(original[index])
+      await world.save()
+      const output = join(world.destination, 'cordis.patch.yml')
+      await writeFile(output, '# previously staged profile\n')
+      await assert.rejects(stagePreset(world.directory, world.destination), new RegExp(id))
+      assert.equal(await readFile(output, 'utf8'), '# previously staged profile\n')
+    })
+  }
+}
 
 for (const kind of ['missing', 'duplicate']) {
   test(`a ${kind} original delegation tool rejects staging without replacing the current patch`, async t => {

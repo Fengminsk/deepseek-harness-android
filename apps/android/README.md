@@ -8,10 +8,22 @@ This directory contains the Flutter App, a Kotlin foreground service and an embe
 
 ## Table of Contents
 
+- [DSH migration baseline](#parity)
 - [Build the preview](#build)
 - [Runtime and storage](#runtime)
 - [Interface and themes](#interface)
 - [Verification limits](#verification)
+
+<a id="parity"></a>
+## DSH migration baseline
+
+Pocket Harness targets the complete DSH product workflow in the App. The current preview does not yet meet that target. The original [Web bundle](../../packages/bundle/web-app/cordis.patch.yml), [standard preset](../../packages/bundle/web-app/presets/standard.patch.yml), and their owning services define the behavior to migrate; retaining their Web assets or exposing a generic API does not establish App coverage. Mobile navigation can differ, but feature semantics, Session identity, authorization, persistence and conflict behavior must remain aligned with DSH.
+
+The [migration inventory](tool/parity-manifest.json) records the original entries and the corresponding Android code and evidence. Run `node apps/android/tool/parity-audit.mjs` from the repository root to detect unclassified source changes and invalid references. This inventory check does not execute or certify the features. Core composition, App interaction, behavior tests and device acceptance are separate evidence levels; partial implementations stay partial.
+
+DSH already provides a [Session working-directory tree](../../packages/client/ui-sidebar-files/README.md) and [document previews](../../packages/client/ui-sidebar-documentpreview/README.md) for text, code, Markdown, images, PDF, HTML, Excel and Office documents. Android's current fixed private-directory browser and UTF-8 reader do not replace those capabilities. File migration uses the original [workspaceFiles service](../../packages/api/workspace-files/README.md), including Session-scoped resolution, binary reads, versions, cancellation and change subscriptions. SAF grants remain a separate Android file source; attachment IDs remain a separate Session-authorized source.
+
+The [Android patch](runtime/cordis.patch.yml) and [preset staging](tool/stage-preset.mjs) currently omit capabilities including Office conversion, persistent terminals, some standard tools and presets. These are migration gaps, not evidence that DSH lacks those functions. Root, device ADB control, offline model inference and boot auto-start remain outside the agreed release scope. Other platform differences require an explicit adaptation and acceptance record rather than silently dropping the original behavior.
 
 <a id="build"></a>
 ## Build the preview
@@ -90,6 +102,8 @@ Current search results open their source file within the original grant, includi
 
 **Agent presets** has a native settings page for the original preset catalog, default selection, loading failures and read-only declarations. The new-conversation entry and session-model page open the conversation's actual preset. The preset page only reads state when opened; it does not create or resume a conversation. The original service permits selection only before the first turn; changing the default affects subsequent conversations. Default changes use the original settings revision check, and failed or unconfirmed changes retain the draft without automatic replay. Android currently ships one supported local preset; this page does not enable desktop-only capabilities.
 
+The Android preset stages the original filesystem skill provider, skill invocation, todo and file-delivery tools without replacing their configuration. The host [portable-tools smoke](tool/smoke-preset-portable-tools.mjs) verifies discovery, invocation, parallel todo states, file-existence checks, durable events and cold reading without replay, using the Android profile and a local fixture model. Native skill selection, todo and delivery presentation, and device acceptance are separate unfinished migration work.
+
 **Subagent model selection** uses a native searchable list of exact provider/model pairs. Saved selections remain visible when a provider is unavailable. Disabling selection retains the list; enabling it requires at least one selected model. The switch and list are saved together through the original settings API with a revision check, and apply to new conversations. Conflicts retain both the current configuration and the draft for review.
 
 **Account and configuration** pages use the original account and model services. Sign-in opens the official authorization page in an Android Custom Tab; its temporary loopback listener only serves the authorization callback and does not enable Web. The completion page's `dsh://open` link returns to the native account page without credentials or a login-state change; the original account service confirms login. Successful login invokes the original default-model initialization rules; an initialization failure preserves the signed-in account and offers a separate retry. Profile, balance and notices load independently. Model/provider credentials and defaults have native editors. Asynchronous model failures remain visible in the matching conversation after reconnecting.
@@ -117,6 +131,8 @@ The recovery entry shows service status and links to configuration, backups, ope
 Recovery can preview backups, read the last 64 KiB of the private runtime log, and quarantine the current bundled-runtime cache for extraction from the installed APK. It does not reset sessions, credentials or document grants. Actual service mode and next-start preference are reported separately if they differ. Maintenance persists until the App explicitly resumes normal operation. Before ordinary plugin activation, the Android profile composition check rejects user layers that replace required host entries or enable static Web listeners; executable extensions remain application code, not sandboxed configuration.
 
 **Private workspace files** exposes the App's default private directory through a native, read-only browser. Directory pages and UTF-8 text pages detect changed files before continuing. Filename and literal-content search report skipped entries and bounded, incomplete results; symbolic links are not followed. This entry does not accept arbitrary device roots or replace SAF grants. Limits are adjustable through the Android tools settings.
+
+The private-directory and authorized-location browsers navigate folders in one viewport, with floating controls, breadcrumbs and per-location scroll restoration. Rows display file-type icons and available metadata; a type icon does not imply an installed preview renderer. Truncated listings report the loaded count rather than a total. Returning to a paginated directory revalidates the required pages before restoring its position. Grant removal uses the location menu and a separate confirmation.
 
 **Workspaces and sessions** uses the original Workspace registry and Session controllers for listing, naming, pinning, archiving, restoring, ordering and forking. New directories under the default private workspace are created separately from workspace registration; the UI preserves each step's outcome. Session creation adopts the identity returned by DSH. Ordinary forks remain visible, while delegated child conversations retain their separate addressed entry. Archiving active work requires a separate confirmation to stop that work. Session ordering stays within one workspace; changing the session working directory does not move its immutable workspace affiliation. These original mutation APIs do not offer atomic version comparisons, so the App retains drafts and reports observed conflicts without promising to prevent every concurrent write.
 

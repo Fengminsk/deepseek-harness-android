@@ -1,4 +1,4 @@
-/** Compose portable commands and delegation from the shipped preset without forking their policy. */
+/** Compose portable tools and command groups from the shipped preset without forking their policy. */
 import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { load, dump, Type, DEFAULT_SCHEMA } from 'js-yaml'
@@ -13,7 +13,7 @@ const schema = DEFAULT_SCHEMA.extend(new Type('tag:yaml.org,2002:js', {
   represent: expression => expression.source,
 }))
 
-/** Stage original portable command groups and local subagent tools; PTC workflows stay unavailable. */
+/** Stage original filesystem skills, todo, deliveries, command groups and local delegation. */
 export async function stagePreset(root, destination) {
   const source = load(await readFile(join(root,
     'packages/bundle/web-app/presets/standard.patch.yml'), 'utf8'), { schema })
@@ -27,13 +27,17 @@ export async function stagePreset(root, destination) {
   }
   const original = pluginsFor(source, 'preset-standard')
   const android = pluginsFor(target, 'preset-android')
-  for (const id of ['command-goal', 'tool-goal', 'planning', 'compaction', 'tool-schedule']) {
-    const entry = original.find(item => item.id === id)
-    if (!entry) throw new Error(`Original preset is missing ${id}`)
+  // The shared host supplies skills, fs, workingDirectory and sessionProjections.
+  // These entries retain the standard provider settings and scoped ownership;
+  // Android's separate tool-fs write/edit policy is not changed here.
+  for (const id of ['skill-filesystem', 'tool-skill', 'tool-todo', 'present',
+    'command-goal', 'tool-goal', 'planning', 'compaction', 'tool-schedule']) {
+    const entries = original.filter(item => item.id === id)
+    if (entries.length !== 1) throw new Error(`Original preset must contain exactly one ${id}`)
     if (android.some(item => item.id === id)) {
       throw new Error(`Android preset overrides original ${id}`)
     }
-    android.push(entry)
+    android.push(entries[0])
   }
   if (android.some(item => item.id === 'delegation')) {
     throw new Error('Android preset overrides original delegation')
@@ -54,6 +58,6 @@ export async function stagePreset(root, destination) {
     })
   android.push({ ...delegation, config: tools })
   await writeFile(join(destination, 'cordis.patch.yml'),
-    '# Generated with original standard preset command groups and local delegation by stage-preset.mjs.\n'
+    '# Generated with original standard preset portable tools, command groups and local delegation by stage-preset.mjs.\n'
     + dump(target, { schema, noRefs: true, lineWidth: -1 }))
 }
