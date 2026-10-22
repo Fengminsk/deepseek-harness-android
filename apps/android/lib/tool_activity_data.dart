@@ -318,7 +318,8 @@ class ToolActivityProjection {
       final hasResult = call?.result != null;
       ToolActivityPhase phase;
       if (hasResult) {
-        if (error?['code'] == 'interrupted') {
+        if (error?['code'] == 'interrupted' ||
+            error?['code'] == 'TOOL_OUTCOME_UNKNOWN') {
           phase = ToolActivityPhase.interrupted;
         } else {
           phase = result?['isError'] == true

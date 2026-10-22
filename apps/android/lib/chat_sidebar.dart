@@ -6,6 +6,7 @@ import 'package:material_ui/material_ui.dart';
 
 import 'account.dart';
 import 'approvals.dart';
+import 'entry_motion.dart';
 import 'export.dart';
 import 'files.dart';
 import 'flclash/popup.dart';
@@ -46,6 +47,8 @@ class _ChatSidebarState extends State<ChatSidebar> {
   final _searchFocus = FocusNode();
   bool _searchOpen = false;
   String? _notice, _noticeSession;
+  final _archiveRows = <String, _ArchiveRow>{};
+  final _archivedLocally = <String>{};
   late LibraryController _library;
   late Listenable _updates;
 
@@ -66,6 +69,8 @@ class _ChatSidebarState extends State<ChatSidebar> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.runtime != widget.runtime) {
       _notice = _noticeSession = null;
+      _archiveRows.clear();
+      _archivedLocally.clear();
       _observe();
     }
   }
@@ -123,30 +128,57 @@ class _ChatSidebarState extends State<ChatSidebar> {
   }
 
   List<Json> _sessions() {
+    // A confirmed receipt can precede the catalog refresh. Keep its row only
+    // for the exit animation, then hide it until the catalog catches up.
+    _archivedLocally.removeWhere(_library.archivedSessionIds.contains);
+    final List<Json> rows;
     if (_library.fresh || _library.sessions.isNotEmpty) {
-      return _library.sessions
+      rows = _library.sessions
           .where(
             (row) =>
                 row['origin'] != 'subagent' &&
-                !_library.archivedSessionIds.contains(row['sessionId']),
+                !_library.archivedSessionIds.contains(row['sessionId']) &&
+                !_archivedLocally.contains(row['sessionId']),
           )
           .toList();
-    }
-    // Before the library baseline arrives, retain the last sidebar observation.
-    // It supplies display data, never authority for a library mutation.
-    return [
-      for (final row in widget.runtime.sessions)
-        if (row['header']?['id'] is String &&
-            row['header']?['origin'] != 'subagent' &&
-            row['archived'] != true)
-          {
-            ...row,
-            'sessionId': row['header']['id'],
-            'projections': {
-              'values': {'title': row['title'] ?? row['header']['title']},
+    } else {
+      // Before the library baseline arrives, retain the last sidebar observation.
+      // It supplies display data, never authority for a library mutation.
+      rows = [
+        for (final row in widget.runtime.sessions)
+          if (row['header']?['id'] is String &&
+              row['header']?['origin'] != 'subagent' &&
+              row['archived'] != true &&
+              !_archivedLocally.contains(row['header']['id']))
+            {
+              ...row,
+              'sessionId': row['header']['id'],
+              'projections': {
+                'values': {'title': row['title'] ?? row['header']['title']},
+              },
             },
-          },
-    ];
+      ];
+    }
+    for (final entry in _archiveRows.entries) {
+      final state = _library.actions['archive:${entry.key}']?.state;
+      // The receipt notification arrives before mutate() finishes its follow-up
+      // catalog read. Start feedback now; a slow refresh must not freeze it.
+      if (state == 'confirmed' || state == 'observed') {
+        entry.value.removing = true;
+      }
+      if (!rows.any((row) => row['sessionId'] == entry.key)) {
+        rows.insert(math.min(entry.value.index, rows.length), entry.value.row);
+      }
+    }
+    return rows;
+  }
+
+  void _finishArchive(String id) {
+    if (!mounted || _archiveRows[id]?.removing != true) return;
+    setState(() {
+      _archiveRows.remove(id);
+      if (!_library.archivedSessionIds.contains(id)) _archivedLocally.add(id);
+    });
   }
 
   void _details(String id) =>
@@ -164,16 +196,27 @@ class _ChatSidebarState extends State<ChatSidebar> {
   Future<void> _mutate(String id, {required bool archive}) async {
     final key = '${archive ? 'archive' : 'pin'}:$id';
     if (!_library.allowed(key) || _library.session(id) == null) return;
+    final library = _library;
+    final rows = _sessions();
+    final index = rows.indexWhere((row) => row['sessionId'] == id);
+    if (index < 0) return;
     final pinned = _library.pinnedSessionIds.contains(id);
     setState(() {
+      if (archive) {
+        _archiveRows[id] = _ArchiveRow(
+          row: Map.of(rows[index]),
+          index: index,
+          pinnedIndex: _library.pinnedSessionIds.indexOf(id),
+        );
+      }
       _notice = archive
-          ? '正在归档…'
+          ? null
           : pinned
           ? '正在取消置顶…'
           : '正在置顶…';
-      _noticeSession = id;
+      _noticeSession = archive ? null : id;
     });
-    await _library.mutate(key, archive ? 'sessionArchive' : 'sessionPin', {
+    await library.mutate(key, archive ? 'sessionArchive' : 'sessionPin', {
       'sessionId': id,
       if (archive) ...{
         'archived': true,
@@ -181,16 +224,27 @@ class _ChatSidebarState extends State<ChatSidebar> {
       } else
         'pinned': !pinned,
     });
-    if (!mounted) return;
-    final action = _library.actions[key];
+    if (!mounted || !identical(_library, library)) return;
+    final action = library.actions[key];
     setState(() {
-      _notice = action?.state == 'confirmed'
+      final confirmed =
+          action?.state == 'confirmed' ||
+          (archive && action?.state == 'observed');
+      if (archive) {
+        if (confirmed) {
+          _archiveRows[id]?.removing = true;
+        } else {
+          _archiveRows.remove(id);
+        }
+      }
+      _notice = confirmed
           ? archive
-                ? '已归档对话，可在工作区与会话中恢复。'
+                ? null
                 : pinned
                 ? '已取消置顶。'
                 : '已置顶对话。'
           : action?.message ?? '操作尚未确认，请查看会话详情。';
+      _noticeSession = _notice == null ? null : id;
     });
     if (action?.state == 'needs-stop') _details(id);
   }
@@ -333,6 +387,13 @@ class _ChatSidebarState extends State<ChatSidebar> {
           ],
         ),
       ),
+      const SizedBox(width: 10),
+      GlassButton(
+        key: const ValueKey('sidebar-new-chat'),
+        icon: Icons.edit_square,
+        label: '新对话',
+        onPressed: () => _leave(widget.onNewChat),
+      ),
       const Spacer(),
       _SidebarAvatar(
         url: _avatarUrl(),
@@ -362,8 +423,15 @@ class _ChatSidebarState extends State<ChatSidebar> {
           )
           .toList();
       final knownIds = _library.sessions.map((row) => row['sessionId']).toSet();
+      final pinnedIds = [..._library.pinnedSessionIds];
+      for (final entry in _archiveRows.entries) {
+        final index = entry.value.pinnedIndex;
+        if (index >= 0 && !pinnedIds.contains(entry.key)) {
+          pinnedIds.insert(math.min(index, pinnedIds.length), entry.key);
+        }
+      }
       final pinned = [
-        for (final id in _library.pinnedSessionIds)
+        for (final id in pinnedIds)
           for (final row in rows)
             if (row['sessionId'] == id) row,
       ];
@@ -396,19 +464,24 @@ class _ChatSidebarState extends State<ChatSidebar> {
 
       Widget session(Json row) {
         final id = row['sessionId'] as String;
-        return _SessionRow(
-          key: ValueKey('sidebar-session:$id'),
-          title: librarySessionTitle(row),
-          selected: id == widget.currentSessionId,
-          pinned:
-              _library.pinnedSessionIds.contains(id) && knownIds.contains(id),
-          canPin: knownIds.contains(id) && _library.allowed('pin:$id'),
-          // Opening the original editor also recovers its retained draft.
-          // The editor itself gates saving on synchronization and receipt state.
-          canRename: knownIds.contains(id),
-          canArchive: knownIds.contains(id) && _library.allowed('archive:$id'),
-          onSelect: () => _leave(() => widget.onSelectSession(id)),
-          onAction: (action) => _sessionAction(action, row),
+        return _ArchiveTransition(
+          key: ValueKey('sidebar-presence:$id'),
+          removing: _archiveRows[id]?.removing == true,
+          onRemoved: () => _finishArchive(id),
+          child: _SessionRow(
+            key: ValueKey('sidebar-session:$id'),
+            title: librarySessionTitle(row),
+            selected: id == widget.currentSessionId,
+            pinned: pinnedIds.contains(id) && knownIds.contains(id),
+            canPin: knownIds.contains(id) && _library.allowed('pin:$id'),
+            // Opening the original editor also recovers its retained draft.
+            // The editor itself gates saving on synchronization and receipt state.
+            canRename: knownIds.contains(id),
+            canArchive:
+                knownIds.contains(id) && _library.allowed('archive:$id'),
+            onSelect: () => _leave(() => widget.onSelectSession(id)),
+            onAction: (action) => _sessionAction(action, row),
+          ),
         );
       }
 
@@ -438,20 +511,6 @@ class _ChatSidebarState extends State<ChatSidebar> {
                   _searchContents,
                   key: const ValueKey('sidebar-search-content'),
                 ),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 4),
-                child: PocketButton.tonal(
-                  key: const ValueKey('sidebar-new-chat'),
-                  onPressed: () => _leave(widget.onNewChat),
-                  child: const Row(
-                    children: [
-                      Icon(Icons.edit_square, size: 21),
-                      SizedBox(width: 12),
-                      Flexible(child: Text('新对话')),
-                    ],
-                  ),
-                ),
-              ),
               _destination(
                 '后台任务',
                 Icons.play_circle_outline_rounded,
@@ -463,77 +522,72 @@ class _ChatSidebarState extends State<ChatSidebar> {
                 Icons.folder_copy_outlined,
                 () => unawaited(_browse(LibraryPage(runtime: widget.runtime))),
               ),
-              CommonPopupBox(
-                key: const ValueKey('sidebar-more'),
-                placement: PopupPlacement.overAnchorStart,
-                targetBuilder: (open) => _destination(
-                  '更多',
-                  Icons.more_horiz_rounded,
-                  open,
-                  trailing: widget.runtime.interactions.isEmpty
-                      ? null
-                      : Text('${widget.runtime.interactions.length} 项待处理'),
-                ),
-                popupBuilder: (_) => CommonPopupMenu(
-                  items: [
-                    CommonPopupMenuItem(
-                      label: '我的文件',
-                      glyph: Icons.folder_open_rounded,
-                      onPressed: () =>
-                          _page(FilesPage(runtime: widget.runtime)),
-                    ),
-                    CommonPopupMenuItem(
-                      label: '自动化任务',
-                      glyph: Icons.schedule_rounded,
-                      onPressed: () => _leave(widget.onOpenAutomations),
-                    ),
-                    CommonPopupMenuItem(
-                      label: '授权与提问',
-                      glyph: Icons.pending_actions_rounded,
-                      onPressed: () =>
-                          _page(ApprovalsPage(runtime: widget.runtime)),
-                    ),
-                    if (current != null) ...[
-                      CommonPopupMenuItem(
-                        label: '会话文件',
-                        glyph: Icons.folder_open_outlined,
-                        onPressed: () => _page(
-                          SessionFilesPage(
-                            runtime: widget.runtime,
-                            sessionId: widget.currentSessionId,
-                            onOpenDocument: (context, sessionId, path) async {
-                              await Navigator.of(context).push<void>(
-                                PocketRoute(
-                                  builder: (_) => SessionDocumentPage(
-                                    runtime: widget.runtime,
-                                    sessionId: sessionId,
-                                    path: path,
-                                  ),
+              _SidebarMore(
+                pending: widget.runtime.interactions.length,
+                children: [
+                  _destination(
+                    '我的文件',
+                    Icons.folder_open_rounded,
+                    () => _page(FilesPage(runtime: widget.runtime)),
+                    key: const ValueKey('sidebar-more-files'),
+                  ),
+                  _destination(
+                    '自动化任务',
+                    Icons.schedule_rounded,
+                    () => _leave(widget.onOpenAutomations),
+                    key: const ValueKey('sidebar-more-automations'),
+                  ),
+                  _destination(
+                    '授权与提问',
+                    Icons.pending_actions_rounded,
+                    () => _page(ApprovalsPage(runtime: widget.runtime)),
+                    key: const ValueKey('sidebar-more-approvals'),
+                    trailing: widget.runtime.interactions.isEmpty
+                        ? null
+                        : Text('${widget.runtime.interactions.length}'),
+                  ),
+                  if (current != null) ...[
+                    _destination(
+                      '会话文件',
+                      Icons.folder_open_outlined,
+                      () => _page(
+                        SessionFilesPage(
+                          runtime: widget.runtime,
+                          sessionId: widget.currentSessionId,
+                          onOpenDocument: (context, sessionId, path) async {
+                            await Navigator.of(context).push<void>(
+                              PocketRoute(
+                                builder: (_) => SessionDocumentPage(
+                                  runtime: widget.runtime,
+                                  sessionId: sessionId,
+                                  path: path,
                                 ),
-                              );
-                            },
-                          ),
+                              ),
+                            );
+                          },
                         ),
                       ),
-                      CommonPopupMenuItem(
-                        label: '当前会话的子 Agent',
-                        glyph: Icons.account_tree_outlined,
-                        onPressed: () => _page(
-                          SubagentsPage(
-                            runtime: widget.runtime,
-                            parentSessionId: widget.currentSessionId,
-                          ),
+                      key: const ValueKey('sidebar-more-session-files'),
+                    ),
+                    _destination(
+                      '当前会话的子 Agent',
+                      Icons.account_tree_outlined,
+                      () => _page(
+                        SubagentsPage(
+                          runtime: widget.runtime,
+                          parentSessionId: widget.currentSessionId,
                         ),
                       ),
-                      CommonPopupMenuItem(
-                        label: '导出当前对话',
-                        glyph: Icons.ios_share_rounded,
-                        onPressed: () =>
-                            _sessionAction(_SessionAction.export, current),
-                      ),
-                    ],
+                      key: const ValueKey('sidebar-more-subagents'),
+                    ),
+                    _destination(
+                      '导出当前对话',
+                      Icons.ios_share_rounded,
+                      () => _sessionAction(_SessionAction.export, current),
+                      key: const ValueKey('sidebar-more-export'),
+                    ),
                   ],
-                ),
+                ],
               ),
               if (_library.readError != null)
                 _message('会话列表同步失败，已保留上次内容。', refresh: true)
@@ -591,6 +645,241 @@ class _ChatSidebarState extends State<ChatSidebar> {
       );
     },
   );
+}
+
+class _ArchiveRow {
+  _ArchiveRow({
+    required this.row,
+    required this.index,
+    required this.pinnedIndex,
+  });
+  final Json row;
+  final int index, pinnedIndex;
+  bool removing = false;
+}
+
+/// A service-confirmed archive fades where it was, then releases its space.
+/// Pending or rejected requests keep the same fully visible, keyed row.
+class _ArchiveTransition extends StatefulWidget {
+  const _ArchiveTransition({
+    super.key,
+    required this.removing,
+    required this.onRemoved,
+    required this.child,
+  });
+  final bool removing;
+  final VoidCallback onRemoved;
+  final Widget child;
+  @override
+  State<_ArchiveTransition> createState() => _ArchiveTransitionState();
+}
+
+class _ArchiveTransitionState extends State<_ArchiveTransition>
+    with SingleTickerProviderStateMixin {
+  late final _controller =
+      AnimationController(
+        vsync: this,
+        duration: const Duration(milliseconds: 320),
+      )..addStatusListener((status) {
+        if (status == AnimationStatus.completed) _finish();
+      });
+  late final _opacity = Tween<double>(begin: 1, end: 0).animate(
+    CurvedAnimation(parent: _controller, curve: const Interval(0, .65)),
+  );
+  late final _size = Tween<double>(begin: 1, end: 0).animate(
+    CurvedAnimation(
+      parent: _controller,
+      curve: const Interval(.35, 1, curve: Curves.easeInOutCubic),
+    ),
+  );
+  bool _finished = false;
+
+  void _finish() {
+    if (_finished) return;
+    _finished = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && widget.removing) widget.onRemoved();
+    });
+  }
+
+  void _sync() {
+    if (!widget.removing) {
+      _controller.reset();
+      _finished = false;
+      return;
+    }
+    if (MediaQuery.disableAnimationsOf(context)) {
+      _controller.value = 1;
+      _finish();
+    } else {
+      _controller.forward();
+    }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _sync();
+  }
+
+  @override
+  void didUpdateWidget(_ArchiveTransition oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.removing != oldWidget.removing) _sync();
+  }
+
+  @override
+  Widget build(BuildContext context) => IgnorePointer(
+    ignoring: widget.removing,
+    child: ExcludeSemantics(
+      excluding: widget.removing,
+      child: SizeTransition(
+        sizeFactor: _size,
+        alignment: AlignmentDirectional.topStart,
+        child: FadeTransition(opacity: _opacity, child: widget.child),
+      ),
+    ),
+  );
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+}
+
+/// Secondary destinations are part of the drawer's scrolling content. Each
+/// row opens in sequence using the shared blur appearance and its own extent.
+class _SidebarMore extends StatefulWidget {
+  const _SidebarMore({required this.pending, required this.children});
+  final int pending;
+  final List<Widget> children;
+  @override
+  State<_SidebarMore> createState() => _SidebarMoreState();
+}
+
+class _SidebarMoreState extends State<_SidebarMore>
+    with SingleTickerProviderStateMixin, AutomaticKeepAliveClientMixin {
+  late final _controller = AnimationController(vsync: this);
+  bool _expanded = false;
+  @override
+  bool get wantKeepAlive => true;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _syncDuration();
+    if (MediaQuery.disableAnimationsOf(context)) {
+      _controller.value = _expanded ? 1 : 0;
+    }
+  }
+
+  @override
+  void didUpdateWidget(_SidebarMore oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _syncDuration();
+  }
+
+  void _syncDuration() {
+    _controller.duration = MediaQuery.disableAnimationsOf(context)
+        ? Duration.zero
+        : Duration(milliseconds: 260 + (widget.children.length - 1) * 35);
+  }
+
+  void _toggle() {
+    setState(() => _expanded = !_expanded);
+    if (_expanded) {
+      _controller.forward();
+    } else {
+      _controller.reverse();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    super.build(context);
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, _) {
+        final duration = 260 + (widget.children.length - 1) * 35;
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Semantics(
+              expanded: _expanded,
+              child: PocketTile(
+                key: const ValueKey('sidebar-more'),
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 10,
+                ),
+                leading: const Icon(Icons.more_horiz_rounded),
+                title: const Text('更多'),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (widget.pending > 0) ...[
+                      Semantics(
+                        label: '${widget.pending} 项待处理',
+                        excludeSemantics: true,
+                        child: Text('${widget.pending}'),
+                      ),
+                      const SizedBox(width: 6),
+                    ],
+                    RotationTransition(
+                      turns: Tween<double>(
+                        begin: 0,
+                        end: .5,
+                      ).animate(_controller),
+                      child: const Icon(Icons.expand_more_rounded, size: 20),
+                    ),
+                  ],
+                ),
+                onTap: _toggle,
+              ),
+            ),
+            if (_expanded || !_controller.isDismissed)
+              for (var index = 0; index < widget.children.length; index++)
+                _moreRow(index, duration),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _moreRow(int index, int duration) {
+    final animation = _controller.drive(
+      CurveTween(
+        curve: Interval(
+          index * 35 / duration,
+          (index * 35 + 260) / duration,
+          curve: PocketEntryMotion.curve,
+        ),
+      ),
+    );
+    return IgnorePointer(
+      ignoring: !_expanded || animation.value < .5,
+      child: ExcludeSemantics(
+        excluding: !_expanded || animation.value < .5,
+        child: SizeTransition(
+          key: ValueKey('sidebar-more-reveal:$index'),
+          sizeFactor: animation,
+          alignment: AlignmentDirectional.topStart,
+          child: PocketBlurTransition(
+            animation: animation,
+            child: widget.children[index],
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
 }
 
 /// Insets keep the first and last rows reachable; the viewport itself extends

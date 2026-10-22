@@ -77,6 +77,9 @@ export class AppSessions {
       }
     }
     requestedPreset(params.agentPreset)
+    if (params.clientTimeZone !== undefined && typeof params.clientTimeZone !== 'string') {
+      throw new TypeError('clientTimeZone must be a string when supplied')
+    }
     const attachmentIds = params.attachmentIds ?? []
     if (typeof params.text !== 'string' || !Array.isArray(attachmentIds)
       || attachmentIds.some(id => typeof id !== 'string' || id.length === 0)
@@ -89,6 +92,7 @@ export class AppSessions {
       const attachments = await this.resolveAttachments(sessionId, attachmentIds)
       return this.invoke('prompt', {
         sessionId, requestId: params.requestId, mode: 'queue',
+        ...(params.clientTimeZone === undefined ? {} : { clientTimeZone: params.clientTimeZone }),
         content: [...(params.text.trim().length ? [{ type: 'text', text: params.text }] : []), ...attachments],
       })
     })

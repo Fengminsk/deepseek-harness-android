@@ -121,7 +121,19 @@ async function verifyDormant(runtime, beforeRows, baseline) {
     assert.equal(task.pending[0].status, 'suspended')
     assert.equal(task.pending[0].cancellable, false)
     const read = await runtime.request('session.read', { sessionId })
-    assert.equal(read.events.some(event => event.type === 'turn/end'), false)
+    const end = read.events.filter(event => event.type === 'turn/end')
+    assert.equal(end.length, 1, 'chat reads include the original in-memory interrupted-turn closure')
+    assert.equal(end[0].data.reason.kind, 'interrupted')
+    const storedEvents = beforeRows.get(sessionId).filter(row => Number.isSafeInteger(row.seq))
+    assert.deepEqual(read.events.slice(0, storedEvents.length), storedEvents)
+    if (sessionId === shellSession) {
+      const result = read.events.find(event => event.type === 'tool/result')
+      assert.equal(result.data.message.toolCallId, shellCallId)
+      assert.equal(result.data.message.isError, true)
+      assert.equal(result.data.error.code, 'TOOL_OUTCOME_UNKNOWN')
+    }
+    assert.deepEqual((await runtime.request('session.read', { sessionId })).events, read.events,
+      'repeated cold reads produce the same balanced view')
     assert.deepEqual(await persisted(sessionId), beforeRows.get(sessionId), 'read-only recovery must not rewrite the log')
   }
   assert.deepEqual((await runtime.request('interactions.list')).requests, [], 'dead approval responder is not recreated from history')
@@ -242,6 +254,7 @@ try {
     outcome = { androidProfile: true, nodeGenerations: generations.length, interruptedModelStream: true,
       originalAndroidShellApproval: true, coldReadDoesNotRewrite: true, originalRepairOutcome: 'TOOL_OUTCOME_UNKNOWN',
       oldApprovalRejected: true, queuedPromptsPreserved: 2, noInferenceOrToolReplay: true, repairIdempotent: true,
+      chatColdReadShowsInterrupted: true, chatColdReadShowsUnknownToolOutcome: true,
       androidProcessGroupKillTested: false, home }
   })(), failed.promise, new Promise((_, reject) => {
     deadline = setTimeout(() => reject(new Error(`Task recovery fixture timed out at ${phase}`)), 120000)

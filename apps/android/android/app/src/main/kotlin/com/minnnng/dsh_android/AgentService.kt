@@ -41,6 +41,7 @@ class AgentService : Service() {
     private lateinit var vault: CredentialVault
     private lateinit var webPreferences: WebPreferences
     private lateinit var approvals: ApprovalNotifications
+    private lateinit var taskCompletion: TaskCompletionNotifications
     private lateinit var documentSearch: DocumentSearchManager
     private lateinit var background: BackgroundExecution
     private var summaryRequest: String? = null
@@ -115,6 +116,11 @@ class AgentService : Service() {
                 params.put("owner", owner)
                 frame.put("params", params)
             }
+            if (frame.getString("method") == "session.send") {
+                val params = frame.optJSONObject("params") ?: JSONObject()
+                params.put("clientTimeZone", java.time.ZoneId.systemDefault().id)
+                frame.put("params", params)
+            }
             if (frame.getString("method") == "recovery.call") {
                 val request = frame.optJSONObject("params") ?: JSONObject()
                 val method = request.optString("method")
@@ -152,6 +158,18 @@ class AgentService : Service() {
                 } catch (exception: Exception) {
                     send(client, error(id, exception.message ?: "无法保存后台运行设置"))
                 }
+            } else if (frame.getString("method") == "runtime.background.overlay.configure") {
+                try {
+                    val params = frame.getJSONObject("params")
+                    require(params.length() == 1 && params.get("enabled") is Boolean) {
+                        "悬浮窗选项必须是布尔值"
+                    }
+                    send(client, JSONObject().put("id", id).put("result",
+                        background.configureOverlay(params.getBoolean("enabled"))))
+                    broadcast(status())
+                } catch (_: Exception) {
+                    send(client, error(id, "悬浮窗设置未确认，请刷新后核对"))
+                }
             } else if (frame.getString("method") == "notifications.draft") {
                 val params = frame.getJSONObject("params")
                 send(client, JSONObject().put("id", id).put("result", JSONObject().put("text",
@@ -169,6 +187,11 @@ class AgentService : Service() {
                 }
             }
         } else if (message.what == 3) removeClient(client)
+        else if (message.what == TaskCompletionNotifications.MESSAGE_VIEWING) {
+            appClients[client]?.let { record ->
+                taskCompletion.viewing(record.owner, message.data.getString("sessionId"), message.data.getBoolean("foreground"))
+            }
+        }
         else if (message.what == ApprovalNotifications.MESSAGE_RESPOND) {
             try {
                 approvals.handle(JSONObject(WirePayload.decode(message.data))) { ack -> send(client, ack) }
@@ -205,6 +228,7 @@ class AgentService : Service() {
         webPreferences = WebPreferences(this)
         documentSearch = DocumentSearchManager(this)
         background = BackgroundExecution(this)
+        taskCompletion = TaskCompletionNotifications(this)
         transitions = PackageOperationTransitions(PackageOperationTransitions.Rpc { method, token, epoch, completion ->
             requestTransition(method, token, epoch) { completion.accept(it) }
         }, object : PackageOperationTransitions.Scheduler {
@@ -364,6 +388,13 @@ class AgentService : Service() {
                 try { background.observe(frame.getJSONObject("params")) }
                 catch (_: Exception) { background.unavailable() }
             }
+            if (frame.optString("method") == "task.completed") {
+                try { taskCompletion.completed(frame.getJSONObject("params")) }
+                catch (exception: Exception) {
+                    broadcast(JSONObject().put("method", "notifications.error").put("params",
+                        JSONObject().put("message", "任务完成提醒不可用，请在会话中查看结果")))
+                }
+            }
             if (frame.optString("method") == "interactions.changed") {
                 try { approvals.sync(frame.getJSONObject("params")) }
                 catch (exception: Exception) {
@@ -475,6 +506,7 @@ class AgentService : Service() {
         main.removeCallbacks(summaryTimeout)
         broadcast(status())
         approvals.close()
+        taskCompletion.close()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
         // libnode starts only once per process. The committed Node gate remains sealed until this process exits.
@@ -521,6 +553,7 @@ class AgentService : Service() {
         callbacks.forEach { it(Result.failure(IllegalStateException(message))) }
         transitions.unavailable()
         approvals.close()
+        taskCompletion.close()
         broadcast(status())
     }
     private fun broadcast(frame: JSONObject) { clients.toList().forEach { send(it, frame) } }
@@ -535,6 +568,7 @@ class AgentService : Service() {
     private fun removeClient(client: Messenger) {
         clients.remove(client)
         val record = appClients.remove(client) ?: return
+        taskCompletion.disconnected(record.owner)
         client.binder.unlinkToDeath(record.death, 0)
         transitions.disconnect(client)
         if (phase != "ready" || workers.isShutdown) return
@@ -569,6 +603,7 @@ class AgentService : Service() {
         // Accepted writes own their completion; Activity cancellation never interrupts commits.
         recoveryWorker.shutdown()
         approvals.close()
+        taskCompletion.close()
         appClients.keys.toList().forEach { removeClient(it) }
         super.onDestroy()
     }

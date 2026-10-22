@@ -56,8 +56,8 @@ void main() {
       await tester.tap(find.byKey(const ValueKey('sidebar-more')));
       await settle(tester);
       expect(find.text('会话文件'), findsOneWidget);
-      final menu = tester.widget<CommonPopupMenu>(find.byType(CommonPopupMenu));
-      expect(menu.items.any((item) => item.label == '我的文件'), true);
+      expect(find.byType(CommonPopupMenu), findsNothing);
+      expect(find.text('我的文件'), findsOneWidget);
       await tester.tap(find.text('会话文件'));
       await settle(tester);
       expect(find.byType(SessionFilesPage), findsOneWidget);

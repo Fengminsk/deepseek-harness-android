@@ -308,6 +308,25 @@ void main() {
     },
   );
 
+  test('a failed PTC child stays visible in its completed parent summary', () {
+    final failedChild = dispatchEvent(3, end: true);
+    (failedChild['data'] as Json)['isError'] = true;
+    final projection = ToolActivityProjection()
+      ..reconcile([
+        callEvent(1, name: 'ptc'),
+        dispatchEvent(2),
+        failedChild,
+        resultEvent(4, text: 'root returned'),
+      ]);
+    final activity = projection.byAnchorSeq[1]!;
+    expect(activity.phase, ToolActivityPhase.completed);
+    expect(toolActivityNeedsAttention(activity), isTrue);
+    expect(
+      ToolActivityPresentation.from(activity).summary(activity),
+      '含失败调用 执行工具',
+    );
+  });
+
   test('shell shows explicit exit timeout and stderr without inferring absent success', () {
     final projection = ToolActivityProjection()
       ..reconcile([
@@ -345,7 +364,7 @@ void main() {
     expect(failedProcess.needsAttention(projection.byAnchorSeq[1]!), isTrue);
     expect(
       failedProcess.summary(projection.byAnchorSeq[1]!),
-      '需要查看 · cat missing',
+      '运行失败 cat missing',
     );
     final timed = ToolActivityPresentation.from(projection.byAnchorSeq[3]!);
     expect(timed.fields['退出码'], '未知或未取得');

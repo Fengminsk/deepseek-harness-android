@@ -24,7 +24,8 @@ const plugins = (patch, id) => patch.flatMap(row => row.insert ?? [])
 const delegationIds = [
   'tool-subagent-control', 'tool-subagent-list-agents', 'tool-subagent', 'tool-subagent-fork',
 ]
-const portableIds = ['skill-filesystem', 'tool-skill', 'tool-todo', 'present',
+const portableIds = ['agent-instructions', 'time-context', 'tool-jobs',
+  'skill-filesystem', 'tool-skill', 'tool-todo', 'present',
   'command-goal', 'tool-goal', 'planning', 'compaction', 'tool-schedule']
 
 async function fixture(t) {
@@ -77,6 +78,12 @@ test('Android stages original local delegation without enabling PTC or changing 
   }
   assert.deepEqual(android.find(entry => entry.id === 'tool-todo').config,
     { allowParallelInProgress: true })
+  assert.deepEqual(android.find(entry => entry.id === 'agent-instructions').config,
+    { maxBytes: 65536 })
+  assert.equal(android.find(entry => entry.id === 'time-context').config, undefined,
+    'request clock refresh and zone resolution retain upstream defaults')
+  assert.equal(android.find(entry => entry.id === 'tool-jobs').config, undefined,
+    'completion wakeups and owner-fenced controls retain upstream defaults')
   assert.deepEqual(android.find(entry => entry.id === 'tool-fs'),
     plugins(world.target, 'preset-android').find(entry => entry.id === 'tool-fs'),
     'restoring portable tools must not change Android filesystem mutation permissions')

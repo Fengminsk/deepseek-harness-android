@@ -1,6 +1,11 @@
+import 'package:material_ui/material_ui.dart';
+
 import 'chat_projection.dart';
+import 'chat_progress.dart';
 import 'runtime.dart';
 import 'tool_activity_data.dart';
+import 'tool_activity_details.dart';
+import 'tool_activity_presentation.dart';
 
 /// Display grouping only. Original calls, ordering and results stay untouched.
 class ChatToolGroup {
@@ -8,7 +13,30 @@ class ChatToolGroup {
   final List<ChatEntry> entries;
   String get key => 'tool-group:${entries.first.key}';
 
-  String get title => '${entries.length} 项工具调用';
+  String get family => toolActivityFamily(entries.first.tool!);
+  late final int pendingCount = entries
+      .where((entry) => entry.tool!.phase == ToolActivityPhase.pending)
+      .length;
+  late final int attentionCount = entries
+      .where((entry) => toolActivityNeedsAttention(entry.tool!))
+      .length;
+  late final int unknownCount = entries
+      .where((entry) => entry.tool!.phase == ToolActivityPhase.unknown)
+      .length;
+  bool get needsAttention => attentionCount > 0 || unknownCount > 0;
+  String get countUnit =>
+      family == 'shell' ? '条命令' : '次${toolActivityName(entries.first.tool!)}';
+  String get titlePrefix =>
+      needsAttention ? '' : '${pendingCount > 0 ? '正在调用' : '已运行'} ';
+  String get titleSuffix => attentionCount > 0
+      ? ' · $attentionCount 项需查看'
+      : unknownCount > 0
+      ? ' · 状态待确认'
+      : '';
+  String get title {
+    return '$titlePrefix${entries.length} $countUnit$titleSuffix';
+  }
+
   late final String status = _status();
   String _status() {
     final counts = <ToolActivityPhase, int>{};
@@ -48,7 +76,10 @@ List<ChatDisplayItem> groupChatTools(List<ChatEntry> entries) {
     final turn = _callTurn(first);
     var end = index + 1;
     if (turn != null) {
-      while (end < entries.length && _callTurn(entries[end]) == turn) {
+      while (end < entries.length &&
+          _callTurn(entries[end]) == turn &&
+          toolActivityFamily(entries[end].tool!) ==
+              toolActivityFamily(first.tool!)) {
         end++;
       }
     }
@@ -62,6 +93,56 @@ List<ChatDisplayItem> groupChatTools(List<ChatEntry> entries) {
     index = end;
   }
   return display;
+}
+
+/// One line in the conversation; expanded members remain independent calls.
+class ChatToolGroupHeader extends StatelessWidget {
+  const ChatToolGroupHeader({
+    required this.group,
+    required this.expanded,
+    required this.onToggle,
+    super.key,
+  });
+  final ChatToolGroup group;
+  final bool expanded;
+  final VoidCallback onToggle;
+  @override
+  Widget build(BuildContext context) {
+    final ink = group.needsAttention
+        ? Theme.of(context).colorScheme.error
+        : Theme.of(context).colorScheme.onSurfaceVariant;
+    final style = Theme.of(context).textTheme.bodyMedium?.copyWith(color: ink);
+    return ToolActivitySummaryRow(
+      opened: expanded,
+      label: '${group.title}，${group.status}',
+      color: ink,
+      icon: switch (group.family) {
+        'shell' => Icons.terminal_rounded,
+        'web_search' || 'web_fetch' => Icons.language_rounded,
+        'file-search' => Icons.search_rounded,
+        'read' || 'write' || 'edit' => Icons.description_outlined,
+        _ => Icons.build_outlined,
+      },
+      onTap: onToggle,
+      title: ExcludeSemantics(
+        child: Row(
+          children: [
+            if (group.titlePrefix.isNotEmpty)
+              Text(group.titlePrefix, style: style),
+            ChatRollingCount(value: group.entries.length, style: style),
+            Expanded(
+              child: Text(
+                ' ${group.countUnit}${group.titleSuffix}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: style,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 int? _callTurn(ChatEntry entry) {

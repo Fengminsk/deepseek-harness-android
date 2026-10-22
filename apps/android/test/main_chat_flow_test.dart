@@ -72,6 +72,16 @@ class _ChatRuntime extends RuntimeController {
   Future<dynamic> call(String method, [Json params = const {}]) async {
     calls.add((method: method, params: params));
     switch (method) {
+      case 'userText.mask':
+        return {'ranges': <Json>[]};
+      case 'api.call':
+        if (params['namespace'] == 'session' &&
+            params['method'] == 'projections') {
+          return null;
+        }
+        throw StateError(
+          'Unexpected API ${params['namespace']}.${params['method']}',
+        );
       case 'library.catalog':
         return {
           'workspaces': <Json>[],
@@ -159,6 +169,11 @@ class _ChatRuntime extends RuntimeController {
 
   void routeTasks() {
     navigationRequest = {'route': 'tasks'};
+    notifyListeners();
+  }
+
+  void routeSession(String sessionId) {
+    navigationRequest = {'route': 'session', 'sessionId': sessionId};
     notifyListeners();
   }
 }
@@ -467,6 +482,37 @@ void main() {
       },
     );
   }
+
+  testWidgets(
+    'completion notification returns to its session from another page',
+    (tester) async {
+      _phone(tester);
+      final runtime = _ChatRuntime([
+        fixture.input(0, 'Question'),
+        fixture.assistant(1, 'Task completed'),
+      ]);
+      addTearDown(runtime.dispose);
+      await tester.pumpWidget(_host(runtime));
+      runtime.routeTasks();
+      await tester.pumpAndSettle();
+      expect(find.byType(TasksPage), findsOneWidget);
+
+      runtime.routeSession('history');
+      await tester.pumpAndSettle();
+      expect(find.byType(TasksPage), findsNothing);
+      expect(find.text('Task completed', findRichText: true), findsWidgets);
+      expect(
+        runtime.calls.where((call) => call.method == 'session.read'),
+        hasLength(1),
+      );
+      expect(runtime.navigationRequest, isNull);
+      expect(
+        runtime.calls.any((call) => call.method == 'session.send'),
+        isFalse,
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('sidebar opens current parent catalog and retains its draft', (
     tester,

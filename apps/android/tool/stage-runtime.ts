@@ -8,6 +8,7 @@ import { stageQuestionCarrier } from './stage-question-carrier.mjs'
 import { stagePreset } from './stage-preset.mjs'
 import { stagePackageManager } from './stage-package-manager.mjs'
 import { stageImageRuntime } from './stage-image-runtime.mjs'
+import { stageSecretMask } from './stage-secret-mask.mjs'
 
 const root = resolve(import.meta.dirname, '../../..')
 const staging = join(root, '.cache/android/runtime-bundle')
@@ -88,6 +89,7 @@ const plugin = join(staging, 'node_modules/@minnnng/dsh-android-runtime')
 await mkdir(plugin, { recursive: true })
 await cp(join(root, 'apps/android/runtime'), plugin, { recursive: true })
 await stageQuestionCarrier(plugin)
+await stageSecretMask(plugin)
 await stagePreset(root, plugin)
 await writeFile(join(plugin, 'package.json'), JSON.stringify({
   name: '@minnnng/dsh-android-runtime', version: manifest.version, type: 'module', main: './index.mjs',

@@ -3,7 +3,6 @@ import { randomUUID } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
-import { SessionId } from '@deepseek-ai/dsh-session'
 import { establishAttachmentHome } from '@deepseek-ai/dsh-attachment-local'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { AndroidCredentials } from './credentials.mjs'
@@ -11,6 +10,7 @@ import { registerAndroidShell } from './tool-android-shell.mjs'
 import AndroidShell from './android-shell.mjs'
 import { WebAccess } from './web-access.mjs'
 import { AppSessions } from './sessions.mjs'
+import { AppSessionHistory } from './session-history.mjs'
 import { AppLiveState, presentSessionEvent } from './live-state.mjs'
 import { AppInteractions } from './interactions.mjs'
 import { AppStreams } from './streams.mjs'
@@ -23,7 +23,9 @@ import { AppDocumentSearch } from './document-search.mjs'
 import { AppDocumentPreview } from './document-preview.mjs'
 import { AppReferenceDiscovery } from './reference-discovery.mjs'
 import { AppWorkspaceChanges } from './workspace-changes.mjs'
+import { maskUserText } from './user-text-mask.mjs'
 import { AppTasks } from './tasks.mjs'
+import { AppTaskCompletion } from './task-completion.mjs'
 import { AppPackageOperations } from './package-operations.mjs'
 import { AppConfigurationTransfers } from './configuration-transfer.mjs'
 import { AppSubagents } from './subagents.mjs'
@@ -148,6 +150,7 @@ export function apply(ctx, config) {
     ensureSession: sessionId => sessions.ensure(sessionId),
   })
   const live = new AppLiveState(ctx, transport, { streamPublishMs: () => config.streamPublishMs.get() })
+  const history = new AppSessionHistory(ctx.sessionController)
   const shell = registerAndroidShell(ctx, config)
   let tasks
   const interactions = new AppInteractions(ctx, {
@@ -157,6 +160,7 @@ export function apply(ctx, config) {
     },
   }, { shellContext: (sessionId, callId) => shell.context(sessionId, callId) })
   tasks = new AppTasks(ctx, transport, { interactions: () => interactions.snapshot() })
+  const taskCompletion = new AppTaskCompletion(ctx, transport)
   const packageOperations = new AppPackageOperations(ctx)
   const subagents = new AppSubagents(ctx, {
     invoke,
@@ -211,6 +215,7 @@ export function apply(ctx, config) {
       void web.refresh().catch(error => web.publish({ phase: 'failed', host: null, url: null, error: String(error) }))
     }
     if (method === 'native.appDisconnected') {
+      history.releaseAll()
       void references.closeOwner(params.owner).catch(error => console.error('App reference cleanup failed:', error))
       void workspaceChanges.closeOwner(params.owner).catch(error => console.error('App change comparison cleanup failed:', error))
       void streams.closeOwner(params.owner).catch(error => console.error('App stream cleanup failed:', error))
@@ -221,6 +226,7 @@ export function apply(ctx, config) {
   })
   const describe = () => describeAndroidSettings(ctx)
   transport.onRequest(async (method, params) => {
+    if (method === 'userText.mask') return maskUserText(params)
     if (method.startsWith('workspaceChanges.')) return workspaceChanges.call(method.slice('workspaceChanges.'.length), params)
     if (method.startsWith('references.')) {
       try { return await references.call(method.slice('references.'.length), params) }
@@ -318,21 +324,10 @@ export function apply(ctx, config) {
       // Child transcripts require their durable parent address and belong to the subagent/task entry points.
       case 'sessions.list': return library.sidebar()
       case 'session.read': {
-        const sessionId = SessionId(requiredString(params.sessionId, 'sessionId'))
-        const offset = params.offset ?? 0
-        if (!Number.isSafeInteger(offset) || offset < 0) throw new TypeError('offset must be a non-negative integer')
-        // Standalone command events can precede the next persistence checkpoint.
-        // The original controller owns the current attached Session observation.
-        if (ctx.sessions.get(sessionId) !== undefined) {
-          const inspection = await ctx.sessionController.inspect(sessionId)
-          return { events: inspection.events.filter(event => event.seq >= offset).slice(0, 200).map(presentSessionEvent) }
-        }
-        const handle = await ctx.sessionPersistence.open(sessionId, 'read')
-        try {
-          const page = await handle.read(offset, 200)
-          return { ...page, events: page.events.map(presentSessionEvent) }
-        } finally { await handle.close() }
+        try { return await history.read(params) }
+        catch (error) { return remoteFailure(error) }
       }
+      case 'session.read.release': return history.release(params)
       case 'session.cancel': return tasks.cancel(params)
       case 'documents.roots': return transport.request('native.documents.roots', {})
       case 'documents.list': return transport.request('native.documents.list', params)
@@ -388,10 +383,12 @@ export function apply(ctx, config) {
     return async () => {
       remove()
       const results = await Promise.allSettled([
+        () => taskCompletion.close(),
         () => documentSearch.close(), () => attachments.close(), () => attachmentFiles.close(), () => exports.close(), () => tasks.close(),
         () => packageOperations.close(),
         () => configurationTransfers.close(), () => subagents.close(), () => workspaceFiles.close(), () => library.close(),
         () => live.close(),
+        () => history.close(),
         () => streams.close(), () => documentPreview.close(), () => references.close(), () => workspaceChanges.close(),
         () => interactions.close(), () => web.close(),
       ].map(close => Promise.resolve().then(close)))

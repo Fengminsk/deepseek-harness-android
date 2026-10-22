@@ -14,6 +14,11 @@ import 'chat_changes.dart';
 import 'chat_skills.dart';
 import 'chat_tool_groups.dart';
 import 'chat_user_references.dart';
+import 'chat_turn_extras.dart';
+import 'chat_reading.dart';
+import 'chat_progress.dart';
+import 'chat_stream_reveal.dart';
+import 'tool_activity_details.dart' show ToolActivitySummaryRow;
 import 'entry_motion.dart';
 import 'runtime.dart';
 import 'tool_activity.dart';
@@ -123,6 +128,7 @@ class ChatTimeline extends StatefulWidget {
     required this.controller,
     this.events = const [],
     this.runtime,
+    this.running = false,
     this.onOpenSkill,
     this.live,
     this.footer,
@@ -134,6 +140,7 @@ class ChatTimeline extends StatefulWidget {
   });
   final String sessionId;
   final RuntimeController? runtime;
+  final bool running;
   final Future<void> Function(String name)? onOpenSkill;
   final ChatProjection projection;
   final ScrollController controller;
@@ -159,13 +166,16 @@ class _ChatTimelineState extends State<ChatTimeline>
   List<ChatDisplayItem> _groups = const [];
   List<ChatDisplayItem> _display = const [];
   final _positions = <String, int>{};
+  final _displayKeys = <String, String>{};
   ChatArtifactsProjection _artifacts = ChatArtifactsProjection();
   final _artifactRows = <String, ChatArtifact>{};
   ChatChangesProjection _changes = ChatChangesProjection();
   ChatSkillNameProjection _references = ChatSkillNameProjection();
   WorkspaceChangesController? _changesController;
+  late ChatTurnExtras _extras;
+  List<ToolActivity> _progressCalls = const [];
   final _changeRows = <String, ChatChangesTurn>{};
-  (ChatProjection, int, int, int, int)? _observed;
+  (ChatProjection, int, int, int, int, int, int?)? _observed;
   int _generation = 0;
 
   @override
@@ -176,6 +186,7 @@ class _ChatTimelineState extends State<ChatTimeline>
 
   void _attachChanges() {
     final runtime = widget.runtime;
+    _extras = ChatTurnExtras(runtime: runtime, sessionId: widget.sessionId);
     if (runtime == null) return;
     _changesController = WorkspaceChangesController(
       runtime: runtime,
@@ -188,6 +199,7 @@ class _ChatTimelineState extends State<ChatTimeline>
   }
 
   void _detachChanges() {
+    _extras.dispose();
     _changesController?.removeListener(_changesChanged);
     _changesController?.dispose();
     _changesController = null;
@@ -200,6 +212,7 @@ class _ChatTimelineState extends State<ChatTimeline>
         oldWidget.runtime != widget.runtime) {
       _detachChanges();
       _attachChanges();
+      _observed = null;
     }
     if (oldWidget.sessionId != widget.sessionId) {
       _retire(_sources.values.toList());
@@ -247,15 +260,33 @@ class _ChatTimelineState extends State<ChatTimeline>
     _artifacts.reconcile(widget.events);
     _changes.reconcile(widget.events);
     _references.reconcile(entries: projection.entries, events: widget.events);
+    _extras.reconcile(widget.events, widget.projection.entries);
     final stamp = (
       projection,
       projection.processedEventCount,
       projection.entries.length,
       _artifacts.revision,
       _changes.revision,
+      _extras.revision,
+      widget.live?.turn,
     );
     if (_observed == stamp) return;
     _observed = stamp;
+    final activeTurn = _activeProgressTurn();
+    _progressCalls = projection.entries
+        .where(
+          (entry) =>
+              activeTurn != null &&
+              entry.tool != null &&
+              entry.tool!.events.any(
+                (event) =>
+                    event['type'] == 'tool/call' &&
+                    (event['data'] as Json?)?['turn'] == activeTurn,
+              ),
+        )
+        .map((entry) => entry.tool)
+        .whereType<ToolActivity>()
+        .toList();
     _changeRows
       ..clear()
       ..addEntries(_changes.entries.map((entry) => MapEntry(entry.key, entry)));
@@ -265,7 +296,8 @@ class _ChatTimelineState extends State<ChatTimeline>
         _artifacts.entries.map((entry) => MapEntry(entry.key, entry)),
       );
     final entries = [
-      ...projection.entries,
+      ...projection.entries.where(chatReadingEntry),
+      ..._extras.rows,
       for (final change in _changes.entries)
         ChatEntry(
           key: change.key,
@@ -327,6 +359,27 @@ class _ChatTimelineState extends State<ChatTimeline>
     _flatten();
   }
 
+  int? _activeProgressTurn() {
+    int? observedCallTurn;
+    // The user bubble is not a turn boundary: a runtime/context message can
+    // initiate another turn without a new human message. Prefer the newest
+    // durable turn/start, and do not reuse the previous turn while a freshly
+    // submitted human message is waiting for its start event.
+    for (final event in widget.events.reversed) {
+      final data = event['data'] as Json?;
+      if (event['type'] == 'turn/start') return data?['turn'] as int?;
+      if (event['type'] == 'turn/end') return observedCallTurn;
+      if (event['type'] == 'tool/call') {
+        observedCallTurn ??= data?['turn'] as int?;
+      }
+      if (event['type'] == 'user/message' &&
+          (data?['source'] as Json?)?['kind'] == 'user') {
+        return observedCallTurn;
+      }
+    }
+    return observedCallTurn ?? widget.live?.turn;
+  }
+
   void _flatten() {
     _display = [
       for (final item in _groups) ...[
@@ -339,8 +392,21 @@ class _ChatTimelineState extends State<ChatTimeline>
       ],
     ];
     _positions.clear();
+    _displayKeys.clear();
+    final seenAssistantSteps = <(int, int)>{};
     for (var i = 0; i < _display.length; i++) {
-      _positions[_display[i].key] = i;
+      final item = _display[i];
+      final row = item.entry;
+      var identity = item.key;
+      if (row != null &&
+          row.kind == ChatEntryKind.assistant &&
+          row.turn != null &&
+          row.step != null &&
+          seenAssistantSteps.add((row.turn!, row.step!))) {
+        identity = 'assistant-step:${row.turn}:${row.step}';
+      }
+      if (row != null) _displayKeys[row.key] = identity;
+      _positions[identity] = i;
     }
   }
 
@@ -386,12 +452,20 @@ class _ChatTimelineState extends State<ChatTimeline>
     final footer = widget.footer;
     final showLive =
         stream != null &&
-        !widget.projection.hasFinalAssistant(
+        !widget.projection.hasSettledAssistant(
           turn: stream.turn,
           step: stream.step,
         );
-    final liveKey = showLive ? 'live:${stream.identity}' : null;
-    final count = rows.length + (showLive ? 1 : 0) + (footer == null ? 0 : 1);
+    final liveKey = showLive
+        ? 'assistant-step:${stream.turn}:${stream.step}'
+        : null;
+    final showProgress =
+        widget.running &&
+        stream?.interrupted != true &&
+        stream?.unconfirmed != true;
+    final progressIndex = rows.length + (showLive ? 1 : 0);
+    final count =
+        progressIndex + (showProgress ? 1 : 0) + (footer == null ? 0 : 1);
     return PocketList.builder(
       controller: widget.controller,
       padding: const EdgeInsets.symmetric(horizontal: 24),
@@ -402,6 +476,7 @@ class _ChatTimelineState extends State<ChatTimeline>
         }
         final identity = key.value.$2;
         if (identity == liveKey) return rows.length;
+        if (identity == 'progress' && showProgress) return progressIndex;
         if (identity == 'footer' && footer != null) return count - 1;
         return _positions[identity];
       },
@@ -409,7 +484,7 @@ class _ChatTimelineState extends State<ChatTimeline>
         if (index < rows.length) {
           final item = rows[index];
           if (item.group case final group?) {
-            return _ToolGroupHeader(
+            return ChatToolGroupHeader(
               key: ValueKey((sessionId, group.key)),
               group: group,
               expanded: _expanded[group.key] == true,
@@ -417,6 +492,18 @@ class _ChatTimelineState extends State<ChatTimeline>
             );
           }
           final row = item.entry!;
+          final extra = _extras.render(
+            context,
+            row.key,
+            onOpenFile: widget.onOpenFile,
+            onOpenLink: widget.onOpenLink,
+          );
+          if (extra != null) {
+            return KeyedSubtree(
+              key: ValueKey((sessionId, row.key)),
+              child: extra,
+            );
+          }
           final change = _changeRows[row.key];
           if (change != null) {
             final controller = _changesController;
@@ -451,6 +538,7 @@ class _ChatTimelineState extends State<ChatTimeline>
           }
           final message = ChatMessage(
             entry: row,
+            runtime: widget.runtime,
             sessionId: sessionId,
             storageId: '$sessionId:${row.key}',
             activitySource: row.tool == null
@@ -482,30 +570,50 @@ class _ChatTimelineState extends State<ChatTimeline>
             }
           }
           return KeyedSubtree(
-            key: ValueKey((sessionId, row.key)),
+            key: ValueKey((sessionId, _displayKeys[row.key] ?? row.key)),
             child: child,
           );
         }
         if (showLive && index == rows.length) {
-          return Padding(
+          return KeyedSubtree(
             key: ValueKey((sessionId, liveKey!)),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  ChatContent(
+                    content: stream.content,
+                    streaming: true,
+                    sessionId: sessionId,
+                    storageId: '$sessionId:$liveKey',
+                    onOpenLink: widget.onOpenLink,
+                    onOpenAttachment: widget.onOpenAttachment,
+                    onOpenImage: widget.onOpenImage,
+                  ),
+                  if (stream.unconfirmed)
+                    Text(
+                      '回复状态待确认',
+                      style: Theme.of(context).textTheme.labelSmall,
+                    )
+                  else if (stream.interrupted)
+                    Text(
+                      '回复已中断',
+                      style: Theme.of(context).textTheme.labelSmall,
+                    ),
+                ],
+              ),
+            ),
+          );
+        }
+        if (showProgress && index == progressIndex) {
+          return Padding(
+            key: ValueKey((sessionId, 'progress')),
             padding: const EdgeInsets.symmetric(vertical: 14),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                ChatContent(
-                  content: stream.content,
-                  sessionId: sessionId,
-                  storageId: '$sessionId:$liveKey',
-                  onOpenLink: widget.onOpenLink,
-                  onOpenAttachment: widget.onOpenAttachment,
-                  onOpenImage: widget.onOpenImage,
-                ),
-                if (stream.unconfirmed)
-                  Text('回复状态待确认', style: Theme.of(context).textTheme.labelSmall)
-                else if (stream.interrupted)
-                  Text('回复已中断', style: Theme.of(context).textTheme.labelSmall),
-              ],
+            child: ChatProgressLine(
+              calls: _progressCalls,
+              writing:
+                  stream != null && chatMessageText(stream.content).isNotEmpty,
             ),
           );
         }
@@ -518,40 +626,11 @@ class _ChatTimelineState extends State<ChatTimeline>
   }
 }
 
-class _ToolGroupHeader extends StatelessWidget {
-  const _ToolGroupHeader({
-    super.key,
-    required this.group,
-    required this.expanded,
-    required this.onToggle,
-  });
-  final ChatToolGroup group;
-  final bool expanded;
-  final VoidCallback onToggle;
-  @override
-  Widget build(BuildContext context) => Semantics(
-    expanded: expanded,
-    child: PocketTile(
-      contentPadding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
-      leading: const Icon(Icons.account_tree_outlined, size: 20),
-      title: Text(group.title),
-      subtitle: Text(group.status),
-      onTap: onToggle,
-      trailing: AnimatedRotation(
-        turns: expanded ? .25 : 0,
-        duration: MediaQuery.disableAnimationsOf(context)
-            ? Duration.zero
-            : const Duration(milliseconds: 200),
-        child: const Icon(Icons.chevron_right_rounded, size: 20),
-      ),
-    ),
-  );
-}
-
 class ChatMessage extends StatelessWidget {
   const ChatMessage({
     required this.entry,
     required this.storageId,
+    this.runtime,
     this.sessionId,
     this.onOpenLink,
     this.onOpenFile,
@@ -564,6 +643,7 @@ class ChatMessage extends StatelessWidget {
     super.key,
   });
   final ChatEntry entry;
+  final RuntimeController? runtime;
   final String storageId;
   final String? sessionId;
   final ChatOpenLink? onOpenLink;
@@ -679,11 +759,14 @@ class ChatMessage extends StatelessWidget {
             margin: const EdgeInsets.symmetric(vertical: 10),
             padding: EdgeInsets.symmetric(
               horizontal: user ? 18 : 0,
-              vertical: 14,
+              vertical: user ? 10 : 6,
             ),
             decoration: user
                 ? BoxDecoration(
-                    color: colors.surfaceContainer,
+                    color: Color.alphaBlend(
+                      colors.primary.withValues(alpha: .10),
+                      colors.surfaceContainer,
+                    ),
                     borderRadius: BorderRadius.circular(24),
                   )
                 : null,
@@ -695,6 +778,7 @@ class ChatMessage extends StatelessWidget {
                 children: [
                   ChatContent(
                     content: entry.content,
+                    runtime: runtime,
                     sessionId: sessionId,
                     storageId: storageId,
                     opaqueText: user,
@@ -727,10 +811,12 @@ class ChatContent extends StatelessWidget {
   const ChatContent({
     required this.content,
     required this.storageId,
+    this.runtime,
     this.sessionId,
     this.opaqueText = false,
     this.selectable = true,
     this.userReferences = false,
+    this.streaming = false,
     this.onOpenSkill,
     this.skillNames = const [],
     this.sessionLabels = const [],
@@ -741,11 +827,13 @@ class ChatContent extends StatelessWidget {
     super.key,
   });
   final List<dynamic> content;
+  final RuntimeController? runtime;
   final String storageId;
   final String? sessionId;
   final bool opaqueText;
   final bool selectable;
   final bool userReferences;
+  final bool streaming;
   final Future<void> Function(String name)? onOpenSkill;
   final List<String> skillNames, sessionLabels;
   final ChatOpenLink? onOpenLink;
@@ -776,6 +864,7 @@ class ChatContent extends StatelessWidget {
               ? userReferences
                     ? ChatUserText(
                         text: text,
+                        runtime: runtime,
                         storageId: '$storageId:block:$index',
                         skillNames: skillNames,
                         sessionLabels: sessionLabels,
@@ -795,6 +884,17 @@ class ChatContent extends StatelessWidget {
                         text,
                         style: const TextStyle(fontSize: 16, height: 1.6),
                       )
+              : streaming
+              ? ChatStreamReveal(
+                  revision: text,
+                  child: PocketMarkdown(
+                    data: text,
+                    sessionId: sessionId,
+                    selectable: false,
+                    onOpenLink: onOpenLink,
+                    onOpenFile: onOpenFile,
+                  ),
+                )
               : PocketMarkdown(
                   data: text,
                   sessionId: sessionId,
@@ -1191,43 +1291,51 @@ class _ChatDisclosureState extends State<_ChatDisclosure> {
   }
 
   @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.symmetric(vertical: 6),
-    child: PocketCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          PocketRow(
-            icon: widget.icon,
-            title: widget.title,
-            onTap: toggle,
-            trailing: AnimatedRotation(
-              turns: expanded ? .25 : 0,
-              duration: MediaQuery.disableAnimationsOf(context)
-                  ? Duration.zero
-                  : const Duration(milliseconds: 200),
-              child: const Icon(Icons.chevron_right_rounded),
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      ToolActivitySummaryRow(
+        icon: widget.icon,
+        title: Text(
+          widget.title,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            fontSize: 14,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+        ),
+        label: widget.title,
+        color: Theme.of(context).colorScheme.onSurfaceVariant,
+        opened: expanded,
+        onTap: toggle,
+      ),
+      if (MediaQuery.disableAnimationsOf(context))
+        expandedBody(context)
+      else
+        AnimatedSize(
+          duration: const Duration(milliseconds: 220),
+          curve: Curves.easeOutCubic,
+          alignment: Alignment.topCenter,
+          child: expandedBody(context),
+        ),
+    ],
+  );
+
+  Widget expandedBody(BuildContext context) => expanded
+      ? PocketReveal(
+          child: PocketCard(
+            padding: const EdgeInsets.all(16),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 320),
+              child: SingleChildScrollView(
+                primary: false,
+                child: widget.body(context),
+              ),
             ),
           ),
-          AnimatedSize(
-            duration: MediaQuery.disableAnimationsOf(context)
-                ? Duration.zero
-                : const Duration(milliseconds: 220),
-            curve: Curves.easeOutCubic,
-            alignment: Alignment.topCenter,
-            child: expanded
-                ? PocketReveal(
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(18, 0, 18, 18),
-                      child: widget.body(context),
-                    ),
-                  )
-                : const SizedBox(width: double.infinity),
-          ),
-        ],
-      ),
-    ),
-  );
+        )
+      : const SizedBox(width: double.infinity);
 }
 
 String _json(dynamic value) =>

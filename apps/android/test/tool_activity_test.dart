@@ -50,8 +50,14 @@ Widget host(
 );
 
 Finder get sheet => find.byKey(const Key('tool-details-sheet'));
+Finder foreground(Finder finder) => sheet.evaluate().isEmpty
+    ? finder
+    : find.descendant(of: sheet, matching: finder);
+Finder activeText(String text) => foreground(find.text(text));
+Finder activeTextContaining(String text) =>
+    foreground(find.textContaining(text));
 Finder row(ToolActivity activity) =>
-    find.byKey(ValueKey('tool-row:${activity.identity}'));
+    foreground(find.byKey(ValueKey('tool-row:${activity.identity}')));
 Finder copy(String title) => find.byKey(ValueKey('tool-copy:$title'));
 
 Future<void> tapVisible(WidgetTester tester, Finder target) async {
@@ -62,8 +68,11 @@ Future<void> tapVisible(WidgetTester tester, Finder target) async {
 }
 
 Future<void> open(WidgetTester tester, ToolActivity activity) async {
-  await tester.tap(row(activity));
-  await tester.pumpAndSettle();
+  final full = find.byKey(ValueKey('tool-full:${activity.identity}'));
+  if (full.evaluate().isEmpty) {
+    await tapVisible(tester, row(activity));
+  }
+  await tapVisible(tester, full);
   expect(sheet, findsOneWidget);
 }
 
@@ -137,7 +146,7 @@ void main() {
           ),
         ),
       );
-      await open(tester, activity);
+      await tester.pumpAndSettle();
       Future<void> capture(String suffix) => tester.runAsync(() async {
         final image =
             await (captureKey.currentContext!.findRenderObject()!
@@ -149,6 +158,10 @@ void main() {
             .writeAsBytes(bytes.buffer.asUint8List());
         image.dispose();
       });
+      await capture('-collapsed');
+      await tapVisible(tester, row(activity));
+      await capture('-inline');
+      await open(tester, activity);
       await capture('');
       final list = tester.widget<ListView>(
         find.byKey(ValueKey('tool-details-body:${activity.identity}')),
@@ -196,8 +209,10 @@ void main() {
       final header = find.byKey(const Key('tool-details-header'));
       final title = find.byKey(const Key('tool-details-title'));
       final closeButton = find.byKey(const Key('tool-details-close'));
-      final commandText = find.byWidgetPredicate(
-        (widget) => widget is SelectableText && widget.data == command,
+      final commandText = foreground(
+        find.byWidgetPredicate(
+          (widget) => widget is SelectableText && widget.data == command,
+        ),
       );
       final bounds = tester.getRect(sheet);
       expect(tester.getRect(listFinder), bounds);
@@ -237,7 +252,8 @@ void main() {
       addTearDown(source.dispose);
       await tester.pumpWidget(host(activity, source: source));
       await tester.pumpAndSettle();
-      await tester.tap(row(activity));
+      await tapVisible(tester, row(activity));
+      await tester.tap(find.byKey(ValueKey('tool-full:${activity.identity}')));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 70));
       final transition = find.ancestor(
@@ -254,7 +270,7 @@ void main() {
       projection.reconcile(events);
       source.value = projection.byAnchorSeq[1]!;
       await tester.pump();
-      expect(find.text('new result after the entrance'), findsOneWidget);
+      expect(activeText('new result after the entrance'), findsOneWidget);
       expect(
         tester.widget<PocketBlurTransition>(transition).animation.value,
         1,
@@ -264,7 +280,7 @@ void main() {
   );
 
   testWidgets(
-    'compact row opens a live detail sheet without expanding the transcript',
+    'compact row expands inline and live results preserve its command reader',
     (tester) async {
       final events = <Json>[callEvent(1)];
       final projection = ToolActivityProjection()..reconcile(events);
@@ -272,10 +288,11 @@ void main() {
       await tester.pumpWidget(host(activity));
       final original = tester.getRect(row(activity));
       expect(original.height, inInclusiveRange(48, 56));
-      expect(find.text('命令'), findsNothing);
-      await open(tester, activity);
-      expect(find.text('命令'), findsOneWidget);
-      expect(find.textContaining('尚未收到工具结果'), findsOneWidget);
+      expect(activeText('命令'), findsNothing);
+      await tapVisible(tester, row(activity));
+      expect(sheet, findsNothing);
+      expect(activeText('命令'), findsOneWidget);
+      expect(activeTextContaining('等待执行或授权结果'), findsOneWidget);
       events.add(
         resultEvent(
           2,
@@ -290,11 +307,11 @@ void main() {
       projection.reconcile(events);
       await tester.pumpWidget(host(projection.byAnchorSeq[1]!));
       await tester.pumpAndSettle();
-      expect(find.text('from the device'), findsOneWidget);
-      expect(find.textContaining('尚未收到工具结果'), findsNothing);
-      await close(tester);
+      expect(activeText('from the device'), findsOneWidget);
+      expect(activeTextContaining('等待执行或授权结果'), findsNothing);
+      await tapVisible(tester, row(activity));
       expect(tester.getRect(row(activity)), original);
-      expect(find.text('命令'), findsNothing);
+      expect(activeText('命令'), findsNothing);
     },
   );
 
@@ -307,18 +324,18 @@ void main() {
       await tester.pumpWidget(host(root));
       await open(tester, root);
       await tapVisible(tester, row(root.children.single));
-      expect(find.text('路径'), findsOneWidget);
+      expect(activeText('路径'), findsOneWidget);
       events.add(dispatchEvent(3, end: true, text: 'updated child output'));
       projection.reconcile(events);
       root = projection.byAnchorSeq[1]!;
       await tester.pumpWidget(host(root));
       await tester.pumpAndSettle();
-      expect(find.text('updated child output'), findsOneWidget);
-      expect(find.text('已返回结果'), findsOneWidget);
+      expect(activeText('updated child output'), findsOneWidget);
+      expect(activeText('已返回结果'), findsOneWidget);
       expect(sheet, findsOneWidget);
       await tester.tap(find.byTooltip('返回上级调用'));
       await tester.pumpAndSettle();
-      expect(find.text('子调用 · 1'), findsOneWidget);
+      expect(activeText('子调用 · 1'), findsOneWidget);
       await close(tester);
     },
   );
@@ -343,13 +360,13 @@ void main() {
         ]);
       final activity = projection.byAnchorSeq[1]!;
       await tester.pumpWidget(host(activity));
-      expect(find.text('完整原始详情'), findsNothing);
+      expect(activeText('完整原始详情'), findsNothing);
       await open(tester, activity);
-      expect(find.text('keep raw output'), findsOneWidget);
-      expect(find.textContaining('keep raw argument'), findsNothing);
-      await tapVisible(tester, find.text('完整原始详情'));
-      expect(find.textContaining('keep raw argument'), findsOneWidget);
-      expect(find.textContaining('privateShape'), findsOneWidget);
+      expect(activeText('keep raw output'), findsOneWidget);
+      expect(activeTextContaining('keep raw argument'), findsNothing);
+      await tapVisible(tester, activeText('完整原始详情'));
+      expect(activeTextContaining('keep raw argument'), findsOneWidget);
+      expect(activeTextContaining('privateShape'), findsOneWidget);
       await close(tester);
     },
   );
@@ -371,11 +388,11 @@ void main() {
       ]);
     final activity = projection.byAnchorSeq[1]!;
     await tester.pumpWidget(host(activity));
-    expect(find.textContaining('调用失败'), findsOneWidget);
+    expect(activeTextContaining('调用失败'), findsOneWidget);
     await open(tester, activity);
-    expect(find.textContaining('缺少调用开始记录'), findsOneWidget);
-    expect(find.textContaining('User rejected this tool'), findsOneWidget);
-    expect(find.textContaining('尚未收到工具结果'), findsNothing);
+    expect(activeTextContaining('缺少调用开始记录'), findsOneWidget);
+    expect(activeTextContaining('User rejected this tool'), findsOneWidget);
+    expect(activeTextContaining('尚未收到工具结果'), findsNothing);
     await close(tester);
   });
 
@@ -419,11 +436,11 @@ void main() {
       await tapVisible(tester, copy('命令'));
       await tapVisible(tester, copy('stdout'));
       expect(copied, [command, stdout]);
-      expect(find.textContaining('TAIL_AFTER_PREVIEW'), findsNothing);
-      expect(find.textContaining('显示前 6000'), findsOneWidget);
-      expect(find.textContaining('运行时已截断输出'), findsOneWidget);
-      await tapVisible(tester, find.text('显示完整内容'));
-      expect(find.textContaining('TAIL_AFTER_PREVIEW'), findsOneWidget);
+      expect(activeTextContaining('TAIL_AFTER_PREVIEW'), findsNothing);
+      expect(activeTextContaining('显示前 6000'), findsOneWidget);
+      expect(activeTextContaining('运行时已截断输出'), findsOneWidget);
+      await tapVisible(tester, activeText('显示完整内容'));
+      expect(activeTextContaining('TAIL_AFTER_PREVIEW'), findsOneWidget);
       await close(tester);
     },
   );
@@ -459,11 +476,11 @@ void main() {
     await tester.pumpWidget(host(activity));
     await open(tester, activity);
     await tapVisible(tester, copy('stdout'));
-    expect(find.text('复制失败，请重试'), findsOneWidget);
-    expect(find.text('retained output'), findsOneWidget);
+    expect(activeText('复制失败，请重试'), findsOneWidget);
+    expect(activeText('retained output'), findsOneWidget);
     await tapVisible(tester, copy('stdout'));
     expect(attempts, 2);
-    expect(find.text('已复制'), findsOneWidget);
+    expect(activeText('已复制'), findsOneWidget);
     await close(tester);
   });
 
@@ -489,7 +506,7 @@ void main() {
       projection.reconcile(events);
       source.value = projection.byAnchorSeq[1]!;
       await tester.pumpAndSettle();
-      expect(find.text('after group collapsed'), findsOneWidget);
+      expect(activeText('after group collapsed'), findsOneWidget);
       source.value = null;
       await tester.pumpAndSettle();
       expect(sheet, findsNothing);
@@ -563,8 +580,7 @@ void main() {
             brightness: brightness,
           ),
         );
-        await tester.tap(row(activity));
-        await tester.pump();
+        await open(tester, activity);
         expect(sheet, findsOneWidget);
         expect(tester.getRect(sheet).bottom, closeTo(700, .1));
         expect(tester.getRect(copy('命令')).right, lessThanOrEqualTo(320));
@@ -601,7 +617,7 @@ void main() {
       completion.complete();
       await tester.pumpAndSettle();
       await open(tester, activity);
-      expect(find.text('已复制'), findsNothing);
+      expect(activeText('已复制'), findsNothing);
       expect(tester.takeException(), isNull);
       await close(tester);
     },

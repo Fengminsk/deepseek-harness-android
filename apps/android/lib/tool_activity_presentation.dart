@@ -13,32 +13,51 @@ class ToolActivityPresentation {
     'shell' => '执行命令',
     'file' => '文件操作',
     'search' => '搜索文件',
-    _ => activity.name.isEmpty ? '工具调用' : activity.name,
+    'web-search' => '联网搜索',
+    'web-fetch' => '读取网页',
+    _ => toolActivityName(activity),
   };
 
   /// A returned tool result does not imply a successful process exit.
-  bool needsAttention(ToolActivity activity) {
+  bool _ownFailure(ToolActivity activity) {
     final exitCode = int.tryParse(fields['退出码'] ?? '');
     return activity.phase == ToolActivityPhase.failed ||
         activity.phase == ToolActivityPhase.interrupted ||
         fields['超时'] == '是' ||
         fields['取消'] == '是' ||
+        (fields['终止信号']?.isNotEmpty ?? false) ||
         (exitCode != null && exitCode != 0);
   }
 
+  bool needsAttention(ToolActivity activity) =>
+      _ownFailure(activity) ||
+      activity.children.any(toolActivityNeedsAttention);
+
   String summary(ToolActivity activity) {
     final detail = preview.isEmpty
-        ? (activity.name.isEmpty ? '名称未记录' : activity.name)
+        ? toolActivityName(activity)
         : preview.replaceAll(RegExp(r'\s+'), ' ').trim();
-    final status = switch (activity.phase) {
-      ToolActivityPhase.pending => '等待结果',
-      ToolActivityPhase.completed => needsAttention(activity) ? '需要查看' : '已返回',
-      ToolActivityPhase.failed => '调用失败',
-      ToolActivityPhase.interrupted => '已中断',
-      ToolActivityPhase.unknown => '信息不完整',
-    };
-    return '$status · $detail';
+    return '${status(activity)} $detail';
   }
+
+  /// A tool/call may still await approval. Pending means an active invocation,
+  /// not evidence that a child process has started executing the command.
+  String status(ToolActivity activity) => switch (activity.phase) {
+    ToolActivityPhase.pending => '正在调用',
+    ToolActivityPhase.completed =>
+      fields['超时'] == '是'
+          ? '已超时'
+          : fields['取消'] == '是'
+          ? '已取消'
+          : _ownFailure(activity)
+          ? '运行失败'
+          : activity.children.any(toolActivityNeedsAttention)
+          ? '含失败调用'
+          : '已运行',
+    ToolActivityPhase.failed => '调用失败',
+    ToolActivityPhase.interrupted => '已中断',
+    ToolActivityPhase.unknown => '状态待确认',
+  };
 
   factory ToolActivityPresentation.from(ToolActivity activity) {
     final args = activity.args;
@@ -117,8 +136,11 @@ class ToolActivityPresentation {
       }
       return ToolActivityPresentation('file', fields);
     }
-    if (name == 'read' || name == 'grep' || name == 'glob') {
-      final path = args?[name == 'read' ? 'file_path' : 'path'];
+    if (const ['read', 'write', 'edit', 'grep', 'glob'].contains(name)) {
+      final path =
+          args?[const ['read', 'write', 'edit'].contains(name)
+              ? 'file_path'
+              : 'path'];
       if (path is String) fields['路径'] = path;
       if (args?['pattern'] is String) {
         fields['搜索表达式'] = args!['pattern'] as String;
@@ -165,13 +187,82 @@ class ToolActivityPresentation {
         fields['结果'] = activity.resultText;
       }
       return ToolActivityPresentation(
-        name == 'read' ? 'file' : 'search',
+        const ['read', 'write', 'edit'].contains(name) ? 'file' : 'search',
+        fields,
+      );
+    }
+    if (name == 'web_search' || name == 'web_fetch') {
+      final value = args?[name == 'web_search' ? 'query' : 'url'];
+      if (value is String) fields['搜索表达式'] = value;
+      if (activity.resultText.isNotEmpty) fields['结果'] = activity.resultText;
+      return ToolActivityPresentation(
+        name == 'web_search' ? 'web-search' : 'web-fetch',
         fields,
       );
     }
     return ToolActivityPresentation('other', fields);
   }
 }
+
+/// Group summaries inspect explicit failure markers without rendering/parsing
+/// file result lines or search result lists for every collapsed invocation.
+bool toolActivityNeedsAttention(ToolActivity activity) {
+  if (activity.phase == ToolActivityPhase.failed ||
+      activity.phase == ToolActivityPhase.interrupted) {
+    return true;
+  }
+  if (toolActivityFamily(activity) == 'shell') {
+    final result = activity.resultValue;
+    if (activity.name == 'android_shell' && result is Json) {
+      if (result['timedOut'] == true ||
+          result['cancelled'] == true ||
+          (result['exitCode'] is num && result['exitCode'] != 0)) {
+        return true;
+      }
+    } else {
+      final exit = RegExp(r'\n\[exit code: (-?\d+)\]$')
+          .firstMatch(activity.resultText);
+      if (exit != null && int.parse(exit.group(1)!) != 0) return true;
+      if (RegExp(r'\n\[killed by signal: [^\]\n]+\]$')
+          .hasMatch(activity.resultText)) {
+        return true;
+      }
+    }
+  }
+  return activity.children.any(toolActivityNeedsAttention);
+}
+
+String toolActivityName(ToolActivity activity) => switch (activity.name) {
+  'android_shell' || 'bash' || 'pwsh' || 'terminal_send' => '执行命令',
+  'android_files' => switch (activity.args?['action']) {
+    'read' => '读取文件',
+    'list' => '浏览文件',
+    'search' => '搜索文件',
+    _ => '授权文件',
+  },
+  'read' => '读取文件',
+  'write' => '写入文件',
+  'edit' => '编辑文件',
+  'grep' || 'glob' => '搜索文件',
+  'web_search' => '联网搜索',
+  'web_fetch' => '读取网页',
+  'skill' => '使用技能',
+  'ptc' => '执行工具',
+  'todo_write' => '更新待办',
+  'exit_plan_mode' => '提交计划',
+  'create_goal' || 'update_goal' => '更新目标',
+  'spawn_agent' || 'subagent' => '调用子智能体',
+  _ => activity.name.isEmpty ? '工具调用' : activity.name,
+};
+
+/// Group only calls of the same user-facing family. Unknown plugin tools keep
+/// their exact identity instead of being merged into one generic tools group.
+String toolActivityFamily(ToolActivity activity) => switch (activity.name) {
+  'android_shell' || 'bash' || 'pwsh' || 'terminal_send' => 'shell',
+  'android_files' => 'android-files:${activity.args?['action'] ?? 'unknown'}',
+  'grep' || 'glob' => 'file-search',
+  _ => activity.name,
+};
 
 String toolActivityStatus(ToolActivity activity) => switch (activity.phase) {
   ToolActivityPhase.pending => '等待工具结果',

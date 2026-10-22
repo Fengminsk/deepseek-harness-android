@@ -444,6 +444,80 @@ void main() {
     expect(projection.entries.last.interrupted, isTrue);
   });
 
+  test('interrupted reply survives a cold read as a visible assistant row', () {
+    final events = <Json>[
+      input(0, 'question'),
+      event(1, 'turn/start', {'turn': 1}),
+      event(2, 'step/start', {'turn': 1, 'step': 1}),
+      {
+        ...event(3, 'assistant/attempt', {'turn': 1, 'step': 1}),
+        'assistantContent': [
+          {'type': 'text', 'text': 'partial answer'},
+        ],
+      },
+      event(4, 'turn/end', {
+        'turn': 1,
+        'reason': {'kind': 'interrupted'},
+      }),
+    ];
+    for (final projection in [
+      ChatProjection()..reconcile(events),
+      ChatProjection()..reconcile(List.of(events)),
+    ]) {
+      final visible = projection.entries.where(
+        (row) => row.kind == ChatEntryKind.assistant,
+      ).toList();
+      expect(visible, hasLength(1));
+      expect(visible.single.content.single['text'], 'partial answer');
+      expect(visible.single.interrupted, isTrue);
+      expect(visible.single.key, 'assistant-frozen:1:1');
+      expect(projection.hasFinalAssistant(turn: 1, step: 1), isFalse);
+      expect(projection.hasSettledAssistant(turn: 1, step: 1), isTrue);
+      expect(projection.entries.last.kind, ChatEntryKind.notice);
+    }
+    expect(events[3].containsKey('message'), isFalse);
+  });
+
+  test('retry resets only its step prefix before freezing or settling text', () {
+    final events = <Json>[
+      event(0, 'turn/start', {'turn': 1}),
+      event(1, 'step/start', {'turn': 1, 'step': 1}),
+      event(2, 'assistant/live-chunk', {
+        'turn': 1,
+        'step': 1,
+        'chunk': {'type': 'text-delta', 'index': 0, 'text': 'discarded'},
+      }),
+      event(3, 'llm/retry', {'turn': 1, 'step': 1}),
+      event(4, 'assistant/live-chunk', {
+        'turn': 1,
+        'step': 1,
+        'chunk': {'type': 'text-delta', 'index': 0, 'text': 'replacement'},
+      }),
+      event(5, 'step/end', {'turn': 1, 'step': 1}),
+      event(6, 'turn/end', {
+        'turn': 1,
+        'reason': {'kind': 'interrupted'},
+      }),
+    ];
+    final projection = ChatProjection()..reconcile(events);
+    final frozen = projection.entries.where(
+      (row) => row.kind == ChatEntryKind.assistant,
+    );
+    expect(frozen, hasLength(1));
+    expect(frozen.single.content.single['text'], 'replacement');
+    expect(projection.hasSettledAssistant(turn: 1, step: 1), isTrue);
+    final resumed = List<Json>.of(events)
+      ..add(event(7, 'step/start', {'turn': 1, 'step': 1}))
+      ..add(assistant(8, 'complete retry'));
+    projection.reconcile(resumed);
+    expect(
+      projection.entries.where((row) => row.key == 'assistant-frozen:1:1'),
+      isEmpty,
+    );
+    expect(projection.entries.last.content.single['text'], 'complete retry');
+    expect(projection.hasFinalAssistant(turn: 1, step: 1), isTrue);
+  });
+
   test('10k history is interpreted once; unchanged streaming frames do not walk or rebuild rows', () {
     final events = List.generate(
       10000,

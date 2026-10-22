@@ -22,6 +22,7 @@ class BackgroundExecution(private val service: Service) {
 
     private val preferences = service.getSharedPreferences("background_execution", Service.MODE_PRIVATE)
     private val state = BackgroundTaskState(preferences.getBoolean("keepAwakeWhileWorking", true))
+    private val overlay = TaskOverlayWindow(service, preferences.getBoolean("taskOverlayEnabled", false))
     private val notifications = service.getSystemService(NotificationManager::class.java)
     private val main = Handler(Looper.getMainLooper())
     private val wakeLock = service.getSystemService(PowerManager::class.java)
@@ -97,6 +98,15 @@ class BackgroundExecution(private val service: Service) {
         return status()
     }
 
+    fun configureOverlay(enabled: Boolean): JSONObject {
+        check(!closed) { "后台服务已经关闭" }
+        check(preferences.edit().putBoolean("taskOverlayEnabled", enabled).commit()) {
+            "悬浮窗设置未保存"
+        }
+        overlay.configure(enabled)
+        return overlay.status()
+    }
+
     fun status(): JSONObject = JSONObject()
         .put("keepAwakeWhileWorking", state.keepAwake())
         .put("wakeLockHeld", wakeLock.isHeld)
@@ -110,6 +120,7 @@ class BackgroundExecution(private val service: Service) {
         .put("packageOperations", state.packageOperations() ?: JSONObject.NULL)
         .put("powerError", powerError ?: JSONObject.NULL)
         .put("notificationError", notificationError ?: JSONObject.NULL)
+        .put("overlay", overlay.status())
 
     private fun text(): String = when (state.presentation()) {
         "starting" -> "正在启动本地 Agent"
@@ -154,6 +165,7 @@ class BackgroundExecution(private val service: Service) {
     }
 
     private fun render() {
+        overlay.update(state.hasActiveWork())
         try {
             if (state.shouldHoldWakeLock()) wakeLock.acquire(WAKE_LEASE_MS)
             else if (wakeLock.isHeld) wakeLock.release()
@@ -178,6 +190,7 @@ class BackgroundExecution(private val service: Service) {
         closed = true
         main.removeCallbacks(expire)
         state.phase("stopped")
+        overlay.close()
         if (wakeLock.isHeld) wakeLock.release()
     }
 }

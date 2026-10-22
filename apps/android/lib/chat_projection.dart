@@ -64,6 +64,8 @@ class ChatProjection {
   final _stepStarts = <(int, int), int>{};
   final _turnStarts = <int, int>{};
   final _settledSteps = <(int, int)>{};
+  final _frozenSteps = <(int, int)>{};
+  final _assistantPrefixes = <int, Map<int, _AssistantPrefix>>{};
   final _retries = <String, _RetryChain>{};
   List<Json>? _source;
   ToolActivityProjection _tools = ToolActivityProjection();
@@ -104,6 +106,8 @@ class ChatProjection {
       _stepStarts.clear();
       _turnStarts.clear();
       _settledSteps.clear();
+      _frozenSteps.clear();
+      _assistantPrefixes.clear();
       _retries.clear();
       _tools = ToolActivityProjection();
       _system = _SystemPromptState();
@@ -143,6 +147,12 @@ class ChatProjection {
   bool hasFinalAssistant({required int turn, required int step}) =>
       _settledSteps.contains((turn, step));
 
+  /// A closed interrupted prefix also replaces the live row, without claiming
+  /// that a durable assistant/message exists. An open failed attempt does not.
+  bool hasSettledAssistant({required int turn, required int step}) =>
+      hasFinalAssistant(turn: turn, step: step) ||
+      _frozenSteps.contains((turn, step));
+
   void _put(ChatEntry row) {
     final previous = _positions[row.key];
     if (previous != null) {
@@ -158,6 +168,15 @@ class ChatProjection {
     }
     _rows.insert(index, row);
     for (var at = previous == null ? index : 0; at < _rows.length; at++) {
+      _positions[_rows[at].key] = at;
+    }
+  }
+
+  void _remove(String key) {
+    final position = _positions.remove(key);
+    if (position == null) return;
+    _rows.removeAt(position);
+    for (var at = position; at < _rows.length; at++) {
       _positions[_rows[at].key] = at;
     }
   }
@@ -179,8 +198,10 @@ class ChatProjection {
         return;
       case 'step/start':
         _stepStarts[(data['turn'] as int, data['step'] as int)] = seq;
+        _resetAssistantPrefix(data);
         return;
       case 'step/end':
+        _closeAssistantPrefixes(event, step: data['step'] as int);
         _closeRetries(data['turn'], data['step']);
         return;
       case 'request/header':
@@ -249,7 +270,10 @@ class ChatProjection {
         if (op != 'append') return;
         final turn = data['turn'] as int?;
         final step = data['step'] as int?;
-        if (turn != null && step != null) _settledSteps.add((turn, step));
+        if (turn != null && step != null) {
+          _resetAssistantPrefix(data);
+          _settledSteps.add((turn, step));
+        }
         final blocks = _content(_record(data['message']));
         // Tool-call blocks belong to the existing correlated Tool cards.
         final visible = blocks
@@ -278,6 +302,7 @@ class ChatProjection {
         final content = event['assistantContent'];
         final hasPrefix = content is List && content.isNotEmpty;
         final decodeError = event['assistantContentError'] as String?;
+        if (content is List) _assistantPrefix(data)?.replace(content);
         _put(
           ChatEntry(
             key: 'attempt:$seq',
@@ -296,6 +321,10 @@ class ChatProjection {
             step: data['step'] as int?,
           ),
         );
+        return;
+      case 'assistant/live-chunk':
+        final chunk = _record(data['chunk']);
+        if (chunk != null) _assistantPrefix(data)?.apply(chunk);
         return;
       case 'command/run':
       case 'command/done':
@@ -327,6 +356,7 @@ class ChatProjection {
         );
         return;
       case 'turn/end':
+        _closeAssistantPrefixes(event);
         _closeRetries(data['turn']);
         final reason = _record(data['reason']);
         final kind = reason?['kind'];
@@ -360,6 +390,9 @@ class ChatProjection {
         );
         return;
       case 'llm/retry':
+        _resetAssistantPrefix(data);
+        _retry(event);
+        return;
       case 'llm/retry-started':
         _retry(event);
         return;
@@ -383,6 +416,62 @@ class ChatProjection {
           );
         }
     }
+  }
+
+  _AssistantPrefix? _assistantPrefix(Json data) {
+    final turn = data['turn'], step = data['step'];
+    if (turn is! int || step is! int ||
+        _settledSteps.contains((turn, step))) {
+      return null;
+    }
+    return _assistantPrefixes
+        .putIfAbsent(turn, () => <int, _AssistantPrefix>{})
+        .putIfAbsent(step, _AssistantPrefix.new);
+  }
+
+  void _resetAssistantPrefix(Json data) {
+    final turn = data['turn'], step = data['step'];
+    if (turn is! int || step is! int) return;
+    final steps = _assistantPrefixes[turn];
+    steps?.remove(step);
+    if (steps?.isEmpty == true) _assistantPrefixes.remove(turn);
+    if (_frozenSteps.remove((turn, step))) {
+      _remove('assistant-frozen:$turn:$step');
+    }
+  }
+
+  void _closeAssistantPrefixes(Json event, {int? step}) {
+    final turn = event['data']['turn'] as int;
+    final prefixes = _assistantPrefixes[turn];
+    if (prefixes == null) return;
+    final closingSteps = step == null
+        ? (prefixes.keys.toList()..sort())
+        : [step];
+    for (final closingStep in closingSteps) {
+      final prefix = prefixes.remove(closingStep);
+      if (prefix == null || _settledSteps.contains((turn, closingStep))) {
+        continue;
+      }
+      final content = prefix.visibleContent;
+      if (content.isEmpty) continue;
+      _frozenSteps.add((turn, closingStep));
+      // ChatEntry keeps integer sequences. Insert at the closing event before
+      // its notice; stable tie ordering preserves the original interrupted
+      // assistant's position without inventing a durable message or id.
+      _put(
+        ChatEntry(
+          key: 'assistant-frozen:$turn:$closingStep',
+          seq: event['seq'] as int,
+          kind: ChatEntryKind.assistant,
+          event: event,
+          content: content,
+          turn: turn,
+          step: closingStep,
+          interrupted: true,
+        ),
+      );
+    }
+    if (prefixes.isEmpty) _assistantPrefixes.remove(turn);
   }
 
   int _anchor(Json data, int fallback) {
@@ -487,6 +576,59 @@ class ChatProjection {
             ? chain.attempts.map((attempt) => attempt.describe()).join('\n\n')
             : null,
       ),
+    );
+  }
+}
+
+/// Prefixes are presentation state only; snapshots replace streamed blocks so
+/// a canonical assistant/attempt cannot duplicate already-seen token deltas.
+class _AssistantPrefix {
+  final _blocks = <int, dynamic>{};
+
+  void replace(List<dynamic> content) {
+    _blocks
+      ..clear()
+      ..addEntries(content.indexed.map((entry) => MapEntry(entry.$1, entry.$2)));
+  }
+
+  void apply(Json chunk) {
+    final index = chunk['index'];
+    if (index is! int) return;
+    switch (chunk['type']) {
+      case 'block-start':
+      case 'tool-call-delta':
+        _blocks.remove(index);
+      case 'text-delta':
+      case 'reasoning-delta':
+        final text = chunk['text'];
+        if (text is! String) return;
+        final type = chunk['type'] == 'text-delta' ? 'text' : 'reasoning';
+        final previous = _record(_blocks[index]);
+        var retained = '';
+        if (previous != null && previous['type'] == type) {
+          retained = previous['text'] as String? ?? '';
+        }
+        _blocks[index] = {
+          'type': type,
+          'text': '$retained$text',
+        };
+      case 'block-end':
+        final block = chunk['block'];
+        if (block is Json) _blocks[index] = block;
+    }
+  }
+
+  List<dynamic> get visibleContent {
+    final indexes = _blocks.keys.toList()..sort();
+    return List.unmodifiable(
+      indexes.map((index) => _blocks[index]).where((block) {
+        if (block is! Json) return true;
+        if (block['type'] == 'tool-call') return false;
+        if (block['type'] == 'text' || block['type'] == 'reasoning') {
+          return (block['text'] as String? ?? '').trim().isNotEmpty;
+        }
+        return true;
+      }),
     );
   }
 }

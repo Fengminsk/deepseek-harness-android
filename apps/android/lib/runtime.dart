@@ -115,6 +115,8 @@ class RuntimeController extends ChangeNotifier {
     (method, params) => call(method, params),
   );
   final Map<String, List<Json>> timelines = {};
+  final Map<String, int> _timelineGenerations = {};
+  final Map<String, Object> _historyReads = {};
   final Map<String, String> streaming = {};
   final Map<String, Json> liveMessages = {};
   final Map<String, String> statuses = {};
@@ -564,6 +566,19 @@ class RuntimeController extends ChangeNotifier {
     info = nextInfo;
     await refreshLive();
     if (!current()) return;
+    // A new process has no live attempts to publish for the old turn. Refresh
+    // retained transcripts through the core's read-only interruption recovery.
+    // The event bus also carries child Sessions, whose reads need a parent
+    // address. Only refresh the ordinary chats explicitly opened or created.
+    for (final id in _timelineGenerations.keys.toList()) {
+      final observed = _timelineGenerations[id];
+      if (observed == generation ||
+          (timelines[id]?.isEmpty == true && observed != -1)) {
+        continue;
+      }
+      await openSession(id);
+      if (!current()) return;
+    }
     await refreshInteractions();
     if (!current()) return;
     await refreshWeb();
@@ -789,31 +804,62 @@ class RuntimeController extends ChangeNotifier {
     final id =
         'android-${DateTime.now().microsecondsSinceEpoch}-${random.nextInt(1 << 30)}';
     timelines[id] = [];
+    _timelineGenerations[id] = _connectionGeneration;
     return id;
   }
 
   Future<void> openSession(String id) async {
+    _timelineGenerations.putIfAbsent(id, () => -1);
+    final generation = _connectionGeneration;
+    final read = Object();
+    _historyReads[id] = read;
+    bool current() =>
+        !_disposed &&
+        generation == _connectionGeneration &&
+        identical(_historyReads[id], read);
     final accumulated = <Json>[];
     var offset = 0;
-    while (true) {
-      final page = await call('session.read', {
-        'sessionId': id,
-        'offset': offset,
-      }) as Json;
-      final records = (page['events'] as List).cast<Json>();
-      accumulated.addAll(records);
-      if (records.length < 200) break;
-      offset = (records.last['seq'] as int) + 1;
-    }
-    // Merge notifications received while the historical pages were loading.
-    for (final event in timelines[id] ?? <Json>[]) {
-      if (!accumulated.any((record) => record['seq'] == event['seq'])) {
-        accumulated.add(event);
+    String? snapshot;
+    try {
+      while (true) {
+        final request = <String, dynamic>{
+          'sessionId': id,
+          'offset': offset,
+        };
+        if (snapshot != null) request['snapshot'] = snapshot;
+        final page = await call('session.read', request) as Json;
+        snapshot = page['snapshot'] as String?;
+        if (!current()) return;
+        final records = (page['events'] as List).cast<Json>();
+        accumulated.addAll(records);
+        if (records.length < 200) break;
+        offset = (records.last['seq'] as int) + 1;
       }
+      // Merge notifications received while the historical pages were loading.
+      for (final event in timelines[id] ?? <Json>[]) {
+        if (!accumulated.any((record) => record['seq'] == event['seq'])) {
+          accumulated.add(event);
+        }
+      }
+      accumulated.sort((a, b) => (a['seq'] as int).compareTo(b['seq'] as int));
+      timelines[id] = accumulated;
+      _timelineGenerations[id] = generation;
+      notifyListeners();
+    } catch (_) {
+      if (current()) rethrow;
+    } finally {
+      if (snapshot != null) {
+        try {
+          await call('session.read.release', {
+            'sessionId': id,
+            'snapshot': snapshot,
+          });
+        } catch (_) {
+          // A disconnected runtime also releases all in-memory snapshots.
+        }
+      }
+      if (identical(_historyReads[id], read)) _historyReads.remove(id);
     }
-    accumulated.sort((a, b) => (a['seq'] as int).compareTo(b['seq'] as int));
-    timelines[id] = accumulated;
-    notifyListeners();
   }
 
   Future<Json> ensureSession(String id) async {

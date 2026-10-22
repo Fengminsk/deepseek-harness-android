@@ -94,7 +94,7 @@ test('question snapshots retain original questions and state without shell prese
   })
 })
 
-test('shared credential and preset changes reach native observers without forwarding account record events', async () => {
+test('shared credential, preset and goal activation changes reach native observers without account records', async () => {
   const lifetime = new AbortController()
   const delivered = []
   const ready = Promise.withResolvers()
@@ -107,6 +107,7 @@ test('shared credential and preset changes reach native observers without forwar
         yield { type: 'ready', clientId: 'test-client' }
         yield { type: 'emit', event: 'credentials/reference-updated', args: ['SEARCH_API_KEY'] }
         yield { type: 'emit', event: 'agent-preset/selected', args: ['session', 'android'] }
+        yield { type: 'emit', event: 'goal/activation-changed', args: [{ sessionId: 'session', goal: { id: 'goal-1', revision: 7, activation: 'disarmed' } }] }
         yield { type: 'emit', event: 'credentials/record-updated', args: ['account/record'] }
         lifetime.abort()
       })()
@@ -118,5 +119,7 @@ test('shared credential and preset changes reach native observers without forwar
     event: 'credentials/reference-updated', args: ['SEARCH_API_KEY'],
   } }, { method: 'api.event', params: {
     event: 'agent-preset/selected', args: ['session', 'android'],
+  } }, { method: 'api.event', params: {
+    event: 'goal/activation-changed', args: [{ sessionId: 'session', goal: { id: 'goal-1', revision: 7, activation: 'disarmed' } }],
   } }])
 })

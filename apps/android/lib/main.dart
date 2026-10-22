@@ -29,6 +29,10 @@ import 'agent_presets.dart';
 import 'skills.dart';
 import 'chat_references.dart';
 import 'chat_deliverables.dart';
+import 'chat_goal.dart';
+import 'chat_plan.dart';
+import 'chat_goal_plan_state.dart';
+import 'chat_reading.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -146,8 +150,11 @@ class _ChatPageState extends State<ChatPage> {
   final skillCatalogs = <String, SessionSkillsController>{};
   final chatProjections = <String, ChatProjection>{};
   late AttachmentDrafts attachments;
+  late ChatGoalPlanController goalPlan;
   final messageScroll = ScrollController();
   bool navigationScheduled = false;
+  bool drawerOpen = false;
+  (String?, int)? notificationViewing;
   (String, int, Object?)? observedTimeline;
   int scrollRequest = 0;
   bool followPending = false;
@@ -169,7 +176,13 @@ class _ChatPageState extends State<ChatPage> {
     localDraftSessions.add(sessionId);
     runtime.addListener(handleNavigation);
     attachments = AttachmentDrafts(runtime)..addListener(attachmentChanged);
+    connectGoalPlan();
     handleNavigation();
+  }
+
+  void connectGoalPlan() {
+    goalPlan = ChatGoalPlanController(runtime: runtime, sessionId: sessionId);
+    unawaited(goalPlan.start());
   }
 
   @override
@@ -177,6 +190,8 @@ class _ChatPageState extends State<ChatPage> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.runtime != runtime) {
       sessionNavigationEpoch++;
+      goalPlan.dispose();
+      connectGoalPlan();
       for (final catalog in skillCatalogs.values) {
         catalog.dispose();
       }
@@ -226,6 +241,18 @@ class _ChatPageState extends State<ChatPage> {
         unawaited(openTasks());
         return;
       }
+      if (request['route'] == 'session' &&
+          request['sessionId'] is String &&
+          (request['sessionId'] as String).trim().isNotEmpty) {
+        scaffold.currentState?.closeDrawer();
+        inputFocus.unfocus();
+        final chatRoute = ModalRoute.of(context);
+        Navigator.of(context).popUntil((route) => route == chatRoute);
+        final id = request['sessionId'] as String;
+        activateSession(id);
+        unawaited(readNotifiedSession(id));
+        return;
+      }
       if (request['route'] != 'approval' ||
           request['requestId'] is! String ||
           request['requestVersion'] is! int) {
@@ -245,6 +272,8 @@ class _ChatPageState extends State<ChatPage> {
 
   @override
   void dispose() {
+    unawaited(publishNotificationViewing(null));
+    goalPlan.dispose();
     for (final catalog in skillCatalogs.values) {
       catalog.dispose();
     }
@@ -259,15 +288,52 @@ class _ChatPageState extends State<ChatPage> {
 
   void navigate(Widget page) =>
       Navigator.push(context, PocketRoute<void>(builder: (_) => page));
+
+  Future<void> readNotifiedSession(String id) async {
+    try {
+      await runtime.openSession(id);
+    } catch (failure) {
+      if (mounted) setState(() => errors[id] = '读取会话失败：$failure');
+    }
+  }
+
+  Future<void> publishNotificationViewing(String? id) async {
+    try {
+      await RuntimeController.channel.invokeMethod<void>(
+        'notifications.viewing',
+        {'sessionId': id},
+      );
+    } catch (failure) {
+      // This optional suppression cannot interrupt reading. Native lifecycle
+      // still clears its foreground state when the Activity leaves the screen.
+      debugPrint('Notification visibility could not be synchronized');
+    }
+  }
+
+  void synchronizeNotificationViewing() {
+    final visible = !drawerOpen && (ModalRoute.of(context)?.isCurrent ?? true);
+    final next = (visible ? sessionId : null, runtime.connectionGeneration);
+    if (notificationViewing == next) return;
+    notificationViewing = next;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && notificationViewing == next) {
+        unawaited(publishNotificationViewing(next.$1));
+      }
+    });
+  }
+
   void attachmentChanged() {
     if (mounted) setState(() {});
   }
 
   void activateSession(String id) {
+    if (id == sessionId) return;
     sessionNavigationEpoch++;
     drafts[sessionId] = input.value;
+    goalPlan.dispose();
     setState(() {
       sessionId = id;
+      connectGoalPlan();
       input.value = drafts[id] ?? TextEditingValue.empty;
     });
   }
@@ -373,6 +439,14 @@ class _ChatPageState extends State<ChatPage> {
         navigate(ModelsPage(runtime: runtime));
       case 'model':
         navigate(SessionModelPage(runtime: runtime, sessionId: sessionId));
+      case 'goal':
+        inputFocus.unfocus();
+        unawaited(goalPlan.refresh());
+        unawaited(openChatGoal(context, goalPlan));
+      case 'plan':
+        inputFocus.unfocus();
+        unawaited(goalPlan.refresh());
+        unawaited(openChatPlanMode(context, goalPlan));
       case 'permission':
         navigate(
           SessionPermissionPage(
@@ -480,9 +554,17 @@ class _ChatPageState extends State<ChatPage> {
           commandLine = typed.line;
           final action = builtinCommand(command) ?? command['clientAction'];
           if (typed.bare &&
-              ['file', 'model', 'permission', 'export'].contains(action)) {
+              [
+                'file',
+                'model',
+                'permission',
+                'export',
+                'goal',
+                'plan',
+              ].contains(action)) {
             if (attachedIds.isNotEmpty &&
-                (action == 'model' || action == 'permission')) {
+                action != 'file' &&
+                action != 'export') {
               throw StateError('/${command['name']} 不接受附件，请先移除附件。');
             }
             if (!mounted) return;
@@ -615,6 +697,7 @@ class _ChatPageState extends State<ChatPage> {
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: runtime,
     builder: (context, _) {
+      synchronizeNotificationViewing();
       final viewedSessionId = sessionId;
       final colors = Theme.of(context).colorScheme;
       final events = runtime.timelines[sessionId] ?? [];
@@ -682,10 +765,38 @@ class _ChatPageState extends State<ChatPage> {
             ),
           ),
         ),
-        trailing: GlassButton(
-          icon: Icons.edit_square,
-          label: '新对话',
-          onPressed: newChat,
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            GlassButton(
+              icon: Icons.edit_square,
+              label: '新对话',
+              onPressed: newChat,
+            ),
+            if (projection.entries.any(
+              (entry) => !chatReadingEntry(entry),
+            )) ...[
+              const SizedBox(width: 4),
+              CommonPopupBox(
+                onOpen: inputFocus.unfocus,
+                popupBuilder: (_) => CommonPopupMenu(
+                  items: [
+                    CommonPopupMenuItem(
+                      label: '会话记录',
+                      glyph: Icons.history_rounded,
+                      onPressed: () =>
+                          openChatRecords(context, projection.entries),
+                    ),
+                  ],
+                ),
+                targetBuilder: (open) => GlassButton(
+                  icon: Icons.more_horiz_rounded,
+                  label: '会话更多',
+                  onPressed: open,
+                ),
+              ),
+            ],
+          ],
         ),
         drawer: ChatSidebar(
           runtime: runtime,
@@ -713,6 +824,10 @@ class _ChatPageState extends State<ChatPage> {
             ),
           ),
         ),
+        onDrawerChanged: (open) {
+          drawerOpen = open;
+          synchronizeNotificationViewing();
+        },
 
         body: projection.entries.isEmpty && live == null && sessionError == null
             ? PocketEmpty(
@@ -792,6 +907,7 @@ class _ChatPageState extends State<ChatPage> {
                   projection: projection,
                   controller: messageScroll,
                   live: live,
+                  running: running,
                   onOpenSkill: (name) =>
                       openSkillReference(viewedSessionId, name),
                   onOpenLink: (uri) => RuntimeController.channel
@@ -865,6 +981,8 @@ class _ChatPageState extends State<ChatPage> {
         bottom: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            ChatGoalDock(controller: goalPlan),
+            ChatPlanDock(controller: goalPlan),
             ChatTodoDock(
               sessionId: sessionId,
               events: runtime.timelines[sessionId] ?? const [],

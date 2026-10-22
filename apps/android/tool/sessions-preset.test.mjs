@@ -30,6 +30,35 @@ function fixture({ exists = false, invoke, select, resolve } = {}) {
 }
 const message = { sessionId: 'draft', requestId: 'first', text: 'hello', provider: 'p', model: 'm' }
 
+test('App time zones pass to original prompt validation without changing model, content or request identity', async () => {
+  for (const zone of [undefined, 'UTC', 'Asia/Shanghai', 'US/Eastern']) {
+    const h = fixture({ exists: true })
+    await h.sessions.send({ ...message, ...(zone === undefined ? {} : { clientTimeZone: zone }) })
+    assert.deepEqual(h.calls, [{ method: 'prompt', params: {
+      sessionId: 'draft', requestId: 'first', mode: 'queue',
+      ...(zone === undefined ? {} : { clientTimeZone: zone }),
+      content: [{ type: 'text', text: 'hello' }],
+    } }])
+  }
+})
+
+test('original zone refusal is preserved and never retries prompt admission', async () => {
+  const refusal = Object.assign(new Error('clientTimeZone must be UTC or a valid IANA Area/Location name'),
+    { code: 'session/invalid-time-zone' })
+  const h = fixture({ exists: true, invoke: () => { throw refusal } })
+  await assert.rejects(h.sessions.send({ ...message, clientTimeZone: 'Not/A_Real_Zone' }), error => error === refusal)
+  assert.equal(h.calls.length, 1)
+  assert.equal(h.calls[0].params.clientTimeZone, 'Not/A_Real_Zone')
+})
+
+test('non-string optional zones are refused before resolving or mutating the session', () => {
+  const h = fixture({ resolve: () => { assert.fail('invalid zone must not resolve an Agent') } })
+  for (const clientTimeZone of [null, false, 1, {}, []]) {
+    assert.throws(() => h.sessions.send({ ...message, clientTimeZone }), /clientTimeZone/)
+  }
+  assert.deepEqual(h.calls, [])
+})
+
 test('ensure and first message pass an explicit preset only to original creation', async () => {
   for (const method of ['ensure', 'send']) {
     const h = fixture()

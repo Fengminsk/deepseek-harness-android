@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:dsh_android/composer_commands.dart';
+import 'package:dsh_android/chat_goal.dart';
 import 'package:dsh_android/chat_messages.dart';
 import 'package:dsh_android/chat_projection.dart';
 import 'package:dsh_android/main.dart';
@@ -347,6 +348,7 @@ void main() {
       tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
         RuntimeController.channel,
         (call) async {
+          if (call.method == 'notifications.viewing') return null;
           native.add(call.method);
           if (call.method != 'attachment.pick') {
             throw StateError('Unexpected native action ${call.method}');
@@ -629,6 +631,7 @@ void main() {
       tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
         RuntimeController.channel,
         (call) async {
+          if (call.method == 'notifications.viewing') return null;
           native.add(call.method);
           return jsonEncode({
             'items': [
@@ -671,10 +674,10 @@ void main() {
   );
 
   testWidgets(
-    'goal uses the command handler and retains text and selection on failure',
+    'goal opens its dedicated management page without submitting a chat command',
     (tester) async {
       phone(tester);
-      final runtime = _Runtime()..failCommand = true;
+      final runtime = _Runtime();
       addTearDown(runtime.dispose);
       await tester.pumpWidget(host(ChatPage(runtime: runtime)));
       await tester.pumpAndSettle();
@@ -682,27 +685,15 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('目标  goal'));
       await tester.pumpAndSettle();
-      await tester.enterText(find.byType(TextField), '整理当前项目');
-      runtime.statuses[runtime.timelines.keys.single] = 'running';
-      runtime.notifyListeners();
-      await tester.pumpAndSettle();
-      await tester.tap(find.byTooltip('发送'));
-      await tester.pumpAndSettle();
+      expect(find.byType(ChatGoalPage), findsOneWidget);
       expect(runtime.prompts, 0);
-      expect(runtime.calls.last.params['line'], '/goal 整理当前项目');
-      expect(find.text('原命令拒绝了输入'), findsOneWidget);
-      expect(find.text('目标 · /goal'), findsOneWidget);
       expect(
-        tester.widget<TextField>(find.byType(TextField)).controller!.text,
-        '整理当前项目',
+        runtime.calls.any((call) => call.method == 'session.command'),
+        isFalse,
       );
-      runtime.failCommand = false;
-      await tester.tap(find.byTooltip('发送'));
+      await tester.binding.handlePopRoute();
       await tester.pumpAndSettle();
-      expect(
-        tester.widget<TextField>(find.byType(TextField)).controller!.text,
-        isEmpty,
-      );
+      expect(find.byType(TextField), findsOneWidget);
       expect(find.byType(ComposerCommandChip), findsNothing);
     },
   );

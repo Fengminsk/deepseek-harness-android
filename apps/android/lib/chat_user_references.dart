@@ -1,8 +1,10 @@
 import 'package:material_ui/material_ui.dart';
 
 import 'chat_skills.dart';
+import 'chat_secret_mask.dart';
+import 'runtime.dart';
 
-enum ChatReferenceKind { session, skill, file, folder }
+enum ChatReferenceKind { secret, session, skill, file, folder }
 
 class ChatUserReference {
   const ChatUserReference(
@@ -18,13 +20,23 @@ class ChatUserReference {
 }
 
 /// The original UserText rules resolve overlapping UTF-16 ranges by position,
-/// then Session (10), skill (20), path (30). No lookup changes authored text.
+/// then secret (0), Session (10), skill (20), path (30). No lookup changes
+/// authored text; an earlier reference still precedes an overlapping secret.
 List<ChatUserReference> chatUserReferences(
   String text, {
   Iterable<String> skillNames = const [],
   Iterable<String> sessionLabels = const [],
+  Iterable<ChatSecretRange> secrets = const [],
 }) {
   final candidates = <ChatUserReference>[
+    for (final range in secrets)
+      ChatUserReference(
+        range.start,
+        range.end,
+        ChatReferenceKind.secret,
+        range.masked,
+        text.substring(range.start, range.end),
+      ),
     for (final range in sessionReferenceRanges(text, sessionLabels))
       ChatUserReference(
         range.start,
@@ -83,6 +95,7 @@ class ChatUserText extends StatelessWidget {
   const ChatUserText({
     required this.text,
     required this.storageId,
+    this.runtime,
     this.skillNames = const [],
     this.sessionLabels = const [],
     this.onOpenSkill,
@@ -90,17 +103,23 @@ class ChatUserText extends StatelessWidget {
     super.key,
   });
   final String text, storageId;
+  final RuntimeController? runtime;
   final List<String> skillNames, sessionLabels;
   final Future<void> Function(String name)? onOpenSkill;
   final Future<void> Function(String path)? onOpenFile;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => runtime == null
+      ? _display(context, const [])
+      : ChatSecretMask(runtime: runtime!, text: text, builder: _display);
+
+  Widget _display(BuildContext context, List<ChatSecretRange> secrets) {
     const style = TextStyle(fontSize: 16, height: 1.6);
     final ranges = chatUserReferences(
       text,
       skillNames: skillNames,
       sessionLabels: sessionLabels,
+      secrets: secrets,
     );
     if (ranges.isEmpty) return Text(text, style: style);
     final spans = <InlineSpan>[];
@@ -108,6 +127,20 @@ class ChatUserText extends StatelessWidget {
     for (final range in ranges) {
       if (range.start > cursor) {
         spans.add(TextSpan(text: text.substring(cursor, range.start)));
+      }
+      if (range.kind == ChatReferenceKind.secret) {
+        spans.add(
+          WidgetSpan(
+            alignment: PlaceholderAlignment.middle,
+            child: ChatSecretValue(
+              key: ValueKey((storageId, range.start, range.end, range.value)),
+              raw: range.value,
+              masked: range.label,
+            ),
+          ),
+        );
+        cursor = range.end;
+        continue;
       }
       final open = switch (range.kind) {
         ChatReferenceKind.file => onOpenFile,
@@ -125,6 +158,7 @@ class ChatUserText extends StatelessWidget {
               ChatReferenceKind.folder => Icons.folder_outlined,
               ChatReferenceKind.session => Icons.chat_bubble_outline_rounded,
               ChatReferenceKind.skill => null,
+              ChatReferenceKind.secret => null,
             },
             hint: switch (range.kind) {
               ChatReferenceKind.file => '打开文件',

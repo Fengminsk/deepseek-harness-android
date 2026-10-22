@@ -124,60 +124,415 @@ class ToolActivityRow extends StatelessWidget {
       'shell' => Icons.terminal_rounded,
       'file' => Icons.description_outlined,
       'search' => Icons.search_rounded,
+      'web-search' || 'web-fetch' => Icons.language_rounded,
       _ => Icons.build_outlined,
     };
-    return Semantics(
-      button: true,
+    return ToolActivitySummaryRow(
+      key: ValueKey('tool-row:${activity.identity}'),
       label:
           '${presentation.title(activity)}，${presentation.summary(activity)}',
-      hint: '打开调用详情',
+      icon: icon,
+      color: ink,
+      opened: opened,
+      onTap: onTap,
+      title: Text(
+        presentation.summary(activity),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: AppTextStyle.footnote.of(context).copyWith(color: ink),
+      ),
+    );
+  }
+}
+
+/// One shared press target for an invocation and a group of invocations.
+class ToolActivitySummaryRow extends StatelessWidget {
+  const ToolActivitySummaryRow({
+    required this.title,
+    required this.label,
+    required this.icon,
+    required this.color,
+    required this.opened,
+    required this.onTap,
+    super.key,
+  });
+  final Widget title;
+  final String label;
+  final IconData icon;
+  final Color color;
+  final bool opened;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => PocketReveal(
+    child: Semantics(
+      button: true,
+      label: label,
+      hint: opened ? '收起调用内容' : '展开调用内容',
+      expanded: opened,
       onTap: onTap,
       child: ExcludeSemantics(
-        child: ElasticPress(
-          child: FocusRing(
-            shape: AppShape.md,
-            child: Material(
-              type: MaterialType.transparency,
-              child: InkWell(
-                key: ValueKey('tool-row:${activity.identity}'),
-                customBorder: AppShape.md,
-                onTap: onTap,
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(minHeight: 48),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 4,
-                      vertical: 10,
-                    ),
-                    child: Row(
-                      children: [
-                        Icon(icon, size: 20, color: ink),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Text(
-                            presentation.summary(activity),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: AppTextStyle.subheadline
-                                .of(context)
-                                .copyWith(color: ink),
-                          ),
-                        ),
-                        const SizedBox(width: 6),
-                        Icon(
-                          opened
-                              ? Icons.expand_more_rounded
-                              : Icons.chevron_right_rounded,
+        child: FocusRing(
+          shape: const RoundedRectangleBorder(),
+          child: Material(
+            type: MaterialType.transparency,
+            child: InkWell(
+              customBorder: const RoundedRectangleBorder(),
+              splashFactory: NoSplash.splashFactory,
+              onTap: onTap,
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(minHeight: 48),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 4,
+                    vertical: 10,
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(icon, size: 20, color: color),
+                      const SizedBox(width: 10),
+                      Expanded(child: title),
+                      const SizedBox(width: 6),
+                      AnimatedRotation(
+                        turns: opened ? .25 : 0,
+                        duration: MediaQuery.disableAnimationsOf(context)
+                            ? Duration.zero
+                            : const Duration(milliseconds: 200),
+                        child: Icon(
+                          Icons.chevron_right_rounded,
                           size: 18,
-                          color: ink,
+                          color: color,
                         ),
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
                 ),
               ),
             ),
           ),
+        ),
+      ),
+    ),
+  );
+}
+
+/// Bounded readers are inline in the transcript. Their scroll positions belong
+/// to this invocation; a result update does not recreate the command reader.
+class ToolActivityInlineDetails extends StatefulWidget {
+  const ToolActivityInlineDetails({
+    required this.activity,
+    this.onOpenFull,
+    this.depth = 0,
+    super.key,
+  });
+  final ToolActivity activity;
+  final VoidCallback? onOpenFull;
+
+  /// Preserve the real nested hierarchy without consuming all screen width.
+  final int depth;
+  @override
+  State<ToolActivityInlineDetails> createState() =>
+      _ToolActivityInlineDetailsState();
+}
+
+class _ToolActivityInlineDetailsState extends State<ToolActivityInlineDetails> {
+  final _children = <String>{};
+  @override
+  void didUpdateWidget(ToolActivityInlineDetails oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.activity.identity != widget.activity.identity) {
+      _children.clear();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final activity = widget.activity;
+    final presentation = ToolActivityPresentation.from(activity);
+    final fields = presentation.fields;
+    final colors = Theme.of(context).colorScheme;
+    final outputs = <String, String>{
+      for (final entry in fields.entries)
+        if (_outputFields.contains(entry.key) && entry.value.isNotEmpty)
+          entry.key: entry.value,
+      if (!fields.keys.any(_outputFields.contains) &&
+          activity.resultText.isNotEmpty)
+        '结果': activity.resultText,
+    };
+    final metadata = [
+      if (fields['退出码'] != null) '退出码 ${fields['退出码']}',
+      if (fields['超时'] == '是') '已超时',
+      if (fields['取消'] == '是') '已取消',
+      if (fields['终止信号'] != null) '${fields['终止信号']}',
+    ];
+    return Padding(
+      padding: widget.depth < 3
+          ? const EdgeInsets.fromLTRB(4, 0, 4, 12)
+          : const EdgeInsets.only(bottom: 12),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          border: Border(
+            left: BorderSide(
+              color: colors.outlineVariant.withValues(alpha: .7),
+              width: 1.5,
+            ),
+          ),
+        ),
+        child: Padding(
+          padding: EdgeInsets.only(left: widget.depth < 3 ? 14 : 0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (fields['命令'] case final String command)
+                ToolBoundedText(
+                  key: ValueKey('inline-command:${activity.identity}'),
+                  identity: '${activity.identity}:command',
+                  title: '命令',
+                  text: command,
+                  command: true,
+                ),
+              for (final name in const ['路径', '相对路径', '搜索表达式', '包含文件'])
+                if (fields[name] case final String value)
+                  ToolBoundedText(
+                    key: ValueKey('inline-input:${activity.identity}:$name'),
+                    identity: '${activity.identity}:$name',
+                    title: name,
+                    text: value,
+                    command: true,
+                  ),
+              for (final entry in outputs.entries)
+                ToolBoundedText(
+                  key: ValueKey(
+                    'inline-output:${activity.identity}:${entry.key}',
+                  ),
+                  identity: '${activity.identity}:${entry.key}',
+                  title: switch (entry.key) {
+                    'stdout' => '输出',
+                    'stderr' => '错误输出',
+                    _ => entry.key,
+                  },
+                  text: entry.value,
+                ),
+              if (outputs.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  child: Text(
+                    activity.hasResult
+                        ? '没有输出'
+                        : activity.phase == ToolActivityPhase.interrupted
+                        ? '调用已中断，尚未记录结果'
+                        : activity.phase == ToolActivityPhase.unknown ||
+                              !activity.hasCall
+                        ? '调用记录不完整，尚未记录结果'
+                        : '等待执行或授权结果…',
+                    style: AppTextStyle.footnote
+                        .of(context)
+                        .copyWith(color: colors.onSurfaceVariant),
+                  ),
+                ),
+              if (metadata.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  child: Text(
+                    metadata.join(' · '),
+                    style: AppTextStyle.footnote
+                        .of(context)
+                        .copyWith(
+                          color: presentation.needsAttention(activity)
+                              ? colors.error
+                              : colors.onSurfaceVariant,
+                        ),
+                  ),
+                ),
+              if (fields['工作目录（记录值）'] ?? fields['工作目录（请求值）']
+                  case final String directory)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 6),
+                  child: SelectableText(
+                    '工作目录  $directory',
+                    style: AppTextStyle.footnote.of(context),
+                  ),
+                ),
+              for (final entry in fields.entries)
+                if (const ['输出范围', '读取范围', '结果范围', '超时'].contains(entry.key) &&
+                    (entry.key != '超时' || entry.value.startsWith('未确认')))
+                  _ToolNotice(entry.value),
+              if (activity.error != null)
+                _ToolNotice(
+                  '${activity.error!['reason'] ?? activity.error!['message'] ?? activity.error!['name'] ?? '调用失败'}'
+                  '${activity.error!['code'] == null ? '' : '（${activity.error!['code']}）'}',
+                  error: true,
+                ),
+              if (!activity.hasCall) const _ToolNotice('缺少调用开始记录，未记录的参数无法还原。'),
+              for (final warning in activity.warnings) _ToolNotice(warning),
+              for (final child in activity.children) ...[
+                ToolActivityRow(
+                  key: ValueKey('inline-child:${child.identity}'),
+                  activity: child,
+                  opened: _children.contains(child.identity),
+                  onTap: () => setState(() {
+                    if (!_children.remove(child.identity)) {
+                      _children.add(child.identity);
+                    }
+                  }),
+                ),
+                if (_children.contains(child.identity))
+                  PocketReveal(
+                    child: ToolActivityInlineDetails(
+                      key: ValueKey('inline-child-reader:${child.identity}'),
+                      activity: child,
+                      depth: widget.depth + 1,
+                    ),
+                  ),
+              ],
+              if (widget.onOpenFull != null)
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: PocketButton.tonal(
+                    key: ValueKey('tool-full:${activity.identity}'),
+                    onPressed: widget.onOpenFull,
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.open_in_full_rounded, size: 16),
+                        SizedBox(width: 6),
+                        Text('放大阅读'),
+                      ],
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Complete recorded text remains selectable/copyable. Height is limited while
+/// scrolling reveals the rest; no preview prefix is substituted for the output.
+class ToolBoundedText extends StatefulWidget {
+  const ToolBoundedText({
+    required this.identity,
+    required this.title,
+    required this.text,
+    this.command = false,
+    super.key,
+  });
+  final String identity, title, text;
+  final bool command;
+  @override
+  State<ToolBoundedText> createState() => _ToolBoundedTextState();
+}
+
+class _ToolBoundedTextState extends State<ToolBoundedText> {
+  final _scroll = ScrollController();
+  String? _feedback;
+  bool _copying = false;
+  int _copyEpoch = 0;
+  @override
+  void didUpdateWidget(ToolBoundedText oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.identity != widget.identity ||
+        oldWidget.text != widget.text) {
+      _copyEpoch++;
+      _copying = false;
+      _feedback = null;
+    }
+  }
+
+  @override
+  void dispose() {
+    _copyEpoch++;
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  Future<void> _copy() async {
+    if (_copying) return;
+    final epoch = ++_copyEpoch;
+    setState(() => _copying = true);
+    String feedback;
+    try {
+      await Clipboard.setData(ClipboardData(text: widget.text));
+      feedback = '已复制';
+    } catch (_) {
+      feedback = '复制失败，请重试';
+    }
+    if (mounted && epoch == _copyEpoch) {
+      setState(() {
+        _copying = false;
+        _feedback = feedback;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final maxHeight =
+        (MediaQuery.sizeOf(context).height * (widget.command ? .19 : .28))
+            .clamp(
+              widget.command ? 76.0 : 100.0,
+              widget.command ? 180.0 : 260.0,
+            );
+    return PocketReveal(
+      child: Padding(
+        padding: const EdgeInsets.only(bottom: 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    _feedback ?? widget.title,
+                    style: AppTextStyle.footnote
+                        .of(context)
+                        .copyWith(color: colors.onSurfaceVariant),
+                  ),
+                ),
+                SizedBox.square(
+                  dimension: 36,
+                  child: GlassButton(
+                    key: ValueKey('inline-copy:${widget.identity}'),
+                    icon: _feedback == '已复制'
+                        ? Icons.check_rounded
+                        : Icons.copy_rounded,
+                    label: '复制${widget.title}',
+                    onPressed: _copying ? null : _copy,
+                  ),
+                ),
+              ],
+            ),
+            Container(
+              key: ValueKey('inline-scroll:${widget.identity}'),
+              constraints: BoxConstraints(maxHeight: maxHeight),
+              decoration: BoxDecoration(
+                color: colors.surfaceContainerLow.withValues(alpha: .6),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: colors.outlineVariant.withValues(alpha: .55),
+                ),
+              ),
+              clipBehavior: Clip.antiAlias,
+              child: Scrollbar(
+                controller: _scroll,
+                thumbVisibility: true,
+                child: SingleChildScrollView(
+                  controller: _scroll,
+                  primary: false,
+                  padding: const EdgeInsets.fromLTRB(12, 10, 18, 10),
+                  child: SelectableText(
+                    widget.text.isEmpty ? '（空）' : widget.text,
+                    style: AppTextStyle.footnote
+                        .of(context)
+                        .copyWith(fontFamily: 'monospace', height: 1.45),
+                  ),
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -515,16 +870,6 @@ class _ToolDetailsBody extends StatelessWidget {
                     : colors.onSurfaceVariant,
               ),
         ),
-        if (activity.name.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.only(top: 4),
-            child: Text(
-              activity.name,
-              style: AppTextStyle.footnote
-                  .of(context)
-                  .copyWith(color: colors.onSurfaceVariant),
-            ),
-          ),
         if (!activity.hasCall)
           const _ToolNotice('缺少调用开始记录；未记录的名称、参数或开始时间不作推测。'),
         if (!activity.hasResult)

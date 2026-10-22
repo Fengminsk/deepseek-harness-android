@@ -56,9 +56,12 @@ public final class BackgroundTaskState {
     public int failed() { return failed; }
     public Integer backgroundJobs() { return backgroundJobs; }
     public Integer packageOperations() { return packageOperations; }
-    public boolean shouldHoldWakeLock() {
-        return fresh() && keepAwake && (running > 0 || (backgroundJobs != null && backgroundJobs > 0)
+    public boolean hasActiveWork() {
+        return fresh() && (running > 0 || (backgroundJobs != null && backgroundJobs > 0)
                 || (packageOperations != null && packageOperations > 0));
+    }
+    public boolean shouldHoldWakeLock() {
+        return keepAwake && hasActiveWork();
     }
     public String presentation() {
         if (!phase.equals("ready")) return phase;

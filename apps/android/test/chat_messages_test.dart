@@ -1,6 +1,8 @@
 import 'package:dsh_android/chat_messages.dart';
 import 'package:dsh_android/chat_message_actions.dart';
 import 'package:dsh_android/chat_projection.dart';
+import 'package:dsh_android/chat_reading.dart';
+import 'package:dsh_android/chat_tool_groups.dart';
 import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/tool_activity.dart';
 import 'package:dsh_android/ui.dart';
@@ -76,7 +78,7 @@ void main() {
   });
 
   testWidgets(
-    'context and system prompt start collapsed and retain raw text on demand',
+    'context and system prompt leave the reading flow and remain in records',
     (tester) async {
       final projection = ChatProjection()
         ..reconcile([
@@ -102,6 +104,11 @@ void main() {
       expect(find.text('full system instructions'), findsNothing);
       expect(find.text('runtime context text'), findsNothing);
       expect(find.text('human question'), findsOneWidget);
+      expect(find.text('上下文 · runtime-context'), findsNothing);
+      await tester.pumpWidget(
+        host(ChatRecordsPage(entries: projection.entries)),
+      );
+      await tester.pumpAndSettle();
       await tester.tap(find.text('上下文 · runtime-context'));
       await tester.pumpAndSettle();
       expect(find.text('runtime context text'), findsOneWidget);
@@ -470,6 +477,8 @@ void main() {
       await tester.pumpWidget(view('a'));
       await tester.tap(find.byType(ToolActivityCard));
       await tester.pumpAndSettle();
+      await tester.tap(find.text('放大阅读'));
+      await tester.pumpAndSettle();
       // A second call creates a collapsed group and removes the original row.
       events.add(tool_fixture.callEvent(1, id: 'second'));
       projection.reconcile(events);
@@ -490,7 +499,7 @@ void main() {
       await tester.pumpWidget(view('b'));
       await tester.pumpAndSettle();
       expect(find.text('late device output'), findsNothing);
-      expect(find.text('2 项工具调用'), findsOneWidget);
+      expect(find.byType(ChatToolGroupHeader), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );
@@ -517,7 +526,7 @@ void main() {
         ),
       );
       expect(find.byType(ToolActivityCard), findsNothing);
-      await tester.tap(find.text('1500 项工具调用'));
+      await tester.tap(find.byType(ChatToolGroupHeader));
       await tester.pumpAndSettle();
       expect(
         find.byType(ToolActivityCard).evaluate().length,
@@ -528,7 +537,7 @@ void main() {
       expect(find.byType(ToolActivityCard).evaluate().length, lessThan(30));
       scroll.jumpTo(0);
       await tester.pumpAndSettle();
-      await tester.tap(find.text('1500 项工具调用'));
+      await tester.tap(find.byType(ChatToolGroupHeader));
       await tester.pumpAndSettle();
       expect(find.byType(ToolActivityCard), findsNothing);
       expect(tester.takeException(), isNull);
@@ -536,7 +545,7 @@ void main() {
   );
 
   testWidgets(
-    'long history creates only visible rows and restores folded details after eviction',
+    'long history stays lazy and internal context never reappears after recycling',
     (tester) async {
       final events = <Json>[
         fixture.input(0, 'context retained', source: {'kind': 'plugin'}),
@@ -558,15 +567,15 @@ void main() {
         ),
       );
       expect(find.byType(ChatMessage).evaluate().length, lessThan(30));
-      await tester.tap(find.text('上下文 · plugin'));
-      await tester.pumpAndSettle();
-      expect(find.text('context retained'), findsOneWidget);
+      expect(find.text('上下文 · plugin'), findsNothing);
+      expect(find.text('context retained'), findsNothing);
       scroll.jumpTo(scroll.position.maxScrollExtent);
       await tester.pumpAndSettle();
       expect(find.text('context retained'), findsNothing);
       scroll.jumpTo(0);
       await tester.pumpAndSettle();
-      expect(find.text('context retained'), findsOneWidget);
+      expect(find.text('context retained'), findsNothing);
+      expect(find.byType(ChatMessage).evaluate().length, lessThan(30));
       expect(tester.takeException(), isNull);
     },
   );

@@ -210,6 +210,13 @@ try {
     await prompt('completed', 'completed', 'Complete one turn')
     await finish('completed')
     assert.equal((await request('tasks.session', { sessionId: 'completed' })).history[0].status, 'completed')
+    const completedNotice = await first.wait(frame => frame.method === 'task.completed'
+      && frame.params.sessionId === 'completed')
+    assert.deepEqual(Object.keys(completedNotice.params).sort(), ['endSeq', 'sessionId', 'turn'])
+    assert.equal(completedNotice.params.turn, 1)
+    assert.ok(Number.isSafeInteger(completedNotice.params.endSeq))
+    assert.deepEqual(first.notices.filter(frame => frame.method === 'task.completed').map(frame => frame.params.sessionId),
+      ['completed'], 'cancelled and failed turns must not claim completion')
     checkpoint('durable failure and completed turn')
 
     const renamedTitle = 'Renamed background task'
@@ -268,9 +275,14 @@ try {
     assert.equal(recovered.pending[0].cancellable, false)
     assert.equal(requests, beforeRestartRequests, 'observation must never replay queued prompts')
     assert.deepEqual((await second.request('tasks.summary')).active, [])
+    assert.equal(second.notices.filter(frame => frame.method === 'task.completed').length, 0,
+      'cold reads of old completion and interrupted recovery must not emit completion notifications')
+    assert.equal(first.notices.filter(frame => frame.method === 'task.completed').length, 1,
+      'repeated history reads and an unfinished approval must not replay a completion notification')
     console.log(JSON.stringify({ realProfile: true, jobsBaseline: true, configurationExportPreview: true,
       waitingApproval: true, cancelRetainsQueue: true, explicitRemoval: true, durableFailure: true,
-      completedTurn: true, titleRecovery: true, processRecovery: true, noAutomaticReplay: true }))
+      completedTurn: true, titleRecovery: true, processRecovery: true, noAutomaticReplay: true,
+      completionNotification: true, noFailureOrRecoveryNotification: true }))
   })(), new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error(
     `Task profile smoke exceeded 120 seconds; pending=${JSON.stringify(runtimes.map(runtime => runtime.pendingMethods()))}; modelCalls=${requests}; remainingFixtureSteps=${steps.length}`,
   )), 120000) })])

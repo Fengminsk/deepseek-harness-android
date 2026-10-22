@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:dsh_android/composer_commands.dart';
+import 'package:dsh_android/chat_goal.dart';
 import 'package:dsh_android/flclash/popup.dart';
 import 'package:dsh_android/main.dart';
 import 'package:dsh_android/runtime.dart';
@@ -113,6 +114,7 @@ class _Runtime extends RuntimeController {
   @override
   Future<dynamic> call(String method, [Json params = const {}]) async {
     calls.add((method: method, params: params));
+    if (method == 'userText.mask') return {'ranges': <Json>[]};
     if (method == 'session.ensure') {
       expect(timelines.containsKey(params['sessionId']), isTrue);
       return {'sessionId': params['sessionId'], 'created': false};
@@ -123,6 +125,20 @@ class _Runtime extends RuntimeController {
       expect(params['args'], {'agentId': timelines.keys.single});
       return catalogResponse == null ? _catalog : await catalogResponse!.future;
     }
+    if (method == 'api.call' &&
+        params['namespace'] == 'session' &&
+        params['method'] == 'projections') {
+      return {
+        'kind': 'sequenced',
+        'asOfSeq': 0,
+        'values': {'goal': null, 'plan': null},
+      };
+    }
+    if (method == 'api.call' &&
+        params['namespace'] == 'settings' &&
+        params['method'] == 'describe') {
+      return {'revision': 0, 'values': <String, dynamic>{}};
+    }
     throw StateError('Unexpected runtime action: $method $params');
   }
 
@@ -131,9 +147,14 @@ class _Runtime extends RuntimeController {
     for (final call in calls) {
       expect(
         call.method == 'session.ensure' ||
+            call.method == 'userText.mask' ||
             (call.method == 'api.call' &&
-                call.params['namespace'] == 'commands' &&
-                call.params['method'] == 'list'),
+                ((call.params['namespace'] == 'commands' &&
+                        call.params['method'] == 'list') ||
+                    (call.params['namespace'] == 'session' &&
+                        call.params['method'] == 'projections') ||
+                    (call.params['namespace'] == 'settings' &&
+                        call.params['method'] == 'describe'))),
         isTrue,
         reason: 'Dismissal must not submit a prompt or run a command: $call',
       );
@@ -457,7 +478,7 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(find.byType(ComposerCommands), findsNothing);
-      expect(find.text('目标 · /goal'), findsOneWidget);
+      expect(find.byType(ChatGoalPage), findsOneWidget);
       runtime.expectOnlyDiscovery();
       expect(tester.takeException(), isNull);
     },

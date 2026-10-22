@@ -40,6 +40,7 @@ class SidebarHarness {
     Brightness brightness = Brightness.light,
     String? fontFamily,
     bool glass = false,
+    String currentSessionId = 's2',
   }) => MaterialApp(
     debugShowCheckedModeBanner: false,
     theme: pocketTheme(brightness).copyWith(
@@ -68,7 +69,7 @@ class SidebarHarness {
       body: const Text('聊天主页'),
       drawer: ChatSidebar(
         runtime: runtime,
-        currentSessionId: 's2',
+        currentSessionId: currentSessionId,
         onClose: () {
           closes++;
           scaffold.currentState!.closeDrawer();
@@ -160,7 +161,8 @@ void main() {
     final runtime = harness.runtime;
     expect(find.text('Pocket Harness'), findsOneWidget);
     expect(key('sidebar-search'), findsNothing);
-    expect(find.text('新对话'), findsOneWidget);
+    expect(find.text('新对话'), findsNothing);
+    expect(find.byTooltip('新对话'), findsOneWidget);
     expect(find.text('自动化任务'), findsNothing);
     expect(find.text('工作区'), findsOneWidget);
     expect(find.text('已归档任务'), findsNothing);
@@ -180,6 +182,14 @@ void main() {
       tester.getCenter(key('sidebar-settings')).dx,
       lessThan(tester.getCenter(key('sidebar-account')).dx),
     );
+    final settings = tester.getRect(key('sidebar-settings'));
+    final newChat = tester.getRect(key('sidebar-new-chat'));
+    expect(newChat.left, greaterThan(settings.right));
+    expect(newChat.left - settings.right, lessThanOrEqualTo(12));
+    expect(newChat.center.dy, closeTo(settings.center.dy, .1));
+    expect(newChat.width, closeTo(newChat.height, .1));
+    expect(newChat.width, lessThanOrEqualTo(48));
+    expect(footer.contains(newChat.center), isTrue);
     expect(find.text('账号'), findsNothing);
     expect(find.byTooltip('账号'), findsOneWidget);
     final reads = runtime.reads;
@@ -196,6 +206,53 @@ void main() {
     expect(runtime.calls.any((call) => call.$1 == 'session.read'), isFalse);
     await dispose(tester);
   });
+
+  testWidgets(
+    'more reveals destinations inline in sequence without a menu route',
+    (tester) async {
+      final harness = await setup(tester, reduceMotion: false);
+      final anchor = tester.getRect(key('sidebar-more'));
+      final footer = tester.getRect(key('sidebar-footer'));
+      await tester.tap(key('sidebar-more'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 80));
+      final first = tester.widget<SizeTransition>(key('sidebar-more-reveal:0'));
+      final last = tester.widget<SizeTransition>(key('sidebar-more-reveal:5'));
+      expect(first.sizeFactor.value, greaterThan(0));
+      expect(first.sizeFactor.value, lessThan(1));
+      expect(last.sizeFactor.value, 0);
+      expect(find.byType(CommonPopupMenu), findsNothing);
+      expect(tester.getRect(key('sidebar-more')), anchor);
+      final blur = tester.widget<ImageFiltered>(
+        find
+            .descendant(
+              of: key('sidebar-more-reveal:0'),
+              matching: find.byType(ImageFiltered),
+            )
+            .first,
+      );
+      expect(blur.enabled, isTrue);
+      await tester.pumpAndSettle();
+      expect(
+        tester.getRect(key('sidebar-more-files')).top,
+        closeTo(anchor.bottom, .1),
+      );
+      expect(tester.getRect(key('sidebar-footer')), footer);
+      expect(harness.closes, 0);
+      expect(find.text('我的文件'), findsOneWidget);
+      await tester.tap(key('sidebar-more'));
+      await tester.pumpAndSettle();
+      expect(key('sidebar-more-files'), findsNothing);
+      expect(tester.getRect(key('sidebar-more')), anchor);
+      await tester.tap(key('sidebar-more'));
+      await tester.pumpAndSettle();
+      await tester.tap(key('sidebar-more-automations'));
+      await tester.pumpAndSettle();
+      expect(harness.automations, 1);
+      expect(harness.closes, 1);
+      await dispose(tester);
+    },
+  );
 
   testWidgets('session menu follows the pressed point and stays on screen', (
     tester,
@@ -554,6 +611,8 @@ void main() {
     });
     expect(harness.runtime.library.archivedSessionIds, contains('s2'));
     expect(key('sidebar-session:s2'), findsNothing);
+    expect(key('sidebar-message'), findsNothing);
+    expect(find.text('查看详情'), findsNothing);
     expect(harness.closes, 0);
     expect(
       harness.runtime.calls.any((call) => call.$1 == 'session.cancel'),
@@ -561,6 +620,161 @@ void main() {
     );
     await dispose(tester);
   });
+
+  testWidgets(
+    'archive keeps its row until confirmation, then fades before collapse',
+    (tester) async {
+      final runtime = LibraryRuntime();
+      final receipt = Completer<dynamic>();
+      runtime.handlers['library.sessionArchive'] = (_) => receipt.future;
+      await setup(tester, runtime: runtime, reduceMotion: false);
+      await menu(tester, 's2');
+      await tester.tap(
+        find.descendant(
+          of: find.byType(CommonPopupMenu),
+          matching: find.text('归档'),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final before = tester.getRect(key('sidebar-session:s2'));
+      final neighbor = tester.getRect(key('sidebar-session:s3'));
+      expect(key('sidebar-message'), findsNothing);
+      expect(runtime.sent('sessionArchive'), hasLength(1));
+      await tester.pump(const Duration(milliseconds: 200));
+      expect(tester.getRect(key('sidebar-session:s2')), before);
+      final refresh = Completer<dynamic>();
+      runtime.handlers['library.catalog'] = (_) => refresh.future;
+      (runtime.catalog['archivedSessionIds'] as List).add('s2');
+      receipt.complete({
+        'archivedSessionIds': runtime.catalog['archivedSessionIds'],
+      });
+      await tester.pump();
+      // Flush the receipt continuation, then mount the exit ticker before
+      // advancing its clock. The follow-up catalog is deliberately unresolved.
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 64));
+      final fade = tester.widget<FadeTransition>(
+        find
+            .descendant(
+              of: key('sidebar-presence:s2'),
+              matching: find.byType(FadeTransition),
+            )
+            .first,
+      );
+      expect(fade.opacity.value, greaterThan(0));
+      expect(fade.opacity.value, lessThan(1));
+      expect(tester.getRect(key('sidebar-session:s2')), before);
+      expect(tester.getRect(key('sidebar-session:s3')), neighbor);
+      await tester.pump(const Duration(milliseconds: 140));
+      expect(
+        tester.getRect(key('sidebar-presence:s2')).height,
+        lessThan(before.height),
+      );
+      await tester.pumpAndSettle();
+      expect(key('sidebar-session:s2'), findsNothing);
+      expect(key('sidebar-message'), findsNothing);
+      expect(find.text('查看详情'), findsNothing);
+      expect(
+        tester.getRect(key('sidebar-session:s3')).top,
+        lessThan(neighbor.top),
+      );
+      expect(runtime.library.loading, isTrue);
+      refresh.complete(runtime.catalog);
+      await tester.pumpAndSettle();
+      expect(key('sidebar-session:s2'), findsNothing);
+      await dispose(tester);
+    },
+  );
+
+  testWidgets('rejected archive retains the session and its failure feedback', (
+    tester,
+  ) async {
+    final runtime = LibraryRuntime();
+    runtime.handlers['library.sessionArchive'] = (_) async =>
+        throw PlatformException(code: 'session/conflict');
+    final harness = await setup(tester, runtime: runtime);
+    await menu(tester, 's2');
+    await choose(tester, '归档');
+    expect(key('sidebar-session:s2'), findsOneWidget);
+    expect(runtime.library.archivedSessionIds, isNot(contains('s2')));
+    expect(runtime.library.actions['archive:s2']?.state, 'rejected');
+    expect(find.textContaining('session/conflict'), findsOneWidget);
+    expect(harness.closes, 0);
+    await dispose(tester);
+  });
+
+  testWidgets(
+    'archive completion belongs to its original row after current chat changes',
+    (tester) async {
+      final runtime = LibraryRuntime();
+      final receipt = Completer<dynamic>();
+      runtime.handlers['library.sessionArchive'] = (_) => receipt.future;
+      final harness = await setup(
+        tester,
+        runtime: runtime,
+        reduceMotion: false,
+      );
+      await menu(tester, 's2');
+      await tester.tap(
+        find.descendant(
+          of: find.byType(CommonPopupMenu),
+          matching: find.text('归档'),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.pumpWidget(
+        harness.host(reduceMotion: false, currentSessionId: 's3'),
+      );
+      await tester.pumpAndSettle();
+      expect(key('sidebar-session:s2'), findsOneWidget);
+      (runtime.catalog['archivedSessionIds'] as List).add('s2');
+      receipt.complete({
+        'archivedSessionIds': runtime.catalog['archivedSessionIds'],
+      });
+      await tester.pumpAndSettle();
+      expect(key('sidebar-session:s2'), findsNothing);
+      expect(key('sidebar-session:s3'), findsOneWidget);
+      final selected = tester.widget<Semantics>(
+        find
+            .descendant(
+              of: key('sidebar-session:s3'),
+              matching: find.byType(Semantics),
+            )
+            .first,
+      );
+      expect(selected.properties.selected, true);
+      expect(harness.closes, 0);
+      expect(harness.selected, isEmpty);
+      await dispose(tester);
+    },
+  );
+
+  testWidgets(
+    'confirmed archive stays removed through stale reads and permits a later restore',
+    (tester) async {
+      final runtime = LibraryRuntime();
+      runtime.handlers['library.sessionArchive'] = (_) async => {
+        'archivedSessionIds': ['a1', 's2'],
+      };
+      await setup(tester, runtime: runtime);
+      await menu(tester, 's2');
+      await choose(tester, '归档');
+      expect(key('sidebar-session:s2'), findsNothing);
+      await runtime.library.refresh();
+      await tester.pumpAndSettle();
+      expect(key('sidebar-session:s2'), findsNothing);
+      (runtime.catalog['archivedSessionIds'] as List).add('s2');
+      await runtime.library.refresh();
+      await tester.pumpAndSettle();
+      expect(key('sidebar-session:s2'), findsNothing);
+      (runtime.catalog['archivedSessionIds'] as List).remove('s2');
+      await runtime.library.refresh();
+      await tester.pumpAndSettle();
+      expect(key('sidebar-session:s2'), findsOneWidget);
+      expect(key('sidebar-message'), findsNothing);
+      await dispose(tester);
+    },
+  );
 
   testWidgets(
     'active archive opens original confirmation and never auto stops',

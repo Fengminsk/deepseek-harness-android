@@ -13,7 +13,7 @@ const schema = DEFAULT_SCHEMA.extend(new Type('tag:yaml.org,2002:js', {
   represent: expression => expression.source,
 }))
 
-/** Stage original filesystem skills, todo, deliveries, command groups and local delegation. */
+/** Stage original context, job controls, skills, command groups and local delegation. */
 export async function stagePreset(root, destination) {
   const source = load(await readFile(join(root,
     'packages/bundle/web-app/presets/standard.patch.yml'), 'utf8'), { schema })
@@ -27,10 +27,11 @@ export async function stagePreset(root, destination) {
   }
   const original = pluginsFor(source, 'preset-standard')
   const android = pluginsFor(target, 'preset-android')
-  // The shared host supplies skills, fs, workingDirectory and sessionProjections.
+  // The shared host supplies jobs, skills, fs, workingDirectory and sessionProjections.
   // These entries retain the standard provider settings and scoped ownership;
   // Android's separate tool-fs write/edit policy is not changed here.
-  for (const id of ['skill-filesystem', 'tool-skill', 'tool-todo', 'present',
+  for (const id of ['agent-instructions', 'time-context', 'tool-jobs',
+    'skill-filesystem', 'tool-skill', 'tool-todo', 'present',
     'command-goal', 'tool-goal', 'planning', 'compaction', 'tool-schedule']) {
     const entries = original.filter(item => item.id === id)
     if (entries.length !== 1) throw new Error(`Original preset must contain exactly one ${id}`)

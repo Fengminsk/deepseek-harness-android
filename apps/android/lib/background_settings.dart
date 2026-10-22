@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:material_ui/material_ui.dart';
 
 import 'runtime.dart';
+import 'overlay_keepalive_settings.dart';
 import 'tasks.dart';
 import 'ui.dart';
 
@@ -294,6 +295,23 @@ class _BackgroundSettingsPageState extends State<BackgroundSettingsPage>
                     icon: Icons.info_outline_rounded,
                     title: state![name] as String,
                   ),
+            ],
+          ),
+          PocketSection(
+            title: '保活策略',
+            children: [
+              PocketRow(
+                icon: Icons.layers_outlined,
+                title: '透明悬浮窗',
+                subtitle: '由你选择是否使用辅助保活',
+                onTap: () => Navigator.push(
+                  context,
+                  PocketRoute<void>(
+                    builder: (_) =>
+                        OverlayKeepaliveSettingsPage(runtime: widget.runtime),
+                  ),
+                ),
+              ),
             ],
           ),
           PocketSection(

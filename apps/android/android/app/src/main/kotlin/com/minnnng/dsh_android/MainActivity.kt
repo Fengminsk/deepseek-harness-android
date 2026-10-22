@@ -38,6 +38,7 @@ class MainActivity : FlutterActivity() {
     private var bound = false
     private var connection: ServiceConnection? = null
     private var foreground = false
+    private var notificationSessionId: String? = null
     private var runtimeRequested = false
     private var notificationPermission: MethodChannel.Result? = null
     private val main = Handler(Looper.getMainLooper())
@@ -196,6 +197,7 @@ class MainActivity : FlutterActivity() {
                 service = Messenger(binder)
                 try { service!!.send(Message.obtain(null, 1).apply { replyTo = replies }) }
                 catch (_: RemoteException) { lostBinding(this); return }
+                publishNotificationView()
                 if (restartAwaitingOldConnection) {
                     restartAwaitingOldConnection = false
                     prepareTransition()
@@ -265,6 +267,14 @@ class MainActivity : FlutterActivity() {
                         result.success(null)
                     } catch (failure: Exception) { result.error("settings", "无法打开系统应用设置", null) }
                 }
+                "background.overlay.openPermission" -> {
+                    try {
+                        startActivity(TaskOverlayWindow.permissionIntent(this))
+                        result.success(null)
+                    } catch (_: Exception) {
+                        result.error("overlay-permission", "无法打开悬浮窗授权页面，请在系统设置中查找", null)
+                    }
+                }
                 "account.openPage" -> {
                     try {
                         AuthTabs.open(this, call.argument<String>("url") ?: "", call.argument<Boolean>("dark") ?: false)
@@ -282,6 +292,16 @@ class MainActivity : FlutterActivity() {
                     result.success(null)
                 }
                 "notifications.status" -> result.success(ApprovalNotifications.status(this).toString())
+                "notifications.viewing" -> {
+                    val sessionId = call.argument<String>("sessionId")
+                    if (sessionId != null && (sessionId.isBlank() || sessionId.length > 512)) {
+                        result.error("notification-session", "无效的会话标识", null)
+                    } else {
+                        notificationSessionId = sessionId
+                        publishNotificationView()
+                        result.success(null)
+                    }
+                }
                 "notifications.settings" -> {
                     startActivity(ApprovalNotifications.settingsIntent(this))
                     result.success(null)
@@ -339,6 +359,21 @@ class MainActivity : FlutterActivity() {
                 }
                 "pickDirectory" -> transfers.pickDirectory(result)
                 "pickDocument" -> transfers.pickDocument(result)
+                "shareText" -> {
+                    val text = call.arguments as? String
+                    if (text.isNullOrBlank() || text.toByteArray(Charsets.UTF_8).size > 512 * 1024) {
+                        result.error("share", "内容为空或过长，无法分享", null)
+                    } else try {
+                        val intent = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_TEXT, text)
+                        }
+                        startActivity(Intent.createChooser(intent, "分享回复"))
+                        result.success(null)
+                    } catch (_: Exception) {
+                        result.error("share", "暂时无法打开系统分享", null)
+                    }
+                }
                 "openUrl" -> {
                     val uri = Uri.parse(call.arguments as String)
                     if (uri.scheme != "http" && uri.scheme != "https") result.error("url", "不支持的链接", null) else {
@@ -525,6 +560,17 @@ class MainActivity : FlutterActivity() {
                 JSONObject().put("route", "tasks")).toString())
             return
         }
+        if (intent.getStringExtra("pocket.route") == "session" && intent.action == TaskCompletionNotifications.OPEN_ACTION) {
+            val sessionId = intent.getStringExtra("pocket.sessionId")
+            intent.removeExtra("pocket.route")
+            intent.removeExtra("pocket.sessionId")
+            intent.data = null
+            if (!sessionId.isNullOrBlank() && sessionId.length <= 512) {
+                sink.success(JSONObject().put("method", "navigation.open").put("params",
+                    JSONObject().put("route", "session").put("sessionId", sessionId)).toString())
+            }
+            return
+        }
         if (intent.getStringExtra("pocket.route") != "approval") return
         val id = intent.getStringExtra("pocket.requestId") ?: return
         val version = intent.getLongExtra("pocket.requestVersion", -1)
@@ -536,12 +582,27 @@ class MainActivity : FlutterActivity() {
     override fun onResume() {
         super.onResume()
         foreground = true
+        publishNotificationView()
         if (runtimeRequested && restarting == null) ensureBinding()
     }
     override fun onPause() {
         foreground = false
+        publishNotificationView()
         bindingHandshake.backgrounded()
         super.onPause()
+    }
+    private fun publishNotificationView() {
+        try {
+            service?.send(Message.obtain(null, TaskCompletionNotifications.MESSAGE_VIEWING).apply {
+                replyTo = replies
+                data = Bundle().apply {
+                    putString("sessionId", notificationSessionId)
+                    putBoolean("foreground", foreground)
+                }
+            })
+        } catch (error: RemoteException) {
+            // Binder death releases this Activity's visible-session claim in AgentService.
+        }
     }
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)

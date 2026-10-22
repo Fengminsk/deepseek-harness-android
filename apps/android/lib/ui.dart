@@ -232,10 +232,12 @@ class PocketScaffold extends StatefulWidget {
     this.trailing,
     this.bottom,
     this.drawer,
+    this.onDrawerChanged,
     this.scaffoldKey,
   });
   final Widget title, body;
   final Widget? leading, trailing, bottom, drawer;
+  final ValueChanged<bool>? onDrawerChanged;
   final GlobalKey<ScaffoldState>? scaffoldKey;
   @override
   State<PocketScaffold> createState() => _PocketScaffoldState();
@@ -253,6 +255,7 @@ class _PocketScaffoldState extends State<PocketScaffold> {
     return PocketReveal(
       child: Scaffold(
         key: widget.scaffoldKey,
+        onDrawerChanged: widget.onDrawerChanged,
         drawer: widget.drawer == null
             ? null
             : FilledInputTheme(

@@ -14,6 +14,11 @@ String chatMessageText(List<dynamic> content) => content
     .map((block) => block['text'] as String)
     .join('\n\n');
 
+Future<void> showChatMessageSelection(BuildContext context, String text) =>
+    Navigator.of(context).push<void>(
+      PocketRoute(builder: (_) => _MessageSelectionPage(text: text)),
+    );
+
 enum _MessageAction { copy, select }
 
 class ChatMessageActions extends StatefulWidget {
