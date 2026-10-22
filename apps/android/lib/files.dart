@@ -9,6 +9,7 @@ import 'document_search.dart';
 import 'file_browser_chrome.dart';
 import 'flclash/popup.dart';
 import 'workspace_files.dart';
+import 'external_file_action.dart';
 
 class FilesPage extends StatefulWidget {
   const FilesPage({
@@ -25,6 +26,7 @@ class FilesPage extends StatefulWidget {
 }
 
 class _FilesPageState extends State<FilesPage> with WidgetsBindingObserver {
+  final externalOpen = ExternalFileOpenController();
   List<Json>? items;
   String? error, notice;
   Json? confirmRevoke;
@@ -44,6 +46,12 @@ class _FilesPageState extends State<FilesPage> with WidgetsBindingObserver {
       : path.isEmpty
       ? rootName
       : path.split('/').last;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    externalOpen.observeRoute(context);
+  }
 
   @override
   void initState() {
@@ -119,6 +127,7 @@ class _FilesPageState extends State<FilesPage> with WidgetsBindingObserver {
   }
 
   void navigate(String? root, String nextPath, {String? name}) {
+    externalOpen.cancel();
     if (revoking || choosing) return;
     if (scroll.hasClients) positions[location] = scroll.offset;
     generation++;
@@ -216,6 +225,13 @@ class _FilesPageState extends State<FilesPage> with WidgetsBindingObserver {
         : [if (path.isNotEmpty) path, entry['name']].join('/');
     if (entry['directory'] == true) {
       navigate(root, target, name: isGrant ? entry['name'] as String : null);
+      return;
+    }
+    if (!fileLikelyText(
+      '${entry['name']}',
+      mimeType: entry['mediaType'] as String?,
+    )) {
+      await externalOpen.open(context, root: root, path: target);
       return;
     }
     await Navigator.of(context).push(
@@ -363,6 +379,7 @@ class _FilesPageState extends State<FilesPage> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    externalOpen.dispose();
     generation++;
     widget.runtime.removeListener(runtimeChanged);
     WidgetsBinding.instance.removeObserver(this);
@@ -535,12 +552,21 @@ class TextFilePage extends StatefulWidget {
 }
 
 class _TextFilePageState extends State<TextFilePage> {
+  final externalOpen = ExternalFileOpenController();
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    externalOpen.observeRoute(context);
+  }
+
   final scroll = ScrollController();
   final starts = <int>[0];
   String? text, error;
   int index = 0, retryIndex = 0, retryOffset = 0;
   bool more = false, loading = false;
   bool current = false, retryReset = false, retryPreserveScroll = false;
+  bool openingExternal = false;
   int generation = 0;
   late int connection;
   late String phase;
@@ -629,6 +655,7 @@ class _TextFilePageState extends State<TextFilePage> {
 
   @override
   void dispose() {
+    externalOpen.dispose();
     generation++;
     widget.runtime.removeListener(runtimeChanged);
     scroll.dispose();
@@ -641,6 +668,21 @@ class _TextFilePageState extends State<TextFilePage> {
     trailing: Row(
       mainAxisSize: MainAxisSize.min,
       children: [
+        GlassButton(
+          icon: Icons.open_in_new_rounded,
+          label: '在其他应用中打开',
+          onPressed: openingExternal
+              ? null
+              : () async {
+                  setState(() => openingExternal = true);
+                  await externalOpen.open(
+                    context,
+                    root: widget.root,
+                    path: widget.path,
+                  );
+                  if (mounted) setState(() => openingExternal = false);
+                },
+        ),
         GlassButton(
           icon: Icons.search_rounded,
           label: '搜索此文件的文字',

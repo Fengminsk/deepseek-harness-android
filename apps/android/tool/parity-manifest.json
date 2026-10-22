@@ -11,15 +11,21 @@
         "packages/bundle/web-app/cordis.patch.yml",
         "packages/client/ui-open-in-app/README.md"
       ],
-      "status": "not-migrated",
-      "android": [],
+      "status": "adapted",
+      "android": [
+        "apps/android/lib/external_file_action.dart",
+        "apps/android/lib/workspace_files.dart",
+        "apps/android/lib/session_document.dart",
+        "apps/android/android/app/src/main/kotlin/com/minnnng/dsh_android/ExternalFileOpening.kt",
+        "apps/android/tool/acceptance-external-file-policy.mjs"
+      ],
       "evidence": {
-        "core": "unverified",
-        "ui": "unverified",
-        "behavior": "unverified",
+        "core": "partial",
+        "ui": "partial",
+        "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Host application associations and file reveal are disabled; Android ACTION_VIEW adaptation is not wired."
+      "note": "Android ACTION_VIEW offers an external app for supported, authorized files with cancellable staging and FileProvider access. Desktop file reveal/association behavior differs, and device launch and provider handling remain unverified."
     },
     {
       "key": "webUi/ui-settings-account",
@@ -70,15 +76,19 @@
         "packages/bundle/web-app/cordis.patch.yml",
         "packages/client/ui-shortcuts/README.md"
       ],
-      "status": "not-migrated",
-      "android": [],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/chat_shortcuts.dart",
+        "apps/android/lib/main.dart",
+        "apps/android/test/chat_keyboard_shortcuts_test.dart"
+      ],
       "evidence": {
         "core": "unverified",
-        "ui": "unverified",
-        "behavior": "unverified",
+        "ui": "partial",
+        "behavior": "partial",
         "device": "unverified"
       },
-      "note": "No native shortcut reference or external-keyboard action mapping was located."
+      "note": "Native external-keyboard handling covers original new-session Ctrl+N and conversation-search Ctrl+K plus composer focus and contextual Escape. Focused Flutter tests pass; the remaining original shortcut roster and physical keyboard behavior remain unverified."
     },
     {
       "key": "webUi/ui-layout",
@@ -172,15 +182,20 @@
         "packages/bundle/web-app/cordis.patch.yml",
         "packages/client/ui-sidebar-right/README.md"
       ],
-      "status": "not-migrated",
-      "android": [],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/resource_hub.dart",
+        "apps/android/lib/main.dart",
+        "apps/android/test/resource_hub_test.dart",
+        "apps/android/test/main_chat_flow_test.dart"
+      ],
       "evidence": {
         "core": "unverified",
-        "ui": "unverified",
-        "behavior": "unverified",
+        "ui": "partial",
+        "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Original per-session docked resource tabs have no equivalent native resource navigation owner."
+      "note": "A per-session mobile resource page links real files, saved changes, skill catalog and tasks; focused Flutter tests cover navigation without starting work. Original docked tabs, persistent terminal and embedded browser remain missing, and device behavior is unverified."
     },
     {
       "key": "webUi/ui-sidebar-documentpreview",
@@ -769,15 +784,21 @@
         "packages/bundle/web-app/cordis.patch.yml",
         "packages/client/ui-secret-mask/README.md"
       ],
-      "status": "not-migrated",
-      "android": [],
+      "status": "adapted",
+      "android": [
+        "apps/android/lib/chat_secret_mask.dart",
+        "apps/android/runtime/user-text-mask.mjs",
+        "apps/android/tool/stage-secret-mask.mjs",
+        "apps/android/test/chat_secret_mask_test.dart",
+        "apps/android/tool/user-text-mask.test.mjs"
+      ],
       "evidence": {
-        "core": "unverified",
-        "ui": "unverified",
-        "behavior": "unverified",
+        "core": "partial",
+        "ui": "partial",
+        "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Original sent-user-text secret masking has no identified native equivalent; settings secret masking is a different surface."
+      "note": "The App stages the original pure matcher and applies its UTF-16 ranges before other references in sent user text. Host matcher and Flutter rendering tests pass; Android device display and every original formatter combination remain unverified."
     },
     {
       "key": "webUi/ui-jobs",
@@ -831,15 +852,18 @@
       ],
       "status": "partial",
       "android": [
-        "apps/android/lib/composer_commands.dart"
+        "apps/android/lib/composer_commands.dart",
+        "apps/android/lib/chat_goal.dart",
+        "apps/android/lib/chat_goal_plan_state.dart",
+        "apps/android/test/chat_goal_plan_test.dart"
       ],
       "evidence": {
         "core": "unverified",
         "ui": "partial",
-        "behavior": "unverified",
+        "behavior": "partial",
         "device": "unverified"
       },
-      "note": "The original goal command is reachable, but its dedicated pause/resume/edit/clear strip is not migrated."
+      "note": "Native goal presentation and pause, resume, edit and clear actions use the original goal calls; focused Flutter tests cover these states. Complete original behavior and device interaction remain unverified."
     },
     {
       "key": "webUi/ui-message-feedback",
@@ -851,15 +875,19 @@
       ],
       "status": "partial",
       "android": [
-        "apps/android/lib/chat_message_actions.dart"
+        "apps/android/lib/chat_message_actions.dart",
+        "apps/android/lib/chat_feedback.dart",
+        "apps/android/lib/chat_feedback_projection.dart",
+        "apps/android/lib/chat_feedback_widgets.dart",
+        "apps/android/test/chat_feedback_test.dart"
       ],
       "evidence": {
         "core": "unverified",
         "ui": "partial",
-        "behavior": "unverified",
+        "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Native message actions only copy/select text; original like/dislike feedback is absent."
+      "note": "Native reply actions include feedback state and like/dislike submission through the original service; host projection and widget tests pass. Device behavior and complete original feedback semantics remain unverified."
     },
     {
       "key": "webUi/ui-model-selection",
@@ -1080,15 +1108,18 @@
       "status": "partial",
       "android": [
         "apps/android/lib/composer_commands.dart",
-        "apps/android/lib/approvals.dart"
+        "apps/android/lib/approvals.dart",
+        "apps/android/lib/chat_plan.dart",
+        "apps/android/lib/chat_goal_plan_state.dart",
+        "apps/android/test/chat_goal_plan_test.dart"
       ],
       "evidence": {
         "core": "unverified",
         "ui": "partial",
-        "behavior": "unverified",
+        "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Original plan command and interactions are reachable; persistent mode chip, submitted-plan cards and reading workflow are incomplete."
+      "note": "Native plan mode, submitted-plan cards and reading flow are wired to original records and interactions; focused Flutter tests cover their transitions. Device behavior and complete original planning semantics remain unverified."
     },
     {
       "key": "webUi/ui-user-questions",
@@ -1120,15 +1151,20 @@
         "packages/bundle/web-app/cordis.patch.yml",
         "packages/client/ui-trajectory/README.md"
       ],
-      "status": "not-migrated",
-      "android": [],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/session_trajectory.dart",
+        "apps/android/lib/session_trajectory_data.dart",
+        "apps/android/test/session_trajectory_test.dart",
+        "apps/android/lib/main.dart"
+      ],
       "evidence": {
-        "core": "unverified",
-        "ui": "unverified",
-        "behavior": "unverified",
+        "core": "partial",
+        "ui": "partial",
+        "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Native tool details do not provide the original timeline, record inspector, cumulative usage or request navigation."
+      "note": "Native read-only session trajectory includes a timeline, request and tool-result correlation, record inspector, and recorded token totals. Original PTC nesting, image gallery, stream metrics, interval zoom/pan, and Android device acceptance remain outstanding."
     },
     {
       "key": "standardPreset/persona",
@@ -1156,17 +1192,18 @@
       "sources": [
         "packages/bundle/web-app/presets/standard.patch.yml"
       ],
-      "status": "not-migrated",
+      "status": "adapted",
       "android": [
-        "apps/android/tool/stage-preset.mjs"
+        "apps/android/tool/stage-preset.mjs",
+        "apps/android/tool/smoke-portable-context.mjs"
       ],
       "evidence": {
-        "core": "unverified",
+        "core": "partial",
         "ui": "unverified",
-        "behavior": "unverified",
+        "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Original per-directory agent instructions are not copied by the audited Android staging list."
+      "note": "The exact original preset entry is staged. The real Android-profile host smoke exercised baseline, nested discovery, replacement, removal and cold reconciliation without rewriting prior events; device behavior remains unverified."
     },
     {
       "key": "standardPreset/time-context",
@@ -1175,17 +1212,19 @@
       "sources": [
         "packages/bundle/web-app/presets/standard.patch.yml"
       ],
-      "status": "not-migrated",
+      "status": "adapted",
       "android": [
-        "apps/android/tool/stage-preset.mjs"
+        "apps/android/tool/stage-preset.mjs",
+        "apps/android/runtime/sessions.mjs",
+        "apps/android/tool/smoke-portable-context.mjs"
       ],
       "evidence": {
-        "core": "unverified",
+        "core": "partial",
         "ui": "unverified",
-        "behavior": "unverified",
+        "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Original time-context entry is not copied by the audited Android staging list."
+      "note": "The exact original preset entry is staged. The real Android-profile host smoke exercised client time zone admission, invalid-zone rejection, refresh and cold projection; device clock and zone behavior remain unverified."
     },
     {
       "key": "standardPreset/tool-bash",
@@ -1264,15 +1303,19 @@
       "status": "partial",
       "android": [
         "apps/android/runtime/document-search.mjs",
-        "apps/android/runtime/workspace-files.mjs"
+        "apps/android/runtime/workspace-files.mjs",
+        "apps/android/runtime/android-ripgrep.mjs",
+        "apps/android/tool/build-ripgrep.ps1",
+        "apps/android/tool/ripgrep-android.test.mjs",
+        "apps/android/tool/stage-runtime.ts"
       ],
       "evidence": {
-        "core": "unverified",
+        "core": "partial",
         "ui": "unverified",
-        "behavior": "unverified",
+        "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Android SAF/private-root literal search exists, but original Session filesystem search tools are not composed equivalently."
+      "note": "Original glob/grep tools are staged with a pinned Android ARM64 ripgrep and host-level package/behavior checks. Android process launch and Agent search remain unverified on device; SAF content URIs require a materialized Session file."
     },
     {
       "key": "standardPreset/tool-jobs",
@@ -1281,17 +1324,19 @@
       "sources": [
         "packages/bundle/web-app/presets/standard.patch.yml"
       ],
-      "status": "partial",
+      "status": "adapted",
       "android": [
-        "apps/android/runtime/tasks.mjs"
+        "apps/android/runtime/tasks.mjs",
+        "apps/android/tool/stage-preset.mjs",
+        "apps/android/tool/smoke-portable-context.mjs"
       ],
       "evidence": {
-        "core": "unverified",
+        "core": "partial",
         "ui": "unverified",
-        "behavior": "unverified",
+        "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Native job observations exist; original model-visible jobs tool is not in the audited Android preset."
+      "note": "The exact original model-visible jobs tool is staged. The real Android-profile host smoke exercised ownership, cursor, wait timeout, cancellation, durable events and one completion wake; device execution remains unverified."
     },
     {
       "key": "standardPreset/tool-schedule",
@@ -1957,17 +2002,19 @@
       "sources": [
         "apps/android/runtime/cordis.patch.yml"
       ],
-      "status": "not-migrated",
+      "status": "adapted",
       "android": [
-        "apps/android/runtime/cordis.patch.yml"
+        "apps/android/runtime/cordis.patch.yml",
+        "apps/android/android/app/src/main/kotlin/com/minnnng/dsh_android/ExternalFileOpening.kt",
+        "apps/android/android/app/src/main/java/com/minnnng/dsh_android/ExternalFilePolicy.java"
       ],
       "evidence": {
-        "core": "unverified",
-        "ui": "unverified",
-        "behavior": "unverified",
+        "core": "partial",
+        "ui": "partial",
+        "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Original host file associations and reveal are disabled; Android system-open integration remains missing."
+      "note": "The desktop plugin stays disabled in the Android runtime; native ACTION_VIEW provides a scoped substitute. Host policy and cancellation checks pass, but desktop reveal semantics and device launch are not equivalent or verified."
     },
     {
       "key": "androidDisabled/ui-open-in-app",
@@ -1976,17 +2023,21 @@
       "sources": [
         "apps/android/runtime/cordis.patch.yml"
       ],
-      "status": "not-migrated",
+      "status": "adapted",
       "android": [
-        "apps/android/runtime/cordis.patch.yml"
+        "apps/android/runtime/cordis.patch.yml",
+        "apps/android/lib/external_file_action.dart",
+        "apps/android/lib/files.dart",
+        "apps/android/lib/workspace_files.dart",
+        "apps/android/lib/session_document.dart"
       ],
       "evidence": {
         "core": "unverified",
-        "ui": "unverified",
-        "behavior": "unverified",
+        "ui": "partial",
+        "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Original host file associations and reveal are disabled; Android system-open integration remains missing."
+      "note": "Native file and document actions replace the desktop UI plugin through a guarded chooser. Route/background cancellation has host tests; device chooser and all file providers remain unverified."
     },
     {
       "key": "androidDisabled/office-to-pdf",

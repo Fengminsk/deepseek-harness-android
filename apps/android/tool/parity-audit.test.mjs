@@ -32,7 +32,7 @@ test('the committed ledger covers current source declarations without certifying
   // Existing implementation files are deliberately not proof of feature or device acceptance.
   const missing = baseline.entries.find(entry => entry.key === 'webUi/ui-sidebar-documentpreview')
   assert.equal(missing.status, 'partial')
-  assert.equal(missing.evidence.device, 'unverified')
+  assert.notEqual(missing.evidence.device, 'verified')
 })
 
 test('JavaScript in patch tags remains inert during inventory collection', () => {

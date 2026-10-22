@@ -7,6 +7,7 @@ import 'package:material_ui/material_ui.dart';
 import 'runtime.dart';
 import 'ui.dart';
 import 'file_browser_chrome.dart';
+import 'external_file_action.dart';
 import 'flclash/popup.dart';
 
 String workspaceFileFailure(Object error) => error is PlatformException
@@ -65,6 +66,14 @@ class WorkspaceFilesPage extends StatefulWidget {
 
 class _WorkspaceFilesPageState extends State<WorkspaceFilesPage>
     with WidgetsBindingObserver {
+  final externalOpen = ExternalFileOpenController();
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    externalOpen.observeRoute(context);
+  }
+
   List<Json> entries = [];
   String? root, version, error;
   int? nextOffset;
@@ -195,6 +204,7 @@ class _WorkspaceFilesPageState extends State<WorkspaceFilesPage>
   }
 
   void navigate(String target) {
+    externalOpen.cancel();
     if (scroll.hasClients) positions[path] = scroll.offset;
     if (current) loadedCounts[path] = entries.length;
     generation++;
@@ -226,6 +236,13 @@ class _WorkspaceFilesPageState extends State<WorkspaceFilesPage>
     if (target == null || row['blockedReason'] != null) return;
     if (row['kind'] == 'directory') {
       navigate(target);
+      return;
+    }
+    if (!fileLikelyText(
+      '${row['name']}',
+      mimeType: row['mediaType'] as String?,
+    )) {
+      await externalOpen.open(context, path: target);
       return;
     }
     await Navigator.of(context).push(
@@ -287,6 +304,7 @@ class _WorkspaceFilesPageState extends State<WorkspaceFilesPage>
 
   @override
   void dispose() {
+    externalOpen.dispose();
     generation++;
     widget.runtime.removeListener(runtimeChanged);
     WidgetsBinding.instance.removeObserver(this);
@@ -378,12 +396,21 @@ class WorkspaceTextPage extends StatefulWidget {
 }
 
 class _WorkspaceTextPageState extends State<WorkspaceTextPage> {
+  final externalOpen = ExternalFileOpenController();
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    externalOpen.observeRoute(context);
+  }
+
   final scroll = ScrollController();
   late final List<int> starts = [widget.offset];
   String? text, error, version, root;
   int index = 0, bytes = 0, retryIndex = 0, retryOffset = 0;
   bool loading = false, eof = true, retryReset = false;
   bool current = false, retryPreserveScroll = false;
+  bool openingExternal = false;
   int generation = 0;
   late String phase;
   late int connection;
@@ -476,6 +503,7 @@ class _WorkspaceTextPageState extends State<WorkspaceTextPage> {
 
   @override
   void dispose() {
+    externalOpen.dispose();
     generation++;
     widget.runtime.removeListener(runtimeChanged);
     scroll.dispose();
@@ -489,12 +517,28 @@ class _WorkspaceTextPageState extends State<WorkspaceTextPage> {
       maxLines: 1,
       overflow: TextOverflow.ellipsis,
     ),
-    trailing: GlassButton(
-      icon: Icons.refresh_rounded,
-      label: '从头重新读取工作区文件',
-      onPressed: loading || !widget.runtime.ready
-          ? null
-          : () => load(0, 0, reset: true),
+    trailing: Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        GlassButton(
+          icon: Icons.open_in_new_rounded,
+          label: '在其他应用中打开',
+          onPressed: openingExternal
+              ? null
+              : () async {
+                  setState(() => openingExternal = true);
+                  await externalOpen.open(context, path: widget.path);
+                  if (mounted) setState(() => openingExternal = false);
+                },
+        ),
+        GlassButton(
+          icon: Icons.refresh_rounded,
+          label: '从头重新读取工作区文件',
+          onPressed: loading || !widget.runtime.ready
+              ? null
+              : () => load(0, 0, reset: true),
+        ),
+      ],
     ),
     bottom: text == null
         ? null

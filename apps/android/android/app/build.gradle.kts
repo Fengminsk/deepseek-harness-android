@@ -40,7 +40,11 @@ android {
             version = "3.22.1"
         }
     }
-    packaging { jniLibs { useLegacyPackaging = true } }
+    packaging { jniLibs {
+        useLegacyPackaging = true
+        // This PIE executable is verified byte-for-byte against the runtime lock.
+        keepDebugSymbols += "**/libpocket_ripgrep.so"
+    } }
 
     buildTypes {
         release {

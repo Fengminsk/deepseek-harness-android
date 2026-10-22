@@ -9,6 +9,7 @@ import { stagePreset } from './stage-preset.mjs'
 import { stagePackageManager } from './stage-package-manager.mjs'
 import { stageImageRuntime } from './stage-image-runtime.mjs'
 import { stageSecretMask } from './stage-secret-mask.mjs'
+import { stageRipgrep } from './stage-ripgrep.mjs'
 
 const root = resolve(import.meta.dirname, '../../..')
 const staging = join(root, '.cache/android/runtime-bundle')
@@ -91,6 +92,7 @@ await cp(join(root, 'apps/android/runtime'), plugin, { recursive: true })
 await stageQuestionCarrier(plugin)
 await stageSecretMask(plugin)
 await stagePreset(root, plugin)
+await stageRipgrep({ repositoryRoot: root, staging })
 await writeFile(join(plugin, 'package.json'), JSON.stringify({
   name: '@minnnng/dsh-android-runtime', version: manifest.version, type: 'module', main: './index.mjs',
   exports: { '.': './index.mjs', './package.json': './package.json' },

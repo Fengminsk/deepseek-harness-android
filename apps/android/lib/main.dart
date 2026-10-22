@@ -33,6 +33,9 @@ import 'chat_goal.dart';
 import 'chat_plan.dart';
 import 'chat_goal_plan_state.dart';
 import 'chat_reading.dart';
+import 'chat_shortcuts.dart';
+import 'resource_hub.dart';
+import 'session_trajectory.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -139,7 +142,9 @@ class _ChatPageState extends State<ChatPage> {
   final input = TextEditingController();
   final inputFocus = FocusNode();
   final scaffold = GlobalKey<ScaffoldState>();
+  late final ChatKeyboardShortcuts keyboardShortcuts;
   late String sessionId = widget.runtime.newSession();
+  int sidebarSearchRequest = 0;
   int sessionNavigationEpoch = 0;
   final drafts = <String, TextEditingValue>{};
   final errors = <String, String>{};
@@ -173,6 +178,40 @@ class _ChatPageState extends State<ChatPage> {
   @override
   void initState() {
     super.initState();
+    keyboardShortcuts = ChatKeyboardShortcuts(
+      isActive: () => mounted && (ModalRoute.of(context)?.isCurrent ?? false),
+      isComposing: () {
+        final focused = FocusManager.instance.primaryFocus?.context;
+        final editor = focused?.findAncestorWidgetOfExactType<EditableText>();
+        return editor?.controller.value.composing.isValid ?? false;
+      },
+      isEditingOtherField: () {
+        if (inputFocus.hasFocus) return false;
+        final focused = FocusManager.instance.primaryFocus?.context;
+        return focused?.findAncestorWidgetOfExactType<EditableText>() != null;
+      },
+      newChat: () {
+        scaffold.currentState?.closeDrawer();
+        newChat();
+        inputFocus.requestFocus();
+      },
+      searchConversations: () {
+        scaffold.currentState?.openDrawer();
+        setState(() => sidebarSearchRequest++);
+      },
+      focusComposer: inputFocus.requestFocus,
+      dismiss: () {
+        if (inputFocus.hasFocus) {
+          inputFocus.unfocus();
+          return true;
+        }
+        if (drawerOpen) {
+          scaffold.currentState?.closeDrawer();
+          return true;
+        }
+        return false;
+      },
+    )..attach();
     localDraftSessions.add(sessionId);
     runtime.addListener(handleNavigation);
     attachments = AttachmentDrafts(runtime)..addListener(attachmentChanged);
@@ -272,6 +311,7 @@ class _ChatPageState extends State<ChatPage> {
 
   @override
   void dispose() {
+    keyboardShortcuts.dispose();
     unawaited(publishNotificationViewing(null));
     goalPlan.dispose();
     for (final catalog in skillCatalogs.values) {
@@ -701,6 +741,11 @@ class _ChatPageState extends State<ChatPage> {
       final viewedSessionId = sessionId;
       final colors = Theme.of(context).colorScheme;
       final events = runtime.timelines[sessionId] ?? [];
+      final hasSession =
+          events.isNotEmpty ||
+          runtime.sessions.any(
+            (item) => (item['header'] as Json?)?['id'] == sessionId,
+          );
       final projection = chatProjections.putIfAbsent(
         sessionId,
         ChatProjection.new,
@@ -773,20 +818,41 @@ class _ChatPageState extends State<ChatPage> {
               label: '新对话',
               onPressed: newChat,
             ),
-            if (projection.entries.any(
-              (entry) => !chatReadingEntry(entry),
-            )) ...[
+            if (hasSession) ...[
               const SizedBox(width: 4),
               CommonPopupBox(
                 onOpen: inputFocus.unfocus,
                 popupBuilder: (_) => CommonPopupMenu(
                   items: [
                     CommonPopupMenuItem(
-                      label: '会话记录',
-                      glyph: Icons.history_rounded,
-                      onPressed: () =>
-                          openChatRecords(context, projection.entries),
+                      label: '会话资源',
+                      glyph: Icons.folder_copy_outlined,
+                      onPressed: () => navigate(
+                        SessionResourcesPage(
+                          runtime: runtime,
+                          sessionId: sessionId,
+                        ),
+                      ),
                     ),
+                    CommonPopupMenuItem(
+                      label: '会话轨迹',
+                      glyph: Icons.route_outlined,
+                      onPressed: () => navigate(
+                        SessionTrajectoryPage(
+                          runtime: runtime,
+                          sessionId: sessionId,
+                        ),
+                      ),
+                    ),
+                    if (projection.entries.any(
+                      (entry) => !chatReadingEntry(entry),
+                    ))
+                      CommonPopupMenuItem(
+                        label: '会话记录',
+                        glyph: Icons.history_rounded,
+                        onPressed: () =>
+                            openChatRecords(context, projection.entries),
+                      ),
                   ],
                 ),
                 targetBuilder: (open) => GlassButton(
@@ -801,6 +867,7 @@ class _ChatPageState extends State<ChatPage> {
         drawer: ChatSidebar(
           runtime: runtime,
           currentSessionId: sessionId,
+          searchRequest: sidebarSearchRequest,
           onClose: () {
             inputFocus.unfocus();
             scaffold.currentState?.closeDrawer();

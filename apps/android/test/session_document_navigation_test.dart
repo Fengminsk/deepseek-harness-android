@@ -82,6 +82,42 @@ void main() {
   }
 
   testWidgets(
+    'document toolbar sends the bound Session path to Android system open',
+    (tester) async {
+      await start(tester);
+      final calls = <MethodCall>[];
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        RuntimeController.channel,
+        (call) async {
+          calls.add(call);
+          return null;
+        },
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          RuntimeController.channel,
+          null,
+        ),
+      );
+      await tester.tap(
+        find.byWidgetPredicate(
+          (widget) => widget is GlassButton && widget.label == '在其他应用中打开',
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(calls, hasLength(2));
+      expect(calls.first.method, 'file.openSession');
+      final arguments = calls.first.arguments as Map;
+      expect(arguments['sessionId'], 'bound');
+      expect(arguments['path'], 'guides/readme.md');
+      expect(arguments['requestId'], isA<String>());
+      expect(calls.last.method, 'file.launchPrepared');
+      expect(calls.last.arguments, {'requestId': arguments['requestId']});
+    },
+    variant: TargetPlatformVariant.only(TargetPlatform.android),
+  );
+
+  testWidgets(
     'local links push the target title and line, then return to the retained reader',
     (tester) async {
       await start(tester);

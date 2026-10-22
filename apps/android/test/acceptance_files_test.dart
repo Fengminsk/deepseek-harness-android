@@ -91,6 +91,184 @@ Widget _host(Widget child, {double scale = 1}) => MaterialApp(
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  testWidgets('binary SAF grant opens its selected URI through Android', (
+    tester,
+  ) async {
+    final runtime = _FilesRuntime();
+    runtime.grants.single['name'] = 'contract.pdf';
+    final calls = <MethodCall>[];
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      RuntimeController.channel,
+      (call) async {
+        calls.add(call);
+        return null;
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        RuntimeController.channel,
+        null,
+      ),
+    );
+    await tester.pumpWidget(_host(FilesPage(runtime: runtime)));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('contract.pdf'));
+    await tester.pumpAndSettle();
+    expect(calls, hasLength(2));
+    expect(calls.first.method, 'file.openDocument');
+    final arguments = calls.first.arguments as Map;
+    expect(arguments['root'], 'file-id');
+    expect(arguments['path'], '');
+    expect(arguments['requestId'], isA<String>());
+    expect(calls.last.method, 'file.launchPrepared');
+    expect(calls.last.arguments, {'requestId': arguments['requestId']});
+    expect(runtime.reads, isEmpty);
+  });
+
+  testWidgets(
+    'leaving the file route cancels a slow SAF prepare before launch',
+    (tester) async {
+      final runtime = _FilesRuntime();
+      runtime.grants.single['name'] = 'slow.pdf';
+      final pending = Completer<void>();
+      final calls = <MethodCall>[];
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        RuntimeController.channel,
+        (call) async {
+          calls.add(call);
+          if (call.method == 'file.openDocument') return pending.future;
+          if (call.method == 'file.cancelOpen') return;
+          throw StateError('A departed route must not launch the chooser');
+        },
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          RuntimeController.channel,
+          null,
+        ),
+      );
+      await tester.pumpWidget(_host(FilesPage(runtime: runtime)));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('slow.pdf'));
+      await tester.pump();
+      expect(calls.first.method, 'file.openDocument');
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump();
+      expect(calls.last.method, 'file.cancelOpen');
+      expect(
+        (calls.last.arguments as Map)['requestId'],
+        (calls.first.arguments as Map)['requestId'],
+      );
+      pending.complete();
+      await tester.pumpAndSettle();
+      expect(
+        calls.where((call) => call.method == 'file.launchPrepared'),
+        isEmpty,
+      );
+    },
+  );
+
+  testWidgets(
+    'pushing then returning to the same file route never revives an old chooser',
+    (tester) async {
+      final runtime = _FilesRuntime();
+      runtime.grants.single['name'] = 'slow.pdf';
+      final pending = Completer<void>();
+      final calls = <MethodCall>[];
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        RuntimeController.channel,
+        (call) async {
+          calls.add(call);
+          if (call.method == 'file.openDocument') return pending.future;
+          if (call.method == 'file.cancelOpen') return;
+          throw StateError('A covered route must not launch an old chooser');
+        },
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          RuntimeController.channel,
+          null,
+        ),
+      );
+      await tester.pumpWidget(_host(FilesPage(runtime: runtime)));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('slow.pdf'));
+      await tester.pump();
+      final requestId = (calls.first.arguments as Map)['requestId'];
+      final navigator = tester.state<NavigatorState>(find.byType(Navigator));
+      navigator.push<void>(
+        MaterialPageRoute(
+          builder: (_) => const Scaffold(body: Text('covered')),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        calls
+            .where((call) => call.method == 'file.cancelOpen')
+            .single
+            .arguments,
+        {'requestId': requestId},
+      );
+      navigator.pop();
+      await tester.pumpAndSettle();
+      pending.complete();
+      await tester.pumpAndSettle();
+      expect(
+        calls.where((call) => call.method == 'file.launchPrepared'),
+        isEmpty,
+      );
+    },
+  );
+
+  testWidgets(
+    'backgrounding then resuming the file route never revives an old chooser',
+    (tester) async {
+      final runtime = _FilesRuntime();
+      runtime.grants.single['name'] = 'slow.pdf';
+      final pending = Completer<void>();
+      final calls = <MethodCall>[];
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        RuntimeController.channel,
+        (call) async {
+          calls.add(call);
+          if (call.method == 'file.openDocument') return pending.future;
+          if (call.method == 'file.cancelOpen') return;
+          throw StateError(
+            'A backgrounded route must not launch an old chooser',
+          );
+        },
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          RuntimeController.channel,
+          null,
+        ),
+      );
+      await tester.pumpWidget(_host(FilesPage(runtime: runtime)));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('slow.pdf'));
+      await tester.pump();
+      final requestId = (calls.first.arguments as Map)['requestId'];
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      await tester.pump();
+      expect(
+        calls
+            .where((call) => call.method == 'file.cancelOpen')
+            .single
+            .arguments,
+        {'requestId': requestId},
+      );
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      pending.complete();
+      await tester.pumpAndSettle();
+      expect(
+        calls.where((call) => call.method == 'file.launchPrepared'),
+        isEmpty,
+      );
+    },
+  );
+
   testWidgets(
     'same-ready replacement discards old granted roots and reloads the current list',
     (tester) async {

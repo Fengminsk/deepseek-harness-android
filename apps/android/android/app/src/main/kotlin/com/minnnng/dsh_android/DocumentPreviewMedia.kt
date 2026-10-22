@@ -11,6 +11,7 @@ import org.json.JSONObject
 import org.json.JSONTokener
 import java.io.ByteArrayInputStream
 import java.io.IOException
+import java.io.OutputStream
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ExecutionException
@@ -110,6 +111,70 @@ class DocumentPreviewMedia(
         val id = prefix + UUID.randomUUID().toString()
         return rpc("document.call", JSONObject().put("requestId", id).put("sessionId", sessionId)
             .put("namespace", "workspaceFiles").put("method", method).put("args", JSONObject().put("path", path)))
+    }
+
+    /** Materializes one Session-scoped original file for a user-initiated system open. Worker thread only. */
+    fun copyFile(path: String, output: OutputStream, maximum: Long): Long {
+        ensureWorker()
+        require(path.isNotBlank() && path.length <= 8192 && path.none { it.code < 32 || it.code == 127 })
+        val initial = call("stat", path)
+        val size = number(initial, "bytes")
+        if (size > maximum) throw MediaFailure(413, "file-open/too-large")
+        val version = initial.getString("version")
+        val absolute = initial.getString("absolutePath")
+        var offset = 0L
+        var window = 128 * 1024
+        while (offset < size || offset == 0L) {
+            ensureWorker()
+            var length: Int
+            var page: JSONObject
+            while (true) {
+                length = minOf(window.toLong(), maxOf(1L, size - offset)).toInt()
+                val request = JSONObject().put("requestId", prefix + UUID.randomUUID().toString())
+                    .put("sessionId", sessionId).put("namespace", "workspaceFiles").put("method", "readBytes")
+                    .put("args", JSONObject().put("path", path)
+                        .put("options", JSONObject().put("range", JSONObject().put("offset", offset).put("length", length))))
+                try {
+                    page = rpc("document.call", request)
+                    break
+                } catch (failure: MediaFailure) {
+                    if (failure.code != "workspace-file/too-large" || window == 1) throw failure
+                    window = maxOf(1, window / 2)
+                }
+            }
+            val data = page.getJSONObject("data")
+            val lease = data.getString("id")
+            try {
+                if (data.getString("encoding") != "android-byte-lease" ||
+                    page.getString("version") != version || page.getString("absolutePath") != absolute ||
+                    number(page, "bytes") != size || number(page, "offset") != offset) {
+                    throw MediaFailure(409, "file-open/changed")
+                }
+                val count = number(data, "length")
+                if (count > length || count == 0L && offset < size || page.getBoolean("eof") != (offset + count == size)) {
+                    throw MediaFailure(502, "file-open/invalid-window")
+                }
+                var consumed = 0L
+                while (consumed < count) {
+                    val chunkSize = minOf(64 * 1024L, count - consumed).toInt()
+                    val frame = rpc("document.bytes", JSONObject().put("id", lease)
+                        .put("offset", consumed).put("length", chunkSize))
+                    val bytes = Base64.decode(frame.getString("data"), Base64.NO_WRAP)
+                    if (number(frame, "offset") != consumed || bytes.size != chunkSize ||
+                        frame.getBoolean("eof") != (consumed + chunkSize == count)) {
+                        throw MediaFailure(502, "file-open/invalid-byte-frame")
+                    }
+                    output.write(bytes)
+                    consumed += bytes.size
+                }
+                offset += count
+            } finally { release(lease) }
+            if (offset == size) break
+        }
+        val final = call("stat", path)
+        if (number(final, "bytes") != size || final.getString("version") != version ||
+            final.getString("absolutePath") != absolute) throw MediaFailure(409, "file-open/changed")
+        return size
     }
 
     private fun ensureOpen() { synchronized(lock) { if (closed) throw MediaFailure(499, "gateway/cancelled") } }

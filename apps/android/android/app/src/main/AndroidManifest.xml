@@ -12,6 +12,15 @@
         android:usesCleartextTraffic="true"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.selectedfiles"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/external_open_paths" />
+        </provider>
         <service android:name=".AgentService" android:exported="false"
             android:process=":agent" android:stopWithTask="false"
             android:foregroundServiceType="specialUse">

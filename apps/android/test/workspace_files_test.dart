@@ -150,6 +150,98 @@ Future<void> close(WidgetTester tester) async {
 }
 
 void main() {
+  testWidgets('binary workspace file opens through native system viewer', (
+    tester,
+  ) async {
+    final runtime = WorkspaceRuntime();
+    addTearDown(runtime.dispose);
+    final calls = <MethodCall>[];
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      RuntimeController.channel,
+      (call) async {
+        calls.add(call);
+        return null;
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        RuntimeController.channel,
+        null,
+      ),
+    );
+    runtime.handle = (method, params) async => listing(
+      '',
+      entries: [
+        {
+          'name': 'report.pdf',
+          'path': 'report.pdf',
+          'kind': 'file',
+          'bytes': 42,
+        },
+      ],
+    );
+    await open(tester, WorkspaceFilesPage(runtime: runtime));
+    await tap(tester, find.text('report.pdf'));
+    expect(calls, hasLength(2));
+    expect(calls.first.method, 'file.openWorkspace');
+    final arguments = calls.first.arguments as Map;
+    expect(arguments['path'], 'report.pdf');
+    expect(arguments['requestId'], isA<String>());
+    expect(calls.last.method, 'file.launchPrepared');
+    expect(calls.last.arguments, {'requestId': arguments['requestId']});
+    expect(
+      runtime.calls.where((call) => call.$1 == 'workspace.files.read'),
+      isEmpty,
+    );
+    await close(tester);
+  });
+
+  testWidgets('changing folders cancels a slow private-file copy', (
+    tester,
+  ) async {
+    final runtime = WorkspaceRuntime();
+    addTearDown(runtime.dispose);
+    final pending = Completer<void>();
+    final calls = <MethodCall>[];
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      RuntimeController.channel,
+      (call) async {
+        calls.add(call);
+        if (call.method == 'file.openWorkspace') return pending.future;
+        if (call.method == 'file.cancelOpen') return;
+        throw StateError('A changed folder must not launch the chooser');
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        RuntimeController.channel,
+        null,
+      ),
+    );
+    runtime.handle = (method, params) async => listing(
+      params['path'] as String? ?? '',
+      entries: params['path'] == ''
+          ? [
+              {'name': 'report.pdf', 'path': 'report.pdf', 'kind': 'file'},
+              {'name': 'notes', 'path': 'notes', 'kind': 'directory'},
+            ]
+          : [],
+    );
+    await open(tester, WorkspaceFilesPage(runtime: runtime));
+    await tester.tap(find.text('report.pdf'));
+    await tester.pump();
+    await tester.tap(find.text('notes'));
+    await tester.pump();
+    expect(calls.last.method, 'file.cancelOpen');
+    pending.complete();
+    await tester.pumpAndSettle();
+    expect(
+      calls.where((call) => call.method == 'file.launchPrepared'),
+      isEmpty,
+    );
+    await close(tester);
+  });
+
   testWidgets(
     'same-ready search replacement retains query without replay and ignores an old completion',
     (tester) async {

@@ -4,6 +4,7 @@ import 'package:material_ui/material_ui.dart';
 
 import 'runtime.dart';
 import 'ui.dart';
+import 'external_file_action.dart';
 
 /// Original DSH document readers, scoped to one Session, under native chrome.
 /// The service remains shared with chat; leaving this route only closes reads.
@@ -24,10 +25,19 @@ class SessionDocumentPage extends StatefulWidget {
 }
 
 class _SessionDocumentPageState extends State<SessionDocumentPage> {
+  final externalOpen = ExternalFileOpenController();
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    externalOpen.observeRoute(context);
+  }
+
   int retry = 0;
   late int? _line = widget.line;
   MethodChannel? _navigation;
   bool _opening = false;
+  bool _openingExternal = false;
 
   void _connect(int viewId, int generation) {
     if (!mounted || generation != widget.runtime.connectionGeneration) return;
@@ -93,6 +103,7 @@ class _SessionDocumentPageState extends State<SessionDocumentPage> {
 
   @override
   void dispose() {
+    externalOpen.dispose();
     _navigation?.setMethodCallHandler(null);
     super.dispose();
   }
@@ -112,12 +123,32 @@ class _SessionDocumentPageState extends State<SessionDocumentPage> {
           '#${(value.toARGB32() & 0xffffff).toRadixString(16).padLeft(6, '0')}';
       return PocketScaffold(
         title: Text(widget.path.split(RegExp(r'[/\\]')).last),
-        trailing: GlassButton(
-          icon: Icons.refresh_rounded,
-          label: '重新打开文档',
-          onPressed: widget.runtime.ready
-              ? () => setState(() => retry++)
-              : null,
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            GlassButton(
+              icon: Icons.open_in_new_rounded,
+              label: '在其他应用中打开',
+              onPressed: !widget.runtime.ready || _openingExternal
+                  ? null
+                  : () async {
+                      setState(() => _openingExternal = true);
+                      await externalOpen.open(
+                        context,
+                        sessionId: widget.sessionId,
+                        path: widget.path,
+                      );
+                      if (mounted) setState(() => _openingExternal = false);
+                    },
+            ),
+            GlassButton(
+              icon: Icons.refresh_rounded,
+              label: '重新打开文档',
+              onPressed: widget.runtime.ready
+                  ? () => setState(() => retry++)
+                  : null,
+            ),
+          ],
         ),
         body: !widget.runtime.ready
             ? const Center(child: Text('本地服务尚未连接，文档将在连接后重新打开。'))

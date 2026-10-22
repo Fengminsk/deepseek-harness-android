@@ -34,6 +34,7 @@ class MainActivity : FlutterActivity() {
         }
     }
     private val attachments by lazy { AttachmentTransfers(this) }
+    private val externalFiles by lazy { ExternalFileOpening(this) { frame, result -> sendCall(frame, result); Unit } }
     private val configurationTransfers by lazy { ConfigurationTransfers(this) }
     private var bound = false
     private var connection: ServiceConnection? = null
@@ -233,6 +234,7 @@ class MainActivity : FlutterActivity() {
     }
     override fun configureFlutterEngine(engine: FlutterEngine) {
         super.configureFlutterEngine(engine)
+        externalFiles // Schedule bounded staging-cache cleanup on each Activity start.
         documentPreviews = DocumentPreviewFactory(engine.dartExecutor.binaryMessenger) { frame, result -> sendCall(frame, result); Unit }.also {
             engine.platformViewsController.registry.registerViewFactory("dsh/document-preview", it)
         }
@@ -359,6 +361,14 @@ class MainActivity : FlutterActivity() {
                 }
                 "pickDirectory" -> transfers.pickDirectory(result)
                 "pickDocument" -> transfers.pickDocument(result)
+                "file.openDocument" -> externalFiles.document(call.argument<String>("requestId") ?: "",
+                    call.argument<String>("root") ?: "", call.argument<String>("path") ?: "", result)
+                "file.openWorkspace" -> externalFiles.workspace(call.argument<String>("requestId") ?: "",
+                    call.argument<String>("path") ?: "", result)
+                "file.openSession" -> externalFiles.session(call.argument<String>("requestId") ?: "",
+                    call.argument<String>("sessionId") ?: "", call.argument<String>("path") ?: "", result)
+                "file.launchPrepared" -> externalFiles.launchPrepared(call.argument<String>("requestId") ?: "", result)
+                "file.cancelOpen" -> externalFiles.cancel(call.argument<String>("requestId") ?: "", result)
                 "shareText" -> {
                     val text = call.arguments as? String
                     if (text.isNullOrBlank() || text.toByteArray(Charsets.UTF_8).size > 512 * 1024) {
@@ -635,6 +645,7 @@ class MainActivity : FlutterActivity() {
         transfers.close()
         exports.close()
         attachmentFiles.close()
+        externalFiles.close()
         attachments.close()
         configurationTransfers.close()
         restarting?.error("closed", "重启期间界面已关闭，请重新打开 App 查看运行时状态", null)

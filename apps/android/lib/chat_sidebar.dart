@@ -31,12 +31,14 @@ class ChatSidebar extends StatefulWidget {
     required this.onSelectSession,
     required this.onOpenTasks,
     required this.onOpenAutomations,
+    this.searchRequest = 0,
   });
 
   final RuntimeController runtime;
   final String currentSessionId;
   final VoidCallback onClose, onNewChat, onOpenTasks, onOpenAutomations;
   final ValueChanged<String> onSelectSession;
+  final int searchRequest;
 
   @override
   State<ChatSidebar> createState() => _ChatSidebarState();
@@ -56,6 +58,12 @@ class _ChatSidebarState extends State<ChatSidebar> {
   void initState() {
     super.initState();
     _observe();
+    if (widget.searchRequest > 0) {
+      _searchOpen = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _searchOpen) _searchFocus.requestFocus();
+      });
+    }
   }
 
   void _observe() {
@@ -67,6 +75,9 @@ class _ChatSidebarState extends State<ChatSidebar> {
   @override
   void didUpdateWidget(ChatSidebar oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.searchRequest != widget.searchRequest) {
+      _openSearch();
+    }
     if (oldWidget.runtime != widget.runtime) {
       _notice = _noticeSession = null;
       _archiveRows.clear();
@@ -94,6 +105,13 @@ class _ChatSidebarState extends State<ChatSidebar> {
     } else {
       _searchFocus.unfocus();
     }
+  }
+
+  void _openSearch() {
+    if (!_searchOpen) setState(() => _searchOpen = true);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _searchOpen) _searchFocus.requestFocus();
+    });
   }
 
   void _leave(VoidCallback action) {

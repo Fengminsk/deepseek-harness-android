@@ -224,7 +224,12 @@ Future<(_Runtime, _Routes)> _chat(
   return (service, routes);
 }
 
-Finder get _source => find.byType(CommonPopupBox, skipOffstage: false);
+// The header also has a session menu. Keep geometry and opacity assertions
+// anchored to the composer popup, whose parent carries a stable product key.
+Finder get _source => find.descendant(
+  of: find.byKey(const ValueKey('chat-composer'), skipOffstage: false),
+  matching: find.byType(CommonPopupBox, skipOffstage: false),
+);
 Finder get _editor => find.byType(TextField, skipOffstage: false);
 Finder get _chatList => find.descendant(
   of: find.byType(PocketList, skipOffstage: false),

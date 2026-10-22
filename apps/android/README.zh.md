@@ -23,6 +23,8 @@ Pocket Harness 的目标是在 App 内覆盖完整的 DSH 产品流程，当前�
 
 DSH 已有[会话工作目录文件树](../../packages/client/ui-sidebar-files/README.zh.md)，以及文本、代码、Markdown、图片、PDF、HTML、Excel 和 Office 的[文档预览](../../packages/client/ui-sidebar-documentpreview/README.zh.md)。当前会话菜单通过原版 [workspaceFiles 服务](../../packages/api/workspace-files/README.zh.md)打开会话文件，保留工作目录、文件权限、版本和变更订阅。目录在同一原生页面中切换，支持面包屑与滚动位置恢复。这与 App 私有文件、SAF 授权及会话附件 ID 是不同入口，各自保留独立授权。
 
+会话资源页集中原版会话工作目录、已记录的文件改动审阅、只读技能目录和按会话筛选的后台任务。改动记录使用已保存的回合公告与 Host 摘要；打开页面只读取历史，不创建或恢复 Agent。原版右侧栏还有持久终端、内嵌浏览器、侧栏内子 Agent 对话和任意资源标签页；这些标签类型及桌面停靠布局尚未映射到移动端资源导航。文档预览仍可通过会话文件和文档链接打开。
+
 会话文档在专用 Android WebView 内使用原版阅读器资源，导航采用原生悬浮组件。内置资源与绑定会话的读取接口在 Web 访问关闭时也可工作。二进制数据按有限大小分片传输；关闭或取消页面会释放请求、订阅和保留的数据。Markdown 本地图片使用同一会话文件服务和原版媒体大小限制。同一会话内的文档链接打开阅读页，返回时保留来源位置；当前文件的行号链接直接定位，不重新读取文件。跨会话及不支持的资源链接会明确报错。Office 转换、远程资源及交互式 HTML 偏好仍未完成。主机渲染与导航测试不能代替 Android WebView 真机验收。
 
 [Android 配置补丁](runtime/cordis.patch.yml)与[预设暂存](tool/stage-preset.mjs)目前缺少 Office 转换、持久终端、部分标准工具和预设等能力。这些是迁移缺口，不能解释成 DSH 没有相应功能。Root、设备 ADB 控制、离线模型推理和开机自启动仍不属于已约定的本期范围；其他平台差异需要明确的适配与验收记录，不能静默删去原版行为。
@@ -30,7 +32,7 @@ DSH 已有[会话工作目录文件树](../../packages/client/ui-sidebar-files/R
 <a id="build"></a>
 ## 构建预览版
 
-使用 Windows PowerShell 7、Node 24、仓库指定的 pnpm、JDK 17、Android SDK 36、NDK 28.2.13676358 和 CMake 3.22.1。Flutter 与原生依赖版本固定在 [tool/runtime-lock.json](tool/runtime-lock.json)。先将指定 Flutter 版本放到仓库忽略的 `.cache/flutter` 目录，并配置 Android SDK。
+使用 Windows PowerShell 7、Node 24、仓库指定的 pnpm、JDK 17、Android SDK 36、NDK 28.2.13676358、CMake 3.22.1，以及带 `aarch64-linux-android` 目标的 Rust 1.99.1。Flutter 与原生依赖版本固定在 [tool/runtime-lock.json](tool/runtime-lock.json)。先将指定 Flutter 版本放到仓库忽略的 `.cache/flutter` 目录，并配置 Android SDK。固定版本的 Android ripgrep 需在 Visual Studio Developer PowerShell 中按 [tool/ripgrep-android.md](tool/ripgrep-android.md) 构建。
 
 完成 `pnpm install` 后，在仓库根目录执行以下命令。deploy 命令创建新的暂存目录；仅修改 App 时可保留该目录复用。依赖锁文件变化后应重新部署暂存目录。后面的 install 用于恢复 pnpm deploy 后的工作区开发依赖。
 
@@ -38,6 +40,7 @@ DSH 已有[会话工作目录文件树](../../packages/client/ui-sidebar-files/R
 pnpm.cmd run build:artifacts
 pnpm.cmd --filter dsh-python-runtime-closure deploy --legacy --prod --config.allow-unused-patches=true --config.node-linker=hoisted --config.auto-install-peers=false --config.link-workspace-packages=true --config.hoist-workspace-packages=false .cache/android/runtime-bundle
 pnpm.cmd install --offline --frozen-lockfile --prod=false --ignore-scripts
+./apps/android/tool/build-ripgrep.ps1 -NdkDirectory "$env:ANDROID_HOME/ndk/28.2.13676358"
 node node_modules/tsx/dist/cli.mjs apps/android/tool/stage-runtime.ts
 ./apps/android/tool/prepare-native.ps1
 node apps/android/tool/smoke-runtime.mjs
@@ -55,7 +58,7 @@ node apps/android/tool/smoke-runtime.mjs
 ../../.cache/flutter/bin/flutter.bat build apk --debug --target-platform android-arm64 --no-pub
 ```
 
-交付前，在本目录运行 `tool/verify-apk.ps1`，传入 `-ApkPath build/app/outputs/flutter-apk/app-debug.apk`，并用 `-ExpectedVersionName` 和 `-ExpectedVersionCode` 指定本次构建的预期版本。校验器读取编译后的 Manifest 与 ZIP 条目，检查 ARM64 的八个必需原生库，并核对内嵌运行时与包内 SHA256 是否一致。还需运行 `node tool/verify-document-preview.mjs build/app/outputs/flutter-apk/app-debug.apk`，按资源清单与原模块哈希核对包内阅读器资源。两个校验器都以 JSON 输出结果，不一致时以非零状态退出。Gradle 的 `disable-abi-filtering` 属性保留应用明确设置的 ARM64 过滤；APK 文件名不能证明实际包含的架构。
+交付前，在本目录运行 `tool/verify-apk.ps1`，传入 `-ApkPath build/app/outputs/flutter-apk/app-debug.apk`，并用 `-ExpectedVersionName` 和 `-ExpectedVersionCode` 指定本次构建的预期版本。校验器读取编译后的 Manifest 与 ZIP 条目，检查包括固定版本 ripgrep 可执行文件在内的九个 ARM64 原生条目、上游许可资源，以及内嵌运行时与包内 SHA256。还需运行 `node tool/verify-document-preview.mjs build/app/outputs/flutter-apk/app-debug.apk`，按资源清单与原模块哈希核对包内阅读器资源。两个校验器都以 JSON 输出结果，不一致时以非零状态退出。Gradle 的 `disable-abi-filtering` 属性保留应用明确设置的 ARM64 过滤；APK 文件名不能证明实际包含的架构。
 
 <a id="runtime"></a>
 ## 运行时与存储
@@ -103,6 +106,8 @@ Agent 进程被系统结束后，App 冷读取原版中断历史的投影，将�
 **模型文件工具**使用原版 `read`、`write` 和 `edit` 实现及[文件系统沙箱提供方](../../packages/fs/fs-sandbox/README.zh.md)。Android profile 默认将修改限制在工作区和允许的临时目录，更宽范围的重试需要原版仅对本次调用生效的审批。覆盖或编辑已有文件保留原版已读取版本检查，编辑默认要求字面内容唯一匹配，明确选择 `replace_all` 时才替换全部。原 `fs-sandbox` 条目禁用，是因为 `android-filesystem` 继承该提供方。[Android 适配器](runtime/android-filesystem.mjs)通过已有的复制和排他重命名桥接发布新文件，替代硬链接，并保留原版版本检查和审批策略。[暂存 profile 冒烟测试](tool/smoke-file-tools.mjs)通过本地合成模型驱动真实主机文件操作、拒绝、取消和冷恢复。Android Binder 和设备文件系统验收仍未完成。该策略不会为 `android_shell` 提供内核级隔离，也不会恢复原版 `/permission` 菜单。
 
 **授权文件** 支持单文件、目录、分段 UTF-8 读取及撤销授权，SAF 访问仍为只读。App 与 Agent 共用持久 SAF 授权范围内的字面文本搜索，可选择区分大小写，并限制读取量、遍历范围和执行时间。结果标明跳过的文件与未完成的搜索；不完整结果为空不代表没有匹配。取消操作等待原生搜索实际结束，文档授权不会将 `content://` URI 转成 Shell 路径。
+
+点选 PDF、图片等非文本文件时，App 把对应 SAF `content://` 文件交给 Android 应用选择器，并仅授予本次读取权限。普通文本和源码继续使用内置阅读器；阅读器也提供“在其他应用中打开”。私有工作区与会话文件只在用户点选后，把单个普通文件暂存到 App 缓存（上限 256 MiB），通过不可导出的 `FileProvider` 提供临时读取权限，不暴露整个私有目录。会话文件使用原版会话范围内的文档接口分段读取，复制期间文件变化会被拒绝。离开文件页面会取消准备，独立的启动确认步骤阻止迟到的应用选择器。此入口只读，在外部应用中编辑不会写回 DSH。取消或 Activity 结束时清除尚未交出的副本；启动与每六小时的维护会清除超过 24 小时的文件，并将缓存控制在 512 MiB 以内。Android 也可能提前清理缓存。设备上可接收的应用及选择器外观仍需真机验收。
 
 当前搜索结果可在原授权范围内打开源文件，也支持单文件授权。阅读页检查当前访问权限并从文件开头显示；搜索行号不会自动定位阅读位置。返回后保留查询和结果，不重新扫描。连接变化后尚未核实的旧结果需重新搜索后才能打开。
 
@@ -244,4 +249,6 @@ Flutter 测试覆盖草稿保留、主题、悬浮控件、弹层拖选、大字
 
 构建 36 编译成功，APK 校验确认版本号 36、ARM64 库、运行时 SHA-256 `d94f7078437ef7b584547dcd46f4f1bc12c9db10bd49b1b2ab011a28032ae163` 和 131 个文档阅读资源。安装包位于 `.cache/android/pocket-harness-0.1.0+36-arm64-debug.apk`，大小 233,217,911 字节，SHA-256 为 `e546d749bfbdd097c62b8c35638a7a4be575b6f02661a14a6f2537095934370b`。此时 ADB 未检测到设备，所以手机上的悬浮窗行为与通知送达仍待验收。
 
-真实子 Agent 续聊与中断、自动化、断网后的账号恢复、锁屏执行的时效稳定性，以及拔线后台运行仍需手机验收。原生 `@` 选择、历史技能／引用标签和文件差异审阅已有主机证据，仍未经手机验证。App 全量管理覆盖及限定运行设置之外的配置迁移仍未完成；消息评价和部分文档预览仍有缺口。设备截图、诊断日志、个人会话和生成的 APK 是本地文件，不进入 Git。
+构建 37 加入只读的会话资源与轨迹页面、受控的“用其他应用打开”、外接键盘快捷键，以及使用固定 ARM64 ripgrep 的原版 `glob`／`grep` 工具。全部 1120 项 Flutter 测试与静态检查通过，原生检查通过 34 项悬浮窗生命周期断言和 32 项外部打开路径／缓存断言。APK 校验确认版本号 37、仅 ARM64 库（含 ripgrep）、运行时 SHA-256 `2a2ea6abf20b05e2252e3a7551ec4e85bf0e221af8c0f3f52088acc2ee98d5b1`、ripgrep 上游许可资源和 131 个文档阅读资源。开发包位于 `.cache/android/pocket-harness-0.1.0+37-arm64-debug.apk`，大小 234,876,969 字节，SHA-256 为 `065e588a8ffe7a328f2d63a8fa105c5577c222fc2630af5b9216ca04a07108d3`。ADB 仍未检测到设备；外部打开、Agent 文件搜索和可选透明悬浮窗都尚未获得本次真机证据。
+
+真实子 Agent 续聊与中断、自动化、断网后的账号恢复、锁屏执行的时效稳定性，以及拔线后台运行仍需手机验收。原生 `@` 选择、历史技能／引用标签、消息评价和文件差异审阅已有主机证据，仍未经手机验证。App 全量管理覆盖及限定运行设置之外的配置迁移仍未完成；部分文档预览仍有缺口。设备截图、诊断日志、个人会话和生成的 APK 是本地文件，不进入 Git。

@@ -5,7 +5,9 @@ import 'dart:ui' as ui;
 import 'package:dsh_android/chat_messages.dart';
 import 'package:dsh_android/main.dart';
 import 'package:dsh_android/runtime.dart';
+import 'package:dsh_android/resource_hub.dart';
 import 'package:dsh_android/session_document.dart';
+import 'package:dsh_android/session_trajectory.dart';
 import 'package:dsh_android/tasks.dart';
 import 'package:dsh_android/subagents.dart';
 import 'package:dsh_android/ui.dart';
@@ -206,6 +208,58 @@ ScrollController _scroll(WidgetTester tester) =>
     tester.widget<ChatTimeline>(find.byType(ChatTimeline)).controller;
 
 void main() {
+  testWidgets('external keyboard searches sessions and starts a new chat', (
+    tester,
+  ) async {
+    _phone(tester);
+    final runtime = _ChatRuntime([]);
+    addTearDown(runtime.dispose);
+    await tester.pumpWidget(_host(runtime));
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyK);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await tester.pumpAndSettle();
+    final search = find.byKey(const ValueKey('sidebar-search'));
+    expect(search, findsOneWidget);
+    expect(tester.widget<TextField>(search).focusNode?.hasFocus, isTrue);
+
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: '拼音',
+        selection: TextSelection.collapsed(offset: 2),
+        composing: TextRange(start: 0, end: 2),
+      ),
+    );
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyN);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    expect(runtime.draft, 1);
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: '拼音',
+        selection: TextSelection.collapsed(offset: 2),
+      ),
+    );
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    expect(search, findsNothing);
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyN);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await tester.pumpAndSettle();
+    expect(runtime.draft, 2);
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const ValueKey('chat-composer-input')))
+          .focusNode
+          ?.hasFocus,
+      isTrue,
+    );
+  });
+
   testWidgets(
     'assistant file link opens the original document route with its Session and line',
     (tester) async {
@@ -400,6 +454,46 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets(
+    'a saved conversation opens its resource navigation without sending work',
+    (tester) async {
+      _phone(tester);
+      final runtime = _ChatRuntime([fixture.input(0, 'Question')]);
+      addTearDown(runtime.dispose);
+      await tester.pumpWidget(_host(runtime));
+      await _openHistory(tester);
+      await tester.tap(find.byTooltip('会话更多'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('会话资源'));
+      await tester.pumpAndSettle();
+      expect(find.byType(SessionResourcesPage), findsOneWidget);
+      expect(find.text('文件改动'), findsOneWidget);
+      expect(
+        runtime.calls.any((call) => call.method == 'session.send'),
+        isFalse,
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('a saved conversation opens its read-only trajectory', (
+    tester,
+  ) async {
+    _phone(tester);
+    final runtime = _ChatRuntime([fixture.input(0, 'Question')]);
+    addTearDown(runtime.dispose);
+    await tester.pumpWidget(_host(runtime));
+    await _openHistory(tester);
+    await tester.tap(find.byTooltip('会话更多'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('会话轨迹'));
+    await tester.pumpAndSettle();
+    expect(find.byType(SessionTrajectoryPage), findsOneWidget);
+    expect(runtime.calls.any((call) => call.method == 'session.read'), isTrue);
+    expect(runtime.calls.any((call) => call.method == 'session.send'), isFalse);
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets(
     'reading older messages is not displaced by live deltas or appended replies',

@@ -19,7 +19,7 @@ $failures = [Collections.Generic.List[string]]::new()
 $requiredLibraries = @(
     'libflutter.so', 'libnode.so', 'libc++_shared.so',
     'libdsh_runtime.so', 'libdsh_system.so', 'libpocket_file_publish.so',
-    'libpocket_node_cli.so', 'libpocket_require_builtin.so'
+    'libpocket_node_cli.so', 'libpocket_require_builtin.so', 'libpocket_ripgrep.so'
 )
 $result = [ordered]@{
     schemaVersion = 1
@@ -148,6 +148,21 @@ try {
             }
             foreach ($abi in $ExpectedAbi) {
                 if ($actualAbi -cnotcontains $abi) { $failures.Add("Expected ABI is missing: $abi") }
+            }
+            $ripgrepLock = (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'runtime-lock.json') -Raw | ConvertFrom-Json).ripgrep
+            $ripgrepEntryName = 'lib/arm64-v8a/libpocket_ripgrep.so'
+            if ($ripgrepLock.abi -cne 'arm64-v8a' -or $ripgrepLock.sha256 -cnotmatch '^[a-f0-9]{64}$') {
+                $failures.Add('Pinned Android ripgrep identity is invalid.')
+            } elseif ($entries.ContainsKey($ripgrepEntryName)) {
+                $ripgrepStream = $entries[$ripgrepEntryName].Open()
+                try { $ripgrepHash = Get-StreamSha256 $ripgrepStream } finally { $ripgrepStream.Dispose() }
+                if ($ripgrepHash -cne $ripgrepLock.sha256) { $failures.Add('Packaged Android ripgrep checksum mismatch.') }
+            }
+            foreach ($notice in @('NOTICE.txt', 'COPYING', 'LICENSE-MIT', 'UNLICENSE')) {
+                $noticeEntry = "assets/licenses/ripgrep/$notice"
+                if (-not $entries.ContainsKey($noticeEntry) -or $entries[$noticeEntry].Length -eq 0) {
+                    $failures.Add("Ripgrep license or attribution is missing: $noticeEntry")
+                }
             }
             $runtimeName = 'assets/runtime/runtime.zip'
             $checksumName = 'assets/runtime/runtime.sha256'

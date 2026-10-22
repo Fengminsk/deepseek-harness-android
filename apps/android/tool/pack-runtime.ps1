@@ -48,6 +48,21 @@ if (-not (Test-Path -LiteralPath (Join-Path $staging 'android/package-manager/pa
 if (-not (Test-Path -LiteralPath (Join-Path $staging 'android/image-runtime.json'))) {
     throw 'Official Sharp WASM runtime is missing. Run stage-runtime.ts before packaging.'
 }
+$ripgrepLock = (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'runtime-lock.json') -Raw | ConvertFrom-Json).ripgrep
+$ripgrepDescriptorPath = Join-Path $staging 'node_modules/@minnnng/dsh-android-runtime/android-ripgrep.json'
+$ripgrepBinary = Join-Path $projectRoot 'android/app/src/main/jniLibs/arm64-v8a/libpocket_ripgrep.so'
+if (-not (Test-Path -LiteralPath $ripgrepDescriptorPath -PathType Leaf) -or
+    -not (Test-Path -LiteralPath $ripgrepBinary -PathType Leaf)) {
+    throw 'Pinned Android ARM64 ripgrep is missing. Build it and rerun stage-runtime.ts before packaging.'
+}
+$ripgrepDescriptor = Get-Content -LiteralPath $ripgrepDescriptorPath -Raw | ConvertFrom-Json
+$ripgrepInfo = Get-Item -LiteralPath $ripgrepBinary
+if ($ripgrepInfo.Length -eq 0 -or ($ripgrepInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+    $ripgrepDescriptor.abi -cne 'arm64-v8a' -or $ripgrepDescriptor.version -cne $ripgrepLock.version -or
+    $ripgrepDescriptor.sha256 -cne $ripgrepLock.sha256 -or
+    (Get-FileHash -LiteralPath $ripgrepBinary -Algorithm SHA256).Hash.ToLowerInvariant() -cne $ripgrepLock.sha256) {
+    throw 'Android ripgrep identity changed after staging.'
+}
 $imageRuntime = Get-Content -LiteralPath (Join-Path $staging 'android/image-runtime.json') -Raw | ConvertFrom-Json
 if ($imageRuntime.sharp -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid staged Sharp version.' }
 foreach ($suffix in @('js', 'wasm')) {

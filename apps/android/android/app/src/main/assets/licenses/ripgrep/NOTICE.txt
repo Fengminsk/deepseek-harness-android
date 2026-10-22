@@ -1,0 +1,11 @@
+ripgrep 15.0.0
+Copyright (c) 2015 Andrew Gallant (see accompanying LICENSE-MIT)
+Source: https://github.com/BurntSushi/ripgrep
+Pinned source revision: 3a612f88b805e14aef45bfa43e25a54abc6297fc
+License: Unlicense OR MIT (the accompanying COPYING, UNLICENSE and LICENSE-MIT files)
+
+The Android arm64 executable in this application is built from the pinned
+source with Rust 1.99.1 and Android NDK 28.2.13676358. The executable is
+named libpocket_ripgrep.so so Android will install it into its executable
+native-library directory; it is invoked as a process rather than loaded as a
+JNI library.
