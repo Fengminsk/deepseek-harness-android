@@ -1,7 +1,9 @@
 import 'dart:async';
 
+import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
+import 'account_presentation.dart';
 import 'account_state.dart';
 import 'runtime.dart';
 import 'ui.dart';
@@ -19,6 +21,8 @@ class _AccountPageState extends State<AccountPage> with WidgetsBindingObserver {
   String? error, signOutImpact;
   int? signOutRevision;
   bool wantedSignIn = false, checkingImpact = false;
+  String? linkCopyStatus;
+  Timer? linkCopyTimer;
   bool initialized = false;
   late String runtimePhase;
 
@@ -97,7 +101,7 @@ class _AccountPageState extends State<AccountPage> with WidgetsBindingObserver {
   Future<void> openPage(String url) async {
     try {
       await RuntimeController.channel.invokeMethod<void>('account.openPage', {
-        'url': url,
+        'url': accountAuthorizeUrl(url, Theme.of(context).brightness),
         'dark': Theme.of(context).brightness == Brightness.dark,
       });
     } catch (failure) {
@@ -105,6 +109,26 @@ class _AccountPageState extends State<AccountPage> with WidgetsBindingObserver {
         setState(() => error = '无法打开官方页面。请确认已安装支持 Custom Tabs 的浏览器，再点击继续授权重试。');
       }
     }
+  }
+
+  Future<void> copySignInLink(String url) async {
+    final attemptId = account?.attempt?['id'];
+    try {
+      await Clipboard.setData(
+        ClipboardData(
+          text: accountAuthorizeUrl(url, Theme.of(context).brightness),
+        ),
+      );
+      if (!mounted || account?.attempt?['id'] != attemptId) return;
+      setState(() => linkCopyStatus = '已复制授权链接');
+    } catch (_) {
+      if (!mounted || account?.attempt?['id'] != attemptId) return;
+      setState(() => linkCopyStatus = '复制失败，请重试');
+    }
+    linkCopyTimer?.cancel();
+    linkCopyTimer = Timer(const Duration(seconds: 2), () {
+      if (mounted) setState(() => linkCopyStatus = null);
+    });
   }
 
   Future<void> signIn() async {
@@ -152,6 +176,7 @@ class _AccountPageState extends State<AccountPage> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    linkCopyTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     widget.runtime.removeListener(handleAccountReturn);
     account?.removeListener(changed);
@@ -221,7 +246,10 @@ class _AccountPageState extends State<AccountPage> with WidgetsBindingObserver {
               children: [
                 PocketRow(
                   icon: Icons.account_circle_outlined,
-                  title: profile?['name'] as String? ?? 'DeepSeek',
+                  title:
+                      profile?['name'] as String? ??
+                      profile?['contact'] as String? ??
+                      'DeepSeek',
                   subtitle: !model.connected
                       ? model.view == null
                             ? '正在读取账号状态'
@@ -348,6 +376,14 @@ class _AccountPageState extends State<AccountPage> with WidgetsBindingObserver {
                                   : null,
                               child: const Text('继续官方授权'),
                             ),
+                          if (attempt['phase'] == 'waiting-browser' &&
+                              attempt['authorizeUrl'] is String)
+                            PocketButton.tonal(
+                              onPressed: () => copySignInLink(
+                                attempt['authorizeUrl'] as String,
+                              ),
+                              child: Text(linkCopyStatus ?? '复制授权链接'),
+                            ),
                           PocketButton.tonal(
                             onPressed:
                                 canAct && attempt['phase'] != 'committing'
@@ -379,18 +415,25 @@ class _AccountPageState extends State<AccountPage> with WidgetsBindingObserver {
                         title: '充值余额',
                         subtitle: model.balanceFresh ? null : '上次读取，本次尚未更新',
                         trailing: Text(
-                          '${wallet['balance']} ${wallet['currency']}',
+                          formatAccountBalance(
+                            '${wallet['balance']}',
+                            '${wallet['currency']}',
+                          ),
                         ),
                       ),
                     for (final wallet in model.balance!['bonusWallets'] as List)
-                      PocketRow(
-                        icon: Icons.redeem_rounded,
-                        title: '赠送余额',
-                        subtitle: model.balanceFresh ? null : '上次读取，本次尚未更新',
-                        trailing: Text(
-                          '${wallet['balance']} ${wallet['currency']}',
+                      if (accountBalanceIsPositive('${wallet['balance']}'))
+                        PocketRow(
+                          icon: Icons.redeem_rounded,
+                          title: '赠送余额',
+                          subtitle: model.balanceFresh ? null : '上次读取，本次尚未更新',
+                          trailing: Text(
+                            formatAccountBalance(
+                              '${wallet['balance']}',
+                              '${wallet['currency']}',
+                            ),
+                          ),
                         ),
-                      ),
                   ] else
                     PocketRow(
                       icon: Icons.account_balance_wallet_outlined,

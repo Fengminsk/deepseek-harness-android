@@ -591,10 +591,26 @@ class AgentService : Service() {
             check(granted.workerUid != Process.myUid() && granted.content == payload.toString(Charsets.UTF_8)) {
                 "Isolated worker did not return the granted text"
             }
+            val workspace = File(filesDir, "ptc-isolation-workspace-${java.util.UUID.randomUUID()}")
+            check(workspace.mkdir()) { "Could not create isolation workspace" }
+            val source = File(workspace, "probe.txt")
+            try {
+                source.writeBytes(payload)
+                val edit = IsolatedWorkerBridge.replaceWorkspaceText(
+                    this, workspace, source.name, hash, "isolation", "worker", 1,
+                    java.util.function.BooleanSupplier { false },
+                )
+                check(edit.previousSha256() == hash && source.readText() == "PTC worker probe") {
+                    "Isolated worker edit was not committed to the selected workspace file"
+                }
+            } finally {
+                check(source.delete() || !source.exists()) { "Could not remove isolation workspace file" }
+                check(workspace.delete() || !workspace.exists()) { "Could not remove isolation workspace" }
+            }
             return JSONObject().put("workerUid", evidence.workerUid)
                 .put("hostUid", Process.myUid()).put("bytes", evidence.bytes)
                 .put("sha256", evidence.sha256).put("privateReadDenied", true)
-                .put("grantReadVerified", true)
+                .put("grantReadVerified", true).put("workspaceEditVerified", true)
         } finally {
             check(file.delete() || !file.exists()) { "Could not remove isolation probe input" }
         }

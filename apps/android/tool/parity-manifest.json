@@ -38,7 +38,8 @@
       "status": "partial",
       "android": [
         "apps/android/lib/account.dart",
-        "apps/android/lib/account_state.dart"
+        "apps/android/lib/account_state.dart",
+        "apps/android/lib/account_presentation.dart"
       ],
       "evidence": {
         "core": "unverified",
@@ -46,7 +47,7 @@
         "behavior": "unverified",
         "device": "unverified"
       },
-      "note": "Native account reads and sign-in exist; full original settings/onboarding parity has not been established."
+      "note": "Native account reads and sign-in exist. The explicit authorization-link fallback carries the active palette and preserves Host query parameters; account balances follow original two-decimal and sub-cent display rules without changing raw values. Full original settings, onboarding, quota notice, profile-image lifecycle and device behavior have not been established."
     },
     {
       "key": "webUi/ui-theme",
@@ -507,7 +508,9 @@
         "apps/android/lib/chat_projection.dart",
         "apps/android/lib/chat_user_references.dart",
         "apps/android/lib/chat_skills.dart",
-        "apps/android/lib/chat_changes.dart"
+        "apps/android/lib/chat_changes.dart",
+        "apps/android/lib/image_preview.dart",
+        "apps/android/runtime/chat-images.mjs"
       ],
       "evidence": {
         "core": "unverified",
@@ -515,13 +518,15 @@
         "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Native transcript renders authored text, Markdown, tool rows, recorded skill and Session reference chips, delivered files and original workspace-change summaries. Confirmed skill names and Session labels come from the original log, not the current catalog. New reference and diff controls have host integration evidence but no phone acceptance; feedback and other original actions remain incomplete.",
+      "note": "Native transcript renders authored text, Markdown, tool rows, recorded skill and Session reference chips, delivered files and original workspace-change summaries. Settled local Markdown images now load inline through the original Session-scoped workspaceFiles stat/readBytes service with bounded bytes and version checks, then open the native zoom viewer; failures can retry or open the original file. Confirmed skill names and Session labels come from the original log, not the current catalog. Remote Markdown images remain explicit external links rather than inline fetches, and file-image hover cards, all other original actions and phone acceptance remain incomplete.",
       "evidenceRefs": {
         "behavior": [
           "apps/android/test/chat_messages_test.dart",
           "apps/android/test/chat_user_references_test.dart",
           "apps/android/test/chat_skills_test.dart",
-          "apps/android/test/workspace_diff_test.dart"
+          "apps/android/test/workspace_diff_test.dart",
+          "apps/android/test/chat_inline_images_test.dart",
+          "apps/android/tool/chat-images.test.mjs"
         ]
       }
     },
@@ -2180,7 +2185,12 @@
       ],
       "status": "not-migrated",
       "android": [
-        "apps/android/runtime/cordis.patch.yml"
+        "apps/android/runtime/cordis.patch.yml",
+        "apps/android/android/app/src/main/kotlin/com/minnnng/dsh_android/IsolatedWorkerService.kt",
+        "apps/android/android/app/src/main/kotlin/com/minnnng/dsh_android/IsolatedWorkerBridge.kt",
+        "apps/android/android/app/src/main/java/com/minnnng/dsh_android/IsolatedWorkerTextEdit.java",
+        "apps/android/android/app/src/main/java/com/minnnng/dsh_android/IsolatedWorkerWriteback.java",
+        "apps/android/tool/acceptance-isolated-worker.mjs"
       ],
       "evidence": {
         "core": "unverified",
@@ -2188,7 +2198,7 @@
         "behavior": "unverified",
         "device": "unverified"
       },
-      "note": "Original programmatic tool execution remains disabled. Its Node child requires per-run workspace confinement, but the original sandbox-local provider has no Android runner. Host startup and plugin-management guards prevent accidental activation; a distinct execution UID and authorized file bridge remain an open migration gap."
+      "note": "Original programmatic tool execution remains disabled. Its Node child requires per-run workspace confinement, but sandbox-local has no Android runner. Android code wires one bounded literal edit over an App-selected workspace text snapshot through an isolated Service and revision-checked writeback; host compilation and pure-Java tests pass, but device execution is unverified. This diagnostic file-operation slice is not a Node program backend. General file mapping, tool callbacks, descendant confinement and restart ownership remain open. Startup and plugin-management guards still reject activation."
     },
     {
       "key": "androidDisabled/workflow-ptc",
@@ -2208,7 +2218,7 @@
         "behavior": "unverified",
         "device": "unverified"
       },
-      "note": "Original PTC workflow engine remains disabled because the available per-run OS sandbox has no Android runner. Package, startup and plugin-management checks reject accidental activation; a distinct execution UID and authorized file bridge are still required."
+      "note": "Original PTC workflow engine remains disabled because no Android runner can execute its Node script under the original per-run confinement contract. Android code provides a diagnostic isolated-worker path for one bounded literal workspace text edit with revisioned writeback; device execution is unverified, and it cannot execute scripts, call child agents, bridge tool bindings or contain descendants. Package, startup and plugin-management checks reject activation."
     },
     {
       "key": "androidDisabled/tool-workflow",

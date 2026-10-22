@@ -80,6 +80,65 @@ test('other tools preserve raw arguments and never infer an Android shell execut
   assert.equal(Object.hasOwn(value, 'executionContext'), false)
 })
 
+test('cold Host reconciliation closes a logged approval without replaying its started answer', async t => {
+  const root = await mkdtemp(join(fileURLToPath(new URL('../../../.cache/android/', import.meta.url)), 'dsh-reconcile-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const receipts = new InteractionReceipts()
+  await receipts.initialize(root)
+  const identity = ['approval', 'session', 'audit-1']
+  assert.equal(await receipts.begin(identity), true)
+  const events = [
+    { type: 'approval/asked', data: { id: 'audit-1' } },
+    { type: 'approval/decided', data: { id: 'audit-1', outcome: 'unavailable' } },
+  ]
+  const agent = { id: 'session', session: { seq: events.length, eventAt: seq => events[seq] },
+    inbox: { nextStep: [], nextTurn: [] } }
+  const record = { id: 'event-1', version: 1, sessionId: 'session', kind: 'approval',
+    approvalAuditId: 'audit-1', life: new AbortController(), request: {}, sending: true }
+  const notices = []
+  const carrier = Object.create(AppInteractions.prototype)
+  Object.assign(carrier, {
+    ctx: { agents: { roots: () => [agent], list: () => [agent] }, get: () => ({ stateOf: () => ({ questions: { active: [], settled: [] } }) }) },
+    receipts, receiptSettlements: new Map(), records: new Map([[record.id, record]]), events: new Map(),
+    transport: { notify: (...args) => notices.push(args) }, revision: 0, error: null,
+  })
+  carrier.reconcile()
+  assert.equal(carrier.records.size, 1, 'an in-flight answer keeps its carrier until its own acknowledgement')
+  assert.equal(receipts.phase(identity), 'started')
+  record.sending = false
+  carrier.reconcile()
+  await Promise.allSettled([...carrier.receiptSettlements.values()])
+  assert.equal(carrier.records.size, 0)
+  assert.equal(receipts.phase(identity), 'settled')
+  assert.equal(notices.at(-1)[1].requests.length, 0)
+  assert.equal(await receipts.begin(identity), false)
+})
+
+test('cold Host keeps a still-continued question blocked after an unknown answer write', async t => {
+  const root = await mkdtemp(join(fileURLToPath(new URL('../../../.cache/android/', import.meta.url)), 'dsh-reconcile-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const receipts = new InteractionReceipts()
+  await receipts.initialize(root)
+  const identity = ['question', 'session', 'call-1']
+  await receipts.begin(identity)
+  const question = { callId: 'call-1', state: 'continued', questions: [{ id: 'choice', question: 'Choose' }] }
+  const agent = { id: 'session', session: { seq: 0, eventAt: () => undefined },
+    inbox: { nextStep: [], nextTurn: [] } }
+  const carrier = Object.create(AppInteractions.prototype)
+  Object.assign(carrier, {
+    ctx: { agents: { roots: () => [agent], list: () => [agent] },
+      get: () => ({ stateOf: () => ({ questions: { active: [question], settled: [] } }) }),
+      typertGateway: { invoke: () => { throw new Error('A read-only reconciliation must not answer') } } },
+    peer: {}, receipts, receiptSettlements: new Map(), records: new Map(), events: new Map(),
+    transport: { notify() {} }, revision: 0, version: 0, error: null,
+  })
+  carrier.reconcile()
+  assert.equal(receipts.phase(identity), 'started')
+  assert.equal(carrier.snapshot().requests[0].submission, 'started')
+  assert.equal(await receipts.begin(identity), false)
+  for (const record of carrier.records.values()) carrier.remove(record)
+})
+
 test('missing call details remain missing instead of borrowing another command or session directory', () => {
   const carrier = fixture({ toolName: 'android_shell', callId: 'missing' }, [
     { type: 'tool/call', data: { callId: 'another', name: 'android_shell', arguments: '{"command":"unrelated"}' } },

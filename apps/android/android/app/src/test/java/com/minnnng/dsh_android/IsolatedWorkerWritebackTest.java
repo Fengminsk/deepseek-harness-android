@@ -27,6 +27,13 @@ public final class IsolatedWorkerWritebackTest {
             check(created.bytes() == first.length && created.previousSha256().equals(IsolatedWorkerWriteback.MISSING), "create receipt");
             check(writer.version("笔记.txt").equals(created.sha256()), "created revision");
             check(Files.readString(workspace.resolve("笔记.txt")).equals("第一版\n"), "created content");
+            var snapshot = writer.snapshot("笔记.txt", () -> false);
+            check(snapshot.sha256().equals(created.sha256())
+                    && new String(snapshot.content(), StandardCharsets.UTF_8).equals("第一版\n"),
+                "App-selected snapshot did not pair bytes with revision");
+            snapshot.content()[0] = 0;
+            check(new String(snapshot.content(), StandardCharsets.UTF_8).equals("第一版\n"),
+                "snapshot exposed mutable granted bytes");
             byte[] second = "第二版\n".getBytes(StandardCharsets.UTF_8);
             var replaced = writer.commit("笔记.txt", created.sha256(), second, () -> false);
             check(replaced.previousSha256().equals(created.sha256()), "replacement revision");
@@ -79,6 +86,8 @@ public final class IsolatedWorkerWritebackTest {
             reject(() -> writer.commit("笔记.txt", replaced.sha256(), new byte[IsolatedWorkerInput.MAX_TEXT_BYTES + 1], () -> false), "oversize");
             reject(() -> writer.commit("笔记.txt", replaced.sha256(), new byte[] {(byte) 0xc3, 0x28}, () -> false), "malformed UTF-8");
             reject(() -> writer.commit("笔记.txt", replaced.sha256(), first, () -> true), "pre-cancelled");
+            reject(() -> writer.snapshot("笔记.txt", () -> true), "cancelled snapshot");
+            reject(() -> writer.snapshot("../escape", () -> false), "snapshot traversal");
             AtomicInteger checkpoints = new AtomicInteger();
             reject(() -> writer.commit("笔记.txt", replaced.sha256(), new byte[20000],
                 () -> checkpoints.incrementAndGet() >= 3), "mid-write cancellation");
@@ -91,6 +100,17 @@ public final class IsolatedWorkerWritebackTest {
             reject(() -> writer.version("folder"), "directory target");
             Files.write(workspace.resolve("large.txt"), new byte[IsolatedWorkerInput.MAX_TEXT_BYTES + 1]);
             reject(() -> writer.version("large.txt"), "oversized existing target");
+            reject(() -> writer.snapshot("large.txt", () -> false), "oversized snapshot");
+            Files.write(workspace.resolve("invalid.txt"), new byte[] {(byte) 0xc3, 0x28});
+            reject(() -> writer.snapshot("invalid.txt", () -> false), "malformed snapshot");
+            boolean symlinkAvailable = false;
+            try {
+                Files.createSymbolicLink(workspace.resolve("alias.txt"), workspace.resolve("笔记.txt"));
+                symlinkAvailable = true;
+            } catch (java.nio.file.FileSystemException | UnsupportedOperationException | SecurityException unavailable) {
+                // Some Windows hosts do not permit creating symlinks without developer mode.
+            }
+            if (symlinkAvailable) reject(() -> writer.snapshot("alias.txt", () -> false), "symbolic-link snapshot");
             reject(() -> new IsolatedWorkerWriteback(privateRoot, fixture, directory -> {}), "outside private root");
             var uncertain = new IsolatedWorkerWriteback(privateRoot, workspace, directory -> { throw new IOException("sync failed"); });
             try {

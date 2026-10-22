@@ -20,6 +20,7 @@ import 'subagents_data.dart';
 import 'chat_reading.dart';
 import 'chat_progress.dart';
 import 'chat_stream_reveal.dart';
+import 'image_preview.dart';
 import 'tool_activity_details.dart' show ToolActivitySummaryRow;
 import 'entry_motion.dart';
 import 'runtime.dart';
@@ -933,6 +934,7 @@ class ChatContent extends StatelessWidget {
                 )
               : PocketMarkdown(
                   data: text,
+                  runtime: runtime,
                   sessionId: sessionId,
                   selectable: selectable,
                   onOpenLink: onOpenLink,
@@ -949,6 +951,7 @@ class ChatContent extends StatelessWidget {
           icon: Icons.psychology_outlined,
           body: (context) => PocketMarkdown(
             data: text,
+            runtime: runtime,
             sessionId: sessionId,
             onOpenLink: onOpenLink,
             onOpenFile: onOpenFile,
@@ -980,11 +983,12 @@ class ChatContent extends StatelessWidget {
   }
 }
 
-/// The maintained Markdown renderer receives Pocket's explicit theme. It never
-/// invokes a default image loader, so model-authored paths cannot read files.
+/// Markdown images use the explicit Session-scoped image reader only after a
+/// reply settles. No default file or network image loader is installed.
 class PocketMarkdown extends StatefulWidget {
   const PocketMarkdown({
     required this.data,
+    this.runtime,
     this.sessionId,
     this.onOpenLink,
     this.onOpenFile,
@@ -992,6 +996,7 @@ class PocketMarkdown extends StatefulWidget {
     super.key,
   });
   final String data;
+  final RuntimeController? runtime;
   final String? sessionId;
   final bool selectable;
   final ChatOpenLink? onOpenLink;
@@ -1156,14 +1161,30 @@ class _PocketMarkdownState extends State<PocketMarkdown> {
           size: 18,
           color: Theme.of(context).colorScheme.primary,
         ),
-        imageBuilder: (uri, title, alt) => PocketTile(
-          leading: const Icon(Icons.image_outlined),
-          title: Text(alt?.isNotEmpty == true ? alt! : title ?? '图片链接'),
-          subtitle: Text(
-            chatExternalUri(uri.toString()) == null ? '需要通过文件入口访问' : '点击打开图片链接',
-          ),
-          onTap: () => unawaited(_open(uri.toString(), allowFile: false)),
-        ),
+        imageBuilder: (uri, title, alt) {
+          final destination = uri.toString();
+          final file = _file(destination);
+          if (file != null && widget.runtime != null) {
+            return PocketInlineImage(
+              key: ValueKey((file.sessionId, file.path)),
+              source: PocketImageSource.workspaceFile(
+                widget.runtime!,
+                file.sessionId,
+                file.path,
+              ),
+              onOpenFile: widget.onOpenFile == null
+                  ? null
+                  : () => widget.onOpenFile!(file),
+            );
+          }
+          final external = chatExternalUri(destination);
+          return PocketTile(
+            leading: const Icon(Icons.image_outlined),
+            title: Text(alt?.isNotEmpty == true ? alt! : title ?? '图片链接'),
+            subtitle: Text(external == null ? '图片暂不可预览' : '点击打开图片链接'),
+            onTap: () => unawaited(_open(destination, allowFile: false)),
+          );
+        },
       ),
       if (_linkError != null)
         Padding(

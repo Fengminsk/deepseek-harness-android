@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { PendingQuestion, createWaterfallRequest } from './question-carrier.mjs'
-import { approvalAuditIdentity, interactionReceiptIdentity } from './interaction-receipts.mjs'
+import { approvalAuditIdentity, interactionReceiptIdentity, originalInteractionSettled } from './interaction-receipts.mjs'
 
 const emptyUplink = { async *[Symbol.asyncIterator]() {} }
 const waitActions = new Set(['holdFocus', 'releaseFocus', 'engage', 'takeTime'])
@@ -21,6 +21,7 @@ export class AppInteractions {
     this.version = 0
     this.error = null
     this.started = null
+    this.receiptSettlements = new Map()
     for (const event of ['session/event', 'agent/created', 'agent/disposed', 'agent/inbox/claimed', 'agent/inbox/discarded']) {
       ctx.on(event, () => {
         queueMicrotask(() => {
@@ -181,7 +182,8 @@ export class AppInteractions {
   reconcile() {
     const continued = new Map()
     const projections = this.ctx.get('sessionProjections')
-    for (const agent of this.ctx.agents.roots()) {
+    const roots = this.ctx.agents.roots()
+    for (const agent of roots) {
       const rows = projections?.stateOf(agent.session, 'userQuestions')?.questions.active ?? []
       const queued = new Set([...agent.inbox.nextStep, ...agent.inbox.nextTurn]
         .filter(message => message.source.kind === 'user-question-reply').map(message => message.source.callId))
@@ -209,7 +211,33 @@ export class AppInteractions {
     for (const record of [...this.records.values()]) {
       if (record.kind === 'question' && record.callId && !record.eventId && !continued.has(record.id)) this.remove(record)
     }
+    const agents = new Map(roots.map(agent => [String(agent.id), agent]))
+    const sendingIdentities = new Set([...this.records.values()].filter(record => record.sending)
+      .map(record => interactionReceiptIdentity(record)).filter(Boolean).map(identity => JSON.stringify(identity)))
+    for (const identity of this.receipts?.startedIdentities() ?? []) {
+      if (sendingIdentities.has(JSON.stringify(identity))) continue
+      const [kind, sessionId, requestId] = identity
+      const agent = agents.get(sessionId)
+      if (!agent || !['approval', 'question'].includes(kind)) continue
+      const reference = kind === 'approval'
+        ? { kind, approvalAuditId: requestId }
+        : { kind, callId: requestId }
+      if (originalInteractionSettled(reference, agent, projections)) this.settleReceipt(identity)
+    }
+    for (const record of [...this.records.values()]) {
+      if (!record.sending && originalInteractionSettled(record, agents.get(record.sessionId), projections)) this.remove(record)
+    }
     this.publish()
+  }
+
+  settleReceipt(identity) {
+    const key = JSON.stringify(identity)
+    if (this.receiptSettlements.has(key)) return
+    const operation = this.receipts.settled(identity).catch(error => {
+      this.error = `原始请求已结束，但本地提交记录未能更新：${error.message}`
+      this.publish()
+    }).finally(() => this.receiptSettlements.delete(key))
+    this.receiptSettlements.set(key, operation)
   }
 
   project(record) {
@@ -332,6 +360,7 @@ export class AppInteractions {
     for (const record of [...this.records.values()]) this.remove(record)
     await this.peer.dispose()
     await this.done
+    await Promise.allSettled(this.receiptSettlements.values())
   }
 }
 

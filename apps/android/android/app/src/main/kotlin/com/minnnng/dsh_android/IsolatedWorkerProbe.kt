@@ -46,7 +46,7 @@ object IsolatedWorkerProbe {
         val replies = Messenger(Handler(Looper.getMainLooper()) { message ->
             if (message.what == IsolatedWorkerService.RESULT) {
                 val data = message.data
-                val received = try { Outcome(report = report(data, markerPath)) }
+                val received = try { Outcome(report = report(data, markerPath, message.sendingUid)) }
                     catch (error: Exception) { Outcome(error = error) }
                 outcome.compareAndSet(null, received)
                 finished.countDown()
@@ -92,10 +92,12 @@ object IsolatedWorkerProbe {
         }
     }
 
-    private fun report(data: Bundle, markerPath: String): Report {
-        data.getString(IsolatedWorkerService.ERROR)?.let { throw IllegalStateException(it) }
+    private fun report(data: Bundle, markerPath: String, senderUid: Int): Report {
         val uid = data.getInt(IsolatedWorkerService.UID, -1)
-        check(uid >= 0 && uid != Process.myUid()) { "Worker did not run under a separate UID" }
+        check(senderUid >= 0 && senderUid == uid && uid != Process.myUid()) {
+            "Worker response did not originate from its reported separate UID"
+        }
+        data.getString(IsolatedWorkerService.ERROR)?.let { throw IllegalStateException(it) }
         check(data.getString(IsolatedWorkerService.PRIVATE_PATH) == markerPath) {
             "Worker checked a different private-file path"
         }

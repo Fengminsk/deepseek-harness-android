@@ -9,6 +9,7 @@ import 'package:material_ui/material_ui.dart';
 
 import 'runtime.dart';
 import 'ui.dart';
+import 'entry_motion.dart';
 
 const pocketImageMediaTypes = {
   'image/png',
@@ -40,9 +41,14 @@ class PocketImagePayload {
 /// Each source is bound to one conversation. No file/network image provider is
 /// accepted; historical images must be authorized by the original Session log.
 class PocketImageSource {
-  const PocketImageSource({required this.name, required this.load});
+  const PocketImageSource({
+    required this.name,
+    required this.load,
+    this.identity,
+  });
   final String name;
   final Future<PocketImagePayload> Function() load;
+  final String? identity;
 
   factory PocketImageSource.session(
     RuntimeController runtime,
@@ -122,6 +128,34 @@ class PocketImageSource {
       return payload;
     },
   );
+
+  /// The original workspaceFiles service resolves this path under the viewed
+  /// Session. The App never turns a Markdown path into a local Android file.
+  factory PocketImageSource.workspaceFile(
+    RuntimeController runtime,
+    String sessionId,
+    String path,
+  ) => PocketImageSource(
+    name: path.split(RegExp(r'[/\\]')).last,
+    identity:
+        '${identityHashCode(runtime)}:${runtime.connectionGeneration}:$sessionId:$path',
+    load: () async {
+      final generation = runtime.connectionGeneration;
+      final value = await runtime.call('chat.image.preview', {
+        'sessionId': sessionId,
+        'path': path,
+      });
+      if (generation != runtime.connectionGeneration) {
+        throw StateError('服务连接已变化，请重试读取图片。');
+      }
+      if (value is! Json ||
+          value['sessionId'] != sessionId ||
+          value['path'] != path) {
+        throw const FormatException('图片读取结果不属于当前会话。');
+      }
+      return _payload(value, value['data'], path.split(RegExp(r'[/\\]')).last);
+    },
+  );
 }
 
 Future<PocketImagePayload> _payload(
@@ -182,6 +216,113 @@ class _PreparedImage {
   final PocketImagePayload payload;
   final int width, height;
   final ImageProvider provider;
+}
+
+/// The compact Chat image owns one visible row. List eviction releases its
+/// decoder; the full-screen viewer performs a fresh Session-authorized read.
+class PocketInlineImage extends StatefulWidget {
+  const PocketInlineImage({super.key, required this.source, this.onOpenFile});
+  final PocketImageSource source;
+  final Future<void> Function()? onOpenFile;
+
+  @override
+  State<PocketInlineImage> createState() => _PocketInlineImageState();
+}
+
+class _PocketInlineImageState extends State<PocketInlineImage> {
+  _PreparedImage? image;
+  String? error;
+  int generation = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(load());
+  }
+
+  @override
+  void didUpdateWidget(PocketInlineImage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.source.identity != widget.source.identity) unawaited(load());
+  }
+
+  Future<void> load() async {
+    final request = ++generation;
+    final old = image;
+    setState(() {
+      image = null;
+      error = null;
+    });
+    if (old != null) unawaited(old.provider.evict());
+    try {
+      final payload = await widget.source.load();
+      if (!mounted || request != generation) return;
+      final prepared = await _prepareImage(payload);
+      if (!mounted || request != generation) {
+        unawaited(prepared.provider.evict());
+        return;
+      }
+      setState(() => image = prepared);
+    } catch (_) {
+      if (mounted && request == generation) setState(() => error = '图片暂时无法预览');
+    }
+  }
+
+  @override
+  void dispose() {
+    generation++;
+    final old = image;
+    if (old != null) unawaited(old.provider.evict());
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final loaded = image;
+    if (loaded == null) {
+      return PocketTile(
+        leading: Icon(
+          error == null ? Icons.image_outlined : Icons.broken_image_outlined,
+        ),
+        title: Text(widget.source.name),
+        subtitle: Text(error ?? '正在加载图片…'),
+        onTap: error == null ? null : () => unawaited(load()),
+        trailing: error == null || widget.onOpenFile == null
+            ? null
+            : GlassButton(
+                icon: Icons.open_in_new_rounded,
+                label: '打开原文件',
+                onPressed: () => unawaited(widget.onOpenFile!()),
+              ),
+      );
+    }
+    return PocketReveal(
+      child: Semantics(
+        button: true,
+        label: '打开图片：${widget.source.name}',
+        child: InkWell(
+          onTap: () => Navigator.of(context).push<void>(
+            PocketRoute<void>(
+              builder: (_) => PocketImagePreview(source: widget.source),
+            ),
+          ),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(
+              minWidth: 160,
+              minHeight: 120,
+              maxHeight: 280,
+            ),
+            child: Image(
+              image: loaded.provider,
+              fit: BoxFit.contain,
+              semanticLabel: widget.source.name,
+              errorBuilder: (_, _, _) => const Text('图片内容无法显示'),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 Future<_PreparedImage> _prepareImage(PocketImagePayload payload) async {

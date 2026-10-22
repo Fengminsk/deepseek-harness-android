@@ -21,6 +21,7 @@ class InteractionRuntime extends RuntimeController {
   final replies = <Json>[];
   final waits = <Json>[];
   final dismissals = <Json>[];
+  final cancellations = <Json>[];
   bool failReply = false;
   bool rejectReply = false;
   bool failRefresh = false;
@@ -87,6 +88,9 @@ class InteractionRuntime extends RuntimeController {
         return {'accepted': true, 'requestStillPending': pending};
       case 'notifications.draft':
         return notificationDraftBarrier?.future ?? {'text': notificationDraft};
+      case 'session.cancel':
+        cancellations.add(clone(params));
+        return {'accepted': true};
       default:
         throw StateError('Unexpected method $method');
     }
@@ -490,6 +494,31 @@ void main() {
       await tester.pumpAndSettle();
       expect(runtime.replies, isEmpty);
       expect(button(tester, '允许一次').onPressed, isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'an uncertain answer offers an explicit stop path while the old answer stays blocked',
+    (tester) async {
+      final runtime = InteractionRuntime([
+        {...approval(), 'submission': 'started'},
+      ]);
+      await openRequest(tester, runtime);
+      expect(find.textContaining('可能已送达，不能重发'), findsOneWidget);
+      await tester.ensureVisible(find.byKey(const Key('stop-uncertain-task')));
+      await tester.tap(find.byKey(const Key('stop-uncertain-task')));
+      await tester.pumpAndSettle();
+      expect(find.text('停止当前任务？'), findsOneWidget);
+      expect(runtime.cancellations, isEmpty);
+      await tester.tap(find.text('请求停止'));
+      await tester.pumpAndSettle();
+      expect(runtime.cancellations, [
+        {'sessionId': 'session-a'},
+      ]);
+      expect(runtime.replies, isEmpty);
+      expect(button(tester, '允许一次').onPressed, isNull);
+      expect(find.textContaining('旧答复仍不可重发'), findsOneWidget);
       await tester.pumpWidget(const SizedBox());
     },
   );

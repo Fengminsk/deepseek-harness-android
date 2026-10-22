@@ -27,6 +27,7 @@ class IsolatedWorkerService : Service() {
         const val RESULT = 2
         const val READ_TEXT = 3
         const val CANCEL = 4
+        const val EDIT_TEXT = 5
         const val INPUT = "input"
         const val REQUEST_ID = "requestId"
         const val TEXT = "text"
@@ -37,6 +38,9 @@ class IsolatedWorkerService : Service() {
         const val PRIVATE_ACCESS = "privateAccess"
         const val PRIVATE_PATH = "privatePath"
         const val ERROR = "error"
+        const val EDIT_NEEDLE = "editNeedle"
+        const val EDIT_REPLACEMENT = "editReplacement"
+        const val EDIT_MAX_REPLACEMENTS = "editMaxReplacements"
     }
 
     private val worker = Executors.newSingleThreadExecutor()
@@ -45,11 +49,17 @@ class IsolatedWorkerService : Service() {
         val id: String,
         val descriptor: ParcelFileDescriptor,
         val reply: Messenger,
+        val edit: IsolatedWorkerTextEdit.Spec?,
         val cancelled: AtomicBoolean = AtomicBoolean(false),
     )
     // Handler callbacks, including onDestroy, own this reference on the main thread.
     private var activeText: TextOperation? = null
     private val messenger = Messenger(Handler(Looper.getMainLooper()) { message ->
+        if (message.sendingUid != applicationInfo.uid) {
+            @Suppress("DEPRECATION")
+            (message.data.getParcelable<ParcelFileDescriptor>(INPUT))?.close()
+            return@Handler true
+        }
         if (message.what == CANCEL) {
             val id = message.data.getString(REQUEST_ID)
             val current = activeText
@@ -63,7 +73,7 @@ class IsolatedWorkerService : Service() {
             }
             return@Handler true
         }
-        if (message.what == READ_TEXT) {
+        if (message.what == READ_TEXT || message.what == EDIT_TEXT) {
             val reply = message.replyTo ?: return@Handler true
             val data = message.data
             val descriptor = @Suppress("DEPRECATION") (data.getParcelable<ParcelFileDescriptor>(INPUT))
@@ -73,12 +83,23 @@ class IsolatedWorkerService : Service() {
                 send(reply, Bundle().apply { putString(ERROR, "Invalid isolated-worker read") })
                 return@Handler true
             }
+            val edit = try {
+                if (message.what == EDIT_TEXT) IsolatedWorkerTextEdit.Spec(
+                    checkNotNull(data.getString(EDIT_NEEDLE)),
+                    checkNotNull(data.getString(EDIT_REPLACEMENT)),
+                    data.getInt(EDIT_MAX_REPLACEMENTS, -1),
+                ) else null
+            } catch (_: Exception) {
+                descriptor.close()
+                send(reply, Bundle().apply { putString(REQUEST_ID, id); putString(ERROR, "Invalid isolated-worker text edit") })
+                return@Handler true
+            }
             if (!busy.compareAndSet(false, true)) {
                 descriptor.close()
                 send(reply, Bundle().apply { putString(REQUEST_ID, id); putString(ERROR, "Isolated worker is busy") })
                 return@Handler true
             }
-            val operation = TextOperation(id, descriptor, reply)
+            val operation = TextOperation(id, descriptor, reply, edit)
             activeText = operation
             try { worker.execute { readText(operation) } }
             catch (_: RejectedExecutionException) {
@@ -168,7 +189,9 @@ class IsolatedWorkerService : Service() {
                 require((Os.fcntlInt(descriptor.fileDescriptor, OsConstants.F_GETFL, 0) and OsConstants.O_ACCMODE) == OsConstants.O_RDONLY) {
                     "Isolated-worker text descriptor must be read-only"
                 }
-                val text = ParcelFileDescriptor.AutoCloseInputStream(descriptor).use { IsolatedWorkerInput.readUtf8(it) }
+                val input = ParcelFileDescriptor.AutoCloseInputStream(descriptor).use { IsolatedWorkerInput.readUtf8(it) }
+                check(!operation.cancelled.get()) { "Isolated-worker read cancelled" }
+                val text = operation.edit?.let { IsolatedWorkerTextEdit.replace(input, it) } ?: input
                 check(!operation.cancelled.get()) { "Isolated-worker read cancelled" }
                 result.putInt(UID, Process.myUid())
                 result.putString(TEXT, text)
@@ -191,6 +214,7 @@ class IsolatedWorkerService : Service() {
     } catch (_: IllegalArgumentException) { false }
 
     private fun send(reply: Messenger, data: Bundle) {
+        if (!data.containsKey(UID)) data.putInt(UID, Process.myUid())
         try { reply.send(Message.obtain(null, RESULT).apply { this.data = data }) }
         catch (_: RemoteException) { /* Caller death closes its descriptor and owns the timeout. */ }
     }

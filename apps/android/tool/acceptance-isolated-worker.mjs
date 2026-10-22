@@ -12,14 +12,19 @@ const output = mkdtempSync(join(temporaryRoot, 'pocket-isolated-worker-'))
 try {
   const sources = [
     'android/app/src/main/java/com/minnnng/dsh_android/IsolatedWorkerInput.java',
+    'android/app/src/main/java/com/minnnng/dsh_android/IsolatedWorkerTextEdit.java',
     'android/app/src/main/java/com/minnnng/dsh_android/IsolatedWorkerWriteback.java',
     'android/app/src/test/java/com/minnnng/dsh_android/IsolatedWorkerInputTest.java',
+    'android/app/src/test/java/com/minnnng/dsh_android/IsolatedWorkerTextEditTest.java',
     'android/app/src/test/java/com/minnnng/dsh_android/IsolatedWorkerWritebackTest.java',
   ].map(path => join(project, path))
   execFileSync('javac', ['-encoding', 'UTF-8', '-d', output, ...sources], {
     stdio: 'inherit', windowsHide: true,
   })
   execFileSync('java', ['-cp', output, 'com.minnnng.dsh_android.IsolatedWorkerInputTest'], {
+    stdio: 'inherit', windowsHide: true,
+  })
+  execFileSync('java', ['-cp', output, 'com.minnnng.dsh_android.IsolatedWorkerTextEditTest'], {
     stdio: 'inherit', windowsHide: true,
   })
   execFileSync('java', [`-Djava.io.tmpdir=${output}`, '-cp', output, 'com.minnnng.dsh_android.IsolatedWorkerWritebackTest'], {

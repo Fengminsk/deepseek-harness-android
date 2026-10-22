@@ -14,12 +14,16 @@ export class InteractionReceipts {
   constructor() {
     this.directory = undefined
     this.entries = new Map()
+    this.identitiesByHash = new Map()
+    this.writes = new Map()
   }
 
   async initialize(privateRoot) {
     if (typeof privateRoot !== 'string' || !privateRoot) throw new TypeError('Private storage root is required')
     this.directory = join(privateRoot, 'interaction-replies-v1')
     await mkdir(this.directory, { recursive: true, mode: 0o700 })
+    this.entries.clear()
+    this.identitiesByHash.clear()
     for (const name of await readdir(this.directory)) {
       if (!/^[a-f0-9]{64}\.json$/.test(name)) continue
       const hash = name.slice(0, -5)
@@ -27,8 +31,9 @@ export class InteractionReceipts {
         const entry = JSON.parse(await readFile(join(this.directory, name), 'utf8'))
         if (entry.version !== 1 || !Array.isArray(entry.identity)
           || identityHash(entry.identity) !== hash
-          || !['started', 'accepted'].includes(entry.phase)) throw new Error('Invalid receipt')
+          || !['started', 'accepted', 'settled'].includes(entry.phase)) throw new Error('Invalid receipt')
         this.entries.set(hash, entry.phase)
+        this.identitiesByHash.set(hash, entry.identity)
       } catch {
         // An incomplete marker is evidence of a possible prior submission.
         // Keep just its filename-derived identity blocked; other requests work.
@@ -39,6 +44,12 @@ export class InteractionReceipts {
 
   phase(identity) {
     return this.entries.get(identityHash(identity))
+  }
+
+  /** Valid undecided markers that can be compared with original Session state. */
+  startedIdentities() {
+    return [...this.identitiesByHash].filter(([hash]) => this.entries.get(hash) === 'started')
+      .map(([, identity]) => identity)
   }
 
   async begin(identity) {
@@ -58,6 +69,7 @@ export class InteractionReceipts {
         try { await directoryHandle.sync() } finally { await directoryHandle.close() }
       }
       this.entries.set(hash, 'started')
+      this.identitiesByHash.set(hash, identity)
       return true
     } catch (error) {
       // An incomplete marker or lost write receipt is uncertain, not a reason
@@ -71,15 +83,35 @@ export class InteractionReceipts {
   }
 
   async accepted(identity) {
+    await this.record(identity, 'accepted')
+  }
+
+  /** A logged original DSH decision closes a request, without claiming which client answered. */
+  async settled(identity) {
+    await this.record(identity, 'settled')
+  }
+
+  async record(identity, phase) {
     if (!this.directory) throw new Error('Private interaction receipt storage is not ready')
     const hash = identityHash(identity)
+    const previous = this.writes.get(hash) ?? Promise.resolve()
+    const operation = previous.catch(() => {}).then(() => this.persistPhase(identity, phase))
+    this.writes.set(hash, operation)
+    try { await operation } finally {
+      if (this.writes.get(hash) === operation) this.writes.delete(hash)
+    }
+  }
+
+  async persistPhase(identity, phase) {
+    const hash = identityHash(identity)
     if (!this.entries.has(hash)) throw new Error('Missing interaction receipt')
+    if (this.entries.get(hash) !== 'started') return
     const file = join(this.directory, `${hash}.json`)
     const temporary = join(this.directory, `${hash}.${randomUUID()}.tmp`)
     let handle
     try {
       handle = await open(temporary, 'wx', 0o600)
-      await handle.writeFile(JSON.stringify({ version: 1, identity, phase: 'accepted' }) + '\n')
+      await handle.writeFile(JSON.stringify({ version: 1, identity, phase }) + '\n')
       await handle.sync()
       await handle.close()
       handle = undefined
@@ -93,11 +125,15 @@ export class InteractionReceipts {
           await new Promise(resolve => setTimeout(resolve, Math.min(20 * 2 ** attempt, 200)))
         }
       }
+      if (process.platform !== 'win32') {
+        const directoryHandle = await open(this.directory, 'r')
+        try { await directoryHandle.sync() } finally { await directoryHandle.close() }
+      }
     } finally {
       await handle?.close()
       await rm(temporary, { force: true })
     }
-    this.entries.set(hash, 'accepted')
+    this.entries.set(hash, phase)
   }
 }
 
@@ -124,4 +160,26 @@ export function interactionReceiptIdentity(record) {
   }
   if (record.callId) return ['question', record.sessionId, record.callId]
   return record.eventId ? ['unnamed-question', record.sessionId, record.eventId] : undefined
+}
+
+/** Only an original logged decision or settled question proves the request is closed. */
+export function originalInteractionSettled(record, agent, projections) {
+  if (!agent?.session) return false
+  if (record.kind === 'approval') {
+    if (!record.approvalAuditId) return false
+    for (let seq = agent.session.seq - 1; seq >= 0; seq--) {
+      const event = agent.session.eventAt(seq)
+      if (event?.type === 'approval/decided' && event.data.id === record.approvalAuditId) return true
+    }
+    return false
+  }
+  if (!record.callId) return false
+  const state = projections?.stateOf(agent.session, 'userQuestions')?.questions
+  if (state?.settled?.some(question => question.callId === record.callId)) return true
+  if (!state || state.active?.some(question => question.callId === record.callId)) return false
+  for (let seq = agent.session.seq - 1; seq >= 0; seq--) {
+    const event = agent.session.eventAt(seq)
+    if (event?.type === 'tool/result' && event.data.message.toolCallId === record.callId) return true
+  }
+  return false
 }

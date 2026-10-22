@@ -6,6 +6,7 @@ import 'package:material_ui/material_ui.dart';
 import 'approvals_draft.dart';
 import 'approvals_notifications.dart';
 import 'chat_plan.dart';
+import 'confirmation.dart';
 import 'runtime.dart';
 import 'ui.dart';
 
@@ -183,6 +184,8 @@ class _RequestDetailState extends State<_RequestDetail>
   bool engaged = false;
   bool hasLocalEdits = false;
   bool notificationDraftRead = false;
+  bool confirmStop = false;
+  bool stopping = false;
   int refreshEpoch = 0;
   int replyEpoch = 0;
   String? error;
@@ -232,7 +235,8 @@ class _RequestDetailState extends State<_RequestDetail>
       final hostSubmission = match['submission'];
       final evidence = _draftsFor(widget.runtime)
           .submissionEvidence(widget.requestId, version!);
-      if (hostSubmission == 'started' || evidence == SubmissionEvidence.unconfirmed) {
+      if (hostSubmission == 'started' ||
+          evidence == SubmissionEvidence.unconfirmed) {
         uncertain = true;
         error ??= hostSubmission == 'started'
             ? 'Host 记录此请求已有一次提交，但结果尚未确认。进程重启和刷新后仍不能凭待处理状态重发答复。'
@@ -471,6 +475,29 @@ class _RequestDetailState extends State<_RequestDetail>
     }
   }
 
+  Future<void> stopUncertainTask() async {
+    final sessionId = lastRequest?['sessionId'];
+    if (sessionId is! String || stopping || !available) return;
+    setState(() {
+      confirmStop = false;
+      stopping = true;
+    });
+    try {
+      await widget.runtime.call('session.cancel', {'sessionId': sessionId});
+      if (!mounted) return;
+      setState(() {
+        status = '已请求停止当前任务。旧答复仍不可重发；请回到会话核查执行结果，再决定是否发起新请求。';
+      });
+      await refresh();
+    } catch (failure) {
+      if (mounted) {
+        setState(() => error = '无法确认任务已停止：$failure\n旧答复仍不可重发，请先核查会话与任务状态。');
+      }
+    } finally {
+      if (mounted) setState(() => stopping = false);
+    }
+  }
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
@@ -499,7 +526,11 @@ class _RequestDetailState extends State<_RequestDetail>
     final preview = planReview == null
         ? null
         : planReviewPreview(planReview.plan);
-    return PocketScaffold(
+    final unresolved =
+        available &&
+        !submitted &&
+        (uncertain || request?['submission'] == 'started');
+    final page = PocketScaffold(
       title: Text(approval ? '授权请求' : 'Agent 提问'),
       trailing: GlassButton(
         icon: Icons.refresh_rounded,
@@ -572,6 +603,26 @@ class _RequestDetailState extends State<_RequestDetail>
             Padding(
               padding: const EdgeInsets.fromLTRB(8, 0, 8, 20),
               child: Text(status!, key: const Key('interaction-status')),
+            ),
+          if (unresolved)
+            PocketSection(
+              title: '答复状态未确认',
+              children: [
+                const PocketRow(
+                  icon: Icons.info_outline_rounded,
+                  title: '可能已送达，不能重发',
+                  subtitle:
+                      '核对请求状态只能发现已结案结果；待处理状态不能证明原答复没有送达。可停止当前任务，回会话核查后另发新请求。',
+                ),
+                PocketRow(
+                  key: const Key('stop-uncertain-task'),
+                  icon: Icons.stop_circle_outlined,
+                  title: stopping ? '正在请求停止' : '停止当前任务',
+                  onTap: stopping || sending
+                      ? null
+                      : () => setState(() => confirmStop = true),
+                ),
+              ],
             ),
           if (!available &&
               !loading &&
@@ -723,6 +774,25 @@ class _RequestDetailState extends State<_RequestDetail>
               ),
           ],
         ],
+      ),
+    );
+    return PopScope<void>(
+      canPop: !confirmStop,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && confirmStop) setState(() => confirmStop = false);
+      },
+      child: PocketConfirmationLayer(
+        confirmation: confirmStop
+            ? PocketConfirmation(
+                title: '停止当前任务？',
+                message: '此前的答复可能已经送达。停止任务不会撤销已执行的操作，也不会允许重发旧答复。请先核查会话和文件变化，再决定是否发起新请求。',
+                secondaryLabel: '返回',
+                onSecondary: () => setState(() => confirmStop = false),
+                primaryLabel: '请求停止',
+                onPrimary: stopping ? null : stopUncertainTask,
+              )
+            : null,
+        child: page,
       ),
     );
   }

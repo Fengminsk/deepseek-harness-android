@@ -27,6 +27,18 @@ public final class IsolatedWorkerWriteback {
 
     public record Receipt(String previousSha256, String sha256, int bytes) {}
 
+    /** Immutable App-side snapshot; the worker receives only its separately opened descriptor. */
+    public static final class Snapshot {
+        private final String sha256;
+        private final byte[] content;
+        private Snapshot(String sha256, byte[] content) {
+            this.sha256 = sha256;
+            this.content = content.clone();
+        }
+        public String sha256() { return sha256; }
+        public byte[] content() { return content.clone(); }
+    }
+
     /** A post-rename sync failure leaves the new file visible; callers must inspect it before retrying. */
     public static final class CommitUncertain extends IOException {
         public final Receipt receipt;
@@ -52,6 +64,23 @@ public final class IsolatedWorkerWriteback {
     public String version(String filename) throws IOException {
         synchronized (COMMIT_LOCK) {
             return revision(target(filename));
+        }
+    }
+
+    /** Snapshot one App-selected direct child with a content revision for later writeback. */
+    public Snapshot snapshot(String filename, BooleanSupplier cancelled) throws IOException {
+        synchronized (COMMIT_LOCK) {
+            checkCancelled(cancelled);
+            Path source = target(filename);
+            if (!Files.isRegularFile(source, LinkOption.NOFOLLOW_LINKS))
+                throw new IOException("Workspace source is not a regular file");
+            byte[] content;
+            try (InputStream input = Files.newInputStream(source, LinkOption.NOFOLLOW_LINKS)) {
+                content = readBounded(input, cancelled);
+            }
+            IsolatedWorkerInput.readUtf8(new ByteArrayInputStream(content));
+            checkCancelled(cancelled);
+            return new Snapshot(hash(content), content);
         }
     }
 
@@ -132,11 +161,23 @@ public final class IsolatedWorkerWriteback {
         if (!Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS))
             throw new IOException("Workspace target is not a regular file");
         try (InputStream input = Files.newInputStream(target, LinkOption.NOFOLLOW_LINKS)) {
-            byte[] value = input.readNBytes(IsolatedWorkerInput.MAX_TEXT_BYTES + 1);
-            if (value.length > IsolatedWorkerInput.MAX_TEXT_BYTES)
-                throw new IOException("Workspace target exceeds 64 KiB");
-            return hash(value);
+            return hash(readBounded(input, () -> false));
         }
+    }
+
+    private static byte[] readBounded(InputStream input, BooleanSupplier cancelled) throws IOException {
+        byte[] content = new byte[IsolatedWorkerInput.MAX_TEXT_BYTES + 1];
+        int count = 0;
+        while (count < content.length) {
+            checkCancelled(cancelled);
+            int read = input.read(content, count, Math.min(8192, content.length - count));
+            if (read < 0) break;
+            count += read;
+        }
+        checkCancelled(cancelled);
+        if (count > IsolatedWorkerInput.MAX_TEXT_BYTES)
+            throw new IOException("Workspace target exceeds 64 KiB");
+        return java.util.Arrays.copyOf(content, count);
     }
 
     private static boolean validRevision(String value) {

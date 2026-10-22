@@ -22,6 +22,7 @@ import { AppAttachments } from './attachments.mjs'
 import { createRuntimeTransport } from './transport.mjs'
 import { AppDocumentSearch } from './document-search.mjs'
 import { AppDocumentPreview, PRIVATE_WORKSPACE_SCOPE } from './document-preview.mjs'
+import { AppChatImages } from './chat-images.mjs'
 import { AppReferenceDiscovery } from './reference-discovery.mjs'
 import { AppWorkspaceChanges } from './workspace-changes.mjs'
 import { maskUserText } from './user-text-mask.mjs'
@@ -59,6 +60,10 @@ export const Config = Schema.object({
   documentPreviewLeaseTimeoutMs: Schema.natural().min(1000).max(600000).default(120000).volatile(),
   documentPreviewRequestTimeoutMs: Schema.natural().min(100).max(300000).default(90000).volatile(),
   documentPreviewCloseTimeoutMs: Schema.natural().min(100).max(30000).default(5000).volatile(),
+  chatImagePreviewMaxBytes: Schema.natural().min(1024).max(8388608).default(8388608).volatile(),
+  chatImagePreviewMaxRequests: Schema.natural().min(1).max(16).default(4).volatile(),
+  chatImagePreviewTimeoutMs: Schema.natural().min(100).max(300000).default(30000).volatile(),
+  chatImagePreviewCloseTimeoutMs: Schema.natural().min(100).max(30000).default(5000).volatile(),
   referenceMaxRequests: Schema.natural().min(1).max(16).default(4).volatile(),
   referenceRequestTimeoutMs: Schema.natural().min(100).max(300000).default(15000).volatile(),
   referenceCloseTimeoutMs: Schema.natural().min(100).max(30000).default(5000).volatile(),
@@ -265,6 +270,11 @@ export function apply(ctx, config) {
     leaseTimeoutMs: config.documentPreviewLeaseTimeoutMs.get(), requestTimeoutMs: config.documentPreviewRequestTimeoutMs.get(),
     closeTimeoutMs: config.documentPreviewCloseTimeoutMs.get(),
   }) })
+  const chatImages = new AppChatImages({ invoke, mimeType: path => mediaMime.lookup(path) || null,
+    limits: () => ({ maxBytes: Math.min(config.chatImagePreviewMaxBytes.get(),
+      ctx.get('attachments')?.imageLimits?.maxImageBytes ?? 0),
+    maxRequests: config.chatImagePreviewMaxRequests.get(), timeoutMs: config.chatImagePreviewTimeoutMs.get(),
+    closeTimeoutMs: config.chatImagePreviewCloseTimeoutMs.get() }) })
   const terminals = new AppTerminals({
     resolveDirectory: async sessionId => {
       const found = await ctx.sessionController.resolveAgent(sessionId)
@@ -353,6 +363,7 @@ export function apply(ctx, config) {
             requiredString(params.method, 'method'), params.args ?? {})
         } catch (error) { return remoteFailure(error) }
       }
+      case 'chat.image.preview': return chatImages.preview(params)
       case 'api.subscribe': return streams.subscribe(params)
       case 'api.ack': return streams.ack(params)
       case 'api.unsubscribe': return streams.unsubscribe(params)
@@ -473,7 +484,7 @@ export function apply(ctx, config) {
         () => terminals.dispose(),
         () => live.close(),
         () => history.close(),
-        () => streams.close(), () => documentPreview.close(), () => references.close(), () => workspaceChanges.close(),
+        () => streams.close(), () => documentPreview.close(), () => chatImages.close(), () => references.close(), () => workspaceChanges.close(),
         () => interactions.close(), () => web.close(),
       ].map(close => Promise.resolve().then(close)))
       // Stream and interaction owners release their peer before the shared API peer.

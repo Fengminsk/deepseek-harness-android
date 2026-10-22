@@ -765,6 +765,22 @@ void main() {
     (tester) async {
       final runtime = _Runtime();
       final opened = <Json>[];
+      Map<dynamic, dynamic>? copied;
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        (call) async {
+          if (call.method == 'Clipboard.setData') {
+            copied = call.arguments as Map;
+          }
+          return null;
+        },
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform,
+          null,
+        ),
+      );
       tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
         RuntimeController.channel,
         (call) async {
@@ -808,6 +824,22 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(opened.single['url'], contains('/dsh/authorize'));
+      expect(
+        Uri.parse(opened.single['url'] as String).queryParameters['theme'],
+        'light',
+      );
+      await tester.ensureVisible(find.text('复制授权链接'));
+      await tester.tap(find.text('复制授权链接'));
+      await tester.pump();
+      expect(
+        Uri.parse(copied!['text'] as String).queryParameters['opaque'],
+        'fixture',
+      );
+      expect(
+        Uri.parse(copied!['text'] as String).queryParameters['theme'],
+        'light',
+      );
+      expect(find.text('已复制授权链接'), findsOneWidget);
       expect(find.text('本机已保存登录凭据'), findsNothing);
       expect(
         runtime.calls.any((item) => '${item['rpc']}'.startsWith('web.')),
