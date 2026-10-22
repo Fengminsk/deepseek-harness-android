@@ -24,6 +24,11 @@ class _JobsRuntime extends RuntimeController {
   final resumeArguments = <Json Function()>[];
   final calls = <Json>[];
   int cancellations = 0;
+  int replacementGeneration = 0;
+  Completer<Json>? stopReply;
+
+  @override
+  int get connectionGeneration => replacementGeneration;
 
   @override
   Stream<Json> watchApi(
@@ -47,6 +52,10 @@ class _JobsRuntime extends RuntimeController {
   @override
   Future<dynamic> call(String method, [Json params = const {}]) async {
     calls.add({'method': method, ...params});
+    if (params['namespace'] == 'job' && params['method'] == 'kill') {
+      final pending = stopReply;
+      if (pending != null) return pending.future;
+    }
     return {'outcome': 'requested'};
   }
 }
@@ -203,4 +212,232 @@ void main() {
       });
     },
   );
+
+  for (final replacement in [
+    'watch',
+    'runtime',
+    'observation',
+    'disconnected',
+  ]) {
+    for (final failed in [false, true]) {
+      testWidgets(
+        'old stop ${failed ? 'failure' : 'success'} cannot change the $replacement successor',
+        (tester) async {
+          final runtime = _JobsRuntime();
+          final reply = Completer<Json>();
+          runtime.stopReply = reply;
+          addTearDown(() async {
+            if (!reply.isCompleted) reply.complete({'outcome': 'requested'});
+            await tester.pumpWidget(const SizedBox());
+            await tester.pump();
+            for (final feed in runtime.feeds) {
+              await feed.close();
+            }
+            runtime.dispose();
+          });
+          await tester.pumpWidget(
+            _host(
+              JobOutputPage(
+                runtime: runtime,
+                sessionId: 'session-a',
+                job: _job('running'),
+              ),
+            ),
+          );
+          await tester.pumpAndSettle();
+          runtime.feeds.single.add({
+            'type': 'item',
+            'value': {'type': 'opened', 'job': _job('running'), 'from': 0},
+          });
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('停止子进程'));
+          await tester.pumpAndSettle();
+          expect(runtime.calls, hasLength(1));
+          expect(reply.isCompleted, isFalse);
+          expect(find.text('正在停止'), findsOneWidget);
+
+          switch (replacement) {
+            case 'watch':
+              await tester.tap(find.byTooltip('重新连接任务输出'));
+              await tester.pumpAndSettle();
+              expect(runtime.feeds, hasLength(2));
+              runtime.feeds.last.add({
+                'type': 'item',
+                'value': {'type': 'opened', 'job': _job('running'), 'from': 0},
+              });
+            case 'runtime':
+              // The runtime invalidates ownership before delivery of a new
+              // stream baseline, so a late reply can land in that interval.
+              runtime.replacementGeneration++;
+            case 'observation':
+              runtime.feeds.single.add({'type': 'opening'});
+              runtime.feeds.single.add({
+                'type': 'item',
+                'value': {'type': 'opened', 'job': _job('running'), 'from': 0},
+              });
+            case 'disconnected':
+              runtime.feeds.single.add({'type': 'disconnected'});
+          }
+          await tester.pumpAndSettle();
+          if (failed) {
+            reply.completeError(StateError('old stop transport failed'));
+          } else {
+            reply.complete({'outcome': 'requested'});
+          }
+          await tester.pumpAndSettle();
+          expect(find.text('停止请求已接受，等待任务结束。'), findsNothing);
+          expect(find.textContaining('停止请求的结果未确认'), findsNothing);
+          expect(
+            find.text(switch (replacement) {
+              'runtime' => '正在停止',
+              'disconnected' => '核对停止状态',
+              _ => '停止子进程',
+            }),
+            findsOneWidget,
+          );
+          if (replacement == 'watch' || replacement == 'observation') {
+            expect(find.text('任务仍在运行，如需停止请重新发起。'), findsOneWidget);
+          } else if (replacement == 'disconnected') {
+            expect(find.text('停止结果待核对，恢复输出后确认任务状态。'), findsOneWidget);
+            expect(find.text('输出连接中断；已读内容保留，恢复后从原位置继续读取。'), findsOneWidget);
+          }
+          expect(runtime.calls, hasLength(1));
+        },
+      );
+    }
+  }
+
+  for (final settled in [false, true]) {
+    testWidgets(
+      settled ? 'terminal output outranks a delayed stop failure' : 'current stop failure remains visible without replaying the request',
+      (tester) async {
+        final runtime = _JobsRuntime();
+        final reply = Completer<Json>();
+        runtime.stopReply = reply;
+        addTearDown(() async {
+          if (!reply.isCompleted) reply.complete({'outcome': 'requested'});
+          await tester.pumpWidget(const SizedBox());
+          await tester.pump();
+          for (final feed in runtime.feeds) {
+            await feed.close();
+          }
+          runtime.dispose();
+        });
+        await tester.pumpWidget(
+          _host(
+            JobOutputPage(
+              runtime: runtime,
+              sessionId: 'session-a',
+              job: _job('running'),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        runtime.feeds.single.add({
+          'type': 'item',
+          'value': {'type': 'opened', 'job': _job('running'), 'from': 0},
+        });
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('停止子进程'));
+        await tester.pumpAndSettle();
+        expect(runtime.calls, hasLength(1));
+        expect(reply.isCompleted, isFalse);
+        if (settled) {
+          runtime.feeds.single.add({
+            'type': 'item',
+            'value': {'type': 'status', 'job': _job('killed')},
+          });
+          await tester.pumpAndSettle();
+          expect(find.text('已停止'), findsOneWidget);
+        }
+        reply.completeError(StateError('late stop failure'));
+        await tester.pumpAndSettle();
+        expect(
+          find.textContaining('停止请求的结果未确认'),
+          settled ? findsNothing : findsOneWidget,
+        );
+        expect(find.text('正在停止'), findsNothing);
+        expect(find.text(settled ? '已停止' : '停止子进程'), findsOneWidget);
+        expect(runtime.calls, hasLength(1));
+      },
+    );
+  }
+
+  for (final status in ['running', 'stopping', 'completed']) {
+    testWidgets('reopened $status baseline replaces an old stop receipt', (
+      tester,
+    ) async {
+      final runtime = _JobsRuntime();
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox());
+        await tester.pump();
+        for (final feed in runtime.feeds) {
+          await feed.close();
+        }
+        runtime.dispose();
+      });
+      await tester.pumpWidget(
+        _host(
+          JobOutputPage(
+            runtime: runtime,
+            sessionId: 'session-a',
+            job: _job('running'),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      runtime.feeds.single.add({
+        'type': 'item',
+        'value': {'type': 'opened', 'job': _job('running'), 'from': 0},
+      });
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('停止子进程'));
+      await tester.pumpAndSettle();
+      expect(find.text('停止请求已接受，等待任务结束。'), findsOneWidget);
+
+      runtime.feeds.single.add({'type': 'disconnected'});
+      await tester.pumpAndSettle();
+      expect(find.text('停止请求已接受，等待任务结束。'), findsNothing);
+      expect(find.text('停止结果待核对，恢复输出后确认任务状态。'), findsOneWidget);
+      expect(find.text('核对停止状态'), findsOneWidget);
+      runtime.feeds.single.add({'type': 'opening'});
+      runtime.feeds.single.add({
+        'type': 'item',
+        'value': {'type': 'opened', 'job': _job(status), 'from': 0},
+      });
+      await tester.pumpAndSettle();
+      expect(find.text('停止结果待核对，恢复输出后确认任务状态。'), findsNothing);
+      expect(find.text('核对停止状态'), findsNothing);
+      expect(
+        find.text(switch (status) {
+          'running' => '任务仍在运行，如需停止请重新发起。',
+          'stopping' => '任务正在停止，等待最终输出。',
+          _ => '任务已结束，正在读取最终输出。',
+        }),
+        findsOneWidget,
+      );
+      expect(runtime.calls, hasLength(1));
+
+      if (status == 'running') {
+        // A new user gesture may request a stop after an authoritative running
+        // baseline; reconnect itself must never replay the previous command.
+        await tester.tap(find.text('停止子进程'));
+        await tester.pumpAndSettle();
+        expect(runtime.calls, hasLength(2));
+        expect(find.text('停止请求已接受，等待任务结束。'), findsOneWidget);
+      }
+      runtime.feeds.single.add({
+        'type': 'item',
+        'value': {
+          'type': 'status',
+          'job': _job(status == 'completed' ? 'completed' : 'killed'),
+        },
+      });
+      await tester.pumpAndSettle();
+      expect(find.text(status == 'completed' ? '已完成' : '已停止'), findsOneWidget);
+      expect(find.text('停止请求已接受，等待任务结束。'), findsNothing);
+      expect(find.text('任务正在停止，等待最终输出。'), findsNothing);
+      expect(find.text('任务已结束，正在读取最终输出。'), findsNothing);
+    });
+  }
 }

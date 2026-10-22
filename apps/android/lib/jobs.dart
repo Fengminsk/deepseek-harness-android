@@ -173,7 +173,9 @@ class _JobOutputPageState extends State<JobOutputPage> {
   final output = JobOutput();
   StreamSubscription<Json>? subscription;
   int generation = 0;
+  int observationGeneration = 0;
   bool current = false, stopping = false;
+  bool stopNeedsReconcile = false;
   String? error, actionError, notice;
   String get jobId => widget.job['id'] as String;
 
@@ -187,6 +189,7 @@ class _JobOutputPageState extends State<JobOutputPage> {
   Future<void> watch() async {
     final attempt = ++generation;
     setState(() {
+      invalidateObservation();
       current = false;
       error = null;
     });
@@ -209,16 +212,29 @@ class _JobOutputPageState extends State<JobOutputPage> {
             if (!mounted || attempt != generation) return;
             setState(() {
               if (frame['type'] == 'item') {
-                output.apply(frame['value'] as Json);
+                final value = frame['value'] as Json;
+                output.apply(value);
                 current = true;
                 error = null;
+                if (value['type'] == 'opened' && stopNeedsReconcile) {
+                  stopNeedsReconcile = false;
+                  stopping = output.job?['status'] == 'stopping';
+                  notice = switch (output.job?['status']) {
+                    'running' => '任务仍在运行，如需停止请重新发起。',
+                    'stopping' => '任务正在停止，等待最终输出。',
+                    _ => '任务已结束，正在读取最终输出。',
+                  };
+                }
                 if (output.settled) {
                   stopping = false;
+                  stopNeedsReconcile = false;
                   notice = null;
                 }
               } else if (frame['type'] == 'opening') {
+                invalidateObservation();
                 current = false;
               } else if (frame['type'] == 'disconnected') {
+                invalidateObservation();
                 current = false;
                 error = '输出连接中断；已读内容保留，恢复后从原位置继续读取。';
               }
@@ -227,6 +243,7 @@ class _JobOutputPageState extends State<JobOutputPage> {
           onError: (Object failure) {
             if (mounted && attempt == generation) {
               setState(() {
+                invalidateObservation();
                 current = false;
                 error = '无法继续读取输出：$failure';
               });
@@ -235,6 +252,7 @@ class _JobOutputPageState extends State<JobOutputPage> {
           onDone: () {
             if (!mounted || attempt != generation || output.settled) return;
             setState(() {
+              invalidateObservation();
               current = false;
               error ??= '输出连接已结束，任务结果尚未确认。';
             });
@@ -242,28 +260,53 @@ class _JobOutputPageState extends State<JobOutputPage> {
         );
   }
 
+  void invalidateObservation() {
+    observationGeneration++;
+    if (stopping) {
+      stopNeedsReconcile = true;
+      notice = '停止结果待核对，恢复输出后确认任务状态。';
+    }
+  }
+
   Future<void> stop() async {
     if (stopping || !current || !widget.runtime.ready) return;
+    final runtime = widget.runtime;
+    final connection = runtime.connectionGeneration;
+    final watch = generation;
+    final observation = observationGeneration;
+    // A stream can reopen within the same page and runtime connection. A stop
+    // receipt belongs only to the observation that issued it; it is never replayed.
+    bool ownsReceipt() =>
+        mounted &&
+        identical(widget.runtime, runtime) &&
+        connection == runtime.connectionGeneration &&
+        watch == generation &&
+        observation == observationGeneration &&
+        current &&
+        runtime.ready &&
+        !output.settled;
     setState(() {
       stopping = true;
+      stopNeedsReconcile = false;
       actionError = null;
+      notice = null;
     });
     try {
-      final result = await widget.runtime.call('api.call', {
+      final result = await runtime.call('api.call', {
         'namespace': 'job',
         'method': 'kill',
         'args': {
           'request': {'sessionId': widget.sessionId, 'jobId': jobId},
         },
       }) as Json;
-      if (!mounted || output.settled) return;
+      if (!ownsReceipt()) return;
       setState(
         () => notice = result['outcome'] == 'already-finished'
             ? '任务已结束，正在核对最终输出。'
             : '停止请求已接受，等待任务结束。',
       );
     } catch (failure) {
-      if (mounted) {
+      if (ownsReceipt()) {
         setState(() {
           stopping = false;
           actionError = '停止请求的结果未确认：$failure';
@@ -330,7 +373,13 @@ class _JobOutputPageState extends State<JobOutputPage> {
                         onPressed: !current || !widget.runtime.ready || stopping
                             ? null
                             : stop,
-                        child: Text(stopping ? '正在停止' : '停止子进程'),
+                        child: Text(
+                          stopNeedsReconcile
+                              ? '核对停止状态'
+                              : stopping
+                              ? '正在停止'
+                              : '停止子进程',
+                        ),
                       ),
                   ],
                 ),

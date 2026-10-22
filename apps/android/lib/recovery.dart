@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:material_ui/material_ui.dart';
 
 import 'recovery_data.dart';
+import 'confirmation.dart';
 import 'runtime.dart';
 import 'ui.dart';
 import 'text_document_page.dart';
@@ -31,6 +32,41 @@ String _operationState(dynamic state) => switch (state) {
   _ => '结果未确认',
 };
 
+String _operationName(dynamic method) => switch (method) {
+  'write' => '保存启动配置',
+  'restore' => '恢复配置备份',
+  'runtimeRepair' => '修复内嵌运行资源',
+  _ => '其他维护操作',
+};
+
+String _recordTime(dynamic value) {
+  if (value is! int || value <= 0) return '时间未记录';
+  final date = DateTime.fromMillisecondsSinceEpoch(value).toLocal();
+  String pad(int n) => n.toString().padLeft(2, '0');
+  return '${date.year}-${pad(date.month)}-${pad(date.day)} '
+      '${pad(date.hour)}:${pad(date.minute)}';
+}
+
+Widget _operationDetails(Json operation) => TextDocumentRow(
+  title: '查看技术详情',
+  icon: Icons.info_outline_rounded,
+  selectable: true,
+  monospace: true,
+  text: [
+    '操作：${_operationName(operation['method'])}',
+    '状态：${_operationState(operation['state'])}',
+    for (final key in [
+      'method',
+      'requestId',
+      'fileId',
+      'generation',
+      'sha256',
+      'backupId',
+    ])
+      if (operation[key] != null) '$key: ${operation[key]}',
+  ].join('\n'),
+);
+
 class RecoveryPage extends StatefulWidget {
   const RecoveryPage({super.key, required this.controller});
   final RecoveryController controller;
@@ -39,7 +75,7 @@ class RecoveryPage extends StatefulWidget {
 }
 
 class _RecoveryPageState extends State<RecoveryPage> {
-  bool confirmMaintenance = false, confirmRepair = false;
+  bool confirmMaintenance = false;
   RecoveryController get controller => widget.controller;
 
   @override
@@ -60,275 +96,479 @@ class _RecoveryPageState extends State<RecoveryPage> {
   Widget build(BuildContext context) => AnimatedBuilder(
     animation: controller,
     builder: (context, _) {
-      // Native transition admission is independent of inspecting damaged files.
-      // Only configuration writes require a fresh, writable maintenance snapshot.
+      // Native mode admission remains available when configuration inspection fails.
       final canAct = !controller.working;
-      return PocketScaffold(
-        title: const Text('启动配置与恢复'),
-        trailing: GlassButton(
-          icon: Icons.refresh_rounded,
-          label: '刷新恢复状态',
-          onPressed: controller.loading ? null : controller.load,
-        ),
-        body: PocketList(
-          children: [
-            PocketSection(
-              title: '服务状态',
-              children: [
-                PocketRow(
-                  icon: Icons.build_outlined,
-                  title: !controller.current
-                      ? '状态尚未确认'
-                      : controller.state['mode'] == 'maintenance'
-                      ? (controller.maintenance ? '维护模式' : '维护条件尚未确认')
-                      : '正常运行模式',
-                  subtitle: controller.maintenance
-                      ? 'Agent 与 Web 已停止，可以编辑启动配置。'
-                      : controller.state['mode'] == 'maintenance'
-                      ? '修改已禁用。请查看诊断并重新检查维护条件。'
-                      : '维护前会停止 Agent 与 Web，当前任务将被中断。',
-                ),
-                if (controller.boot['stage'] != null)
-                  _message('启动阶段：${controller.boot['stage']}'),
-                if (controller.boot['error'] != null)
-                  _message('启动错误：${controller.boot['error']}'),
-                if (controller.state['preferenceError'] != null)
-                  _message('启动偏好读取失败：${controller.state['preferenceError']}'),
-                if (controller.state['preferredMode'] != null &&
-                    controller.state['preferredMode'] !=
-                        controller.state['mode'])
-                  _message(
-                    '下次服务启动偏好与当前模式不同：'
-                    '${controller.state['preferredMode'] == 'maintenance' ? '维护模式' : '正常运行模式'}。'
-                    '请重新选择运行模式以确认。',
-                  ),
-                if (controller.readError != null)
-                  _message(controller.readError!),
-                if (controller.error != null) _message(controller.error!),
-                if (controller.notice != null) _message(controller.notice!),
-                if (controller.loading) _message('正在读取原生服务状态…'),
-                if (controller.working) _message('正在等待原生操作回执…'),
-                if (controller.awaitingReady)
-                  _message('等待 DSH 加载配置；进程已启动不代表配置已通过验证。'),
-              ],
+      return PopScope<void>(
+        canPop: !confirmMaintenance,
+        onPopInvokedWithResult: (didPop, _) {
+          if (!didPop && confirmMaintenance) {
+            setState(() => confirmMaintenance = false);
+          }
+        },
+        child: PocketConfirmationLayer(
+          confirmation: confirmMaintenance
+              ? PocketConfirmation(
+                  title: '进入维护模式？',
+                  message: 'Agent 与 Web 将停止，当前任务会被中断。会话、凭据、文件授权和 Web 偏好会保留。',
+                  secondaryLabel: '取消',
+                  onSecondary: () => setState(() => confirmMaintenance = false),
+                  primaryLabel: '停止并维护',
+                  onPrimary: canAct
+                      ? () {
+                          if (!confirmMaintenance || controller.working) return;
+                          setState(() => confirmMaintenance = false);
+                          unawaited(controller.changeMode(enter: true));
+                        }
+                      : null,
+                )
+              : null,
+          child: PocketScaffold(
+            title: const Text('启动配置与恢复'),
+            trailing: GlassButton(
+              icon: Icons.refresh_rounded,
+              label: '刷新恢复状态',
+              onPressed: controller.loading ? null : controller.load,
             ),
-            if (controller.pendingAction != null)
-              PocketSection(
-                title: '待核对的操作',
-                children: [
-                  _message(
-                    '${controller.pendingAction!['method']} · '
-                    '${_operationState(controller.pendingAction!['state'])}\n'
-                    '请求：${controller.pendingAction!['requestId']}',
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: PocketButton.tonal(
-                      onPressed: controller.checkAction,
-                      child: const Text('核对原请求回执'),
+            body: PocketList(
+              children: [
+                PocketSection(
+                  title: '服务状态',
+                  children: [
+                    PocketRow(
+                      icon: Icons.build_outlined,
+                      title: !controller.current
+                          ? '状态尚未确认'
+                          : controller.state['mode'] == 'maintenance'
+                          ? (controller.maintenance ? '维护模式' : '维护条件尚未确认')
+                          : '正常运行模式',
+                      subtitle: controller.maintenance
+                          ? 'Agent 与 Web 已停止，可以编辑启动配置。'
+                          : controller.state['mode'] == 'maintenance'
+                          ? '修改已禁用。请查看诊断并重新检查维护条件。'
+                          : '维护前会停止 Agent 与 Web，当前任务将被中断。',
                     ),
-                  ),
-                  if (controller.canAcknowledgeAction) ...[
-                    _message(
-                      '原操作所属进程已退出。确认接受这条未确认记录后，可继续其他操作；原请求不会重发。请先核对实际文件状态。',
-                    ),
-                    Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: PocketButton.tonal(
-                        onPressed: controller.acknowledgeAction,
-                        child: const Text('保留未确认记录，继续手动处理'),
+                    if (controller.boot['stage'] != null)
+                      _message('启动阶段：${controller.boot['stage']}'),
+                    if (controller.boot['error'] != null)
+                      _message('启动错误：${controller.boot['error']}'),
+                    if (controller.state['preferenceError'] != null)
+                      _message(
+                        '启动偏好读取失败：${controller.state['preferenceError']}',
                       ),
+                    if (controller.state['preferredMode'] != null &&
+                        controller.state['preferredMode'] !=
+                            controller.state['mode'])
+                      _message(
+                        '下次服务启动偏好与当前模式不同：'
+                        '${controller.state['preferredMode'] == 'maintenance' ? '维护模式' : '正常运行模式'}。'
+                        '请重新选择运行模式以确认。',
+                      ),
+                    if (controller.readError != null)
+                      _message(controller.readError!),
+                    if (controller.error != null) _message(controller.error!),
+                    if (controller.notice != null) _message(controller.notice!),
+                    if (controller.loading) _message('正在读取原生服务状态…'),
+                    if (controller.working) _message('正在等待原生操作回执…'),
+                    if (controller.awaitingReady)
+                      _message('等待 DSH 加载配置；进程已启动不代表配置已通过验证。'),
+                  ],
+                ),
+
+                PocketSection(
+                  divided: true,
+                  children: [
+                    if (controller.state['mode'] == 'maintenance')
+                      PocketRow(
+                        key: const ValueKey('recovery-resume'),
+                        icon: Icons.play_arrow_rounded,
+                        title: '恢复运行',
+                        subtitle: '启动服务并验证保存的配置',
+                        onTap: canAct
+                            ? () => controller.changeMode(enter: false)
+                            : null,
+                      )
+                    else
+                      PocketRow(
+                        key: const ValueKey('recovery-enter'),
+                        icon: Icons.build_outlined,
+                        title: '进入维护模式',
+                        subtitle: '停止当前工作后编辑启动配置',
+                        onTap: canAct
+                            ? () {
+                                FocusManager.instance.primaryFocus?.unfocus();
+                                setState(() => confirmMaintenance = true);
+                              }
+                            : null,
+                      ),
+                    if (controller.pendingAction != null)
+                      PocketRow(
+                        icon: Icons.pending_actions_rounded,
+                        title: '有操作待核对',
+                        subtitle:
+                            '${_operationName(controller.pendingAction!['method'])} · ${_operationState(controller.pendingAction!['state'])}',
+                        onTap: () => open(
+                          RecoveryOperationsPage(controller: controller),
+                        ),
+                      ),
+                  ],
+                ),
+                PocketSection(
+                  title: '启动配置',
+                  divided: true,
+                  children: [
+                    for (final file in controller.files)
+                      PocketRow(
+                        icon: file['id'] == 'runtime-log'
+                            ? Icons.article_outlined
+                            : Icons.description_outlined,
+                        title: '${file['label'] ?? _fileName('${file['id']}')}',
+                        subtitle: file['exists'] == true
+                            ? '${file['bytes']} 字节'
+                            : '尚未创建',
+                        onTap: () => open(
+                          RecoveryDocumentPage(
+                            controller: controller,
+                            fileId: file['id'] as String,
+                          ),
+                        ),
+                      ),
+                    if (!controller.files.any(
+                      (file) => file['id'] == 'runtime-log',
+                    ))
+                      PocketRow(
+                        icon: Icons.article_outlined,
+                        title: '启动日志',
+                        subtitle: '查看最近的运行记录',
+                        onTap: () => open(
+                          RecoveryDocumentPage(
+                            controller: controller,
+                            fileId: 'runtime-log',
+                          ),
+                        ),
+                      ),
+                    const TextDocumentRow(
+                      title: '配置说明',
+                      text: '保存启动配置前会备份旧版本。语法或插件配置错误可能导致启动失败，可从本机备份恢复。保存不会启动服务，恢复运行后由 DSH 验证配置。',
+                      icon: Icons.info_outline_rounded,
                     ),
                   ],
-                ],
-              ),
-            PocketSection(
-              title: '运行模式',
-              children: [
-                if (controller.state['mode'] == 'maintenance')
-                  Padding(
-                    padding: const EdgeInsets.all(20),
-                    child: PocketButton(
-                      key: const ValueKey('recovery-resume'),
-                      onPressed: canAct
-                          ? () => controller.changeMode(enter: false)
-                          : null,
-                      child: const Text('恢复运行并验证配置'),
-                    ),
-                  ),
-                if (!controller.maintenance && confirmMaintenance) ...[
-                  _message('确定停止服务并进入维护模式？当前任务会被中断。会话、凭据、文件授权和 Web 偏好会保留。'),
-                  Padding(
-                    padding: const EdgeInsets.all(20),
-                    child: Wrap(
-                      spacing: 12,
-                      runSpacing: 12,
-                      children: [
-                        PocketButton.tonal(
-                          onPressed: controller.working
-                              ? null
-                              : () =>
-                                    setState(() => confirmMaintenance = false),
-                          child: const Text('取消'),
-                        ),
-                        PocketButton(
-                          key: const ValueKey('recovery-confirm-enter'),
-                          onPressed: canAct
-                              ? () async {
-                                  setState(() => confirmMaintenance = false);
-                                  await controller.changeMode(enter: true);
-                                }
-                              : null,
-                          child: const Text('确认停止并维护'),
-                        ),
-                      ],
-                    ),
-                  ),
-                ] else if (!controller.maintenance)
-                  Padding(
-                    padding: const EdgeInsets.all(20),
-                    child: PocketButton.tonal(
-                      key: const ValueKey('recovery-enter'),
-                      onPressed: canAct
-                          ? () => setState(() => confirmMaintenance = true)
-                          : null,
-                      child: const Text('进入维护模式'),
-                    ),
-                  ),
-              ],
-            ),
-            PocketSection(
-              title: '原始启动配置',
-              children: [
-                _message(
-                  '编辑原 DSH 配置文件。保存前自动保留旧版本，配置内容只在本机处理。语法或插件配置错误可能导致启动失败，可在此恢复备份。',
                 ),
-                for (final file in controller.files)
-                  PocketRow(
-                    icon: file['id'] == 'runtime-log'
-                        ? Icons.article_outlined
-                        : Icons.description_outlined,
-                    title: '${file['label'] ?? _fileName('${file['id']}')}',
-                    subtitle: file['exists'] == true
-                        ? '${file['bytes']} 字节'
-                        : '尚未创建',
-                    onTap: () => open(
-                      RecoveryDocumentPage(
-                        controller: controller,
-                        fileId: file['id'] as String,
-                      ),
-                    ),
-                  ),
-                if (!controller.files.any(
-                  (file) => file['id'] == 'runtime-log',
-                ))
-                  PocketRow(
-                    icon: Icons.article_outlined,
-                    title: '查看启动日志',
-                    subtitle: '最近 64 KiB，仅在打开后读取',
-                    onTap: () => open(
-                      RecoveryDocumentPage(
-                        controller: controller,
-                        fileId: 'runtime-log',
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-            PocketSection(
-              title: '本机备份',
-              children: [
-                if (controller.backups.isEmpty)
-                  _message('尚无配置备份。保存或恢复配置时，会先备份当前版本。'),
-                for (final backup in controller.backups.reversed)
-                  PocketRow(
-                    icon: Icons.history_rounded,
-                    title: _fileName('${backup['fileId']}'),
-                    subtitle:
-                        '${backup['createdAt']}\n'
-                        '${backup['exists'] == true ? '${backup['bytes']} 字节' : '原文件不存在'}',
-                    onTap: () => open(
-                      RecoveryBackupPage(
-                        controller: controller,
-                        backupId: backup['id'] as String,
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-            PocketSection(
-              title: '内嵌运行资源',
-              children: [
-                _message(
-                  '若安装包内的运行资源解包损坏，可隔离当前缓存，再从当前安装包重新解包。不会移除会话、配置、凭据和文件授权。',
-                ),
-                if (confirmRepair)
-                  _message('确认隔离当前运行资源缓存？此操作只在维护模式执行，随后需要恢复运行。'),
-                if (controller.hasPendingDocument)
-                  _message('先返回编辑文件核对保存回执，再修复运行资源。'),
-                Padding(
-                  padding: const EdgeInsets.all(20),
-                  child: Wrap(
-                    spacing: 12,
-                    runSpacing: 12,
-                    children: [
-                      if (confirmRepair)
-                        PocketButton.tonal(
-                          onPressed: controller.working
-                              ? null
-                              : () => setState(() => confirmRepair = false),
-                          child: const Text('取消'),
-                        ),
-                      PocketButton.tonal(
-                        key: const ValueKey('recovery-repair'),
-                        onPressed:
-                            !canAct ||
-                                !controller.maintenance ||
-                                controller.pendingAction != null ||
-                                controller.hasPendingDocument ||
-                                controller.boot['runtimeSha256'] is! String
-                            ? null
-                            : () async {
-                                if (!confirmRepair) {
-                                  setState(() => confirmRepair = true);
-                                  return;
-                                }
-                                setState(() => confirmRepair = false);
-                                await controller.trackedMutation(
-                                  'runtimeRepair',
-                                  {
-                                    'expectedRuntimeSha256':
-                                        controller.boot['runtimeSha256'],
-                                  },
-                                );
-                              },
-                        child: Text(confirmRepair ? '确认隔离资源' : '修复内嵌运行资源'),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-            if (controller.operations.isNotEmpty)
-              PocketSection(
-                title: '操作记录',
-                children: [
-                  for (final operation in controller.operations.reversed)
+                PocketSection(
+                  title: '维护',
+                  divided: true,
+                  children: [
                     PocketRow(
-                      icon: Icons.receipt_long_outlined,
-                      title:
-                          '${operation['method']} · '
-                          '${_operationState(operation['state'])}',
-                      subtitle:
-                          '${operation['createdAt']}\n'
-                          '${operation['requestId']}',
+                      key: const ValueKey('recovery-backups'),
+                      icon: Icons.history_rounded,
+                      title: '配置备份',
+                      subtitle: controller.current
+                          ? '${controller.backups.length} 份本机备份'
+                          : '备份状态待核对',
+                      onTap: () =>
+                          open(RecoveryBackupsPage(controller: controller)),
                     ),
-                ],
-              ),
-          ],
+                    PocketRow(
+                      key: const ValueKey('recovery-resources'),
+                      icon: Icons.inventory_2_outlined,
+                      title: '内嵌运行资源',
+                      subtitle: '检查与修复运行时缓存',
+                      onTap: () =>
+                          open(RecoveryResourcesPage(controller: controller)),
+                    ),
+                    PocketRow(
+                      key: const ValueKey('recovery-operations'),
+                      icon: Icons.receipt_long_outlined,
+                      title: '操作记录',
+                      subtitle: controller.pendingAction != null
+                          ? '有操作结果待核对'
+                          : '查看维护操作与结果',
+                      onTap: () =>
+                          open(RecoveryOperationsPage(controller: controller)),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
         ),
       );
     },
+  );
+}
+
+class RecoveryBackupsPage extends StatelessWidget {
+  const RecoveryBackupsPage({super.key, required this.controller});
+  final RecoveryController controller;
+
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: controller,
+    builder: (context, _) => PocketScaffold(
+      title: const Text('配置备份'),
+      trailing: GlassButton(
+        icon: Icons.refresh_rounded,
+        label: '刷新配置备份',
+        onPressed: controller.loading ? null : controller.load,
+      ),
+      body: PocketList(
+        children: [
+          _message('保存或恢复配置时，会先备份当前版本。打开一份备份核对内容后，再决定是否恢复。'),
+          if (controller.readError != null) _message(controller.readError!),
+          if (!controller.current) _message('当前备份列表尚未核实，请刷新后再打开。'),
+          if (controller.current && controller.backups.isEmpty)
+            _message('尚无配置备份。'),
+          if (controller.backups.isNotEmpty)
+            PocketSection(
+              divided: true,
+              children: [
+                for (final backup in controller.backups)
+                  PocketRow(
+                    key: ValueKey('recovery-backup:${backup['id']}'),
+                    icon: Icons.description_outlined,
+                    title: _fileName('${backup['fileId']}'),
+                    subtitle:
+                        '${_recordTime(backup['createdAt'])} · ${backup['exists'] == true ? '包含原文件' : '原文件不存在'}',
+                    onTap: !controller.current || controller.loading
+                        ? null
+                        : () async {
+                            await Navigator.push<void>(
+                              context,
+                              PocketRoute<void>(
+                                builder: (_) => RecoveryBackupPage(
+                                  controller: controller,
+                                  backupId: backup['id'] as String,
+                                ),
+                              ),
+                            );
+                            await controller.load();
+                          },
+                  ),
+              ],
+            ),
+        ],
+      ),
+    ),
+  );
+}
+
+class RecoveryOperationsPage extends StatelessWidget {
+  const RecoveryOperationsPage({super.key, required this.controller});
+  final RecoveryController controller;
+
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: controller,
+    builder: (context, _) => PocketScaffold(
+      title: const Text('操作记录'),
+      trailing: GlassButton(
+        icon: Icons.refresh_rounded,
+        label: '刷新操作记录',
+        onPressed: controller.loading ? null : controller.load,
+      ),
+      body: PocketList(
+        children: [
+          if (controller.error != null) _message(controller.error!),
+          if (controller.notice != null) _message(controller.notice!),
+          if (controller.readError != null) _message(controller.readError!),
+          if (controller.pendingAction != null)
+            PocketSection(
+              title: '待核对',
+              divided: true,
+              children: [
+                PocketTile(
+                  title: Text(
+                    _operationName(controller.pendingAction!['method']),
+                  ),
+                  subtitle: Text(
+                    _operationState(controller.pendingAction!['state']),
+                  ),
+                ),
+                PocketRow(
+                  icon: Icons.sync_rounded,
+                  title: '核对原请求回执',
+                  onTap: controller.checkAction,
+                ),
+                _operationDetails(controller.pendingAction!),
+                if (controller.canAcknowledgeAction) ...[
+                  _message('原操作所属进程已退出。先核对实际文件状态，再接受这条未确认记录。原请求不会重发。'),
+                  PocketRow(
+                    icon: Icons.check_rounded,
+                    title: '保留未确认记录，继续手动处理',
+                    onTap: controller.acknowledgeAction,
+                  ),
+                ],
+              ],
+            ),
+          if (!controller.current) _message('显示上次读取的记录，当前状态尚未核实。'),
+          if (controller.current &&
+              controller.operations.isEmpty &&
+              controller.pendingAction == null)
+            _message('尚无维护操作记录。'),
+          if (controller.operations.isNotEmpty)
+            PocketSection(
+              title: '历史',
+              divided: true,
+              children: [
+                for (final operation in controller.operations)
+                  PocketRow(
+                    key: ValueKey(
+                      'recovery-operation:${operation['requestId']}',
+                    ),
+                    icon: Icons.receipt_long_outlined,
+                    title: _operationName(operation['method']),
+                    subtitle:
+                        '${_operationState(operation['state'])} · ${_recordTime(operation['createdAt'])}',
+                    onTap: () => Navigator.push<void>(
+                      context,
+                      PocketRoute<void>(
+                        builder: (_) => PocketScaffold(
+                          title: Text(_operationName(operation['method'])),
+                          body: PocketList(
+                            children: [
+                              _message('此页显示打开时的记录。核对最新结果请返回刷新操作记录。'),
+                              PocketSection(
+                                children: [
+                                  PocketTile(
+                                    title: const Text('状态'),
+                                    subtitle: Text(
+                                      _operationState(operation['state']),
+                                    ),
+                                  ),
+                                  PocketTile(
+                                    title: const Text('时间'),
+                                    subtitle: Text(
+                                      _recordTime(operation['createdAt']),
+                                    ),
+                                  ),
+                                  if (operation['fileId'] is String &&
+                                      (operation['fileId'] as String)
+                                          .isNotEmpty)
+                                    PocketTile(
+                                      title: const Text('配置文件'),
+                                      subtitle: Text(
+                                        _fileName(
+                                          operation['fileId'] as String,
+                                        ),
+                                      ),
+                                    ),
+                                  _operationDetails(operation),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+        ],
+      ),
+    ),
+  );
+}
+
+class RecoveryResourcesPage extends StatefulWidget {
+  const RecoveryResourcesPage({super.key, required this.controller});
+  final RecoveryController controller;
+  @override
+  State<RecoveryResourcesPage> createState() => _RecoveryResourcesPageState();
+}
+
+class _RecoveryResourcesPageState extends State<RecoveryResourcesPage> {
+  String? reviewedHash, reviewedGeneration;
+  RecoveryController get controller => widget.controller;
+  bool get canRepair =>
+      controller.maintenance &&
+      !controller.working &&
+      controller.pendingAction == null &&
+      !controller.hasPendingDocument &&
+      controller.boot['runtimeSha256'] is String;
+  bool get reviewCurrent =>
+      canRepair &&
+      reviewedHash == controller.boot['runtimeSha256'] &&
+      reviewedGeneration == controller.generation;
+  void dismiss() => setState(() {
+    reviewedHash = null;
+    reviewedGeneration = null;
+  });
+
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: controller,
+    builder: (context, _) => PopScope<void>(
+      canPop: reviewedHash == null,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && reviewedHash != null) dismiss();
+      },
+      child: PocketConfirmationLayer(
+        confirmation: reviewedHash == null
+            ? null
+            : PocketConfirmation(
+                title: '修复运行资源？',
+                message: reviewCurrent
+                    ? '将隔离当前内嵌运行资源缓存。恢复运行后会从已安装 APK 重新解包，会话、凭据和文件授权会保留。'
+                    : '运行资源或维护状态已变化。请取消后刷新状态，重新核对。',
+                secondaryLabel: '取消',
+                onSecondary: dismiss,
+                primaryLabel: '隔离并修复',
+                onPrimary: !reviewCurrent
+                    ? null
+                    : () {
+                        if (!reviewCurrent || reviewedHash == null) return;
+                        final hash = reviewedHash;
+                        dismiss();
+                        unawaited(
+                          controller.trackedMutation('runtimeRepair', {
+                            'expectedRuntimeSha256': hash,
+                          }),
+                        );
+                      },
+              ),
+        child: PocketScaffold(
+          title: const Text('内嵌运行资源'),
+          trailing: GlassButton(
+            icon: Icons.refresh_rounded,
+            label: '刷新运行资源状态',
+            onPressed: controller.loading ? null : controller.load,
+          ),
+          body: PocketList(
+            children: [
+              if (controller.error != null) _message(controller.error!),
+              if (controller.notice != null) _message(controller.notice!),
+              if (controller.readError != null) _message(controller.readError!),
+              PocketSection(
+                divided: true,
+                children: [
+                  const TextDocumentRow(
+                    title: '修复说明',
+                    text: '修复仅隔离当前已解包的运行资源缓存，不重置会话、凭据、文档授权或用户配置。需要先进入维护模式；修复后返回恢复运行，由已安装 APK 重新提供运行资源。',
+                    icon: Icons.info_outline_rounded,
+                  ),
+                  PocketRow(
+                    key: const ValueKey('recovery-repair'),
+                    icon: Icons.build_outlined,
+                    title: '修复内嵌运行资源',
+                    onTap: canRepair
+                        ? () => setState(() {
+                            reviewedHash =
+                                controller.boot['runtimeSha256'] as String;
+                            reviewedGeneration = controller.generation;
+                          })
+                        : null,
+                  ),
+                ],
+              ),
+              if (!controller.maintenance) _message('请先返回进入维护模式，再修复运行资源。'),
+              if (controller.hasPendingDocument)
+                _message('先返回编辑文件核对保存回执，再修复运行资源。'),
+              if (controller.pendingAction != null)
+                _message('已有维护操作结果待核对，请返回操作记录处理。'),
+            ],
+          ),
+        ),
+      ),
+    ),
   );
 }
 
@@ -532,9 +772,18 @@ class RecoveryBackupPage extends StatefulWidget {
 
 class _RecoveryBackupPageState extends State<RecoveryBackupPage> {
   Json? backup, current;
-  String? error, notice;
+  String? error, notice, readGeneration;
   bool confirming = false, loading = false;
   RecoveryController get controller => widget.controller;
+  bool get canRestore =>
+      controller.maintenance &&
+      !controller.working &&
+      controller.pendingAction == null &&
+      !controller.hasPendingDocument &&
+      !loading &&
+      backup != null &&
+      current != null &&
+      readGeneration == controller.generation;
 
   @override
   void initState() {
@@ -544,10 +793,13 @@ class _RecoveryBackupPageState extends State<RecoveryBackupPage> {
 
   Future<void> refresh() async {
     if (loading) return;
+    final generation = controller.generation;
     setState(() {
       loading = true;
       confirming = false;
+      backup = null;
       current = null;
+      readGeneration = null;
     });
     try {
       final value = await controller.call('readBackup', {
@@ -560,13 +812,17 @@ class _RecoveryBackupPageState extends State<RecoveryBackupPage> {
         throw const FormatException('Invalid backup');
       }
       final latest = await controller.read(value['id'] as String);
-      if (mounted) {
-        setState(() {
-          backup = value;
-          current = latest;
-          error = null;
-        });
+      if (!mounted) return;
+      if (generation != controller.generation) {
+        setState(() => error = '服务已变化，请重新读取备份和当前文件。');
+        return;
       }
+      setState(() {
+        backup = value;
+        current = latest;
+        readGeneration = generation;
+        error = null;
+      });
     } catch (failure) {
       if (mounted) setState(() => error = recoveryFailure(failure));
     } finally {
@@ -574,95 +830,94 @@ class _RecoveryBackupPageState extends State<RecoveryBackupPage> {
     }
   }
 
+  Future<void> restore() async {
+    if (!confirming || !canRestore) return;
+    final params = <String, dynamic>{
+      'backupId': widget.backupId,
+      'fileId': backup!['id'],
+      'expectedSha256': current!['sha256'],
+    };
+    setState(() => confirming = false);
+    final receipt = await controller.trackedMutation('restore', params);
+    if (mounted && receipt != null) {
+      setState(() {
+        current = null;
+        notice = '已恢复备份。返回恢复运行以验证配置。';
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
     animation: controller,
-    builder: (context, _) => PocketScaffold(
-      title: const Text('预览配置备份'),
-      trailing: GlassButton(
-        icon: Icons.refresh_rounded,
-        label: '刷新恢复基准',
-        onPressed: loading ? null : refresh,
-      ),
-      body: PocketList(
-        children: [
-          if (loading) _message('正在读取备份和当前版本…'),
-          if (error != null) _message(error!),
-          if (controller.error != null) _message(controller.error!),
-          if (notice != null) _message(notice!),
-          if (backup != null) ...[
-            PocketSection(
-              title: _fileName(backup!['id'] as String),
-              children: [
-                _message(
-                  backup!['exists'] == true
-                      ? '恢复会用下面的备份内容替换当前文件，并先备份当前版本。'
-                      : '此备份表示原文件不存在。恢复将移除当前配置文件，并先备份当前版本。',
+    builder: (context, _) => PopScope<void>(
+      canPop: !confirming,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && confirming) setState(() => confirming = false);
+      },
+      child: PocketConfirmationLayer(
+        confirmation: !confirming
+            ? null
+            : PocketConfirmation(
+                title: backup?['exists'] == true ? '恢复这份配置？' : '移除当前配置？',
+                message: !canRestore
+                    ? '维护状态或文件基准已变化。请取消后重新读取，再核对恢复内容。'
+                    : backup!['exists'] == true
+                    ? '将用这份备份替换当前配置，并先备份当前版本。已有编辑草稿会保留，之后需要核对合并。'
+                    : '此备份记录的是“不存在”状态。恢复将移除当前配置文件，并先备份当前版本。已有编辑草稿会保留。',
+                secondaryLabel: '取消',
+                onSecondary: () => setState(() => confirming = false),
+                primaryLabel: backup?['exists'] == true ? '恢复配置' : '移除并恢复',
+                onPrimary: canRestore ? restore : null,
+              ),
+        child: PocketScaffold(
+          title: const Text('预览配置备份'),
+          trailing: GlassButton(
+            icon: Icons.refresh_rounded,
+            label: '刷新恢复基准',
+            onPressed: loading ? null : refresh,
+          ),
+          body: PocketList(
+            children: [
+              if (loading) _message('正在读取备份和当前版本…'),
+              if (error != null) _message(error!),
+              if (controller.error != null) _message(controller.error!),
+              if (notice != null) _message(notice!),
+              if (backup != null) ...[
+                PocketSection(
+                  title: _fileName(backup!['id'] as String),
+                  divided: true,
+                  children: [
+                    _message(
+                      backup!['exists'] == true
+                          ? '恢复会用备份内容替换当前文件，并先备份当前版本。'
+                          : '此备份表示原文件不存在。恢复将移除当前配置文件，并先备份当前版本。',
+                    ),
+                    if (backup!['exists'] == true)
+                      TextDocumentRow(
+                        title: '查看备份内容',
+                        selectable: true,
+                        text: backup!['text'] as String,
+                        monospace: true,
+                      ),
+                  ],
                 ),
-                if (backup!['exists'] == true)
-                  TextDocumentRow(
-                    title: '查看备份内容',
-                    selectable: true,
-                    text: backup!['text'] as String,
-                    monospace: true,
-                  ),
-                if (confirming)
-                  _message(
-                    backup!['exists'] == true
-                        ? '确认替换当前配置？已有编辑草稿会保留，之后需要核对合并。'
-                        : '确认移除当前配置以还原“不存在”的状态？已有编辑草稿会保留。',
-                  ),
-              ],
-            ),
-            Wrap(
-              spacing: 12,
-              runSpacing: 12,
-              children: [
-                if (confirming)
-                  PocketButton.tonal(
-                    onPressed: controller.working
-                        ? null
-                        : () => setState(() => confirming = false),
-                    child: const Text('取消'),
-                  ),
                 PocketButton(
                   key: const ValueKey('recovery-restore'),
-                  onPressed:
-                      !controller.maintenance ||
-                          controller.working ||
-                          controller.pendingAction != null ||
-                          controller.hasPendingDocument ||
-                          current == null
+                  onPressed: !canRestore
                       ? null
-                      : () async {
-                          if (!confirming) {
-                            setState(() => confirming = true);
-                            return;
-                          }
-                          setState(() => confirming = false);
-                          final receipt = await controller.trackedMutation(
-                            'restore',
-                            {
-                              'backupId': widget.backupId,
-                              'fileId': backup!['id'],
-                              'expectedSha256': current!['sha256'],
-                            },
-                          );
-                          if (mounted && receipt != null) {
-                            setState(() {
-                              current = null;
-                              notice = '已恢复备份。返回恢复运行以验证配置。';
-                            });
-                          }
-                        },
-                  child: Text(confirming ? '确认恢复' : '恢复此备份'),
+                      : () => setState(() => confirming = true),
+                  child: const Text('恢复此备份'),
                 ),
               ],
-            ),
-            if (!controller.maintenance) _message('请先进入维护模式再恢复备份。'),
-            if (controller.hasPendingDocument) _message('先返回编辑文件核对保存回执，再恢复备份。'),
-          ],
-        ],
+              if (backup != null && readGeneration != controller.generation)
+                _message('服务已变化，请刷新恢复基准。'),
+              if (!controller.maintenance) _message('请先进入维护模式再恢复备份。'),
+              if (controller.hasPendingDocument)
+                _message('先返回编辑文件核对保存回执，再恢复备份。'),
+            ],
+          ),
+        ),
       ),
     ),
   );

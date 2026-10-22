@@ -74,6 +74,7 @@ class _ConfigurationTransferPageState extends State<ConfigurationTransferPage> {
           .every((row) => row['status'] == 'pending');
 
   Future<void> pick() async {
+    if (busy) return;
     final id = _operationId();
     setState(() {
       busy = true;
@@ -315,6 +316,13 @@ class _ConfigurationTransferPageState extends State<ConfigurationTransferPage> {
 
   void back() {
     if (busy) return;
+    if (replaceReview || leaveReview) {
+      setState(() {
+        replaceReview = false;
+        leaveReview = false;
+      });
+      return;
+    }
     if (stage != _Stage.home) {
       go(
         stage == _Stage.preview || stage == _Stage.result
@@ -338,7 +346,7 @@ class _ConfigurationTransferPageState extends State<ConfigurationTransferPage> {
 
   Widget note(String text) => Padding(
     padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
-    child: SelectableText(
+    child: Text(
       text,
       style: Theme.of(context).textTheme.bodySmall?.copyWith(
         height: 1.6,
@@ -554,7 +562,10 @@ class _ConfigurationTransferPageState extends State<ConfigurationTransferPage> {
               ? null
               : source.text.isEmpty
               ? pick
-              : () => setState(() => replaceReview = true),
+              : () {
+                  FocusManager.instance.primaryFocus?.unfocus();
+                  setState(() => replaceReview = true);
+                },
         ),
         PocketRow(
           title: source.text.isEmpty ? '粘贴 JSON 内容' : '查看或编辑 JSON',
@@ -564,26 +575,6 @@ class _ConfigurationTransferPageState extends State<ConfigurationTransferPage> {
           icon: Icons.code_rounded,
           onTap: busy ? null : editSource,
         ),
-        if (replaceReview) ...[
-          note('选择新文件会替换当前草稿。取消文件选择时，原草稿保留。'),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
-            child: Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                PocketButton(
-                  onPressed: busy ? null : pick,
-                  child: const Text('继续选择并替换草稿'),
-                ),
-                PocketButton.tonal(
-                  onPressed: () => setState(() => replaceReview = false),
-                  child: const Text('保留当前草稿'),
-                ),
-              ],
-            ),
-          ),
-        ],
       ],
     ),
     if (message != null) note(message!),
@@ -746,6 +737,15 @@ class _ConfigurationTransferPageState extends State<ConfigurationTransferPage> {
               onSecondary: () => setState(() => leaveReview = false),
               primaryLabel: '放弃草稿并返回',
               onPrimary: busy ? null : close,
+            )
+          : replaceReview
+          ? PocketConfirmation(
+              title: '替换导入草稿？',
+              message: '选择新文件后会替换当前草稿。取消文件选择时，原草稿保留。',
+              secondaryLabel: '取消',
+              onSecondary: () => setState(() => replaceReview = false),
+              primaryLabel: '选择新文件',
+              onPrimary: busy ? null : pick,
             )
           : null,
       child: PocketScaffold(

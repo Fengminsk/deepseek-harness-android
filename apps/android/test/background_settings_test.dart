@@ -31,9 +31,12 @@ Json snapshot({
 };
 
 class BackgroundRuntime extends RuntimeController {
+  BackgroundRuntime() {
+    phase = 'ready';
+  }
   Json background = snapshot();
   Object? statusFailure;
-  Future<Json>? configureResult;
+  Future<Json>? configureResult, statusResult;
   final calls = <(String, Json)>[];
 
   @override
@@ -43,6 +46,7 @@ class BackgroundRuntime extends RuntimeController {
       case 'runtime.status':
         expect(params, isEmpty);
         if (statusFailure case final Object failure) throw failure;
+        if (statusResult case final Future<Json> result) return result;
         return {
           'phase': 'ready',
           'error': null,
@@ -63,6 +67,11 @@ class BackgroundRuntime extends RuntimeController {
   int get reads => calls.where((call) => call.$1 == 'runtime.status').length;
   int get writes =>
       calls.where((call) => call.$1 == 'runtime.background.configure').length;
+
+  void readyAgain() {
+    phase = 'ready';
+    notifyListeners();
+  }
 }
 
 class SystemPolicy {
@@ -131,6 +140,146 @@ Future<void> close(WidgetTester tester) async {
 }
 
 void main() {
+  testWidgets('connection loss immediately withdraws task facts and controls', (
+    tester,
+  ) async {
+    final runtime = BackgroundRuntime()..background = snapshot(keepAwake: true);
+    await open(tester, runtime, SystemPolicy());
+    expect(find.text('正在持有 CPU 唤醒锁'), findsOneWidget);
+    runtime.fail(StateError('lost service'));
+    await tester.pumpAndSettle();
+    expect(find.text('任务执行中'), findsNothing);
+    expect(find.text('正在持有 CPU 唤醒锁'), findsNothing);
+    expect(find.text('3 个活动作业'), findsNothing);
+    expect(tester.widget<PocketSwitchRow>(toggle).onChanged, isNull);
+    expect(
+      runtime.reads,
+      2,
+      reason: 'native policy can be reread without granting task state',
+    );
+    expect(runtime.writes, 0);
+    await close(tester);
+    runtime.readyAgain();
+    await tester.pump();
+    expect(runtime.reads, 2, reason: 'the disposed page releases its listener');
+  });
+
+  for (final lateFailure in [false, true]) {
+    testWidgets(
+      'connection replacement ignores late status ${lateFailure ? 'failure' : 'success'}',
+      (tester) async {
+        final runtime = BackgroundRuntime();
+        final pending = Completer<Json>();
+        await open(tester, runtime, SystemPolicy());
+        runtime.statusResult = pending.future;
+        await tap(tester, refresh);
+        expect(runtime.reads, 2);
+        runtime.fail(StateError('lost service'));
+        runtime.statusResult = null;
+        runtime.background = snapshot(
+          taskState: 'idle',
+          running: 0,
+          queued: 0,
+          jobs: 0,
+        );
+        runtime.readyAgain();
+        await tester.pumpAndSettle();
+        expect(
+          runtime.reads,
+          4,
+          reason: 'a new connection may read independently',
+        );
+        expect(find.text('已就绪 · 暂无任务'), findsOneWidget);
+        if (lateFailure) {
+          pending.completeError(StateError('late old read failure'));
+        } else {
+          pending.complete({'background': snapshot(keepAwake: true)});
+        }
+        await tester.pumpAndSettle();
+        expect(find.text('已就绪 · 暂无任务'), findsOneWidget);
+        expect(find.text('任务执行中'), findsNothing);
+        expect(find.textContaining('late old read failure'), findsNothing);
+        expect(tester.widget<PocketSwitchRow>(toggle).onChanged, isNotNull);
+        expect(runtime.writes, 0);
+        await close(tester);
+      },
+    );
+  }
+
+  testWidgets(
+    'connection replacement retains an unconfirmed choice without replay',
+    (tester) async {
+      final runtime = BackgroundRuntime();
+      final pending = Completer<Json>();
+      runtime.configureResult = pending.future;
+      await open(tester, runtime, SystemPolicy());
+      await tap(tester, find.text('执行任务时保持 CPU 运行'));
+      expect(runtime.writes, 1);
+      runtime.fail(StateError('lost service during save'));
+      await tester.pumpAndSettle();
+      expect(tester.widget<PocketSwitchRow>(toggle).onChanged, isNull);
+      expect(find.textContaining('希望开启'), findsOneWidget);
+      runtime.background = snapshot(
+        taskState: 'idle',
+        running: 0,
+        queued: 0,
+        jobs: 0,
+      );
+      runtime.readyAgain();
+      await tester.pumpAndSettle();
+      expect(runtime.reads, 3);
+      expect(tester.widget<PocketSwitchRow>(toggle).value, isFalse);
+      expect(find.textContaining('当前读取为关闭'), findsOneWidget);
+      pending.complete(snapshot(keepAwake: true));
+      await tester.pumpAndSettle();
+      expect(tester.widget<PocketSwitchRow>(toggle).value, isFalse);
+      expect(find.textContaining('希望开启'), findsOneWidget);
+      expect(find.text('正在持有 CPU 唤醒锁'), findsNothing);
+      expect(runtime.writes, 1);
+      await close(tester);
+    },
+  );
+
+  testWidgets(
+    'phase change withdraws observations even without a generation increment',
+    (tester) async {
+      final runtime = BackgroundRuntime();
+      await open(tester, runtime, SystemPolicy());
+      final generation = runtime.connectionGeneration;
+      runtime.phase = 'starting';
+      runtime.notifyListeners();
+      await tester.pumpAndSettle();
+      expect(runtime.connectionGeneration, generation);
+      expect(find.text('任务执行中'), findsNothing);
+      expect(tester.widget<PocketSwitchRow>(toggle).onChanged, isNull);
+      await close(tester);
+    },
+  );
+
+  testWidgets(
+    'native battery policy stays readable when the Agent is unavailable',
+    (tester) async {
+      final runtime = BackgroundRuntime()
+        ..phase = 'failed'
+        ..background = snapshot(keepAwake: true);
+      final policy = SystemPolicy();
+      await open(tester, runtime, policy);
+      expect(find.text('服务异常 · 任务可能已中断'), findsOneWidget);
+      expect(find.text('任务执行中'), findsNothing);
+      expect(find.text('正在持有 CPU 唤醒锁'), findsNothing);
+      expect(find.text('已获得 Android 标准电池优化豁免'), findsOneWidget);
+      expect(tester.widget<PocketSwitchRow>(toggle).onChanged, isNull);
+      await tap(tester, refresh);
+      expect(runtime.reads, 2);
+      expect(runtime.writes, 0);
+      expect(policy.calls, [
+        'background.systemStatus',
+        'background.systemStatus',
+      ]);
+      await close(tester);
+    },
+  );
+
   testWidgets('plugin activity is separate and withdrawn on failed refresh', (
     tester,
   ) async {

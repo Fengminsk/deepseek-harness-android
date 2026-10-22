@@ -1,11 +1,15 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:dsh_android/recovery.dart';
+import 'package:dsh_android/confirmation.dart';
 import 'package:dsh_android/recovery_data.dart';
 import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/ui.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
@@ -112,8 +116,36 @@ class NativeRecovery {
   int count(String method) => calls.where((call) => call.$1 == method).length;
 }
 
+final captureKey = GlobalKey();
+Future<void> capture(WidgetTester tester, String name) async {
+  final directory = Platform.environment['POCKET_CAPTURE_DIR'];
+  if (directory == null) return;
+  await tester.runAsync(() async {
+    final image =
+        await (captureKey.currentContext!.findRenderObject()
+                as RenderRepaintBoundary)
+            .toImage(pixelRatio: 1);
+    final png = await image.toByteData(format: ui.ImageByteFormat.png);
+    await Directory(directory).create(recursive: true);
+    await File('$directory/$name.png').writeAsBytes(png!.buffer.asUint8List());
+    image.dispose();
+  });
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  setUpAll(() async {
+    final path = Platform.environment['POCKET_CAPTURE_FONT'];
+    if (path != null) {
+      await (FontLoader('Roboto')..addFont(
+            Future.value(ByteData.sublistView(await File(path).readAsBytes())),
+          ))
+          .load();
+      await (FontLoader(
+        'MaterialIcons',
+      )..addFont(rootBundle.load('fonts/MaterialIcons-Regular.otf'))).load();
+    }
+  });
   late RecoveryTestRuntime runtime;
   late RecoveryController controller;
   late NativeRecovery native;
@@ -430,7 +462,7 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('recovery-enter')));
     await tester.pumpAndSettle();
     expect(native.count('recovery.enter'), 0);
-    await tester.tap(find.byKey(const ValueKey('recovery-confirm-enter')));
+    await tester.tap(find.text('停止并维护'));
     await tester.pumpAndSettle();
     expect(native.count('recovery.enter'), 1);
     expect(find.text('维护模式'), findsOneWidget);
@@ -449,7 +481,7 @@ void main() {
       expect(controller.current, false);
       await tester.tap(find.byKey(const ValueKey('recovery-enter')));
       await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const ValueKey('recovery-confirm-enter')));
+      await tester.tap(find.text('停止并维护'));
       await tester.pumpAndSettle();
       expect(native.count('recovery.enter'), 1);
       expect(controller.maintenance, false);
@@ -476,13 +508,13 @@ void main() {
             .onPressed,
         null,
       );
-      await mount(tester, RecoveryPage(controller: controller));
+      await mount(tester, RecoveryResourcesPage(controller: controller));
       await tester.ensureVisible(find.byKey(const ValueKey('recovery-repair')));
       expect(find.text('先返回编辑文件核对保存回执，再修复运行资源。'), findsOneWidget);
       expect(
         tester
-            .widget<PocketButton>(find.byKey(const ValueKey('recovery-repair')))
-            .onPressed,
+            .widget<PocketRow>(find.byKey(const ValueKey('recovery-repair')))
+            .onTap,
         null,
       );
       expect(native.count('restore'), 0);
@@ -503,7 +535,7 @@ void main() {
       await tester.tap(button);
       await tester.pumpAndSettle();
       expect(native.count('restore'), 0);
-      await tester.tap(button);
+      await tester.tap(find.text('移除并恢复'));
       await tester.pumpAndSettle();
       expect(native.count('restore'), 1);
       final params = native.calls
@@ -513,4 +545,319 @@ void main() {
       expect(params['backupId'], 'absent-backup');
     },
   );
+
+  testWidgets(
+    'maintenance confirmation cancels without mutation and blocks the page',
+    (tester) async {
+      native.snapshot = {...native.snapshot, 'mode': 'active'};
+      await mount(tester, RecoveryPage(controller: controller));
+      await tester.tap(find.byKey(const ValueKey('recovery-enter')));
+      await tester.pumpAndSettle();
+      expect(find.byType(PocketConfirmation), findsOneWidget);
+      final inspectCount = native.count('inspect');
+      final refresh = find.widgetWithIcon(GlassButton, Icons.refresh_rounded);
+      await tester.tap(refresh, warnIfMissed: false);
+      await tester.pumpAndSettle();
+      expect(native.count('inspect'), inspectCount);
+      expect(find.byType(PocketConfirmation), findsOneWidget);
+      final layer = find.byType(PocketConfirmationLayer);
+      expect(
+        tester
+            .widget<ExcludeFocus>(
+              find
+                  .descendant(of: layer, matching: find.byType(ExcludeFocus))
+                  .first,
+            )
+            .excluding,
+        true,
+      );
+      await tester.tap(find.text('取消'));
+      await tester.pumpAndSettle();
+      expect(find.byType(PocketConfirmation), findsNothing);
+      expect(native.count('recovery.enter'), 0);
+      await tester.tap(find.byKey(const ValueKey('recovery-enter')));
+      await tester.pumpAndSettle();
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(find.byType(PocketConfirmation), findsNothing);
+      expect(native.count('recovery.enter'), 0);
+    },
+  );
+
+  testWidgets(
+    'one maintenance confirmation sends one request while receipt is pending',
+    (tester) async {
+      native.snapshot = {...native.snapshot, 'mode': 'active'};
+      final reply = Completer<Json>();
+      native.intercept = (method, args) => method == 'recovery.enter'
+          ? reply.future
+          : Future.value(native.response(method, args));
+      await mount(tester, RecoveryPage(controller: controller));
+      await tester.tap(find.byKey(const ValueKey('recovery-enter')));
+      await tester.pumpAndSettle();
+      final confirm = tester.widget<PocketConfirmation>(
+        find.byType(PocketConfirmation),
+      );
+      confirm.onPrimary!();
+      confirm.onPrimary!();
+      await tester.pump();
+      expect(native.count('recovery.enter'), 1);
+      reply.complete(native.response('recovery.enter', {}));
+      await tester.pumpAndSettle();
+      expect(native.count('recovery.enter'), 1);
+    },
+  );
+
+  testWidgets(
+    'home exposes compact backup and history entries without raw records',
+    (tester) async {
+      native.snapshot = {
+        ...native.snapshot,
+        'backups': [
+          {
+            'id': 'backup-visible',
+            'fileId': 'profile-patch',
+            'createdAt': 1792600000000,
+            'exists': true,
+            'bytes': 8,
+          },
+        ],
+        'operations': [
+          {
+            'method': 'runtimeRepair',
+            'state': 'quarantined',
+            'requestId': 'record-opaque-id',
+            'createdAt': 1792600000000,
+          },
+        ],
+      };
+      await mount(tester, RecoveryPage(controller: controller));
+      expect(find.text('record-opaque-id'), findsNothing);
+      expect(find.textContaining('runtimeRepair'), findsNothing);
+      expect(
+        find.byKey(const ValueKey('recovery-backup:backup-visible')),
+        findsNothing,
+      );
+      await tester.ensureVisible(
+        find.byKey(const ValueKey('recovery-backups')),
+      );
+      await tester.tap(find.byKey(const ValueKey('recovery-backups')));
+      await tester.pumpAndSettle();
+      expect(find.byType(RecoveryBackupsPage), findsOneWidget);
+      expect(find.textContaining('包含原文件'), findsOneWidget);
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(
+        find.byKey(const ValueKey('recovery-operations')),
+      );
+      await tester.tap(find.byKey(const ValueKey('recovery-operations')));
+      await tester.pumpAndSettle();
+      expect(find.text('修复内嵌运行资源'), findsOneWidget);
+      expect(find.textContaining('record-opaque-id'), findsNothing);
+      await tester.tap(
+        find.byKey(const ValueKey('recovery-operation:record-opaque-id')),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('查看技术详情'), findsOneWidget);
+      await tester.tap(find.text('查看技术详情'));
+      await tester.pumpAndSettle();
+      expect(
+        find.byWidgetPredicate(
+          (widget) =>
+              widget is EditableText &&
+              widget.controller.text.contains('requestId: record-opaque-id'),
+        ),
+        findsOneWidget,
+      );
+      expect(native.count('runtimeRepair'), 0);
+      expect(native.count('restore'), 0);
+    },
+  );
+
+  testWidgets(
+    'repair confirmation is invalidated by changed runtime resources',
+    (tester) async {
+      await controller.load();
+      await mount(tester, RecoveryResourcesPage(controller: controller));
+      await tester.tap(find.byKey(const ValueKey('recovery-repair')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('取消'));
+      await tester.pumpAndSettle();
+      expect(native.count('runtimeRepair'), 0);
+      await tester.tap(find.byKey(const ValueKey('recovery-repair')));
+      await tester.pumpAndSettle();
+      native.snapshot = {
+        ...native.snapshot,
+        'boot': {'runtimeSha256': 'updated-runtime'},
+      };
+      await controller.load();
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<PocketConfirmation>(find.byType(PocketConfirmation))
+            .onPrimary,
+        null,
+      );
+      expect(find.textContaining('运行资源或维护状态已变化'), findsOneWidget);
+      await tester.tap(find.text('取消'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('recovery-repair')));
+      await tester.pumpAndSettle();
+      final confirm = tester.widget<PocketConfirmation>(
+        find.byType(PocketConfirmation),
+      );
+      confirm.onPrimary!();
+      confirm.onPrimary!();
+      await tester.pumpAndSettle();
+      expect(native.count('runtimeRepair'), 1);
+      expect(
+        native.calls
+            .singleWhere((entry) => entry.$1 == 'runtimeRepair')
+            .$2['expectedRuntimeSha256'],
+        'updated-runtime',
+      );
+    },
+  );
+
+  testWidgets(
+    'backup refresh failure removes old contents and restore action',
+    (tester) async {
+      await controller.load();
+      native.intercept = (method, args) async => method == 'readBackup'
+          ? {
+              'id': 'profile-patch',
+              'text': 'prior backup',
+              'sha256': 'backup-hash',
+              'exists': true,
+            }
+          : native.response(method, args);
+      await mount(
+        tester,
+        RecoveryBackupPage(controller: controller, backupId: 'removed-backup'),
+      );
+      expect(find.text('查看备份内容'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('recovery-restore')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('取消'));
+      await tester.pumpAndSettle();
+      expect(native.count('restore'), 0);
+      native.intercept = (method, args) async {
+        if (method == 'readBackup') {
+          throw PlatformException(
+            code: 'recovery/backup-missing',
+            message: '备份已不存在',
+          );
+        }
+        return native.response(method, args);
+      };
+      await tester.tap(find.widgetWithIcon(GlassButton, Icons.refresh_rounded));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('备份已不存在'), findsOneWidget);
+      expect(find.text('查看备份内容'), findsNothing);
+      expect(find.byKey(const ValueKey('recovery-restore')), findsNothing);
+      expect(native.count('restore'), 0);
+    },
+  );
+
+  testWidgets(
+    'restore confirmation stops when maintenance generation changes',
+    (tester) async {
+      await controller.load();
+      await mount(
+        tester,
+        RecoveryBackupPage(controller: controller, backupId: 'backup-1'),
+      );
+      await tester.tap(find.byKey(const ValueKey('recovery-restore')));
+      await tester.pumpAndSettle();
+      native.snapshot = {...native.snapshot, 'generation': 'replacement'};
+      await controller.load();
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<PocketConfirmation>(find.byType(PocketConfirmation))
+            .onPrimary,
+        null,
+      );
+      expect(native.count('restore'), 0);
+      await tester.tap(find.text('取消'));
+      await tester.pumpAndSettle();
+      expect(find.text('服务已变化，请刷新恢复基准。'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'phone sized large type maintenance confirmation stays operable',
+    (tester) async {
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      native.snapshot = {...native.snapshot, 'mode': 'active'};
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: pocketTheme(Brightness.dark),
+          builder: (context, child) => MediaQuery(
+            data: MediaQuery.of(context)
+                .copyWith(textScaler: const TextScaler.linear(1.8)),
+            child: child!,
+          ),
+          home: RecoveryPage(controller: controller),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.byKey(const ValueKey('recovery-enter')));
+      await tester.tap(find.byKey(const ValueKey('recovery-enter')));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), null);
+      await tester.ensureVisible(find.text('取消'));
+      await tester.tap(find.text('取消'));
+      await tester.pumpAndSettle();
+      expect(native.count('recovery.enter'), 0);
+      expect(tester.takeException(), null);
+    },
+  );
+  for (final brightness in Brightness.values) {
+    testWidgets(
+      'recovery directory and alert at phone size ${brightness.name}',
+      (tester) async {
+        tester.view.physicalSize = const Size(390, 844);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        native.snapshot = {
+          ...native.snapshot,
+          'mode': 'active',
+          'boot': {'runtimeSha256': 'runtime-hash'},
+          'files': [
+            {'id': 'profile-patch', 'exists': true, 'bytes': 256},
+            {'id': 'home-patch', 'exists': false, 'bytes': 0},
+            {'id': 'profile-manifest', 'exists': true, 'bytes': 128},
+          ],
+        };
+        await tester.pumpWidget(
+          RepaintBoundary(
+            key: captureKey,
+            child: MaterialApp(
+              debugShowCheckedModeBanner: false,
+              theme: pocketTheme(brightness),
+              home: LiquidGlassScope(
+                enabled: true,
+                child: RecoveryPage(controller: controller),
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), null);
+        await capture(tester, 'recovery-home-${brightness.name}');
+        await tester.tap(find.byKey(const ValueKey('recovery-enter')));
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), null);
+        await capture(tester, 'recovery-confirm-${brightness.name}');
+        await tester.tap(find.text('取消'));
+        await tester.pumpAndSettle();
+        expect(native.count('recovery.enter'), 0);
+      },
+    );
+  }
 }

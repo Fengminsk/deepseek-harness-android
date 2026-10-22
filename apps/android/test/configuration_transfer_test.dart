@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' as ui;
@@ -7,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:dsh_android/configuration_transfer.dart';
+import 'package:dsh_android/confirmation.dart';
 import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/ui.dart';
 import 'package:dsh_android/text_document_page.dart';
@@ -590,12 +592,84 @@ void main() {
       await tap(tester, find.byTooltip('完成编辑'));
       await tap(tester, find.text('重新选择文件'));
       expect(native, isEmpty);
-      await tap(tester, find.text('继续选择并替换草稿'));
+      expect(find.byType(PocketConfirmation), findsOneWidget);
+      expect(find.byType(SelectableText), findsNothing);
+      // The preview action remains mounted but cannot run behind the alert.
+      await tester.tapAt(tester.getCenter(previewButton));
+      await tester.pumpAndSettle();
+      expect(runtime.calls, isEmpty);
+      await tap(tester, find.text('取消'));
+      expect(find.byType(PocketConfirmation), findsNothing);
+      expect(native, isEmpty);
+      await tap(tester, find.text('重新选择文件'));
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(find.byType(PocketConfirmation), findsNothing);
+      expect(find.text('导入设置'), findsOneWidget);
+      expect(native, isEmpty);
+      await tap(tester, find.text('重新选择文件'));
+      await tap(tester, find.text('选择新文件'));
       expect(native.single.method, 'configurationTransfer.pick');
       expect((native.single.arguments as Map).keys, ['id']);
+      expect(find.byType(SelectableText), findsNothing);
       await tap(tester, find.text('查看或编辑 JSON'));
       expect(tester.widget<TextField>(source).controller!.text, input);
       expect(runtime.calls, isEmpty);
+    },
+  );
+
+  testWidgets(
+    'replacement owns one picker and only accepted content replaces the draft at large type',
+    (tester) async {
+      final runtime = TransferRuntime();
+      final native = <MethodCall>[];
+      final picked = Completer<String>();
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        RuntimeController.channel,
+        (call) async {
+          native.add(call);
+          return picked.future;
+        },
+      );
+      addTearDown(() {
+        if (!picked.isCompleted) {
+          picked.complete(jsonEncode({'status': 'cancelled'}));
+        }
+        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          RuntimeController.channel,
+          null,
+        );
+      });
+      await open(
+        tester,
+        runtime,
+        size: const Size(390, 844),
+        textScale: 1.5,
+        brightness: Brightness.dark,
+      );
+      await enterInput(tester);
+      await tester.enterText(source, input);
+      await tester.pumpAndSettle();
+      await tap(tester, find.byTooltip('完成编辑'));
+      await tap(tester, find.text('重新选择文件'));
+      expect(tester.takeException(), isNull);
+      await capture(tester, 'transfer-replace-confirmation-dark');
+      final accept = tester
+          .widget<PocketConfirmation>(find.byType(PocketConfirmation))
+          .onPrimary!;
+      // Two activations before a frame still own one native picker.
+      accept();
+      accept();
+      await tester.pumpAndSettle();
+      expect(native.map((call) => call.method), ['configurationTransfer.pick']);
+      expect(find.text('当前草稿 ${input.length} 个字符'), findsOneWidget);
+      const next = '{"format":"new-file"}';
+      picked.complete(jsonEncode({'status': 'selected', 'text': next}));
+      await tester.pumpAndSettle();
+      await tap(tester, find.text('查看或编辑 JSON'));
+      expect(tester.widget<TextField>(source).controller!.text, next);
+      expect(runtime.calls, isEmpty);
+      expect(tester.takeException(), isNull);
     },
   );
 

@@ -35,16 +35,60 @@ class _BackgroundSettingsPageState extends State<BackgroundSettingsPage>
   Json? background, system;
   String? error, settingsError;
   bool loading = false, saving = false, active = true;
+  bool? requestedSetting;
+  int readAttempt = 0, writeAttempt = 0;
+  int? snapshotConnection;
+  late (int, String, bool) observedRuntime;
   Timer? timer;
+
+  bool get confirmed =>
+      widget.runtime.ready &&
+      snapshotConnection == widget.runtime.connectionGeneration &&
+      error == null;
 
   @override
   void initState() {
     super.initState();
+    observedRuntime = (
+      widget.runtime.connectionGeneration,
+      widget.runtime.phase,
+      widget.runtime.ready,
+    );
+    widget.runtime.addListener(runtimeChanged);
     WidgetsBinding.instance.addObserver(this);
     unawaited(refresh());
     timer = Timer.periodic(const Duration(seconds: 5), (_) {
       if (active) unawaited(refresh());
     });
+  }
+
+  void withdrawObservations() {
+    background = background == null
+        ? null
+        : {...background!, 'fresh': false, 'taskState': 'unconfirmed'};
+    snapshotConnection = null;
+    system = null;
+  }
+
+  void runtimeChanged() {
+    final next = (
+      widget.runtime.connectionGeneration,
+      widget.runtime.phase,
+      widget.runtime.ready,
+    );
+    if (next == observedRuntime) return;
+    observedRuntime = next;
+    readAttempt++;
+    writeAttempt++;
+    setState(() {
+      withdrawObservations();
+      loading = false;
+      saving = false;
+      error = requestedSetting == null
+          ? '连接已变化，后台状态待核对。'
+          : '连接已变化，设置保存结果尚未确认；恢复后只读取设置进行核对。';
+    });
+    if (active) unawaited(refresh());
   }
 
   @override
@@ -55,6 +99,14 @@ class _BackgroundSettingsPageState extends State<BackgroundSettingsPage>
 
   Future<void> refresh() async {
     if (loading || saving) return;
+    final attempt = ++readAttempt;
+    final connection = widget.runtime.connectionGeneration;
+    final phase = widget.runtime.phase;
+    bool ownsRead() =>
+        mounted &&
+        attempt == readAttempt &&
+        connection == widget.runtime.connectionGeneration &&
+        phase == widget.runtime.phase;
     setState(() => loading = true);
     try {
       final values = await Future.wait<dynamic>([
@@ -65,46 +117,60 @@ class _BackgroundSettingsPageState extends State<BackgroundSettingsPage>
       ]);
       final next = (values[0] as Json)['background'] as Json;
       final policy = jsonDecode(values[1] as String) as Json;
-      if (mounted) {
+      if (ownsRead()) {
         setState(() {
-          background = next;
+          // Native policy remains readable during startup and recovery, but an
+          // unavailable Agent cannot inherit an old working-state claim.
+          background = widget.runtime.ready
+              ? next
+              : {...next, 'fresh': false, 'taskState': widget.runtime.phase};
+          snapshotConnection = connection;
           system = policy;
           error = null;
         });
       }
     } catch (failure) {
-      if (mounted) {
+      if (ownsRead()) {
         setState(() {
           // Old counts cannot become proof that work is still executing.
-          background = background == null
-              ? null
-              : {...background!, 'fresh': false, 'taskState': 'unconfirmed'};
-          system = null;
+          withdrawObservations();
           error = '后台状态未确认，请刷新后再操作：$failure';
         });
       }
     } finally {
-      if (mounted) setState(() => loading = false);
+      if (ownsRead()) setState(() => loading = false);
     }
   }
 
   Future<void> configure(bool enabled) async {
-    if (saving || loading) return;
-    setState(() => saving = true);
+    if (saving || loading || !confirmed) return;
+    final attempt = ++writeAttempt;
+    final connection = widget.runtime.connectionGeneration;
+    bool ownsWrite() =>
+        mounted &&
+        attempt == writeAttempt &&
+        connection == widget.runtime.connectionGeneration &&
+        widget.runtime.ready;
+    setState(() {
+      saving = true;
+      requestedSetting = enabled;
+    });
     try {
       final result = await widget.runtime.call('runtime.background.configure', {
         'keepAwakeWhileWorking': enabled,
       }) as Json;
-      if (mounted) {
+      if (ownsWrite()) {
         setState(() {
           background = result;
+          snapshotConnection = connection;
+          requestedSetting = null;
           error = null;
         });
       }
     } catch (failure) {
-      if (mounted) setState(() => error = '设置保存未确认，请刷新后核对：$failure');
+      if (ownsWrite()) setState(() => error = '设置保存未确认，请刷新后核对：$failure');
     } finally {
-      if (mounted) setState(() => saving = false);
+      if (ownsWrite()) setState(() => saving = false);
     }
   }
 
@@ -124,6 +190,7 @@ class _BackgroundSettingsPageState extends State<BackgroundSettingsPage>
   @override
   void dispose() {
     timer?.cancel();
+    widget.runtime.removeListener(runtimeChanged);
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -200,9 +267,16 @@ class _BackgroundSettingsPageState extends State<BackgroundSettingsPage>
                     '在任务、后台作业或插件管理操作进行时使用，空闲和仅等待答复时释放。不点亮屏幕，使用期间可能增加耗电。',
                   ),
                   value: state['keepAwakeWhileWorking'] == true,
-                  onChanged: loading || saving || error != null
-                      ? null
-                      : configure,
+                  onChanged: loading || saving || !confirmed ? null : configure,
+                ),
+              if (requestedSetting != null && !saving)
+                PocketRow(
+                  icon: Icons.sync_problem_rounded,
+                  title: '上次设置待核对',
+                  subtitle:
+                      '希望${requestedSetting! ? '开启' : '关闭'} CPU 唤醒保护。'
+                      '${confirmed ? '当前读取为${state?['keepAwakeWhileWorking'] == true ? '开启' : '关闭'}；这是当前设置，不代表已收到上次操作的回执。' : '保存结果尚未确认，连接恢复后只读取设置。'}'
+                      '不会自动重发；如需更改，请重新选择。',
                 ),
               PocketRow(
                 icon: Icons.battery_saver_rounded,
