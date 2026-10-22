@@ -258,6 +258,11 @@ export function apply(ctx, config) {
     switch (method) {
       case 'runtime.info': return { node: process.version, platform: process.platform, arch: process.arch,
         uid: process.getuid?.(), workspace: process.cwd(), profile: 'android' }
+      case 'runtime.permissions': return {
+        shell: shell.policy(),
+        fileTools: { sandboxMode: ctx.get('fs')?.sandboxMode ?? null },
+        presets: { available: !!ctx.get('permissionPresets') },
+      }
       case 'runtime.live': return live.snapshot()
       case 'runtime.transition.reserve': return packageOperations.reserve(params)
       case 'runtime.transition.commit': return packageOperations.commit(params)

@@ -10,6 +10,7 @@ import 'package:dsh_android/models.dart';
 import 'package:dsh_android/models_provider.dart';
 import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/session_models.dart';
+import 'package:dsh_android/skills.dart';
 import 'package:dsh_android/ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
@@ -39,6 +40,7 @@ class _Runtime extends RuntimeController {
   final calls = <({String method, Json params})>[];
   bool failCommand = false;
   bool failCatalog = false;
+  final delayedCatalogs = <String, Completer<List<Json>>>{};
   Completer<Json>? admission;
   int prompts = 0;
   final sentPrompts = <String>[];
@@ -104,6 +106,8 @@ class _Runtime extends RuntimeController {
           if (!(params['args'] as Json).containsKey('agentId')) {
             throw StateError('Gateway requires agentId');
           }
+          final id = params['args']['agentId'] as String;
+          if (delayedCatalogs[id] case final delayed?) return delayed.future;
           return catalog;
         case 'permissionPresets.catalog':
           return {
@@ -290,6 +294,121 @@ void main() {
     );
     expect(tester.takeException(), isNull);
   });
+
+  test(
+    'typed slash candidates search effective names and first-party titles',
+    () {
+      expect(
+        matchingComposerCommands(catalog, 'pl').map((row) => row['name']),
+        ['plan', 'plugin-command'],
+      );
+      expect(matchingComposerCommands(catalog, '目').map((row) => row['name']), [
+        'goal',
+      ]);
+      expect(
+        matchingComposerCommands([
+          {
+            'name': 'goal',
+            'definitionId': 'other/plugin',
+            'description': 'Other',
+          },
+        ], '目'),
+        isEmpty,
+      );
+      expect(matchingComposerCommands(catalog, 'zq'), isEmpty);
+    },
+  );
+
+  testWidgets(
+    'typed slash shows Session commands and selecting one consumes the trigger',
+    (tester) async {
+      phone(tester);
+      final runtime = _Runtime();
+      addTearDown(runtime.dispose);
+      await tester.pumpWidget(host(ChatPage(runtime: runtime)));
+      await tester.pumpAndSettle();
+      final field = find.byKey(const Key('chat-composer-input'));
+      await tester.enterText(field, '/comp');
+      await tester.pumpAndSettle();
+      expect(find.text('压缩  compact'), findsOneWidget);
+      expect(find.text('/summarize'), findsNothing);
+      await tester.tap(find.text('压缩  compact'));
+      await tester.pumpAndSettle();
+      expect(runtime.prompts, 0);
+      expect(
+        runtime.calls
+            .where((call) => call.method == 'session.command')
+            .single
+            .params['line'],
+        '/compact',
+      );
+      expect(tester.widget<TextField>(field).controller!.text, isEmpty);
+      expect(find.byType(ComposerSlashSuggestions), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'typed slash keeps skills available when the command directory fails',
+    (tester) async {
+      phone(tester);
+      final runtime = _Runtime()..failCatalog = true;
+      addTearDown(runtime.dispose);
+      await tester.pumpWidget(host(ChatPage(runtime: runtime)));
+      await tester.pumpAndSettle();
+      final field = find.byKey(const Key('chat-composer-input'));
+      await tester.enterText(field, '/su');
+      await tester.pumpAndSettle();
+      expect(find.textContaining('无法读取会话指令'), findsOneWidget);
+      expect(find.text('/summarize'), findsOneWidget);
+      await tester.tap(find.text('/summarize'));
+      await tester.pumpAndSettle();
+      expect(tester.widget<TextField>(field).controller!.text, '/summarize ');
+      expect(runtime.prompts, 0);
+    },
+  );
+
+  testWidgets(
+    'late command catalog from another Session cannot replace current suggestions',
+    (tester) async {
+      phone(tester);
+      final runtime = _Runtime();
+      addTearDown(runtime.dispose);
+      final delayed = Completer<List<Json>>();
+      runtime.delayedCatalogs['first'] = delayed;
+      final firstSkills = SessionSkillsController(runtime, 'first')..start();
+      final secondSkills = SessionSkillsController(runtime, 'second')..start();
+      addTearDown(firstSkills.dispose);
+      addTearDown(secondSkills.dispose);
+
+      Widget suggestions(
+        String id,
+        String query,
+        SessionSkillsController skills,
+      ) => host(
+        Scaffold(
+          body: ComposerSlashSuggestions(
+            runtime: runtime,
+            sessionId: id,
+            query: query,
+            skills: skills,
+            onCommand: (_) {},
+            onSkill: (_) {},
+            onMoreSkills: () {},
+          ),
+        ),
+      );
+
+      await tester.pumpWidget(suggestions('first', 'comp', firstSkills));
+      await tester.pump();
+      await tester.pumpWidget(suggestions('second', 'pl', secondSkills));
+      await tester.pumpAndSettle();
+      expect(find.text('计划  plan'), findsOneWidget);
+      delayed.complete(catalog);
+      await tester.pumpAndSettle();
+      expect(find.text('计划  plan'), findsOneWidget);
+      expect(find.text('压缩  compact'), findsNothing);
+    },
+  );
 
   testWidgets(
     'menu creation failure still reaches native model and credential pages',

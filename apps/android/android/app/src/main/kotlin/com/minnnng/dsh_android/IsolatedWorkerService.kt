@@ -11,10 +11,11 @@ import android.os.Messenger
 import android.os.ParcelFileDescriptor
 import android.os.Process
 import android.os.RemoteException
+import android.system.ErrnoException
 import android.system.Os
 import android.system.OsConstants
-import android.system.ErrnoException
 import java.io.File
+import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicBoolean
@@ -24,7 +25,11 @@ class IsolatedWorkerService : Service() {
     companion object {
         const val PROBE = 1
         const val RESULT = 2
+        const val READ_TEXT = 3
+        const val CANCEL = 4
         const val INPUT = "input"
+        const val REQUEST_ID = "requestId"
+        const val TEXT = "text"
         const val TOKEN = "token"
         const val UID = "uid"
         const val BYTES = "bytes"
@@ -36,7 +41,54 @@ class IsolatedWorkerService : Service() {
 
     private val worker = Executors.newSingleThreadExecutor()
     private val busy = AtomicBoolean(false)
+    private data class TextOperation(
+        val id: String,
+        val descriptor: ParcelFileDescriptor,
+        val reply: Messenger,
+        val cancelled: AtomicBoolean = AtomicBoolean(false),
+    )
+    // Handler callbacks, including onDestroy, own this reference on the main thread.
+    private var activeText: TextOperation? = null
     private val messenger = Messenger(Handler(Looper.getMainLooper()) { message ->
+        if (message.what == CANCEL) {
+            val id = message.data.getString(REQUEST_ID)
+            val current = activeText
+            if (current != null && current.id == id && current.cancelled.compareAndSet(false, true)) {
+                activeText = null
+                try { current.descriptor.close() } catch (_: Exception) { /* Worker reports its own terminal read failure. */ }
+                send(current.reply, Bundle().apply {
+                    putString(REQUEST_ID, current.id)
+                    putString(ERROR, "Isolated-worker read cancelled")
+                })
+            }
+            return@Handler true
+        }
+        if (message.what == READ_TEXT) {
+            val reply = message.replyTo ?: return@Handler true
+            val data = message.data
+            val descriptor = @Suppress("DEPRECATION") (data.getParcelable<ParcelFileDescriptor>(INPUT))
+            val id = data.getString(REQUEST_ID)
+            if (descriptor == null || id == null || !validRequestId(id)) {
+                descriptor?.close()
+                send(reply, Bundle().apply { putString(ERROR, "Invalid isolated-worker read") })
+                return@Handler true
+            }
+            if (!busy.compareAndSet(false, true)) {
+                descriptor.close()
+                send(reply, Bundle().apply { putString(REQUEST_ID, id); putString(ERROR, "Isolated worker is busy") })
+                return@Handler true
+            }
+            val operation = TextOperation(id, descriptor, reply)
+            activeText = operation
+            try { worker.execute { readText(operation) } }
+            catch (_: RejectedExecutionException) {
+                activeText = null
+                busy.set(false)
+                descriptor.close()
+                send(reply, Bundle().apply { putString(REQUEST_ID, id); putString(ERROR, "Isolated worker is stopping") })
+            }
+            return@Handler true
+        }
         if (message.what != PROBE) return@Handler true
         val reply = message.replyTo ?: return@Handler true
         val data = message.data
@@ -95,9 +147,48 @@ class IsolatedWorkerService : Service() {
     override fun onBind(intent: Intent?): IBinder = messenger.binder
 
     override fun onDestroy() {
+        activeText?.let { current ->
+            current.cancelled.set(true)
+            try { current.descriptor.close() } catch (_: Exception) { /* Service is stopping. */ }
+        }
+        activeText = null
         worker.shutdownNow()
         super.onDestroy()
     }
+
+    private fun readText(operation: TextOperation) {
+        val result = Bundle().apply { putString(REQUEST_ID, operation.id) }
+        try {
+            check(!operation.cancelled.get()) { "Isolated-worker read cancelled" }
+            operation.descriptor.use { descriptor ->
+                val stat = Os.fstat(descriptor.fileDescriptor)
+                require(OsConstants.S_ISREG(stat.st_mode) && stat.st_size in 0..IsolatedWorkerInput.MAX_TEXT_BYTES.toLong()) {
+                    "Isolated-worker text must be a regular file of at most 64 KiB"
+                }
+                require((Os.fcntlInt(descriptor.fileDescriptor, OsConstants.F_GETFL, 0) and OsConstants.O_ACCMODE) == OsConstants.O_RDONLY) {
+                    "Isolated-worker text descriptor must be read-only"
+                }
+                val text = ParcelFileDescriptor.AutoCloseInputStream(descriptor).use { IsolatedWorkerInput.readUtf8(it) }
+                check(!operation.cancelled.get()) { "Isolated-worker read cancelled" }
+                result.putInt(UID, Process.myUid())
+                result.putString(TEXT, text)
+            }
+        } catch (error: Exception) {
+            result.putString(ERROR, error.message ?: "Isolated-worker read failed")
+        } finally {
+            Handler(Looper.getMainLooper()).post {
+                if (activeText === operation) {
+                    activeText = null
+                    send(operation.reply, result)
+                }
+                busy.set(false)
+            }
+        }
+    }
+
+    private fun validRequestId(id: String): Boolean = try {
+        UUID.fromString(id).toString() == id
+    } catch (_: IllegalArgumentException) { false }
 
     private fun send(reply: Messenger, data: Bundle) {
         try { reply.send(Message.obtain(null, RESULT).apply { this.data = data }) }

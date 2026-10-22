@@ -27,6 +27,7 @@ import 'recovery.dart';
 import 'agent_presets.dart';
 import 'subagent_model_settings.dart';
 import 'web_search_settings.dart';
+import 'permission_policy.dart';
 
 class SettingsPage extends StatelessWidget {
   const SettingsPage({required this.runtime, super.key});
@@ -94,6 +95,12 @@ class SettingsPage extends StatelessWidget {
                   title: 'Agent 与工具',
                   subtitle: '预设、Shell、联网搜索与插件',
                   onTap: () => open(ConfigurationListPage(runtime: runtime)),
+                ),
+                PocketRow(
+                  icon: Icons.verified_user_outlined,
+                  title: '执行权限',
+                  subtitle: '查看 Shell 与文件工具的实际边界',
+                  onTap: () => open(ExecutionPermissionsPage(runtime: runtime)),
                 ),
                 PocketRow(
                   icon: Icons.extension_outlined,

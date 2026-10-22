@@ -6,7 +6,6 @@ import 'package:material_ui/material_ui.dart';
 import 'runtime.dart';
 import 'session_document.dart';
 import 'ui.dart';
-import 'flclash/popup.dart';
 
 class SessionSkill {
   const SessionSkill({
@@ -354,65 +353,4 @@ class _SessionSkillsPageState extends State<SessionSkillsPage> {
       ),
     );
   }
-}
-
-/// Inline discovery retains plain-text semantics. It does not claim a slash
-/// command; the existing command dispatcher still decides on submission.
-class ComposerSkillSuggestions extends StatelessWidget {
-  const ComposerSkillSuggestions({
-    super.key,
-    required this.controller,
-    required this.query,
-    required this.onPick,
-    required this.onMore,
-  });
-  final SessionSkillsController controller;
-  final String query;
-  final ValueChanged<SessionSkill> onPick;
-  final VoidCallback onMore;
-  @override
-  Widget build(BuildContext context) => ListenableBuilder(
-    listenable: controller,
-    builder: (context, _) {
-      final matches = rankSessionSkills(controller.skills, query);
-      return Padding(
-        padding: const EdgeInsets.only(bottom: 8),
-        child: ConstrainedBox(
-          constraints: BoxConstraints(
-            maxHeight: MediaQuery.sizeOf(context).height * .26,
-          ),
-          child: CommonPopupMenu(
-            items: [
-              if (controller.loading ||
-                  controller.error != null ||
-                  !controller.runtime.ready)
-                CommonPopupMenuItem(
-                  label: controller.loading
-                      ? '正在读取技能…'
-                      : controller.error ?? '等待本地服务',
-                  dismissOnSelect: false,
-                  onPressed: controller.error == null ? null : controller.load,
-                ),
-              for (final skill in matches.take(4))
-                CommonPopupMenuItem(
-                  label: '/${skill.name}',
-                  section: '技能',
-                  description:
-                      '${skill.modelInvocable ? '' : '仅由你主动调用 · '}${skill.description}',
-                  glyph: Icons.auto_stories_outlined,
-                  dismissOnSelect: false,
-                  onPressed: () => onPick(skill),
-                ),
-              CommonPopupMenuItem(
-                label: '浏览技能',
-                glyph: Icons.search_rounded,
-                dismissOnSelect: false,
-                onPressed: onMore,
-              ),
-            ],
-          ),
-        ),
-      );
-    },
-  );
 }

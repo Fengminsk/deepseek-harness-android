@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:material_ui/material_ui.dart';
 
 import 'runtime.dart';
+import 'skills.dart';
 import 'ui.dart';
 import 'flclash/popup.dart';
 
@@ -133,6 +134,245 @@ List<Json> composerCommandRows(List<Json> catalog) {
       if (!add.contains(row['name']) && !commands.contains(row['name']))
         {...row, 'section': '指令'},
   ];
+}
+
+/// Filter the effective Session catalog by registered name or displayed title.
+/// Prefixes lead, then ordered subsequences, with catalog order as a tie-break.
+List<Json> matchingComposerCommands(List<Json> catalog, String query) {
+  final rows = composerCommandRows(catalog);
+  final needle = query.toLowerCase();
+  if (needle.isEmpty) return rows;
+  final matches = <({Json row, int index, bool prefix, int gap})>[];
+  for (var index = 0; index < rows.length; index++) {
+    final row = rows[index];
+    final names = [
+      '${row['name']}'.toLowerCase(),
+      commandLabel(row).toLowerCase(),
+    ];
+    int? bestGap;
+    var prefix = false;
+    for (final name in names) {
+      final gap = _commandMatchGap(name, needle);
+      if (gap == null) continue;
+      prefix = prefix || name.startsWith(needle);
+      if (bestGap == null || gap < bestGap) bestGap = gap;
+    }
+    if (bestGap != null) {
+      matches.add((row: row, index: index, prefix: prefix, gap: bestGap));
+    }
+  }
+  matches.sort((a, b) {
+    if (a.prefix != b.prefix) return a.prefix ? -1 : 1;
+    final gap = a.gap.compareTo(b.gap);
+    return gap == 0 ? a.index.compareTo(b.index) : gap;
+  });
+  return [for (final match in matches) match.row];
+}
+
+int? _commandMatchGap(String candidate, String query) {
+  var previous = -1;
+  var gap = 0;
+  for (final rune in query.runes) {
+    final next = candidate.indexOf(String.fromCharCode(rune), previous + 1);
+    if (next < 0) return null;
+    gap += next - previous - 1;
+    previous = next;
+  }
+  return gap;
+}
+
+/// The typed slash affordance shares one panel between effective Host commands
+/// and skills. Skill rows remain plain-text insertion; command rows dispatch
+/// through the existing Session command selection path.
+class ComposerSlashSuggestions extends StatefulWidget {
+  const ComposerSlashSuggestions({
+    super.key,
+    required this.runtime,
+    required this.sessionId,
+    required this.query,
+    required this.skills,
+    required this.onCommand,
+    required this.onSkill,
+    required this.onMoreSkills,
+  });
+
+  final RuntimeController runtime;
+  final String sessionId;
+  final String query;
+  final SessionSkillsController skills;
+  final ValueChanged<Json> onCommand;
+  final ValueChanged<SessionSkill> onSkill;
+  final VoidCallback onMoreSkills;
+
+  @override
+  State<ComposerSlashSuggestions> createState() =>
+      _ComposerSlashSuggestionsState();
+}
+
+class _ComposerSlashSuggestionsState extends State<ComposerSlashSuggestions> {
+  List<Json>? _catalog;
+  String? _error;
+  int _epoch = 0;
+  int _connection = -1;
+  String _phase = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _connection = widget.runtime.connectionGeneration;
+    _phase = widget.runtime.phase;
+    widget.runtime.addListener(_runtimeChanged);
+    unawaited(_load());
+  }
+
+  @override
+  void didUpdateWidget(ComposerSlashSuggestions oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.runtime != widget.runtime) {
+      oldWidget.runtime.removeListener(_runtimeChanged);
+      widget.runtime.addListener(_runtimeChanged);
+      _connection = widget.runtime.connectionGeneration;
+      _phase = widget.runtime.phase;
+    }
+    if (oldWidget.runtime != widget.runtime ||
+        oldWidget.sessionId != widget.sessionId) {
+      _catalog = null;
+      _error = null;
+      unawaited(_load());
+    }
+  }
+
+  void _runtimeChanged() {
+    final connection = widget.runtime.connectionGeneration;
+    final phase = widget.runtime.phase;
+    if (_connection == connection && _phase == phase) return;
+    _connection = connection;
+    _phase = phase;
+    setState(() {
+      _catalog = null;
+      _error = null;
+    });
+    if (widget.runtime.ready) unawaited(_load());
+  }
+
+  Future<void> _load() async {
+    final epoch = ++_epoch;
+    final owner = widget.runtime;
+    final connection = owner.connectionGeneration;
+    final id = widget.sessionId;
+    if (!owner.ready) return;
+    try {
+      final catalog = await loadComposerCatalog(
+        owner,
+        id,
+      ).timeout(const Duration(seconds: 30));
+      if (!mounted ||
+          epoch != _epoch ||
+          owner != widget.runtime ||
+          connection != owner.connectionGeneration ||
+          id != widget.sessionId ||
+          !owner.ready) {
+        return;
+      }
+      // A collision with the client-owned File/Model actions is a catalog
+      // error, not a silent replacement of a plugin command.
+      composerCommandRows(catalog);
+      setState(() {
+        _catalog = catalog;
+        _error = null;
+      });
+    } catch (failure) {
+      if (mounted &&
+          epoch == _epoch &&
+          owner == widget.runtime &&
+          connection == owner.connectionGeneration &&
+          id == widget.sessionId) {
+        setState(() => _error = '无法读取会话指令：$failure');
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    ++_epoch;
+    widget.runtime.removeListener(_runtimeChanged);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: widget.skills,
+    builder: (context, _) {
+      final commands = _catalog == null
+          ? <Json>[]
+          : matchingComposerCommands(_catalog!, widget.query);
+      final skills = rankSessionSkills(widget.skills.skills, widget.query);
+      final visibleCommands = commands.take(widget.query.isEmpty ? 8 : 6);
+      final visibleSkills = skills.take(widget.query.isEmpty ? 3 : 4);
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 8),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.sizeOf(context).height * .34,
+          ),
+          child: CommonPopupMenu(
+            items: [
+              if (_catalog == null)
+                CommonPopupMenuItem(
+                  label:
+                      _error ?? (widget.runtime.ready ? '正在读取会话指令…' : '等待本地服务'),
+                  dismissOnSelect: false,
+                  onPressed: _error == null ? null : _load,
+                ),
+              for (final row in visibleCommands)
+                CommonPopupMenuItem(
+                  label: '${commandLabel(row)}  ${row['name']}',
+                  section: widget.query.isEmpty
+                      ? row['section'] as String
+                      : null,
+                  description: commandDescription(row),
+                  glyph: commandIcon(row),
+                  dismissOnSelect: false,
+                  onPressed: () => widget.onCommand(row),
+                ),
+              if (widget.skills.loading || widget.skills.error != null)
+                CommonPopupMenuItem(
+                  label: widget.skills.loading
+                      ? '正在读取技能…'
+                      : widget.skills.error!,
+                  dismissOnSelect: false,
+                  onPressed: widget.skills.error == null
+                      ? null
+                      : widget.skills.load,
+                ),
+              for (final skill in visibleSkills)
+                CommonPopupMenuItem(
+                  label: '/${skill.name}',
+                  section: '技能',
+                  description:
+                      '${skill.modelInvocable ? '' : '仅由你主动调用 · '}${skill.description}',
+                  glyph: Icons.auto_stories_outlined,
+                  dismissOnSelect: false,
+                  onPressed: () => widget.onSkill(skill),
+                ),
+              if (_catalog != null &&
+                  !widget.skills.loading &&
+                  widget.skills.error == null &&
+                  commands.isEmpty &&
+                  skills.isEmpty)
+                const CommonPopupMenuItem(label: '没有匹配的指令或技能'),
+              CommonPopupMenuItem(
+                label: '浏览技能',
+                glyph: Icons.search_rounded,
+                dismissOnSelect: false,
+                onPressed: widget.onMoreSkills,
+              ),
+            ],
+          ),
+        ),
+      );
+    },
+  );
 }
 
 class ComposerCommands extends StatefulWidget {

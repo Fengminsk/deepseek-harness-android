@@ -121,6 +121,8 @@ async function fixture(t, { approval = true, policy = 'ask', timeoutMs = 60000 }
 
 test('real Loader tool waits for one-shot approval and records the exact call identity', async t => {
   const f = await fixture(t)
+  assert.deepEqual(f.shell.policy(), { tool: 'android_shell', executionIdentity: 'app-uid',
+    approval: 'every-invocation', workspaceConfinement: false })
   const asked = Promise.withResolvers(), answer = Promise.withResolvers()
   f.ctx.on('approval/request', request => { asked.resolve(request); return answer.promise })
   const running = f.execute()

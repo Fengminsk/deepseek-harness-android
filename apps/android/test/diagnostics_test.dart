@@ -136,7 +136,7 @@ void main() {
   });
 
   testWidgets(
-    'isolation check accepts only independent UID and private denial',
+    'isolation check requires independent UID, private denial and granted read',
     (tester) async {
       final runtime = _Runtime()
         ..error = null
@@ -144,6 +144,7 @@ void main() {
           'hostUid': 10100,
           'workerUid': 99100,
           'privateReadDenied': true,
+          'grantReadVerified': true,
           'bytes': 19,
           'sha256': 'a' * 64,
         }
@@ -155,12 +156,25 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('检查独立进程'));
       await tester.pumpAndSettle();
-      expect(find.text('独立进程与受限文件读取已通过本次检查。'), findsOneWidget);
+      expect(find.text('独立进程、私有文件拒绝与授权文本读取已通过本次检查。'), findsOneWidget);
       expect(runtime.calls, 1);
 
       runtime.isolationReply = {
         'hostUid': 10100,
         'workerUid': 10100,
+        'privateReadDenied': true,
+        'grantReadVerified': true,
+        'bytes': 19,
+        'sha256': 'a' * 64,
+      };
+      await tester.tap(find.text('检查独立进程'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('隔离验证未通过'), findsOneWidget);
+      expect(find.text('独立进程、私有文件拒绝与授权文本读取已通过本次检查。'), findsNothing);
+
+      runtime.isolationReply = {
+        'hostUid': 10100,
+        'workerUid': 99100,
         'privateReadDenied': true,
         'bytes': 19,
         'sha256': 'a' * 64,
@@ -168,7 +182,6 @@ void main() {
       await tester.tap(find.text('检查独立进程'));
       await tester.pumpAndSettle();
       expect(find.textContaining('隔离验证未通过'), findsOneWidget);
-      expect(find.text('独立进程与受限文件读取已通过本次检查。'), findsNothing);
     },
   );
 
@@ -193,12 +206,13 @@ void main() {
       'hostUid': 10100,
       'workerUid': 99100,
       'privateReadDenied': true,
+      'grantReadVerified': true,
       'bytes': 19,
       'sha256': 'a' * 64,
     });
     await tester.pumpAndSettle();
     expect(find.text('连接已变化，请重新验证隔离进程。'), findsOneWidget);
-    expect(find.text('独立进程与受限文件读取已通过本次检查。'), findsNothing);
+    expect(find.text('独立进程、私有文件拒绝与授权文本读取已通过本次检查。'), findsNothing);
   });
 
   testWidgets('recovery requires a decision and actual ready after admission', (

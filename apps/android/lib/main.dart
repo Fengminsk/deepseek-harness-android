@@ -516,6 +516,19 @@ class _ChatPageState extends State<ChatPage> {
     }
   }
 
+  void pickTypedCommand(String id, Json command) {
+    if (id != sessionId ||
+        !RegExp(r'^\s*/[^\s]*$').hasMatch(input.text) ||
+        commandDrafts[id] != null) {
+      return;
+    }
+    // The typed trigger is consumed only after a user picks a visible row.
+    // The same command action handles selection from the + menu and here.
+    input.clear();
+    drafts.remove(id);
+    pickCommand(command);
+  }
+
   Future<void> runDetached(Json command, String id) async {
     if (submissions.contains(id)) {
       setState(() => errors[id] = '当前提交尚未确认，请稍后再执行指令。');
@@ -1119,18 +1132,22 @@ class _ChatPageState extends State<ChatPage> {
             ValueListenableBuilder<TextEditingValue>(
               valueListenable: input,
               builder: (context, value, _) {
-                final query = RegExp(r'^\s*/([\w-]*)$')
+                final query = RegExp(r'^\s*/([^\s]*)$')
                     .firstMatch(value.text)
                     ?.group(1);
                 if (query == null || commandDrafts[sessionId] != null) {
                   return const SizedBox.shrink();
                 }
                 final id = sessionId;
-                return ComposerSkillSuggestions(
-                  controller: skillsFor(id),
+                return ComposerSlashSuggestions(
+                  key: ValueKey((runtime, id)),
+                  runtime: runtime,
+                  sessionId: id,
                   query: query,
-                  onPick: (skill) => insertSkill(id, skill),
-                  onMore: pickSkill,
+                  skills: skillsFor(id),
+                  onCommand: (command) => pickTypedCommand(id, command),
+                  onSkill: (skill) => insertSkill(id, skill),
+                  onMoreSkills: pickSkill,
                 );
               },
             ),

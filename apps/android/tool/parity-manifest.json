@@ -960,7 +960,8 @@
       ],
       "status": "partial",
       "android": [
-        "apps/android/lib/approvals.dart"
+        "apps/android/lib/approvals.dart",
+        "apps/android/lib/permission_policy.dart"
       ],
       "evidence": {
         "core": "unverified",
@@ -968,7 +969,7 @@
         "behavior": "unverified",
         "device": "unverified"
       },
-      "note": "Desktop permission presets are disabled; per-call Android approval is a distinct platform capability, not equivalent sandbox choices."
+      "note": "Desktop permission presets remain disabled. Android now shows a runtime-observed read-only execution policy and per-call approval, but cannot offer equivalent sandbox choices until Shell confinement exists."
     },
     {
       "key": "webUi/ui-agent-preset",
@@ -1897,15 +1898,17 @@
       "status": "partial",
       "android": [
         "apps/android/runtime/android-shell.mjs",
-        "apps/android/runtime/interactions.mjs"
+        "apps/android/runtime/interactions.mjs",
+        "apps/android/runtime/index.mjs",
+        "apps/android/lib/permission_policy.dart"
       ],
       "evidence": {
         "core": "partial",
-        "ui": "unverified",
+        "ui": "partial",
         "behavior": "unverified",
         "device": "unverified"
       },
-      "note": "Original desktop permission presets are disabled; Android app UID and per-call approval do not implement equivalent confinement."
+      "note": "Original desktop permission presets are disabled. The App reads the actual file-tool mode and Shell one-shot approval policy; app UID execution still lacks per-command confinement, so no preset switch is advertised."
     },
     {
       "key": "androidDisabled/ui-permission",
@@ -1917,15 +1920,17 @@
       "status": "partial",
       "android": [
         "apps/android/runtime/android-shell.mjs",
-        "apps/android/runtime/interactions.mjs"
+        "apps/android/runtime/interactions.mjs",
+        "apps/android/runtime/index.mjs",
+        "apps/android/lib/permission_policy.dart"
       ],
       "evidence": {
         "core": "partial",
-        "ui": "unverified",
+        "ui": "partial",
         "behavior": "unverified",
         "device": "unverified"
       },
-      "note": "Original desktop permission presets are disabled; Android app UID and per-call approval do not implement equivalent confinement."
+      "note": "Original desktop permission presets are disabled. The native settings page reports the runtime's actual execution boundary and opens pending approvals; it does not claim desktop sandbox parity."
     },
     {
       "key": "androidDisabled/credentials",

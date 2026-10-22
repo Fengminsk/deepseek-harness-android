@@ -54,6 +54,13 @@ export function registerAndroidShell(ctx, config) {
     },
   })))
   return {
+    policy() {
+      // This is the policy actually enforced by the pre-execute hook above.
+      // Keep it separate from desktop permission presets: the app UID is not
+      // a workspace boundary, even though an approval is required per call.
+      return { tool: 'android_shell', executionIdentity: 'app-uid',
+        approval: 'every-invocation', workspaceConfinement: false }
+    },
     context(sessionId, callId) {
       for (const value of prepared.values()) {
         if (value.sessionId === sessionId && value.callId === callId) return { cwd: value.cwd }

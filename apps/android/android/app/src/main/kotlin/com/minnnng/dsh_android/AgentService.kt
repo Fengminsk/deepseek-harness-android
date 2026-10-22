@@ -582,9 +582,16 @@ class AgentService : Service() {
             check(evidence.bytes == payload.size && evidence.sha256 == hash) {
                 "Isolated worker changed the granted descriptor content"
             }
+            val granted = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use {
+                IsolatedWorkerBridge.readText(this, it)
+            }
+            check(granted.workerUid != Process.myUid() && granted.content == payload.toString(Charsets.UTF_8)) {
+                "Isolated worker did not return the granted text"
+            }
             return JSONObject().put("workerUid", evidence.workerUid)
                 .put("hostUid", Process.myUid()).put("bytes", evidence.bytes)
                 .put("sha256", evidence.sha256).put("privateReadDenied", true)
+                .put("grantReadVerified", true)
         } finally {
             check(file.delete() || !file.exists()) { "Could not remove isolation probe input" }
         }

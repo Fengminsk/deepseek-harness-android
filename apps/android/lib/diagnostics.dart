@@ -120,6 +120,7 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
           raw['hostUid'] is! int ||
           raw['workerUid'] == raw['hostUid'] ||
           raw['privateReadDenied'] != true ||
+          raw['grantReadVerified'] != true ||
           raw['bytes'] is! int ||
           raw['bytes'] <= 0 ||
           raw['sha256'] is! String ||
@@ -129,7 +130,7 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
       if (current()) {
         setState(() {
           isolationEvidence = raw;
-          isolationNotice = '独立进程与受限文件读取已通过本次检查。';
+          isolationNotice = '独立进程、私有文件拒绝与授权文本读取已通过本次检查。';
         });
       }
     } catch (_) {
@@ -308,7 +309,7 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
               PocketRow(
                 icon: Icons.security_rounded,
                 title: '检查独立进程',
-                subtitle: '核对独立 UID、应用私有文件拒绝与受限输入',
+                subtitle: '核对独立 UID、私有文件拒绝与授权文本回传',
                 trailing: checkingIsolation
                     ? const Text('检查中…')
                     : const Icon(Icons.chevron_right_rounded),
