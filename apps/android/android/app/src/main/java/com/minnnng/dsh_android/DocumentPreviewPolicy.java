@@ -44,4 +44,12 @@ public final class DocumentPreviewPolicy {
         return value != null && !value.isEmpty() && value.length() <= 96
             && value.chars().allMatch(c -> c >= 33 && c <= 126);
     }
+
+    /** File paths stay decoded; authorization and path resolution remain with workspaceFiles. */
+    public static boolean document(String boundSession, String targetSession, String path, Long line) {
+        return boundSession != null && !boundSession.isEmpty() && boundSession.equals(targetSession)
+            && path != null && !path.isEmpty() && path.length() <= 8192
+            && path.chars().noneMatch(c -> c < 32 || c == 127)
+            && (line == null || line > 0 && line <= 9007199254740991L);
+    }
 }

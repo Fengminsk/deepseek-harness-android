@@ -45,7 +45,9 @@ export class AppLiveState {
         this.flush(id, record)
       }
       this.streaming.delete(id)
-      transport.notify('session.status', { sessionId: id, status: 'idle', revision: ++this.revision })
+      // Agent membership must match the reconnect snapshot, which only lists
+      // attached Agents. Idle alone would make a released Session look live.
+      transport.notify('session.status', { sessionId: id, status: 'idle', attached: false, revision: ++this.revision })
     })
   }
 

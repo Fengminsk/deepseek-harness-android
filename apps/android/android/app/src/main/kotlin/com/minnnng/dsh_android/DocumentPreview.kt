@@ -13,6 +13,7 @@ import androidx.webkit.WebViewAssetLoader
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import io.flutter.plugin.common.MethodChannel
+import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.StandardMessageCodec
 import io.flutter.plugin.platform.PlatformView
 import io.flutter.plugin.platform.PlatformViewFactory
@@ -23,12 +24,14 @@ import java.util.UUID
 
 /** A document surface, not a browser: no listener, file URLs, external network or unrestricted JS interface. */
 class DocumentPreviewFactory(
+    private val messenger: BinaryMessenger,
     private val send: (JSONObject, MethodChannel.Result) -> Unit,
 ) : PlatformViewFactory(StandardMessageCodec.INSTANCE) {
     private val views = mutableSetOf<DocumentPreviewView>()
     override fun create(context: Context, viewId: Int, args: Any?): PlatformView {
         val options = JSONObject(args as? Map<*, *> ?: emptyMap<Any, Any>())
-        return DocumentPreviewView(context, options, send) { views.remove(it) }.also { views.add(it) }
+        val navigation = MethodChannel(messenger, "dsh/document-preview/$viewId")
+        return DocumentPreviewView(context, options, navigation, send) { views.remove(it) }.also { views.add(it) }
     }
     fun receive(frame: JSONObject) { views.toList().forEach { it.receive(frame) } }
     fun disconnected() { views.toList().forEach { it.disconnected() } }
@@ -38,6 +41,7 @@ class DocumentPreviewFactory(
 private class DocumentPreviewView(
     context: Context,
     private val options: JSONObject,
+    private val navigation: MethodChannel,
     private val send: (JSONObject, MethodChannel.Result) -> Unit,
     private val onDispose: (DocumentPreviewView) -> Unit,
 ) : PlatformView {
@@ -60,7 +64,7 @@ private class DocumentPreviewView(
 
     init {
         require(session.isNotBlank() && session.length <= 256)
-        require(options.getString("path").length <= 8192)
+        require(DocumentPreviewPolicy.document(session, session, options.getString("path"), documentLine(options)))
         web.setBackgroundColor(runCatching { Color.parseColor(options.optString("background")) }.getOrDefault(Color.TRANSPARENT))
         container.addView(web, FrameLayout.LayoutParams(-1, -1))
         web.settings.apply {
@@ -128,6 +132,22 @@ private class DocumentPreviewView(
             require(DocumentPreviewPolicy.identity(id)) { "Invalid document request identity" }
             when (message.getString("kind")) {
                 "ready" -> reply(proxy, JSONObject().put("id", id).put("result", options))
+                "navigate" -> {
+                    val path = message.getString("path")
+                    val line = documentLine(message)
+                    require(DocumentPreviewPolicy.document(session, message.getString("sessionId"), path, line)) { "Invalid document navigation target" }
+                    navigation.invokeMethod("openDocument", mapOf("sessionId" to session, "path" to path,
+                        "line" to line, "replace" to (message.opt("replace") == true)), object : MethodChannel.Result {
+                        override fun success(result: Any?) {
+                            if (path == options.getString("path")) {
+                                if (line == null) options.remove("line") else options.put("line", line)
+                            }
+                            reply(proxy, JSONObject().put("id", id).put("result", JSONObject().put("opened", true)))
+                        }
+                        override fun error(code: String, message: String?, details: Any?) { error(proxy, id, message ?: code) }
+                        override fun notImplemented() { error(proxy, id, "Document navigation is not available") }
+                    })
+                }
                 "external" -> {
                     val url = message.getString("url")
                     require(DocumentPreviewPolicy.external(url)) { "Unsupported external document link" }
@@ -211,6 +231,13 @@ private class DocumentPreviewView(
         }
         if (!removeScope) args.put("workspaceFileScopeId", session)
         return args
+    }
+
+    private fun documentLine(value: JSONObject): Long? {
+        if (!value.has("line") || value.isNull("line")) return null
+        val number = value.get("line")
+        require(number is Number && number.toDouble().isFinite() && number.toDouble() == number.toLong().toDouble()) { "Invalid document line" }
+        return number.toLong()
     }
 
     private fun subscribe(id: String, message: JSONObject, proxy: JavaScriptReplyProxy) {

@@ -142,11 +142,16 @@ class ComposerCommands extends StatefulWidget {
     required this.sessionId,
     required this.onPick,
     this.maxHeight = 420,
+    this.deferActivation = false,
   });
   final RuntimeController runtime;
   final String sessionId;
   final ValueChanged<Json> onPick;
   final double maxHeight;
+
+  /// A cold history menu exposes read-only entries before the user explicitly
+  /// asks for Agent-scoped commands, whose original API requires activation.
+  final bool deferActivation;
   @override
   State<ComposerCommands> createState() => _ComposerCommandsState();
 }
@@ -155,21 +160,29 @@ class _ComposerCommandsState extends State<ComposerCommands> {
   List<Json>? rows;
   String? error;
   int generation = 0;
+  bool requested = false;
   @override
   void initState() {
     super.initState();
-    unawaited(load());
+    if (!widget.deferActivation) unawaited(load());
   }
 
   @override
   void didUpdateWidget(ComposerCommands oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.sessionId != widget.sessionId) unawaited(load());
+    if (oldWidget.sessionId != widget.sessionId) {
+      generation++;
+      rows = null;
+      error = null;
+      requested = false;
+      if (!widget.deferActivation) unawaited(load());
+    }
   }
 
   Future<void> load() async {
     final current = ++generation;
     setState(() {
+      requested = true;
       rows = null;
       error = null;
     });
@@ -193,7 +206,22 @@ class _ComposerCommandsState extends State<ComposerCommands> {
       constraints: BoxConstraints(maxHeight: widget.maxHeight),
       child: CommonPopupMenu(
         items: [
-          if (rows == null) ...[
+          if (!requested) ...[
+            for (final action in ['file', 'model', 'export'])
+              CommonPopupMenuItem(
+                label: commandLabel({'clientAction': action}),
+                glyph: commandIcon({'clientAction': action}),
+                onPressed: () => widget.onPick({'clientAction': action}),
+              ),
+            CommonPopupMenuItem(
+              label: '会话指令',
+              description: '载入目标、计划及其他指令',
+              glyph: Icons.terminal_rounded,
+              dismissOnSelect: false,
+              onPressed: load,
+            ),
+          ],
+          if (rows == null && requested) ...[
             CommonPopupMenuItem(
               label: error == null ? '正在读取会话菜单…' : '会话菜单暂不可用',
               description: error?.contains('Select an available model') == true
@@ -228,6 +256,13 @@ class _ComposerCommandsState extends State<ComposerCommands> {
               glyph: commandIcon(row),
               onPressed: () => widget.onPick(row),
             ),
+          CommonPopupMenuItem(
+            label: '浏览技能',
+            section: '技能',
+            description: '选择技能并添加到消息',
+            glyph: Icons.auto_stories_outlined,
+            onPressed: () => widget.onPick({'clientAction': 'skills'}),
+          ),
         ],
       ),
     );

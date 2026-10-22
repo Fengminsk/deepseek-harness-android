@@ -55,6 +55,8 @@ export class DocumentBridge {
     });
   }
   ready(signal) { return this.request('ready', {}, signal); }
+  /** A file target, not a URL; native retains its bound Session and owns routing. */
+  openDocument(target, signal) { return this.request('navigate', target, signal); }
   /** Delegate a user-selected Web link; the native host validates and launches it. */
   openExternalLink(url) {
     if (typeof url !== 'string') throw new Error('Invalid external document link');

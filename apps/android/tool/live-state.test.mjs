@@ -6,13 +6,33 @@ const { AppLiveState, presentSessionEvent } = await import(new URL('@minnnng/dsh
 function harness(t) {
   const handlers = new Map(), notices = []
   const agent = { session: { id: 'fixture' }, status: 'running' }
+  const attached = [agent]
   const state = new AppLiveState({
     on: (name, callback) => handlers.set(name, callback),
-    agents: { list: () => [agent] },
+    agents: { list: () => attached },
   }, { notify: (method, data) => notices.push({ method, data }) })
   t.after(() => state.close())
-  return { agent, state, notices, handlers, send: frame => state.receive(agent, frame) }
+  return { agent, state, notices, handlers, send: frame => state.receive(agent, frame),
+    disposeAgent() {
+      attached.splice(attached.indexOf(agent), 1)
+      handlers.get('agent/disposed')({ agent })
+    } }
 }
+
+test('normal idle remains attached, while disposal notification and reconnect both remove Agent membership', t => {
+  const { agent, state, handlers, notices, disposeAgent } = harness(t)
+  agent.status = 'idle'
+  handlers.get('agent/status')({ agent, status: 'idle' })
+  assert.deepEqual(notices.at(-1), {
+    method: 'session.status', data: { sessionId: 'fixture', status: 'idle', revision: 1 },
+  })
+  assert.deepEqual(state.snapshot().statuses, { fixture: 'idle' })
+  disposeAgent()
+  assert.deepEqual(notices.at(-1), {
+    method: 'session.status', data: { sessionId: 'fixture', status: 'idle', attached: false, revision: 2 },
+  })
+  assert.deepEqual(state.snapshot().statuses, {})
+})
 
 test('many deltas publish one canonical reasoning/text prefix while a reconnect sees the latest prefix', t => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
@@ -59,12 +79,14 @@ test('abandoned attempts preserve partial text and late frames cannot finish a r
 
 test('Agent disposal exposes interrupted partial text, and close cancels any pending publication', t => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
-  const { state, send, notices, handlers, agent } = harness(t)
+  const { state, send, notices, handlers, agent, disposeAgent } = harness(t)
   send({ type: 'start', attemptId: 'one', revision: 1, turn: 1, step: 1 })
   send({ type: 'chunk', attemptId: 'one', revision: 2, index: 0,
     chunk: { type: 'text-delta', index: 0, text: 'partial' } })
-  handlers.get('agent/disposed')({ agent })
+  disposeAgent()
   assert.equal(state.snapshot().liveMessages.fixture.interrupted, true)
+  assert.deepEqual(state.snapshot().statuses, {})
+  assert.equal(notices.at(-1).data.attached, false)
   const count = notices.length
   state.close()
   t.mock.timers.tick(100)

@@ -9,6 +9,7 @@ import 'package:markdown/markdown.dart' as md;
 
 import 'chat_message_actions.dart';
 import 'chat_projection.dart';
+import 'chat_deliverables.dart';
 import 'chat_tool_groups.dart';
 import 'entry_motion.dart';
 import 'runtime.dart';
@@ -116,6 +117,7 @@ class ChatTimeline extends StatefulWidget {
     required this.sessionId,
     required this.projection,
     required this.controller,
+    this.events = const [],
     this.live,
     this.footer,
     this.onOpenLink,
@@ -127,6 +129,9 @@ class ChatTimeline extends StatefulWidget {
   final String sessionId;
   final ChatProjection projection;
   final ScrollController controller;
+
+  /// Original loaded Session window, including log-only todo/present events.
+  final List<Json> events;
   final ChatLiveMessage? live;
   final Widget? footer;
   final ChatOpenLink? onOpenLink;
@@ -146,7 +151,9 @@ class _ChatTimelineState extends State<ChatTimeline>
   List<ChatDisplayItem> _groups = const [];
   List<ChatDisplayItem> _display = const [];
   final _positions = <String, int>{};
-  (ChatProjection, int, int)? _observed;
+  ChatArtifactsProjection _artifacts = ChatArtifactsProjection();
+  final _artifactRows = <String, ChatArtifact>{};
+  (ChatProjection, int, int, int)? _observed;
   int _generation = 0;
 
   @override
@@ -157,6 +164,8 @@ class _ChatTimelineState extends State<ChatTimeline>
       _sources.clear();
       _expanded.clear();
       _disposeMotions();
+      _artifacts = ChatArtifactsProjection();
+      _artifactRows.clear();
       _observed = null;
       _generation++;
     }
@@ -189,14 +198,41 @@ class _ChatTimelineState extends State<ChatTimeline>
 
   void _synchronize() {
     final projection = widget.projection;
+    _artifacts.reconcile(widget.events);
     final stamp = (
       projection,
       projection.processedEventCount,
       projection.entries.length,
+      _artifacts.revision,
     );
     if (_observed == stamp) return;
     _observed = stamp;
-    _groups = groupChatTools(projection.entries);
+    _artifactRows
+      ..clear()
+      ..addEntries(
+        _artifacts.entries.map((entry) => MapEntry(entry.key, entry)),
+      );
+    final entries = [
+      ...projection.entries,
+      for (final artifact in _artifacts.entries)
+        ChatEntry(
+          key: artifact.key,
+          seq: artifact.seq,
+          kind: ChatEntryKind.notice,
+          event: artifact.event,
+        ),
+    ];
+    final orderByKey = {
+      for (var index = 0; index < entries.length; index++)
+        entries[index].key: index,
+    };
+    entries.sort((a, b) {
+      final order = a.seq.compareTo(b.seq);
+      // A turn/end error or interruption notice precedes that turn's files.
+      if (order != 0) return order;
+      return orderByKey[a.key]!.compareTo(orderByKey[b.key]!);
+    });
+    _groups = groupChatTools(entries);
     final snapshots = <String, ToolActivity>{};
     for (final row in projection.entries) {
       final activity = row.tool;
@@ -322,6 +358,24 @@ class _ChatTimelineState extends State<ChatTimeline>
             );
           }
           final row = item.entry!;
+          final artifact = _artifactRows[row.key];
+          if (artifact != null) {
+            return KeyedSubtree(
+              key: ValueKey((sessionId, row.key)),
+              child: switch (artifact) {
+                ChatTodoSnapshot() => ChatTodoRow(snapshot: artifact),
+                ChatPresentedTurn() => ChatPresentedFiles(
+                  sessionId: sessionId,
+                  delivery: artifact,
+                  onOpen: widget.onOpenFile == null
+                      ? null
+                      : (file) => widget.onOpenFile!(
+                          ChatFileLink(sessionId: sessionId, path: file.path),
+                        ),
+                ),
+              },
+            );
+          }
           final message = ChatMessage(
             entry: row,
             sessionId: sessionId,

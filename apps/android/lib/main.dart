@@ -26,6 +26,8 @@ import 'chat_projection.dart';
 import 'chat_messages.dart';
 import 'chat_sidebar.dart';
 import 'agent_presets.dart';
+import 'skills.dart';
+import 'chat_deliverables.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -137,6 +139,9 @@ class _ChatPageState extends State<ChatPage> {
   final errors = <String, String>{};
   final submissions = <String>{};
   final commandDrafts = <String, Json>{};
+  final localDraftSessions = <String>{};
+  final skillDraftPreparation = <String, Future<void>>{};
+  final skillCatalogs = <String, SessionSkillsController>{};
   final chatProjections = <String, ChatProjection>{};
   late AttachmentDrafts attachments;
   final messageScroll = ScrollController();
@@ -159,6 +164,7 @@ class _ChatPageState extends State<ChatPage> {
   @override
   void initState() {
     super.initState();
+    localDraftSessions.add(sessionId);
     runtime.addListener(handleNavigation);
     attachments = AttachmentDrafts(runtime)..addListener(attachmentChanged);
     handleNavigation();
@@ -168,6 +174,11 @@ class _ChatPageState extends State<ChatPage> {
   void didUpdateWidget(ChatPage oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.runtime != runtime) {
+      for (final catalog in skillCatalogs.values) {
+        catalog.dispose();
+      }
+      skillCatalogs.clear();
+      skillDraftPreparation.clear();
       chatProjections.clear();
       oldWidget.runtime.removeListener(handleNavigation);
       attachments.removeListener(attachmentChanged);
@@ -231,6 +242,9 @@ class _ChatPageState extends State<ChatPage> {
 
   @override
   void dispose() {
+    for (final catalog in skillCatalogs.values) {
+      catalog.dispose();
+    }
     runtime.removeListener(handleNavigation);
     attachments.removeListener(attachmentChanged);
     attachments.dispose();
@@ -254,12 +268,67 @@ class _ChatPageState extends State<ChatPage> {
     });
   }
 
-  void newChat() => activateSession(runtime.newSession());
+  void newChat() {
+    final id = runtime.newSession();
+    localDraftSessions.add(id);
+    activateSession(id);
+  }
+
+  Future<void> prepareSkillDraft(String id) {
+    if (!localDraftSessions.contains(id)) {
+      return Future.error(StateError('会话已不可访问'));
+    }
+    return skillDraftPreparation.putIfAbsent(id, () async {
+      try {
+        await runtime.ensureSession(id);
+        localDraftSessions.remove(id);
+      } finally {
+        skillDraftPreparation.remove(id);
+      }
+    });
+  }
+
+  Future<void> pickSkill() async {
+    final id = sessionId;
+    final skill = await Navigator.of(context).push<SessionSkill>(
+      PocketRoute<SessionSkill>(
+        builder: (_) => SessionSkillsPage(controller: skillsFor(id)),
+      ),
+    );
+    if (!mounted || skill == null) return;
+    insertSkill(id, skill);
+  }
+
+  SessionSkillsController skillsFor(String id) => skillCatalogs.putIfAbsent(
+    id,
+    () => SessionSkillsController(
+      runtime,
+      id,
+      prepareDraft: localDraftSessions.contains(id)
+          ? () => prepareSkillDraft(id)
+          : null,
+    )..start(),
+  );
+
+  void insertSkill(String id, SessionSkill skill) {
+    setState(() {
+      final draft = id == sessionId
+          ? input.value
+          : drafts[id] ?? TextEditingValue.empty;
+      final next = insertSessionSkill(draft, skill.name);
+      drafts[id] = next;
+      commandDrafts.remove(id);
+      if (id == sessionId) input.value = next;
+    });
+    if (id == sessionId) inputFocus.requestFocus();
+  }
 
   void pickCommand(Json command) {
     switch (builtinCommand(command) ?? command['clientAction']) {
       case 'file':
         unawaited(attachments.pick(sessionId));
+      case 'skills':
+        unawaited(pickSkill());
       case 'configure-models':
         navigate(ModelsPage(runtime: runtime));
       case 'model':
@@ -410,6 +479,7 @@ class _ChatPageState extends State<ChatPage> {
         await runtime.send(sendingId, text);
       }
       if (!mounted) return;
+      localDraftSessions.remove(sendingId);
       final draft = sendingId == sessionId ? input.value : drafts[sendingId];
       if (draft?.text.trim() == text &&
           identical(commandDrafts[sendingId], pickedCommand)) {
@@ -676,6 +746,7 @@ class _ChatPageState extends State<ChatPage> {
                 },
                 child: ChatTimeline(
                   sessionId: sessionId,
+                  events: runtime.timelines[sessionId] ?? const [],
                   projection: projection,
                   controller: messageScroll,
                   live: live,
@@ -750,6 +821,28 @@ class _ChatPageState extends State<ChatPage> {
         bottom: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            ChatTodoDock(
+              sessionId: sessionId,
+              events: runtime.timelines[sessionId] ?? const [],
+            ),
+            ValueListenableBuilder<TextEditingValue>(
+              valueListenable: input,
+              builder: (context, value, _) {
+                final query = RegExp(r'^\s*/([\w-]*)$')
+                    .firstMatch(value.text)
+                    ?.group(1);
+                if (query == null || commandDrafts[sessionId] != null) {
+                  return const SizedBox.shrink();
+                }
+                final id = sessionId;
+                return ComposerSkillSuggestions(
+                  controller: skillsFor(id),
+                  query: query,
+                  onPick: (skill) => insertSkill(id, skill),
+                  onMore: pickSkill,
+                );
+              },
+            ),
             if (commandDrafts[sessionId] != null)
               ComposerCommandChip(
                 command: commandDrafts[sessionId]!,
@@ -808,6 +901,13 @@ class _ChatPageState extends State<ChatPage> {
                       popupBuilder: (popupContext) => ComposerCommands(
                         runtime: runtime,
                         sessionId: sessionId,
+                        deferActivation:
+                            !localDraftSessions.contains(sessionId) &&
+                            ![
+                              'idle',
+                              'running',
+                              'waiting',
+                            ].contains(runtime.statuses[sessionId]),
                         maxHeight:
                             (MediaQuery.sizeOf(popupContext).height -
                                     MediaQuery.paddingOf(popupContext)

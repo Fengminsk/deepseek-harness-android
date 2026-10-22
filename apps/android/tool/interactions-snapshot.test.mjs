@@ -94,7 +94,7 @@ test('question snapshots retain original questions and state without shell prese
   })
 })
 
-test('shared credential reference changes reach native observers without forwarding account record events', async () => {
+test('shared credential and preset changes reach native observers without forwarding account record events', async () => {
   const lifetime = new AbortController()
   const delivered = []
   const ready = Promise.withResolvers()
@@ -106,6 +106,7 @@ test('shared credential reference changes reach native observers without forward
       return (async function* () {
         yield { type: 'ready', clientId: 'test-client' }
         yield { type: 'emit', event: 'credentials/reference-updated', args: ['SEARCH_API_KEY'] }
+        yield { type: 'emit', event: 'agent-preset/selected', args: ['session', 'android'] }
         yield { type: 'emit', event: 'credentials/record-updated', args: ['account/record'] }
         lifetime.abort()
       })()
@@ -115,5 +116,7 @@ test('shared credential reference changes reach native observers without forward
   await ready.promise
   assert.deepEqual(delivered, [{ method: 'api.event', params: {
     event: 'credentials/reference-updated', args: ['SEARCH_API_KEY'],
+  } }, { method: 'api.event', params: {
+    event: 'agent-preset/selected', args: ['session', 'android'],
   } }])
 })

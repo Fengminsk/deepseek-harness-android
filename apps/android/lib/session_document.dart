@@ -25,11 +25,83 @@ class SessionDocumentPage extends StatefulWidget {
 
 class _SessionDocumentPageState extends State<SessionDocumentPage> {
   int retry = 0;
+  late int? _line = widget.line;
+  MethodChannel? _navigation;
+  bool _opening = false;
+
+  void _connect(int viewId, int generation) {
+    if (!mounted || generation != widget.runtime.connectionGeneration) return;
+    _navigation?.setMethodCallHandler(null);
+    final channel = MethodChannel('dsh/document-preview/$viewId');
+    _navigation = channel;
+    channel.setMethodCallHandler((call) async {
+      if (call.method != 'openDocument') throw MissingPluginException();
+      if (!mounted ||
+          _navigation != channel ||
+          generation != widget.runtime.connectionGeneration ||
+          !widget.runtime.ready ||
+          ModalRoute.of(context)?.isCurrent != true ||
+          _opening) {
+        throw PlatformException(
+          code: 'document/inactive',
+          message: '阅读页已离开，请返回文档后重试。',
+        );
+      }
+      final args = call.arguments;
+      if (args is! Map ||
+          args['sessionId'] != widget.sessionId ||
+          args['path'] is! String ||
+          (args['path'] as String).isEmpty ||
+          (args['path'] as String).length > 8192 ||
+          RegExp(r'[\x00-\x1f\x7f]').hasMatch(args['path'] as String) ||
+          args['line'] != null &&
+              (args['line'] is! int ||
+                  args['line'] < 1 ||
+                  args['line'] > 9007199254740991)) {
+        throw PlatformException(
+          code: 'document/invalid-target',
+          message: '文档链接无法识别或属于另一个会话。',
+        );
+      }
+      final path = args['path'] as String;
+      final line = args['line'] as int?;
+      if (path == widget.path) {
+        // The existing renderer answers the next navigation revision in place.
+        _line = line;
+        return {'opened': true};
+      }
+      final route = PocketRoute<void>(
+        builder: (_) => SessionDocumentPage(
+          runtime: widget.runtime,
+          sessionId: widget.sessionId,
+          path: path,
+          line: line,
+        ),
+      );
+      _opening = true;
+      final navigator = Navigator.of(context);
+      final returned = args['replace'] == true
+          ? navigator.pushReplacement<void, void>(route)
+          : navigator.push<void>(route);
+      // Retain this reader and its original resource/scroll state until return.
+      returned.whenComplete(() {
+        _opening = false;
+      });
+      return {'opened': true};
+    });
+  }
+
+  @override
+  void dispose() {
+    _navigation?.setMethodCallHandler(null);
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
     animation: widget.runtime,
     builder: (context, _) {
+      final generation = widget.runtime.connectionGeneration;
       final safe = MediaQuery.paddingOf(context);
       final theme = Theme.of(context);
       final header = (MediaQuery.textScalerOf(context).scale(17) * 2.4).clamp(
@@ -56,7 +128,7 @@ class _SessionDocumentPageState extends State<SessionDocumentPage> {
                   widget.sessionId,
                   widget.path,
                   widget.line,
-                  widget.runtime.connectionGeneration,
+                  generation,
                   theme.brightness,
                   safe.top,
                   safe.bottom,
@@ -64,11 +136,12 @@ class _SessionDocumentPageState extends State<SessionDocumentPage> {
                   retry,
                 )),
                 viewType: 'dsh/document-preview',
+                onPlatformViewCreated: (id) => _connect(id, generation),
                 creationParamsCodec: const StandardMessageCodec(),
                 creationParams: {
                   'sessionId': widget.sessionId,
                   'path': widget.path,
-                  if (widget.line != null) 'line': widget.line,
+                  if (_line != null) 'line': _line,
                   'locale': Localizations.localeOf(context).toLanguageTag(),
                   'dark': theme.brightness == Brightness.dark,
                   'topInset': safe.top + header + 32,

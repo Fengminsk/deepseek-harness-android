@@ -231,7 +231,7 @@ class MainActivity : FlutterActivity() {
     }
     override fun configureFlutterEngine(engine: FlutterEngine) {
         super.configureFlutterEngine(engine)
-        documentPreviews = DocumentPreviewFactory { frame, result -> sendCall(frame, result); Unit }.also {
+        documentPreviews = DocumentPreviewFactory(engine.dartExecutor.binaryMessenger) { frame, result -> sendCall(frame, result); Unit }.also {
             engine.platformViewsController.registry.registerViewFactory("dsh/document-preview", it)
         }
         EventChannel(engine.dartExecutor.binaryMessenger, "dsh/events").setStreamHandler(object : EventChannel.StreamHandler {

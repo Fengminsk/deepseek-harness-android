@@ -196,6 +196,8 @@
         "apps/android/runtime/document-preview.mjs",
         "apps/android/preview/main.mjs",
         "apps/android/preview/browser.test.mjs",
+        "apps/android/preview/navigation.test.mjs",
+        "apps/android/test/session_document_navigation_test.dart",
         "apps/android/tool/smoke-document-preview.mjs",
         "apps/android/tool/verify-document-preview.mjs"
       ],
@@ -205,7 +207,7 @@
         "behavior": "partial",
         "device": "partial"
       },
-      "note": "Original reader bundles run in a Session-bound document-only surface with host rendering and original Gateway evidence. Build 32 displayed the existing synthetic text file on the phone; other Android renderers, Office, interactive HTML preferences and nested resource navigation remain gaps."
+      "note": "Original reader bundles run in a Session-bound document-only surface with host rendering and original Gateway evidence. Same-Session links, line navigation, source-position restoration and rejected cross-Session links have host coverage. Build 32 displayed synthetic text; Build 33 displayed Markdown, followed same-Session links to text line 220 and returned at the source position. Other Android renderers and connection replacement need device acceptance. Office and interactive HTML preferences remain gaps."
     },
     {
       "key": "webUi/ui-sidebar-browser",
@@ -265,9 +267,15 @@
         "device": "partial"
       },
       "evidenceRefs": {
-        "core": ["apps/android/tool/smoke-document-preview.mjs"],
-        "ui": ["apps/android/test/session_files_sidebar_test.dart"],
-        "behavior": ["apps/android/test/session_files_test.dart"]
+        "core": [
+          "apps/android/tool/smoke-document-preview.mjs"
+        ],
+        "ui": [
+          "apps/android/test/session_files_sidebar_test.dart"
+        ],
+        "behavior": [
+          "apps/android/test/session_files_test.dart"
+        ]
       },
       "note": "Current Session files use the original cold Session cwd and workspaceFiles list/change feed. Native same-page navigation and original-service host smoke pass. Build 32 listed the test Session cwd and opened its existing text file on the phone; nested device navigation and remaining file interactions are unverified."
     },
@@ -533,15 +541,25 @@
         "packages/bundle/web-app/cordis.patch.yml",
         "packages/client/ui-deliverables/README.md"
       ],
-      "status": "not-migrated",
-      "android": [],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/chat_deliverables.dart",
+        "apps/android/lib/chat_messages.dart",
+        "apps/android/lib/session_document.dart"
+      ],
       "evidence": {
-        "core": "unverified",
-        "ui": "unverified",
-        "behavior": "unverified",
+        "core": "partial",
+        "ui": "partial",
+        "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Present cards, recorded file-link actions, changed-file summaries and diff review are not implemented in native chat."
+      "note": "Native present cards fold original persisted events by completed turn, preserve exact file paths and open the Session reader. Changed-file summaries and diff review are still missing; these new cards have host tests but no device acceptance.",
+      "evidenceRefs": {
+        "behavior": [
+          "apps/android/test/chat_deliverables_test.dart",
+          "apps/android/test/chat_deliverables_widgets_test.dart"
+        ]
+      }
     },
     {
       "key": "webUi/ui-workspace",
@@ -632,15 +650,26 @@
         "packages/bundle/web-app/cordis.patch.yml",
         "packages/client/ui-skill/README.md"
       ],
-      "status": "not-migrated",
-      "android": [],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/skills.dart",
+        "apps/android/lib/composer_commands.dart",
+        "apps/android/lib/main.dart"
+      ],
       "evidence": {
-        "core": "unverified",
-        "ui": "unverified",
-        "behavior": "unverified",
-        "device": "unverified"
+        "core": "partial",
+        "ui": "partial",
+        "behavior": "partial",
+        "device": "partial"
       },
-      "note": "Native skill discovery and explicit invocation chooser are absent."
+      "note": "Native slash suggestions and a searchable picker use original skills/list, preserve user-only skills, insert literal /name text and keep command precedence. Cold directory reads and original injection have host evidence. Build 33 displayed a synthetic user-only skill and opened its provider file on the phone; composer insertion and invocation still need device acceptance. Sent-reference highlighting and the dedicated recorded skill row remain gaps.",
+      "evidenceRefs": {
+        "behavior": [
+          "apps/android/test/skills_test.dart",
+          "apps/android/test/composer_commands_test.dart",
+          "apps/android/tool/smoke-skill-catalog.mjs"
+        ]
+      }
     },
     {
       "key": "webUi/ui-subagent",
@@ -1260,22 +1289,25 @@
       ],
       "status": "partial",
       "android": [
-        "apps/android/tool/stage-preset.mjs"
+        "apps/android/tool/stage-preset.mjs",
+        "apps/android/lib/skills.dart"
       ],
       "evidence": {
         "core": "verified",
-        "ui": "unverified",
+        "ui": "partial",
         "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Original skill invocation is staged unchanged. The host profile smoke reads the discovered skill body through the real tool; native skill selection and device acceptance remain open.",
+      "note": "Original skill invocation is staged unchanged. Host profile checks cover cold catalog reads without Agent activation or log writes and the literal user-only invocation injection. Native discovery uses that directory; device acceptance remains pending.",
       "evidenceRefs": {
         "core": [
           "apps/android/tool/stage-preset.test.mjs",
           "apps/android/tool/smoke-preset-portable-tools.mjs"
         ],
         "behavior": [
-          "apps/android/tool/smoke-preset-portable-tools.mjs"
+          "apps/android/tool/smoke-preset-portable-tools.mjs",
+          "apps/android/tool/smoke-skill-catalog.mjs",
+          "apps/android/test/skills_test.dart"
         ]
       }
     },
@@ -1402,22 +1434,25 @@
       ],
       "status": "partial",
       "android": [
-        "apps/android/tool/stage-preset.mjs"
+        "apps/android/tool/stage-preset.mjs",
+        "apps/android/lib/chat_deliverables.dart"
       ],
       "evidence": {
         "core": "verified",
-        "ui": "unverified",
+        "ui": "partial",
         "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Original todo_write is staged unchanged. The host profile smoke writes parallel in-progress items and rereads durable events after restart; native todo presentation and device acceptance remain open.",
+      "note": "Original todo_write is staged unchanged. Native history and the floating current list fold durable whole-list updates, preserve concurrent in-progress items and clear on turn/start. Host profile and widget evidence exist; device acceptance is pending.",
       "evidenceRefs": {
         "core": [
           "apps/android/tool/stage-preset.test.mjs",
           "apps/android/tool/smoke-preset-portable-tools.mjs"
         ],
         "behavior": [
-          "apps/android/tool/smoke-preset-portable-tools.mjs"
+          "apps/android/tool/smoke-preset-portable-tools.mjs",
+          "apps/android/test/chat_deliverables_test.dart",
+          "apps/android/test/chat_deliverables_widgets_test.dart"
         ]
       }
     },
@@ -1449,22 +1484,25 @@
       ],
       "status": "partial",
       "android": [
-        "apps/android/tool/stage-preset.mjs"
+        "apps/android/tool/stage-preset.mjs",
+        "apps/android/lib/chat_deliverables.dart"
       ],
       "evidence": {
         "core": "verified",
-        "ui": "unverified",
+        "ui": "partial",
         "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Original present is staged unchanged. The host profile smoke publishes an existing file, rejects a missing file without publishing, and cold-reads the event without replay; native delivery cards and previews remain absent.",
+      "note": "Original present is staged unchanged. Native completed-turn cards retain declaration coordinates and exact paths and open the same Session document reader. Missing-file rejection and cold restoration have host evidence; device acceptance is pending.",
       "evidenceRefs": {
         "core": [
           "apps/android/tool/stage-preset.test.mjs",
           "apps/android/tool/smoke-preset-portable-tools.mjs"
         ],
         "behavior": [
-          "apps/android/tool/smoke-preset-portable-tools.mjs"
+          "apps/android/tool/smoke-preset-portable-tools.mjs",
+          "apps/android/test/chat_deliverables_test.dart",
+          "apps/android/test/chat_deliverables_widgets_test.dart"
         ]
       }
     },

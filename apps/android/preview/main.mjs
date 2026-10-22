@@ -12,6 +12,7 @@ import { RemoteStream } from '../../../packages/api/gateway/src/client/remote-st
 import { installThemeStyles } from '../../../packages/client/ui-theme/src/client/styles.ts';
 import { sessionFileAddress } from '../../../packages/util/workspace-path/src/file-address.ts';
 import { DocumentBridge, createDocumentRemote } from './bridge.mjs';
+import { createDocumentNavigation } from './navigation.mjs';
 import './shell.css';
 
 const PREVIEW = '@deepseek-ai/dsh-client-ui-sidebar-documentpreview';
@@ -30,6 +31,16 @@ async function close() {
   return disposed;
 }
 window.addEventListener('pagehide', () => { void close(); }, { once: true });
+
+function DocumentShell({ renderSlot, SessionProvider, reference, tab, useNavigation, delegates, dismissError }) {
+  const { navigation, error } = useNavigation(value => value);
+  const tabInfo = React.useMemo(() => ({ sidebar: { expanded: true, fullscreen: true }, panel: { id: 'document' },
+    tab: { ...tab, navigation } }), [tab, navigation]);
+  return React.createElement(SessionProvider, { session: reference },
+    React.createElement(Primitives.MarkdownDelegateProvider, delegates,
+      renderSlot('sidebar.right.pane.tab', {}, { entryKey: PREVIEW, hookContext: tabInfo }),
+      error ? React.createElement('button', { type: 'button', role: 'alert', className: 'document-navigation-error', onClick: dismissError }, error) : null));
+}
 
 async function boot() {
   const config = await bridge.ready(lifetime.signal);
@@ -97,21 +108,34 @@ async function boot() {
   await activate('@deepseek-ai/dsh-client-resources');
   await activate('@deepseek-ai/dsh-api-workspace-files');
   const address = sessionFileAddress(config.sessionId, config.path);
+  const navigation = Store.createSnapshotStore({ navigation: { address,
+    params: Number.isSafeInteger(config.line) && config.line > 0 ? { line: config.line } : undefined, revision: 1 }, error: undefined });
+  const english = config.locale?.startsWith('en');
+  const links = createDocumentNavigation({ sessionId: config.sessionId, path: config.path, tabs: ctx.sidebarRightTabs,
+    open: target => bridge.openDocument(target, lifetime.signal),
+    reveal: line => navigation.update(state => { state.navigation.params = line === undefined ? undefined : { line }; state.navigation.revision++; state.error = undefined; }),
+    report: error => navigation.update(state => {
+      state.error = error.code === 'document/session-mismatch'
+        ? (english ? 'This document belongs to another conversation. Open it from that conversation. Tap to dismiss.' : '此文档属于另一个会话，请从对应会话打开。点按关闭提示。')
+        : error.code === 'document/unsupported-resource'
+          ? (english ? 'This resource cannot open in the document reader. Return to its source. Tap to dismiss.' : '此资源无法在文档阅读器中打开，请返回来源页面查看。点按关闭提示。')
+          : (english ? 'The document could not open. Try the link again. Tap to dismiss.' : '无法打开此文档，请重试链接。点按关闭提示。');
+    }),
+  });
   let commands;
-  const tabInfo = Object.freeze({ sidebar: { expanded: true, fullscreen: true }, panel: { id: 'document' }, tab: {
+  const tab = Object.freeze({
     id: 'document', kind: 'text', contentId: address, title: config.path.split('/').at(-1), visible: true,
-    navigation: { address, params: Number.isSafeInteger(config.line) && config.line > 0 ? { line: config.line } : undefined, revision: 1 },
     signal: lifetime.signal,
     actions: { bindCommands(value) { commands = value; return () => { if (commands === value) commands = undefined; }; },
-      openResource() { throw new Error('Open documents through the native file browser'); }, openTab() { throw new Error('Only documents can open in this surface'); }, close() { void close(); } },
-  } });
+      openResource: (address, options) => links.openResource(address, options), openTab: () => links.openTab(), close() { void close(); } },
+  });
+  const delegates = { openExternalLink: url => bridge.openExternalLink(url), openFile: (path, options) => { void links.openFile(path, options); } };
   const shell = ctx.plugin({ name: 'android-document-shell', inject: ['slots'], apply(owner) {
-    owner.slots.register({ name: 'root', children: {
-      'sidebar.right.pane.tab': { kind: 'keyed', scope: 'session', inject: { hooks: { tabInfo: () => () => tabInfo } } },
-      'sidebar.right.pane.tab.title': { kind: 'keyed', scope: 'session', inject: { hooks: { tabInfo: () => () => tabInfo } } },
-    } }, ({ renderSlot, SessionProvider }) => React.createElement(SessionProvider, { session: reference },
-      React.createElement(Primitives.MarkdownDelegateProvider, { openExternalLink: url => bridge.openExternalLink(url) },
-        renderSlot('sidebar.right.pane.tab', {}, { entryKey: PREVIEW, hookContext: tabInfo }))));
+    owner.slots.register({ name: 'root', inject: () => ({ reference, tab, delegates, hooks: { navigation },
+      dismissError: () => navigation.update(state => { state.error = undefined; }) }), children: {
+      'sidebar.right.pane.tab': { kind: 'keyed', scope: 'session', inject: { hooks: { tabInfo: (_standard, context) => () => context } } },
+      'sidebar.right.pane.tab.title': { kind: 'keyed', scope: 'session', inject: { hooks: { tabInfo: (_standard, context) => () => context } } },
+    } }, DocumentShell);
   } });
   await shell.await();
   await activate(PREVIEW);

@@ -40,6 +40,7 @@ class _Runtime extends RuntimeController {
   bool failCatalog = false;
   Completer<Json>? admission;
   int prompts = 0;
+  final sentPrompts = <String>[];
   Json currentModel = {'provider': 'provider-fixture', 'model': 'one'};
   int modelSeq = 4;
   @override
@@ -59,6 +60,7 @@ class _Runtime extends RuntimeController {
   @override
   Future<void> send(String id, String text) async {
     prompts++;
+    sentPrompts.add(text);
   }
 
   @override
@@ -86,6 +88,16 @@ class _Runtime extends RuntimeController {
     if (method == 'attachments.release') return {'released': true};
     if (method == 'api.call') {
       switch ('${params['namespace']}.${params['method']}') {
+        case 'skills.list':
+          return {
+            'skills': [
+              {
+                'name': 'summarize',
+                'description': '整理文件',
+                'modelInvocable': false,
+              },
+            ],
+          };
         case 'commands.list':
           if (failCatalog) throw StateError('命令目录不可用');
           if (!(params['args'] as Json).containsKey('agentId')) {
@@ -216,6 +228,68 @@ void phone(WidgetTester tester) {
 }
 
 void main() {
+  testWidgets(
+    'cold history menu reaches skills without initializing Agent commands',
+    (tester) async {
+      phone(tester);
+      final runtime = _RecoveryRuntime();
+      addTearDown(runtime.dispose);
+      Json? chosen;
+      await tester.pumpWidget(
+        host(
+          Scaffold(
+            body: ComposerCommands(
+              runtime: runtime,
+              sessionId: 'cold-history',
+              deferActivation: true,
+              onPick: (value) => chosen = value,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(runtime.ensureCalls, 0);
+      expect(runtime.calls, isEmpty);
+      await tester.ensureVisible(find.text('浏览技能'));
+      await tester.tap(find.text('浏览技能'));
+      await tester.pumpAndSettle();
+      expect(chosen?['clientAction'], 'skills');
+      expect(runtime.ensureCalls, 0);
+    },
+  );
+
+  testWidgets('slash skill selection stays plain text until the user submits', (
+    tester,
+  ) async {
+    phone(tester);
+    final runtime = _Runtime();
+    addTearDown(runtime.dispose);
+    await tester.pumpWidget(host(ChatPage(runtime: runtime)));
+    await tester.pumpAndSettle();
+    final field = find.byKey(const Key('chat-composer-input'));
+    await tester.enterText(field, '/su');
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('/summarize'));
+    await tester.pumpAndSettle();
+    expect(tester.widget<TextField>(field).controller!.text, '/summarize ');
+    expect(runtime.prompts, 0);
+    expect(
+      runtime.calls.where((call) => call.method == 'session.command'),
+      isEmpty,
+    );
+    await tester.enterText(field, '/summarize 整理报告');
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('发送'));
+    await tester.pumpAndSettle();
+    expect(runtime.sentPrompts, ['/summarize 整理报告']);
+    expect(tester.widget<TextField>(field).controller!.text, isEmpty);
+    expect(
+      runtime.calls.where((call) => call.method == 'session.command'),
+      isEmpty,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets(
     'menu creation failure still reaches native model and credential pages',
     (tester) async {

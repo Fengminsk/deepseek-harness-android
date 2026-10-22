@@ -72,7 +72,7 @@ async function checkDocuments(t, mode) {
   sheet.columns.forEach(column => { column.width = 20; });
   const workbookBytes = Buffer.from(await workbook.xlsx.writeBuffer());
 
-  async function open(path, bytes) {
+  async function open(path, bytes, line) {
     const page = await browser.newPage({ viewport: { width: 412, height: 820 }, deviceScaleFactor: 1 });
     // Emulate AssetLoader at its real HTTPS origin without contacting that host.
     // The only network response source is the isolated fixture server above.
@@ -91,7 +91,13 @@ async function checkDocuments(t, mode) {
       const message = JSON.parse(raw); assert.equal(typeof message.id, 'string', 'every native control frame has an id'); frames.push(message);
       const reply = payload => page.evaluate(value => window.PocketDocument.onmessage?.({ data: JSON.stringify(value) }), { id: message.id, ...payload });
       const metadata = () => ({ absolutePath: `/workspace/${path}`, version: `${revision}`, bytes: content.length });
-      if (message.kind === 'ready') return reply({ result: { sessionId: 'document-session', path, locale: 'en', dark: path.endsWith('.pdf'), topInset: 72, bottomInset: 20, background: path.endsWith('.pdf') ? '#151515' : '#ffffff', foreground: path.endsWith('.pdf') ? '#ffffff' : '#151515' } });
+      if (message.kind === 'ready') return reply({ result: { sessionId: 'document-session', path, line, locale: 'en', dark: path.endsWith('.pdf'), topInset: 72, bottomInset: 20, background: path.endsWith('.pdf') ? '#151515' : '#ffffff', foreground: path.endsWith('.pdf') ? '#ffffff' : '#151515' } });
+      if (message.kind === 'navigate') {
+        assert.equal(message.sessionId, 'document-session');
+        return message.path === 'denied.md'
+          ? reply({ error: { code: 'document/inactive', message: 'Document page is no longer current' } })
+          : reply({ result: { opened: true } });
+      }
       if (message.kind === 'call') {
         assert.ok(!('sessionId' in message.args));
         if (message.namespace === 'officeToPdf') return reply({ result: fail('gateway/service-unavailable', 'Office conversion is not available') });
@@ -135,7 +141,7 @@ async function checkDocuments(t, mode) {
     ['notes.txt', Buffer.from('Original document text'), '[data-textpreview-line]'],
     ['readme.md', Buffer.from('# Original Markdown\n\n**Strong content** — the original document viewer now runs inside the Android shell.\n\n## Reading and navigation\n\n- Preserve the document renderer\n- Keep the session permission boundary\n- Support file changes and cancellation\n\n```js\nconst document = await read();\n```\n\nThis page uses the real Markdown renderer, including headings, lists and code highlighting.'), '[data-document-markdown] h1'],
     ['guides/nested/illustrated.md', Buffer.from('# Local image\n\n![Session chart](../images/chart%20one.png)'), '[data-document-markdown] img'],
-    ['links.md', Buffer.from('# External links\n\n[HTTPS guide](https://example.invalid/guide?q=preview#part)\n\n[HTTP guide](http://example.invalid/readme)\n\n[Local file](./notes.txt)'), '[data-document-markdown] h1'],
+    ['links.md', Buffer.from('# External links\n\n[HTTPS guide](https://example.invalid/guide?q=preview#part)\n\n[HTTP guide](http://example.invalid/readme)\n\n[Local file](./src/example%20one.txt#L240-L242)\n\n[This document](./links.md#L3)\n\n[Denied navigation](denied.md)\n\n[Malformed line](notes.txt#L9-L2)\n\n[Other session](dsh-resource://file/session/other/secret.txt)\n\n' + Array.from({ length: 40 }, (_, i) => `Paragraph ${i}.\n\n`).join('')), '[data-document-markdown] h1'],
     ['source.js', Buffer.from('const original = 42;'), '[data-code-preview]'],
     ['sample.png', Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6+6sAAAAASUVORK5CYII=', 'base64'), '[data-image-preview] img'],
     ['sample.pdf', tinyPdf(), '[data-pdf-preview] canvas'],
@@ -164,8 +170,33 @@ async function checkDocuments(t, mode) {
         ], 'original Markdown delegates Web links through the dedicated native message');
         assert.equal(state.page.url(), url, 'preview never navigates to the external destination');
         assert.equal(state.page.context().pages().length, 1, 'delegated links do not open a WebView popup');
-        assert.equal(await state.page.getByRole('link', { name: 'Local file', exact: true }).count(), 0,
-          'existing absent local-file delegate remains unchanged');
+        await state.page.getByRole('button', { name: 'This document', exact: true }).click();
+        await state.page.waitForFunction(() => document.querySelector('[data-document-markdown]') !== null);
+        assert.equal(state.frames.filter(frame => frame.kind === 'call' && frame.method === 'read').length, 1,
+          'same-document navigation updates the original tab revision without reloading bytes');
+        await state.page.getByRole('button', { name: 'Denied navigation', exact: true }).click();
+        await state.page.getByRole('alert').filter({ hasText: 'The document could not open' }).waitFor();
+        await state.page.getByRole('alert').click();
+        assert.equal(await state.page.getByRole('button', { name: 'Malformed line', exact: true }).count(), 0);
+        assert.equal(await state.page.getByRole('button', { name: 'Other session', exact: true }).count(), 0,
+          'raw resource URLs retain original Markdown sanitization');
+        await state.page.getByRole('button', { name: 'Local file', exact: true }).click();
+        const local = state.frames.filter(frame => frame.kind === 'navigate').at(-1);
+        assert.deepEqual({ sessionId: local.sessionId, path: local.path, line: local.line, replace: local.replace },
+          { sessionId: 'document-session', path: 'src/example one.txt', line: 240, replace: false },
+          'original Markdown decoder and fileAddressFor retain workspace-root, decoded name, and range start');
+        const before = await state.page.locator('[data-textpreview-body]').evaluate(element => { element.scrollTop = 300; return element.scrollTop; });
+        const child = await open(local.path, Buffer.from(Array.from({ length: 300 }, (_, i) => `Source line ${i + 1}`).join('\n')), local.line);
+        try {
+          await child.page.getByText('Source line 240', { exact: true }).waitFor();
+          await child.page.waitForFunction(() => document.querySelector('[data-textpreview-body]')?.scrollTop > 0);
+          assert.ok(child.frames.some(frame => frame.kind === 'call' && frame.method === 'read' && frame.args.range.offset > 1),
+            'original reader loads further pages to satisfy navigation line');
+          assert.deepEqual(child.errors, []);
+        } finally { await child.page.close(); }
+        await state.page.bringToFront();
+        assert.equal(await state.page.locator('[data-textpreview-body]').evaluate(element => element.scrollTop), before,
+          'retained source reader keeps its scroll position when native route returns');
       }
       if (name.endsWith('illustrated.md')) {
         await state.page.waitForFunction(() => document.querySelector('[data-document-markdown] img')?.naturalWidth === 2);
@@ -241,4 +272,4 @@ async function checkDocuments(t, mode) {
 }
 
 test('original document-only client renders supported formats, watches changes, and isolates HTML', { timeout: 120_000 }, t => checkDocuments(t, 'formats'));
-test('original Markdown external links use the native delegate without navigating the preview', { timeout: 30_000 }, t => checkDocuments(t, 'external'));
+test('original Markdown links use native routing, preserve source reading, and honor line navigation', { timeout: 60_000 }, t => checkDocuments(t, 'external'));

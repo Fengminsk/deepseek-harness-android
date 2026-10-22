@@ -33,6 +33,15 @@ public final class DocumentPreviewPolicyTest {
             check(!DocumentPreviewPolicy.external(value), "invalid external link");
         }
         check(DocumentPreviewPolicy.identity("read-1"), "request identity");
+        check(DocumentPreviewPolicy.document("bound", "bound", "guides/../code one.ts", 23L), "decoded path stays with original filesystem");
+        check(DocumentPreviewPolicy.document("bound", "bound", "/workspace/report.pdf", null), "absolute file stays Session-scoped");
+        check(!DocumentPreviewPolicy.document("bound", "other", "secret.txt", null), "no cross-Session navigation");
+        for (String path : new String[]{"", "a\u0000b", "a\nb", "a".repeat(8193)}) {
+            check(!DocumentPreviewPolicy.document("bound", "bound", path, null), "invalid document path");
+        }
+        for (long line : new long[]{0, -1, 9007199254740992L}) {
+            check(!DocumentPreviewPolicy.document("bound", "bound", "code.ts", line), "invalid document line");
+        }
         for (String value : new String[]{"", "with space", "newline\n", "a".repeat(97)}) {
             check(!DocumentPreviewPolicy.identity(value), "invalid identity");
         }

@@ -122,3 +122,19 @@ test('external links use independent control IDs and reject non-Web or credentia
   assert.equal(h.sent.length, 2, 'fire-and-forget external replies do not retain pending calls');
   assert.throws(() => h.bridge.openExternalLink('https://example.invalid/'), { name: 'AbortError' });
 });
+
+test('document routing waits for native acceptance and cancels when its reader closes', async () => {
+  const h = harness();
+  const target = { sessionId: 'bound', path: 'src/code.ts', line: 23, replace: false };
+  const opened = h.bridge.openDocument(target);
+  assert.deepEqual(h.sent[0], { id: h.sent[0].id, kind: 'navigate', ...target });
+  h.reply({ id: h.sent[0].id, result: { opened: true } });
+  assert.deepEqual(await opened, { opened: true });
+  const failed = h.bridge.openDocument(target);
+  h.reply({ id: h.sent.at(-1).id, error: { code: 'document/inactive', message: 'closed' } });
+  await assert.rejects(failed, { code: 'document/inactive' });
+  const pending = h.bridge.openDocument(target);
+  h.bridge.close();
+  await assert.rejects(pending, { name: 'AbortError' });
+  assert.equal(h.sent.at(-1).kind, 'cancel');
+});

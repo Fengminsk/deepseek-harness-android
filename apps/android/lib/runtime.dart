@@ -677,6 +677,11 @@ class RuntimeController extends ChangeNotifier {
       return;
     }
     if (method == 'session.status') {
+      if (data['attached'] == false) {
+        statuses.remove(id);
+        streaming.remove(id);
+        return;
+      }
       statuses[id] = data['status'] as String;
       if (data['status'] == 'idle') streaming.remove(id);
       if (data['status'] == 'running') sessionErrors.remove(id);

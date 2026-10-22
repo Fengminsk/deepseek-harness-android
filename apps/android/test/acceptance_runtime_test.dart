@@ -112,11 +112,20 @@ void main() {
         'revision': 12,
         'error': 'Credential not configured',
       });
+      emit('session.status', {
+        'sessionId': 'released-task',
+        'revision': 13,
+        'status': 'idle',
+        'attached': false,
+      });
       await tester.pump();
       runtime.baseline.complete({
         'revision': 10,
-        'statuses': {'live-task': 'running'},
-        'streaming': {'live-task': 'restored text'},
+        'statuses': {'live-task': 'running', 'released-task': 'idle'},
+        'streaming': {
+          'live-task': 'restored text',
+          'released-task': 'released text',
+        },
         'errors': {'failed-task': 'Restored failure'},
       });
       await tester.pump();
@@ -129,7 +138,7 @@ void main() {
       });
       emit('session.status', {
         'sessionId': 'live-task',
-        'revision': 13,
+        'revision': 14,
         'status': 'idle',
       });
       await tester.pump();
@@ -138,11 +147,28 @@ void main() {
       expect(runtime.sessionErrors['live-task'], 'Credential not configured');
       emit('session.status', {
         'sessionId': 'live-task',
-        'revision': 14,
+        'revision': 15,
         'status': 'running',
       });
       await tester.pump();
       expect(runtime.sessionErrors, {'failed-task': 'Restored failure'});
+      runtime.liveMessages['live-task'] = {
+        'content': [
+          {'type': 'text', 'text': 'interrupted partial text'},
+        ],
+        'interrupted': true,
+      };
+      runtime.streaming['live-task'] = 'partial text';
+      emit('session.status', {
+        'sessionId': 'live-task',
+        'revision': 16,
+        'status': 'idle',
+        'attached': false,
+      });
+      await tester.pump();
+      expect(runtime.statuses, isEmpty);
+      expect(runtime.streaming, isEmpty);
+      expect(runtime.liveMessages['live-task']?['interrupted'], isTrue);
       runtime.dispose();
       disposed = true;
       await tester.pump();
