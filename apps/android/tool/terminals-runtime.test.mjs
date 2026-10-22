@@ -4,7 +4,7 @@ import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import { once } from 'node:events'
 import { createRequire } from 'node:module'
-import { AppTerminals, projectTerminalView } from '../runtime/terminals.mjs'
+import { AppTerminals, observeTerminalDisplay, projectTerminalView } from '../runtime/terminals.mjs'
 
 const terminalRequire = createRequire(new URL('../../../packages/terminal/terminal-bash/package.json', import.meta.url))
 const { Terminal } = terminalRequire('@xterm/headless')
@@ -56,6 +56,49 @@ test('pathological per-cell styling keeps text while capping styled runs', async
   screen.dispose()
 })
 
+test('program OSC palette and cursor modes survive projection and reset', async () => {
+  const screen = await interpretedScreen(12, 2, 'A')
+  const display = observeTerminalDisplay(screen)
+  const write = source => new Promise(resolve => screen.write(source, resolve))
+  await write('\x1b]4;1;rgb:f/0/8;240;#abc\x07\x1b]10;#123456\x07\x1b]11;#111111\x07'
+    + '\x1b]12;#abcdef\x07\x1b[?25l\x1b[3 q')
+  let view = projectTerminalView(screen, display)
+  assert.deepEqual(view.palette, {
+    indexed: { 1: '#ff0088', 240: '#a0b0c0' },
+    foreground: '#123456', background: '#111111', cursor: '#abcdef',
+  })
+  assert.equal(view.cursorVisible, false)
+  assert.equal(view.cursorStyle, 'underline')
+  assert.equal(view.cursorBlink, true)
+  assert.equal(view.lines[0].runs.some(run => run.cursor), false)
+  await write('\x1b[?25h\x1b[6 q\x1b]104;1\x07\x1b]110\x07\x1b]112\x07')
+  view = projectTerminalView(screen, display)
+  assert.equal(view.cursorVisible, true)
+  assert.equal(view.cursorStyle, 'bar')
+  assert.equal(view.cursorBlink, false)
+  assert.deepEqual(view.palette, { indexed: { 240: '#a0b0c0' }, background: '#111111' })
+  assert.equal(view.lines[0].runs.some(run => run.cursor), true)
+  await write('\x1bc')
+  view = projectTerminalView(screen, display)
+  assert.deepEqual(view.palette, { indexed: {} })
+  assert.equal(view.cursorVisible, true)
+  assert.equal(view.cursorStyle, 'block')
+  display.dispose()
+  screen.dispose()
+})
+
+test('malformed and query OSC colors cannot change projected palette', async () => {
+  const screen = await interpretedScreen(8, 2, '')
+  const display = observeTerminalDisplay(screen)
+  await new Promise(resolve => screen.write('\x1b]4;256;#fff;0;?;2;rgb:ff/0/f\x07'
+    + '\x1b]12;rgb:aaaa/bb/cccc\x07\x1b[999 q', resolve))
+  const view = projectTerminalView(screen, display)
+  assert.deepEqual(view.palette, { indexed: {} })
+  assert.equal(view.cursorStyle, 'block')
+  display.dispose()
+  screen.dispose()
+})
+
 test('terminal.read delivers a styled projection after consuming PTY bytes', async () => {
   const { service, children } = fixture({ makeScreen: (cols, rows) => {
     const screen = new Terminal({ cols, rows, scrollback: 500, allowProposedApi: true })
@@ -67,6 +110,24 @@ test('terminal.read delivers a styled projection after consuming PTY bytes', asy
   assert.equal(result.display, 'green')
   assert.equal(result.view.lines[0].runs[0].fg, 2)
   assert.equal(result.view.lines[0].runs[0].text, 'green')
+  await service.dispose()
+})
+
+test('terminal.read restores program palette and cursor state after page detachment', async () => {
+  const { service, children } = fixture({ makeScreen: (cols, rows) => {
+    const screen = new Terminal({ cols, rows, scrollback: 500, allowProposedApi: true })
+    return { screen, serializer: { serialize: () => '' } }
+  } })
+  await service.create({ sessionId: 'session-A', id: 'persist', cols: 8, rows: 2 })
+  children[0].child.stdout.write('\x1b]4;2;#123456\x07\x1b[?25l\x1b[4 q\x1b[32mgreen')
+  const first = await service.read({ sessionId: 'session-A', id: 'persist' })
+  assert.equal(first.view.palette.indexed[2], '#123456')
+  assert.equal(first.view.cursorVisible, false)
+  assert.equal(first.view.cursorStyle, 'underline')
+  // A fresh reader uses the same Host-owned PTY; no Flutter page-local state is required.
+  const reopened = await service.read({ sessionId: 'session-A', id: 'persist' })
+  assert.deepEqual(reopened.view, first.view)
+  assert.equal(children.length, 1)
   await service.dispose()
 })
 

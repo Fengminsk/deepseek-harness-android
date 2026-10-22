@@ -154,6 +154,58 @@ void main() {
   );
 
   testWidgets(
+    'dismissed token stays closed on focus restore; another token re-arms',
+    (tester) async {
+      final runtime = ReferenceRuntime();
+      final controller = ReferenceDiscoveryController(
+        runtime,
+        'one',
+        prepare: () async {},
+      );
+      controller.update(draft('first @a'));
+      expect(controller.token?.query, 'a');
+      controller.dismiss();
+      expect(controller.token, isNull);
+      controller.update(draft('first @a'));
+      expect(controller.token, isNull);
+      controller.update(draft('first '));
+      controller.update(draft('first @a'));
+      expect(controller.token?.query, 'a');
+      controller.dismiss();
+      controller.update(draft('first @ab'));
+      expect(controller.token?.query, 'ab');
+      controller.dismiss();
+      controller.update(draft('first @ab then @ab'));
+      expect(controller.token?.start, 'first @ab then '.length);
+      controller.dispose();
+      runtime.dispose();
+    },
+  );
+
+  testWidgets(
+    'same query at another caret position refreshes reference candidates',
+    (tester) async {
+      final runtime = ReferenceRuntime();
+      final controller = ReferenceDiscoveryController(
+        runtime,
+        'one',
+        prepare: () async {},
+      );
+      const text = '@a then @a';
+      controller.update(draft(text, cursor: 2));
+      await tester.pump(const Duration(milliseconds: 160));
+      controller.update(draft(text));
+      await tester.pump(const Duration(milliseconds: 160));
+      expect(
+        runtime.requests.where((r) => r.$1 == 'references.list').length,
+        2,
+      );
+      controller.dispose();
+      runtime.dispose();
+    },
+  );
+
+  testWidgets(
     'rapid query edits coalesce; late cancelled result cannot replace current candidates',
     (tester) async {
       final runtime = ReferenceRuntime();

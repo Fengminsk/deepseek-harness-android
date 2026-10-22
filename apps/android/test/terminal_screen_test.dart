@@ -48,6 +48,7 @@ class _TerminalRuntime extends RuntimeController {
   final resizes = <({int cols, int rows})>[];
   int cols = 8, rows = 2, revision = 1;
   bool failWrites = false;
+  bool advanceRevisionOnRead = false;
 
   _TerminalRuntime() {
     phase = 'ready';
@@ -56,6 +57,7 @@ class _TerminalRuntime extends RuntimeController {
   @override
   Future<dynamic> call(String method, [Json params = const {}]) async {
     if (method == 'terminal.read') {
+      if (advanceRevisionOnRead) revision++;
       final view = terminalView();
       view['cols'] = cols;
       view['rows'] = rows;
@@ -131,6 +133,33 @@ void main() {
     expect(() => TerminalScreenData.parse(oversized), throwsFormatException);
   });
 
+  test('view decoder keeps bounded OSC palette and cursor state', () {
+    final source = terminalView();
+    source['palette'] = {
+      'indexed': {'1': '#123456'},
+      'foreground': '#eeeeee',
+      'background': '#101010',
+      'cursor': '#abcdef',
+    };
+    source['cursorVisible'] = false;
+    source['cursorStyle'] = 'underline';
+    source['cursorBlink'] = false;
+    final view = TerminalScreenData.parse(source);
+    expect(view.palette[1], const Color(0xff123456));
+    expect(view.foreground, const Color(0xffeeeeee));
+    expect(view.background, const Color(0xff101010));
+    expect(view.cursorColor, const Color(0xffabcdef));
+    expect(view.cursorVisible, false);
+    expect(view.cursorStyle, 'underline');
+    expect(view.cursorBlink, false);
+    expect(terminalColor(1, palette: view.palette), const Color(0xff123456));
+    source['cursorStyle'] = 'circle';
+    expect(() => TerminalScreenData.parse(source), throwsFormatException);
+    source['cursorStyle'] = 'bar';
+    (source['palette'] as Map)['indexed'] = {'256': '#123456'};
+    expect(() => TerminalScreenData.parse(source), throwsFormatException);
+  });
+
   testWidgets('styled cell and cursor use independent colors', (tester) async {
     final view = TerminalScreenData.parse(terminalView());
     await tester.pumpWidget(
@@ -146,10 +175,12 @@ void main() {
       ),
     );
     final rich = tester.widget<RichText>(
-      find.descendant(
-        of: find.byKey(const ValueKey('terminal-row')),
-        matching: find.byType(RichText),
-      ),
+      find
+          .descendant(
+            of: find.byKey(const ValueKey('terminal-row')),
+            matching: find.byType(RichText),
+          )
+          .first,
     );
     final spans = (rich.text as TextSpan).children!.cast<TextSpan>();
     expect(spans.first.text, 'red');
@@ -159,8 +190,130 @@ void main() {
       spans.last.style!.backgroundColor,
       Theme.of(tester.element(find.byType(TerminalScreenLine)))
           .colorScheme
-          .primary,
+          .onSurface,
     );
+  });
+
+  testWidgets('underline and bar cursor preserve program colors', (
+    tester,
+  ) async {
+    final view = TerminalScreenData.parse(terminalView());
+    Future<void> render(String style) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: pocketTheme(Brightness.dark),
+          home: Scaffold(
+            body: TerminalScreenLine(
+              key: const ValueKey('terminal-row'),
+              line: view.lines.first,
+              running: true,
+              palette: const {1: Color(0xff123456)},
+              cursorColor: const Color(0xffabcdef),
+              cursorStyle: style,
+            ),
+          ),
+        ),
+      );
+    }
+
+    await render('underline');
+    var rich = tester.widget<RichText>(
+      find
+          .descendant(
+            of: find.byKey(const ValueKey('terminal-row')),
+            matching: find.byType(RichText),
+          )
+          .first,
+    );
+    var spans = (rich.text as TextSpan).children!.cast<TextSpan>();
+    expect(spans.first.style!.color, const Color(0xff123456));
+    expect(spans.last.style!.decoration, TextDecoration.underline);
+    expect(spans.last.style!.decorationColor, const Color(0xffabcdef));
+    await render('bar');
+    rich = tester.widget<RichText>(
+      find
+          .descendant(
+            of: find.byKey(const ValueKey('terminal-row')),
+            matching: find.byType(RichText),
+          )
+          .first,
+    );
+    expect((rich.text as TextSpan).children!.last, isA<WidgetSpan>());
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'bar cursor overlays the same monospace cell without changing row metrics',
+    (tester) async {
+      final line = TerminalScreenData.parse(terminalView()).lines.first;
+      Future<Size> render(String style) async {
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: pocketTheme(Brightness.dark),
+            home: Scaffold(
+              body: UnconstrainedBox(
+                alignment: Alignment.topLeft,
+                child: TerminalScreenLine(
+                  key: const ValueKey('terminal-row'),
+                  line: line,
+                  running: true,
+                  cursorStyle: style,
+                ),
+              ),
+            ),
+          ),
+        );
+        return tester.getSize(find.byKey(const ValueKey('terminal-row')));
+      }
+
+      final block = await render('block');
+      final bar = await render('bar');
+      expect(bar.width, closeTo(block.width, 0.01));
+      expect(bar.height, closeTo(block.height, 0.01));
+      final label = tester.widget<RichText>(
+        find
+            .descendant(
+              of: find.byKey(const ValueKey('terminal-row')),
+              matching: find.byType(RichText),
+            )
+            .last,
+      );
+      final style = (label.text as TextSpan).style!;
+      expect(style.fontFamily, 'monospace');
+      expect(style.fontSize, 13);
+      expect(style.height, 1.35);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('continuous output does not restart the cursor blink phase', (
+    tester,
+  ) async {
+    final runtime = _TerminalRuntime()..advanceRevisionOnRead = true;
+    addTearDown(runtime.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: pocketTheme(Brightness.dark),
+        home: SessionTerminalView(
+          runtime: runtime,
+          sessionId: 'session',
+          id: 'pty',
+        ),
+      ),
+    );
+    await tester.pump();
+    bool cursorPainted() => tester
+        .widget<TerminalScreenLine>(find.byType(TerminalScreenLine).first)
+        .running;
+    expect(cursorPainted(), true);
+    await tester.pump(const Duration(milliseconds: 530));
+    expect(cursorPainted(), false);
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(runtime.revision, greaterThan(2));
+    expect(cursorPainted(), false);
+    await tester.pump(const Duration(milliseconds: 130));
+    expect(cursorPainted(), true);
+    await tester.pumpWidget(const SizedBox.shrink());
   });
 
   testWidgets(
@@ -232,11 +385,11 @@ void main() {
       expect(runtime.resizes, isNotEmpty);
       expect(runtime.resizes.last.cols, inInclusiveRange(2, 40));
       expect(tester.takeException(), isNull);
-    final narrowColumns = runtime.resizes.last.cols;
-    tester.view.physicalSize = const Size(480, 640);
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 200));
-    expect(runtime.resizes.last.cols, greaterThan(narrowColumns));
+      final narrowColumns = runtime.resizes.last.cols;
+      tester.view.physicalSize = const Size(480, 640);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 200));
+      expect(runtime.resizes.last.cols, greaterThan(narrowColumns));
 
       await tester.tap(find.text('Esc'));
       await tester.pump(const Duration(milliseconds: 20));

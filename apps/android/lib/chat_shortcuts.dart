@@ -10,6 +10,8 @@ class ChatKeyboardShortcuts {
     required this.newChat,
     required this.searchConversations,
     required this.focusComposer,
+    required this.toggleSidebar,
+    required this.openSettings,
     required this.dismiss,
   });
 
@@ -19,6 +21,8 @@ class ChatKeyboardShortcuts {
   final VoidCallback newChat;
   final VoidCallback searchConversations;
   final VoidCallback focusComposer;
+  final VoidCallback toggleSidebar;
+  final VoidCallback openSettings;
   final bool Function() dismiss;
 
   void attach() => HardwareKeyboard.instance.addHandler(handle);
@@ -29,7 +33,10 @@ class ChatKeyboardShortcuts {
     if (event is! KeyDownEvent || !isActive() || isComposing()) return false;
     final keyboard = HardwareKeyboard.instance;
     if (keyboard.isAltPressed || keyboard.isShiftPressed) return false;
-    final primary = keyboard.isControlPressed || keyboard.isMetaPressed;
+    // DSH's primary modifier maps to Control on a PC keyboard and Command
+    // on an Apple keyboard. Either can be connected to an Android device.
+    final primary = keyboard.isControlPressed != keyboard.isMetaPressed;
+    if (keyboard.isControlPressed && keyboard.isMetaPressed) return false;
     if (primary) {
       switch (event.logicalKey) {
         case LogicalKeyboardKey.keyN:
@@ -41,6 +48,12 @@ class ChatKeyboardShortcuts {
         case LogicalKeyboardKey.keyL:
           if (isEditingOtherField()) return false;
           focusComposer();
+          return true;
+        case LogicalKeyboardKey.keyB:
+          toggleSidebar();
+          return true;
+        case LogicalKeyboardKey.comma:
+          openSettings();
           return true;
       }
       return false;

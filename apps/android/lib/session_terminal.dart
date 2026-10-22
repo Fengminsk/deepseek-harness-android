@@ -229,9 +229,10 @@ class _SessionTerminalViewState extends State<SessionTerminalView>
     with WidgetsBindingObserver {
   final input = TextEditingController();
   final outputScroll = ScrollController();
-  Timer? polling, resizeTimer;
+  Timer? polling, resizeTimer, cursorTimer;
   bool reading = false, sending = false, closing = false, resizing = false;
   bool visible = true;
+  bool cursorPhase = true;
   String display = '', state = 'starting';
   TerminalScreenData? screenView;
   String? error, operationError;
@@ -256,6 +257,16 @@ class _SessionTerminalViewState extends State<SessionTerminalView>
       const Duration(milliseconds: 450),
       (_) => unawaited(read()),
     );
+    cursorTimer = Timer.periodic(const Duration(milliseconds: 530), (_) {
+      if (!mounted ||
+          !visible ||
+          state != 'running' ||
+          screenView?.cursorVisible != true ||
+          screenView?.cursorBlink != true) {
+        return;
+      }
+      setState(() => cursorPhase = !cursorPhase);
+    });
     unawaited(read());
   }
 
@@ -266,7 +277,10 @@ class _SessionTerminalViewState extends State<SessionTerminalView>
   @override
   void didChangeAppLifecycleState(AppLifecycleState next) {
     visible = next == AppLifecycleState.resumed;
-    if (visible) unawaited(read());
+    if (visible) {
+      setState(() => cursorPhase = true);
+      unawaited(read());
+    }
   }
 
   void _runtimeChanged() {
@@ -281,11 +295,10 @@ class _SessionTerminalViewState extends State<SessionTerminalView>
       setState(() {
         state = 'unconfirmed';
         screenView = null;
+        cursorPhase = true;
         display = '';
         operationError = null;
-        error = widget.runtime.ready
-            ? '正在确认终端状态…'
-            : '服务未连接，终端状态待确认。';
+        error = widget.runtime.ready ? '正在确认终端状态…' : '服务未连接，终端状态待确认。';
       });
       if (widget.runtime.ready) {
         unawaited(read());
@@ -332,9 +345,16 @@ class _SessionTerminalViewState extends State<SessionTerminalView>
         final nextView = result['view'] == null
             ? null
             : TerminalScreenData.parse(result['view']);
+        final resetCursorPhase =
+            screenView == null ||
+            nextView == null ||
+            screenView!.cursorVisible != nextView.cursorVisible ||
+            screenView!.cursorStyle != nextView.cursorStyle ||
+            screenView!.cursorBlink != nextView.cursorBlink;
         setState(() {
           revision = nextRevision;
           screenView = nextView;
+          if (resetCursorPhase) cursorPhase = true;
           display = result['display'] is String
               ? result['display'] as String
               : '';
@@ -480,6 +500,7 @@ class _SessionTerminalViewState extends State<SessionTerminalView>
     epoch++;
     polling?.cancel();
     resizeTimer?.cancel();
+    cursorTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     widget.runtime.removeListener(_runtimeChanged);
     input.dispose();
@@ -530,53 +551,66 @@ class _SessionTerminalViewState extends State<SessionTerminalView>
               (screenView?.cols ?? 0) * cellWidth + 40,
             ),
             height: constraints.maxHeight,
-            child: ListView.builder(
-              controller: outputScroll,
-              padding: const EdgeInsets.fromLTRB(20, 12, 20, 150),
-              itemCount: 4 + (screenView?.lines.length ?? 0),
-              itemBuilder: (context, index) {
-                if (index == 0) {
-                  return Text(
-                    state == 'running' ? '运行中 · 离开页面后继续运行' : '进程状态：$state',
-                    style: Theme.of(context).textTheme.labelMedium,
+            child: ColoredBox(
+              color:
+                  screenView?.background ??
+                  Theme.of(context).colorScheme.surface,
+              child: ListView.builder(
+                controller: outputScroll,
+                padding: const EdgeInsets.fromLTRB(20, 12, 20, 150),
+                itemCount: 4 + (screenView?.lines.length ?? 0),
+                itemBuilder: (context, index) {
+                  if (index == 0) {
+                    return Text(
+                      state == 'running' ? '运行中 · 离开页面后继续运行' : '进程状态：$state',
+                      style: Theme.of(context).textTheme.labelMedium,
+                    );
+                  }
+                  if (index == 1) {
+                    final message = operationError ?? error;
+                    return message == null
+                        ? const SizedBox.shrink()
+                        : Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            child: Text(message),
+                          );
+                  }
+                  if (index == 2) return const SizedBox(height: 12);
+                  if (screenView == null) {
+                    return index == 3
+                        ? SelectableText(
+                            display.isEmpty ? ' ' : display,
+                            style: const TextStyle(
+                              fontFamily: 'monospace',
+                              fontSize: 13,
+                              height: 1.35,
+                            ),
+                          )
+                        : const SizedBox.shrink();
+                  }
+                  if (index == 3) {
+                    return screenView!.stylesTruncated
+                        ? Text(
+                            '终端样式过多，后续颜色已简化。',
+                            style: Theme.of(context).textTheme.labelSmall,
+                          )
+                        : const SizedBox.shrink();
+                  }
+                  return TerminalScreenLine(
+                    key: ValueKey('terminal-line-${index - 4}'),
+                    line: screenView!.lines[index - 4],
+                    running:
+                        state == 'running' &&
+                        screenView!.cursorVisible &&
+                        (!screenView!.cursorBlink || cursorPhase),
+                    palette: screenView!.palette,
+                    foreground: screenView!.foreground,
+                    background: screenView!.background,
+                    cursorColor: screenView!.cursorColor,
+                    cursorStyle: screenView!.cursorStyle,
                   );
-                }
-                if (index == 1) {
-                  final message = operationError ?? error;
-                  return message == null
-                      ? const SizedBox.shrink()
-                      : Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                          child: Text(message),
-                        );
-                }
-                if (index == 2) return const SizedBox(height: 12);
-                if (screenView == null) {
-                  return index == 3
-                      ? SelectableText(
-                          display.isEmpty ? ' ' : display,
-                          style: const TextStyle(
-                            fontFamily: 'monospace',
-                            fontSize: 13,
-                            height: 1.35,
-                          ),
-                        )
-                      : const SizedBox.shrink();
-                }
-                if (index == 3) {
-                  return screenView!.stylesTruncated
-                      ? Text(
-                          '终端样式过多，后续颜色已简化。',
-                          style: Theme.of(context).textTheme.labelSmall,
-                        )
-                      : const SizedBox.shrink();
-                }
-                return TerminalScreenLine(
-                  key: ValueKey('terminal-line-${index - 4}'),
-                  line: screenView!.lines[index - 4],
-                  running: state == 'running',
-                );
-              },
+                },
+              ),
             ),
           ),
         );

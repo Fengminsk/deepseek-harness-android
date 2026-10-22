@@ -50,6 +50,98 @@ function screenFactory(cols, rows) {
   return { screen, serializer }
 }
 
+// Observe program display controls without consuming xterm's own parser handlers.
+// This state belongs to the PTY, so a detached and reopened Flutter page sees
+// the same palette and cursor mode as the running program.
+export function observeTerminalDisplay(screen) {
+  const indexed = new Map()
+  const special = new Map()
+  const subscriptions = []
+  let cursorVisible = true
+  let cursorStyle = 'block'
+  let cursorBlink = true
+
+  const index = value => /^\d{1,3}$/.test(value) && Number(value) < 256 ? Number(value) : null
+  const color = value => {
+    const rgb = /^rgb:([\da-f]{1,4})\/([\da-f]{1,4})\/([\da-f]{1,4})$/i.exec(value)
+    let channels
+    if (rgb) {
+      channels = rgb.slice(1)
+      if (!channels.every(channel => channel.length === channels[0].length)) return null
+    } else {
+      if (!/^#(?:[\da-f]{3}){1,4}$/i.test(value)) return null
+      const width = (value.length - 1) / 3
+      channels = [value.slice(1, width + 1), value.slice(width + 1, 2 * width + 1), value.slice(2 * width + 1)]
+    }
+    return `#${channels.map(channel => {
+      const value = rgb
+        ? Math.round(Number.parseInt(channel, 16) * 255 / (16 ** channel.length - 1))
+        : Number.parseInt(channel.padEnd(2, '0').slice(0, 2), 16)
+      return value.toString(16).padStart(2, '0')
+    }).join('')}`
+  }
+  const observeOsc = (code, handler) => subscriptions.push(screen.parser.registerOscHandler(code,
+    data => { if (data.length <= 4096) handler(data); return false }))
+  observeOsc(4, data => {
+    const parts = data.split(';')
+    for (let i = 0; i + 1 < parts.length; i += 2) {
+      const key = index(parts[i])
+      const value = color(parts[i + 1])
+      if (key !== null && value !== null) indexed.set(key, value)
+    }
+  })
+  observeOsc(104, data => {
+    if (data === '') indexed.clear()
+    else for (const part of data.split(';')) {
+      const key = index(part)
+      if (key !== null) indexed.delete(key)
+    }
+  })
+  for (const [offset, key] of ['foreground', 'background', 'cursor'].entries()) {
+    observeOsc(10 + offset, data => {
+      for (const [partOffset, part] of data.split(';').entries()) {
+        const target = ['foreground', 'background', 'cursor'][offset + partOffset]
+        const value = color(part)
+        if (target && value !== null) special.set(target, value)
+      }
+    })
+    observeOsc(110 + offset, () => special.delete(key))
+  }
+  const observeCsi = (id, handler) => subscriptions.push(screen.parser.registerCsiHandler(id,
+    params => { handler(params); return false }))
+  observeCsi({ prefix: '?', final: 'h' }, params => {
+    if (params.includes(25)) cursorVisible = true
+  })
+  observeCsi({ prefix: '?', final: 'l' }, params => {
+    if (params.includes(25)) cursorVisible = false
+  })
+  observeCsi({ intermediates: ' ', final: 'q' }, params => {
+    if (params.length !== 1 || !Number.isInteger(params[0])) return
+    switch (params[0]) {
+      case 0: case 1: cursorStyle = 'block'; cursorBlink = true; break
+      case 2: cursorStyle = 'block'; cursorBlink = false; break
+      case 3: cursorStyle = 'underline'; cursorBlink = true; break
+      case 4: cursorStyle = 'underline'; cursorBlink = false; break
+      case 5: cursorStyle = 'bar'; cursorBlink = true; break
+      case 6: cursorStyle = 'bar'; cursorBlink = false; break
+    }
+  })
+  subscriptions.push(screen.parser.registerEscHandler({ final: 'c' }, () => {
+    indexed.clear(); special.clear()
+    cursorVisible = true; cursorStyle = 'block'; cursorBlink = true
+    return false
+  }))
+  return {
+    snapshot() {
+      return {
+        palette: { indexed: Object.fromEntries(indexed), ...Object.fromEntries(special) },
+        cursorVisible, cursorStyle, cursorBlink,
+      }
+    },
+    dispose() { for (const subscription of subscriptions) subscription.dispose() },
+  }
+}
+
 function cellColor(cell, foreground) {
   const rgb = foreground ? cell.isFgRGB() : cell.isBgRGB()
   const palette = foreground ? cell.isFgPalette() : cell.isBgPalette()
@@ -59,9 +151,10 @@ function cellColor(cell, foreground) {
 }
 
 /** Project the active xterm grid into bounded styled rows without exposing raw VT controls. */
-export function projectTerminalView(screen) {
+export function projectTerminalView(screen, displayState) {
   const buffer = screen.buffer?.active
   if (!buffer) return null
+  const display = displayState?.snapshot()
   const cols = screen.cols
   const rows = screen.rows
   const count = Math.min(buffer.length, MAX_VIEW_LINES,
@@ -92,7 +185,8 @@ export function projectTerminalView(screen) {
         bold: Boolean(cell.isBold()), dim: Boolean(cell.isDim()),
         inverse: Boolean(cell.isInverse()), underline: Boolean(cell.isUnderline()),
         invisible: Boolean(cell.isInvisible()),
-        cursor: y - start === cursor.row && x === cursorCell,
+        cursor: (display?.cursorVisible ?? true)
+          && y - start === cursor.row && x === cursorCell,
       }
       if (runCount >= MAX_VIEW_RUNS && !style.cursor) {
         style = { fg: null, bg: null, bold: false, dim: false, inverse: false,
@@ -110,7 +204,8 @@ export function projectTerminalView(screen) {
     }
     lines.push({ wrapped: Boolean(line?.isWrapped), runs })
   }
-  return { cols, rows, start, cursor, lines, truncated: start > 0, stylesTruncated }
+  return { cols, rows, start, cursor, lines, truncated: start > 0, stylesTruncated,
+    ...(display ?? {}) }
 }
 
 /** One Host-generation PTY with a bounded recoverable screen; no transcript writes. */
@@ -128,6 +223,7 @@ class TerminalProcess {
     const { screen, serializer } = makeScreen(cols, rows)
     this.screen = screen
     this.serializer = serializer
+    this.displayState = screen.parser ? observeTerminalDisplay(screen) : null
     this.child = spawn(helper, [cwd, String(cols), String(rows), '/system/bin/sh'], {
       cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'],
       env: scrubbedEnvironment(sessionId),
@@ -254,7 +350,7 @@ class TerminalProcess {
     }).join('\n').replace(/\n+$/, '') : null
     return { ...this.info(), revision: this.revision,
       screen: this.serializer.serialize(), ...(visible === null ? {} : { display: visible }),
-      ...(buffer ? { view: projectTerminalView(this.screen) } : {}) }
+      ...(buffer ? { view: projectTerminalView(this.screen, this.displayState) } : {}) }
   }
 
   async write(data) {
@@ -309,7 +405,7 @@ class TerminalProcess {
 
   async close() {
     if (this._closing) return this._closing
-    this._closing = this._close()
+    this._closing = this._close().then(() => this.displayState?.dispose())
     return this._closing
   }
 

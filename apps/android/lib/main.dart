@@ -20,6 +20,7 @@ import 'session_model_projection.dart';
 import 'session_document.dart';
 import 'models.dart';
 import 'account.dart';
+import 'settings.dart';
 import 'flclash/popup.dart';
 import 'automations.dart';
 import 'chat_projection.dart';
@@ -199,6 +200,18 @@ class _ChatPageState extends State<ChatPage> {
       searchConversations: () {
         scaffold.currentState?.openDrawer();
         setState(() => sidebarSearchRequest++);
+      },
+      toggleSidebar: () {
+        if (drawerOpen) {
+          scaffold.currentState?.closeDrawer();
+        } else {
+          scaffold.currentState?.openDrawer();
+        }
+      },
+      openSettings: () {
+        scaffold.currentState?.closeDrawer();
+        inputFocus.unfocus();
+        navigate(SettingsPage(runtime: runtime));
       },
       focusComposer: inputFocus.requestFocus,
       dismiss: () {

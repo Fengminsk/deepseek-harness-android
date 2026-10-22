@@ -1,7 +1,7 @@
 name: dsh_android
 description: "Pocket Harness — 手机上的本地 Agent 与可选原版 Web。"
 publish_to: 'none'
-version: 0.1.0+46
+version: 0.1.0+47
 environment:
   sdk: ^3.13.5
 dependencies:

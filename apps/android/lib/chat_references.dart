@@ -179,6 +179,7 @@ class ReferenceDiscoveryController extends ChangeNotifier {
   final String sessionId;
   final Future<void> Function() prepare;
   ReferenceToken? token;
+  ReferenceToken? _dismissedToken;
   List<ReferenceCandidate> candidates = [];
   String? error;
   bool loading = false, drilled = false;
@@ -193,11 +194,24 @@ class ReferenceDiscoveryController extends ChangeNotifier {
       '${DateTime.now().microsecondsSinceEpoch}-${Random.secure().nextInt(1 << 30)}';
 
   void update(TextEditingValue? draft, {bool drill = false}) {
+    if (draft == null && token != null) _dismissedToken = token;
     _draft = draft;
-    final next = draft == null ? null : activeReferenceToken(draft);
+    final detected = draft == null ? null : activeReferenceToken(draft);
+    if (draft != null && detected == null) _dismissedToken = null;
+    if (detected != null &&
+        _dismissedToken != null &&
+        (detected.start != _dismissedToken!.start ||
+            detected.end != _dismissedToken!.end ||
+            detected.query != _dismissedToken!.query ||
+            detected.quoted != _dismissedToken!.quoted)) {
+      _dismissedToken = null;
+    }
+    final next = _dismissedToken == null ? detected : null;
     final same =
         next != null &&
         token != null &&
+        next.start == token!.start &&
+        next.end == token!.end &&
         next.query == token!.query &&
         next.quoted == token!.quoted;
     token = next;

@@ -88,7 +88,7 @@
         "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Native external-keyboard handling covers original new-session Ctrl+N and conversation-search Ctrl+K plus composer focus and contextual Escape. Focused Flutter tests pass; the remaining original shortcut roster and physical keyboard behavior remain unverified."
+      "note": "Native external-keyboard handling covers original new-session Ctrl+N, conversation-search Ctrl+K, sidebar toggle Ctrl+B, settings Ctrl+Comma, composer focus and contextual Escape. Focused Flutter tests pass; the remaining original shortcut roster and physical keyboard behavior remain unverified."
     },
     {
       "key": "webUi/ui-layout",
@@ -280,7 +280,7 @@
           "apps/android/test/terminal_screen_test.dart"
         ]
       },
-      "note": "The mobile Session resource page opens process-backed terminals and projects bounded xterm cells with ANSI/RGB colors, emphasis, inverse video and cursor position. Host runtime and Flutter tests cover projection, alternate buffers, text copy and reconnect ownership. Custom OSC palettes, cursor visibility/shape, full raw keyboard input and desktop dock behavior remain absent; device execution and process-tree cleanup remain unverified."
+      "note": "The mobile Session resource page opens process-backed terminals and projects bounded xterm cells with ANSI/RGB colors, emphasis, inverse video and cursor position. Host runtime and Flutter tests cover projection, alternate buffers, text copy and reconnect ownership. Program OSC palette changes, cursor visibility and shape persist with the PTY across page re-entry. Complete VT/OSC query semantics, per-key IME input and desktop dock behavior remain absent; device execution and process-tree cleanup remain unverified."
     },
     {
       "key": "webUi/ui-sidebar-files",
@@ -678,7 +678,7 @@
         "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Existing Session workflow run/start/end and member events now replay into a read-only run/stage/member view, including pagination and interruption semantics. Android still cannot create runs because PTC/workflow execution is disabled; original guarded child-Session navigation and device behavior remain unverified."
+      "note": "Existing Session workflow run/start/end and member events replay into a read-only run/stage/member view, including pagination and interruption semantics. Host-tested navigation from a historical run to a still-running child Session revalidates parent ownership and connection generation. Android still cannot create runs because PTC/workflow execution is disabled; device behavior remains unverified."
     },
     {
       "key": "webUi/ui-input-trigger",
@@ -691,15 +691,17 @@
       "status": "partial",
       "android": [
         "apps/android/lib/main.dart",
-        "apps/android/lib/composer_commands.dart"
+        "apps/android/lib/composer_commands.dart",
+        "apps/android/lib/chat_references.dart",
+        "apps/android/test/chat_references_test.dart"
       ],
       "evidence": {
         "core": "unverified",
         "ui": "partial",
-        "behavior": "unverified",
+        "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Slash execution and plus menu exist; inline trigger candidates and at-reference selection are incomplete."
+      "note": "Inline slash command candidates and file/Session at-reference selection now use the original catalog with cancellation, drill-down and same-token dismissal behavior under host tests. Full keyboard candidate navigation, all original source arbitration and device behavior remain unverified."
     },
     {
       "key": "webUi/ui-commands",
@@ -1202,7 +1204,7 @@
         "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Native read-only session trajectory includes a timeline, request and tool-result correlation, record inspector, and recorded token totals. Original PTC nesting, image gallery, stream metrics, interval zoom/pan, and Android device acceptance remain outstanding."
+      "note": "Native read-only session trajectory includes a timeline, request and tool-result correlation, record inspector, recorded token totals, Session-authorized attachment gallery and stream timing from recorded chunks. Original PTC nesting, interval zoom/pan and Android device acceptance remain outstanding."
     },
     {
       "key": "standardPreset/persona",
