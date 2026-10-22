@@ -19,6 +19,11 @@ public final class TaskCompletionState {
         return true;
     }
 
+    /** Rejects a queued delivery after a newer completion or owner shutdown. */
+    public boolean isCurrentClaim(String sessionId, long endSeq) {
+        return !closed && settled.getOrDefault(sessionId, -1L) == endSeq;
+    }
+
     /** A null session or a paused Activity never suppresses another view's completion. */
     public void viewing(String owner, String sessionId, boolean foreground) {
         if (closed) return;

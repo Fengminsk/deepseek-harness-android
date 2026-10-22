@@ -6,6 +6,9 @@ const require = createRequire(import.meta.url)
 const MAX_TERMINALS = 8
 const MAX_INPUT_BYTES = 65536
 const MAX_PENDING_OUTPUT_BYTES = 262144
+const MAX_VIEW_LINES = 500
+const MAX_VIEW_CELLS = 100000
+const MAX_VIEW_RUNS = 10000
 const START_TIMEOUT_MS = 3000
 const CLOSE_TIMEOUT_MS = 3000
 const WORKDIR_TIMEOUT_MS = 8000
@@ -45,6 +48,69 @@ function screenFactory(cols, rows) {
   const serializer = new SerializeAddon()
   screen.loadAddon(serializer)
   return { screen, serializer }
+}
+
+function cellColor(cell, foreground) {
+  const rgb = foreground ? cell.isFgRGB() : cell.isBgRGB()
+  const palette = foreground ? cell.isFgPalette() : cell.isBgPalette()
+  if (rgb) return `#${(foreground ? cell.getFgColor() : cell.getBgColor()).toString(16).padStart(6, '0')}`
+  if (palette) return foreground ? cell.getFgColor() : cell.getBgColor()
+  return null
+}
+
+/** Project the active xterm grid into bounded styled rows without exposing raw VT controls. */
+export function projectTerminalView(screen) {
+  const buffer = screen.buffer?.active
+  if (!buffer) return null
+  const cols = screen.cols
+  const rows = screen.rows
+  const count = Math.min(buffer.length, MAX_VIEW_LINES,
+    Math.max(rows, Math.floor(MAX_VIEW_CELLS / cols)))
+  const start = Math.max(0, buffer.length - count)
+  const cursor = { col: buffer.cursorX, row: buffer.baseY + buffer.cursorY - start }
+  const lines = []
+  let runCount = 0
+  let stylesTruncated = false
+  for (let y = start; y < buffer.length; y++) {
+    const line = buffer.getLine(y)
+    const runs = []
+    let cursorCell = Math.min(cursor.col, cols - 1)
+    if (y - start === cursor.row) {
+      while (cursorCell > 0 && line?.getCell(cursorCell)?.getWidth() === 0) cursorCell--
+    }
+    let last = -1
+    for (let x = 0; x < cols; x++) {
+      const cell = line?.getCell(x)
+      if (cell && cell.getWidth() > 0 && (cell.getChars() || !cell.isAttributeDefault()
+        || (y - start === cursor.row && x === cursorCell))) last = x
+    }
+    for (let x = 0; x <= last; x++) {
+      const cell = line?.getCell(x)
+      if (!cell || cell.getWidth() === 0) continue
+      let style = {
+        fg: cellColor(cell, true), bg: cellColor(cell, false),
+        bold: Boolean(cell.isBold()), dim: Boolean(cell.isDim()),
+        inverse: Boolean(cell.isInverse()), underline: Boolean(cell.isUnderline()),
+        invisible: Boolean(cell.isInvisible()),
+        cursor: y - start === cursor.row && x === cursorCell,
+      }
+      if (runCount >= MAX_VIEW_RUNS && !style.cursor) {
+        style = { fg: null, bg: null, bold: false, dim: false, inverse: false,
+          underline: false, invisible: false, cursor: false }
+        stylesTruncated = true
+      }
+      const text = cell.getChars() || ' '
+      const previous = runs.at(-1)
+      if (previous && Object.keys(style).every(key => previous[key] === style[key])) {
+        previous.text += text
+      } else {
+        runs.push({ text, ...style })
+        runCount++
+      }
+    }
+    lines.push({ wrapped: Boolean(line?.isWrapped), runs })
+  }
+  return { cols, rows, start, cursor, lines, truncated: start > 0, stylesTruncated }
 }
 
 /** One Host-generation PTY with a bounded recoverable screen; no transcript writes. */
@@ -181,15 +247,14 @@ class TerminalProcess {
 
   async read() {
     await this._writes
-    // A mobile text viewport can render xterm's already-interpreted cells.
-    // The serialized VT state remains available for a full terminal renderer.
     const buffer = this.screen.buffer?.active
-    const visible = buffer ? Array.from({ length: Math.min(buffer.length, 500) }, (_, offset) => {
-      const line = buffer.getLine(Math.max(0, buffer.length - 500) + offset)
+    const visible = buffer ? Array.from({ length: Math.min(buffer.length, MAX_VIEW_LINES) }, (_, offset) => {
+      const line = buffer.getLine(Math.max(0, buffer.length - MAX_VIEW_LINES) + offset)
       return line?.translateToString(true) ?? ''
     }).join('\n').replace(/\n+$/, '') : null
     return { ...this.info(), revision: this.revision,
-      screen: this.serializer.serialize(), ...(visible === null ? {} : { display: visible }) }
+      screen: this.serializer.serialize(), ...(visible === null ? {} : { display: visible }),
+      ...(buffer ? { view: projectTerminalView(this.screen) } : {}) }
   }
 
   async write(data) {

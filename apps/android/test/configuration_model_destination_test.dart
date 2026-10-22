@@ -148,10 +148,7 @@ void main() {
       await mount(tester, runtime, 'agent-default-model');
       expect(runtime.models.snapshot, isNotNull);
       expect(find.byType(DefaultModelPage), findsNothing);
-      expect(
-        find.textContaining('Synthetic directory unavailable'),
-        findsOneWidget,
-      );
+      expect(find.textContaining('本地服务尚未返回完整配置'), findsOneWidget);
       runtime.failRead = false;
       runtime.catalogModel = 'recovered';
       await tester.tap(find.byTooltip('重新读取模型设置'));

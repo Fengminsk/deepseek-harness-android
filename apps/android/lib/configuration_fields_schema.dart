@@ -30,6 +30,10 @@ class ConfigurationFieldSchema {
           options.contains(false);
   bool? get explicitBooleanDefault =>
       booleanChoice && meta['default'] is bool ? meta['default'] as bool : null;
+  bool get hasExplicitChoiceDefault =>
+      enumType &&
+      meta.containsKey('default') &&
+      options.any((option) => configurationEqual(option, meta['default']));
   bool get native =>
       structured ||
       enumType ||
@@ -219,6 +223,39 @@ class ConfigurationFieldSchema {
     }
     return null;
   }
+}
+
+/// The base is already resolved by DSH (schema defaults then profile values).
+/// A missing draft field stages an unset, but its inherited display value can
+/// still be shown without writing that value into the draft.
+dynamic configurationInheritedValueAt(
+  ConfigurationMap descriptor,
+  List<String> path,
+  ConfigurationFieldSchema field,
+) {
+  final base = descriptor['base'];
+  final inherited = configurationValueAt(base is Map ? base : const {}, path);
+  final validBase = field.enumType
+      ? field.options.any((option) => configurationEqual(option, inherited))
+      : field.branchChoice
+      ? field.alternatives.any((branch) => branch.acceptsKind(inherited)) &&
+            field.validate(inherited) == null
+      : field.acceptsKind(inherited) && field.validate(inherited) == null;
+  if (configurationHasValue(inherited) && validBase) {
+    return inherited;
+  }
+  if (field.booleanChoice && field.explicitBooleanDefault != null) {
+    return field.explicitBooleanDefault;
+  }
+  if (field.hasExplicitChoiceDefault) return field.meta['default'];
+  final declared = field.meta['default'];
+  if (field.meta.containsKey('default') &&
+      const ['string', 'number'].contains(field.type) &&
+      field.acceptsKind(declared) &&
+      field.validate(declared) == null) {
+    return declared;
+  }
+  return configurationValueAt(const {}, const ['missing']);
 }
 
 String configurationStructureSummary(dynamic value) {

@@ -51,7 +51,8 @@ class TaskCompletionNotifications(private val context: Context) : AutoCloseable 
             catch (error: Exception) { false }
             main.post {
                 if (!saved) Log.w("PocketTaskNotice", "Completion notification state could not be saved")
-                else if (!closed && eligible && state.shouldAlert(sessionId) && allowed()) show(sessionId)
+                else if (!closed && eligible && state.isCurrentClaim(sessionId, endSeq)
+                    && state.shouldAlert(sessionId) && allowed()) show(sessionId)
             }
         }
     }

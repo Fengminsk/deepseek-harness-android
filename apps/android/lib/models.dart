@@ -101,6 +101,12 @@ class _ModelsPageState extends State<ModelsPage> {
               ],
             ),
           if (data != null) ...[
+            if (!data.catalogFresh)
+              ModelNotice(
+                '实时模型目录尚未恢复；已显示当前服务商配置和保存的默认模型。'
+                '${directory.retryPending ? '稍后会自动重试。' : '请点击刷新重试。'}'
+                '恢复前不能更改默认模型。',
+              ),
             PocketSection(
               title: '默认模型',
               children: [
@@ -110,11 +116,15 @@ class _ModelsPageState extends State<ModelsPage> {
                   subtitle:
                       '${data.catalog['default']?['provider'] ?? ''}'
                       '${data.catalog['default']?['reasoningEffort'] == null ? '' : ' · ${data.catalog['default']['reasoningEffort']}'}',
-                  onTap: data.descriptor('agent-default-model') == null
+                  onTap:
+                      !data.catalogFresh ||
+                          data.descriptor('agent-default-model') == null
                       ? null
                       : () => open(
                           (current) =>
-                              current.descriptor('agent-default-model') == null
+                              !current.catalogFresh ||
+                                  current.descriptor('agent-default-model') ==
+                                      null
                               ? null
                               : DefaultModelPage(
                                   runtime: widget.runtime,

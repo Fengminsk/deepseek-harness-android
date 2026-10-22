@@ -14,6 +14,7 @@ class _Runtime extends RuntimeController {
   Completer<Json>? webRead;
   Json interactionValue = {'revision': 1, 'requests': <Json>[]};
   String catalogModel = 'one';
+  Json? savedDefault;
   bool failCatalog = false;
   int catalogReads = 0;
   int failUnsubscribes = 0;
@@ -31,7 +32,12 @@ class _Runtime extends RuntimeController {
       if (statusFailures.isNotEmpty) throw statusFailures.removeAt(0);
       return statusRead?.future ?? status;
     }
-    if (method == 'settings.describe') return <Json>[];
+    if (method == 'settings.describe') {
+      return <Json>[
+        if (savedDefault != null)
+          {'ns': 'agent-default-model', 'value': savedDefault},
+      ];
+    }
     if (method == 'web.status') return webRead!.future;
     if (method == 'interactions.list') {
       return interactionRead?.future ?? interactionValue;
@@ -538,35 +544,36 @@ void main() {
     },
   );
 
-  test(
-    'directory retains last success and reloads when the service returns',
-    () async {
-      final runtime = _Runtime()..phase = 'ready';
-      final directory = runtime.models;
-      await directory.refresh();
-      final known = directory.snapshot;
-      expect(directory.fresh, isTrue);
-      runtime.failCatalog = true;
-      await directory.refresh();
-      expect(directory.snapshot, same(known));
-      expect(directory.fresh, isFalse);
-      expect(directory.error, isNotNull);
-      runtime.phase = 'starting';
-      runtime.notifyListeners();
-      final reads = runtime.catalogReads;
-      await directory.refresh();
-      expect(runtime.catalogReads, reads);
-      runtime.failCatalog = false;
-      runtime.catalogModel = 'two';
-      runtime.phase = 'ready';
-      runtime.notifyListeners();
-      await directory.refresh();
-      expect(directory.snapshot?.catalog['default']['model'], 'two');
-      expect(directory.fresh, isTrue);
-      expect(directory.error, isNull);
-      runtime.dispose();
-    },
-  );
+  test('directory keeps saved settings when the catalog fails and reloads on return', () async {
+    final runtime = _Runtime()
+      ..phase = 'ready'
+      ..savedDefault = {'provider': 'fixture', 'model': 'one'};
+    final directory = runtime.models;
+    await directory.refresh();
+    final known = directory.snapshot;
+    expect(directory.fresh, isTrue);
+    runtime.failCatalog = true;
+    await directory.refresh();
+    expect(directory.snapshot, isNot(same(known)));
+    expect(directory.snapshot?.catalogFresh, isFalse);
+    expect(directory.snapshot?.catalog['default'], known?.catalog['default']);
+    expect(directory.fresh, isTrue);
+    expect(directory.error, isNull);
+    runtime.phase = 'starting';
+    runtime.notifyListeners();
+    final reads = runtime.catalogReads;
+    await directory.refresh();
+    expect(runtime.catalogReads, reads);
+    runtime.failCatalog = false;
+    runtime.catalogModel = 'two';
+    runtime.phase = 'ready';
+    runtime.notifyListeners();
+    await directory.refresh();
+    expect(directory.snapshot?.catalog['default']['model'], 'two');
+    expect(directory.fresh, isTrue);
+    expect(directory.error, isNull);
+    runtime.dispose();
+  });
 
   test(
     'directory coalesces reads and rejects a previous service response',

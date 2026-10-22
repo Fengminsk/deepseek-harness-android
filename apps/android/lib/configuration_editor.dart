@@ -95,15 +95,27 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
     structureOpen = true;
     state.holdDraft(true);
     try {
+      final field = ConfigurationFieldSchema(
+        ConfigurationSchema(accepted['schema']),
+        node,
+      );
+      final current = configurationValueAt(draft, path);
+      final fallback = configurationHasValue(current)
+          ? configurationValueAt(const {}, const ['missing'])
+          : configurationInheritedValueAt(accepted, path, field);
       final result = await Navigator.of(context).push<ConfigurationFieldResult>(
         PocketRoute(
           builder: (_) => ConfigurationStructurePage(
-            field: ConfigurationFieldSchema(
-              ConfigurationSchema(accepted['schema']),
-              node,
-            ),
+            field: field,
             title: title,
-            value: configurationValueAt(draft, path),
+            value: current,
+            inheritedValue: fallback,
+            hasInheritedValue: configurationHasValue(fallback),
+            pendingReset:
+                !configurationHasValue(current) &&
+                configurationHasValue(
+                  configurationValueAt(accepted['value'], path),
+                ),
             allowReset: configurationHasValue(
               configurationValueAt(draft, path),
             ),
@@ -775,19 +787,30 @@ class ConfigurationFields extends StatelessWidget {
     final current = configurationValueAt(value, item.path);
     final isProtected = protection.containsSecret(item.path);
     final key = ValueKey('configuration-field:${jsonEncode(item.path)}');
-    final inherited = !configurationHasValue(current)
-        ? schema.explicitBooleanDefault
-        : null;
+    final fallback = !configurationHasValue(current)
+        ? configurationInheritedValueAt(descriptor, item.path, schema)
+        : configurationValueAt(const {}, const ['missing']);
+    final inherited = fallback is bool ? fallback : null;
     if (schema.booleanChoice &&
         (current is bool || inherited != null) &&
         !isProtected) {
       final hint = presentation.description(item.path, schema);
+      final resetPending =
+          inherited != null &&
+          configurationHasValue(
+            configurationValueAt(descriptor['value'], item.path),
+          );
       return PocketSwitchRow(
         key: key,
         title: Text(title),
         subtitle: hint == null && inherited == null
             ? null
-            : Text([if (inherited != null) '使用默认值', ?hint].join(' · ')),
+            : Text(
+                [
+                  if (inherited != null) resetPending ? '恢复后使用' : '使用默认值',
+                  ?hint,
+                ].join(' · '),
+              ),
         value: current is bool ? current : inherited!,
         onChanged: enabled ? (next) => onChanged(item.path, next) : null,
       );
@@ -817,7 +840,27 @@ class ConfigurationFields extends StatelessWidget {
     }
     if (protection.containsSecret(field.path)) return '包含凭据 · 已保护';
     final current = configurationValueAt(value, field.path);
-    if (!configurationHasValue(current)) return '使用默认值';
+    if (!configurationHasValue(current)) {
+      final schema = ConfigurationFieldSchema(protection.schema, field.node);
+      final fallback = configurationInheritedValueAt(
+        descriptor,
+        field.path,
+        schema,
+      );
+      if (configurationHasValue(fallback)) {
+        final resetPending = configurationHasValue(
+          configurationValueAt(descriptor['value'], field.path),
+        );
+        final valueLabel =
+            fallback is String &&
+                (fallback.contains('\n') || fallback.length > 80)
+            ? '${fallback.length} 个字符'
+            : presentation.option(field.path, fallback);
+        return '$valueLabel · '
+            '${resetPending ? '恢复后使用' : '使用默认值'}';
+      }
+      return '使用默认值';
+    }
     if (current is String && (current.contains('\n') || current.length > 80)) {
       return '${current.length} 个字符';
     }

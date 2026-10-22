@@ -564,7 +564,18 @@ class RuntimeController extends ChangeNotifier {
     final nextInfo = await call('runtime.info') as Json;
     if (!current()) return;
     info = nextInfo;
-    await refreshLive();
+    Object? firstFailure;
+    StackTrace? firstStack;
+    Future<void> read(Future<void> Function() operation) async {
+      try {
+        await operation();
+      } catch (failure, stack) {
+        firstFailure ??= failure;
+        firstStack ??= stack;
+      }
+    }
+
+    await read(refreshLive);
     if (!current()) return;
     // A new process has no live attempts to publish for the old turn. Refresh
     // retained transcripts through the core's read-only interruption recovery.
@@ -576,18 +587,22 @@ class RuntimeController extends ChangeNotifier {
           (timelines[id]?.isEmpty == true && observed != -1)) {
         continue;
       }
-      await openSession(id);
+      await read(() => openSession(id));
       if (!current()) return;
     }
-    await refreshInteractions();
+    await read(refreshInteractions);
     if (!current()) return;
-    await refreshWeb();
+    await read(refreshWeb);
     if (!current()) return;
-    await refreshSessions();
+    await read(refreshSessions);
     if (!current()) return;
-    await refreshForms();
+    await read(refreshForms);
     if (!current()) return;
-    await refreshTasks();
+    await read(refreshTasks);
+    if (!current()) return;
+    if (firstFailure != null) {
+      Error.throwWithStackTrace(firstFailure!, firstStack!);
+    }
   }
 
   void _applyTasks(Json snapshot) {
@@ -822,10 +837,7 @@ class RuntimeController extends ChangeNotifier {
     String? snapshot;
     try {
       while (true) {
-        final request = <String, dynamic>{
-          'sessionId': id,
-          'offset': offset,
-        };
+        final request = <String, dynamic>{'sessionId': id, 'offset': offset};
         if (snapshot != null) request['snapshot'] = snapshot;
         final page = await call('session.read', request) as Json;
         snapshot = page['snapshot'] as String?;

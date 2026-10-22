@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:ui' as ui;
 
@@ -100,6 +101,8 @@ class ModelsRuntime extends RuntimeController {
   List<Json> descriptors;
   final calls = <Json>[];
   bool failCredential = false, conflict = false;
+  bool failCatalog = false, failSettings = false;
+  Completer<Json>? pendingCatalog;
   bool configured = false;
   @override
   Future<void> refreshForms() async {}
@@ -108,6 +111,7 @@ class ModelsRuntime extends RuntimeController {
     calls.add({'method': method, 'params': cloneConfiguration(params)});
     switch (method) {
       case 'settings.describe':
+        if (failSettings) throw StateError('private settings failure');
         return descriptors.map(cloneConfiguration).toList();
       case 'settings.mutate':
         if (conflict) {
@@ -158,6 +162,12 @@ class ModelsRuntime extends RuntimeController {
           case 'listConfigurableProviders':
             return [providerEntry()];
           case 'modelCatalog':
+            final pending = pendingCatalog;
+            if (pending != null) {
+              pendingCatalog = null;
+              return pending.future;
+            }
+            if (failCatalog) throw StateError('private catalog failure');
             return catalog();
           case 'discoverModels':
             return [
@@ -170,6 +180,11 @@ class ModelsRuntime extends RuntimeController {
         }
     }
     throw StateError('Unexpected method $method $params');
+  }
+
+  void recover() {
+    phase = 'ready';
+    notifyListeners();
   }
 }
 
@@ -474,6 +489,87 @@ void main() {
       );
     },
   );
+
+  testWidgets(
+    'catalog outage retains current provider settings but blocks model selection until retry',
+    (tester) async {
+      final runtime = ModelsRuntime([
+        section('llm-pi-ai', {
+          'providers': {
+            'acme': {'baseURL': 'https://a.test', 'models': []},
+          },
+        }, schema: profileSchema()),
+        section('agent-default-model', {
+          'provider': 'acme',
+          'model': 'saved-choice',
+        }),
+      ])..failCatalog = true;
+      addTearDown(runtime.dispose);
+      await mount(tester, ModelsPage(runtime: runtime));
+      expect(runtime.models.snapshot?.catalogFresh, isFalse);
+      expect(runtime.models.fresh, isTrue);
+      expect(find.text('saved-choice'), findsOneWidget);
+      expect(find.textContaining('实时模型目录尚未恢复'), findsOneWidget);
+      expect(find.text('Acme'), findsOneWidget);
+      await tap(tester, 'saved-choice');
+      expect(find.text('保存默认模型'), findsNothing);
+      await tap(tester, 'Acme');
+      expect(find.text('完整服务商配置'), findsOneWidget);
+      await tap(tester, '返回');
+      runtime.failCatalog = false;
+      await runtime.models.refresh();
+      await tester.pumpAndSettle();
+      expect(runtime.models.snapshot?.catalogFresh, isTrue);
+      expect(find.textContaining('实时模型目录尚未恢复'), findsNothing);
+      expect(find.text('one'), findsOneWidget);
+    },
+  );
+
+  testWidgets('failed settings read retries without exposing its exception', (
+    tester,
+  ) async {
+    final runtime = ModelsRuntime([
+      section('agent-default-model', {'provider': 'acme', 'model': 'one'}),
+    ])..failSettings = true;
+    addTearDown(runtime.dispose);
+    await mount(tester, ModelsPage(runtime: runtime));
+    expect(runtime.models.snapshot, isNull);
+    expect(find.text('模型目录暂不可用'), findsOneWidget);
+    expect(find.textContaining('稍后会自动重试'), findsOneWidget);
+    expect(find.textContaining('private settings failure'), findsNothing);
+    runtime.failSettings = false;
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pumpAndSettle();
+    expect(runtime.models.fresh, isTrue);
+    expect(find.text('one'), findsOneWidget);
+  });
+
+  testWidgets('old catalog reply cannot replace the recovered connection', (
+    tester,
+  ) async {
+    final old = Completer<Json>();
+    final runtime = ModelsRuntime([
+      section('agent-default-model', {'provider': 'acme', 'model': 'one'}),
+    ])..pendingCatalog = old;
+    addTearDown(runtime.dispose);
+    await mount(tester, ModelsPage(runtime: runtime));
+    expect(runtime.models.loading, isTrue);
+    runtime.fail(StateError('connection lost'));
+    await tester.pump();
+    expect(runtime.models.fresh, isFalse);
+    runtime.recover();
+    await tester.pumpAndSettle();
+    expect(runtime.models.snapshot?.catalogFresh, isTrue);
+    expect(find.text('one'), findsOneWidget);
+    old.complete({
+      'default': {'provider': 'obsolete', 'model': 'obsolete-model'},
+      'groups': <Json>[],
+      'failures': <Json>[],
+    });
+    await tester.pump();
+    expect(runtime.models.snapshot?.catalog['default']['model'], 'one');
+    expect(find.text('obsolete-model'), findsNothing);
+  });
 
   testWidgets(
     'default model saves original reasoning id and removes previous effort on model change',

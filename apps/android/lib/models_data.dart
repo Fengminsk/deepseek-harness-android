@@ -75,10 +75,19 @@ class ModelProvider {
 }
 
 class ModelsSnapshot {
-  ModelsSnapshot(this.providers, this.descriptors, this.catalog);
+  ModelsSnapshot(
+    this.providers,
+    this.descriptors,
+    this.catalog, {
+    this.catalogFresh = true,
+  });
   final List<ModelProvider> providers;
   final List<Json> descriptors;
   final Json catalog;
+
+  /// A failed catalog read cannot authorize choosing a model, even when the
+  /// separately read provider settings are current.
+  final bool catalogFresh;
   Json? descriptor(String ns) {
     for (final row in descriptors) {
       if (row['ns'] == ns) return row;
@@ -87,12 +96,19 @@ class ModelsSnapshot {
   }
 
   static Future<ModelsSnapshot> read(RuntimeController runtime) async {
+    // The remote catalog may need an account listing. Its failure must not
+    // suppress independent local provider and settings management.
+    final catalogRead = modelsApi(runtime, 'session', 'modelCatalog')
+        .then<({Json? value, bool fresh})>(
+          (value) => (value: value as Json, fresh: true),
+          onError: (Object failure) => (value: null, fresh: false),
+        );
     final parts = await Future.wait([
       modelsApi(runtime, 'llm', 'listProviders'),
       modelsApi(runtime, 'llm', 'listConfigurableProviders'),
       runtime.call('settings.describe'),
-      modelsApi(runtime, 'session', 'modelCatalog'),
     ]);
+    final catalogResult = await catalogRead;
     final registered = (parts[0] as List).cast<Json>();
     final directory = (parts[1] as List).cast<Json>();
     final descriptors = (parts[2] as List).cast<Json>();
@@ -120,7 +136,19 @@ class ModelsSnapshot {
     return ModelsSnapshot(
       rows.map((row) => ModelProvider(row, owning(row))).toList(),
       descriptors,
-      parts[3] as Json,
+      catalogResult.value ??
+          {
+            'default': modelObjectAt(
+              descriptors
+                  .where((row) => row['ns'] == 'agent-default-model')
+                  .firstOrNull?['value'],
+              const [],
+            ),
+            'groups': <Json>[],
+            'failures': <Json>[],
+            'routableProviders': <String>[],
+          },
+      catalogFresh: catalogResult.fresh,
     );
   }
 }
@@ -137,9 +165,41 @@ class ModelsDirectoryController extends ChangeNotifier {
   ModelsSnapshot? snapshot;
   String? error;
   bool loading = false, fresh = false, _disposed = false;
+  bool get retryPending => _retry != null;
   int _revision = 0, _connection;
   String _phase;
   Future<void>? _refresh;
+  Timer? _retry;
+  int _retryAttempt = 0;
+  static const _retryDelays = [
+    Duration(seconds: 1),
+    Duration(seconds: 2),
+    Duration(seconds: 4),
+    Duration(seconds: 8),
+    Duration(seconds: 16),
+  ];
+
+  void _cancelRetry() {
+    _retry?.cancel();
+    _retry = null;
+  }
+
+  void _scheduleRetry() {
+    if (_disposed ||
+        !runtime.ready ||
+        !hasListeners ||
+        _retry != null ||
+        _retryAttempt >= _retryDelays.length) {
+      return;
+    }
+    final delay = _retryDelays[_retryAttempt++];
+    _retry = Timer(delay, () {
+      _retry = null;
+      if (!_disposed && runtime.ready && hasListeners) {
+        unawaited(refresh());
+      }
+    });
+  }
 
   void _runtimeChanged() {
     if (_phase == runtime.phase &&
@@ -150,6 +210,8 @@ class ModelsDirectoryController extends ChangeNotifier {
     _connection = runtime.connectionGeneration;
     _revision++;
     _refresh = null;
+    _cancelRetry();
+    _retryAttempt = 0;
     fresh = false;
     loading = false;
     if (runtime.ready) {
@@ -163,6 +225,7 @@ class ModelsDirectoryController extends ChangeNotifier {
   Future<void> refresh() {
     if (_disposed) return Future.value();
     if (_refresh != null) return _refresh!;
+    _cancelRetry();
     if (!runtime.ready) {
       fresh = false;
       error = '本地服务尚未就绪，恢复后会自动刷新。';
@@ -187,10 +250,18 @@ class ModelsDirectoryController extends ChangeNotifier {
             if (!current()) return;
             snapshot = next;
             fresh = true;
+            if (next.catalogFresh) {
+              _retryAttempt = 0;
+            } else {
+              _scheduleRetry();
+            }
           } catch (failure) {
             if (!current()) return;
             fresh = false;
-            error = '$failure';
+            _scheduleRetry();
+            error = retryPending
+                ? '本地服务尚未返回完整配置，稍后会自动重试。'
+                : '本地服务尚未返回完整配置，请点击刷新重试。';
           } finally {
             if (current()) {
               loading = false;
@@ -207,6 +278,7 @@ class ModelsDirectoryController extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _revision++;
+    _cancelRetry();
     runtime.removeListener(_runtimeChanged);
     super.dispose();
   }

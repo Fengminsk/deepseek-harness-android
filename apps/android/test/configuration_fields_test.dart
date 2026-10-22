@@ -219,6 +219,57 @@ void main() {
       );
     },
   );
+  test('inherited choice comes from resolved base before schema default', () {
+    final field = shape({
+      'type': 'union',
+      'meta': {'default': 'system'},
+      'list': [
+        {'type': 'const', 'value': 'system'},
+        {'type': 'const', 'value': 'light'},
+        {'type': 'const', 'value': 'dark'},
+      ],
+    });
+    expect(
+      configurationInheritedValueAt(
+        {
+          'base': {'preference': 'dark'},
+        },
+        ['preference'],
+        field,
+      ),
+      'dark',
+    );
+    expect(
+      configurationInheritedValueAt(
+        {
+          'base': {'preference': 'unknown'},
+        },
+        ['preference'],
+        field,
+      ),
+      'system',
+    );
+    expect(
+      configurationInheritedValueAt(
+        {
+          'base': {'preference': null},
+        },
+        ['preference'],
+        field,
+      ),
+      'system',
+    );
+    expect(
+      configurationHasValue(
+        configurationInheritedValueAt(
+          {'base': <String, dynamic>{}},
+          ['preference'],
+          shape({'type': 'boolean'}),
+        ),
+      ),
+      isFalse,
+    );
+  });
   test(
     'primitive unions have typed branches and secret structures stay protected',
     () {

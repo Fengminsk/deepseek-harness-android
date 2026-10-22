@@ -3,7 +3,72 @@ import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import { once } from 'node:events'
-import { AppTerminals } from '../runtime/terminals.mjs'
+import { createRequire } from 'node:module'
+import { AppTerminals, projectTerminalView } from '../runtime/terminals.mjs'
+
+const terminalRequire = createRequire(new URL('../../../packages/terminal/terminal-bash/package.json', import.meta.url))
+const { Terminal } = terminalRequire('@xterm/headless')
+
+async function interpretedScreen(cols, rows, text) {
+  const screen = new Terminal({ cols, rows, scrollback: 500, allowProposedApi: true })
+  await new Promise(resolve => screen.write(text, resolve))
+  return screen
+}
+
+test('headless projection retains ANSI styles, cursor cell and wide characters', async () => {
+  const screen = await interpretedScreen(12, 3,
+    'A\x1b[1;31mB\x1b[0m\x1b[7;38;2;18;52;86mC\x1b[0m你\x1b[2G')
+  const view = projectTerminalView(screen)
+  assert.equal(view.cols, 12)
+  assert.deepEqual(view.cursor, { col: 1, row: 0 })
+  assert.equal(view.lines[0].runs.map(run => run.text).join(''), 'ABC你')
+  assert.equal(view.lines[0].runs[1].fg, 1)
+  assert.equal(view.lines[0].runs[1].bold, true)
+  assert.equal(view.lines[0].runs[1].cursor, true)
+  assert.equal(view.lines[0].runs[2].fg, '#123456')
+  assert.equal(view.lines[0].runs[2].inverse, true)
+  assert.equal(JSON.stringify(view).includes('\x1b'), false)
+  screen.dispose()
+})
+
+test('projection changes to alternate buffer and bounds scrollback by cells', async () => {
+  const screen = await interpretedScreen(500, 2, `${'x\n'.repeat(250)}\x1b[44mEnd`)
+  const normal = projectTerminalView(screen)
+  assert.ok(normal.lines.length <= 200)
+  assert.equal(normal.truncated, true)
+  assert.ok(normal.lines.at(-1).runs.some(run => run.bg === 4))
+  await new Promise(resolve => screen.write('\x1b[?1049hALT', resolve))
+  const alternate = projectTerminalView(screen)
+  assert.equal(screen.buffer.active.type, 'alternate')
+  assert.equal(alternate.lines.length, 2)
+  assert.ok(alternate.lines.some(line => line.runs.some(run => run.text.includes('ALT'))))
+  assert.equal(alternate.lines.some(line => line.runs.some(run => run.text.includes('End'))), false)
+  screen.dispose()
+})
+
+test('pathological per-cell styling keeps text while capping styled runs', async () => {
+  const source = '\x1b[31ma\x1b[32mb'.repeat(10050)
+  const screen = await interpretedScreen(120, 200, source)
+  const view = projectTerminalView(screen)
+  assert.equal(view.stylesTruncated, true)
+  assert.ok(view.lines.reduce((sum, line) => sum + line.runs.length, 0) < 10500)
+  assert.ok(view.lines.map(line => line.runs.map(run => run.text).join('')).join('').includes('abab'))
+  screen.dispose()
+})
+
+test('terminal.read delivers a styled projection after consuming PTY bytes', async () => {
+  const { service, children } = fixture({ makeScreen: (cols, rows) => {
+    const screen = new Terminal({ cols, rows, scrollback: 500, allowProposedApi: true })
+    return { screen, serializer: { serialize: () => '' } }
+  } })
+  await service.create({ sessionId: 'session-A', id: 'styled', cols: 8, rows: 2 })
+  children[0].child.stdout.write('\x1b[32mgreen\x1b[0m')
+  const result = await service.read({ sessionId: 'session-A', id: 'styled' })
+  assert.equal(result.display, 'green')
+  assert.equal(result.view.lines[0].runs[0].fg, 2)
+  assert.equal(result.view.lines[0].runs[0].text, 'green')
+  await service.dispose()
+})
 
 function fixture({ acknowledge = true, resolveDirectory, workdirTimeoutMs, closeTimeoutMs, onKill,
   makeScreen } = {}) {

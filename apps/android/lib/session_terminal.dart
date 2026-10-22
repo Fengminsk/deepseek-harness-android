@@ -1,8 +1,11 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:material_ui/material_ui.dart';
+import 'package:flutter/services.dart';
 
 import 'runtime.dart';
+import 'terminal_screen.dart';
 import 'ui.dart';
 
 /// Session-scoped PTYs owned by the Android Host. Leaving this page detaches
@@ -229,8 +232,15 @@ class _SessionTerminalViewState extends State<SessionTerminalView>
   bool reading = false, sending = false, closing = false;
   bool visible = true;
   String display = '', state = 'starting';
+  TerminalScreenData? screenView;
   String? error;
   int revision = -1, epoch = 0;
+
+  String get copyableDisplay => screenView == null
+      ? display
+      : screenView!.lines
+            .map((line) => line.runs.map((run) => run.text).join())
+            .join('\n');
 
   @override
   void initState() {
@@ -252,7 +262,8 @@ class _SessionTerminalViewState extends State<SessionTerminalView>
 
   void _runtimeChanged() {
     if (!mounted) return;
-    if (!widget.runtime.ready && state == 'running') {
+    if (!widget.runtime.ready && state != 'unconfirmed') {
+      epoch++;
       setState(() {
         state = 'unconfirmed';
         error = '服务未连接，终端状态待确认。';
@@ -282,8 +293,14 @@ class _SessionTerminalViewState extends State<SessionTerminalView>
           (nextRevision != revision ||
               nextState != state ||
               error != result['error'])) {
+        final followOutput =
+            !outputScroll.hasClients || outputScroll.position.extentAfter < 48;
+        final nextView = result['view'] == null
+            ? null
+            : TerminalScreenData.parse(result['view']);
         setState(() {
           revision = nextRevision;
+          screenView = nextView;
           display = result['display'] is String
               ? result['display'] as String
               : '';
@@ -291,7 +308,7 @@ class _SessionTerminalViewState extends State<SessionTerminalView>
           error = result['error'] as String?;
         });
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted && outputScroll.hasClients) {
+          if (mounted && followOutput && outputScroll.hasClients) {
             outputScroll.jumpTo(outputScroll.position.maxScrollExtent);
           }
         });
@@ -371,29 +388,64 @@ class _SessionTerminalViewState extends State<SessionTerminalView>
       label: '关闭终端进程',
       onPressed: closing ? null : close,
     ),
-    body: ListView(
-      controller: outputScroll,
-      padding: const EdgeInsets.fromLTRB(20, 12, 20, 150),
-      children: [
-        Text(
-          state == 'running' ? '运行中 · 离开页面后继续运行' : '进程状态：$state',
-          style: Theme.of(context).textTheme.labelMedium,
-        ),
-        if (error != null)
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 12),
-            child: Text(error!),
+    body: LayoutBuilder(
+      builder: (context, constraints) => SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: SizedBox(
+          width: math.max(
+            constraints.maxWidth,
+            (screenView?.cols ?? 0) * 8.2 + 40,
           ),
-        const SizedBox(height: 12),
-        SelectableText(
-          display.isEmpty ? ' ' : display,
-          style: const TextStyle(
-            fontFamily: 'monospace',
-            fontSize: 13,
-            height: 1.35,
+          height: constraints.maxHeight,
+          child: ListView.builder(
+            controller: outputScroll,
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 150),
+            itemCount: 4 + (screenView?.lines.length ?? 0),
+            itemBuilder: (context, index) {
+              if (index == 0) {
+                return Text(
+                  state == 'running' ? '运行中 · 离开页面后继续运行' : '进程状态：$state',
+                  style: Theme.of(context).textTheme.labelMedium,
+                );
+              }
+              if (index == 1) {
+                return error == null
+                    ? const SizedBox.shrink()
+                    : Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        child: Text(error!),
+                      );
+              }
+              if (index == 2) return const SizedBox(height: 12);
+              if (screenView == null) {
+                return index == 3
+                    ? SelectableText(
+                        display.isEmpty ? ' ' : display,
+                        style: const TextStyle(
+                          fontFamily: 'monospace',
+                          fontSize: 13,
+                          height: 1.35,
+                        ),
+                      )
+                    : const SizedBox.shrink();
+              }
+              if (index == 3) {
+                return screenView!.stylesTruncated
+                    ? Text(
+                        '终端样式过多，后续颜色已简化。',
+                        style: Theme.of(context).textTheme.labelSmall,
+                      )
+                    : const SizedBox.shrink();
+              }
+              return TerminalScreenLine(
+                key: ValueKey('terminal-line-${index - 4}'),
+                line: screenView!.lines[index - 4],
+                running: state == 'running',
+              );
+            },
           ),
         ),
-      ],
+      ),
     ),
     bottom: SafeArea(
       top: false,
@@ -402,22 +454,30 @@ class _SessionTerminalViewState extends State<SessionTerminalView>
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Row(
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
               children: [
                 for (final key in const [
                   ('Ctrl-C', '\u0003'),
                   ('Tab', '\t'),
                   ('Esc', '\u001b'),
                 ])
-                  Padding(
-                    padding: const EdgeInsets.only(right: 8),
-                    child: PocketButton.tonal(
-                      onPressed: state == 'running' && !sending
-                          ? () => send(key.$2)
-                          : null,
-                      child: Text(key.$1),
-                    ),
+                  PocketButton.tonal(
+                    onPressed: state == 'running' && !sending
+                        ? () => send(key.$2)
+                        : null,
+                    child: Text(key.$1),
                   ),
+                GlassButton(
+                  icon: Icons.copy_rounded,
+                  label: '复制终端内容',
+                  onPressed: copyableDisplay.isEmpty
+                      ? null
+                      : () => Clipboard.setData(
+                          ClipboardData(text: copyableDisplay),
+                        ),
+                ),
               ],
             ),
             Row(

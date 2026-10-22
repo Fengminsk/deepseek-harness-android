@@ -39,6 +39,17 @@ class SettingsRuntime extends RuntimeController {
     for (final op in args['ops'] as List) {
       applyConfigurationEdit(remote['value'] as Json, op as Json);
       applyConfigurationEdit(remote['user'] as Json, op);
+      if (op['op'] == 'unset' && remote['base'] is Json) {
+        final path = (op['path'] as List).cast<String>();
+        final inherited = configurationValueAt(remote['base'], path);
+        if (configurationHasValue(inherited)) {
+          applyConfigurationEdit(remote['value'] as Json, {
+            'op': 'set',
+            'path': path,
+            'value': inherited,
+          });
+        }
+      }
     }
     remote['revision'] = (remote['revision'] as int) + 1;
     return cloneConfiguration(remote);
@@ -1088,6 +1099,60 @@ void main() {
       ]);
       expect(runtime.remote['value']['maxTokens'], 1024);
       expect(runtime.remote['secrets'], fixture()['secrets']);
+    },
+  );
+  testWidgets(
+    'reset choice previews resolved profile value without writing it',
+    (tester) async {
+      final runtime = SettingsRuntime({
+        'ns': 'ui-theme',
+        'revision': 1,
+        'value': {'preference': 'light'},
+        'base': {'preference': 'dark'},
+        'user': {'preference': 'light'},
+        'secrets': [],
+        'schema': {
+          'type': 'object',
+          'dict': {
+            'preference': {
+              'type': 'union',
+              'meta': {'default': 'system'},
+              'list': [
+                {'type': 'const', 'value': 'system'},
+                {'type': 'const', 'value': 'light'},
+                {'type': 'const', 'value': 'dark'},
+              ],
+            },
+          },
+        },
+      });
+      await openEditor(tester, runtime);
+      expect(summary(tester, 'preference'), '浅色');
+      await tester.tap(field('preference'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('使用默认值'));
+      await tester.pumpAndSettle();
+      expect(summary(tester, 'preference'), '深色 · 恢复后使用');
+      expect(runtime.writes, isEmpty);
+      await tester.tap(field('preference'));
+      await tester.pumpAndSettle();
+      expect(find.text('恢复后使用此选项'), findsOneWidget);
+      expect(find.text('深色'), findsOneWidget);
+      await tester.tap(find.byTooltip('完成编辑'));
+      await tester.pumpAndSettle();
+      expect(summary(tester, 'preference'), '深色 · 恢复后使用');
+      expect(runtime.writes, isEmpty);
+      await tester.tap(find.byTooltip('保存并应用'));
+      await tester.pumpAndSettle();
+      expect(runtime.writes.single['ops'], [
+        {
+          'op': 'unset',
+          'path': ['preference'],
+        },
+      ]);
+      expect(runtime.remote['user'], isEmpty);
+      expect(runtime.remote['value'], {'preference': 'dark'});
+      expect(summary(tester, 'preference'), '深色');
     },
   );
 

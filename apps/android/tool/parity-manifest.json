@@ -263,16 +263,24 @@
         "apps/android/runtime/terminals.mjs",
         "apps/android/android/app/src/main/cpp/terminal_helper.cpp",
         "apps/android/lib/session_terminal.dart",
+        "apps/android/lib/terminal_screen.dart",
         "apps/android/lib/resource_hub.dart",
-        "apps/android/tool/terminals-runtime.test.mjs"
+        "apps/android/tool/terminals-runtime.test.mjs",
+        "apps/android/test/terminal_screen_test.dart"
       ],
       "evidence": {
         "core": "partial",
         "ui": "partial",
-        "behavior": "unverified",
+        "behavior": "partial",
         "device": "unverified"
       },
-      "note": "The mobile Session resource page now opens process-backed terminals with restored text viewport, command entry and control keys. It does not reproduce the original xterm color/cursor renderer, raw keyboard input, advanced retention, or desktop dock layout. Host protocol tests and cross-compilation do not establish device execution or process-tree cleanup."
+      "evidenceRefs": {
+        "behavior": [
+          "apps/android/tool/terminals-runtime.test.mjs",
+          "apps/android/test/terminal_screen_test.dart"
+        ]
+      },
+      "note": "The mobile Session resource page opens process-backed terminals and projects bounded xterm cells with ANSI/RGB colors, emphasis, inverse video and cursor position. Host runtime and Flutter tests cover projection, alternate buffers, text copy and reconnect ownership. Custom OSC palettes, cursor visibility/shape, full raw keyboard input and desktop dock behavior remain absent; device execution and process-tree cleanup remain unverified."
     },
     {
       "key": "webUi/ui-sidebar-files",
@@ -320,6 +328,7 @@
       "android": [
         "apps/android/lib/settings.dart",
         "apps/android/lib/configuration_editor.dart",
+        "apps/android/lib/configuration_fields_schema.dart",
         "apps/android/lib/workspace_changes_preference.dart"
       ],
       "evidence": {
@@ -328,11 +337,13 @@
         "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Native structured configuration pages exist. Workspace-change visibility and reads use the original ui-settings/enabled value with no App-only default; scoped tests cover invalidation and shared-setting changes. Schema accessibility does not establish complete settings workflow parity.",
+      "note": "Native structured configuration pages exist. Restoring a user override previews the descriptor's inherited value without writing it; focused form tests cover switches and finite choices. Workspace-change visibility and reads use the original ui-settings/enabled value with no App-only default. Schema accessibility does not establish complete settings workflow parity.",
       "evidenceRefs": {
         "behavior": [
           "apps/android/test/workspace_changes_test.dart",
-          "apps/android/test/workspace_diff_test.dart"
+          "apps/android/test/workspace_diff_test.dart",
+          "apps/android/test/configuration_fields_test.dart",
+          "apps/android/test/configuration_editor_test.dart"
         ]
       }
     },
@@ -368,16 +379,22 @@
       "status": "partial",
       "android": [
         "apps/android/lib/models.dart",
+        "apps/android/lib/models_data.dart",
         "apps/android/lib/models_provider.dart",
         "apps/android/lib/models_editor.dart"
       ],
       "evidence": {
         "core": "unverified",
         "ui": "partial",
-        "behavior": "unverified",
+        "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Native provider/model/credential forms call shared services; full original action and recovery coverage is not certified here."
+      "evidenceRefs": {
+        "behavior": [
+          "apps/android/test/models_test.dart"
+        ]
+      },
+      "note": "Native provider/model/credential forms call shared services. A catalog outage retains provider settings and the saved default but blocks model changes until a bounded or manual retry succeeds; widget tests cover this separation. Full original action and device recovery coverage is not certified here."
     },
     {
       "key": "webUi/ui-plugin-manager",

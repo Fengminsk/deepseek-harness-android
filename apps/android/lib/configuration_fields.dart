@@ -31,6 +31,9 @@ class ConfigurationStructurePage extends StatefulWidget {
     this.adding = false,
     this.allowReset = false,
     this.resetLabel = '使用默认值',
+    this.inheritedValue,
+    this.hasInheritedValue = false,
+    this.pendingReset = false,
     this.editingState,
     this.canEdit,
   });
@@ -42,6 +45,9 @@ class ConfigurationStructurePage extends StatefulWidget {
   final List<String> path;
   final bool adding, allowReset;
   final String resetLabel;
+  final dynamic inheritedValue;
+  final bool hasInheritedValue;
+  final bool pendingReset;
   final Listenable? editingState;
   final bool Function()? canEdit;
 
@@ -385,13 +391,19 @@ class _ConfigurationStructurePageState
       );
     }
     if (field.booleanChoice) {
-      final inherited = !exists ? field.explicitBooleanDefault : null;
+      final inherited = !exists
+          ? widget.hasInheritedValue && widget.inheritedValue is bool
+                ? widget.inheritedValue as bool
+                : field.explicitBooleanDefault
+          : null;
       return PocketSection(
         children: [
           if (value is bool || inherited != null)
             PocketSwitchRow(
               title: Text(widget.title),
-              subtitle: inherited == null ? null : const Text('使用默认值'),
+              subtitle: inherited == null
+                  ? null
+                  : Text(widget.pendingReset ? '恢复后使用' : '使用默认值'),
               value: value is bool ? value as bool : inherited!,
               onChanged: enabled ? changed : null,
             )
@@ -405,6 +417,7 @@ class _ConfigurationStructurePageState
       );
     }
     if (field.enumType) {
+      final inherited = !exists && widget.hasInheritedValue;
       return PocketSection(
         title: '选项',
         divided: true,
@@ -413,8 +426,19 @@ class _ConfigurationStructurePageState
             if (presentation.offerOption(widget.path, option))
               PocketTile(
                 title: Text(presentation.option(widget.path, option)),
-                selected: exists && configurationEqual(value, option),
-                trailing: exists && configurationEqual(value, option)
+                subtitle:
+                    inherited &&
+                        configurationEqual(widget.inheritedValue, option)
+                    ? Text(widget.pendingReset ? '恢复后使用此选项' : '当前默认选项')
+                    : null,
+                selected:
+                    (exists && configurationEqual(value, option)) ||
+                    (inherited &&
+                        configurationEqual(widget.inheritedValue, option)),
+                trailing:
+                    (exists && configurationEqual(value, option)) ||
+                        (inherited &&
+                            configurationEqual(widget.inheritedValue, option))
                     ? const Icon(Icons.check_rounded)
                     : null,
                 onTap: enabled ? () => changed(option) : null,
