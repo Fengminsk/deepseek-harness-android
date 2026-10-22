@@ -13,6 +13,7 @@ import { AppSessions } from './sessions.mjs'
 import { AppSessionHistory } from './session-history.mjs'
 import { AppLiveState, presentSessionEvent } from './live-state.mjs'
 import { AppInteractions } from './interactions.mjs'
+import { InteractionReceipts } from './interaction-receipts.mjs'
 import { AppStreams } from './streams.mjs'
 import { AppExports } from './exports.mjs'
 import { AppAttachmentFiles } from './attachment-files.mjs'
@@ -159,13 +160,14 @@ export function apply(ctx, config) {
   const live = new AppLiveState(ctx, transport, { streamPublishMs: () => config.streamPublishMs.get() })
   const history = new AppSessionHistory(ctx.sessionController)
   const shell = registerAndroidShell(ctx, config)
+  const interactionReceipts = new InteractionReceipts()
   let tasks
   const interactions = new AppInteractions(ctx, {
     notify(method, params) {
       transport.notify(method, params)
       if (method === 'interactions.changed') tasks?.interactionsChanged()
     },
-  }, { shellContext: (sessionId, callId) => shell.context(sessionId, callId) })
+  }, { shellContext: (sessionId, callId) => shell.context(sessionId, callId), receipts: interactionReceipts })
   tasks = new AppTasks(ctx, transport, { interactions: () => interactions.snapshot() })
   const taskCompletion = new AppTaskCompletion(ctx, transport)
   const packageOperations = new AppPackageOperations(ctx)
@@ -447,9 +449,11 @@ export function apply(ctx, config) {
   })))
   ctx.effect(() => {
     const remove = ctx.appReady.onReady(() => {
-      void transport.request('native.storage.root', {}).then(root =>
-        establishAttachmentHome(resolveDshHome(), requiredString(root, 'native storage root')),
-      ).then(() => library.initialize()).then(() => interactions.start()).then(() => {
+      void transport.request('native.storage.root', {}).then(async root => {
+        const privateRoot = requiredString(root, 'native storage root')
+        await interactionReceipts.initialize(privateRoot)
+        establishAttachmentHome(resolveDshHome(), privateRoot)
+      }).then(() => library.initialize()).then(() => interactions.start()).then(() => {
         transport.notify('runtime.ready', { node: process.version })
         tasks.publish()
         return web.restore().catch(error =>

@@ -29,6 +29,7 @@ import 'subagent_model_settings.dart';
 import 'web_search_settings.dart';
 import 'permission_policy.dart';
 import 'settings_general.dart';
+import 'session_log_upload_settings.dart';
 
 class SettingsPage extends StatelessWidget {
   const SettingsPage({required this.runtime, super.key});
@@ -73,6 +74,11 @@ class SettingsPage extends StatelessWidget {
               title: '通用',
               children: [
                 DeveloperToolsSettingsRow(runtime: runtime),
+                if (runtime.ready &&
+                    runtime.forms.any(
+                      (form) => form['ns'] == 'session-log-deepseek',
+                    ))
+                  SessionLogUploadSettingsRow(runtime: runtime),
                 const _InstalledVersionRow(),
               ],
             ),

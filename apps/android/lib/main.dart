@@ -17,6 +17,7 @@ import 'attachment_file.dart';
 import 'composer_commands.dart';
 import 'session_models.dart';
 import 'session_model_projection.dart';
+import 'models_label.dart';
 import 'session_document.dart';
 import 'models.dart';
 import 'account.dart';
@@ -160,6 +161,7 @@ class _ChatPageState extends State<ChatPage> {
   late AttachmentDrafts attachments;
   late ChatGoalPlanController goalPlan;
   late WorkspaceChangesPreference codingTools;
+  late CurrentModelCatalog currentModelCatalog;
   final messageScroll = ScrollController();
   bool navigationScheduled = false;
   bool drawerOpen = false;
@@ -182,6 +184,9 @@ class _ChatPageState extends State<ChatPage> {
   @override
   void initState() {
     super.initState();
+    runtime.plugins.attach();
+    unawaited(runtime.plugins.load());
+    currentModelCatalog = CurrentModelCatalog(runtime);
     codingTools = WorkspaceChangesPreference(runtime);
     unawaited(codingTools.start());
     keyboardShortcuts = ChatKeyboardShortcuts(
@@ -246,6 +251,11 @@ class _ChatPageState extends State<ChatPage> {
   void didUpdateWidget(ChatPage oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.runtime != runtime) {
+      oldWidget.runtime.plugins.detach();
+      runtime.plugins.attach();
+      unawaited(runtime.plugins.load());
+      currentModelCatalog.dispose();
+      currentModelCatalog = CurrentModelCatalog(runtime);
       codingTools.dispose();
       codingTools = WorkspaceChangesPreference(runtime);
       unawaited(codingTools.start());
@@ -332,6 +342,8 @@ class _ChatPageState extends State<ChatPage> {
 
   @override
   void dispose() {
+    runtime.plugins.detach();
+    currentModelCatalog.dispose();
     keyboardShortcuts.dispose();
     codingTools.dispose();
     unawaited(publishNotificationViewing(null));
@@ -348,8 +360,16 @@ class _ChatPageState extends State<ChatPage> {
     super.dispose();
   }
 
-  void navigate(Widget page) =>
-      Navigator.push(context, PocketRoute<void>(builder: (_) => page));
+  void navigate(Widget page) {
+    unawaited(
+      Navigator.push<void>(
+        context,
+        PocketRoute<void>(builder: (_) => page),
+      ).then((_) {
+        if (mounted) unawaited(currentModelCatalog.refresh());
+      }),
+    );
+  }
 
   Future<void> readNotifiedSession(String id) async {
     try {
@@ -834,7 +854,9 @@ class _ChatPageState extends State<ChatPage> {
         sessionId,
         ChatProjection.new,
       )..reconcile(events);
-      final modelLabel = nextSessionModel(events)?['model'] ?? runtime.model;
+      final modelSelection =
+          nextSessionModel(events) ??
+          {'provider': runtime.provider, 'model': runtime.model};
       final stream = runtime.liveMessages[sessionId];
       final live = stream == null
           ? null
@@ -877,18 +899,20 @@ class _ChatPageState extends State<ChatPage> {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
-                Text(
-                  runtime.ready
-                      ? modelLabel
-                      : runtime.phase == 'failed'
-                      ? '服务需要处理'
-                      : '正在启动',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+                DefaultTextStyle.merge(
                   style: TextStyle(
                     fontSize: 11,
                     color: colors.onSurfaceVariant,
+                    overflow: TextOverflow.ellipsis,
                   ),
+                  maxLines: 1,
+                  child: runtime.ready
+                      ? CurrentModelReleaseLabel(
+                          runtime: runtime,
+                          catalog: currentModelCatalog,
+                          selection: modelSelection,
+                        )
+                      : Text(runtime.phase == 'failed' ? '服务需要处理' : '正在启动'),
                 ),
               ],
             ),

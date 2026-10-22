@@ -135,6 +135,16 @@ class _Runtime extends RuntimeController {
       };
     }
     if (method == 'api.call' &&
+        params['namespace'] == 'session' &&
+        params['method'] == 'modelCatalog') {
+      return {'groups': <Json>[]};
+    }
+    if (method == 'api.call' &&
+        params['namespace'] == 'pluginInventory' &&
+        params['method'] == 'list') {
+      return {'managementAvailable': false, 'entries': <Json>[]};
+    }
+    if (method == 'api.call' &&
         params['namespace'] == 'settings' &&
         params['method'] == 'describe') {
       return {'revision': 0, 'values': <String, dynamic>{}};
@@ -152,7 +162,11 @@ class _Runtime extends RuntimeController {
                 ((call.params['namespace'] == 'commands' &&
                         call.params['method'] == 'list') ||
                     (call.params['namespace'] == 'session' &&
-                        call.params['method'] == 'projections') ||
+                        const ['projections', 'modelCatalog'].contains(
+                          call.params['method'],
+                        )) ||
+                    (call.params['namespace'] == 'pluginInventory' &&
+                        call.params['method'] == 'list') ||
                     (call.params['namespace'] == 'settings' &&
                         call.params['method'] == 'describe'))),
         isTrue,

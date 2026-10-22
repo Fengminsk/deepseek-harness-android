@@ -204,13 +204,25 @@ await fixture('ask', async f => {
   const started = f.marker('started.txt')
   await f.reply(running, 'allowed-once')
   await started
-  await f.request('session.cancel', { sessionId: running.sessionId })
+  const cancelStartedAt = performance.now()
   let timer
+  let ended
   try {
-    await Promise.race([f.finish(running.sessionId), new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new Error('Approved shell cancellation did not settle in 5 seconds')), 5000)
+    ended = await Promise.race([(async () => {
+      await f.request('session.cancel', { sessionId: running.sessionId })
+      return f.finish(running.sessionId)
+    })(), new Promise((_, reject) => {
+      // The Shell deadline is ten seconds. Cancellation must finish before it,
+      // including the host request and Session event delivery.
+      timer = setTimeout(() => reject(new Error('Approved shell cancellation did not settle before its deadline')), 9000)
     })])
   } finally { clearTimeout(timer) }
+  const runningCancellationMs = Math.round(performance.now() - cancelStartedAt)
+  assert.equal(ended.params.event.data.reason.kind, 'aborted')
+  assert.equal(ended.params.event.data.reason.reason.kind, 'user')
+  assert.equal(await f.content('started.txt'), 'started')
+  assert.deepEqual((await f.history(running.sessionId)).filter(event => event.type === 'approval/decided')
+    .map(event => event.data.outcome), ['allowed-once'])
   assert.equal((await f.request('runtime.live')).statuses[running.sessionId], 'idle')
 
   const web = await f.browser()
@@ -230,6 +242,7 @@ await fixture('ask', async f => {
   console.log(JSON.stringify({ originalToolGate: true, appApprovalStartsRealShell: true,
     outputReachesModel: true, outputLogged: true, oneShotGrant: true, rejectionNeverExecutes: true,
     waitingCancellationDiscardsLateGrant: true, runningCancellationSettles: true,
+    runningCancellationMs,
     sharedWebEventId: true, concurrentAppWebSingleDecision: true, durableApprovalAudit: true,
     executionPlatform: process.platform, windowsShellAndTerminationAdapter: process.platform === 'win32',
     androidDeviceExecution: false }))

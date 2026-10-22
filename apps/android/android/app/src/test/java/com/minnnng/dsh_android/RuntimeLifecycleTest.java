@@ -75,6 +75,41 @@ public final class RuntimeLifecycleTest {
         check(replacement.phase.equals("ready") && replacement.readyEvents == 1,
                 "the previous generation's latch prevented replacement startup");
 
+        RuntimeLifecycle disconnected = new RuntimeLifecycle();
+        check(disconnected.fail(), "transport failure did not latch");
+        StringBuilder shutdown = new StringBuilder();
+        check(disconnected.stopFailedProcess(
+                () -> shutdown.append('R'), () -> shutdown.append('F'),
+                () -> shutdown.append('S'), () -> shutdown.append('K')),
+                "unobserved runtime was not stopped");
+        check(shutdown.toString().equals("RFSK"), "failure report did not precede service and process stop");
+        check(!disconnected.acceptsFrames() && !disconnected.stopFailedProcess(
+                () -> shutdown.append('R'), () -> shutdown.append('F'),
+                () -> shutdown.append('S'), () -> shutdown.append('K')),
+                "repeated failure could stop a replacement process");
+        check(shutdown.toString().equals("RFSK"), "failed process was stopped twice");
+
+        RuntimeLifecycle reportFailure = new RuntimeLifecycle();
+        reportFailure.fail();
+        StringBuilder finalizers = new StringBuilder();
+        try {
+            reportFailure.stopFailedProcess(() -> { finalizers.append('R'); throw new IllegalStateException("report"); },
+                    () -> { finalizers.append('F'); throw new IllegalStateException("foreground"); },
+                    () -> { finalizers.append('S'); throw new IllegalStateException("service"); },
+                    () -> finalizers.append('K'));
+            throw new AssertionError("Expected report failure");
+        } catch (IllegalStateException expected) {
+            check(finalizers.toString().equals("RFSK"), "a failed cleanup step left Node running");
+            check(!reportFailure.acceptsFrames(), "cleanup error reopened a failed transport");
+        }
+        RuntimeLifecycle alreadyStopped = new RuntimeLifecycle();
+        alreadyStopped.fail();
+        alreadyStopped.close();
+        check(!alreadyStopped.stopFailedProcess(
+                () -> shutdown.append('R'), () -> shutdown.append('F'),
+                () -> shutdown.append('S'), () -> shutdown.append('K')),
+                "deliberate teardown was mistaken for an unobserved runtime");
+
         RuntimeLifecycle simultaneous = new RuntimeLifecycle();
         AtomicInteger failures = new AtomicInteger();
         CountDownLatch start = new CountDownLatch(1);
@@ -93,6 +128,6 @@ public final class RuntimeLifecycleTest {
             check(!worker.isAlive(), "failure reporter did not settle");
         }
         check(failures.get() == 1 && simultaneous.failed(), "concurrent Node exit and IPC EOF both won termination");
-        System.out.println("RuntimeLifecycle: " + checks + " checks passed (late ready, queued work, close, replacement, concurrent failure)");
+        System.out.println("RuntimeLifecycle: " + checks + " checks passed (late ready, queued work, fail-closed stop, replacement, concurrent failure)");
     }
 }

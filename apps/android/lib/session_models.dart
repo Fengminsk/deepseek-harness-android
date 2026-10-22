@@ -64,7 +64,8 @@ class _SessionModelPageState extends State<SessionModelPage>
   Widget selectionLabel(Json? pick) {
     if (pick == null) return const Text('尚未取得会话模型');
     final model = modelFor(pick);
-    return ModelReleaseLabel(
+    return PluginAwareModelReleaseLabel(
+      runtime: widget.runtime,
       providerId: '${pick['provider']}',
       modelId: '${pick['model']}',
       modelName: '${model?['name'] ?? pick['model']}',
@@ -107,6 +108,8 @@ class _SessionModelPageState extends State<SessionModelPage>
   @override
   void initState() {
     super.initState();
+    widget.runtime.plugins.attach();
+    unawaited(widget.runtime.plugins.load());
     runtimeReady = widget.runtime.ready;
     runtimeGeneration = widget.runtime.connectionGeneration;
     WidgetsBinding.instance.addObserver(this);
@@ -133,6 +136,7 @@ class _SessionModelPageState extends State<SessionModelPage>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state != AppLifecycleState.resumed) return;
+    unawaited(widget.runtime.plugins.load());
     if (busy) {
       reloadAfterBusy = true;
     } else {
@@ -396,6 +400,7 @@ class _SessionModelPageState extends State<SessionModelPage>
 
   @override
   void dispose() {
+    widget.runtime.plugins.detach();
     observationActive = false;
     WidgetsBinding.instance.removeObserver(this);
     widget.runtime.removeListener(runtimeChanged);
@@ -617,7 +622,8 @@ class _SessionModelPageState extends State<SessionModelPage>
       inMutuallyExclusiveGroup: true,
       child: PocketTile(
         key: ValueKey('session-model-${group['id']}-${model['id']}'),
-        title: ModelReleaseLabel(
+        title: PluginAwareModelReleaseLabel(
+          runtime: widget.runtime,
           providerId: '${group['id']}',
           modelId: '${model['id']}',
           modelName: '${model['name']}',

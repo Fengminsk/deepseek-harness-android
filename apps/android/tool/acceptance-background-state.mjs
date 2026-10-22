@@ -17,6 +17,8 @@ try {
     'android/app/src/test/java/com/minnnng/dsh_android/PackageOperationTransitionsTest.java',
     'android/app/src/main/java/com/minnnng/dsh_android/RuntimeLifecycle.java',
     'android/app/src/test/java/com/minnnng/dsh_android/RuntimeLifecycleTest.java',
+    'android/app/src/main/java/com/minnnng/dsh_android/RuntimeInterruptionRecord.java',
+    'android/app/src/test/java/com/minnnng/dsh_android/RuntimeInterruptionRecordTest.java',
     'android/app/src/main/java/com/minnnng/dsh_android/RuntimeTransport.java',
     'android/app/src/test/java/com/minnnng/dsh_android/RuntimeTransportTest.java',
   ].map(path => join(project, path))
@@ -31,6 +33,9 @@ try {
     stdio: 'inherit', windowsHide: true,
   })
   execFileSync('java', ['-cp', output, 'com.minnnng.dsh_android.RuntimeLifecycleTest'], {
+    stdio: 'inherit', windowsHide: true,
+  })
+  execFileSync('java', ['-cp', output, 'com.minnnng.dsh_android.RuntimeInterruptionRecordTest'], {
     stdio: 'inherit', windowsHide: true,
   })
   execFileSync('java', ['-cp', output, 'com.minnnng.dsh_android.RuntimeTransportTest'], {

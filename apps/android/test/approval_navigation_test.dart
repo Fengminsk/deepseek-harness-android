@@ -81,7 +81,10 @@ void main() {
       expect(find.byType(ApprovalsPage), findsOneWidget);
       expect(runtime.navigationRequest, isNull);
       expect(find.text('请求已处理、撤回或此通知已失效'), findsOneWidget);
-      expect(runtime.calls, ['interactions.list']);
+      expect(
+        runtime.calls.where((method) => method.startsWith('interactions.')),
+        ['interactions.list'],
+      );
     },
   );
 
@@ -99,7 +102,10 @@ void main() {
     await tester.tap(find.byTooltip('返回'));
     await tester.pumpAndSettle();
     expect(find.text('还没发送的内容'), findsOneWidget);
-    expect(runtime.calls, ['interactions.list']);
+    expect(
+      runtime.calls.where((method) => method.startsWith('interactions.')),
+      ['interactions.list'],
+    );
     runtime.readyNow();
     await tester.pumpAndSettle();
     expect(find.byType(ApprovalsPage), findsNothing);

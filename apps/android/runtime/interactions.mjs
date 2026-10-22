@@ -1,15 +1,17 @@
 import { randomUUID } from 'node:crypto'
 import { PendingQuestion, createWaterfallRequest } from './question-carrier.mjs'
+import { approvalAuditIdentity, interactionReceiptIdentity } from './interaction-receipts.mjs'
 
 const emptyUplink = { async *[Symbol.asyncIterator]() {} }
 const waitActions = new Set(['holdFocus', 'releaseFocus', 'engage', 'takeTime'])
 
 /** Android is one authenticated owner client of the existing Gateway event stream. */
 export class AppInteractions {
-  constructor(ctx, transport, { shellContext = () => undefined } = {}) {
+  constructor(ctx, transport, { shellContext = () => undefined, receipts } = {}) {
     this.ctx = ctx
     this.transport = transport
     this.shellContext = shellContext
+    this.receipts = receipts
     this.peer = ctx.connection.createPeer({ principal: { kind: 'owner' }, interactions: 'answer' })
     this.fetchHandler = ctx.connection.createSharedFetchHandler('/api')
     this.lifetime = new AbortController()
@@ -96,8 +98,10 @@ export class AppInteractions {
     const id = question && callId ? PendingQuestion.keyOf(sessionId, callId) : frame.eventId
     const previous = this.records.get(id)
     if (previous) this.remove(previous)
+    const agent = this.ctx.agents.list().find(agent => String(agent.id) === sessionId)
     const record = { id, version: ++this.version, sessionId, kind: question ? 'question' : 'approval',
       callId, eventId: frame.eventId, request, life: new AbortController(), sending: false }
+    if (!question) record.approvalAuditId = approvalAuditIdentity(agent, request)
     this.records.set(id, record)
     this.events.set(frame.eventId, record)
     if (!question) {
@@ -213,7 +217,8 @@ export class AppInteractions {
     if (kind === 'question') {
       const state = record.card?.snapshot()
       return { id, version, sessionId, kind, callId, questions: record.request.questions,
-        state: state?.state ?? 'open', waitState: state?.waitState, countdown: state?.countdown }
+        state: state?.state ?? 'open', waitState: state?.waitState, countdown: state?.countdown,
+        ...(this.submissionOf(record) ? { submission: this.submissionOf(record) } : {}) }
     }
     let toolCall
     const agent = this.ctx.agents.list().find(agent => String(agent.id) === sessionId)
@@ -225,8 +230,14 @@ export class AppInteractions {
     }
     const executionContext = record.request.toolName === 'android_shell' ? this.shellContext(sessionId, callId) : undefined
     return { id, version, sessionId, kind, ...record.request, toolCall,
+      ...(this.submissionOf(record) ? { submission: this.submissionOf(record) } : {}),
       ...(executionContext === undefined ? {} : { executionContext }),
     }
+  }
+
+  submissionOf(record) {
+    const identity = interactionReceiptIdentity(record)
+    return identity ? this.receipts?.phase(identity) : undefined
   }
 
   snapshot() {
@@ -256,13 +267,21 @@ export class AppInteractions {
     }
     record.sending = true
     try {
+      const identity = interactionReceiptIdentity(record)
+      if (!identity) throw new Error('无法对应原始请求的持久审计标识，未发送答复')
+      if (!this.receipts || !await this.receipts.begin(identity)) {
+        throw new Error('此请求已有一次提交且结果可能已送达，不能重复答复')
+      }
+      this.publish()
       if (record.kind === 'approval') {
         const accepted = await this.complete(record, { kind: 'result', value: params.response })
+        if (accepted) await this.receipts.accepted(identity)
         return { accepted, requestStillPending: false }
       }
       const delivery = record.delivery
       await record.card.answer(params.response)
       if (delivery && await delivery === false) return { accepted: false, requestStillPending: false }
+      await this.receipts.accepted(identity)
       this.remove(record)
       this.publish()
       return { accepted: true, requestStillPending: false }

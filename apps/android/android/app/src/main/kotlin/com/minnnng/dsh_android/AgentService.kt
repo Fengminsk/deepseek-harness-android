@@ -336,6 +336,9 @@ class AgentService : Service() {
         try {
             phase = "failed"
             failure = "系统已结束后台运行时段，正在停止任务；重新打开 App 后核对中断记录"
+            if (!persistInterruption(RuntimeInterruptionRecord.SERVICE_TIMEOUT)) {
+                failure += "；本地中断摘要未能保存"
+            }
             background.phase(phase)
             broadcast(status())
         } finally {
@@ -611,9 +614,23 @@ class AgentService : Service() {
     private fun fail(message: String) {
         if (!lifecycle.fail()) return
         main.post {
-            if (!lifecycle.failed()) return@post
-            reportFailure(message)
+            lifecycle.stopFailedProcess(
+                {
+                    val stored = persistInterruption(RuntimeInterruptionRecord.RUNTIME_LOST)
+                    reportFailure(if (stored) message else "$message；本地中断摘要未能保存")
+                },
+                { stopForeground(STOP_FOREGROUND_REMOVE) },
+                { stopSelf() },
+                { Process.killProcess(Process.myPid()) },
+            )
         }
+    }
+    private fun persistInterruption(kind: String): Boolean = try {
+        RuntimeInterruptionRecord.write(noBackupFilesDir, kind, System.currentTimeMillis())
+        true
+    } catch (failure: Exception) {
+        // IPC teardown must still stop Node if private storage is unavailable.
+        false
     }
     private fun reportFailure(message: String) {
         phase = "failed"; failure = message

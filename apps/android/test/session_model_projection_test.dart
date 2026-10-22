@@ -1,4 +1,5 @@
 import 'package:dsh_android/main.dart';
+import 'package:dsh_android/models_label.dart';
 import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/session_model_projection.dart';
 import 'package:dsh_android/ui.dart';
@@ -9,6 +10,9 @@ import 'support/read_only_presets.dart';
 
 class _ProjectionRuntime extends RuntimeController {
   final presets = ReadOnlyPresets();
+  bool provideCatalog = false;
+  bool? badgePluginEnabled = true;
+  bool failPluginRead = false;
 
   @override
   Stream<Json> watchApi(
@@ -26,6 +30,46 @@ class _ProjectionRuntime extends RuntimeController {
   @override
   Future<dynamic> call(String method, [Json params = const {}]) async {
     if (presets.handles(method, params)) return presets.reply(params);
+    if (method == 'api.call' &&
+        params['namespace'] == 'pluginInventory' &&
+        params['method'] == 'list') {
+      if (failPluginRead) throw StateError('Plugin inventory unavailable');
+      return {
+        'managementAvailable': false,
+        'entries': [
+          if (badgePluginEnabled != null)
+            {
+              'entryId': 'ui-deepseek-model-label-1017',
+              'moduleName': deepSeek1017Plugin,
+              'enabled': badgePluginEnabled,
+              'fiberPhase': badgePluginEnabled == true ? 'active' : null,
+            },
+        ],
+      };
+    }
+    if (provideCatalog &&
+        method == 'api.call' &&
+        params['namespace'] == 'session' &&
+        params['method'] == 'modelCatalog') {
+      return {
+        'default': _flash,
+        'groups': [
+          {
+            'id': 'deepseek-account',
+            'models': [
+              {'id': 'deepseek-flash', 'name': 'DeepSeek-V4.1-Flash'},
+              {'id': 'deepseek-v4-pro', 'name': 'DeepSeek-V4-Pro'},
+            ],
+          },
+          {
+            'id': 'deepseek-official',
+            'models': [
+              {'id': 'deepseek-flash', 'name': 'DeepSeek-V4.1-Flash'},
+            ],
+          },
+        ],
+      };
+    }
     throw StateError('Unexpected request: $method');
   }
 
@@ -197,4 +241,46 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets('home release badge follows model and confirmed plugin state', (
+    tester,
+  ) async {
+    final runtime = _ProjectionRuntime()
+      ..phase = 'ready'
+      ..provider = 'deepseek-account'
+      ..provideCatalog = true;
+    addTearDown(runtime.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: pocketTheme(Brightness.light),
+        home: ChatPage(runtime: runtime),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('1017'), findsOneWidget);
+    expect(find.textContaining('DeepSeek-V4.1-Flash'), findsOneWidget);
+    final events = runtime.timelines.values.single;
+    events.add(_selected(0, _pro));
+    runtime.notifyListeners();
+    await tester.pumpAndSettle();
+    expect(find.text('1017'), findsNothing);
+    expect(find.text('DeepSeek-V4-Pro'), findsOneWidget);
+    events.add(_selected(1, _flash));
+    runtime.notifyListeners();
+    await tester.pumpAndSettle();
+    expect(find.text('1017'), findsOneWidget);
+
+    runtime.badgePluginEnabled = false;
+    await runtime.plugins.load(invalidate: true);
+    await tester.pumpAndSettle();
+    expect(find.text('1017'), findsNothing);
+    expect(find.textContaining('DeepSeek-V4.1-Flash'), findsOneWidget);
+
+    runtime.badgePluginEnabled = true;
+    runtime.failPluginRead = true;
+    await runtime.plugins.load(invalidate: true);
+    await tester.pumpAndSettle();
+    expect(find.text('1017'), findsNothing);
+    expect(find.textContaining('DeepSeek-V4.1-Flash'), findsOneWidget);
+  });
 }

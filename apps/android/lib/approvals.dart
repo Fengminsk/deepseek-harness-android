@@ -193,6 +193,7 @@ class _RequestDetailState extends State<_RequestDetail>
       !sending &&
       !submitted &&
       !uncertain &&
+      lastRequest?['submission'] == null &&
       (version == null ||
           !_draftsFor(widget.runtime)
               .submissionBlocked(widget.requestId, version!)) &&
@@ -228,12 +229,16 @@ class _RequestDetailState extends State<_RequestDetail>
     }
     version ??= match['version'] as int;
     if (!sending && !submitted) {
+      final hostSubmission = match['submission'];
       final evidence = _draftsFor(widget.runtime)
           .submissionEvidence(widget.requestId, version!);
-      if (evidence == SubmissionEvidence.unconfirmed) {
+      if (hostSubmission == 'started' || evidence == SubmissionEvidence.unconfirmed) {
         uncertain = true;
-        error ??= '此请求已有一次提交，结果尚未确认。刷新只能读取待处理状态，不能证明此前的答复未送达；请勿重复提交。';
-      } else if (evidence == SubmissionEvidence.accepted) {
+        error ??= hostSubmission == 'started'
+            ? 'Host 记录此请求已有一次提交，但结果尚未确认。进程重启和刷新后仍不能凭待处理状态重发答复。'
+            : '此请求已有一次提交，结果尚未确认。刷新只能读取待处理状态，不能证明此前的答复未送达；请勿重复提交。';
+      } else if (hostSubmission == 'accepted' ||
+          evidence == SubmissionEvidence.accepted) {
         submitted = true;
         status ??= '操作已发送，等待 DSH 完成处理。';
       }

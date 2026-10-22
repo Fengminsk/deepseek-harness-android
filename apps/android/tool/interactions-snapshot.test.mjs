@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { registerHooks } from 'node:module'
+import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { InteractionReceipts } from '../runtime/interaction-receipts.mjs'
 
 // The carrier dependency is generated from the original DSH question implementation.
 // Read the existing generated module, but always test this checkout's interactions source.
@@ -171,4 +175,87 @@ test('dismissal failure remains uncertain and cannot be replayed', async () => {
   assert.match(carrier.error, /结果未确认/)
   assert.equal(published, 1)
   await assert.rejects(carrier.dismiss({ id: 'unnamed', version: 2 }), /勿重复提交/)
+})
+
+test('a restarted Host cannot repeat a previously accepted named question answer', async t => {
+  const home = fileURLToPath(new URL('../../../.cache/android/', import.meta.url))
+  await mkdir(home, { recursive: true })
+  const root = await mkdtemp(join(home, 'dsh-interaction-submit-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const firstReceipts = new InteractionReceipts()
+  await firstReceipts.initialize(root)
+  let deliveries = 0
+  const makeCarrier = receipts => {
+    const carrier = Object.create(AppInteractions.prototype)
+    const record = { id: 'question:session:call-1', version: 2, sessionId: 'session', kind: 'question',
+      callId: 'call-1', request: { questions: [{ id: 'choice', options: [{ label: 'Yes' }] }] }, sending: false,
+      card: { snapshot: () => ({ state: 'continued' }), async answer() { deliveries++ } } }
+    Object.assign(carrier, { receipts, records: new Map([[record.id, record]]),
+      publish() {}, remove(item) { this.records.delete(item.id) }, error: null })
+    return carrier
+  }
+  const params = { id: 'question:session:call-1', version: 2,
+    response: { answers: [{ id: 'choice', selected: ['Yes'] }] } }
+  assert.deepEqual(await makeCarrier(firstReceipts).reply(params), { accepted: true, requestStillPending: false })
+  const restoredReceipts = new InteractionReceipts()
+  await restoredReceipts.initialize(root)
+  const restarted = makeCarrier(restoredReceipts)
+  assert.equal(restarted.snapshot().requests[0].submission, 'accepted')
+  await assert.rejects(restarted.reply(params), /不能重复答复/)
+  assert.equal(deliveries, 1)
+})
+
+test('a lost Host answer acknowledgement remains blocked after a process restart', async t => {
+  const home = fileURLToPath(new URL('../../../.cache/android/', import.meta.url))
+  await mkdir(home, { recursive: true })
+  const root = await mkdtemp(join(home, 'dsh-interaction-submit-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const firstReceipts = new InteractionReceipts()
+  await firstReceipts.initialize(root)
+  let deliveries = 0
+  const makeCarrier = (receipts, failed) => {
+    const carrier = Object.create(AppInteractions.prototype)
+    const record = { id: 'question:session:call-1', version: 8, sessionId: 'session', kind: 'question',
+      callId: 'call-1', request: { questions: [{ id: 'choice', options: [] }] }, sending: false,
+      card: { snapshot: () => ({ state: 'continued' }),
+        async answer() { deliveries++; if (failed) throw new Error('ack lost') } } }
+    Object.assign(carrier, { receipts, records: new Map([[record.id, record]]), publish() {}, error: null })
+    return carrier
+  }
+  const params = { id: 'question:session:call-1', version: 8,
+    response: { answers: [{ id: 'choice', selected: [], custom: 'Because' }] } }
+  await assert.rejects(makeCarrier(firstReceipts, true).reply(params), /ack lost/)
+  const restoredReceipts = new InteractionReceipts()
+  await restoredReceipts.initialize(root)
+  const restarted = makeCarrier(restoredReceipts, false)
+  assert.equal(restarted.snapshot().requests[0].submission, 'started')
+  await assert.rejects(restarted.reply(params), /不能重复答复/)
+  assert.equal(deliveries, 1)
+})
+
+test('an audited approval cannot be granted twice across Host processes', async t => {
+  const home = fileURLToPath(new URL('../../../.cache/android/', import.meta.url))
+  await mkdir(home, { recursive: true })
+  const root = await mkdtemp(join(home, 'dsh-interaction-submit-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const firstReceipts = new InteractionReceipts()
+  await firstReceipts.initialize(root)
+  let carrierDeliveries = 0
+  const makeCarrier = receipts => {
+    const carrier = Object.create(AppInteractions.prototype)
+    const record = { id: 'event-1', version: 1, sessionId: 'session', kind: 'approval',
+      approvalAuditId: 'asked-1', request: { toolName: 'android_shell', callId: 'call-1' }, sending: false }
+    Object.assign(carrier, { receipts, records: new Map([[record.id, record]]),
+      ctx: { agents: { list: () => [] } }, shellContext: () => undefined,
+      async complete() { carrierDeliveries++; return true }, publish() {}, error: null })
+    return carrier
+  }
+  const params = { id: 'event-1', version: 1, response: 'allowed-once' }
+  assert.deepEqual(await makeCarrier(firstReceipts).reply(params), { accepted: true, requestStillPending: false })
+  const restartedReceipts = new InteractionReceipts()
+  await restartedReceipts.initialize(root)
+  const restarted = makeCarrier(restartedReceipts)
+  assert.equal(restarted.snapshot().requests[0].submission, 'accepted')
+  await assert.rejects(restarted.reply(params), /不能重复答复/)
+  assert.equal(carrierDeliveries, 1)
 })

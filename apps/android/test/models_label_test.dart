@@ -1,6 +1,48 @@
+import 'dart:async';
+
 import 'package:dsh_android/models_label.dart';
+import 'package:dsh_android/runtime.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
+
+class _CatalogRuntime extends RuntimeController {
+  _CatalogRuntime() {
+    phase = 'ready';
+  }
+
+  int epoch = 0;
+  final reads = <Completer<Json>>[];
+  @override
+  int get connectionGeneration => epoch;
+
+  @override
+  Future<dynamic> call(String method, [Json params = const {}]) {
+    if (method != 'api.call' ||
+        params['namespace'] != 'session' ||
+        params['method'] != 'modelCatalog') {
+      throw StateError('Unexpected request: $method $params');
+    }
+    final read = Completer<Json>();
+    reads.add(read);
+    return read.future;
+  }
+
+  void reconnect() {
+    epoch++;
+    notifyListeners();
+  }
+}
+
+Json _catalog(String name) => {
+  'groups': [
+    {
+      'id': 'deepseek-official',
+      'models': [
+        {'id': 'deepseek-flash', 'name': name},
+      ],
+    },
+  ],
+};
 
 void main() {
   test('1017 is limited to the two official exact Flash catalog entries', () {
@@ -62,5 +104,27 @@ void main() {
     await tester.pumpWidget(page(false));
     expect(find.text('1017'), findsNothing);
     expect(find.text('DeepSeek-V4.1-Flash · High'), findsOneWidget);
+  });
+
+  testWidgets('a prior connection cannot publish a stale catalog label', (
+    tester,
+  ) async {
+    final runtime = _CatalogRuntime();
+    final catalog = CurrentModelCatalog(runtime);
+    addTearDown(() {
+      catalog.dispose();
+      runtime.dispose();
+    });
+    const route = {'provider': 'deepseek-official', 'model': 'deepseek-flash'};
+    expect(runtime.reads, hasLength(1));
+    expect(currentModelCatalogName(catalog, route), 'deepseek-flash');
+    runtime.reconnect();
+    expect(runtime.reads, hasLength(2));
+    runtime.reads.first.complete(_catalog('Stale version'));
+    await tester.pump();
+    expect(currentModelCatalogName(catalog, route), 'deepseek-flash');
+    runtime.reads.last.complete(_catalog('DeepSeek-V4.1-Flash'));
+    await tester.pump();
+    expect(currentModelCatalogName(catalog, route), 'DeepSeek-V4.1-Flash');
   });
 }

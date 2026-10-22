@@ -16,6 +16,21 @@ public final class RuntimeLifecycle {
     /** Teardown supersedes a failure whose notification has not yet run. */
     public boolean failed() { return state.get() == State.FAILED; }
 
+    /** A failed IPC generation cannot retain an unobserved Node process. Teardown wins races with replacement. */
+    public boolean stopFailedProcess(Runnable report, Runnable stopForeground, Runnable stopService,
+            Runnable killProcess) {
+        if (!state.compareAndSet(State.FAILED, State.CLOSED)) return false;
+        try { report.run(); }
+        finally {
+            try { stopForeground.run(); }
+            finally {
+                try { stopService.run(); }
+                finally { killProcess.run(); }
+            }
+        }
+        return true;
+    }
+
     /** Each replacement service owns a new instance; this instance is never reset. */
     public void close() { state.set(State.CLOSED); }
 }

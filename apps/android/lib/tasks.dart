@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:material_ui/material_ui.dart';
 
@@ -52,6 +53,9 @@ class _TasksPageState extends State<TasksPage> with WidgetsBindingObserver {
   bool loadingMore = false;
   bool refreshAgain = false;
   String? refreshError;
+  Json? lastInterruption;
+  String? interruptionError;
+  int interruptionRead = 0;
   Object? observedRevision;
   late int connection;
   int? snapshotConnection;
@@ -68,6 +72,7 @@ class _TasksPageState extends State<TasksPage> with WidgetsBindingObserver {
     connection = widget.runtime.connectionGeneration;
     WidgetsBinding.instance.addObserver(this);
     widget.runtime.addListener(changed);
+    unawaited(readInterruption());
     unawaited(refresh());
   }
 
@@ -86,6 +91,7 @@ class _TasksPageState extends State<TasksPage> with WidgetsBindingObserver {
       }
       stopping.clear();
       stopAttempts.clear();
+      unawaited(readInterruption());
     }
     final key =
         '$connection:${widget.runtime.phase}:${widget.runtime.taskState['epoch']}:${widget.runtime.taskState['revision']}';
@@ -96,7 +102,37 @@ class _TasksPageState extends State<TasksPage> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) unawaited(refresh());
+    if (state == AppLifecycleState.resumed) {
+      unawaited(readInterruption());
+      unawaited(refresh());
+    }
+  }
+
+  Future<void> readInterruption() async {
+    final attempt = ++interruptionRead;
+    try {
+      final raw = await RuntimeController.channel.invokeMethod<String>(
+        'background.lastInterruption',
+      );
+      final decoded = raw == null ? null : jsonDecode(raw);
+      final record = decoded is Json ? decoded : null;
+      final kind = record?['kind'];
+      final time = record?['timeMillis'];
+      final valid =
+          (kind == 'runtime-lost' || kind == 'service-timeout') &&
+          time is int &&
+          time > 0;
+      if (!mounted || attempt != interruptionRead) return;
+      setState(() {
+        lastInterruption = valid ? record : null;
+        interruptionError = decoded == null || valid
+            ? null
+            : '本地中断摘要无法确认，请查看原会话记录。';
+      });
+    } catch (_) {
+      if (!mounted || attempt != interruptionRead) return;
+      setState(() => interruptionError = '无法读取上次后台中断摘要，请查看原会话记录。');
+    }
   }
 
   Future<void> refresh() async {
@@ -283,6 +319,29 @@ class _TasksPageState extends State<TasksPage> with WidgetsBindingObserver {
                         ),
                       ),
                     ),
+                  ),
+                ],
+              ),
+            if (lastInterruption case final Json record)
+              PocketSection(
+                children: [
+                  PocketRow(
+                    icon: Icons.error_outline_rounded,
+                    title: record['kind'] == 'service-timeout'
+                        ? '上次后台运行时段已结束'
+                        : '上次本地运行时异常退出',
+                    subtitle:
+                        '${MaterialLocalizations.of(context).formatMediumDate(DateTime.fromMillisecondsSinceEpoch(record['timeMillis'] as int))} ${TimeOfDay.fromDateTime(DateTime.fromMillisecondsSinceEpoch(record['timeMillis'] as int)).format(context)} · 任务结果需在原会话核对；不会自动重试。',
+                  ),
+                ],
+              ),
+            if (interruptionError case final String message)
+              PocketSection(
+                children: [
+                  PocketRow(
+                    icon: Icons.warning_amber_rounded,
+                    title: '后台中断记录暂不可用',
+                    subtitle: message,
                   ),
                 ],
               ),

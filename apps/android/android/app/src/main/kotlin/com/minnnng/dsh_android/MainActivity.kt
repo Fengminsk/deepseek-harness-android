@@ -263,6 +263,16 @@ class MainActivity : FlutterActivity() {
                         .put("backgroundRestricted", activity.isBackgroundRestricted)
                         .put("powerSaveMode", power.isPowerSaveMode).toString())
                 }
+                "background.lastInterruption" -> {
+                    try {
+                        val record = RuntimeInterruptionRecord.read(noBackupFilesDir)
+                        result.success(record?.let {
+                            JSONObject().put("kind", it.kind).put("timeMillis", it.timeMillis).toString()
+                        })
+                    } catch (failure: Exception) {
+                        result.error("interruption-read", "无法读取上次后台中断摘要", null)
+                    }
+                }
                 "background.openSystemSettings" -> {
                     try {
                         startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,

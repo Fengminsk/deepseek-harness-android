@@ -477,6 +477,38 @@ void main() {
   );
 
   testWidgets(
+    'a fresh App process obeys the Host write-ahead marker for the same approval',
+    (tester) async {
+      final runtime = InteractionRuntime([
+        {...approval(), 'submission': 'started'},
+      ]);
+      await openRequest(tester, runtime);
+      expect(find.textContaining('Host 记录此请求已有一次提交'), findsOneWidget);
+      expect(button(tester, '允许一次').onPressed, isNull);
+      expect(button(tester, '拒绝').onPressed, isNull);
+      await tester.tap(find.byTooltip('核对请求状态'));
+      await tester.pumpAndSettle();
+      expect(runtime.replies, isEmpty);
+      expect(button(tester, '允许一次').onPressed, isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'a fresh App process treats a Host-accepted answer as submitted, not pending',
+    (tester) async {
+      final runtime = InteractionRuntime([
+        {...question([{'id': 'details', 'question': 'Details'}]), 'submission': 'accepted'},
+      ]);
+      await openRequest(tester, runtime);
+      expect(find.textContaining('操作已发送，等待 DSH 完成处理'), findsOneWidget);
+      expect(button(tester, '提交回答').onPressed, isNull);
+      expect(runtime.replies, isEmpty);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
     'a confirmed reply after page disposal remains submitted when the page reopens',
     (tester) async {
       final runtime = InteractionRuntime([approval()]);

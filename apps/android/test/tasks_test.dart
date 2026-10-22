@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/tasks.dart';
@@ -84,6 +85,41 @@ Widget _host(RuntimeController runtime) => MaterialApp(
 );
 
 void main() {
+  testWidgets('task page reads last interruption without replaying task work', (
+    tester,
+  ) async {
+    final runtime = _TasksRuntime();
+    addTearDown(runtime.dispose);
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    final calls = <String>[];
+    String? record = jsonEncode({
+      'kind': 'runtime-lost',
+      'timeMillis': 1782000000000,
+    });
+    messenger.setMockMethodCallHandler(RuntimeController.channel, (call) async {
+      calls.add(call.method);
+      if (call.method == 'background.lastInterruption') return record;
+      throw StateError('Unexpected native call ${call.method}');
+    });
+    addTearDown(
+      () => messenger.setMockMethodCallHandler(RuntimeController.channel, null),
+    );
+    await tester.pumpWidget(_host(runtime));
+    await tester.pumpAndSettle();
+    expect(find.text('上次本地运行时异常退出'), findsOneWidget);
+    expect(find.textContaining('任务结果需在原会话核对；不会自动重试'), findsOneWidget);
+    expect(calls, everyElement('background.lastInterruption'));
+    expect(runtime.stops, 0);
+
+    record = jsonEncode({'kind': 'raw-secret', 'timeMillis': 1782000000000});
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pumpAndSettle();
+    expect(find.text('上次本地运行时异常退出'), findsNothing);
+    expect(find.text('后台中断记录暂不可用'), findsOneWidget);
+    expect(runtime.stops, 0);
+  });
+
   for (final count in <int?>[2, null]) {
     testWidgets('idle Agent does not imply plugin operations idle: $count', (
       tester,

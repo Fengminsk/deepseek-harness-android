@@ -479,7 +479,8 @@
       "status": "partial",
       "android": [
         "apps/android/lib/approvals.dart",
-        "apps/android/lib/approvals_notifications.dart"
+        "apps/android/lib/approvals_notifications.dart",
+        "apps/android/runtime/interaction-receipts.mjs"
       ],
       "evidence": {
         "core": "unverified",
@@ -487,9 +488,9 @@
         "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Native decisions, plan-review request-changes/approve actions, recommended question option display and exact original answer labels are covered by focused tests. Uncertain replies require refresh before another action. Full request-variant comparison and device behavior remain incomplete.",
+      "note": "Native decisions, plan-review actions, recommended question options and original answer labels have focused tests. A private write-ahead marker persists possible reply submission across Host restarts and blocks duplicate delivery for identified requests; a started marker does not prove delivery and may leave an unanswered request blocked until authoritative reconciliation exists. Full request-variant comparison and device behavior remain incomplete.",
       "evidenceRefs": {
-        "behavior": ["apps/android/test/approvals_test.dart", "apps/android/test/approvals_draft_test.dart", "apps/android/tool/interactions-snapshot.test.mjs"]
+        "behavior": ["apps/android/test/approvals_test.dart", "apps/android/test/approvals_draft_test.dart", "apps/android/tool/interactions-snapshot.test.mjs", "apps/android/tool/interaction-receipts.test.mjs"]
       }
     },
     {
@@ -861,7 +862,9 @@
       "status": "partial",
       "android": [
         "apps/android/lib/jobs.dart",
-        "apps/android/lib/job_output.dart"
+        "apps/android/lib/job_output.dart",
+        "apps/android/lib/tasks.dart",
+        "apps/android/android/app/src/main/java/com/minnnng/dsh_android/RuntimeInterruptionRecord.java"
       ],
       "evidence": {
         "core": "unverified",
@@ -869,7 +872,10 @@
         "behavior": "unverified",
         "device": "unverified"
       },
-      "note": "Shared job record streaming and stop requests exist; complete original output/terminal behavior remains unverified."
+      "note": "Shared job record streaming and stop requests exist. An Android-private type/time receipt makes a lost runtime visible on the task page after restart without claiming a task result or replaying work; focused host tests cover record redaction and display. Complete original output/terminal behavior and device notification delivery remain unverified.",
+      "evidenceRefs": {
+        "behavior": ["apps/android/tool/acceptance-background-state.mjs", "apps/android/test/tasks_test.dart"]
+      }
     },
     {
       "key": "webUi/ui-schedule",
@@ -970,6 +976,7 @@
       ],
       "status": "partial",
       "android": [
+        "apps/android/lib/main.dart",
         "apps/android/lib/session_models.dart",
         "apps/android/lib/models_label.dart"
       ],
@@ -979,9 +986,9 @@
         "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Native Session model labels use the original exact provider, model ID and catalog-name predicate for the presentation-only 1017 badge; positive and negative cases have focused widget coverage. Home trigger integration, live plugin-disabled state and device presentation remain incomplete.",
+      "note": "Native Session and home model labels use the original exact provider, model ID and catalog-name predicate for the presentation-only 1017 badge. The current Loader inventory must confirm the plugin is enabled and active; absent, failed and unconfirmed states omit the badge. Host and widget tests cover the projection; device presentation remains unverified.",
       "evidenceRefs": {
-        "behavior": ["apps/android/test/models_label_test.dart", "apps/android/test/session_models_test.dart"]
+        "behavior": ["apps/android/test/models_label_test.dart", "apps/android/test/session_models_test.dart", "apps/android/test/session_model_projection_test.dart"]
       }
     },
     {
@@ -1037,15 +1044,20 @@
       "status": "partial",
       "android": [
         "apps/android/lib/settings.dart",
-        "apps/android/lib/configuration_editor.dart"
+        "apps/android/lib/configuration_editor.dart",
+        "apps/android/lib/session_log_upload_settings.dart",
+        "apps/android/lib/configuration_boolean_preference.dart"
       ],
       "evidence": {
         "core": "unverified",
         "ui": "partial",
-        "behavior": "unverified",
+        "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Shared session-log settings are exposed through native fields; original control behavior has not been fully checked."
+      "note": "When the Host serves session-log-deepseek, General Settings displays its accepted enabled value as a native switch and saves once with the original document revision. Read-only, absent, non-boolean and uncertain states do not issue a write; a fresh read and explicit review are required after an uncertain result. Focused Host-mirror tests cover this App control, but request upload behavior and device acceptance remain unverified.",
+      "evidenceRefs": {
+        "behavior": ["apps/android/test/session_log_upload_settings_test.dart"]
+      }
     },
     {
       "key": "webUi/ui-settings-plugins",

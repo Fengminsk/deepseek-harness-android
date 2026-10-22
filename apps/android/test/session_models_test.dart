@@ -27,6 +27,7 @@ class _Runtime extends RuntimeController {
   final control = StreamController<Json>.broadcast(sync: true);
   Future<Json> Function()? read;
   Future<Json> Function(Json)? select;
+  bool? badgePluginEnabled = true;
   Json directory = {
     'default': pick(flash),
     'routableProviders': [provider],
@@ -116,6 +117,22 @@ class _Runtime extends RuntimeController {
 
   @override
   Future<dynamic> call(String method, [Json params = const {}]) async {
+    if (method == 'api.call' &&
+        params['namespace'] == 'pluginInventory' &&
+        params['method'] == 'list') {
+      return {
+        'managementAvailable': false,
+        'entries': [
+          if (badgePluginEnabled != null)
+            {
+              'entryId': 'ui-deepseek-model-label-1017',
+              'moduleName': deepSeek1017Plugin,
+              'enabled': badgePluginEnabled,
+              'fiberPhase': badgePluginEnabled == true ? 'active' : null,
+            },
+        ],
+      };
+    }
     if (method != 'api.call' || params['namespace'] != 'session') {
       throw StateError('Unexpected API: $method $params');
     }
@@ -220,6 +237,25 @@ void main() {
     expect(find.text('1017'), findsNWidgets(2));
     expect(runtime.current, pick(flash));
     expect(runtime.applied, isEmpty);
+  });
+
+  testWidgets('a disabled or missing plugin removes only the visual badge', (
+    tester,
+  ) async {
+    final runtime = _Runtime();
+    await _open(tester, runtime);
+    expect(find.text('1017'), findsNWidgets(2));
+    runtime.badgePluginEnabled = false;
+    await runtime.plugins.load(invalidate: true);
+    await tester.pump();
+    expect(find.text('1017'), findsNothing);
+    expect(find.textContaining('DeepSeek-V4.1-Flash'), findsWidgets);
+    expect(runtime.current, pick(flash));
+    runtime.badgePluginEnabled = null;
+    await runtime.plugins.load(invalidate: true);
+    await tester.pump();
+    expect(find.text('1017'), findsNothing);
+    expect(runtime.current, pick(flash));
   });
 
   testWidgets(
