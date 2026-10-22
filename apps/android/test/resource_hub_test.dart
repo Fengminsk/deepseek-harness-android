@@ -253,7 +253,7 @@ void main() {
         runtime.calls
             .lastWhere((call) => call.$1 == 'terminal.write')
             .$2['data'],
-        'pwd\n',
+        'pwd\r',
       );
       await tester.tap(find.byTooltip('关闭终端进程'));
       await tester.pumpAndSettle();

@@ -36,9 +36,9 @@ export async function stagePreset(root, destination) {
   // The shared host supplies jobs, skills, fs, workingDirectory and sessionProjections.
   // These entries retain the standard provider settings and scoped ownership;
   // Android's separate tool-fs write/edit policy is not changed here.
-  for (const id of ['agent-instructions', 'time-context', 'tool-jobs',
+  for (const id of ['agent-instructions', 'time-context', 'tool-fs-search', 'tool-jobs',
     'skill-filesystem', 'tool-skill', 'tool-todo', 'present',
-    'command-goal', 'tool-goal', 'planning', 'compaction', 'tool-schedule']) {
+    'command-goal', 'tool-goal', 'planning', 'compaction', 'tool-schedule', 'tool-web']) {
     const entries = original.filter(item => item.id === id)
     if (entries.length !== 1) throw new Error(`Original preset must contain exactly one ${id}`)
     if (android.some(item => item.id === id)) {

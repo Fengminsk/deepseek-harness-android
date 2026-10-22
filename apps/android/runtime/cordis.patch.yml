@@ -128,8 +128,6 @@
               readImage: true
               write: true
               edit: true
-          - id: tool-web
-            name: '@deepseek-ai/dsh-tool-web'
           - id: tool-ask-user
             name: '@deepseek-ai/dsh-tool-ask-user'
             config:

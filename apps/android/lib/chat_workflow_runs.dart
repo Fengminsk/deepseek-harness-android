@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'dart:collection';
 
 import 'package:material_ui/material_ui.dart';
 
 import 'runtime.dart';
+import 'subagents_data.dart';
 
 enum WorkflowRunStatus { running, completed, failed, cancelled, interrupted }
 
@@ -258,8 +260,18 @@ class ChatWorkflowRunProjection {
 
 /// A compact read-only disclosure. This deliberately offers no Run action.
 class ChatWorkflowRunCard extends StatefulWidget {
-  const ChatWorkflowRunCard({required this.record, super.key});
+  const ChatWorkflowRunCard({
+    required this.record,
+    this.runtime,
+    this.parentSessionId,
+    this.onOpenChild,
+    super.key,
+  });
   final WorkflowRunRecord record;
+  final RuntimeController? runtime;
+  final String? parentSessionId;
+  final Future<void> Function(SubagentAddress address, String label)?
+  onOpenChild;
   @override
   State<ChatWorkflowRunCard> createState() => _ChatWorkflowRunCardState();
 }
@@ -267,6 +279,234 @@ class ChatWorkflowRunCard extends StatefulWidget {
 class _ChatWorkflowRunCardState extends State<ChatWorkflowRunCard> {
   late bool open = widget.record.status != WorkflowRunStatus.completed;
   final phaseOpen = <String, bool>{};
+  final _navigable = <String, SubagentAddress>{};
+  Timer? _refreshTimer;
+  bool _checking = false;
+  int _read = 0;
+  int? _connection;
+
+  @override
+  void initState() {
+    super.initState();
+    _connection = widget.runtime?.connectionGeneration;
+    widget.runtime?.addListener(_runtimeChanged);
+    _refreshTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+      if (open && ModalRoute.of(context)?.isCurrent == true) {
+        unawaited(_refreshChildren());
+      }
+    });
+    if (open) _scheduleRefresh();
+  }
+
+  void _scheduleRefresh() => WidgetsBinding.instance.addPostFrameCallback((_) {
+    if (mounted) unawaited(_refreshChildren());
+  });
+
+  void _runtimeChanged() {
+    final runtime = widget.runtime;
+    if (runtime == null) return;
+    final changedConnection = _connection != runtime.connectionGeneration;
+    if (changedConnection || !runtime.ready) {
+      _connection = runtime.connectionGeneration;
+      _read++;
+      if (_navigable.isNotEmpty && mounted) setState(_navigable.clear);
+    }
+    if (changedConnection && runtime.ready && open) _scheduleRefresh();
+  }
+
+  @override
+  void dispose() {
+    _read++;
+    _refreshTimer?.cancel();
+    widget.runtime?.removeListener(_runtimeChanged);
+    super.dispose();
+  }
+
+  Future<void> _refreshChildren() async {
+    final runtime = widget.runtime;
+    final parent = widget.parentSessionId;
+    if (_checking ||
+        !open ||
+        runtime == null ||
+        !runtime.ready ||
+        parent == null ||
+        widget.onOpenChild == null) {
+      return;
+    }
+    final candidates = {
+      for (final phase in widget.record.phases)
+        for (final member in phase.members)
+          if (member.status == WorkflowRunStatus.running) member.childId,
+    };
+    final read = ++_read;
+    final connection = runtime.connectionGeneration;
+    _checking = true;
+    try {
+      final available = <String, SubagentAddress>{};
+      var offset = 0;
+      while (candidates.isNotEmpty) {
+        final result =
+            await runtime
+                    .call('subagents.catalog', {
+                      'parentSessionId': parent,
+                      'offset': offset,
+                      'limit': 100,
+                    })
+                    .timeout(subagentRequestTimeout)
+                as Json;
+        if (!mounted ||
+            read != _read ||
+            !runtime.ready ||
+            runtime.connectionGeneration != connection) {
+          return;
+        }
+        if (result['parentSessionId'] != parent) {
+          throw const FormatException('Mismatched workflow parent catalog');
+        }
+        for (final entry in (result['entries'] as List).cast<Json>()) {
+          final id = entry['id'];
+          if (id is! String || !candidates.contains(id)) continue;
+          candidates.remove(id);
+          final raw = entry['address'];
+          if (raw is! Json ||
+              entry['attached'] != true ||
+              entry['running'] != true ||
+              raw['parentSessionId'] != parent ||
+              raw['childSessionId'] != id ||
+              !const [
+                'continuable',
+                'one-shot',
+                'unknown',
+              ].contains(raw['mode'])) {
+            continue;
+          }
+          var address = SubagentAddress.fromJson(raw);
+          if (address.mode == 'unknown') {
+            // A parent catalog can outlive an unreadable child descriptor.
+            // Only the child's own inspected identity may resolve this mode.
+            try {
+              final inspection =
+                  await runtime
+                          .call('subagents.inspect', {
+                            'address': address.json,
+                            'maxMessages': 1,
+                          })
+                          .timeout(subagentRequestTimeout)
+                      as Json;
+              if (!mounted ||
+                  read != _read ||
+                  !runtime.ready ||
+                  runtime.connectionGeneration != connection) {
+                return;
+              }
+              final verified = inspection['address'];
+              final capabilities = inspection['capabilities'];
+              if (verified is! Json ||
+                  capabilities is! Json ||
+                  verified['parentSessionId'] != parent ||
+                  verified['childSessionId'] != id ||
+                  !const [
+                    'continuable',
+                    'one-shot',
+                  ].contains(verified['mode']) ||
+                  capabilities['attached'] != true ||
+                  capabilities['running'] != true) {
+                continue;
+              }
+              address = SubagentAddress.fromJson(verified);
+            } catch (_) {
+              // An unreadable child cannot be made navigable by its parent row.
+              continue;
+            }
+          }
+          available[id] = address;
+        }
+        final next = result['nextOffset'];
+        if (next == null) break;
+        if (next is! int || next <= offset) {
+          throw const FormatException('Workflow catalog did not advance');
+        }
+        offset = next;
+      }
+      if (mounted &&
+          read == _read &&
+          runtime.connectionGeneration == connection) {
+        setState(() {
+          _navigable
+            ..clear()
+            ..addAll(available);
+        });
+      }
+    } catch (_) {
+      // A failed live read cannot authorize navigation from historical events.
+      if (mounted && read == _read) setState(_navigable.clear);
+    } finally {
+      _checking = false;
+    }
+  }
+
+  Future<void> _openMember(WorkflowRunMember member) async {
+    final runtime = widget.runtime;
+    final parent = widget.parentSessionId;
+    final address = _navigable[member.childId];
+    if (runtime == null ||
+        !runtime.ready ||
+        parent == null ||
+        address == null ||
+        widget.onOpenChild == null ||
+        member.status != WorkflowRunStatus.running) {
+      return;
+    }
+    final connection = runtime.connectionGeneration;
+    try {
+      final result =
+          await runtime
+                  .call('subagents.inspect', {
+                    'address': address.json,
+                    'maxMessages': 1,
+                  })
+                  .timeout(subagentRequestTimeout)
+              as Json;
+      if (!mounted ||
+          !runtime.ready ||
+          runtime.connectionGeneration != connection ||
+          widget.parentSessionId != parent ||
+          !_navigable.containsKey(member.childId) ||
+          !widget.record.phases.any(
+            (phase) => phase.members.any(
+              (current) =>
+                  current.seq == member.seq &&
+                  current.childId == member.childId &&
+                  current.status == WorkflowRunStatus.running,
+            ),
+          )) {
+        return;
+      }
+      final verified = result['address'];
+      final capabilities = result['capabilities'];
+      if (verified is! Json ||
+          capabilities is! Json ||
+          verified['parentSessionId'] != parent ||
+          verified['childSessionId'] != member.childId ||
+          verified['mode'] != address.mode ||
+          capabilities['attached'] != true ||
+          capabilities['running'] != true) {
+        _navigationUnavailable(member.childId);
+        return;
+      }
+      await widget.onOpenChild!(address, member.label);
+    } catch (_) {
+      if (mounted && runtime.connectionGeneration == connection) {
+        _navigationUnavailable(member.childId);
+      }
+    }
+  }
+
+  void _navigationUnavailable(String childId) {
+    setState(() => _navigable.remove(childId));
+    ScaffoldMessenger.maybeOf(context)
+        ?.showSnackBar(const SnackBar(content: Text('子会话状态已变化，请刷新后重试。')));
+  }
 
   String phaseKey(String? phase) =>
       phase == null ? 'missing' : 'value:${phase.length}:$phase';
@@ -274,11 +514,34 @@ class _ChatWorkflowRunCardState extends State<ChatWorkflowRunCard> {
   @override
   void didUpdateWidget(ChatWorkflowRunCard oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.runtime != widget.runtime) {
+      oldWidget.runtime?.removeListener(_runtimeChanged);
+      widget.runtime?.addListener(_runtimeChanged);
+      _connection = widget.runtime?.connectionGeneration;
+      _read++;
+      _navigable.clear();
+    }
     if (oldWidget.record.runId != widget.record.runId) {
       open = widget.record.status != WorkflowRunStatus.completed;
       phaseOpen.clear();
+      _read++;
+      _navigable.clear();
+      if (open) _scheduleRefresh();
       return;
     }
+    if (oldWidget.parentSessionId != widget.parentSessionId) {
+      _read++;
+      _navigable.clear();
+    }
+    _navigable.removeWhere(
+      (id, _) => !widget.record.phases.any(
+        (phase) => phase.members.any(
+          (member) =>
+              member.childId == id &&
+              member.status == WorkflowRunStatus.running,
+        ),
+      ),
+    );
     final previous = {
       for (final phase in oldWidget.record.phases) phaseKey(phase.phase): phase,
     };
@@ -323,6 +586,9 @@ class _ChatWorkflowRunCardState extends State<ChatWorkflowRunCard> {
         open = true;
       }
     }
+    if (open && oldWidget.record.phases != widget.record.phases) {
+      _scheduleRefresh();
+    }
   }
 
   @override
@@ -340,7 +606,10 @@ class _ChatWorkflowRunCardState extends State<ChatWorkflowRunCard> {
             label:
                 '${record.name}，${record.memberCount} 个成员，${record.status.label}',
             child: InkWell(
-              onTap: () => setState(() => open = !open),
+              onTap: () {
+                setState(() => open = !open);
+                if (open) _scheduleRefresh();
+              },
               child: Padding(
                 padding: const EdgeInsets.symmetric(vertical: 8),
                 child: Row(
@@ -443,18 +712,30 @@ class _ChatWorkflowRunCardState extends State<ChatWorkflowRunCard> {
                 for (final member in phase.members)
                   Padding(
                     padding: const EdgeInsets.symmetric(vertical: 6),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            member.label.isEmpty ? '空成员名' : member.label,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
+                    child: InkWell(
+                      onTap:
+                          _navigable.containsKey(member.childId) &&
+                              member.status == WorkflowRunStatus.running
+                          ? () => _openMember(member)
+                          : null,
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              member.label.isEmpty ? '空成员名' : member.label,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
                           ),
-                        ),
-                        const SizedBox(width: 6),
-                        _Status(status: member.status),
-                      ],
+                          const SizedBox(width: 6),
+                          _Status(status: member.status),
+                          if (_navigable.containsKey(member.childId) &&
+                              member.status == WorkflowRunStatus.running) ...[
+                            const SizedBox(width: 4),
+                            const Icon(Icons.chevron_right, size: 18),
+                          ],
+                        ],
+                      ),
                     ),
                   ),
               ],

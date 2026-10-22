@@ -1345,7 +1345,10 @@
         "apps/android/runtime/android-ripgrep.mjs",
         "apps/android/tool/build-ripgrep.ps1",
         "apps/android/tool/ripgrep-android.test.mjs",
-        "apps/android/tool/stage-runtime.ts"
+        "apps/android/tool/stage-runtime.ts",
+        "apps/android/tool/stage-preset.mjs",
+        "apps/android/tool/stage-preset.test.mjs",
+        "apps/android/tool/smoke-preset-portable-tools.mjs"
       ],
       "evidence": {
         "core": "partial",
@@ -1353,7 +1356,7 @@
         "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Original glob/grep tools are staged with a pinned Android ARM64 ripgrep and host-level package/behavior checks. Android process launch and Agent search remain unverified on device; SAF content URIs require a materialized Session file."
+      "note": "The Android Agent preset now registers the original glob/grep tools with the standard result policy and a pinned Android ARM64 ripgrep. A host runtime smoke verifies model-facing tool registration; Android process launch and Agent search remain unverified on device. SAF content URIs require a materialized Session file."
     },
     {
       "key": "standardPreset/tool-jobs",
@@ -1567,7 +1570,9 @@
       ],
       "status": "partial",
       "android": [
-        "apps/android/runtime/cordis.patch.yml"
+        "apps/android/tool/stage-preset.mjs",
+        "apps/android/tool/stage-preset.test.mjs",
+        "apps/android/tool/smoke-preset-portable-tools.mjs"
       ],
       "evidence": {
         "core": "partial",
@@ -1625,7 +1630,7 @@
         "behavior": "unverified",
         "device": "unverified"
       },
-      "note": "Original web tool is composed; provider configuration and platform network behavior still require acceptance."
+      "note": "The Android Agent preset now inherits the original web_search and web_fetch configuration (including fetch and timeout), with model-facing registration checked in a host runtime smoke. Provider responses and Android network behavior still require acceptance."
     },
     {
       "key": "standardPreset/present",

@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:dsh_android/chat_messages.dart';
 import 'package:dsh_android/chat_projection.dart';
 import 'package:dsh_android/chat_workflow_runs.dart';
 import 'package:dsh_android/runtime.dart';
+import 'package:dsh_android/subagents_data.dart';
 import 'package:dsh_android/ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
@@ -41,7 +44,250 @@ List<Json> completeRun() => [
   record(8, 'tool-workflow/run-end', {'runId': 'run-1', 'stopReason': 'error'}),
 ];
 
+List<Json> runningRun() => completeRun().sublist(0, 5);
+
+class _WorkflowRuntime extends RuntimeController {
+  _WorkflowRuntime() {
+    phase = 'ready';
+  }
+  final calls = <(String, Json)>[];
+  bool childRunning = true;
+  bool validParent = true;
+  bool validDescriptor = true;
+  String catalogMode = 'continuable';
+  Completer<Json>? delayedCatalog;
+
+  @override
+  Future<dynamic> call(String method, [Json params = const {}]) async {
+    calls.add((method, Map.of(params)));
+    if (method == 'subagents.catalog') {
+      if (delayedCatalog != null) return delayedCatalog!.future;
+      return {
+        'parentSessionId': 'parent',
+        'entries': [
+          {
+            'id': 'child-1',
+            'attached': childRunning,
+            'running': childRunning,
+            'address': {
+              'parentSessionId': validParent ? 'parent' : 'other',
+              'childSessionId': 'child-1',
+              'mode': catalogMode,
+            },
+          },
+        ],
+        'nextOffset': null,
+      };
+    }
+    if (method == 'subagents.inspect') {
+      return {
+        'address': {
+          'parentSessionId': validDescriptor ? 'parent' : 'other',
+          'childSessionId': 'child-1',
+          'mode': 'continuable',
+        },
+        'capabilities': {'attached': childRunning, 'running': childRunning},
+      };
+    }
+    throw StateError('Unexpected $method');
+  }
+}
+
 void main() {
+  testWidgets('live direct child opens through addressed subagent route', (
+    tester,
+  ) async {
+    final runtime = _WorkflowRuntime();
+    addTearDown(runtime.dispose);
+    final opened = <SubagentAddress>[];
+    final run =
+        (ChatWorkflowRunProjection()..reconcile(runningRun())).records.single;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ChatWorkflowRunCard(
+            record: run,
+            runtime: runtime,
+            parentSessionId: 'parent',
+            onOpenChild: (address, _) async => opened.add(address),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(find.byIcon(Icons.chevron_right), findsWidgets);
+    await tester.tap(find.text('成员一'));
+    await tester.pump();
+    expect(opened.single.json, {
+      'parentSessionId': 'parent',
+      'childSessionId': 'child-1',
+      'mode': 'continuable',
+    });
+    expect(runtime.calls.map((call) => call.$1), [
+      'subagents.catalog',
+      'subagents.inspect',
+    ]);
+  });
+
+  testWidgets(
+    'historic running text grants no navigation without live lineage',
+    (tester) async {
+      final runtime = _WorkflowRuntime()..validParent = false;
+      addTearDown(runtime.dispose);
+      final opened = <SubagentAddress>[];
+      final run =
+          (ChatWorkflowRunProjection()..reconcile(runningRun())).records.single;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: ChatWorkflowRunCard(
+              record: run,
+              runtime: runtime,
+              parentSessionId: 'parent',
+              onOpenChild: (address, _) async => opened.add(address),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.tap(find.text('成员一'));
+      await tester.pump();
+      expect(opened, isEmpty);
+      expect(runtime.calls.map((call) => call.$1), ['subagents.catalog']);
+    },
+  );
+
+  testWidgets('unknown catalog mode requires the child own descriptor', (
+    tester,
+  ) async {
+    final runtime = _WorkflowRuntime()..catalogMode = 'unknown';
+    addTearDown(runtime.dispose);
+    final opened = <SubagentAddress>[];
+    final run =
+        (ChatWorkflowRunProjection()..reconcile(runningRun())).records.single;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ChatWorkflowRunCard(
+            record: run,
+            runtime: runtime,
+            parentSessionId: 'parent',
+            onOpenChild: (address, _) async => opened.add(address),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.tap(find.text('成员一'));
+    await tester.pump();
+    expect(opened.single.mode, 'continuable');
+    expect(runtime.calls.map((call) => call.$1), [
+      'subagents.catalog',
+      'subagents.inspect',
+      'subagents.inspect',
+    ]);
+  });
+
+  testWidgets('a child stopped after disclosure cannot open', (tester) async {
+    final runtime = _WorkflowRuntime();
+    addTearDown(runtime.dispose);
+    final opened = <SubagentAddress>[];
+    final run =
+        (ChatWorkflowRunProjection()..reconcile(runningRun())).records.single;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ChatWorkflowRunCard(
+            record: run,
+            runtime: runtime,
+            parentSessionId: 'parent',
+            onOpenChild: (address, _) async => opened.add(address),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    runtime.childRunning = false;
+    await tester.tap(find.text('成员一'));
+    await tester.pump();
+    expect(opened, isEmpty);
+    expect(runtime.calls.last.$1, 'subagents.inspect');
+  });
+
+  testWidgets('a catalog row without the child own descriptor cannot open', (
+    tester,
+  ) async {
+    final runtime = _WorkflowRuntime()..validDescriptor = false;
+    addTearDown(runtime.dispose);
+    final opened = <SubagentAddress>[];
+    final run =
+        (ChatWorkflowRunProjection()..reconcile(runningRun())).records.single;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ChatWorkflowRunCard(
+            record: run,
+            runtime: runtime,
+            parentSessionId: 'parent',
+            onOpenChild: (address, _) async => opened.add(address),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.tap(find.text('成员一'));
+    await tester.pump();
+    expect(opened, isEmpty);
+    expect(runtime.calls.map((call) => call.$1), [
+      'subagents.catalog',
+      'subagents.inspect',
+    ]);
+  });
+
+  testWidgets('connection replacement discards delayed catalog authority', (
+    tester,
+  ) async {
+    final runtime = _WorkflowRuntime()..delayedCatalog = Completer<Json>();
+    addTearDown(runtime.dispose);
+    final opened = <SubagentAddress>[];
+    final run =
+        (ChatWorkflowRunProjection()..reconcile(runningRun())).records.single;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ChatWorkflowRunCard(
+            record: run,
+            runtime: runtime,
+            parentSessionId: 'parent',
+            onOpenChild: (address, _) async => opened.add(address),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    runtime.fail(StateError('restarted'));
+    runtime.delayedCatalog!.complete({
+      'parentSessionId': 'parent',
+      'entries': [
+        {
+          'id': 'child-1',
+          'attached': true,
+          'running': true,
+          'address': {
+            'parentSessionId': 'parent',
+            'childSessionId': 'child-1',
+            'mode': 'continuable',
+          },
+        },
+      ],
+      'nextOffset': null,
+    });
+    await tester.pump();
+    await tester.tap(find.text('成员一'));
+    await tester.pump();
+    expect(opened, isEmpty);
+    expect(runtime.calls.map((call) => call.$1), ['subagents.catalog']);
+  });
   test(
     'replays real run and member facts, preserving empty versus missing phase',
     () {

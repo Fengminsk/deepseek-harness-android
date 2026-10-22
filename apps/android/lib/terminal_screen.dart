@@ -1,5 +1,30 @@
 import 'package:material_ui/material_ui.dart';
 
+/// The PTY grid that fits the output viewport at the rendered monospace size.
+/// Reserved height covers the floating header and input controls.
+({int cols, int rows}) fitTerminalViewport({
+  required double width,
+  required double height,
+  required double cellWidth,
+  required double lineHeight,
+  required double reservedHeight,
+}) {
+  if (!width.isFinite ||
+      !height.isFinite ||
+      !cellWidth.isFinite ||
+      !lineHeight.isFinite ||
+      !reservedHeight.isFinite ||
+      cellWidth <= 0 ||
+      lineHeight <= 0 ||
+      reservedHeight < 0) {
+    throw ArgumentError('Invalid terminal viewport');
+  }
+  return (
+    cols: ((width - 40) / cellWidth).floor().clamp(2, 500),
+    rows: ((height - reservedHeight) / lineHeight).floor().clamp(1, 200),
+  );
+}
+
 /// A bounded, already-interpreted xterm buffer received from the Android Host.
 /// No ANSI control sequence is interpreted or displayed by this widget.
 class TerminalScreenData {

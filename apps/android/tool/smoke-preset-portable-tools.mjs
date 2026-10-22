@@ -50,7 +50,8 @@ const model = createServer((request, response) => {
     let block = { type: 'text', text: 'Portable fixture' }
     if (agent) {
       const names = body.tools.map(tool => tool.name)
-      for (const name of ['skill', 'todo_write', 'present', 'subagent', 'subagent_fork']) {
+      for (const name of ['skill', 'todo_write', 'present', 'subagent', 'subagent_fork',
+        'glob', 'grep', 'web_search', 'web_fetch']) {
         assert.ok(names.includes(name), `real Android preset is missing ${name}`)
       }
       for (const name of ['run_code', 'workflow']) assert.ok(!names.includes(name), `${name} must stay unavailable`)

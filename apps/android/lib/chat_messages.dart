@@ -16,6 +16,7 @@ import 'chat_tool_groups.dart';
 import 'chat_user_references.dart';
 import 'chat_turn_extras.dart';
 import 'chat_workflow_runs.dart';
+import 'subagents_data.dart';
 import 'chat_reading.dart';
 import 'chat_progress.dart';
 import 'chat_stream_reveal.dart';
@@ -138,6 +139,7 @@ class ChatTimeline extends StatefulWidget {
     this.onOpenAttachment,
     this.onOpenImage,
     this.onBranch,
+    this.onOpenWorkflowChild,
     super.key,
   });
   final String sessionId;
@@ -156,6 +158,8 @@ class ChatTimeline extends StatefulWidget {
   final ChatOpenAttachment? onOpenAttachment;
   final ChatOpenAttachment? onOpenImage;
   final Future<String?> Function(int atSeq)? onBranch;
+  final Future<void> Function(SubagentAddress address, String label)?
+  onOpenWorkflowChild;
 
   @override
   State<ChatTimeline> createState() => _ChatTimelineState();
@@ -563,6 +567,9 @@ class _ChatTimelineState extends State<ChatTimeline>
             return ChatWorkflowRunCard(
               key: ValueKey((sessionId, row.key)),
               record: workflow,
+              runtime: widget.runtime,
+              parentSessionId: widget.sessionId,
+              onOpenChild: widget.onOpenWorkflowChild,
             );
           }
           final message = ChatMessage(

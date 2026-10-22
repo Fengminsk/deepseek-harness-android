@@ -36,6 +36,7 @@ import 'chat_reading.dart';
 import 'chat_shortcuts.dart';
 import 'resource_hub.dart';
 import 'session_trajectory.dart';
+import 'subagents.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -1044,6 +1045,25 @@ class _ChatPageState extends State<ChatPage> {
                     atSeq,
                     viewedConnectionGeneration,
                   ),
+                  onOpenWorkflowChild: (address, label) async {
+                    if (runtime.connectionGeneration !=
+                            viewedConnectionGeneration ||
+                        !runtime.ready ||
+                        sessionId != viewedSessionId ||
+                        address.parentSessionId != viewedSessionId) {
+                      return;
+                    }
+                    await Navigator.push<void>(
+                      context,
+                      PocketRoute<void>(
+                        builder: (_) => SubagentConversationPage(
+                          runtime: runtime,
+                          address: address,
+                          label: label,
+                        ),
+                      ),
+                    );
+                  },
                   onOpenLink: (uri) => RuntimeController.channel
                       .invokeMethod<void>('openUrl', uri.toString()),
                   onOpenFile: (file) async {

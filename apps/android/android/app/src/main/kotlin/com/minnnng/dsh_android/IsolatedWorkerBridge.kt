@@ -12,11 +12,16 @@ import android.os.Message
 import android.os.Messenger
 import android.os.ParcelFileDescriptor
 import android.os.Process
+import android.system.Os
+import android.system.OsConstants
+import java.io.File
+import java.io.IOException
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import java.util.function.BooleanSupplier
 
 /** Per-call App-granted text descriptor transport; it does not accept a path or run model code. */
 object IsolatedWorkerBridge {
@@ -24,8 +29,12 @@ object IsolatedWorkerBridge {
     private data class Outcome(val text: Text? = null, val error: Throwable? = null)
 
     /** Caller retains [input] and must invoke this from a background thread. */
-    fun readText(context: Context, input: ParcelFileDescriptor): Text {
+    fun readText(context: Context, input: ParcelFileDescriptor): Text = readText(context, input, BooleanSupplier { false })
+
+    /** Cancellation is request-specific and closes the worker grant before returning. */
+    fun readText(context: Context, input: ParcelFileDescriptor, cancelled: BooleanSupplier): Text {
         check(Looper.myLooper() != Looper.getMainLooper()) { "Isolated-worker read cannot block the main thread" }
+        check(!cancelled.getAsBoolean()) { "Isolated-worker read cancelled" }
         val app = context.applicationContext
         val id = UUID.randomUUID().toString()
         val finished = CountDownLatch(1)
@@ -74,11 +83,20 @@ object IsolatedWorkerBridge {
         try {
             bound = app.bindService(Intent(app, IsolatedWorkerService::class.java), connection, Context.BIND_AUTO_CREATE)
             check(bound) { "Could not bind isolated worker" }
-            check(finished.await(5, TimeUnit.SECONDS)) { "Isolated worker did not answer within 5 seconds" }
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+            while (true) {
+                check(!cancelled.getAsBoolean()) { "Isolated-worker read cancelled" }
+                val remaining = deadline - System.nanoTime()
+                check(remaining > 0) { "Isolated worker did not answer within 5 seconds" }
+                if (finished.await(minOf(remaining, TimeUnit.MILLISECONDS.toNanos(50)), TimeUnit.NANOSECONDS)) break
+            }
             val result = checkNotNull(outcome.get()) { "Isolated worker returned no outcome" }
             result.error?.let { throw it }
             terminal = true
             return checkNotNull(result.text) { "Isolated worker returned no text" }
+        } catch (error: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw error
         } finally {
             synchronized(sendLock) {
                 active.set(false)
@@ -92,6 +110,33 @@ object IsolatedWorkerBridge {
             }
             if (bound) app.unbindService(connection)
         }
+    }
+
+    /** The App selects a private workspace target and expected revision; the worker only sees [input]. */
+    fun writeTextBack(
+        context: Context,
+        input: ParcelFileDescriptor,
+        workspaceRoot: File,
+        filename: String,
+        expectedSha256: String,
+        cancelled: BooleanSupplier,
+    ): IsolatedWorkerWriteback.Receipt {
+        check(Looper.myLooper() != Looper.getMainLooper()) { "Isolated-worker writeback cannot block the main thread" }
+        val app = context.applicationContext
+        val writeback = IsolatedWorkerWriteback(
+            File(app.applicationInfo.dataDir).toPath(), workspaceRoot.toPath(),
+        ) { directory ->
+            try {
+                val descriptor = Os.open(directory.toString(), OsConstants.O_RDONLY, 0)
+                try {
+                    check(OsConstants.S_ISDIR(Os.fstat(descriptor).st_mode)) { "Workspace sync target is not a directory" }
+                    Os.fsync(descriptor)
+                } finally { Os.close(descriptor) }
+            } catch (error: Exception) { throw IOException("Could not sync workspace directory", error) }
+        }
+        check(writeback.version(filename) == expectedSha256) { "Workspace file changed before writeback" }
+        val workerText = readText(app, input, cancelled)
+        return writeback.commit(filename, expectedSha256, workerText.content.toByteArray(Charsets.UTF_8), cancelled)
     }
 
     private fun parse(data: Bundle, id: String): Text {

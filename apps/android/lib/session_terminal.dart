@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:material_ui/material_ui.dart';
@@ -228,13 +229,15 @@ class _SessionTerminalViewState extends State<SessionTerminalView>
     with WidgetsBindingObserver {
   final input = TextEditingController();
   final outputScroll = ScrollController();
-  Timer? polling;
-  bool reading = false, sending = false, closing = false;
+  Timer? polling, resizeTimer;
+  bool reading = false, sending = false, closing = false, resizing = false;
   bool visible = true;
   String display = '', state = 'starting';
   TerminalScreenData? screenView;
-  String? error;
+  String? error, operationError;
   int revision = -1, epoch = 0;
+  late int connection;
+  ({int cols, int rows})? pendingSize, attemptedSize;
 
   String get copyableDisplay => screenView == null
       ? display
@@ -245,13 +248,19 @@ class _SessionTerminalViewState extends State<SessionTerminalView>
   @override
   void initState() {
     super.initState();
+    connection = widget.runtime.connectionGeneration;
     WidgetsBinding.instance.addObserver(this);
+    input.addListener(_draftChanged);
     widget.runtime.addListener(_runtimeChanged);
     polling = Timer.periodic(
       const Duration(milliseconds: 450),
       (_) => unawaited(read()),
     );
     unawaited(read());
+  }
+
+  void _draftChanged() {
+    if (mounted) setState(() {});
   }
 
   @override
@@ -262,13 +271,38 @@ class _SessionTerminalViewState extends State<SessionTerminalView>
 
   void _runtimeChanged() {
     if (!mounted) return;
+    if (connection != widget.runtime.connectionGeneration) {
+      connection = widget.runtime.connectionGeneration;
+      epoch++;
+      revision = -1;
+      resizeTimer?.cancel();
+      pendingSize = null;
+      attemptedSize = null;
+      setState(() {
+        state = 'unconfirmed';
+        screenView = null;
+        display = '';
+        operationError = null;
+        error = widget.runtime.ready
+            ? '正在确认终端状态…'
+            : '服务未连接，终端状态待确认。';
+      });
+      if (widget.runtime.ready) {
+        unawaited(read());
+      }
+      return;
+    }
     if (!widget.runtime.ready && state != 'unconfirmed') {
       epoch++;
+      resizeTimer?.cancel();
+      pendingSize = null;
+      attemptedSize = null;
       setState(() {
         state = 'unconfirmed';
         error = '服务未连接，终端状态待确认。';
       });
     } else if (widget.runtime.ready && state == 'unconfirmed') {
+      attemptedSize = null;
       unawaited(read());
     }
   }
@@ -327,9 +361,14 @@ class _SessionTerminalViewState extends State<SessionTerminalView>
 
   Future<void> send(String data, {bool clear = false}) async {
     if (sending || state != 'running' || !widget.runtime.ready) return;
+    if (utf8.encode(data).length > 65536) {
+      setState(() => operationError = '单次终端输入不能超过 64 KiB，请分段发送。');
+      return;
+    }
+    final draft = input.text;
     setState(() {
       sending = true;
-      error = null;
+      operationError = null;
     });
     try {
       await widget.runtime
@@ -339,12 +378,79 @@ class _SessionTerminalViewState extends State<SessionTerminalView>
             'data': data,
           })
           .timeout(const Duration(seconds: 7));
-      if (clear) input.clear();
+      if (clear && input.text == draft) input.clear();
       await read();
     } catch (_) {
-      if (mounted) setState(() => error = '输入未送达终端。请确认进程仍在运行。');
+      if (mounted) {
+        setState(() => operationError = '输入送达状态未知。先检查终端输出，再决定是否重试。');
+      }
     } finally {
       if (mounted) setState(() => sending = false);
+    }
+  }
+
+  Future<void> sendDraft({required bool enter}) async {
+    final draft = input.text;
+    if (draft.isEmpty && !enter) return;
+    await send(enter ? '$draft\r' : draft, clear: true);
+  }
+
+  void scheduleResize(({int cols, int rows}) size) {
+    if (!mounted ||
+        state != 'running' ||
+        !widget.runtime.ready ||
+        screenView == null) {
+      return;
+    }
+    if (screenView!.cols == size.cols && screenView!.rows == size.rows) return;
+    if (attemptedSize == size || pendingSize == size) return;
+    pendingSize = size;
+    resizeTimer?.cancel();
+    resizeTimer = Timer(const Duration(milliseconds: 180), () {
+      unawaited(applyResize());
+    });
+  }
+
+  Future<void> applyResize() async {
+    if (resizing || !mounted || state != 'running' || !widget.runtime.ready) {
+      return;
+    }
+    final size = pendingSize;
+    pendingSize = null;
+    if (size == null) return;
+    if (screenView?.cols == size.cols && screenView?.rows == size.rows) return;
+    resizing = true;
+    attemptedSize = size;
+    final request = epoch;
+    final connection = widget.runtime.connectionGeneration;
+    try {
+      await widget.runtime
+          .call('terminal.resize', {
+            'sessionId': widget.sessionId,
+            'id': widget.id,
+            'cols': size.cols,
+            'rows': size.rows,
+          })
+          .timeout(const Duration(seconds: 7));
+      if (mounted &&
+          request == epoch &&
+          connection == widget.runtime.connectionGeneration) {
+        await read();
+      }
+    } catch (_) {
+      if (mounted &&
+          request == epoch &&
+          connection == widget.runtime.connectionGeneration) {
+        setState(() => operationError = '终端尺寸未能同步，重新进入页面后可重试。');
+      }
+    } finally {
+      resizing = false;
+      if (pendingSize != null && mounted) {
+        resizeTimer?.cancel();
+        resizeTimer = Timer(const Duration(milliseconds: 180), () {
+          unawaited(applyResize());
+        });
+      }
     }
   }
 
@@ -373,6 +479,7 @@ class _SessionTerminalViewState extends State<SessionTerminalView>
   void dispose() {
     epoch++;
     polling?.cancel();
+    resizeTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     widget.runtime.removeListener(_runtimeChanged);
     input.dispose();
@@ -389,63 +496,91 @@ class _SessionTerminalViewState extends State<SessionTerminalView>
       onPressed: closing ? null : close,
     ),
     body: LayoutBuilder(
-      builder: (context, constraints) => SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: SizedBox(
-          width: math.max(
-            constraints.maxWidth,
-            (screenView?.cols ?? 0) * 8.2 + 40,
+      builder: (context, constraints) {
+        final painter = TextPainter(
+          text: const TextSpan(
+            text: 'W',
+            style: TextStyle(
+              fontFamily: 'monospace',
+              fontSize: 13,
+              height: 1.35,
+            ),
           ),
+          textDirection: TextDirection.ltr,
+          textScaler: MediaQuery.textScalerOf(context),
+        )..layout();
+        final cellWidth = painter.width;
+        final lineHeight = painter.height;
+        painter.dispose();
+        final size = fitTerminalViewport(
+          width: constraints.maxWidth,
           height: constraints.maxHeight,
-          child: ListView.builder(
-            controller: outputScroll,
-            padding: const EdgeInsets.fromLTRB(20, 12, 20, 150),
-            itemCount: 4 + (screenView?.lines.length ?? 0),
-            itemBuilder: (context, index) {
-              if (index == 0) {
-                return Text(
-                  state == 'running' ? '运行中 · 离开页面后继续运行' : '进程状态：$state',
-                  style: Theme.of(context).textTheme.labelMedium,
+          cellWidth: cellWidth,
+          lineHeight: lineHeight,
+          reservedHeight: MediaQuery.paddingOf(context).top + 230,
+        );
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) scheduleResize(size);
+        });
+        return SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: SizedBox(
+            width: math.max(
+              constraints.maxWidth,
+              (screenView?.cols ?? 0) * cellWidth + 40,
+            ),
+            height: constraints.maxHeight,
+            child: ListView.builder(
+              controller: outputScroll,
+              padding: const EdgeInsets.fromLTRB(20, 12, 20, 150),
+              itemCount: 4 + (screenView?.lines.length ?? 0),
+              itemBuilder: (context, index) {
+                if (index == 0) {
+                  return Text(
+                    state == 'running' ? '运行中 · 离开页面后继续运行' : '进程状态：$state',
+                    style: Theme.of(context).textTheme.labelMedium,
+                  );
+                }
+                if (index == 1) {
+                  final message = operationError ?? error;
+                  return message == null
+                      ? const SizedBox.shrink()
+                      : Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          child: Text(message),
+                        );
+                }
+                if (index == 2) return const SizedBox(height: 12);
+                if (screenView == null) {
+                  return index == 3
+                      ? SelectableText(
+                          display.isEmpty ? ' ' : display,
+                          style: const TextStyle(
+                            fontFamily: 'monospace',
+                            fontSize: 13,
+                            height: 1.35,
+                          ),
+                        )
+                      : const SizedBox.shrink();
+                }
+                if (index == 3) {
+                  return screenView!.stylesTruncated
+                      ? Text(
+                          '终端样式过多，后续颜色已简化。',
+                          style: Theme.of(context).textTheme.labelSmall,
+                        )
+                      : const SizedBox.shrink();
+                }
+                return TerminalScreenLine(
+                  key: ValueKey('terminal-line-${index - 4}'),
+                  line: screenView!.lines[index - 4],
+                  running: state == 'running',
                 );
-              }
-              if (index == 1) {
-                return error == null
-                    ? const SizedBox.shrink()
-                    : Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                        child: Text(error!),
-                      );
-              }
-              if (index == 2) return const SizedBox(height: 12);
-              if (screenView == null) {
-                return index == 3
-                    ? SelectableText(
-                        display.isEmpty ? ' ' : display,
-                        style: const TextStyle(
-                          fontFamily: 'monospace',
-                          fontSize: 13,
-                          height: 1.35,
-                        ),
-                      )
-                    : const SizedBox.shrink();
-              }
-              if (index == 3) {
-                return screenView!.stylesTruncated
-                    ? Text(
-                        '终端样式过多，后续颜色已简化。',
-                        style: Theme.of(context).textTheme.labelSmall,
-                      )
-                    : const SizedBox.shrink();
-              }
-              return TerminalScreenLine(
-                key: ValueKey('terminal-line-${index - 4}'),
-                line: screenView!.lines[index - 4],
-                running: state == 'running',
-              );
-            },
+              },
+            ),
           ),
-        ),
-      ),
+        );
+      },
     ),
     bottom: SafeArea(
       top: false,
@@ -454,32 +589,46 @@ class _SessionTerminalViewState extends State<SessionTerminalView>
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                for (final key in const [
-                  ('Ctrl-C', '\u0003'),
-                  ('Tab', '\t'),
-                  ('Esc', '\u001b'),
-                ])
-                  PocketButton.tonal(
-                    onPressed: state == 'running' && !sending
-                        ? () => send(key.$2)
-                        : null,
-                    child: Text(key.$1),
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  GlassButton(
+                    icon: Icons.copy_rounded,
+                    label: '复制终端内容',
+                    onPressed: copyableDisplay.isEmpty
+                        ? null
+                        : () => Clipboard.setData(
+                            ClipboardData(text: copyableDisplay),
+                          ),
                   ),
-                GlassButton(
-                  icon: Icons.copy_rounded,
-                  label: '复制终端内容',
-                  onPressed: copyableDisplay.isEmpty
-                      ? null
-                      : () => Clipboard.setData(
-                          ClipboardData(text: copyableDisplay),
-                        ),
-                ),
-              ],
+                  const SizedBox(width: 8),
+                  for (final key in const [
+                    ('Esc', '\u001b'),
+                    ('Tab', '\t'),
+                    ('Shift-Tab', '\u001b[Z'),
+                    ('↑', '\u001b[A'),
+                    ('↓', '\u001b[B'),
+                    ('←', '\u001b[D'),
+                    ('→', '\u001b[C'),
+                    ('退格', '\u007f'),
+                    ('Enter', '\r'),
+                    ('Ctrl-C', '\u0003'),
+                    ('Ctrl-D', '\u0004'),
+                    ('Ctrl-Z', '\u001a'),
+                  ]) ...[
+                    PocketButton.tonal(
+                      onPressed: state == 'running' && !sending
+                          ? () => send(key.$2)
+                          : null,
+                      child: Text(key.$1),
+                    ),
+                    const SizedBox(width: 8),
+                  ],
+                ],
+              ),
             ),
+            const SizedBox(height: 8),
             Row(
               children: [
                 Expanded(
@@ -492,15 +641,24 @@ class _SessionTerminalViewState extends State<SessionTerminalView>
                       hintText: '输入命令',
                       border: OutlineInputBorder(),
                     ),
-                    onSubmitted: (value) => send('$value\n', clear: true),
+                    onSubmitted: (_) => sendDraft(enter: true),
                   ),
+                ),
+                const SizedBox(width: 8),
+                GlassButton(
+                  icon: Icons.keyboard_rounded,
+                  label: '仅发送输入，不按回车',
+                  onPressed:
+                      state == 'running' && !sending && input.text.isNotEmpty
+                      ? () => sendDraft(enter: false)
+                      : null,
                 ),
                 const SizedBox(width: 8),
                 GlassButton(
                   icon: Icons.arrow_upward_rounded,
                   label: '发送命令',
                   onPressed: state == 'running' && !sending
-                      ? () => send('${input.text}\n', clear: true)
+                      ? () => sendDraft(enter: true)
                       : null,
                 ),
               ],

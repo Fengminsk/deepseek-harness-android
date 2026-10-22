@@ -24,9 +24,9 @@ const plugins = (patch, id) => patch.flatMap(row => row.insert ?? [])
 const delegationIds = [
   'tool-subagent-control', 'tool-subagent-list-agents', 'tool-subagent', 'tool-subagent-fork',
 ]
-const portableIds = ['agent-instructions', 'time-context', 'tool-jobs',
+const portableIds = ['agent-instructions', 'time-context', 'tool-fs-search', 'tool-jobs',
   'skill-filesystem', 'tool-skill', 'tool-todo', 'present',
-  'command-goal', 'tool-goal', 'planning', 'compaction', 'tool-schedule']
+  'command-goal', 'tool-goal', 'planning', 'compaction', 'tool-schedule', 'tool-web']
 
 async function fixture(t) {
   const base = resolve(tmpdir())
@@ -80,6 +80,10 @@ test('Android stages original local delegation without enabling PTC or changing 
   }
   assert.deepEqual(android.find(entry => entry.id === 'tool-todo').config,
     { allowParallelInProgress: true })
+  assert.deepEqual(android.find(entry => entry.id === 'tool-fs-search').config,
+    { sampleOverCapGlobResults: false }, 'Agent search must retain the original result policy')
+  assert.deepEqual(android.find(entry => entry.id === 'tool-web').config,
+    { fetch: true, searchTimeoutMs: 60000 }, 'Agent web tools must retain standard preset behavior')
   assert.deepEqual(android.find(entry => entry.id === 'agent-instructions').config,
     { maxBytes: 65536 })
   assert.equal(android.find(entry => entry.id === 'time-context').config, undefined,
