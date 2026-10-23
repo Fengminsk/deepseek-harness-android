@@ -399,6 +399,7 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
                   enabled: state.canEdit,
                   onOpen: editStructure,
                   onChanged: (path, value) => edit(path, value),
+                  onReset: (path) => edit(path, null, remove: true),
                 ),
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -604,6 +605,7 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
               enabled: state.canEdit,
               onOpen: editStructure,
               onChanged: (path, value) => edit(path, value),
+              onReset: (path) => edit(path, null, remove: true),
             ),
           PocketSection(
             children: [
@@ -625,6 +627,7 @@ String configurationNamespaceTitle(String namespace) {
   // configure the original Web client, not Pocket Harness's native appearance.
   const names = {
     'session-log-deepseek': '会话日志上传',
+    'agent-loop': 'Agent 执行',
     'agent-default-model': '默认会话模型',
     'llm-deepseek': 'DeepSeek API 密钥接入',
     'llm-deepseek-account': 'DeepSeek 账号模型接入',
@@ -741,6 +744,7 @@ class ConfigurationFields extends StatelessWidget {
     required this.enabled,
     required this.onOpen,
     required this.onChanged,
+    this.onReset,
     this.paths,
   });
   final Json descriptor, value;
@@ -748,6 +752,7 @@ class ConfigurationFields extends StatelessWidget {
   final Set<String>? paths;
   final void Function(List<String>, Json, String) onOpen;
   final void Function(List<String>, dynamic) onChanged;
+  final void Function(List<String>)? onReset;
 
   @override
   Widget build(BuildContext context) {
@@ -772,12 +777,14 @@ class ConfigurationFields extends StatelessWidget {
       key: const Key('configuration-values'),
       divided: true,
       children: [
-        for (final field in fields) _row(field, protection, presentation),
+        for (final field in fields)
+          _row(context, field, protection, presentation),
       ],
     );
   }
 
   Widget _row(
+    BuildContext context,
     _Field item,
     ConfigurationProtection protection,
     ConfigurationPresentation presentation,
@@ -790,6 +797,87 @@ class ConfigurationFields extends StatelessWidget {
     final fallback = !configurationHasValue(current)
         ? configurationInheritedValueAt(descriptor, item.path, schema)
         : configurationValueAt(const {}, const ['missing']);
+    if (descriptor['ns'] == 'agent-loop' &&
+        item.path.length == 1 &&
+        item.path.single == 'maxParallelToolCalls' &&
+        schema.type == 'number' &&
+        !isProtected) {
+      final effective = current is num ? current : fallback;
+      if (effective is num &&
+          effective.isFinite &&
+          effective % 1 == 0 &&
+          schema.validate(effective) == null) {
+        final override = configurationHasValue(
+          configurationValueAt(descriptor['user'], item.path),
+        );
+        final staged = !configurationEqual(
+          current,
+          configurationValueAt(descriptor['value'], item.path),
+        );
+        return Column(
+          key: key,
+          children: [
+            ConfigurationValueRow(
+              title: title,
+              summary: !configurationHasValue(current)
+                  ? '${effective.toInt()} · 恢复后使用默认值'
+                  : staged
+                  ? '${effective.toInt()} · 待保存'
+                  : override
+                  ? '${effective.toInt()} · 自定义'
+                  : '${effective.toInt()} · 默认值',
+              onTap: enabled ? () => onOpen(item.path, item.node, title) : null,
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  GlassButton(
+                    key: const Key('agent-loop-parallel-decrease'),
+                    icon: Icons.remove_rounded,
+                    label: '减少并行调用数',
+                    onPressed: enabled && schema.validate(effective - 1) == null
+                        ? () => onChanged(item.path, effective - 1)
+                        : null,
+                  ),
+                  Expanded(
+                    child: Center(
+                      child: Text(
+                        '${effective.toInt()}',
+                        key: const Key('agent-loop-parallel-value'),
+                        style: Theme.of(context).textTheme.headlineSmall,
+                      ),
+                    ),
+                  ),
+                  GlassButton(
+                    key: const Key('agent-loop-parallel-increase'),
+                    icon: Icons.add_rounded,
+                    label: '增加并行调用数',
+                    onPressed: enabled && schema.validate(effective + 1) == null
+                        ? () => onChanged(item.path, effective + 1)
+                        : null,
+                  ),
+                ],
+              ),
+            ),
+            if (presentation.description(item.path, schema) case final hint?)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+                child: Text(hint, style: Theme.of(context).textTheme.bodySmall),
+              ),
+            if (configurationHasValue(current) &&
+                (override || staged) &&
+                onReset != null)
+              PocketTile(
+                key: const Key('agent-loop-parallel-reset'),
+                title: const Text('恢复默认值'),
+                onTap: enabled ? () => onReset!(item.path) : null,
+              ),
+          ],
+        );
+      }
+    }
     final inherited = fallback is bool ? fallback : null;
     if (schema.booleanChoice &&
         (current is bool || inherited != null) &&

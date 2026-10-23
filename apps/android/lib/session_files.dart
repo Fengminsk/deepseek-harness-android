@@ -9,6 +9,7 @@ import 'runtime.dart';
 import 'ui.dart';
 
 const _requestTimeout = Duration(seconds: 30);
+const _maxDirectorySnapshots = 24;
 
 /// DSH sorts directories first, then names naturally without case sensitivity.
 int compareSessionFileNames(String left, String right) {
@@ -41,6 +42,16 @@ String _fileFailure(Object failure) => switch (failure) {
   _ => '暂时无法读取会话文件，请重试。',
 };
 
+class _DirectorySnapshot {
+  _DirectorySnapshot(List<Json> entries, this.truncated)
+    : entries = List<Json>.unmodifiable(
+        entries.map((row) => Map<String, dynamic>.unmodifiable(row)),
+      );
+
+  final List<Json> entries;
+  final bool truncated;
+}
+
 /// Reads the original header-based Session file scope. No create/resume calls,
 /// private-directory substitution, attachment import, or filesystem mutations.
 class SessionFilesController extends ChangeNotifier {
@@ -53,6 +64,7 @@ class SessionFilesController extends ChangeNotifier {
   bool loading = false, current = false, truncated = false, noWorkspace = false;
   bool automatic = true;
   bool _started = false, _disposed = false, _dirty = false;
+  final Map<String, _DirectorySnapshot> _directorySnapshots = {};
   int _generation = 0;
   int _readEpoch = 0;
   late int _connection;
@@ -138,6 +150,7 @@ class SessionFilesController extends ChangeNotifier {
         path = '';
         entries = [];
         truncated = false;
+        _directorySnapshots.clear();
       }
       root = nextRoot as String?;
       noWorkspace = root == null;
@@ -156,6 +169,14 @@ class SessionFilesController extends ChangeNotifier {
 
   bool _accept(int generation) =>
       !_disposed && generation == _generation && runtime.ready;
+
+  void _rememberDirectory(String directory, _DirectorySnapshot snapshot) {
+    _directorySnapshots.remove(directory);
+    _directorySnapshots[directory] = snapshot;
+    while (_directorySnapshots.length > _maxDirectorySnapshots) {
+      _directorySnapshots.remove(_directorySnapshots.keys.first);
+    }
+  }
 
   void _observe(int generation) {
     final target = absolutePath;
@@ -267,6 +288,7 @@ class SessionFilesController extends ChangeNotifier {
         });
         entries = rows;
         truncated = raw['truncated'] as bool;
+        _rememberDirectory(path, _DirectorySnapshot(entries, truncated));
         current = true;
         error = null;
         _publish();
@@ -289,10 +311,12 @@ class SessionFilesController extends ChangeNotifier {
     final generation = ++_generation;
     _retireWatch();
     path = target;
-    entries = [];
+    final snapshot = _directorySnapshots[target];
+    if (snapshot != null) _rememberDirectory(target, snapshot);
+    entries = snapshot?.entries ?? [];
     current = false;
     loading = false;
-    truncated = false;
+    truncated = snapshot?.truncated ?? false;
     error = null;
     watchNotice = null;
     _dirty = false;

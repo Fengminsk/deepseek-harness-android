@@ -14,6 +14,21 @@ enum ChatEntryKind {
   unknown,
 }
 
+/// A manual compaction checkpoint and its matching, optionally loaded summary.
+class ChatCompaction {
+  const ChatCompaction({
+    required this.checkpointSeq,
+    this.summaryEventSeq,
+    this.summary,
+    this.shadowedItemCount,
+    this.shadowedTokenCount,
+  });
+
+  final int checkpointSeq;
+  final int? summaryEventSeq, shadowedItemCount, shadowedTokenCount;
+  final String? summary;
+}
+
 /// An immutable row over the already-loaded Session window.
 class ChatEntry {
   const ChatEntry({
@@ -27,6 +42,7 @@ class ChatEntry {
     this.text,
     this.error = false,
     this.outcome,
+    this.compaction,
     this.tool,
     this.turn,
     this.step,
@@ -41,6 +57,7 @@ class ChatEntry {
   final Json event;
   final List<dynamic> content;
   final Json? source, outcome;
+  final ChatCompaction? compaction;
   final String? title, text;
   final bool error;
   final bool interrupted;
@@ -61,6 +78,8 @@ class ChatProjection {
   final _positions = <String, int>{};
   final _commands = <String, Json>{};
   final _outcomes = <String, Json>{};
+  final _compactionSummaries = <String, Json>{};
+  final _manualCheckpoints = <String, Json>{};
   final _stepStarts = <(int, int), int>{};
   final _turnStarts = <int, int>{};
   final _settledSteps = <(int, int)>{};
@@ -103,6 +122,8 @@ class ChatProjection {
       _positions.clear();
       _commands.clear();
       _outcomes.clear();
+      _compactionSummaries.clear();
+      _manualCheckpoints.clear();
       _stepStarts.clear();
       _turnStarts.clear();
       _settledSteps.clear();
@@ -181,6 +202,70 @@ class ChatProjection {
     }
   }
 
+  ChatCompaction? _manualCompaction(String id, Json? outcome) {
+    final checkpoint = _manualCheckpoints[id];
+    if (checkpoint == null) return null;
+    final source = _record((checkpoint['data'] as Json)['source']);
+    final compactionId = source?['compactionId'];
+    if (compactionId is! String) return null;
+    final summaryEvent = _compactionSummaries[compactionId];
+    final summaryData = _record(summaryEvent?['data']);
+    final summarySeq = summaryEvent?['seq'];
+    final sourceSeq = outcome?['sourceEventSeq'];
+    final matches =
+        summaryData != null &&
+        (summaryData['sourceCommandId'] == null ||
+            summaryData['sourceCommandId'] == id) &&
+        (sourceSeq is! int || sourceSeq == summarySeq);
+    final textBlocks = matches ? summaryData['summary'] : null;
+    final text = textBlocks is List ? _text(textBlocks) : null;
+    final shadowed = matches ? summaryData['shadowedSeqs'] : null;
+    final tokens = matches ? summaryData['shadowedTokenCount'] : null;
+    return ChatCompaction(
+      checkpointSeq: checkpoint['seq'] as int,
+      summaryEventSeq: matches && summarySeq is int ? summarySeq : null,
+      summary: text?.trim().isNotEmpty == true ? text : null,
+      shadowedItemCount:
+          shadowed is List && shadowed.every((seq) => seq is int && seq >= 0)
+          ? shadowed.length
+          : null,
+      shadowedTokenCount: tokens is int && tokens >= 0 ? tokens : null,
+    );
+  }
+
+  void _putCommand(String id, Json event) {
+    final run = _commands[id];
+    final runData = _record(run?['data']);
+    final outcome = _outcomes[id];
+    final compaction = runData?['name'] == null || runData?['name'] == 'compact'
+        ? _manualCompaction(id, outcome)
+        : null;
+    final anchor =
+        compaction?.checkpointSeq ??
+        (run?['seq'] as int?) ??
+        event['seq'] as int;
+    _put(
+      ChatEntry(
+        key: 'command:$id',
+        seq: anchor,
+        kind: ChatEntryKind.command,
+        event: run ?? event,
+        title: compaction != null
+            ? '/compact'
+            : runData == null
+            ? '会话指令'
+            : '/${runData['name']}${(runData['args'] as String? ?? '').trimRight()}',
+        text: outcome == null
+            ? '指令执行中…'
+            : outcome['text'] as String? ??
+                  (outcome['kind'] == 'error' ? '指令执行失败' : '指令已完成'),
+        error: outcome?['kind'] == 'error',
+        outcome: outcome,
+        compaction: compaction,
+      ),
+    );
+  }
+
   void _consume(Json event) {
     final type = event['type'];
     final data = event['data'] as Json;
@@ -224,6 +309,18 @@ class ChatProjection {
         if (op != 'append') {
           final source = _record(data['source']);
           if (source?['kind'] == 'compact-checkpoint') {
+            final id = source?['sourceCommandId'];
+            final compactionId = source?['compactionId'];
+            if (id is String &&
+                id.isNotEmpty &&
+                compactionId is String &&
+                compactionId.isNotEmpty &&
+                (_commands[id]?['data']?['name'] == null ||
+                    _commands[id]?['data']?['name'] == 'compact')) {
+              _manualCheckpoints[id] = event;
+              _putCommand(id, event);
+              return;
+            }
             _put(
               ChatEntry(
                 key: 'checkpoint:$seq',
@@ -251,6 +348,18 @@ class ChatProjection {
             title: human ? null : contextTitle(source),
           ),
         );
+        return;
+      case 'compaction/summary':
+        final compactionId = data['compactionId'];
+        if (compactionId is! String || compactionId.isEmpty) return;
+        _compactionSummaries[compactionId] = event;
+        final id = data['sourceCommandId'];
+        if (id is String && _manualCheckpoints[id] != null) {
+          final source = _record(
+            (_manualCheckpoints[id]!['data'] as Json)['source'],
+          );
+          if (source?['compactionId'] == compactionId) _putCommand(id, event);
+        }
         return;
       case 'developer/message':
         final message = _record(data['message']);
@@ -334,26 +443,7 @@ class ChatProjection {
         } else {
           _outcomes[id] = data;
         }
-        final run = _commands[id];
-        final runData = _record(run?['data']);
-        final outcome = _outcomes[id];
-        _put(
-          ChatEntry(
-            key: 'command:$id',
-            seq: (run?['seq'] as int?) ?? seq,
-            kind: ChatEntryKind.command,
-            event: run ?? event,
-            title: runData == null
-                ? '会话指令'
-                : '/${runData['name']}${(runData['args'] as String? ?? '').trimRight()}',
-            text: outcome == null
-                ? '指令执行中…'
-                : outcome['text'] as String? ??
-                      (outcome['kind'] == 'error' ? '指令执行失败' : '指令已完成'),
-            error: outcome?['kind'] == 'error',
-            outcome: outcome,
-          ),
-        );
+        _putCommand(id, event);
         return;
       case 'turn/end':
         _closeAssistantPrefixes(event);
@@ -424,8 +514,7 @@ class ChatProjection {
 
   _AssistantPrefix? _assistantPrefix(Json data) {
     final turn = data['turn'], step = data['step'];
-    if (turn is! int || step is! int ||
-        _settledSteps.contains((turn, step))) {
+    if (turn is! int || step is! int || _settledSteps.contains((turn, step))) {
       return null;
     }
     return _assistantPrefixes
@@ -592,7 +681,9 @@ class _AssistantPrefix {
   void replace(List<dynamic> content) {
     _blocks
       ..clear()
-      ..addEntries(content.indexed.map((entry) => MapEntry(entry.$1, entry.$2)));
+      ..addEntries(
+        content.indexed.map((entry) => MapEntry(entry.$1, entry.$2)),
+      );
   }
 
   void apply(Json chunk) {
@@ -612,10 +703,7 @@ class _AssistantPrefix {
         if (previous != null && previous['type'] == type) {
           retained = previous['text'] as String? ?? '';
         }
-        _blocks[index] = {
-          'type': type,
-          'text': '$retained$text',
-        };
+        _blocks[index] = {'type': type, 'text': '$retained$text'};
       case 'block-end':
         final block = chunk['block'];
         if (block is Json) _blocks[index] = block;

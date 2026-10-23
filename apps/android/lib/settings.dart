@@ -262,7 +262,9 @@ class ConfigurationListPage extends StatelessWidget {
     'llm-deepseek' ||
     'llm-deepseek-account' ||
     'llm-pi-ai' => '模型与连接',
-    'subagent' || 'subagent-model-selection-settings' => 'Agent',
+    'agent-loop' ||
+    'subagent' ||
+    'subagent-model-selection-settings' => 'Agent',
     'web' ||
     'web-search-deepseek' ||
     'web-deepseek-api' ||

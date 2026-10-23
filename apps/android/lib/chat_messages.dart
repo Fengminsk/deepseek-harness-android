@@ -750,40 +750,18 @@ class ChatMessage extends StatelessWidget {
           ),
         );
       case ChatEntryKind.command:
+        if (entry.title == '/compact' || entry.compaction != null) {
+          return _CompactCommandMessage(
+            entry: entry,
+            storageId: storageId,
+            sessionId: sessionId,
+            onOpenLink: onOpenLink,
+            onOpenFile: onOpenFile,
+          );
+        }
+        return _statusCard(context);
       case ChatEntryKind.notice:
-        return Padding(
-          padding: const EdgeInsets.symmetric(vertical: 10),
-          child: PocketCard(
-            padding: const EdgeInsets.all(18),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Text(
-                  entry.title ?? '会话状态',
-                  style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                    color: entry.error ? colors.error : colors.onSurfaceVariant,
-                  ),
-                ),
-                if (entry.text?.isNotEmpty == true) ...[
-                  const SizedBox(height: 8),
-                  PocketMarkdown(
-                    data: entry.text!,
-                    sessionId: sessionId,
-                    onOpenLink: onOpenLink,
-                    onOpenFile: onOpenFile,
-                  ),
-                ],
-                if (entry.details != null)
-                  _ChatDisclosure(
-                    storageId: '$storageId:details',
-                    title: entry.detailsTitle ?? '详情',
-                    icon: Icons.history_rounded,
-                    body: (_) => SelectableText(entry.details!),
-                  ),
-              ],
-            ),
-          ),
-        );
+        return _statusCard(context);
       case ChatEntryKind.user:
       case ChatEntryKind.assistant:
         final user = entry.kind == ChatEntryKind.user;
@@ -840,6 +818,176 @@ class ChatMessage extends StatelessWidget {
           ),
         );
     }
+  }
+
+  Widget _statusCard(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      child: PocketCard(
+        padding: const EdgeInsets.all(18),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              entry.title ?? '会话状态',
+              style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                color: entry.error ? colors.error : colors.onSurfaceVariant,
+              ),
+            ),
+            if (entry.text?.isNotEmpty == true) ...[
+              const SizedBox(height: 8),
+              PocketMarkdown(
+                data: entry.text!,
+                sessionId: sessionId,
+                onOpenLink: onOpenLink,
+                onOpenFile: onOpenFile,
+              ),
+            ],
+            if (entry.details != null)
+              _ChatDisclosure(
+                storageId: '$storageId:details',
+                title: entry.detailsTitle ?? '详情',
+                icon: Icons.history_rounded,
+                body: (_) => SelectableText(entry.details!),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// A manual compaction occupies one transcript row and discloses its saved summary.
+class _CompactCommandMessage extends StatefulWidget {
+  const _CompactCommandMessage({
+    required this.entry,
+    required this.storageId,
+    this.sessionId,
+    this.onOpenLink,
+    this.onOpenFile,
+  });
+
+  final ChatEntry entry;
+  final String storageId;
+  final String? sessionId;
+  final ChatOpenLink? onOpenLink;
+  final ChatOpenFile? onOpenFile;
+
+  @override
+  State<_CompactCommandMessage> createState() => _CompactCommandMessageState();
+}
+
+class _CompactCommandMessageState extends State<_CompactCommandMessage> {
+  bool expanded = false;
+  bool restored = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (restored) return;
+    restored = true;
+    expanded =
+        PageStorage.maybeOf(context)
+            ?.readState(context, identifier: widget.storageId) ==
+        true;
+  }
+
+  void _toggle() {
+    setState(() => expanded = !expanded);
+    PageStorage.maybeOf(context)
+        ?.writeState(context, expanded, identifier: widget.storageId);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final entry = widget.entry;
+    final summary = entry.compaction?.summary;
+    final expandable = summary != null && summary.isNotEmpty;
+    final count = entry.compaction?.shadowedItemCount;
+    final tokens = entry.compaction?.shadowedTokenCount;
+    final status = entry.error
+        ? entry.text ?? '压缩未完成'
+        : count != null && tokens != null
+        ? '已压缩 $count 条历史记录 · 约 $tokens tokens'
+        : entry.compaction != null
+        ? entry.outcome == null
+              ? '上下文已压缩'
+              : entry.text ?? '上下文已压缩'
+        : entry.outcome == null
+        ? '正在压缩上下文…'
+        : entry.text == 'No compactable history yet.'
+        ? '暂无可压缩的历史记录'
+        : entry.text ?? '上下文已压缩';
+    final ink = entry.error
+        ? Theme.of(context).colorScheme.error
+        : Theme.of(context).colorScheme.onSurfaceVariant;
+    final row = ConstrainedBox(
+      constraints: const BoxConstraints(minHeight: 48),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 9),
+        child: Row(
+          children: [
+            Icon(Icons.compress_rounded, size: 20, color: ink),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('压缩上下文', style: TextStyle(color: ink, fontSize: 14)),
+                  Text(status, style: TextStyle(color: ink, fontSize: 13)),
+                ],
+              ),
+            ),
+            if (expandable)
+              AnimatedRotation(
+                turns: expanded ? .25 : 0,
+                duration: MediaQuery.disableAnimationsOf(context)
+                    ? Duration.zero
+                    : const Duration(milliseconds: 200),
+                child: Icon(Icons.chevron_right_rounded, size: 18, color: ink),
+              ),
+          ],
+        ),
+      ),
+    );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        expandable
+            ? Semantics(
+                button: true,
+                expanded: expanded,
+                label: '压缩上下文，$status',
+                onTap: _toggle,
+                child: ExcludeSemantics(
+                  child: Material(
+                    type: MaterialType.transparency,
+                    child: InkWell(onTap: _toggle, child: row),
+                  ),
+                ),
+              )
+            : row,
+        if (expanded && expandable)
+          PocketReveal(
+            child: PocketCard(
+              padding: const EdgeInsets.all(16),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 320),
+                child: SingleChildScrollView(
+                  primary: false,
+                  child: PocketMarkdown(
+                    data: summary,
+                    sessionId: widget.sessionId,
+                    onOpenLink: widget.onOpenLink,
+                    onOpenFile: widget.onOpenFile,
+                  ),
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
   }
 }
 

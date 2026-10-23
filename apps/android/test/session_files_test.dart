@@ -386,6 +386,126 @@ void main() {
   );
 
   testWidgets(
+    'return shows a read-only cached directory until its authoritative listing settles',
+    (tester) async {
+      final pending = Completer<dynamic>();
+      var rootReads = 0;
+      final runtime = FileRuntime()
+        ..read = (args) async {
+          if (args['path'] != '/original/project') return listing([]);
+          return ++rootReads == 1
+              ? listing([entry('Child', type: 'directory'), entry('old.txt')])
+              : pending.future;
+        };
+      addTearDown(runtime.dispose);
+      await mount(tester, runtime);
+      await tester.tap(find.text('Child'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('返回上级'));
+      await tester.pump();
+      expect(find.text('old.txt'), findsOneWidget);
+      expect(find.textContaining('待刷新'), findsOneWidget);
+      final cached = tester.widget<FileBrowserEntry>(
+        find.byKey(const ValueKey('session-file-cold-old.txt')),
+      );
+      expect(cached.onTap, isNull);
+      expect(rootReads, 2);
+      pending.complete(listing([entry('new.txt')]));
+      await tester.pumpAndSettle();
+      expect(find.text('old.txt'), findsNothing);
+      expect(find.text('new.txt'), findsOneWidget);
+      expect(
+        tester
+            .widget<FileBrowserEntry>(
+              find.byKey(const ValueKey('session-file-cold-new.txt')),
+            )
+            .onTap,
+        isNotNull,
+      );
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  testWidgets('new Session cwd invalidates cached directory snapshots', (
+    tester,
+  ) async {
+    final pending = Completer<dynamic>();
+    final runtime = FileRuntime()
+      ..read = (args) async => args['path'] == '/updated/project'
+          ? pending.future
+          : listing([entry('old.txt'), entry('Child', type: 'directory')]);
+    final model = SessionFilesController(runtime, 'cold')..start();
+    await tester.pump();
+    model.navigate('Child');
+    await tester.pump();
+    runtime.metadata = [
+      {'sessionId': 'cold', 'cwd': '/updated/project'},
+    ];
+    final reconnect = model.reconnect();
+    await tester.pump();
+    expect(model.path, '');
+    expect(model.entries, isEmpty);
+    expect(model.current, false);
+    pending.complete(listing([entry('new.txt')]));
+    await reconnect;
+    expect(model.entries.single['name'], 'new.txt');
+    model.dispose();
+    runtime.dispose();
+  });
+
+  testWidgets(
+    'directory cache evicts the oldest of 24 and retains a revisited directory',
+    (tester) async {
+      final pending = <String, Completer<dynamic>>{};
+      final runtime = FileRuntime()
+        ..read = (args) async {
+          final target = args['path'] as String;
+          final wait = pending[target];
+          if (wait != null) return wait.future;
+          final name = target.split('/').last;
+          return listing([entry('$name.txt')]);
+        };
+      final model = SessionFilesController(runtime, 'cold')..start();
+      await tester.pump();
+      for (var i = 0; i < 23; i++) {
+        model.navigate('Folder$i');
+        await tester.pump();
+      }
+      model.navigate('Folder0');
+      await tester.pump();
+      for (var i = 23; i < 25; i++) {
+        model.navigate('Folder$i');
+        await tester.pump();
+      }
+      pending['/original/project'] = Completer<dynamic>();
+      pending['/original/project/Folder0'] = Completer<dynamic>();
+      model.navigate('');
+      expect(
+        model.entries,
+        isEmpty,
+        reason: 'The oldest root listing was evicted',
+      );
+      expect(model.current, false);
+      await tester.pump();
+      model.navigate('Folder0');
+      expect(model.entries.single['name'], 'Folder0.txt');
+      expect(model.current, false);
+      await tester.pump();
+      pending['/original/project']!.complete(
+        listing([entry('stale-root.txt')]),
+      );
+      pending['/original/project/Folder0']!.complete(
+        listing([entry('fresh.txt')]),
+      );
+      await tester.pump();
+      expect(model.path, 'Folder0');
+      expect(model.entries.single['name'], 'fresh.txt');
+      model.dispose();
+      runtime.dispose();
+    },
+  );
+
+  testWidgets(
     'Session switch on the same widget cannot receive an old Session listing',
     (tester) async {
       final delayed = Completer<dynamic>();

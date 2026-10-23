@@ -316,7 +316,7 @@
           "apps/android/test/session_files_test.dart"
         ]
       },
-      "note": "Current Session files use the original cold Session cwd and workspaceFiles list/change feed. Native same-page navigation and original-service host smoke pass. Build 32 listed the test Session cwd and opened its existing text file on the phone; nested device navigation and remaining file interactions are unverified."
+      "note": "Current Session files use the original cold Session cwd and workspaceFiles list/change feed. Native same-page navigation restores each directory's last read-only listing while it revalidates through the original service; restored rows cannot be opened until relisted, and a changed Session cwd clears those snapshots. Original-service host smoke passes. Build 32 listed the test Session cwd and opened its existing text file on the phone; nested device navigation and remaining file interactions are unverified."
     },
     {
       "key": "webUi/ui-settings",
@@ -732,15 +732,17 @@
       "status": "partial",
       "android": [
         "apps/android/lib/composer_commands.dart",
-        "apps/android/lib/main.dart"
+        "apps/android/lib/main.dart",
+        "apps/android/lib/chat_projection.dart",
+        "apps/android/lib/chat_messages.dart"
       ],
       "evidence": {
         "core": "unverified",
         "ui": "partial",
-        "behavior": "unverified",
+        "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Runtime command catalog and dispatch are reused; command-specific status and result surfaces need individual parity review."
+      "note": "Runtime command catalog and dispatch are reused. Manual /compact now folds its correlated checkpoint and summary into one compact, expandable result row; partial-history recovery, mismatched summaries and error outcomes have focused host tests. Other command-specific surfaces and device behavior remain unverified."
     },
     {
       "key": "webUi/ui-skill",
@@ -1126,15 +1128,16 @@
       "status": "partial",
       "android": [
         "apps/android/lib/settings.dart",
-        "apps/android/lib/configuration_editor.dart"
+        "apps/android/lib/configuration_editor.dart",
+        "apps/android/test/configuration_editor_test.dart"
       ],
       "evidence": {
         "core": "unverified",
         "ui": "partial",
-        "behavior": "unverified",
+        "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Loop settings are exposed through native forms; original semantic workflow parity is unverified."
+      "note": "The one user-owned loop cap has native integer steps, a child numeric editor, inherited reset, and revisioned save; on-device behavior remains unverified."
     },
     {
       "key": "webUi/ui-settings-subagent",
@@ -1575,15 +1578,17 @@
       ],
       "status": "partial",
       "android": [
-        "apps/android/tool/stage-preset.mjs"
+        "apps/android/tool/stage-preset.mjs",
+        "apps/android/lib/chat_projection.dart",
+        "apps/android/lib/chat_messages.dart"
       ],
       "evidence": {
         "core": "partial",
-        "ui": "unverified",
-        "behavior": "unverified",
+        "ui": "partial",
+        "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Original compaction group is copied; complete command/status behavior is not certified by inventory checks."
+      "note": "Original compaction group is copied. Manual command results use the recorded command/checkpoint/summary identities and expose a saved summary on demand under host tests; automatic compaction, full command execution and device behavior remain unverified."
     },
     {
       "key": "standardPreset/delegation",

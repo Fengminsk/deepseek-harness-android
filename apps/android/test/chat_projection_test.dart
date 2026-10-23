@@ -345,6 +345,180 @@ void main() {
     expect(projection.entries[2].text, 'partial window');
   });
 
+  test('manual compact folds its durable checkpoint and summary into one command row', () {
+    final projection = ChatProjection()
+      ..reconcile([
+        event(10, 'command/run', {'commandId': 'compact-1', 'name': 'compact'}),
+        event(11, 'compaction/summary', {
+          'compactionId': 'txn-1',
+          'sourceCommandId': 'compact-1',
+          'summary': [
+            {'type': 'text', 'text': 'Saved '},
+            {'type': 'image', 'data': 'ignored'},
+            {'type': 'text', 'text': 'context'},
+          ],
+          'shadowedSeqs': [1, 2],
+          'shadowedTokenCount': 80,
+        }),
+        event(
+          12,
+          'user/message',
+          {
+            'role': 'user',
+            'source': {
+              'kind': 'compact-checkpoint',
+              'compactionId': 'txn-1',
+              'sourceCommandId': 'compact-1',
+            },
+            'content': [
+              {'type': 'text', 'text': 'model checkpoint'},
+            ],
+          },
+          surface: {'op': 'replace', 'startSeq': 1, 'endSeq': 2},
+        ),
+        event(13, 'command/done', {
+          'commandId': 'compact-1',
+          'kind': 'success',
+          'sourceEventSeq': 11,
+          'text': 'Compacted 2 history items (~80 tokens).',
+        }),
+      ]);
+    expect(projection.entries, hasLength(1));
+    final command = projection.entries.single;
+    expect(command.key, 'command:compact-1');
+    expect(command.seq, 12);
+    expect(command.title, '/compact');
+    expect(command.compaction?.summary, 'Saved context');
+    expect(command.compaction?.summaryEventSeq, 11);
+    expect(command.compaction?.shadowedItemCount, 2);
+    expect(command.compaction?.shadowedTokenCount, 80);
+    expect(command.text, 'Compacted 2 history items (~80 tokens).');
+  });
+
+  test('compact partial history recovers a checkpoint without its run', () {
+    final projection = ChatProjection()
+      ..reconcile([
+        event(20, 'compaction/summary', {
+          'compactionId': 'txn-2',
+          'sourceCommandId': 'compact-2',
+          'summary': [
+            {'type': 'text', 'text': 'Recovered summary'},
+          ],
+          'shadowedSeqs': [1],
+          'shadowedTokenCount': 23,
+        }),
+        event(
+          21,
+          'user/message',
+          {
+            'role': 'user',
+            'source': {
+              'kind': 'compact-checkpoint',
+              'compactionId': 'txn-2',
+              'sourceCommandId': 'compact-2',
+            },
+            'content': [],
+          },
+          surface: {'op': 'replace', 'startSeq': 1, 'endSeq': 1},
+        ),
+        event(22, 'command/done', {
+          'commandId': 'compact-2',
+          'kind': 'success',
+          'sourceEventSeq': 20,
+        }),
+      ]);
+    expect(projection.entries, hasLength(1));
+    expect(projection.entries.single.title, '/compact');
+    expect(projection.entries.single.compaction?.summary, 'Recovered summary');
+  });
+
+  test('older-page summary fills the same compact row without replaying the command', () {
+    final checkpoint = event(
+      12,
+      'user/message',
+      {
+        'source': {
+          'kind': 'compact-checkpoint',
+          'compactionId': 'txn',
+          'sourceCommandId': 'c',
+        },
+        'content': [],
+      },
+      surface: {'op': 'replace', 'startSeq': 1, 'endSeq': 2},
+    );
+    final done = event(13, 'command/done', {
+      'commandId': 'c',
+      'kind': 'success',
+      'sourceEventSeq': 11,
+    });
+    final projection = ChatProjection()..reconcile([checkpoint, done]);
+    expect(projection.entries, hasLength(1));
+    expect(projection.entries.single.key, 'command:c');
+    expect(projection.entries.single.compaction?.summary, isNull);
+
+    projection.reconcile([
+      event(11, 'compaction/summary', {
+        'compactionId': 'txn',
+        'sourceCommandId': 'c',
+        'summary': [
+          {'type': 'text', 'text': 'Loaded from older page'},
+        ],
+        'shadowedSeqs': [1, 2],
+        'shadowedTokenCount': 44,
+      }),
+      checkpoint,
+      done,
+    ]);
+    expect(projection.entries, hasLength(1));
+    expect(projection.entries.single.key, 'command:c');
+    expect(
+      projection.entries.single.compaction?.summary,
+      'Loaded from older page',
+    );
+  });
+
+  test(
+    'compact never borrows a mismatched summary or hides a failed result',
+    () {
+      final projection = ChatProjection()
+        ..reconcile([
+          event(1, 'command/run', {'commandId': 'c', 'name': 'compact'}),
+          event(2, 'compaction/summary', {
+            'compactionId': 'other',
+            'sourceCommandId': 'c',
+            'summary': [
+              {'type': 'text', 'text': 'Wrong summary'},
+            ],
+          }),
+          event(
+            3,
+            'user/message',
+            {
+              'source': {
+                'kind': 'compact-checkpoint',
+                'compactionId': 'txn',
+                'sourceCommandId': 'c',
+              },
+              'content': [],
+            },
+            surface: {'op': 'replace', 'startSeq': 0, 'endSeq': 0},
+          ),
+          event(4, 'command/done', {
+            'commandId': 'c',
+            'kind': 'error',
+            'text': 'Compaction did not finish cleanly.',
+          }),
+        ]);
+      expect(projection.entries, hasLength(1));
+      expect(projection.entries.single.compaction?.summary, isNull);
+      expect(projection.entries.single.error, isTrue);
+      expect(
+        projection.entries.single.text,
+        'Compaction did not finish cleanly.',
+      );
+    },
+  );
+
   test('failures, interrupted turns and max-tokens remain visible without exposing AUTH details', () {
     final projection = ChatProjection()
       ..reconcile([
@@ -464,9 +638,9 @@ void main() {
       ChatProjection()..reconcile(events),
       ChatProjection()..reconcile(List.of(events)),
     ]) {
-      final visible = projection.entries.where(
-        (row) => row.kind == ChatEntryKind.assistant,
-      ).toList();
+      final visible = projection.entries
+          .where((row) => row.kind == ChatEntryKind.assistant)
+          .toList();
       expect(visible, hasLength(1));
       expect(visible.single.content.single['text'], 'partial answer');
       expect(visible.single.interrupted, isTrue);
@@ -478,45 +652,48 @@ void main() {
     expect(events[3].containsKey('message'), isFalse);
   });
 
-  test('retry resets only its step prefix before freezing or settling text', () {
-    final events = <Json>[
-      event(0, 'turn/start', {'turn': 1}),
-      event(1, 'step/start', {'turn': 1, 'step': 1}),
-      event(2, 'assistant/live-chunk', {
-        'turn': 1,
-        'step': 1,
-        'chunk': {'type': 'text-delta', 'index': 0, 'text': 'discarded'},
-      }),
-      event(3, 'llm/retry', {'turn': 1, 'step': 1}),
-      event(4, 'assistant/live-chunk', {
-        'turn': 1,
-        'step': 1,
-        'chunk': {'type': 'text-delta', 'index': 0, 'text': 'replacement'},
-      }),
-      event(5, 'step/end', {'turn': 1, 'step': 1}),
-      event(6, 'turn/end', {
-        'turn': 1,
-        'reason': {'kind': 'interrupted'},
-      }),
-    ];
-    final projection = ChatProjection()..reconcile(events);
-    final frozen = projection.entries.where(
-      (row) => row.kind == ChatEntryKind.assistant,
-    );
-    expect(frozen, hasLength(1));
-    expect(frozen.single.content.single['text'], 'replacement');
-    expect(projection.hasSettledAssistant(turn: 1, step: 1), isTrue);
-    final resumed = List<Json>.of(events)
-      ..add(event(7, 'step/start', {'turn': 1, 'step': 1}))
-      ..add(assistant(8, 'complete retry'));
-    projection.reconcile(resumed);
-    expect(
-      projection.entries.where((row) => row.key == 'assistant-frozen:1:1'),
-      isEmpty,
-    );
-    expect(projection.entries.last.content.single['text'], 'complete retry');
-    expect(projection.hasFinalAssistant(turn: 1, step: 1), isTrue);
-  });
+  test(
+    'retry resets only its step prefix before freezing or settling text',
+    () {
+      final events = <Json>[
+        event(0, 'turn/start', {'turn': 1}),
+        event(1, 'step/start', {'turn': 1, 'step': 1}),
+        event(2, 'assistant/live-chunk', {
+          'turn': 1,
+          'step': 1,
+          'chunk': {'type': 'text-delta', 'index': 0, 'text': 'discarded'},
+        }),
+        event(3, 'llm/retry', {'turn': 1, 'step': 1}),
+        event(4, 'assistant/live-chunk', {
+          'turn': 1,
+          'step': 1,
+          'chunk': {'type': 'text-delta', 'index': 0, 'text': 'replacement'},
+        }),
+        event(5, 'step/end', {'turn': 1, 'step': 1}),
+        event(6, 'turn/end', {
+          'turn': 1,
+          'reason': {'kind': 'interrupted'},
+        }),
+      ];
+      final projection = ChatProjection()..reconcile(events);
+      final frozen = projection.entries.where(
+        (row) => row.kind == ChatEntryKind.assistant,
+      );
+      expect(frozen, hasLength(1));
+      expect(frozen.single.content.single['text'], 'replacement');
+      expect(projection.hasSettledAssistant(turn: 1, step: 1), isTrue);
+      final resumed = List<Json>.of(events)
+        ..add(event(7, 'step/start', {'turn': 1, 'step': 1}))
+        ..add(assistant(8, 'complete retry'));
+      projection.reconcile(resumed);
+      expect(
+        projection.entries.where((row) => row.key == 'assistant-frozen:1:1'),
+        isEmpty,
+      );
+      expect(projection.entries.last.content.single['text'], 'complete retry');
+      expect(projection.hasFinalAssistant(turn: 1, step: 1), isTrue);
+    },
+  );
 
   test('10k history is interpreted once; unchanged streaming frames do not walk or rebuild rows', () {
     final events = List.generate(

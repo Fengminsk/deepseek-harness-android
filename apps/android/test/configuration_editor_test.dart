@@ -11,6 +11,7 @@ import 'package:dsh_android/configuration_edits.dart';
 import 'package:dsh_android/configuration_value_row.dart';
 import 'package:dsh_android/configuration_fields_schema.dart';
 import 'package:dsh_android/configuration_presentation.dart';
+import 'package:dsh_android/settings.dart';
 import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/models.dart';
 import 'package:dsh_android/models_data.dart';
@@ -120,6 +121,24 @@ Json fixture() => {
         'uid': 4,
         'type': 'string',
         'meta': {'role': 'secret'},
+      },
+    },
+  },
+};
+
+Json agentLoopFixture({int? override, int? maximum}) => {
+  'ns': 'agent-loop',
+  'revision': 4,
+  'base': {'maxParallelToolCalls': 10},
+  'value': {'maxParallelToolCalls': override ?? 10},
+  'user': {'maxParallelToolCalls': ?override},
+  'secrets': [],
+  'schema': {
+    'type': 'object',
+    'dict': {
+      'maxParallelToolCalls': {
+        'type': 'number',
+        'meta': {'min': 1, 'step': 1, 'max': ?maximum},
       },
     },
   },
@@ -1547,4 +1566,136 @@ void main() {
       await tester.pumpWidget(const SizedBox());
     },
   );
+
+  testWidgets(
+    'agent loop limit stages integer steps and saves through revisioned settings',
+    (tester) async {
+      final runtime = SettingsRuntime(agentLoopFixture(maximum: 11));
+      await openEditor(tester, runtime, width: 390);
+      expect(find.text('Agent 执行'), findsOneWidget);
+      expect(
+        tester
+            .widget<Text>(find.byKey(const Key('agent-loop-parallel-value')))
+            .data,
+        '10',
+      );
+      expect(runtime.writes, isEmpty);
+
+      await tester.tap(find.byKey(const Key('agent-loop-parallel-increase')));
+      await tester.pumpAndSettle();
+      expect(runtime.writes, isEmpty);
+      expect(
+        tester
+            .widget<Text>(find.byKey(const Key('agent-loop-parallel-value')))
+            .data,
+        '11',
+      );
+      expect(
+        tester
+            .widget<GlassButton>(
+              find.byKey(const Key('agent-loop-parallel-increase')),
+            )
+            .onPressed,
+        isNull,
+      );
+      await tester.tap(find.byTooltip('保存并应用'));
+      await tester.pumpAndSettle();
+      expect(runtime.writes.single['expectedRevision'], 4);
+      expect(runtime.writes.single['ops'], [
+        {
+          'op': 'set',
+          'path': ['maxParallelToolCalls'],
+          'value': 11,
+        },
+      ]);
+      expect(runtime.remote['value']['maxParallelToolCalls'], 11);
+    },
+  );
+
+  testWidgets(
+    'agent loop override resets to inherited value without writing until save',
+    (tester) async {
+      final runtime = SettingsRuntime(agentLoopFixture(override: 6));
+      await openEditor(tester, runtime, width: 390);
+      await tester.tap(find.byKey(const Key('agent-loop-parallel-reset')));
+      await tester.pumpAndSettle();
+      expect(runtime.writes, isEmpty);
+      expect(
+        tester
+            .widget<Text>(find.byKey(const Key('agent-loop-parallel-value')))
+            .data,
+        '10',
+      );
+      await tester.tap(find.byTooltip('保存并应用'));
+      await tester.pumpAndSettle();
+      expect(runtime.writes.single['ops'], [
+        {
+          'op': 'unset',
+          'path': ['maxParallelToolCalls'],
+        },
+      ]);
+      expect(runtime.remote['value']['maxParallelToolCalls'], 10);
+    },
+  );
+
+  testWidgets('agent loop keeps detailed numeric editing in a child page', (
+    tester,
+  ) async {
+    final runtime = SettingsRuntime(agentLoopFixture());
+    await openEditor(tester, runtime, width: 390);
+    await tester.tap(find.text('并行工具调用上限'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('structure-value')), findsOneWidget);
+    await tester.enterText(find.byKey(const Key('structure-value')), '0');
+    await tester.pumpAndSettle();
+    expect(find.text('数值不能小于 1。'), findsOneWidget);
+    await tester.enterText(find.byKey(const Key('structure-value')), '16');
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('完成编辑'));
+    await tester.pumpAndSettle();
+    expect(runtime.writes, isEmpty);
+    expect(
+      tester
+          .widget<Text>(find.byKey(const Key('agent-loop-parallel-value')))
+          .data,
+      '16',
+    );
+  });
+
+  testWidgets('agent loop step does not overwrite a newer settings revision', (
+    tester,
+  ) async {
+    final runtime = SettingsRuntime(agentLoopFixture());
+    await openEditor(tester, runtime, width: 390);
+    await tester.tap(find.byKey(const Key('agent-loop-parallel-increase')));
+    await tester.pumpAndSettle();
+    runtime.remote['revision'] = 5;
+    await tester.tap(find.byTooltip('保存并应用'));
+    await tester.pumpAndSettle();
+    expect(runtime.writes, isEmpty);
+    expect(runtime.remote['value']['maxParallelToolCalls'], 10);
+    expect(
+      tester
+          .widget<Text>(find.byKey(const Key('agent-loop-parallel-value')))
+          .data,
+      '11',
+    );
+    expect(find.textContaining('冲突'), findsWidgets);
+  });
+
+  testWidgets('agent loop entry appears in Agent settings group', (
+    tester,
+  ) async {
+    final runtime = SettingsRuntime(agentLoopFixture());
+    addTearDown(runtime.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: pocketTheme(Brightness.light),
+        home: ConfigurationListPage(runtime: runtime),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Agent'), findsOneWidget);
+    expect(find.text('Agent 执行'), findsOneWidget);
+  });
 }
