@@ -18,7 +18,7 @@ public final class IsolatedWorkerWritebackTest {
             Path workspace = Files.createDirectory(privateRoot.resolve("workspace"));
             AtomicInteger syncs = new AtomicInteger();
             var writer = new IsolatedWorkerWriteback(privateRoot, workspace, directory -> {
-                check(directory.equals(workspace), "synced a different directory");
+                check(directory.startsWith(workspace), "synced outside workspace");
                 syncs.incrementAndGet();
             });
             check(writer.version("笔记.txt").equals(IsolatedWorkerWriteback.MISSING), "missing revision");
@@ -81,7 +81,12 @@ public final class IsolatedWorkerWritebackTest {
 
             reject(() -> writer.commit("笔记.txt", created.sha256(), first, () -> false), "stale revision");
             reject(() -> writer.commit("../escape", replaced.sha256(), first, () -> false), "parent traversal");
-            reject(() -> writer.commit("nested/file", replaced.sha256(), first, () -> false), "nested target");
+            reject(() -> writer.commit("nested/file", replaced.sha256(), first, () -> false), "absent nested directory");
+            reject(() -> writer.commit("/absolute", replaced.sha256(), first, () -> false), "absolute target");
+            reject(() -> writer.commit("folder//file", replaced.sha256(), first, () -> false), "empty path component");
+            reject(() -> writer.commit("folder/./file", replaced.sha256(), first, () -> false), "dot path component");
+            reject(() -> writer.commit("folder/../file", replaced.sha256(), first, () -> false), "parent path component");
+            reject(() -> writer.commit("folder\\file", replaced.sha256(), first, () -> false), "backslash path component");
             reject(() -> writer.commit("笔记.txt", "0".repeat(63), first, () -> false), "invalid revision");
             reject(() -> writer.commit("笔记.txt", replaced.sha256(), new byte[IsolatedWorkerInput.MAX_TEXT_BYTES + 1], () -> false), "oversize");
             reject(() -> writer.commit("笔记.txt", replaced.sha256(), new byte[] {(byte) 0xc3, 0x28}, () -> false), "malformed UTF-8");
@@ -97,6 +102,13 @@ public final class IsolatedWorkerWritebackTest {
             }
 
             Files.createDirectory(workspace.resolve("folder"));
+            Path nested = Files.createDirectory(workspace.resolve("folder/deeper"));
+            var nestedCreated = writer.commit("folder/deeper/notes.txt", IsolatedWorkerWriteback.MISSING,
+                "nested text".getBytes(StandardCharsets.UTF_8), () -> false);
+            check(writer.snapshot("folder/deeper/notes.txt", () -> false).sha256().equals(nestedCreated.sha256()),
+                "nested snapshot revision");
+            check(Files.readString(nested.resolve("notes.txt")).equals("nested text"), "nested writeback");
+            check(writer.version("folder/deeper/notes.txt").equals(nestedCreated.sha256()), "nested version");
             reject(() -> writer.version("folder"), "directory target");
             Files.write(workspace.resolve("large.txt"), new byte[IsolatedWorkerInput.MAX_TEXT_BYTES + 1]);
             reject(() -> writer.version("large.txt"), "oversized existing target");
@@ -111,6 +123,12 @@ public final class IsolatedWorkerWritebackTest {
                 // Some Windows hosts do not permit creating symlinks without developer mode.
             }
             if (symlinkAvailable) reject(() -> writer.snapshot("alias.txt", () -> false), "symbolic-link snapshot");
+            if (symlinkAvailable) {
+                Files.createSymbolicLink(workspace.resolve("folder-link"), workspace.resolve("folder"));
+                reject(() -> writer.snapshot("folder-link/deeper/notes.txt", () -> false), "symbolic-link parent");
+                reject(() -> writer.commit("folder-link/other.txt", IsolatedWorkerWriteback.MISSING,
+                    first, () -> false), "symbolic-link parent write");
+            }
             reject(() -> new IsolatedWorkerWriteback(privateRoot, fixture, directory -> {}), "outside private root");
             var uncertain = new IsolatedWorkerWriteback(privateRoot, workspace, directory -> { throw new IOException("sync failed"); });
             try {

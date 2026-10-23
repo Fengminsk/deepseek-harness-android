@@ -42,6 +42,8 @@ class TaskCompletionNotifications(private val context: Context) : AutoCloseable 
         require(rawSeq is Number && rawSeq.toDouble() == rawSeq.toLong().toDouble() && rawSeq.toLong() >= 0)
         require(rawTurn is Number && rawTurn.toDouble() == rawTurn.toLong().toDouble() && rawTurn.toLong() >= 0)
         val endSeq = rawSeq.toLong()
+        val preview = signal.optString("preview").replace(Regex("[\\p{Cntrl}]"), " ")
+            .trim().take(100).takeIf { it.isNotEmpty() }
         val key = "end:$sessionId"
         if (!state.claim(sessionId, endSeq, preferences.getLong(key, -1))) return
         val eligible = state.shouldAlert(sessionId) && allowed()
@@ -52,7 +54,7 @@ class TaskCompletionNotifications(private val context: Context) : AutoCloseable 
             main.post {
                 if (!saved) Log.w("PocketTaskNotice", "Completion notification state could not be saved")
                 else if (!closed && eligible && state.isCurrentClaim(sessionId, endSeq)
-                    && state.shouldAlert(sessionId) && allowed()) show(sessionId)
+                    && state.shouldAlert(sessionId) && allowed()) show(sessionId, preview)
             }
         }
     }
@@ -69,7 +71,7 @@ class TaskCompletionNotifications(private val context: Context) : AutoCloseable 
         manager.areNotificationsEnabled() &&
         manager.getNotificationChannel(CHANNEL_ID)?.importance != NotificationManager.IMPORTANCE_NONE
 
-    private fun show(sessionId: String) {
+    private fun show(sessionId: String, preview: String?) {
         val intent = Intent(context, MainActivity::class.java)
             .setAction(OPEN_ACTION)
             .setData(Uri.Builder().scheme("pocket-notification").authority("completed").appendPath(sessionId).build())
@@ -80,7 +82,7 @@ class TaskCompletionNotifications(private val context: Context) : AutoCloseable 
         val notice = Notification.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.pocket_mark)
             .setContentTitle("Pocket Harness")
-            .setContentText("本轮任务已完成，轻点查看回复。")
+            .setContentText(preview ?: "本轮任务已完成，轻点查看回复。")
             .setCategory(Notification.CATEGORY_MESSAGE)
             .setVisibility(Notification.VISIBILITY_PRIVATE)
             .setContentIntent(open).setAutoCancel(true).setOnlyAlertOnce(false)

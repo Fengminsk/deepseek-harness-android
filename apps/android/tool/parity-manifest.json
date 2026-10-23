@@ -38,16 +38,17 @@
       "status": "partial",
       "android": [
         "apps/android/lib/account.dart",
+        "apps/android/lib/account_avatar.dart",
         "apps/android/lib/account_state.dart",
         "apps/android/lib/account_presentation.dart"
       ],
       "evidence": {
         "core": "unverified",
         "ui": "partial",
-        "behavior": "unverified",
+        "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Native account reads and sign-in exist. The explicit authorization-link fallback carries the active palette and preserves Host query parameters; account balances follow original two-decimal and sub-cent display rules without changing raw values. Full original settings, onboarding, quota notice, profile-image lifecycle and device behavior have not been established."
+      "note": "Native account reads and sign-in exist. The explicit authorization-link fallback carries the active palette and preserves Host query parameters; account balances follow original two-decimal and sub-cent display rules without changing raw values. Account and sidebar now share a bounded, credential-free avatar load with failure fallback, explicit retry and stale-result rejection; focused Flutter tests cover sign-out and reconnect. Full original settings, onboarding, quota notice and device behavior remain unverified."
     },
     {
       "key": "webUi/ui-theme",
@@ -940,7 +941,12 @@
         "apps/android/lib/chat_feedback.dart",
         "apps/android/lib/chat_feedback_projection.dart",
         "apps/android/lib/chat_feedback_widgets.dart",
-        "apps/android/test/chat_feedback_test.dart"
+        "apps/android/lib/feedback_draft.dart",
+        "apps/android/lib/session_feedback.dart",
+        "apps/android/lib/main.dart",
+        "apps/android/test/chat_feedback_test.dart",
+        "apps/android/test/session_feedback_test.dart",
+        "apps/android/test/composer_commands_test.dart"
       ],
       "evidence": {
         "core": "unverified",
@@ -948,7 +954,10 @@
         "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Native reply actions include feedback state and like/dislike submission through the original service; host projection and widget tests pass. Device behavior and complete original feedback semantics remain unverified."
+      "note": "Native reply actions retain original message feedback state and like/dislike submission. Bare /feedback opens a category-and-remark form that records through the original sessionFeedback service without starting a model turn; typed /feedback <text> remains the original command. Both forms share one taxonomy/editor. Unknown transport outcomes preserve the draft and block automatic duplicate submission. Host projection, route, command, and failure tests pass; device behavior and complete original feedback semantics remain unverified.",
+      "evidenceRefs": {
+        "behavior": ["apps/android/test/session_feedback_test.dart", "apps/android/test/composer_commands_test.dart", "apps/android/test/chat_feedback_test.dart"]
+      }
     },
     {
       "key": "webUi/ui-model-selection",
@@ -2189,6 +2198,7 @@
         "apps/android/android/app/src/main/kotlin/com/minnnng/dsh_android/IsolatedWorkerService.kt",
         "apps/android/android/app/src/main/kotlin/com/minnnng/dsh_android/IsolatedWorkerBridge.kt",
         "apps/android/android/app/src/main/java/com/minnnng/dsh_android/IsolatedWorkerTextEdit.java",
+        "apps/android/android/app/src/main/java/com/minnnng/dsh_android/IsolatedWorkerTextSearch.java",
         "apps/android/android/app/src/main/java/com/minnnng/dsh_android/IsolatedWorkerWriteback.java",
         "apps/android/tool/acceptance-isolated-worker.mjs"
       ],
@@ -2198,7 +2208,7 @@
         "behavior": "unverified",
         "device": "unverified"
       },
-      "note": "Original programmatic tool execution remains disabled. Its Node child requires per-run workspace confinement, but sandbox-local has no Android runner. Android code wires one bounded literal edit over an App-selected workspace text snapshot through an isolated Service and revision-checked writeback; host compilation and pure-Java tests pass, but device execution is unverified. This diagnostic file-operation slice is not a Node program backend. General file mapping, tool callbacks, descendant confinement and restart ownership remain open. Startup and plugin-management guards still reject activation."
+      "note": "Original programmatic tool execution remains disabled. Its Node child requires per-run workspace confinement, but sandbox-local has no Android runner. Android code grants one App-selected nested workspace text snapshot to a separate-UID Service for bounded literal search or edit, with SHA-256 revisioned writeback; Java host tests and Android Kotlin compilation pass, but device execution is unverified. This diagnostic file-operation slice is not a Node program backend. General file mapping, tool callbacks, descendant confinement and restart ownership remain open. Startup and plugin-management guards still reject activation."
     },
     {
       "key": "androidDisabled/workflow-ptc",
@@ -2218,7 +2228,7 @@
         "behavior": "unverified",
         "device": "unverified"
       },
-      "note": "Original PTC workflow engine remains disabled because no Android runner can execute its Node script under the original per-run confinement contract. Android code provides a diagnostic isolated-worker path for one bounded literal workspace text edit with revisioned writeback; device execution is unverified, and it cannot execute scripts, call child agents, bridge tool bindings or contain descendants. Package, startup and plugin-management checks reject activation."
+      "note": "Original PTC workflow engine remains disabled because no Android runner can execute its Node script under the original per-run confinement contract. Android code provides diagnostic isolated-worker literal search and edit over one App-selected nested workspace file with revisioned writeback; device execution is unverified, and it cannot execute scripts, call child agents, bridge tool bindings or contain descendants. Package, startup and plugin-management checks reject activation."
     },
     {
       "key": "androidDisabled/tool-workflow",

@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:dsh_android/account.dart';
+import 'package:dsh_android/account_avatar.dart';
 import 'package:dsh_android/account_state.dart';
 import 'package:dsh_android/main.dart';
 import 'package:dsh_android/runtime.dart';
@@ -156,6 +157,45 @@ class _Runtime extends RuntimeController {
 }
 
 void main() {
+  test(
+    'account picture follows credential identity across reconnect and sign-out',
+    () async {
+      final runtime = _Runtime()..deferProfile = true;
+      final image = Completer<Uint8List>();
+      final account = AccountState(
+        runtime,
+        _client,
+        avatarFetch: (_) => image.future,
+      );
+      addTearDown(() async {
+        account.dispose();
+        await runtime.closeFeeds();
+        runtime.dispose();
+      });
+      await account.watch();
+      runtime.publish(_view(signed: true));
+      runtime.pendingProfiles.single.complete({
+        'status': 'ready',
+        'value': {
+          'id': 'account-a',
+          'name': '测试账号',
+          'contact': '1**',
+          'avatarUrl': 'https://platform.deepseek.com/picture/a',
+        },
+      });
+      await Future<void>.delayed(Duration.zero);
+      expect(account.avatar.snapshot?.status, AccountAvatarStatus.loading);
+      runtime.fail(StateError('temporary disconnect'));
+      expect(account.avatar.snapshot?.url, endsWith('/a'));
+      runtime.serviceReady();
+      runtime.publish(_view());
+      expect(account.avatar.snapshot, isNull);
+      image.complete(Uint8List.fromList([1]));
+      await Future<void>.delayed(Duration.zero);
+      expect(account.avatar.snapshot, isNull);
+    },
+  );
+
   testWidgets(
     'shared account survives page disposal and transient profile failure',
     (tester) async {

@@ -4,6 +4,7 @@ import 'package:material_ui/material_ui.dart';
 
 import 'chat_feedback.dart';
 import 'entry_motion.dart';
+import 'feedback_draft.dart';
 import 'ui.dart';
 
 /// The same action is used by the compact reply menu and accessibility actions.
@@ -274,55 +275,15 @@ class _ChatFeedbackPageState extends State<ChatFeedbackPage> {
             label: '关闭反馈',
             onPressed: () => Navigator.maybePop(context),
           ),
-          body: PocketList(
-            children: [
-              PocketSection(
-                title: '反馈分类',
-                divided: true,
-                children: [
-                  for (final entry in chatFeedbackCategories.entries)
-                    PocketTile(
-                      title: Text(entry.value),
-                      selected: _category == entry.key,
-                      trailing: _category == entry.key
-                          ? const Icon(Icons.check_rounded, size: 20)
-                          : const SizedBox(width: 20),
-                      onTap: enabled
-                          ? () => setState(() {
-                              _category = _category == entry.key
-                                  ? null
-                                  : entry.key;
-                            })
-                          : null,
-                    ),
-                ],
-              ),
-              PocketSection(
-                title: '反馈详情',
-                children: [
-                  TextField(
-                    controller: _text,
-                    enabled: enabled,
-                    minLines: 3,
-                    maxLines: null,
-                    keyboardType: TextInputType.multiline,
-                    textCapitalization: TextCapitalization.sentences,
-                    onTapOutside: (_) =>
-                        FocusManager.instance.primaryFocus?.unfocus(),
-                    decoration: const InputDecoration(
-                      hintText: '填写详情以帮助我们改进体验',
-                      border: InputBorder.none,
-                      enabledBorder: InputBorder.none,
-                      focusedBorder: InputBorder.none,
-                    ),
-                  ),
-                ],
-              ),
-              const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 18),
-                child: Text('提交内容会包括当前对话的日志。'),
-              ),
-            ],
+          body: FeedbackDraftBody(
+            text: _text,
+            category: _category,
+            enabled: enabled,
+            hint: '填写详情以帮助我们改进体验',
+            explanation: '提交内容会包括当前对话的日志。',
+            onCategory: (category) => setState(() {
+              _category = _category == category ? null : category;
+            }),
           ),
           bottom: Column(
             mainAxisSize: MainAxisSize.min,

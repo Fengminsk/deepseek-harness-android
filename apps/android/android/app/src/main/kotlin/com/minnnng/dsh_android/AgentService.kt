@@ -593,11 +593,21 @@ class AgentService : Service() {
             }
             val workspace = File(filesDir, "ptc-isolation-workspace-${java.util.UUID.randomUUID()}")
             check(workspace.mkdir()) { "Could not create isolation workspace" }
-            val source = File(workspace, "probe.txt")
+            val nested = File(workspace, "nested")
+            check(nested.mkdir()) { "Could not create nested isolation workspace" }
+            val source = File(nested, "probe.txt")
             try {
                 source.writeBytes(payload)
+                val search = IsolatedWorkerBridge.searchWorkspaceText(
+                    this, workspace, "nested/probe.txt", "isolation", 4,
+                    java.util.function.BooleanSupplier { false },
+                )
+                check(search.workerUid != Process.myUid() && search.revision == hash &&
+                    search.hits.size == 1 && search.hits[0].line == 1 && search.hits[0].column == 5 &&
+                    !search.truncated
+                ) { "Isolated worker did not search the selected nested workspace file" }
                 val edit = IsolatedWorkerBridge.replaceWorkspaceText(
-                    this, workspace, source.name, hash, "isolation", "worker", 1,
+                    this, workspace, "nested/probe.txt", hash, "isolation", "worker", 1,
                     java.util.function.BooleanSupplier { false },
                 )
                 check(edit.previousSha256() == hash && source.readText() == "PTC worker probe") {
@@ -605,12 +615,14 @@ class AgentService : Service() {
                 }
             } finally {
                 check(source.delete() || !source.exists()) { "Could not remove isolation workspace file" }
+                check(nested.delete() || !nested.exists()) { "Could not remove nested isolation workspace" }
                 check(workspace.delete() || !workspace.exists()) { "Could not remove isolation workspace" }
             }
             return JSONObject().put("workerUid", evidence.workerUid)
                 .put("hostUid", Process.myUid()).put("bytes", evidence.bytes)
                 .put("sha256", evidence.sha256).put("privateReadDenied", true)
-                .put("grantReadVerified", true).put("workspaceEditVerified", true)
+                .put("grantReadVerified", true).put("workspaceSearchVerified", true)
+                .put("workspaceEditVerified", true)
         } finally {
             check(file.delete() || !file.exists()) { "Could not remove isolation probe input" }
         }

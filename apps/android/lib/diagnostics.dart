@@ -121,6 +121,7 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
           raw['workerUid'] == raw['hostUid'] ||
           raw['privateReadDenied'] != true ||
           raw['grantReadVerified'] != true ||
+          raw['workspaceSearchVerified'] != true ||
           raw['workspaceEditVerified'] != true ||
           raw['bytes'] is! int ||
           raw['bytes'] <= 0 ||
@@ -131,7 +132,7 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
       if (current()) {
         setState(() {
           isolationEvidence = raw;
-          isolationNotice = '独立进程、私有文件拒绝及授权文件的读取与版本写回已通过本次检查。';
+          isolationNotice = '独立进程、私有文件拒绝及授权文件的读取、搜索与版本写回已通过本次检查。';
         });
       }
     } catch (_) {

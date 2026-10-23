@@ -19,14 +19,38 @@ function fixture(t) {
   })
   const status = (agent, status) => handlers.get('agent/status')?.({ agent, status })
   const event = (agent, type, data, seq = 0) => handlers.get('session/event')?.(agent.session, { type, data, seq })
-  function turn(agent, { number = 1, startSeq = 0, reason = 'completed', step = true } = {}) {
+  function turn(agent, { number = 1, startSeq = 0, reason = 'completed', step = true, message } = {}) {
     event(agent, 'turn/start', { turn: number }, startSeq)
     if (step) event(agent, 'step/start', { turn: number, step: 1 }, startSeq + 1)
+    if (message) event(agent, 'assistant/message', { turn: number, message: { content: [{ type: 'text', text: message }] } }, startSeq + 2)
     values.set(agent.session.id, { turns: [{ turn: number, seq: startSeq, endSeq: startSeq + 4, reason: { kind: reason } }] })
     event(agent, 'turn/end', { turn: number, reason: { kind: reason } }, startSeq + 4)
   }
   return { ctx, completion, handlers, notices, values, goals, agent, status, turn, event }
 }
+
+test('completion preview uses only the current committed assistant text and stays one short line', t => {
+  const f = fixture(t), a = f.agent()
+  f.status(a, 'running')
+  f.turn(a, { number: 1, startSeq: 0, message: 'old result' })
+  f.turn(a, { number: 2, startSeq: 5, message: '## 已修复后台任务。\n详情在会话中。' })
+  f.status(a, 'idle')
+  assert.deepEqual(f.notices, [{ method: 'task.completed', params: {
+    sessionId: 'session', turn: 2, endSeq: 9, preview: '已修复后台任务。',
+  } }])
+})
+
+test('tool-only completion has no invented preview and failed turns reveal no text', t => {
+  const f = fixture(t), a = f.agent()
+  f.status(a, 'running')
+  f.turn(a, { reason: 'error', message: 'private failure text' })
+  f.status(a, 'idle')
+  f.status(a, 'running')
+  f.turn(a, { number: 2, startSeq: 5 })
+  f.event(a, 'assistant/message', { turn: 1, message: { content: [{ type: 'text', text: 'stale' }] } }, 10)
+  f.status(a, 'idle')
+  assert.deepEqual(f.notices, [{ method: 'task.completed', params: { sessionId: 'session', turn: 2, endSeq: 9 } }])
+})
 
 test('successful whole driver emits one metadata-only notice after idle, not each completed turn', t => {
   const f = fixture(t), a = f.agent()

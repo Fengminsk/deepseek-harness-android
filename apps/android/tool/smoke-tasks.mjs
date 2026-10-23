@@ -212,8 +212,9 @@ try {
     assert.equal((await request('tasks.session', { sessionId: 'completed' })).history[0].status, 'completed')
     const completedNotice = await first.wait(frame => frame.method === 'task.completed'
       && frame.params.sessionId === 'completed')
-    assert.deepEqual(Object.keys(completedNotice.params).sort(), ['endSeq', 'sessionId', 'turn'])
+    assert.deepEqual(Object.keys(completedNotice.params).sort(), ['endSeq', 'preview', 'sessionId', 'turn'])
     assert.equal(completedNotice.params.turn, 1)
+    assert.equal(completedNotice.params.preview, 'task completed')
     assert.ok(Number.isSafeInteger(completedNotice.params.endSeq))
     assert.deepEqual(first.notices.filter(frame => frame.method === 'task.completed').map(frame => frame.params.sessionId),
       ['completed'], 'cancelled and failed turns must not claim completion')

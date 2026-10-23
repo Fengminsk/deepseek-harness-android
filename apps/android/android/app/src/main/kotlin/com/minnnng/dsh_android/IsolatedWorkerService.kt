@@ -28,6 +28,7 @@ class IsolatedWorkerService : Service() {
         const val READ_TEXT = 3
         const val CANCEL = 4
         const val EDIT_TEXT = 5
+        const val SEARCH_TEXT = 6
         const val INPUT = "input"
         const val REQUEST_ID = "requestId"
         const val TEXT = "text"
@@ -41,6 +42,13 @@ class IsolatedWorkerService : Service() {
         const val EDIT_NEEDLE = "editNeedle"
         const val EDIT_REPLACEMENT = "editReplacement"
         const val EDIT_MAX_REPLACEMENTS = "editMaxReplacements"
+        const val SEARCH_QUERY = "searchQuery"
+        const val SEARCH_MAX_MATCHES = "searchMaxMatches"
+        const val SEARCH_HITS = "searchHits"
+        const val SEARCH_TRUNCATED = "searchTruncated"
+        const val SEARCH_LINE = "searchLine"
+        const val SEARCH_COLUMN = "searchColumn"
+        const val SEARCH_PREVIEW = "searchPreview"
     }
 
     private val worker = Executors.newSingleThreadExecutor()
@@ -50,6 +58,7 @@ class IsolatedWorkerService : Service() {
         val descriptor: ParcelFileDescriptor,
         val reply: Messenger,
         val edit: IsolatedWorkerTextEdit.Spec?,
+        val search: IsolatedWorkerTextSearch.Spec?,
         val cancelled: AtomicBoolean = AtomicBoolean(false),
     )
     // Handler callbacks, including onDestroy, own this reference on the main thread.
@@ -73,7 +82,7 @@ class IsolatedWorkerService : Service() {
             }
             return@Handler true
         }
-        if (message.what == READ_TEXT || message.what == EDIT_TEXT) {
+        if (message.what == READ_TEXT || message.what == EDIT_TEXT || message.what == SEARCH_TEXT) {
             val reply = message.replyTo ?: return@Handler true
             val data = message.data
             val descriptor = @Suppress("DEPRECATION") (data.getParcelable<ParcelFileDescriptor>(INPUT))
@@ -94,12 +103,22 @@ class IsolatedWorkerService : Service() {
                 send(reply, Bundle().apply { putString(REQUEST_ID, id); putString(ERROR, "Invalid isolated-worker text edit") })
                 return@Handler true
             }
+            val search = try {
+                if (message.what == SEARCH_TEXT) IsolatedWorkerTextSearch.Spec(
+                    checkNotNull(data.getString(SEARCH_QUERY)),
+                    data.getInt(SEARCH_MAX_MATCHES, -1),
+                ) else null
+            } catch (_: Exception) {
+                descriptor.close()
+                send(reply, Bundle().apply { putString(REQUEST_ID, id); putString(ERROR, "Invalid isolated-worker search") })
+                return@Handler true
+            }
             if (!busy.compareAndSet(false, true)) {
                 descriptor.close()
                 send(reply, Bundle().apply { putString(REQUEST_ID, id); putString(ERROR, "Isolated worker is busy") })
                 return@Handler true
             }
-            val operation = TextOperation(id, descriptor, reply, edit)
+            val operation = TextOperation(id, descriptor, reply, edit, search)
             activeText = operation
             try { worker.execute { readText(operation) } }
             catch (_: RejectedExecutionException) {
@@ -191,10 +210,23 @@ class IsolatedWorkerService : Service() {
                 }
                 val input = ParcelFileDescriptor.AutoCloseInputStream(descriptor).use { IsolatedWorkerInput.readUtf8(it) }
                 check(!operation.cancelled.get()) { "Isolated-worker read cancelled" }
-                val text = operation.edit?.let { IsolatedWorkerTextEdit.replace(input, it) } ?: input
-                check(!operation.cancelled.get()) { "Isolated-worker read cancelled" }
                 result.putInt(UID, Process.myUid())
-                result.putString(TEXT, text)
+                if (operation.search != null) {
+                    val matches = IsolatedWorkerTextSearch.search(input, operation.search)
+                    check(!operation.cancelled.get()) { "Isolated-worker search cancelled" }
+                    result.putParcelableArrayList(SEARCH_HITS, ArrayList(matches.hits().map { hit ->
+                        Bundle().apply {
+                            putInt(SEARCH_LINE, hit.line())
+                            putInt(SEARCH_COLUMN, hit.column())
+                            putString(SEARCH_PREVIEW, hit.preview())
+                        }
+                    }))
+                    result.putBoolean(SEARCH_TRUNCATED, matches.truncated())
+                } else {
+                    val text = operation.edit?.let { IsolatedWorkerTextEdit.replace(input, it) } ?: input
+                    check(!operation.cancelled.get()) { "Isolated-worker read cancelled" }
+                    result.putString(TEXT, text)
+                }
             }
         } catch (error: Exception) {
             result.putString(ERROR, error.message ?: "Isolated-worker read failed")

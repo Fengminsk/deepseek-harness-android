@@ -2,16 +2,20 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import 'account_avatar.dart';
 import 'runtime.dart';
 
 class AccountState extends ChangeNotifier {
-  AccountState(this.runtime, this.client)
-    : _ready = runtime.ready,
+  AccountState(this.runtime, this.client, {AccountAvatarFetch? avatarFetch})
+    : avatar = AccountAvatarLoader(fetch: avatarFetch),
+      _ready = runtime.ready,
       _runtimeGeneration = runtime.connectionGeneration {
     runtime.addListener(_runtimeChanged);
+    avatar.addListener(_publish);
   }
   final RuntimeController runtime;
   final Json client;
+  final AccountAvatarLoader avatar;
   StreamSubscription<Json>? _subscription;
   Future<void>? _modelInitialization;
   Future<void>? _detailsRefresh;
@@ -117,6 +121,7 @@ class AccountState extends ChangeNotifier {
                 modelInitializationError = null;
                 modelInitializationNotice = null;
                 profile = balance = bonuses = null;
+                avatar.clear();
                 acknowledged.clear();
               }
               revision++;
@@ -215,7 +220,8 @@ class AccountState extends ChangeNotifier {
     }
   }
 
-  Future<void> refreshDetails() {
+  Future<void> refreshDetails({bool retryAvatar = false}) {
+    if (retryAvatar) avatar.retry();
     if (_detailsRefresh != null) return _detailsRefresh!;
     late final Future<void> operation;
     operation = _readDetails().whenComplete(() {
@@ -232,6 +238,7 @@ class AccountState extends ChangeNotifier {
       loadingDetails = false;
       if (!signedIn) {
         profile = balance = bonuses = null;
+        avatar.clear();
         acknowledged.clear();
       }
       _publish();
@@ -267,6 +274,8 @@ class AccountState extends ChangeNotifier {
       read('getProfile', (value) {
         profile = value;
         profileFresh = true;
+        final record = value?['value'];
+        avatar.setUrl(record is Json ? record['avatarUrl'] as String? : null);
       }, requiresReady: true),
       read('getBalance', (value) {
         balance = value;
@@ -347,6 +356,8 @@ class AccountState extends ChangeNotifier {
     _modelGeneration++;
     _retry?.cancel();
     runtime.removeListener(_runtimeChanged);
+    avatar.removeListener(_publish);
+    avatar.dispose();
     unawaited(_subscription?.cancel());
     super.dispose();
   }

@@ -34,6 +34,7 @@ import 'chat_deliverables.dart';
 import 'chat_goal.dart';
 import 'chat_plan.dart';
 import 'chat_goal_plan_state.dart';
+import 'session_feedback.dart';
 import 'chat_reading.dart';
 import 'chat_shortcuts.dart';
 import 'resource_hub.dart';
@@ -529,6 +530,9 @@ class _ChatPageState extends State<ChatPage> {
         inputFocus.unfocus();
         unawaited(goalPlan.refresh());
         unawaited(openChatPlanMode(context, goalPlan));
+      case 'feedback':
+        inputFocus.unfocus();
+        navigate(SessionFeedbackPage(runtime: runtime, sessionId: sessionId));
       case 'permission':
         navigate(
           SessionPermissionPage(
@@ -656,6 +660,7 @@ class _ChatPageState extends State<ChatPage> {
                 'export',
                 'goal',
                 'plan',
+                'feedback',
               ].contains(action)) {
             if (attachedIds.isNotEmpty &&
                 action != 'file' &&

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:dsh_android/account_state.dart';
 import 'package:dsh_android/chat_sidebar.dart';
@@ -13,11 +14,21 @@ import 'package:material_ui/material_ui.dart';
 import 'library_test.dart' show LibraryRuntime, settle, summary;
 
 class SidebarAccountRuntime extends LibraryRuntime {
-  late final observedAccount = AccountState(this, {});
+  SidebarAccountRuntime() {
+    observedAccount.addListener(notifyListeners);
+  }
+  late final observedAccount = AccountState(
+    this,
+    {},
+    avatarFetch: (_) async => base64Decode(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==',
+    ),
+  );
   @override
   AccountState get accountSnapshot => observedAccount;
   @override
   void dispose() {
+    observedAccount.removeListener(notifyListeners);
     observedAccount.dispose();
     super.dispose();
   }
@@ -304,15 +315,18 @@ void main() {
             'name': 'Test Account',
             'avatarUrl': 'https://example.test/avatar.png',
           },
-        };
+        }
+        ..avatar.setUrl('https://example.test/avatar.png');
       runtime.notifyListeners();
       await tester.pumpAndSettle();
       final image = tester.widget<Image>(
         find.descendant(of: accountEntry, matching: find.byType(Image)),
       );
       expect(
-        (image.image as NetworkImage).url,
-        'https://example.test/avatar.png',
+        ((image.image as ResizeImage).imageProvider as MemoryImage).bytes,
+        base64Decode(
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==',
+        ),
       );
       expect(find.text('Test Account'), findsNothing);
       expect(runtime.watches.where((entry) => entry.$1 == 'account'), isEmpty);

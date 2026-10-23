@@ -52,7 +52,7 @@ public final class IsolatedWorkerWriteback {
     private final Path workspaceRoot;
     private final DirectorySync sync;
 
-    /** Both roots are selected by the App. This transport commits only direct children of one private workspace. */
+    /** Both roots are selected by the App. Paths are relative children of one private workspace. */
     public IsolatedWorkerWriteback(Path privateRoot, Path workspaceRoot, DirectorySync sync) throws IOException {
         this.privateRoot = privateRoot.toAbsolutePath().normalize();
         this.workspaceRoot = workspaceRoot.toAbsolutePath().normalize();
@@ -102,7 +102,8 @@ public final class IsolatedWorkerWriteback {
         String before = revision(destination);
         if (!before.equals(expectedSha256)) throw new IOException("Workspace file changed before writeback");
         String after = hash(content);
-        Path staged = workspaceRoot.resolve("." + filename + "." + UUID.randomUUID() + ".pending");
+        Path parent = destination.getParent();
+        Path staged = parent.resolve("." + destination.getFileName() + "." + UUID.randomUUID() + ".pending");
         boolean moved = false;
         try {
             checkWorkspace();
@@ -124,7 +125,7 @@ public final class IsolatedWorkerWriteback {
                 StandardCopyOption.REPLACE_EXISTING);
             moved = true;
             Receipt receipt = new Receipt(before, after, content.length);
-            try { sync.sync(workspaceRoot); }
+            try { sync.sync(parent); }
             catch (IOException failure) { throw new CommitUncertain(receipt, failure); }
             return receipt;
         } finally {
@@ -146,12 +147,23 @@ public final class IsolatedWorkerWriteback {
 
     private Path target(String filename) throws IOException {
         checkWorkspace();
-        if (filename == null || filename.isEmpty() || filename.equals(".") || filename.equals("..")
-                || filename.indexOf('/') >= 0 || filename.indexOf('\\') >= 0
-                || filename.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 180
-                || filename.codePoints().anyMatch(Character::isISOControl))
-            throw new IOException("Invalid workspace filename");
-        Path target = workspaceRoot.resolve(filename);
+        if (filename == null || filename.isEmpty() || filename.indexOf('\\') >= 0
+                || filename.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 1024)
+            throw new IOException("Invalid workspace relative path");
+        String[] segments = filename.split("/", -1);
+        if (segments.length > 16) throw new IOException("Workspace path exceeds depth limit");
+        Path target = workspaceRoot;
+        for (int index = 0; index < segments.length; index++) {
+            String segment = segments[index];
+            if (segment.isEmpty() || segment.equals(".") || segment.equals("..")
+                    || segment.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 180
+                    || segment.codePoints().anyMatch(Character::isISOControl))
+                throw new IOException("Invalid workspace relative path");
+            target = target.resolve(segment);
+            if (index < segments.length - 1
+                    && (!Files.isDirectory(target, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(target)))
+                throw new IOException("Workspace path contains a non-directory or symbolic link");
+        }
         if (Files.isSymbolicLink(target)) throw new IOException("Workspace target is a symbolic link");
         return target;
     }

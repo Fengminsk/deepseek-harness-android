@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
+import 'account_avatar.dart';
 import 'account_presentation.dart';
 import 'account_state.dart';
 import 'runtime.dart';
@@ -56,7 +57,9 @@ class _AccountPageState extends State<AccountPage> with WidgetsBindingObserver {
     final model = account;
     if (model != null) {
       unawaited(
-        model.connected ? model.refreshDetails() : model.ensureWatching(),
+        model.connected
+            ? model.refreshDetails(retryAvatar: true)
+            : model.ensureWatching(),
       );
     }
   }
@@ -72,6 +75,7 @@ class _AccountPageState extends State<AccountPage> with WidgetsBindingObserver {
       model.addListener(changed);
       setState(() => account = model);
       await model.ensureWatching();
+      model.avatar.retry();
     } catch (failure) {
       if (mounted) setState(() => error = '无法初始化账号页面，请重新打开。');
     }
@@ -168,7 +172,7 @@ class _AccountPageState extends State<AccountPage> with WidgetsBindingObserver {
     if (state == AppLifecycleState.resumed && account != null) {
       unawaited(
         account!.connected
-            ? account!.refreshDetails()
+            ? account!.refreshDetails(retryAvatar: true)
             : account!.ensureWatching(),
       );
     }
@@ -208,7 +212,7 @@ class _AccountPageState extends State<AccountPage> with WidgetsBindingObserver {
         onPressed: model == null
             ? initialize
             : () => model.connected
-                  ? model.refreshDetails()
+                  ? model.refreshDetails(retryAvatar: true)
                   : model.ensureWatching(),
       ),
       body: PocketList(
@@ -246,6 +250,11 @@ class _AccountPageState extends State<AccountPage> with WidgetsBindingObserver {
               children: [
                 PocketRow(
                   icon: Icons.account_circle_outlined,
+                  leading: AccountAvatar(
+                    snapshot: model.avatar.snapshot,
+                    onImageError: model.avatar.renderedImageFailed,
+                    size: 34,
+                  ),
                   title:
                       profile?['name'] as String? ??
                       profile?['contact'] as String? ??

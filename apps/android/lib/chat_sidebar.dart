@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'account.dart';
+import 'account_avatar.dart';
 import 'approvals.dart';
 import 'entry_motion.dart';
 import 'export.dart';
@@ -414,20 +415,15 @@ class _ChatSidebarState extends State<ChatSidebar> {
       ),
       const Spacer(),
       _SidebarAvatar(
-        url: _avatarUrl(),
+        snapshot: widget.runtime.accountSnapshot?.signedIn == true
+            ? widget.runtime.accountSnapshot?.avatar.snapshot
+            : null,
+        onImageError:
+            widget.runtime.accountSnapshot?.avatar.renderedImageFailed,
         onPressed: () => _page(AccountPage(runtime: widget.runtime)),
       ),
     ],
   );
-
-  String? _avatarUrl() {
-    final account = widget.runtime.accountSnapshot;
-    final profile = account?.profile;
-    if (account?.signedIn != true || profile?['status'] != 'ready') return null;
-    final value = profile?['value'];
-    final url = value is Map ? value['avatarUrl'] : null;
-    return url is String && url.trim().isNotEmpty ? url : null;
-  }
 
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
@@ -1013,27 +1009,22 @@ class _SidebarFade extends StatelessWidget {
 }
 
 class _SidebarAvatar extends StatelessWidget {
-  const _SidebarAvatar({required this.onPressed, this.url});
+  const _SidebarAvatar({
+    required this.onPressed,
+    this.snapshot,
+    this.onImageError,
+  });
   final VoidCallback onPressed;
-  final String? url;
+  final AccountAvatarSnapshot? snapshot;
+  final ValueChanged<AccountAvatarSnapshot>? onImageError;
   @override
   Widget build(BuildContext context) => GlassButton.custom(
     key: const ValueKey('sidebar-account'),
     label: '账号',
     onPressed: onPressed,
-    icon: ClipOval(
-      child: SizedBox.square(
-        dimension: 30,
-        child: url == null
-            ? const Icon(Icons.person_outline_rounded)
-            : Image.network(
-                url!,
-                fit: BoxFit.cover,
-                excludeFromSemantics: true,
-                errorBuilder: (_, _, _) =>
-                    const Icon(Icons.person_outline_rounded),
-              ),
-      ),
+    icon: AccountAvatar(
+      snapshot: snapshot,
+      onImageError: onImageError ?? (_) {},
     ),
   );
 }

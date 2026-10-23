@@ -10,6 +10,7 @@ import 'package:dsh_android/models.dart';
 import 'package:dsh_android/models_provider.dart';
 import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/session_models.dart';
+import 'package:dsh_android/session_feedback.dart';
 import 'package:dsh_android/skills.dart';
 import 'package:dsh_android/ui.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -29,6 +30,7 @@ final catalog = <Json>[
       'definitionId': commandDefinitions[name],
       'description': 'original $name',
       if (name == 'goal' || name == 'plan') 'input': {'attachments': true},
+      if (name == 'feedback') 'input': {'hint': '<text>'},
     },
   {'name': 'plugin-command', 'description': 'Plugin contribution'},
 ];
@@ -152,6 +154,11 @@ class _Runtime extends RuntimeController {
           };
           modelSeq++;
           return {'selected': Json.of(currentModel)};
+        case 'sessionFeedback.record':
+          return {
+            'ok': true,
+            'value': {'recorded': true},
+          };
       }
     }
     throw StateError('Unexpected $method $params');
@@ -637,6 +644,82 @@ void main() {
   });
 
   testWidgets(
+    'bare feedback from the composer opens the session form, not the Host text command',
+    (tester) async {
+      phone(tester);
+      final runtime = _Runtime();
+      addTearDown(runtime.dispose);
+      await tester.pumpWidget(host(ChatPage(runtime: runtime)));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const Key('chat-composer-input')),
+        '/反馈',
+      );
+      await tester.tap(find.byTooltip('发送'));
+      await tester.pumpAndSettle();
+      expect(find.byType(SessionFeedbackPage), findsOneWidget);
+      expect(
+        runtime.calls.where((call) => call.method == 'session.command'),
+        isEmpty,
+      );
+      expect(runtime.prompts, 0);
+      await tester.tap(find.text('任务结果'));
+      await tester.enterText(find.byType(TextField).last, '  结果缺页  ');
+      await tester.tap(find.text('提交'));
+      await tester.pumpAndSettle();
+      final recorded = runtime.calls
+          .where(
+            (call) =>
+                call.method == 'api.call' &&
+                call.params['namespace'] == 'sessionFeedback',
+          )
+          .single;
+      expect(recorded.params['args'], {
+        'sessionId': runtime.timelines.keys.single,
+        'text': '结果缺页',
+        'category': 'task-result',
+      });
+      expect(find.byType(SessionFeedbackPage), findsNothing);
+      expect(
+        runtime.calls.where((call) => call.method == 'session.command'),
+        isEmpty,
+      );
+    },
+  );
+
+  testWidgets('typed feedback with text keeps the original command path', (
+    tester,
+  ) async {
+    phone(tester);
+    final runtime = _Runtime();
+    addTearDown(runtime.dispose);
+    await tester.pumpWidget(host(ChatPage(runtime: runtime)));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('chat-composer-input')),
+      '/反馈 建议改善布局',
+    );
+    await tester.tap(find.byTooltip('发送'));
+    await tester.pumpAndSettle();
+    expect(find.byType(SessionFeedbackPage), findsNothing);
+    expect(
+      runtime.calls
+          .where((call) => call.method == 'session.command')
+          .single
+          .params['line'],
+      '/feedback 建议改善布局',
+    );
+    expect(
+      runtime.calls.where(
+        (call) =>
+            call.method == 'api.call' &&
+            call.params['namespace'] == 'sessionFeedback',
+      ),
+      isEmpty,
+    );
+  });
+
+  testWidgets(
     'typed commands execute canonically and an unavailable directory never silently prompts',
     (tester) async {
       final runtime = _Runtime();
@@ -814,6 +897,40 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.byType(TextField), findsOneWidget);
       expect(find.byType(ComposerCommandChip), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'feedback picker opens its own form without consuming the chat draft',
+    (tester) async {
+      phone(tester);
+      final runtime = _Runtime();
+      addTearDown(runtime.dispose);
+      await tester.pumpWidget(host(ChatPage(runtime: runtime)));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const Key('chat-composer-input')),
+        '未发送草稿',
+      );
+      await tester.tap(find.byTooltip('添加与指令'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('反馈  feedback'));
+      await tester.pumpAndSettle();
+      expect(find.byType(SessionFeedbackPage), findsOneWidget);
+      expect(
+        runtime.calls.where((call) => call.method == 'session.command'),
+        isEmpty,
+      );
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(find.byType(SessionFeedbackPage), findsNothing);
+      expect(
+        tester
+            .widget<TextField>(find.byKey(const Key('chat-composer-input')))
+            .controller!
+            .text,
+        '未发送草稿',
+      );
     },
   );
 

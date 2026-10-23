@@ -1,3 +1,12 @@
+function completionPreview(content) {
+  const first = content?.filter(part => part?.type === 'text' && typeof part.text === 'string')
+    .map(part => part.text).join(' ').replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ')
+    .replace(/^(?:[#>*-]+\s*)+/, '').trim()
+  if (!first) return undefined
+  const sentence = first.match(/^.{1,100}?[。！？!?]/u)?.[0] ?? first.slice(0, 100)
+  return sentence.trim() || undefined
+}
+
 /** Live whole-driver completion; history reads and disconnected status never produce notices. */
 export class AppTaskCompletion {
   constructor(ctx, transport) {
@@ -26,8 +35,11 @@ export class AppTaskCompletion {
       record.turn = event.data.turn
       record.startSeq = event.seq
       record.hasStep = false
+      record.preview = undefined
     } else if (event.type === 'step/start' && record.turn === event.data.turn) {
       record.hasStep = true
+    } else if (event.type === 'assistant/message' && record.turn === event.data.turn) {
+      record.preview = completionPreview(event.data.message?.content) ?? record.preview
     }
   }
 
@@ -51,7 +63,8 @@ export class AppTaskCompletion {
         || turn.reason?.kind !== 'completed' || !Number.isSafeInteger(turn.endSeq)) return
       const goal = this.ctx.get('goals')?.get(agent)
       if (goal && goal.phase !== 'complete') return
-      this.transport.notify('task.completed', { sessionId, turn: turn.turn, endSeq: turn.endSeq })
+      this.transport.notify('task.completed', { sessionId, turn: turn.turn, endSeq: turn.endSeq,
+        ...(record.preview ? { preview: record.preview } : {}) })
     } catch (error) {
       // A failed read/notification cannot convert an unknown result into success or stop the Agent.
       try { this.transport.notify('notifications.error', { message: '任务提醒未能确认，请在会话中查看结果' }) }
