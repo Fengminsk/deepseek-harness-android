@@ -5,9 +5,8 @@ import 'package:dsh_android/chat_messages.dart';
 import 'package:dsh_android/chat_message_actions.dart';
 import 'package:dsh_android/chat_projection.dart';
 import 'package:dsh_android/chat_reading.dart';
-import 'package:dsh_android/chat_tool_groups.dart';
+import 'package:dsh_android/chat_execution_chain.dart';
 import 'package:dsh_android/runtime.dart';
-import 'package:dsh_android/tool_activity.dart';
 import 'package:dsh_android/ui.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -446,9 +445,12 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      expect(find.byType(ToolActivityCard), findsOneWidget);
+      expect(find.byType(ChatExecutionHeader), findsOneWidget);
       expect(find.text('from device'), findsNothing);
-      await tester.tap(find.byType(ToolActivityCard));
+      await tester.tap(find.byType(ChatExecutionHeader));
+      await tester.pumpAndSettle();
+      expect(find.byType(ChatExecutionStep), findsOneWidget);
+      await tester.tap(find.text('pwd'));
       await tester.pumpAndSettle();
       expect(find.text('from device'), findsOneWidget);
       expect(find.textContaining('内容详情'), findsNothing);
@@ -544,7 +546,7 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expect(find.text(expected['processTitle'] as String), findsOneWidget);
+    expect(find.text('状态待确认'), findsOneWidget);
     expect(find.text('思考过程'), findsNothing);
     expect(find.text(expected['hiddenReasoning'] as String), findsNothing);
     expect(
@@ -558,8 +560,9 @@ void main() {
       ),
       findsNothing,
     );
-    await tester.tap(find.text(expected['processTitle'] as String));
+    await tester.tap(find.byType(ChatExecutionHeader));
     await tester.pumpAndSettle();
+    expect(find.text(expected['processTitle'] as String), findsOneWidget);
     expect(
       find.textContaining(
         expected['hiddenReasoning'] as String,
@@ -596,7 +599,7 @@ void main() {
       ]),
     );
     expect(find.text('正在思考'), findsOneWidget);
-    expect(find.text('private live detail'), findsNothing);
+    expect(find.text('private live detail'), findsOneWidget);
     await tester.pumpWidget(
       timeline(const [
         {'type': 'reasoning', 'text': 'private live detail'},
@@ -605,7 +608,7 @@ void main() {
     );
     await tester.pump(const Duration(milliseconds: 250));
     expect(find.text('已思考'), findsOneWidget);
-    expect(find.text('private live detail'), findsNothing);
+    expect(find.text('private live detail'), findsOneWidget);
     expect(
       find.textContaining('Visible reply', findRichText: true),
       findsWidgets,
@@ -660,11 +663,18 @@ void main() {
         ),
       );
       await tester.pumpWidget(view('a'));
-      await tester.tap(find.byType(ToolActivityCard));
+      await tester.tap(find.byType(ChatExecutionHeader));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('放大阅读'));
+      await tester.tap(find.text('pwd'));
       await tester.pumpAndSettle();
-      // A second call creates a collapsed group and removes the original row.
+      // Folding removes the lazy step while the route's timeline-owned source
+      // continues to deliver results for the original call.
+      tester
+          .widget<ChatExecutionHeader>(
+            find.byType(ChatExecutionHeader, skipOffstage: false),
+          )
+          .onToggle();
+      await tester.pumpAndSettle();
       events.add(tool_fixture.callEvent(1, id: 'second'));
       projection.reconcile(events);
       await tester.pumpWidget(view('a'));
@@ -684,7 +694,7 @@ void main() {
       await tester.pumpWidget(view('b'));
       await tester.pumpAndSettle();
       expect(find.text('late device output'), findsNothing);
-      expect(find.byType(ChatToolGroupHeader), findsOneWidget);
+      expect(find.byType(ChatExecutionHeader), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );
@@ -710,21 +720,21 @@ void main() {
           ),
         ),
       );
-      expect(find.byType(ToolActivityCard), findsNothing);
-      await tester.tap(find.byType(ChatToolGroupHeader));
+      expect(find.byType(ChatExecutionStep), findsNothing);
+      await tester.tap(find.byType(ChatExecutionHeader));
       await tester.pumpAndSettle();
       expect(
-        find.byType(ToolActivityCard).evaluate().length,
+        find.byType(ChatExecutionStep).evaluate().length,
         inInclusiveRange(1, 30),
       );
       scroll.jumpTo(scroll.position.maxScrollExtent);
       await tester.pumpAndSettle();
-      expect(find.byType(ToolActivityCard).evaluate().length, lessThan(30));
+      expect(find.byType(ChatExecutionStep).evaluate().length, lessThan(30));
       scroll.jumpTo(0);
       await tester.pumpAndSettle();
-      await tester.tap(find.byType(ChatToolGroupHeader));
+      await tester.tap(find.byType(ChatExecutionHeader));
       await tester.pumpAndSettle();
-      expect(find.byType(ToolActivityCard), findsNothing);
+      expect(find.byType(ChatExecutionStep), findsNothing);
       expect(tester.takeException(), isNull);
     },
   );

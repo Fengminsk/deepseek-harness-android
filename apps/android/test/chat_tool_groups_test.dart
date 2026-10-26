@@ -6,6 +6,7 @@ import 'package:dsh_android/chat_projection.dart';
 import 'package:dsh_android/chat_progress.dart';
 import 'package:dsh_android/chat_messages.dart';
 import 'package:dsh_android/chat_tool_groups.dart';
+import 'package:dsh_android/chat_execution_chain.dart';
 import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/tool_activity_data.dart';
 import 'package:dsh_android/tool_activity.dart';
@@ -267,16 +268,16 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      final status = find.text('1 项需查看 · 1 项等待结果');
+      final status = find.text('状态待确认 · 1 项需查看');
       expect(status, findsOneWidget);
       expect(
-        tester.getSize(find.byType(ChatToolGroupHeader)).height,
+        tester.getSize(find.byType(ChatExecutionHeader)).height,
         greaterThan(48),
       );
       expect(find.byType(ToolActivityCard), findsNothing);
-      await tester.tap(find.byType(ChatToolGroupHeader));
+      await tester.tap(find.byType(ChatExecutionHeader));
       await tester.pumpAndSettle();
-      expect(find.byType(ToolActivityCard), findsNWidgets(3));
+      expect(find.byType(ChatExecutionStep), findsNWidgets(3));
       expect(status, findsOneWidget);
       expect(tester.takeException(), isNull);
     },

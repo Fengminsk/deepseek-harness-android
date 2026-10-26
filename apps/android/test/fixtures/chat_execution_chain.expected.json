@@ -1,0 +1,253 @@
+{
+  "description": "Synthetic keyless transcript replay for the Android execution chain; no live search or model request.",
+  "events": [
+    {
+      "seq": 0,
+      "time": 0,
+      "type": "user/message",
+      "data": {
+        "id": "input-0",
+        "role": "user",
+        "source": {
+          "kind": "user"
+        },
+        "content": [
+          {
+            "type": "text",
+            "text": "今天有什么关于漏洞的新闻吗？"
+          }
+        ]
+      },
+      "surfaceOp": "append"
+    },
+    {
+      "seq": 1,
+      "time": 1000,
+      "type": "turn/start",
+      "data": {
+        "turn": 1
+      }
+    },
+    {
+      "seq": 2,
+      "time": 2000,
+      "type": "todo/write",
+      "data": {
+        "todos": [
+          {
+            "content": "搜索近期安全公告",
+            "status": "completed"
+          },
+          {
+            "content": "核对官方来源",
+            "status": "completed"
+          },
+          {
+            "content": "整理影响与修复建议",
+            "status": "completed"
+          }
+        ]
+      }
+    },
+    {
+      "seq": 3,
+      "time": 3000,
+      "type": "tool/call",
+      "data": {
+        "turn": 1,
+        "step": 1,
+        "callId": "search",
+        "name": "web_search",
+        "arguments": "{\"query\":\"security vulnerability news october 2026\"}"
+      }
+    },
+    {
+      "seq": 5,
+      "time": 5000,
+      "type": "tool/result",
+      "data": {
+        "turn": 1,
+        "step": 1,
+        "message": {
+          "role": "tool",
+          "source": {
+            "kind": "tool",
+            "callId": "search"
+          },
+          "toolCallId": "legacy-other-id",
+          "content": [
+            {
+              "type": "text",
+              "text": "done"
+            }
+          ]
+        },
+        "meta": {
+          "sources": [
+            {
+              "title": "GitHub · dotnet/announcements",
+              "url": "https://github.com/dotnet/announcements",
+              "snippet": "Security releases and notices"
+            },
+            {
+              "title": "Security updates",
+              "url": "https://example.org/security",
+              "snippet": "Latest security notices"
+            },
+            {
+              "title": "MDN Web Docs",
+              "url": "https://developer.mozilla.org/en-US/"
+            }
+          ],
+          "truncated": false
+        }
+      },
+      "surfaceOp": "append"
+    },
+    {
+      "seq": 6,
+      "time": 6000,
+      "type": "tool/call",
+      "data": {
+        "turn": 1,
+        "step": 1,
+        "callId": "fetch-1",
+        "name": "web_fetch",
+        "arguments": "{\"url\":\"https://github.com/dotnet/announcements/issues\"}"
+      }
+    },
+    {
+      "seq": 8,
+      "time": 8000,
+      "type": "tool/result",
+      "data": {
+        "turn": 1,
+        "step": 1,
+        "message": {
+          "role": "tool",
+          "source": {
+            "kind": "tool",
+            "callId": "fetch-1"
+          },
+          "toolCallId": "legacy-other-id",
+          "content": [
+            {
+              "type": "text",
+              "text": "done"
+            }
+          ]
+        },
+        "meta": {
+          "url": "https://github.com/dotnet/announcements/issues",
+          "statusCode": 200,
+          "truncated": false
+        }
+      },
+      "surfaceOp": "append"
+    },
+    {
+      "seq": 9,
+      "time": 9000,
+      "type": "tool/call",
+      "data": {
+        "turn": 1,
+        "step": 1,
+        "callId": "fetch-2",
+        "name": "web_fetch",
+        "arguments": "{\"url\":\"https://example.org/security\"}"
+      }
+    },
+    {
+      "seq": 11,
+      "time": 11000,
+      "type": "tool/result",
+      "data": {
+        "turn": 1,
+        "step": 1,
+        "message": {
+          "role": "tool",
+          "source": {
+            "kind": "tool",
+            "callId": "fetch-2"
+          },
+          "toolCallId": "legacy-other-id",
+          "content": [
+            {
+              "type": "text",
+              "text": "done"
+            }
+          ]
+        },
+        "meta": {
+          "url": "https://example.org/security",
+          "statusCode": 200,
+          "truncated": false
+        }
+      },
+      "surfaceOp": "append"
+    },
+    {
+      "seq": 12,
+      "time": 12000,
+      "type": "assistant/message",
+      "data": {
+        "turn": 1,
+        "step": 12,
+        "message": {
+          "id": "reasoning-12",
+          "role": "assistant",
+          "content": [
+            {
+              "type": "reasoning",
+              "text": "核对公告中的影响范围和修复版本。"
+            }
+          ]
+        }
+      },
+      "surfaceOp": "append"
+    },
+    {
+      "seq": 13,
+      "time": 13000,
+      "type": "assistant/message",
+      "data": {
+        "turn": 1,
+        "step": 13,
+        "message": {
+          "id": "assistant-13",
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "已整理来源，下面是公告摘要。"
+            }
+          ]
+        }
+      },
+      "surfaceOp": "append"
+    },
+    {
+      "seq": 14,
+      "time": 14000,
+      "type": "turn/end",
+      "data": {
+        "turn": 1,
+        "reason": {
+          "kind": "completed"
+        }
+      }
+    }
+  ],
+  "expected": {
+    "collapsedTitle": "已完成",
+    "expandedTitle": "规划与执行",
+    "searchPreviewCount": 2,
+    "fetchHeadingCount": 1,
+    "sourceUrls": [
+      "https://github.com/dotnet/announcements",
+      "https://example.org/security",
+      "https://developer.mozilla.org/en-US/"
+    ],
+    "answer": "已整理来源，下面是公告摘要。"
+  }
+}

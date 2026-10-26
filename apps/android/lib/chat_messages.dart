@@ -12,7 +12,8 @@ import 'chat_projection.dart';
 import 'chat_deliverables.dart';
 import 'chat_changes.dart';
 import 'chat_skills.dart';
-import 'chat_tool_groups.dart';
+import 'chat_execution_chain.dart';
+import 'chat_execution_data.dart';
 import 'chat_user_references.dart';
 import 'chat_turn_extras.dart';
 import 'chat_turn_navigation.dart';
@@ -177,8 +178,9 @@ class _ChatTimelineState extends State<ChatTimeline>
   final _sources = <String, ValueNotifier<ToolActivity?>>{};
   final _expanded = <String, bool>{};
   final _motions = <String, AnimationController>{};
-  List<ChatDisplayItem> _groups = const [];
-  List<ChatDisplayItem> _display = const [];
+  List<ChatExecutionDisplay> _groups = const [];
+  List<ChatExecutionDisplay> _display = const [];
+  bool _hasActiveExecution = false;
   final _positions = <String, int>{};
   final _displayKeys = <String, String>{};
   ChatArtifactsProjection _artifacts = ChatArtifactsProjection();
@@ -192,7 +194,7 @@ class _ChatTimelineState extends State<ChatTimeline>
   List<ToolActivity> _progressCalls = const [];
   final _changeRows = <String, ChatChangesTurn>{};
   final _listAnchor = PocketListAnchorController();
-  (ChatProjection, int, int, int, int, int, int, int?)? _observed;
+  Object? _observed;
   int _generation = 0;
   bool _loadingEarlier = false;
   String? _olderError;
@@ -320,6 +322,11 @@ class _ChatTimelineState extends State<ChatTimeline>
     _references.reconcile(entries: projection.entries, events: widget.events);
     _workflows.reconcile(widget.events);
     _extras.reconcile(widget.events, widget.projection.entries);
+    final live = widget.live;
+    final liveReasoning =
+        live != null &&
+        !projection.hasSettledAssistant(turn: live.turn, step: live.step) &&
+        chatReasoningText(live.content) != null;
     final stamp = (
       projection,
       projection.processedEventCount,
@@ -329,6 +336,10 @@ class _ChatTimelineState extends State<ChatTimeline>
       _extras.revision,
       _workflows.revision,
       widget.live?.turn,
+      liveReasoning ? live.step : null,
+      widget.running,
+      live?.interrupted,
+      live?.unconfirmed,
     );
     if (_observed == stamp) return;
     _observed = stamp;
@@ -395,7 +406,19 @@ class _ChatTimelineState extends State<ChatTimeline>
       if (order != 0) return order;
       return orderByKey[a.key]!.compareTo(orderByKey[b.key]!);
     });
-    _groups = groupChatTools(entries);
+    _groups = groupChatExecution(
+      entries,
+      widget.events,
+      activeTurn:
+          widget.running &&
+              live?.interrupted != true &&
+              live?.unconfirmed != true
+          ? activeTurn
+          : null,
+      liveTurn: liveReasoning ? live.turn : null,
+      liveStep: liveReasoning ? live.step : null,
+    );
+    _hasActiveExecution = _groups.any((item) => item.chain?.active == true);
     final snapshots = <String, ToolActivity>{};
     for (final row in projection.entries) {
       final activity = row.tool;
@@ -419,14 +442,11 @@ class _ChatTimelineState extends State<ChatTimeline>
       }
     });
     for (final item in _groups) {
-      final group = item.group;
+      final group = item.chain;
       if (group == null || _expanded.containsKey(group.key)) continue;
-      _expanded[group.key] =
-          PageStorage.maybeOf(context)?.readState(
-            context,
-            identifier: '${widget.sessionId}:${group.key}',
-          ) ==
-          true;
+      final saved = PageStorage.maybeOf(context)
+          ?.readState(context, identifier: '${widget.sessionId}:${group.key}');
+      if (saved is bool) _expanded[group.key] = saved;
     }
     _flatten();
   }
@@ -456,34 +476,54 @@ class _ChatTimelineState extends State<ChatTimeline>
     _display = [
       for (final item in _groups) ...[
         item,
-        if (item.group != null &&
-            (_expanded[item.key] == true ||
-                (_motions[item.key]?.value ?? 0) > 0))
-          for (final row in item.group!.entries)
-            ChatDisplayItem.entry(row, parent: item.group),
+        if (item.chain != null &&
+            (_isExpanded(item.chain!) || (_motions[item.key]?.value ?? 0) > 0))
+          for (var i = 0; i < item.chain!.entries.length; i++)
+            ChatExecutionDisplay.step(
+              item.chain!.entries[i],
+              item.chain,
+              last: i == item.chain!.entries.length - 1,
+              continuation:
+                  i > 0 &&
+                  item.chain!.entries[i].tool?.name == 'web_fetch' &&
+                  item.chain!.entries[i - 1].tool?.name == 'web_fetch',
+            ),
       ],
     ];
     _positions.clear();
     _displayKeys.clear();
     final seenAssistantSteps = <(int, int)>{};
+    final seenReasoningSteps = <(int, int)>{};
     for (var i = 0; i < _display.length; i++) {
       final item = _display[i];
       final row = item.entry;
       var identity = item.key;
       if (row != null &&
+          item.parent != null &&
+          row.kind == ChatEntryKind.assistant &&
+          row.turn != null &&
+          row.step != null &&
+          seenReasoningSteps.add((row.turn!, row.step!))) {
+        identity = 'process:assistant-step:${row.turn}:${row.step}';
+      }
+      if (row != null &&
+          item.parent == null &&
           row.kind == ChatEntryKind.assistant &&
           row.turn != null &&
           row.step != null &&
           seenAssistantSteps.add((row.turn!, row.step!))) {
         identity = 'assistant-step:${row.turn}:${row.step}';
       }
-      if (row != null) _displayKeys[row.key] = identity;
+      if (row != null) _displayKeys[item.key] = identity;
       _positions[identity] = i;
     }
   }
 
-  void _toggle(ChatToolGroup group) {
-    final wasExpanded = _expanded[group.key] == true;
+  bool _isExpanded(ChatExecutionChain chain) =>
+      _expanded[chain.key] ?? chain.active;
+
+  void _toggle(ChatExecutionChain group) {
+    final wasExpanded = _isExpanded(group);
     final reduced = MediaQuery.disableAnimationsOf(context);
     final motion = _motions.putIfAbsent(group.key, () {
       final controller = AnimationController(
@@ -523,12 +563,17 @@ class _ChatTimelineState extends State<ChatTimeline>
     final sessionId = widget.sessionId;
     final footer = widget.footer;
     final activeTurn = widget.running ? _activeProgressTurn() : null;
-    final showLive =
+    final hasLive =
         stream != null &&
         !widget.projection.hasSettledAssistant(
           turn: stream.turn,
           step: stream.step,
         );
+    final showLive =
+        hasLive &&
+        (_assistantReplyBlocks(stream.content).isNotEmpty ||
+            stream.interrupted ||
+            stream.unconfirmed);
     final liveKey = showLive
         ? 'assistant-step:${stream.turn}:${stream.step}'
         : null;
@@ -542,6 +587,7 @@ class _ChatTimelineState extends State<ChatTimeline>
     final hasPendingActivity = chatHasPendingActivity(_progressCalls);
     final showProgress =
         widget.running &&
+        !_hasActiveExecution &&
         stream?.interrupted != true &&
         stream?.unconfirmed != true &&
         !((reasoningOnly || showingAuthoredReply) && !hasPendingActivity);
@@ -617,15 +663,60 @@ class _ChatTimelineState extends State<ChatTimeline>
         final rowIndex = index - headerCount;
         if (rowIndex < rows.length) {
           final item = rows[rowIndex];
-          if (item.group case final group?) {
-            return ChatToolGroupHeader(
+          if (item.chain case final group?) {
+            return ChatExecutionHeader(
               key: ValueKey((sessionId, group.key)),
-              group: group,
-              expanded: _expanded[group.key] == true,
+              chain: group,
+              expanded: _isExpanded(group),
               onToggle: () => _toggle(group),
             );
           }
           final row = item.entry!;
+          if (item.parent case final chain?) {
+            final isLive = row.key.startsWith('live-reasoning:');
+            final artifact = _artifactRows[row.key];
+            Widget step = ChatExecutionStep(
+              entry: row,
+              storageId: '$sessionId:${_displayKeys[item.key] ?? item.key}',
+              runtime: widget.runtime,
+              last: item.last,
+              continuation: item.continuation,
+              live: isLive,
+              thinking:
+                  isLive &&
+                  widget.running &&
+                  widget.live?.interrupted != true &&
+                  widget.live?.unconfirmed != true &&
+                  _assistantReplyBlocks(widget.live?.content ?? const [])
+                      .isEmpty,
+              liveContent: isLive ? widget.live?.content ?? const [] : const [],
+              todo: artifact is ChatTodoSnapshot ? artifact : null,
+              plan: _extras.planFor(row.key),
+              sessionId: sessionId,
+              onOpenFile: widget.onOpenFile,
+              activitySource: row.tool == null
+                  ? null
+                  : _sources[row.tool!.identity],
+              onOpenLink: widget.onOpenLink,
+            );
+            final motion = _motions[chain.key];
+            if (motion != null) {
+              final animation = CurveTween(curve: Curves.easeOutCubic)
+                  .animate(motion);
+              step = FadeTransition(opacity: animation, child: step);
+              if (chain.entries.length <= 20) {
+                step = SizeTransition(
+                  sizeFactor: animation,
+                  alignment: Alignment.topCenter,
+                  child: step,
+                );
+              }
+            }
+            return KeyedSubtree(
+              key: ValueKey((sessionId, _displayKeys[item.key] ?? item.key)),
+              child: step,
+            );
+          }
           final extra = _extras.render(
             context,
             row.key,
@@ -686,6 +777,7 @@ class _ChatTimelineState extends State<ChatTimeline>
           }
           final message = ChatMessage(
             entry: row,
+            showReasoning: !item.hideReasoning,
             activeTurn: row.retry != null && activeTurn == row.retry!.turn,
             runtime: widget.runtime,
             sessionId: sessionId,
@@ -701,26 +793,9 @@ class _ChatTimelineState extends State<ChatTimeline>
             skillNames: _references.namesFor(row.seq),
             sessionLabels: _references.sessionLabelsFor(row.seq),
           );
-          final group = item.parent;
-          final motion = group == null ? null : _motions[group.key];
-          Widget child = message;
-          if (motion != null) {
-            final animation = CurveTween(curve: Curves.easeOutCubic)
-                .animate(motion);
-            child = PocketBlurTransition(animation: animation, child: child);
-            // Shrinking thousands of row extents would make them all visible
-            // in the last frame. Large groups fade while retaining lazy layout.
-            if (group!.entries.length <= 20) {
-              child = SizeTransition(
-                sizeFactor: animation,
-                alignment: Alignment.topCenter,
-                child: child,
-              );
-            }
-          }
           return KeyedSubtree(
-            key: ValueKey((sessionId, _displayKeys[row.key] ?? row.key)),
-            child: child,
+            key: ValueKey((sessionId, _displayKeys[item.key] ?? item.key)),
+            child: message,
           );
         }
         if (showLive && rowIndex == rows.length) {
@@ -732,18 +807,6 @@ class _ChatTimelineState extends State<ChatTimeline>
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  if (_assistantReasoningText(stream.content) case final text?)
-                    _AssistantReasoningRow(
-                      text: text,
-                      storageId: '$sessionId:$liveKey:reasoning',
-                      running:
-                          widget.running &&
-                          reply.isEmpty &&
-                          !stream.interrupted &&
-                          !stream.unconfirmed,
-                      sessionId: sessionId,
-                      onOpenLink: widget.onOpenLink,
-                    ),
                   if (reply.isNotEmpty)
                     ChatContent(
                       content: reply,
@@ -795,6 +858,7 @@ class ChatMessage extends StatelessWidget {
     required this.storageId,
     this.runtime,
     this.activeTurn = false,
+    this.showReasoning = true,
     this.sessionId,
     this.onOpenLink,
     this.onOpenFile,
@@ -809,6 +873,7 @@ class ChatMessage extends StatelessWidget {
   final ChatEntry entry;
   final RuntimeController? runtime;
   final bool activeTurn;
+  final bool showReasoning;
   final String storageId;
   final String? sessionId;
   final ChatOpenLink? onOpenLink;
@@ -972,9 +1037,9 @@ class ChatMessage extends StatelessWidget {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            if (_assistantReasoningText(entry.content) case final text?)
+            if (showReasoning && _assistantReasoningText(entry.content) != null)
               _AssistantReasoningRow(
-                text: text,
+                text: _assistantReasoningText(entry.content)!,
                 storageId: '$storageId:reasoning',
                 runtime: runtime,
                 sessionId: sessionId,
@@ -1175,7 +1240,6 @@ class _AssistantReasoningRow extends StatelessWidget {
   const _AssistantReasoningRow({
     required this.text,
     required this.storageId,
-    this.running = false,
     this.runtime,
     this.sessionId,
     this.onOpenLink,
@@ -1183,7 +1247,6 @@ class _AssistantReasoningRow extends StatelessWidget {
   });
 
   final String text, storageId;
-  final bool running;
   final RuntimeController? runtime;
   final String? sessionId;
   final ChatOpenLink? onOpenLink;
@@ -1192,8 +1255,7 @@ class _AssistantReasoningRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) => _ChatDisclosure(
     storageId: storageId,
-    title: running ? '正在思考' : '已思考',
-    titleWidget: running ? const ChatProgressLabel(text: '正在思考') : null,
+    title: '已思考',
     icon: Icons.psychology_outlined,
     body: (_) => PocketMarkdown(
       data: text,
@@ -1681,13 +1743,11 @@ class _ChatDisclosure extends StatefulWidget {
     required this.icon,
     required this.body,
     this.color,
-    this.titleWidget,
   });
   final String storageId, title;
   final IconData icon;
   final WidgetBuilder body;
   final Color? color;
-  final Widget? titleWidget;
   @override
   State<_ChatDisclosure> createState() => _ChatDisclosureState();
 }
@@ -1719,19 +1779,16 @@ class _ChatDisclosureState extends State<_ChatDisclosure> {
     children: [
       ToolActivitySummaryRow(
         icon: widget.icon,
-        title:
-            widget.titleWidget ??
-            Text(
-              widget.title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: 14,
-                color:
-                    widget.color ??
-                    Theme.of(context).colorScheme.onSurfaceVariant,
-              ),
-            ),
+        title: Text(
+          widget.title,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            fontSize: 14,
+            color:
+                widget.color ?? Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+        ),
         label: widget.title,
         color: widget.color ?? Theme.of(context).colorScheme.onSurfaceVariant,
         opened: expanded,

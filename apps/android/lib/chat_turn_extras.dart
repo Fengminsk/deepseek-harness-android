@@ -31,6 +31,8 @@ class ChatTurnExtras {
   int revision = 0;
   (int, int)? _observed;
 
+  ChatSubmittedPlan? planFor(String key) => _planRows[key];
+
   void reconcile(List<Json> events, List<ChatEntry> entries) {
     _plans.reconcile(events);
     _feedback.reconcile(events);
@@ -77,6 +79,7 @@ class ChatTurnExtras {
           seq: plan.seq,
           kind: ChatEntryKind.notice,
           event: anchors[plan.seq]!,
+          turn: plan.turn,
         ),
       for (final entry in _replyRows.entries)
         ChatEntry(

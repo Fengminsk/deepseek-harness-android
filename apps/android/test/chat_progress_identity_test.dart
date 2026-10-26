@@ -1,4 +1,5 @@
 import 'package:dsh_android/chat_messages.dart';
+import 'package:dsh_android/chat_execution_chain.dart';
 import 'package:dsh_android/chat_progress.dart';
 import 'package:dsh_android/chat_projection.dart';
 import 'package:dsh_android/runtime.dart';
@@ -53,11 +54,15 @@ void main() {
     await tester.pumpWidget(view());
     expect(
       tester
-          .widget<ChatProgressLine>(find.byType(ChatProgressLine))
-          .calls
-          .map((call) => call.callId),
+          .widgetList<ChatExecutionHeader>(find.byType(ChatExecutionHeader))
+          .singleWhere((header) => header.chain.active)
+          .chain
+          .entries
+          .where((entry) => entry.tool != null)
+          .map((entry) => entry.tool!.callId),
       ['second'],
     );
+    expect(find.byType(ChatProgressLine), findsNothing);
 
     events.addAll([
       fixture.event(7, 'turn/end', {
