@@ -182,6 +182,7 @@ class _SessionResourcesPageState extends State<SessionResourcesPage> {
     _ResourceKind.files => SessionFilesPage(
       runtime: widget.runtime,
       sessionId: widget.sessionId,
+      manageRouteBack: false,
       onOpenDocument: _openDocument,
     ),
     _ResourceKind.changes => SessionChangesPage(
@@ -229,7 +230,7 @@ class _SessionResourcesPageState extends State<SessionResourcesPage> {
                   child: Text(
                     _resourceTitles[kind]!,
                     maxLines: 1,
-                    style: TextStyle(
+                    style: Theme.of(context).textTheme.bodySmall!.copyWith(
                       fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
                       color: selected
                           ? Theme.of(context).colorScheme.onSurface
@@ -263,6 +264,7 @@ class _SessionResourcesPageState extends State<SessionResourcesPage> {
   @override
   Widget build(BuildContext context) {
     final keyboardOpen = MediaQuery.viewInsetsOf(context).bottom > 0;
+    final showTabs = !keyboardOpen && _tabs.length > 1;
     return PopScope(
       canPop: _selected == _ResourceKind.guide,
       onPopInvokedWithResult: (didPop, _) {
@@ -270,14 +272,14 @@ class _SessionResourcesPageState extends State<SessionResourcesPage> {
           _select(_ResourceKind.guide);
         }
       },
-      child: ColoredBox(
+      child: Material(
         color: Theme.of(context).scaffoldBackgroundColor,
         child: Column(
           children: [
             Expanded(
               child: MediaQuery.removePadding(
                 context: context,
-                removeBottom: true,
+                removeBottom: showTabs,
                 child: IndexedStack(
                   index: _tabs.indexOf(_selected),
                   children: [
@@ -286,19 +288,25 @@ class _SessionResourcesPageState extends State<SessionResourcesPage> {
                         key: ValueKey(
                           'resource-page-${widget.sessionId}-${kind.name}',
                         ),
-                        child: _mounted.contains(kind)
-                            ? _page(kind)
-                            : const SizedBox.shrink(),
+                        child: TickerMode(
+                          enabled: _selected == kind,
+                          child: ExcludeFocus(
+                            excluding: _selected != kind,
+                            child: _mounted.contains(kind)
+                                ? _page(kind)
+                                : const SizedBox.shrink(),
+                          ),
+                        ),
                       ),
                   ],
                 ),
               ),
             ),
-            if (!keyboardOpen)
+            if (showTabs)
               SafeArea(
                 top: false,
                 child: SizedBox(
-                  height: 64,
+                  height: 56,
                   child: SingleChildScrollView(
                     key: const ValueKey('resource-tabs'),
                     scrollDirection: Axis.horizontal,

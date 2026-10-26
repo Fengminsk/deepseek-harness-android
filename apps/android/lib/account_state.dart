@@ -275,7 +275,10 @@ class AccountState extends ChangeNotifier {
         profile = value;
         profileFresh = true;
         final record = value?['value'];
-        avatar.setUrl(record is Json ? record['avatarUrl'] as String? : null);
+        avatar.setUrl(
+          record is Json ? record['avatarUrl'] as String? : null,
+          retryFailed: true,
+        );
       }, requiresReady: true),
       read('getBalance', (value) {
         balance = value;

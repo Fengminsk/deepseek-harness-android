@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:dsh_android/resource_hub.dart';
 import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/session_files.dart';
@@ -151,6 +154,7 @@ Future<void> _mount(
   WidgetTester tester,
   RuntimeController runtime, {
   String sessionId = 'session',
+  bool glass = false,
 }) async {
   tester.view.physicalSize = const Size(390, 844);
   tester.view.devicePixelRatio = 1;
@@ -164,7 +168,10 @@ Future<void> _mount(
           size: Size(390, 844),
           disableAnimations: true,
         ),
-        child: child!,
+        child: LiquidGlassScope(
+          enabled: glass,
+          child: LiquidGlassHost(enabled: glass, child: child!),
+        ),
       ),
       home: SessionResourcesPage(runtime: runtime, sessionId: sessionId),
     ),
@@ -173,6 +180,43 @@ Future<void> _mount(
 }
 
 void main() {
+  final expected = jsonDecode(
+    File('test/fixtures/resource_navigation.expected.json').readAsStringSync(),
+  ) as Map<String, dynamic>;
+  testWidgets(
+    'glass resource tabs use compact typography and stop hidden motion',
+    (tester) async {
+      final runtime = _ResourceRuntime();
+      await _mount(tester, runtime, glass: true);
+      expect(find.byKey(const ValueKey('resource-tabs')), findsNothing);
+      await tester.tap(find.byKey(const ValueKey('resource-files')));
+      await tester.pumpAndSettle();
+      final tab = find.byKey(const ValueKey('resource-tab-files'));
+      final label = tester.widget<Text>(
+        find.descendant(of: tab, matching: find.text('文件')),
+      );
+      expect(label.style!.fontSize, expected['tabFontSize']);
+      expect(
+        tester.getSize(tab).height,
+        lessThanOrEqualTo(expected['maximumTabHeight']),
+      );
+      final guide = find.byKey(
+        const ValueKey('resource-page-session-guide'),
+        skipOffstage: false,
+      );
+      final ticker = find
+          .descendant(
+            of: guide,
+            matching: find.byType(TickerMode, skipOffstage: false),
+          )
+          .first;
+      expect(tester.widget<TickerMode>(ticker).enabled, false);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+      runtime.dispose();
+    },
+  );
+
   testWidgets(
     'tabs mount on selection and retain browser draft and file scroll',
     (tester) async {
@@ -344,6 +388,20 @@ void main() {
     );
     await tester.tap(find.text('打开资源'));
     await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('resource-files')));
+    await tester.pumpAndSettle();
+    // The file root previously re-entered maybePop indefinitely when the hub
+    // vetoed this same route, starving the UI thread until Android killed it.
+    await tester.tap(find.byTooltip('返回上级'));
+    await tester.pumpAndSettle();
+    expect(find.text('会话资源'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('resource-tab-files')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('folder'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('resource-tab-guide')));
+    await tester.pumpAndSettle();
+    // A retained file directory must not intercept another tab's route back.
     await tester.tap(find.byKey(const ValueKey('resource-browser')));
     await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('返回'));

@@ -1,0 +1,7 @@
+{
+  "embedded-raster": { "width": 1, "height": 1 },
+  "embedded-vector": { "width": 128, "height": 128 },
+  "no-content-type": { "scheme": "https", "decoded": true, "closed": true },
+  "application/octet-stream": { "scheme": "https", "decoded": true, "closed": true },
+  "image/png": { "scheme": "https", "decoded": true, "closed": true }
+}

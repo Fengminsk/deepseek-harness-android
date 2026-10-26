@@ -1,8 +1,11 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 
 import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/session_models.dart';
 import 'package:dsh_android/models_label.dart';
+import 'package:dsh_android/session_reasoning_preferences.dart';
 import 'package:dsh_android/ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
@@ -21,6 +24,7 @@ class _Runtime extends RuntimeController {
     phase = 'ready';
   }
   Json? current = pick(flash);
+  final preferences = _Preferences();
   int seq = 4, subscriptions = 0;
   final ensured = <String>[];
   final applied = <Json>[];
@@ -172,6 +176,26 @@ class _Runtime extends RuntimeController {
   }
 }
 
+class _Preferences extends SessionReasoningPreferences {
+  final records = <String, Json>{};
+  Object? saveFailure;
+  Future<void> Function()? beforeSave;
+
+  @override
+  Future<Json?> load(String sessionId) async => records[sessionId];
+
+  @override
+  Future<void> save(String sessionId, Json? effectiveSelection) async {
+    await beforeSave?.call();
+    if (saveFailure != null) throw saveFailure!;
+    if (effectiveSelection == null) {
+      records.remove(sessionId);
+    } else {
+      records[sessionId] = Json.of(effectiveSelection);
+    }
+  }
+}
+
 Future<void> _open(
   WidgetTester tester,
   _Runtime runtime, {
@@ -192,7 +216,11 @@ Future<void> _open(
         ),
         child: child!,
       ),
-      home: SessionModelPage(runtime: runtime, sessionId: 'session-A'),
+      home: SessionModelPage(
+        runtime: runtime,
+        sessionId: 'session-A',
+        reasoningPreferences: runtime.preferences,
+      ),
     ),
   );
   await tester.pumpAndSettle();
@@ -217,13 +245,128 @@ Future<void> tap(WidgetTester tester, Finder finder) async {
 }
 
 bool selected(WidgetTester tester, String id) =>
-    tester.widget<PocketTile>(model(id)).selected;
+    (tester.widget<PocketTile>(model(id)).trailing as Icon).icon ==
+    Icons.check_circle_rounded;
 bool enabled(WidgetTester tester) =>
     tester.widget<PocketButton>(applyButton).onPressed != null;
 Future<void> refresh(WidgetTester tester) =>
     tap(tester, find.byTooltip('刷新会话模型'));
 
 void main() {
+  testWidgets('default detent survives confirmed normalization and reopening', (
+    tester,
+  ) async {
+    final runtime = _Runtime();
+    await _open(tester, runtime);
+    await tap(tester, find.text('默认'));
+    await tap(tester, applyButton);
+    expect(runtime.current, pick(flash));
+    expect(runtime.preferences.records['session-A'], pick(flash));
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpAndSettle();
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: pocketTheme(Brightness.light),
+        home: SessionModelPage(
+          runtime: runtime,
+          sessionId: 'session-A',
+          reasoningPreferences: runtime.preferences,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final control = find.byKey(const ValueKey('session-reasoning-effort'));
+    expect(tester.widget<SegmentedControl<String?>>(control).value, isNull);
+    expect(enabled(tester), isFalse);
+    await tap(tester, find.text('高'));
+    await tap(tester, applyButton);
+    expect(runtime.preferences.records, isEmpty);
+    expect(tester.widget<SegmentedControl<String?>>(control).value, 'high');
+  });
+
+  testWidgets(
+    'remote changes invalidate remembered default without hiding them',
+    (tester) async {
+      final runtime = _Runtime();
+      runtime.preferences.records['session-A'] = pick(flash);
+      await _open(tester, runtime);
+      final control = find.byKey(const ValueKey('session-reasoning-effort'));
+      expect(tester.widget<SegmentedControl<String?>>(control).value, isNull);
+      runtime.remote(pick(pro, 'max'));
+      await tester.pumpAndSettle();
+      expect(runtime.preferences.records, isEmpty);
+      expect(tester.widget<SegmentedControl<String?>>(control).value, 'max');
+      expect(enabled(tester), isFalse);
+    },
+  );
+
+  testWidgets('a changed model default exposes the actual selected effort', (
+    tester,
+  ) async {
+    final runtime = _Runtime();
+    runtime.preferences.records['session-A'] = pick(flash);
+    runtime.directory['groups'][0]['models'][0]['reasoning']['defaultEffort'] =
+        'max';
+    await _open(tester, runtime);
+    expect(runtime.preferences.records, isEmpty);
+    final control = find.byKey(const ValueKey('session-reasoning-effort'));
+    expect(tester.widget<SegmentedControl<String?>>(control).value, 'high');
+  });
+
+  testWidgets(
+    'preference write failure reports separately from applied model',
+    (tester) async {
+      final runtime = _Runtime();
+      runtime.preferences.saveFailure = StateError('disk full');
+      await _open(tester, runtime);
+      await tap(tester, find.text('默认'));
+      await tap(tester, applyButton);
+      expect(runtime.current, pick(flash));
+      expect(runtime.preferences.records, isEmpty);
+      expect(find.textContaining('默认档位未保存'), findsOneWidget);
+      expect(find.textContaining('切换结果未确认'), findsNothing);
+      expect(enabled(tester), isFalse);
+    },
+  );
+
+  testWidgets(
+    'Chinese sliding detents match the compact expected presentation',
+    (tester) async {
+      final expected = jsonDecode(
+        File('test/fixtures/model_reasoning.expected.json').readAsStringSync(),
+      ) as Json;
+      final runtime = _Runtime();
+      runtime.directory['groups'][0]['models'][0]['reasoning']['efforts'] = [
+        for (final id in ['off', 'low', 'high', 'max']) {'id': id, 'name': id},
+      ];
+      await _open(tester, runtime);
+      final control = find.byKey(const ValueKey('session-reasoning-effort'));
+      await Scrollable.ensureVisible(tester.element(control), alignment: .5);
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<SegmentedControl<String?>>(control)
+            .segments
+            .map((s) => s.$2)
+            .toList(),
+        expected['detents'],
+      );
+      expect(tester.getSize(control).height, lessThanOrEqualTo(52));
+      expect(
+        find.text(expected['explicitHighDescription'] as String),
+        findsOneWidget,
+      );
+      await tap(tester, find.text('默认'));
+      expect(
+        find.text(expected['defaultDescription'] as String),
+        findsOneWidget,
+      );
+      expect(find.text('High'), findsNothing);
+      expect(find.text('Max'), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   testWidgets('official Flash badge appears on current and selectable model', (
     tester,
   ) async {
@@ -352,9 +495,9 @@ void main() {
       final runtime = _Runtime()..current = pick(pro, 'max');
       await _open(tester, runtime);
       await tap(tester, model(pro));
-      await tap(tester, find.text('Max'));
+      await tap(tester, find.text('最高'));
       expect(enabled(tester), isFalse);
-      await tap(tester, find.text('默认 · High'));
+      await tap(tester, find.text('默认'));
       expect(enabled(tester), isTrue);
       await tap(tester, applyButton);
       expect(runtime.applied.single.containsKey('reasoningEffort'), isFalse);
@@ -413,15 +556,12 @@ void main() {
       runtime.read = () => pending.future;
       await refresh(tester);
       await tap(tester, model(pro));
-      await tap(tester, find.text('Max'));
+      await tap(tester, find.text('最高'));
       runtime.remote(pick(flash, 'max'));
       pending.complete(stale);
       await tester.pumpAndSettle();
       expect(selected(tester, pro), isTrue);
-      expect(
-        find.textContaining('待应用 · DeepSeek-V4-Pro · Max'),
-        findsOneWidget,
-      );
+      expect(find.textContaining('待应用 · DeepSeek-V4-Pro · 最高'), findsOneWidget);
       expect(find.text('会话模型已变化'), findsOneWidget);
       expect(enabled(tester), isFalse);
       runtime.read = null;
@@ -440,7 +580,7 @@ void main() {
       runtime.remote(pick(pro));
       await tester.pumpAndSettle();
       expect(selected(tester, pro), isTrue);
-      await tap(tester, find.text('Max'));
+      await tap(tester, find.text('最高'));
       runtime.remote(pick(flash));
       await tester.pumpAndSettle();
       expect(selected(tester, pro), isTrue);
@@ -504,11 +644,13 @@ void main() {
       expect(find.textContaining('切换结果未确认'), findsOneWidget);
       expect(enabled(tester), isFalse);
       expect(find.text('请先刷新确认结果'), findsOneWidget);
+      expect(runtime.preferences.records, isEmpty);
       await refresh(tester);
       expect(selected(tester, pro), isTrue);
       expect(find.text('已是当前模型'), findsOneWidget);
       expect(find.text('会话模型已变化'), findsNothing);
       expect(runtime.applied, hasLength(1));
+      expect(runtime.preferences.records['session-A'], pick(pro));
     },
   );
 
@@ -543,6 +685,7 @@ void main() {
       await tap(tester, applyButton);
       expect(find.textContaining('本次尚未提交'), findsOneWidget);
       expect(runtime.applied, isEmpty);
+      expect(runtime.preferences.records, isEmpty);
       expect(selected(tester, pro), isTrue);
     },
   );
@@ -581,7 +724,7 @@ void main() {
     final runtime = _Runtime();
     await _open(tester, runtime, scale: 1.5);
     await tap(tester, model(pro));
-    await tap(tester, find.text('Max'));
+    await tap(tester, find.text('最高'));
     expect(enabled(tester), isTrue);
     await tap(tester, applyButton);
     expect(runtime.current, pick(pro, 'max'));

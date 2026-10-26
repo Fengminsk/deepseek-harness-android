@@ -157,6 +157,46 @@ class _Runtime extends RuntimeController {
 }
 
 void main() {
+  test('reconnected profile retries the same failed account picture', () async {
+    final runtime = _Runtime()..deferProfile = true;
+    var fetches = 0;
+    final account = AccountState(
+      runtime,
+      _client,
+      avatarFetch: (_) async {
+        fetches++;
+        if (fetches == 1) throw StateError('temporarily offline');
+        return Uint8List.fromList([1]);
+      },
+    );
+    addTearDown(() async {
+      account.dispose();
+      await runtime.closeFeeds();
+      runtime.dispose();
+    });
+    final profile = <String, dynamic>{
+      'status': 'ready',
+      'value': {'id': 'account-a', 'avatarUrl': 'https://example.test/a'},
+    };
+    await account.watch();
+    runtime.publish(_view(signed: true));
+    runtime.pendingProfiles.single.complete(profile);
+    await Future<void>.delayed(Duration.zero);
+    expect(account.avatar.snapshot?.status, AccountAvatarStatus.failed);
+    runtime.fail(StateError('disconnected'));
+    runtime.publish(_view(signed: true));
+    runtime.pendingProfiles.last.complete(profile);
+    await Future<void>.delayed(Duration.zero);
+    expect(account.avatar.snapshot?.status, AccountAvatarStatus.ready);
+    expect(fetches, 2);
+    final ready = account.avatar.snapshot;
+    final refreshed = account.refreshDetails();
+    runtime.pendingProfiles.last.complete(profile);
+    await refreshed;
+    expect(account.avatar.snapshot, same(ready));
+    expect(fetches, 2);
+  });
+
   test(
     'account picture follows credential identity across reconnect and sign-out',
     () async {

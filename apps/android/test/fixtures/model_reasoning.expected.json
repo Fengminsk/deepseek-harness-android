@@ -1,0 +1,5 @@
+{
+  "detents": ["默认", "关闭", "低", "高", "最高"],
+  "defaultDescription": "模型默认：高",
+  "explicitHighDescription": "深入推理，适合多数任务"
+}

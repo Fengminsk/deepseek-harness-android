@@ -5,6 +5,7 @@ import 'package:material_ui/material_ui.dart';
 import 'flclash/popup.dart';
 import 'flclash/surface.dart';
 import 'flclash/typography.dart';
+import 'flclash/daylight.dart';
 import 'entry_motion.dart';
 import 'ui.dart';
 
@@ -55,157 +56,199 @@ class FileBrowserChrome extends StatelessWidget {
     final colors = Theme.of(context).colorScheme;
     return PocketReveal(
       child: Scaffold(
-        body: Stack(
-          fit: StackFit.expand,
-          children: [
-            ListView.builder(
-              key: const Key('file-browser-list'),
-              controller: controller,
-              padding: EdgeInsets.fromLTRB(16, top + 12, 16, safe.bottom + 24),
-              itemCount: children.length,
-              itemBuilder: (_, index) => PocketReveal(
-                key: children[index].key == null
-                    ? null
-                    : ValueKey<Key>(children[index].key!),
-                child: children[index],
+        body: _FileBrowserAtmosphere(
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              ListView.builder(
+                key: const Key('file-browser-list'),
+                controller: controller,
+                padding: EdgeInsets.fromLTRB(
+                  16,
+                  top + 12,
+                  16,
+                  safe.bottom + 24,
+                ),
+                itemCount: children.length,
+                itemBuilder: (_, index) => PocketReveal(
+                  key: children[index].key == null
+                      ? null
+                      : ValueKey<Key>(children[index].key!),
+                  child: children[index],
+                ),
               ),
-            ),
-            Positioned(
-              top: 0,
-              left: 0,
-              right: 0,
-              height: top + 28,
-              child: FloatingEdgeScrim(
-                backgroundColor: Theme.of(context).scaffoldBackgroundColor,
-                overhang: 28,
+              Positioned(
+                top: 0,
+                left: 0,
+                right: 0,
+                height: top + 28,
+                child: FloatingEdgeScrim(
+                  backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+                  overhang: 28,
+                ),
               ),
-            ),
-            Positioned(
-              top: safe.top + 8,
-              left: 16,
-              right: 16,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  SizedBox(
-                    height: head,
-                    child: Row(
-                      children: [
-                        GlassButton(
-                          icon: Icons.arrow_back_rounded,
-                          label: '返回上级',
-                          onPressed: onBack,
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                title,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: AppTextStyle.title3.of(
-                                  context,
-                                  emphasized: true,
-                                ),
-                              ),
-                              const SizedBox(height: 3),
-                              Text(
-                                count,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: AppTextStyle.caption1
-                                    .of(context)
-                                    .copyWith(color: colors.onSurfaceVariant),
-                              ),
-                            ],
-                          ),
-                        ),
-                        if (onAdd != null) ...[
-                          const SizedBox(width: 8),
-                          Builder(
-                            builder: (anchor) => GlassButton(
-                              icon: Icons.add_rounded,
-                              label: '添加文件位置',
-                              onPressed: () => onAdd!(anchor),
-                            ),
-                          ),
-                        ],
-                        if (onSearch != null) ...[
-                          const SizedBox(width: 8),
-                          GlassButton(
-                            icon: Icons.search_rounded,
-                            label: '搜索此目录',
-                            onPressed: onSearch,
-                          ),
-                        ],
-                        const SizedBox(width: 8),
-                        Builder(
-                          builder: (anchor) => GlassButton(
-                            icon: Icons.more_horiz_rounded,
-                            label: '文件菜单',
-                            onPressed: () => onMore(anchor),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  SizedBox(
-                    height: trail,
-                    child: SingleChildScrollView(
-                      scrollDirection: Axis.horizontal,
+              Positioned(
+                top: safe.top + 8,
+                left: 16,
+                right: 16,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    SizedBox(
+                      height: head,
                       child: Row(
                         children: [
-                          for (var i = 0; i < breadcrumbs.length; i++) ...[
-                            if (i > 0)
-                              Padding(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 6,
-                                ),
-                                child: Icon(
-                                  Icons.chevron_right_rounded,
-                                  size: 18,
-                                  color: colors.outline,
-                                ),
-                              ),
-                            Semantics(
-                              button: breadcrumbs[i].onTap != null,
-                              child: GestureDetector(
-                                behavior: HitTestBehavior.opaque,
-                                onTap: breadcrumbs[i].onTap,
-                                child: Padding(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 2,
-                                    vertical: 10,
-                                  ),
-                                  child: Text(
-                                    breadcrumbs[i].label,
-                                    style: AppTextStyle.subheadline
-                                        .of(context, emphasized: true)
-                                        .copyWith(
-                                          color: i == breadcrumbs.length - 1
-                                              ? colors.primary
-                                              : colors.onSurface,
-                                        ),
+                          GlassButton(
+                            icon: Icons.arrow_back_rounded,
+                            label: '返回上级',
+                            onPressed: onBack,
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  title,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: AppTextStyle.title3.of(
+                                    context,
+                                    emphasized: true,
                                   ),
                                 ),
+                                const SizedBox(height: 3),
+                                Text(
+                                  count,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: AppTextStyle.caption1
+                                      .of(context)
+                                      .copyWith(color: colors.onSurfaceVariant),
+                                ),
+                              ],
+                            ),
+                          ),
+                          if (onAdd != null) ...[
+                            const SizedBox(width: 8),
+                            Builder(
+                              builder: (anchor) => GlassButton(
+                                icon: Icons.add_rounded,
+                                label: '添加文件位置',
+                                onPressed: () => onAdd!(anchor),
                               ),
                             ),
                           ],
+                          if (onSearch != null) ...[
+                            const SizedBox(width: 8),
+                            GlassButton(
+                              icon: Icons.search_rounded,
+                              label: '搜索此目录',
+                              onPressed: onSearch,
+                            ),
+                          ],
+                          const SizedBox(width: 8),
+                          Builder(
+                            builder: (anchor) => GlassButton(
+                              icon: Icons.more_horiz_rounded,
+                              label: '文件菜单',
+                              onPressed: () => onMore(anchor),
+                            ),
+                          ),
                         ],
                       ),
                     ),
-                  ),
-                ],
+                    SizedBox(
+                      height: trail,
+                      child: SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: Row(
+                          children: [
+                            for (var i = 0; i < breadcrumbs.length; i++) ...[
+                              if (i > 0)
+                                Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 6,
+                                  ),
+                                  child: Icon(
+                                    Icons.chevron_right_rounded,
+                                    size: 18,
+                                    color: colors.outline,
+                                  ),
+                                ),
+                              Semantics(
+                                button: breadcrumbs[i].onTap != null,
+                                child: GestureDetector(
+                                  behavior: HitTestBehavior.opaque,
+                                  onTap: breadcrumbs[i].onTap,
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 2,
+                                      vertical: 10,
+                                    ),
+                                    child: Text(
+                                      breadcrumbs[i].label,
+                                      style: AppTextStyle.subheadline
+                                          .of(context, emphasized: true)
+                                          .copyWith(
+                                            color: i == breadcrumbs.length - 1
+                                                ? colors.primary
+                                                : colors.onSurface,
+                                          ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
   }
+}
+
+class _FileBrowserAtmosphere extends StatefulWidget {
+  const _FileBrowserAtmosphere({required this.child});
+  final Widget child;
+
+  @override
+  State<_FileBrowserAtmosphere> createState() => _FileBrowserAtmosphereState();
+}
+
+class _FileBrowserAtmosphereState extends State<_FileBrowserAtmosphere> {
+  final _scrolling = ValueNotifier(false);
+
+  @override
+  void dispose() {
+    _scrolling.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Stack(
+    fit: StackFit.expand,
+    children: [
+      if (LiquidGlassScope.of(context))
+        DaylightBackdrop(suspendMotion: _scrolling),
+      NotificationListener<ScrollNotification>(
+        onNotification: (event) {
+          if (event is ScrollStartNotification) _scrolling.value = true;
+          if (event is ScrollEndNotification) _scrolling.value = false;
+          return false;
+        },
+        child: widget.child,
+      ),
+    ],
+  );
 }
 
 class FileBrowserEntry extends StatelessWidget {

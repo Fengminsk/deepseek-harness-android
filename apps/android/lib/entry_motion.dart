@@ -57,6 +57,102 @@ class _EntryScope extends InheritedWidget {
   bool updateShouldNotify(_EntryScope oldWidget) => active != oldWidget.active;
 }
 
+/// Keeps outgoing content mounted for the reverse blur. Only changing the
+/// disclosure state moves layout; streaming text updates do not restart it.
+class PocketAnimatedDisclosure extends StatefulWidget {
+  const PocketAnimatedDisclosure({
+    required this.expanded,
+    required this.preview,
+    required this.details,
+    super.key,
+  });
+  final bool expanded;
+  final WidgetBuilder preview, details;
+  @override
+  State<PocketAnimatedDisclosure> createState() =>
+      _PocketAnimatedDisclosureState();
+}
+
+class _PocketAnimatedDisclosureState extends State<PocketAnimatedDisclosure>
+    with SingleTickerProviderStateMixin {
+  late final _motion =
+      AnimationController(
+        vsync: this,
+        value: widget.expanded ? 1 : 0,
+        duration: PocketEntryMotion.duration,
+      )..addStatusListener((status) {
+        if (status == AnimationStatus.completed ||
+            status == AnimationStatus.dismissed) {
+          if (mounted) setState(() {});
+        }
+      });
+  late final _animation = CurvedAnimation(
+    parent: _motion,
+    curve: PocketEntryMotion.curve,
+  );
+  bool _reduced = false;
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _reduced = MediaQuery.disableAnimationsOf(context);
+    if (_reduced) _motion.value = widget.expanded ? 1 : 0;
+  }
+
+  @override
+  void didUpdateWidget(covariant PocketAnimatedDisclosure oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.expanded == widget.expanded) return;
+    if (_reduced) {
+      _motion.value = widget.expanded ? 1 : 0;
+    } else if (widget.expanded) {
+      _motion.forward();
+    } else {
+      _motion.reverse();
+    }
+  }
+
+  @override
+  void dispose() {
+    _animation.dispose();
+    _motion.dispose();
+    super.dispose();
+  }
+
+  Widget _part(Animation<double> animation, bool active, Widget child) =>
+      SizeTransition(
+        sizeFactor: animation,
+        alignment: Alignment.topCenter,
+        child: IgnorePointer(
+          ignoring: !active,
+          child: ExcludeSemantics(
+            excluding: !active,
+            child: PocketBlurTransition(animation: animation, child: child),
+          ),
+        ),
+      );
+  @override
+  Widget build(BuildContext context) {
+    if (_reduced) {
+      return widget.expanded
+          ? widget.details(context)
+          : widget.preview(context);
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (!widget.expanded || _motion.value < 1)
+          _part(
+            ReverseAnimation(_animation),
+            !widget.expanded,
+            widget.preview(context),
+          ),
+        if (widget.expanded || _motion.value > 0)
+          _part(_animation, widget.expanded, widget.details(context)),
+      ],
+    );
+  }
+}
+
 /// Apply at shared UI boundaries, not to every text token. New children inside
 /// an entering surface share that one filter; later insertions animate alone.
 class PocketReveal extends StatefulWidget {

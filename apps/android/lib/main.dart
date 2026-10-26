@@ -195,6 +195,8 @@ class _ChatPageState extends State<ChatPage> {
   int scrollRequest = 0;
   bool followPending = false;
   bool userScrolling = false;
+  int? submittedAfterSeq;
+  bool followSubmittedMessage = true;
   bool get submitting => submissions.contains(sessionId);
   String? get submitError => errors[sessionId];
   set submitError(String? error) {
@@ -481,6 +483,8 @@ class _ChatPageState extends State<ChatPage> {
     goalPlan.dispose();
     setState(() {
       sessionId = id;
+      submittedAfterSeq = null;
+      followSubmittedMessage = true;
       connectGoalPlan();
       input.value = drafts[id] ?? TextEditingValue.empty;
     });
@@ -705,6 +709,8 @@ class _ChatPageState extends State<ChatPage> {
       return;
     }
     drafts[sendingId] = input.value;
+    final previousSubmittedAfterSeq = submittedAfterSeq;
+    final previousFollowSubmittedMessage = followSubmittedMessage;
     setState(() {
       submissions.add(sendingId);
       errors.remove(sendingId);
@@ -760,10 +766,22 @@ class _ChatPageState extends State<ChatPage> {
           }
           return;
         }
-      } else if (attachedIds.isNotEmpty) {
-        await runtime.sendAttachments(sendingId, text, attachedIds);
       } else {
-        await runtime.send(sendingId, text);
+        if (mounted && sessionId == sendingId) {
+          final events = runtime.timelines[sendingId] ?? const <Json>[];
+          setState(() {
+            submittedAfterSeq = events.isEmpty ? -1 : events.last['seq'] as int;
+            followSubmittedMessage = true;
+            scrollRequest++;
+            followPending = false;
+          });
+          inputFocus.unfocus();
+        }
+        if (attachedIds.isNotEmpty) {
+          await runtime.sendAttachments(sendingId, text, attachedIds);
+        } else {
+          await runtime.send(sendingId, text);
+        }
       }
       if (!mounted) return;
       localDraftSessions.remove(sendingId);
@@ -777,6 +795,16 @@ class _ChatPageState extends State<ChatPage> {
       await attachments.consume(sendingId, attachedIds);
     } catch (error) {
       if (mounted) {
+        final admitted = (runtime.timelines[sendingId] ?? const <Json>[]).any(
+          (event) =>
+              event['type'] == 'user/message' &&
+              (event['seq'] as int) > (submittedAfterSeq ?? -1) &&
+              event['data']?['source']?['kind'] == 'user',
+        );
+        if (command == null && sessionId == sendingId && !admitted) {
+          submittedAfterSeq = previousSubmittedAfterSeq;
+          followSubmittedMessage = previousFollowSubmittedMessage;
+        }
         setState(
           () => errors[sendingId] = command == null
               ? '$error'
@@ -850,6 +878,7 @@ class _ChatPageState extends State<ChatPage> {
     if (next == observedTimeline) return;
     final switching = observedTimeline?.$1 != sessionId;
     observedTimeline = next;
+    if (submittedAfterSeq != null) return;
     if (userScrolling && !switching) return;
     final follows =
         switching ||
@@ -1163,6 +1192,9 @@ class _ChatPageState extends State<ChatPage> {
                     scrollRequest++;
                     followPending = false;
                     userScrolling = true;
+                    if (followSubmittedMessage) {
+                      setState(() => followSubmittedMessage = false);
+                    }
                   }
                   if (notification is ScrollEndNotification) {
                     userScrolling = false;
@@ -1175,6 +1207,8 @@ class _ChatPageState extends State<ChatPage> {
                   events: runtime.timelines[sessionId] ?? const [],
                   projection: projection,
                   controller: messageScroll,
+                  submittedAfterSeq: submittedAfterSeq,
+                  followSubmittedMessage: followSubmittedMessage,
                   live: live,
                   running: running,
                   onOpenSkill: (name) =>

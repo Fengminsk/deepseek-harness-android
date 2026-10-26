@@ -353,11 +353,15 @@ class SessionFilesPage extends StatefulWidget {
     required this.runtime,
     required this.sessionId,
     required this.onOpenDocument,
+    this.manageRouteBack = true,
     super.key,
   });
   final RuntimeController runtime;
   final String sessionId;
   final OpenSessionDocument onOpenDocument;
+
+  /// A resource hub handles its own route back; its retained tabs must not veto it.
+  final bool manageRouteBack;
 
   @override
   State<SessionFilesPage> createState() => _SessionFilesPageState();
@@ -370,6 +374,7 @@ class _SessionFilesPageState extends State<SessionFilesPage>
   final _positions = <String, double>{};
   double? _restore;
   bool _menuOpen = false;
+  bool _documentOpen = false;
 
   @override
   void initState() {
@@ -433,21 +438,32 @@ class _SessionFilesPageState extends State<SessionFilesPage>
     if (_model.path.isEmpty) {
       Navigator.maybePop(context);
     } else {
-      final parts = _model.path.split('/');
-      _navigate(parts.take(parts.length - 1).join('/'));
+      _backDirectory();
     }
   }
 
+  void _backDirectory() {
+    final current = _model.path;
+    if (current.isEmpty) return;
+    final parts = current.split('/');
+    _navigate(parts.take(parts.length - 1).join('/'));
+  }
+
   Future<void> _open(Json row) async {
-    if (!_model.canOpen) return;
+    if (!_model.canOpen || _documentOpen) return;
     final target = _model.childPath(row['name'] as String);
     if (row['type'] == 'directory') {
       _navigate(target);
       return;
     }
     final owner = _model;
-    await widget.onOpenDocument(context, widget.sessionId, target);
-    if (mounted && owner == _model) unawaited(owner.refresh());
+    _documentOpen = true;
+    try {
+      await widget.onOpenDocument(context, widget.sessionId, target);
+    } finally {
+      _documentOpen = false;
+      if (mounted && owner == _model) unawaited(owner.refresh());
+    }
   }
 
   Future<void> _menu(BuildContext anchor) async {
@@ -510,9 +526,11 @@ class _SessionFilesPageState extends State<SessionFilesPage>
     final path = _model.path,
         parts = path.isEmpty ? <String>[] : path.split('/');
     return PopScope(
-      canPop: path.isEmpty,
+      canPop: !widget.manageRouteBack || path.isEmpty,
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop) _back();
+        // Another owner can veto this route even when our directory is root.
+        // Re-entering maybePop here would endlessly invoke the same veto.
+        if (!didPop && widget.manageRouteBack) _backDirectory();
       },
       child: FileBrowserChrome(
         title: path.isEmpty ? '会话文件' : parts.last,

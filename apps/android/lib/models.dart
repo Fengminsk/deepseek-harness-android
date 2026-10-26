@@ -6,6 +6,7 @@ import 'configuration_edits.dart';
 import 'confirmation.dart';
 import 'account.dart';
 import 'models_data.dart';
+import 'model_reasoning.dart';
 import 'models_provider.dart';
 import 'runtime.dart';
 import 'ui.dart';
@@ -512,14 +513,11 @@ class _DefaultModelPageState extends ModelDraftState<DefaultModelPage> {
                         children: [
                           const Text('推理强度'),
                           const SizedBox(height: 8),
-                          SegmentedControl<String?>(
-                            key: const ValueKey('default-reasoning-effort'),
-                            segments: [
-                              (null, '服务商默认'),
-                              for (final effort
-                                  in model['reasoning']['efforts'] as List)
-                                ('${effort['id']}', '${effort['name']}'),
-                            ],
+                          ModelReasoningControl(
+                            controlKey: const ValueKey(
+                              'default-reasoning-effort',
+                            ),
+                            reasoning: model['reasoning'] as Json,
                             value: draft['reasoningEffort'] as String?,
                             onChanged: busy
                                 ? null

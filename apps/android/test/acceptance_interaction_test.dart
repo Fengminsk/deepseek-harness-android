@@ -252,7 +252,7 @@ void main() {
     addTearDown(runtime.disposeFixture);
     await tester.pumpWidget(_host(ChatPage(runtime: runtime)));
     await tester.pumpAndSettle();
-    final list = find.byType(ListView);
+    final list = find.byType(CustomScrollView);
     final scrollable = tester.state<ScrollableState>(
       find.descendant(of: list, matching: find.byType(Scrollable)).first,
     );
@@ -300,14 +300,14 @@ void main() {
     final scrollable = tester.state<ScrollableState>(
       find
           .descendant(
-            of: find.byType(ListView),
+            of: find.byType(CustomScrollView),
             matching: find.byType(Scrollable),
           )
           .first,
     );
     scrollable.position.jumpTo(scrollable.position.maxScrollExtent);
     await tester.pumpAndSettle();
-    await tester.drag(find.byType(ListView), const Offset(0, 400));
+    await tester.drag(find.byType(CustomScrollView), const Offset(0, 400));
     await tester.pumpAndSettle();
     final readingPosition = scrollable.position.pixels;
     expect(

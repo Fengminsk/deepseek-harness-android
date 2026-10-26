@@ -470,7 +470,7 @@ class _WorkspaceFilesPageState extends State<WorkspaceFilesPage>
   Widget build(BuildContext context) => PopScope(
     canPop: path.isEmpty,
     onPopInvokedWithResult: (didPop, _) {
-      if (!didPop) back();
+      if (!didPop && path.isNotEmpty) back();
     },
     child: FileBrowserChrome(
       title: path.isEmpty ? 'App 私有文件' : path.split('/').last,

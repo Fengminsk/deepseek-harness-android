@@ -10,6 +10,7 @@ import 'chat_projection.dart';
 import 'chat_reply_sources.dart';
 import 'chat_reply_sources_sheet.dart';
 import 'chat_source_identity.dart';
+import 'entry_motion.dart';
 import 'runtime.dart';
 import 'tool_activity_data.dart';
 import 'tool_activity_details.dart';
@@ -379,7 +380,7 @@ class _ChatExecutionStepState extends State<ChatExecutionStep>
       if (items == null || items.isEmpty) {
         body.add(_compactRow(label: todo.summary, onTap: null));
       } else {
-        Widget itemAt(int index) => Padding(
+        Widget itemAt(int index, {bool full = false}) => Padding(
           padding: const EdgeInsets.symmetric(vertical: 3),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -394,8 +395,8 @@ class _ChatExecutionStepState extends State<ChatExecutionStep>
               Expanded(
                 child: Text(
                   items[index].content,
-                  maxLines: expanded ? null : 2,
-                  overflow: expanded ? null : TextOverflow.ellipsis,
+                  maxLines: full ? null : 2,
+                  overflow: full ? null : TextOverflow.ellipsis,
                 ),
               ),
               const SizedBox(width: 5),
@@ -414,29 +415,38 @@ class _ChatExecutionStepState extends State<ChatExecutionStep>
           ),
         );
         body.add(
-          Padding(
-            padding: const EdgeInsets.fromLTRB(10, 0, 4, 8),
-            child: expanded && items.length > 3
-                ? SizedBox(
-                    height: 260,
-                    child: ListView.builder(
-                      primary: false,
-                      padding: EdgeInsets.zero,
-                      itemCount: items.length,
-                      itemBuilder: (_, index) => itemAt(index),
+          PocketAnimatedDisclosure(
+            expanded: expanded,
+            preview: (_) => Padding(
+              padding: const EdgeInsets.fromLTRB(10, 0, 4, 8),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  for (var index = 0; index < items.length.clamp(0, 3); index++)
+                    itemAt(index),
+                ],
+              ),
+            ),
+            details: (_) => Padding(
+              padding: const EdgeInsets.fromLTRB(10, 0, 4, 8),
+              child: items.length > 3
+                  ? SizedBox(
+                      height: 260,
+                      child: ListView.builder(
+                        primary: false,
+                        padding: EdgeInsets.zero,
+                        itemCount: items.length,
+                        itemBuilder: (_, index) => itemAt(index, full: true),
+                      ),
+                    )
+                  : Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        for (var index = 0; index < items.length; index++)
+                          itemAt(index, full: true),
+                      ],
                     ),
-                  )
-                : Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      for (
-                        var index = 0;
-                        index < items.length.clamp(0, 3);
-                        index++
-                      )
-                        itemAt(index),
-                    ],
-                  ),
+            ),
           ),
         );
         if (items.length > 3) {
@@ -451,9 +461,17 @@ class _ChatExecutionStepState extends State<ChatExecutionStep>
       }
     } else {
       final text = reasoning ?? entry.text ?? '';
-      if (expanded) {
-        body.add(
-          Padding(
+      body.add(
+        PocketAnimatedDisclosure(
+          expanded: expanded,
+          preview: (_) => text.isEmpty
+              ? const SizedBox.shrink()
+              : _compactRow(
+                  label: text.replaceAll(RegExp(r'\s+'), ' ').trim(),
+                  onTap: _toggle,
+                  fill: false,
+                ),
+          details: (_) => Padding(
             padding: const EdgeInsets.only(left: 10, bottom: 10),
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxHeight: 260),
@@ -464,28 +482,24 @@ class _ChatExecutionStepState extends State<ChatExecutionStep>
                   children: [
                     PocketMarkdown(
                       data: text,
+                      compact: true,
                       runtime: widget.runtime,
                       sessionId: widget.sessionId,
                       onOpenLink: widget.onOpenLink,
                       onOpenFile: widget.onOpenFile,
                     ),
                     if (entry.details case final String details)
-                      SelectableText(details),
+                      SelectableText(
+                        details,
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
                   ],
                 ),
               ),
             ),
           ),
-        );
-      } else if (text.isNotEmpty) {
-        body.add(
-          _compactRow(
-            label: text.replaceAll(RegExp(r'\s+'), ' ').trim(),
-            onTap: _toggle,
-            fill: false,
-          ),
-        );
-      }
+        ),
+      );
     }
     return Stack(
       children: [

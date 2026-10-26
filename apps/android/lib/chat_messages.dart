@@ -8,6 +8,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:markdown/markdown.dart' as md;
 
 import 'chat_message_actions.dart';
+import 'chat_markdown_syntax.dart';
 import 'chat_projection.dart';
 import 'chat_deliverables.dart';
 import 'chat_changes.dart';
@@ -146,6 +147,8 @@ class ChatTimeline extends StatefulWidget {
     this.onOpenWorkflowChild,
     this.showTurnNavigation = true,
     this.historyHeader,
+    this.submittedAfterSeq,
+    this.followSubmittedMessage = true,
     super.key,
   });
   final String sessionId;
@@ -154,6 +157,8 @@ class ChatTimeline extends StatefulWidget {
   final Future<void> Function(String name)? onOpenSkill;
   final ChatProjection projection;
   final ScrollController controller;
+  final int? submittedAfterSeq;
+  final bool followSubmittedMessage;
 
   /// Original loaded Session window, including log-only todo/present events.
   final List<Json> events;
@@ -198,6 +203,7 @@ class _ChatTimelineState extends State<ChatTimeline>
   int _generation = 0;
   bool _loadingEarlier = false;
   String? _olderError;
+  String? _submittedKey;
 
   @override
   void initState() {
@@ -262,6 +268,12 @@ class _ChatTimelineState extends State<ChatTimeline>
   @override
   void didUpdateWidget(ChatTimeline oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.submittedAfterSeq != widget.submittedAfterSeq ||
+        oldWidget.sessionId != widget.sessionId) {
+      _submittedKey = null;
+      _listAnchor.cancel(stopReveal: true);
+    }
+    if (!widget.followSubmittedMessage) _listAnchor.cancel();
     if (oldWidget.sessionId != widget.sessionId ||
         oldWidget.runtime != widget.runtime) {
       _detachChanges();
@@ -406,6 +418,14 @@ class _ChatTimelineState extends State<ChatTimeline>
       if (order != 0) return order;
       return orderByKey[a.key]!.compareTo(orderByKey[b.key]!);
     });
+    final previousChains = {
+      for (final item in _groups)
+        if (item.chain != null) item.key: item.chain!,
+    };
+    final previousExpanded = {
+      for (final entry in previousChains.entries)
+        entry.key: _isExpanded(entry.value),
+    };
     _groups = groupChatExecution(
       entries,
       widget.events,
@@ -443,10 +463,36 @@ class _ChatTimelineState extends State<ChatTimeline>
     });
     for (final item in _groups) {
       final group = item.chain;
-      if (group == null || _expanded.containsKey(group.key)) continue;
-      final saved = PageStorage.maybeOf(context)
-          ?.readState(context, identifier: '${widget.sessionId}:${group.key}');
-      if (saved is bool) _expanded[group.key] = saved;
+      if (group == null) continue;
+      if (!_expanded.containsKey(group.key)) {
+        final saved = PageStorage.maybeOf(
+          context,
+        )?.readState(context, identifier: '${widget.sessionId}:${group.key}');
+        if (saved is bool) _expanded[group.key] = saved;
+      }
+      final previous = previousChains[group.key];
+      if (previous != null &&
+          previous.end == null &&
+          group.reason == 'completed') {
+        _expanded[group.key] = false;
+        PageStorage.maybeOf(context)?.writeState(
+          context,
+          false,
+          identifier: '${widget.sessionId}:${group.key}',
+        );
+      }
+      final wasExpanded = previousExpanded[group.key];
+      final nowExpanded = _isExpanded(group);
+      if (wasExpanded != null && wasExpanded != nowExpanded) {
+        final motion = _chainMotion(group.key, wasExpanded);
+        if (MediaQuery.disableAnimationsOf(context)) {
+          motion.value = nowExpanded ? 1 : 0;
+        } else if (nowExpanded) {
+          motion.forward();
+        } else {
+          motion.reverse();
+        }
+      }
     }
     _flatten();
   }
@@ -522,20 +568,27 @@ class _ChatTimelineState extends State<ChatTimeline>
   bool _isExpanded(ChatExecutionChain chain) =>
       _expanded[chain.key] ?? chain.active;
 
+  AnimationController _chainMotion(String key, bool wasExpanded) =>
+      _motions.putIfAbsent(key, () {
+        final controller = AnimationController(
+          vsync: this,
+          value: wasExpanded ? 1 : 0,
+          duration: PocketEntryMotion.duration,
+        );
+        controller.addStatusListener((status) {
+          if (status == AnimationStatus.dismissed) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) setState(_flatten);
+            });
+          }
+        });
+        return controller;
+      });
+
   void _toggle(ChatExecutionChain group) {
     final wasExpanded = _isExpanded(group);
     final reduced = MediaQuery.disableAnimationsOf(context);
-    final motion = _motions.putIfAbsent(group.key, () {
-      final controller = AnimationController(
-        vsync: this,
-        value: wasExpanded ? 1 : 0,
-        duration: const Duration(milliseconds: 220),
-      );
-      controller.addStatusListener((status) {
-        if (status == AnimationStatus.dismissed && mounted) setState(_flatten);
-      });
-      return controller;
-    });
+    final motion = _chainMotion(group.key, wasExpanded);
     setState(() {
       _expanded[group.key] = !wasExpanded;
       if (reduced) motion.value = wasExpanded ? 0 : 1;
@@ -558,6 +611,22 @@ class _ChatTimelineState extends State<ChatTimeline>
   @override
   Widget build(BuildContext context) {
     _synchronize();
+    if (widget.submittedAfterSeq case final after? when _submittedKey == null) {
+      for (final entry in widget.projection.entries) {
+        if (entry.kind != ChatEntryKind.user || entry.seq <= after) continue;
+        _submittedKey = entry.key;
+        final key = ValueKey((widget.sessionId, entry.key));
+        final animate = !MediaQuery.disableAnimationsOf(context);
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted &&
+              widget.followSubmittedMessage &&
+              _submittedKey == entry.key) {
+            _listAnchor.reveal(key, widget.controller, animate: animate);
+          }
+        });
+        break;
+      }
+    }
     final rows = _display;
     final stream = widget.live;
     final sessionId = widget.sessionId;
@@ -602,6 +671,10 @@ class _ChatTimelineState extends State<ChatTimeline>
     return PocketList.builder(
       controller: widget.controller,
       anchorController: _listAnchor,
+      reserveEndSpace: true,
+      endAnchorKey: _submittedKey == null
+          ? null
+          : ValueKey((sessionId, _submittedKey!)),
       padding: const EdgeInsets.symmetric(horizontal: 24),
       itemCount: count + headerCount,
       findChildIndexCallback: (key) {
@@ -701,9 +774,9 @@ class _ChatTimelineState extends State<ChatTimeline>
             );
             final motion = _motions[chain.key];
             if (motion != null) {
-              final animation = CurveTween(curve: Curves.easeOutCubic)
+              final animation = CurveTween(curve: PocketEntryMotion.curve)
                   .animate(motion);
-              step = FadeTransition(opacity: animation, child: step);
+              step = PocketBlurTransition(animation: animation, child: step);
               if (chain.entries.length <= 20) {
                 step = SizeTransition(
                   sizeFactor: animation,
@@ -1259,6 +1332,7 @@ class _AssistantReasoningRow extends StatelessWidget {
     icon: Icons.psychology_outlined,
     body: (_) => PocketMarkdown(
       data: text,
+      compact: true,
       runtime: runtime,
       sessionId: sessionId,
       onOpenLink: onOpenLink,
@@ -1417,12 +1491,14 @@ class PocketMarkdown extends StatefulWidget {
     this.onOpenLink,
     this.onOpenFile,
     this.selectable = true,
+    this.compact = false,
     super.key,
   });
   final String data;
   final RuntimeController? runtime;
   final String? sessionId;
   final bool selectable;
+  final bool compact;
   final ChatOpenLink? onOpenLink;
   final ChatOpenFile? onOpenFile;
   @override
@@ -1451,6 +1527,7 @@ class _PocketMarkdownState extends State<PocketMarkdown> {
   @override
   void didUpdateWidget(PocketMarkdown oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.compact != widget.compact) _updateStyle();
     if (oldWidget.sessionId != widget.sessionId ||
         oldWidget.data != widget.data) {
       _openGeneration++;
@@ -1462,12 +1539,21 @@ class _PocketMarkdownState extends State<PocketMarkdown> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    _updateStyle();
+  }
+
+  void _updateStyle() {
     final theme = Theme.of(context), colors = theme.colorScheme;
-    final body = theme.textTheme.bodyLarge!.copyWith(
+    final compact = widget.compact;
+    final base = compact
+        ? theme.textTheme.bodySmall!
+        : theme.textTheme.bodyLarge!;
+    final body = base.copyWith(
       color: colors.onSurface,
-      fontSize: 16,
-      height: 1.6,
+      fontSize: compact ? base.fontSize : 16,
+      height: compact ? 1.45 : 1.6,
     );
+    final compactHeading = body.copyWith(fontWeight: FontWeight.w600);
     // Keep this object stable across delta-only rebuilds. MarkdownBody reparses
     // changed text, while settled rows reuse their parsed widget trees.
     _style = MarkdownStyleSheet(
@@ -1476,16 +1562,27 @@ class _PocketMarkdownState extends State<PocketMarkdown> {
         color: colors.primary,
         decoration: TextDecoration.underline,
       ),
-      h1: theme.textTheme.headlineMedium?.copyWith(color: colors.onSurface),
-      h2: theme.textTheme.headlineSmall?.copyWith(color: colors.onSurface),
-      h3: theme.textTheme.titleLarge?.copyWith(color: colors.onSurface),
-      h4: theme.textTheme.titleMedium?.copyWith(color: colors.onSurface),
+      h1: compact
+          ? compactHeading
+          : theme.textTheme.headlineMedium?.copyWith(color: colors.onSurface),
+      h2: compact
+          ? compactHeading
+          : theme.textTheme.headlineSmall?.copyWith(color: colors.onSurface),
+      h3: compact
+          ? compactHeading
+          : theme.textTheme.titleLarge?.copyWith(color: colors.onSurface),
+      h4: compact
+          ? compactHeading
+          : theme.textTheme.titleMedium?.copyWith(color: colors.onSurface),
       h5: body.copyWith(fontWeight: FontWeight.w600),
       h6: body.copyWith(fontWeight: FontWeight.w600),
       strong: const TextStyle(fontWeight: FontWeight.w700),
       em: const TextStyle(fontStyle: FontStyle.italic),
       del: const TextStyle(decoration: TextDecoration.lineThrough),
-      code: body.copyWith(fontFamily: 'monospace', fontSize: 14),
+      code: body.copyWith(
+        fontFamily: 'monospace',
+        fontSize: compact ? base.fontSize : 14,
+      ),
       codeblockPadding: const EdgeInsets.all(14),
       codeblockDecoration: BoxDecoration(
         color: colors.surfaceContainer,
@@ -1506,7 +1603,7 @@ class _PocketMarkdownState extends State<PocketMarkdown> {
         border: Border(top: BorderSide(color: colors.outlineVariant)),
       ),
       textScaler: MediaQuery.textScalerOf(context),
-      blockSpacing: 12,
+      blockSpacing: compact ? 8 : 12,
     );
   }
 
@@ -1561,6 +1658,7 @@ class _PocketMarkdownState extends State<PocketMarkdown> {
           widget.selectable,
         )),
         data: widget.data,
+        extensionSet: pocketMarkdownExtensions,
         selectable: widget.selectable,
         styleSheet: _style,
         builders: {

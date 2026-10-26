@@ -414,7 +414,7 @@ class _FilesPageState extends State<FilesPage> with WidgetsBindingObserver {
     return PopScope(
       canPop: activeRoot == null && confirmRevoke == null && !revoking,
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop) back();
+        if (!didPop && (activeRoot != null || confirmRevoke != null)) back();
       },
       child: PocketConfirmationLayer(
         confirmation: confirmRevoke == null

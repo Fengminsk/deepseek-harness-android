@@ -65,6 +65,32 @@ class _Runtime extends RuntimeController {
 
   final calls = <({String method, Json params})>[];
   Completer<List<Json>>? catalogResponse;
+  bool rejectSend = false;
+
+  @override
+  Future<void> send(String id, String text) async {
+    if (rejectSend) throw StateError('测试发送失败');
+    final events = timelines[id]!;
+    final seq = (events.last['seq'] as int) + 1;
+    timelines[id] = [
+      ...events,
+      {
+        'seq': seq,
+        'time': seq * 1000,
+        'type': 'user/message',
+        'surfaceOp': 'append',
+        'data': {
+          'id': 'sent-$seq',
+          'role': 'user',
+          'source': {'kind': 'user'},
+          'content': [
+            {'type': 'text', 'text': text},
+          ],
+        },
+      },
+    ];
+    notifyListeners();
+  }
 
   @override
   String newSession() {
@@ -250,7 +276,7 @@ Finder get _source => find.descendant(
 Finder get _editor => find.byType(TextField, skipOffstage: false);
 Finder get _chatList => find.descendant(
   of: find.byType(PocketList, skipOffstage: false),
-  matching: find.byType(ListView, skipOffstage: false),
+  matching: find.byType(CustomScrollView, skipOffstage: false),
 );
 
 double _sourceOpacity(WidgetTester tester) => tester
@@ -314,6 +340,33 @@ OneSequenceGestureRecognizer _rowRecognizer(WidgetTester tester) {
 }
 
 void main() {
+  testWidgets(
+    'sending lifts the confirmed question and failed sends keep the draft',
+    (tester) async {
+      final (runtime, _) = await _chat(tester);
+      await tester.enterText(_editor, '请开始新任务');
+      await tester.tap(find.byTooltip('发送'));
+      await settleUi(tester);
+      await tester.pumpAndSettle();
+      final question = find.text('请开始新任务', findRichText: true);
+      expect(question, findsOneWidget);
+      expect(tester.getTopLeft(question).dy, lessThan(190));
+      expect(tester.widget<TextField>(_editor).controller!.text, isEmpty);
+      final list = tester.widget<CustomScrollView>(_chatList);
+      await tester.drag(_chatList, const Offset(0, 110));
+      await tester.pumpAndSettle();
+      final stoppedAt = list.controller!.offset;
+      runtime.notifyListeners();
+      await settleUi(tester);
+      expect(list.controller!.offset, closeTo(stoppedAt, 1));
+      runtime.rejectSend = true;
+      await tester.enterText(_editor, '保留失败草稿');
+      await tester.tap(find.byTooltip('发送'));
+      await settleUi(tester);
+      expect(tester.widget<TextField>(_editor).controller!.text, '保留失败草稿');
+      expect(tester.takeException(), isNull);
+    },
+  );
   for (final glass in [false, true]) {
     testWidgets(
       'chat plus paints intermediate opening and returning frames (glass=$glass)',
@@ -371,7 +424,7 @@ void main() {
         await settleUi(tester);
         final editor = tester.getRect(_editor);
         final viewport = tester.getRect(_chatList);
-        final list = tester.widget<ListView>(_chatList);
+        final list = tester.widget<CustomScrollView>(_chatList);
         final scrollOffset = list.controller!.offset;
         await tester.tap(find.byTooltip('添加与指令'));
         await tester.pump();

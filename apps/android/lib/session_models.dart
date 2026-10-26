@@ -6,7 +6,9 @@ import 'package:material_ui/material_ui.dart';
 import 'models.dart';
 import 'models_data.dart';
 import 'models_label.dart';
+import 'model_reasoning.dart';
 import 'runtime.dart';
+import 'session_reasoning_preferences.dart';
 import 'ui.dart';
 import 'agent_presets.dart';
 
@@ -16,9 +18,11 @@ class SessionModelPage extends StatefulWidget {
     super.key,
     required this.runtime,
     required this.sessionId,
+    this.reasoningPreferences = const SessionReasoningPreferences(),
   });
   final RuntimeController runtime;
   final String sessionId;
+  final SessionReasoningPreferences reasoningPreferences;
   @override
   State<SessionModelPage> createState() => _SessionModelPageState();
 }
@@ -27,6 +31,9 @@ class _SessionModelPageState extends State<SessionModelPage>
     with WidgetsBindingObserver {
   Json? catalog, selection, appliedSelection, modelView;
   Json? unconfirmedSelection;
+  Json? defaultSelection;
+  bool preferencesLoaded = false;
+  String? preferenceError;
   StreamSubscription<Json>? observation;
   bool observationActive = false;
   bool loading = true, busy = false, conflict = false, uncertain = false;
@@ -35,7 +42,11 @@ class _SessionModelPageState extends State<SessionModelPage>
   late bool runtimeReady;
   late int runtimeGeneration;
   bool reloadAfterBusy = false;
-  bool get hasDraft => !mapEquals(selection, appliedSelection);
+  Json? get appliedChoice =>
+      defaultSelection != null && mapEquals(defaultSelection, appliedSelection)
+      ? (Json.of(appliedSelection!)..remove('reasoningEffort'))
+      : appliedSelection;
+  bool get hasDraft => !mapEquals(selection, appliedChoice);
   bool get inherited => modelView?['next'] == null;
   List<Json> get groups => (catalog?['groups'] as List? ?? []).cast<Json>();
 
@@ -58,7 +69,7 @@ class _SessionModelPageState extends State<SessionModelPage>
   String label(Json? pick) {
     if (pick == null) return '尚未取得会话模型';
     return '${modelFor(pick)?['name'] ?? pick['model']}'
-        '${pick['reasoningEffort'] == null ? '' : ' · ${effortLabel(pick)}'}';
+        ' · ${effortLabel(pick)}';
   }
 
   Widget selectionLabel(Json? pick) {
@@ -69,18 +80,21 @@ class _SessionModelPageState extends State<SessionModelPage>
       providerId: '${pick['provider']}',
       modelId: '${pick['model']}',
       modelName: '${model?['name'] ?? pick['model']}',
-      suffix: pick['reasoningEffort'] == null
-          ? null
-          : ' · ${effortLabel(pick)}',
+      suffix: ' · ${effortLabel(pick)}',
     );
   }
 
   String effortLabel(Json pick) {
     for (final level
         in modelFor(pick)?['reasoning']?['efforts'] as List? ?? []) {
-      if (level['id'] == pick['reasoningEffort']) return '${level['name']}';
+      if (level['id'] == pick['reasoningEffort']) {
+        return reasoningEffortLabel(
+          pick['reasoningEffort'] as String?,
+          fallback: level['name'] as String?,
+        );
+      }
     }
-    return '${pick['reasoningEffort']}';
+    return reasoningEffortLabel(pick['reasoningEffort'] as String?);
   }
 
   String route(Json pick) => '${pick['provider']} / ${pick['model']}';
@@ -174,14 +188,56 @@ class _SessionModelPageState extends State<SessionModelPage>
     final effective = next ?? catalog?['default'];
     if (effective == null) return;
     appliedSelection = checkedSelection(effective);
+    if (defaultSelection != null &&
+        (!mapEquals(defaultSelection, appliedSelection) ||
+            (catalog != null &&
+                !sameEffectiveSelection(
+                  Json.of(defaultSelection!)..remove('reasoningEffort'),
+                  appliedSelection,
+                )))) {
+      defaultSelection = null;
+      unawaited(persistChoice(null));
+    }
     if (!keepDraft) {
-      selection = Json.of(appliedSelection!);
-    } else if (mapEquals(selection, appliedSelection)) {
+      selection = Json.of(appliedChoice!);
+    } else if (mapEquals(selection, appliedChoice)) {
       conflict = false;
       uncertain = false;
     } else if (!mapEquals(oldApplied, appliedSelection)) {
       conflict = true;
     }
+  }
+
+  Future<void> persistChoice(Json? effective) async {
+    try {
+      await widget.reasoningPreferences.save(widget.sessionId, effective);
+      if (mounted) setState(() => preferenceError = null);
+    } catch (failure) {
+      if (mounted) {
+        setState(() => preferenceError = '默认档位未保存，重新打开时请核对：$failure');
+      }
+    }
+  }
+
+  Future<void> confirmChoice(Json requested, Json effective) async {
+    defaultSelection = requested['reasoningEffort'] == null
+        ? Json.of(effective)
+        : null;
+    await persistChoice(defaultSelection);
+    if (!mounted) return;
+    setState(() {
+      if (mapEquals(appliedSelection, effective)) {
+        if (mapEquals(selection, requested)) {
+          selection = Json.of(appliedChoice!);
+        }
+        conflict = false;
+        uncertain = false;
+        unconfirmedSelection = null;
+      } else {
+        defaultSelection = null;
+        conflict = true;
+      }
+    });
   }
 
   Future<void> watch() async {
@@ -256,6 +312,19 @@ class _SessionModelPageState extends State<SessionModelPage>
       error = null;
     });
     try {
+      if (!preferencesLoaded) {
+        try {
+          final saved = await widget.reasoningPreferences.load(
+            widget.sessionId,
+          );
+          if (!mounted || generation != loadGeneration) return;
+          defaultSelection = saved;
+          preferencesLoaded = true;
+        } catch (failure) {
+          if (!mounted || generation != loadGeneration) return;
+          preferenceError = '无法读取默认档位记录：$failure';
+        }
+      }
       final ensured = await widget.runtime.ensureSession(widget.sessionId);
       if (ensured['sessionId'] != widget.sessionId) {
         throw const FormatException('会话标识已变化，请重新打开此会话');
@@ -270,6 +339,7 @@ class _SessionModelPageState extends State<SessionModelPage>
       if (!mounted || generation != loadGeneration) return;
       final directory = parts[0] as Json;
       checkedSelection(directory['default']);
+      Json? confirmed;
       setState(() {
         catalog = directory;
         acceptProjection(parts[1] as Json);
@@ -278,13 +348,16 @@ class _SessionModelPageState extends State<SessionModelPage>
         if (unconfirmedSelection != null &&
             mapEquals(selection, unconfirmedSelection) &&
             sameEffectiveSelection(appliedSelection, unconfirmedSelection)) {
-          selection = Json.of(appliedSelection!);
+          confirmed = Json.of(unconfirmedSelection!);
           conflict = false;
         }
         unconfirmedSelection = null;
         uncertain = false;
         notice = hasDraft ? '尚未应用的选择已保留。' : '已核对当前会话模型。';
       });
+      if (confirmed != null) {
+        await confirmChoice(confirmed!, Json.of(appliedSelection!));
+      }
     } catch (failure) {
       if (mounted && generation == loadGeneration) {
         setState(() => error = '无法读取会话模型，选择已保留：$failure');
@@ -343,18 +416,22 @@ class _SessionModelPageState extends State<SessionModelPage>
       final after = await readProjection();
       if (!mounted) return;
       requireConnection();
+      var confirmed = false;
       setState(() {
         acceptProjection(after);
         if (mapEquals(appliedSelection, accepted)) {
-          selection = Json.of(accepted!);
-          conflict = false;
-          unconfirmedSelection = null;
-          notice = '已应用。此会话的后续请求将使用 ${label(accepted)}。';
+          confirmed = true;
         } else {
           conflict = true;
           notice = '服务已接受选择，但会话随后又发生变化。你的选择已保留，请比较后继续。';
         }
       });
+      if (confirmed) {
+        await confirmChoice(submitted, accepted);
+        if (mounted && !conflict) {
+          setState(() => notice = '已应用。此会话的后续请求将使用 ${label(appliedChoice)}。');
+        }
+      }
     } catch (failure) {
       if (mounted) {
         setState(() {
@@ -452,19 +529,18 @@ class _SessionModelPageState extends State<SessionModelPage>
           padding: const EdgeInsets.all(20),
           children: [
             if (loading) const ModelNotice('正在读取会话与模型目录…'),
-            for (final text in [error, notice, syncError])
+            for (final text in [error, notice, syncError, preferenceError])
               if (text != null) ModelNotice(text),
             PocketSection(
               title: '当前会话',
               children: [
                 PocketTile(
                   leading: const Icon(Icons.check_circle_rounded),
-                  title: selectionLabel(appliedSelection),
+                  title: selectionLabel(appliedChoice),
                   subtitle: Text(
                     appliedSelection == null
                         ? '等待会话状态'
-                        : '${route(appliedSelection!)}\n'
-                              '${inherited ? '尚未单独设置，继承默认模型' : '已选择，供后续请求使用'}'
+                        : '${inherited ? '继承默认模型' : '用于此会话的后续请求'}'
                               '${modelFor(appliedSelection) == null ? '\n此模型暂不在可用目录中，请选择其他模型或检查凭据。' : ''}',
                   ),
                 ),
@@ -499,7 +575,7 @@ class _SessionModelPageState extends State<SessionModelPage>
                     child: PocketButton.tonal(
                       onPressed: busy
                           ? null
-                          : () => choose(Json.of(appliedSelection!)),
+                          : () => choose(Json.of(appliedChoice!)),
                       child: const Text('采用当前会话模型'),
                     ),
                   ),
@@ -511,7 +587,9 @@ class _SessionModelPageState extends State<SessionModelPage>
               const ModelNotice('暂无可用模型。请先登录账号，或在服务商与凭据中完成配置，再刷新。'),
             for (final group in groups)
               PocketSection(
-                title: '${group['name']}',
+                title: group['id'] == 'deepseek-account'
+                    ? 'DeepSeek 账号'
+                    : '${group['name']}',
                 children: [
                   for (final model in (group['models'] as List).cast<Json>())
                     modelTile(group, model),
@@ -522,23 +600,10 @@ class _SessionModelPageState extends State<SessionModelPage>
                 title: '推理强度',
                 children: [
                   Padding(
-                    padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
-                    child: Text('适用于 ${selectedModel!['name']}'),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16),
-                    child: SegmentedControl<String?>(
-                      key: const ValueKey('session-reasoning-effort'),
-                      segments: [
-                        (
-                          null,
-                          reasoning?['defaultEffort'] == null
-                              ? '服务商默认'
-                              : '默认 · ${effortLabel({...selection!, 'reasoningEffort': reasoning!['defaultEffort']})}',
-                        ),
-                        for (final effort in efforts)
-                          ('${effort['id']}', '${effort['name']}'),
-                      ],
+                    padding: const EdgeInsets.all(16),
+                    child: ModelReasoningControl(
+                      controlKey: const ValueKey('session-reasoning-effort'),
+                      reasoning: reasoning!,
                       value: selection?['reasoningEffort'] as String?,
                       onChanged: busy
                           ? null
@@ -550,13 +615,6 @@ class _SessionModelPageState extends State<SessionModelPage>
                             ),
                     ),
                   ),
-                  for (final effort in efforts)
-                    if (selection?['reasoningEffort'] == effort['id'] &&
-                        effort['description'] != null)
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(20, 12, 20, 6),
-                        child: Text('${effort['description']}'),
-                      ),
                 ],
               ),
             PocketButton.tonal(
@@ -619,11 +677,16 @@ class _SessionModelPageState extends State<SessionModelPage>
           modelName: '${model['name']}',
         ),
         subtitle: Text(
-          '${model['id']}${current ? '\n当前会话使用' : ''}'
-          '${selected && hasDraft ? '\n已选中 · 待应用' : ''}'
-          '${model['description'] == null ? '' : '\n${model['description']}'}',
+          selected && hasDraft
+              ? '待应用'
+              : current
+              ? '当前会话使用'
+              : modelDescription(group, model),
         ),
-        selected: selected,
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 20,
+          vertical: 16,
+        ),
         trailing: Icon(
           selected
               ? Icons.check_circle_rounded

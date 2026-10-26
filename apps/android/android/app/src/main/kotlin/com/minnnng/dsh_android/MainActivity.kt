@@ -417,6 +417,28 @@ class MainActivity : FlutterActivity() {
                         .putString("shell", shellId).commit()) { "Shell choice could not be saved" }
                     null
                 }
+                "session.reasoning.load" -> LocalPreferenceIo.call(result, "session-reasoning") {
+                    val sessionId = call.argument<String>("sessionId") ?: ""
+                    require(sessionId.isNotBlank() && sessionId.length <= 256)
+                    preferenceContext.getSharedPreferences("session-reasoning", MODE_PRIVATE).getString(sessionId, null)
+                }
+                "session.reasoning.save" -> LocalPreferenceIo.call(result, "session-reasoning") {
+                    val sessionId = call.argument<String>("sessionId") ?: ""
+                    require(sessionId.isNotBlank() && sessionId.length <= 256)
+                    val raw = call.argument<String>("selection")
+                    val edit = preferenceContext.getSharedPreferences("session-reasoning", MODE_PRIVATE).edit()
+                    if (raw == null) {
+                        edit.remove(sessionId)
+                    } else {
+                        require(raw.length < 4096)
+                        val value = JSONObject(raw)
+                        require(value.getString("provider").isNotBlank() && value.getString("model").isNotBlank())
+                        require(!value.has("reasoningEffort") || value.get("reasoningEffort") is String)
+                        edit.putString(sessionId, value.toString())
+                    }
+                    check(edit.commit()) { "Reasoning choice could not be saved" }
+                    null
+                }
                 "appearance.load" -> LocalPreferenceIo.call(result, "preferences") {
                     preferenceContext.getSharedPreferences("appearance", MODE_PRIVATE).getString("value", "{}")
                 }

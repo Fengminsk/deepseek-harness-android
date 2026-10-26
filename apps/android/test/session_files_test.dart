@@ -122,6 +122,54 @@ Future<void> mount(
 
 void main() {
   testWidgets(
+    'two directory back callbacks before a frame never re-enter route pop',
+    (tester) async {
+      final runtime = FileRuntime()
+        ..read = (_) async => listing([entry('Child', type: 'directory')]);
+      await mount(tester, runtime);
+      await tester.tap(find.text('Child'));
+      await tester.pumpAndSettle();
+      final scope = tester.widget<PopScope>(
+        find.byWidgetPredicate((widget) => widget is PopScope).first,
+      );
+      scope.onPopInvokedWithResult!(false, null);
+      scope.onPopInvokedWithResult!(false, null);
+      await tester.pumpAndSettle();
+      expect(find.text('会话文件'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+      runtime.dispose();
+    },
+  );
+
+  testWidgets('repeated file taps share one reader until it returns', (
+    tester,
+  ) async {
+    final returned = Completer<void>();
+    var opens = 0;
+    final runtime = FileRuntime()
+      ..read = (_) async => listing([entry('notes.md')]);
+    await mount(
+      tester,
+      runtime,
+      open: (_, _, _) {
+        opens++;
+        return returned.future;
+      },
+    );
+    await tester.tap(find.text('notes.md'));
+    await tester.tap(find.text('notes.md'));
+    expect(opens, 1);
+    returned.complete();
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('notes.md'));
+    await tester.pumpAndSettle();
+    expect(opens, 2);
+    await tester.pumpWidget(const SizedBox.shrink());
+    runtime.dispose();
+  });
+
+  testWidgets(
     'cold Session uses original cwd, exact wire scope and natural directory-first order',
     (tester) async {
       final runtime = FileRuntime()

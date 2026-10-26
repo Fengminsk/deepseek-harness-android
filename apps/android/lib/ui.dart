@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:material_ui/material_ui.dart';
@@ -447,9 +448,45 @@ class _PocketInsets extends InheritedWidget {
 class PocketListAnchorController {
   _PocketListState? _owner;
   int _revision = 0;
+  ScrollController? _revealingScroll;
 
   PocketListAnchor? capture({int minIndex = 0}) =>
       _owner?._captureAnchor(minIndex);
+
+  /// Lift an actual keyed row below the floating header. Layout refinements
+  /// stay cancellable so a drag, session switch or newer send always wins.
+  void reveal(Key key, ScrollController scroll, {required bool animate}) {
+    final owner = _owner;
+    if (owner == null) return;
+    final revision = ++_revision;
+    _revealingScroll = scroll;
+    Future<void> settle() async {
+      try {
+        for (var pass = 0; pass < 12; pass++) {
+          await WidgetsBinding.instance.endOfFrame;
+          if (_revision != revision || _owner != owner || !scroll.hasClients) {
+            return;
+          }
+          final target = owner._revealOffset(key, scroll);
+          if (target == null) return;
+          if ((target - scroll.offset).abs() < .5) return;
+          if (animate) {
+            await scroll.animateTo(
+              target,
+              duration: Duration(milliseconds: pass == 0 ? 280 : 100),
+              curve: Curves.easeOutCubic,
+            );
+          } else {
+            scroll.jumpTo(target);
+          }
+        }
+      } finally {
+        if (_revision == revision) _revealingScroll = null;
+      }
+    }
+
+    unawaited(settle());
+  }
 
   void restore(PocketListAnchor anchor, ScrollController scroll) {
     final owner = _owner;
@@ -472,7 +509,15 @@ class PocketListAnchorController {
     WidgetsBinding.instance.addPostFrameCallback((_) => settle(12, 0));
   }
 
-  void cancel() => _revision++;
+  void cancel({bool stopReveal = false}) {
+    _revision++;
+    final scroll = _revealingScroll;
+    _revealingScroll = null;
+    if (stopReveal && scroll != null && scroll.hasClients) {
+      final position = scroll.position;
+      if (position is ScrollPositionWithSingleContext) position.goIdle();
+    }
+  }
 
   void dispose() {
     cancel();
@@ -493,6 +538,8 @@ class PocketList extends StatefulWidget {
     this.padding = const EdgeInsets.symmetric(horizontal: 20),
     this.controller,
     this.anchorController,
+    this.endAnchorKey,
+    this.reserveEndSpace = false,
   }) : itemBuilder = null,
        itemCount = null,
        findChildIndexCallback = null;
@@ -504,6 +551,8 @@ class PocketList extends StatefulWidget {
     this.padding = const EdgeInsets.symmetric(horizontal: 20),
     this.controller,
     this.anchorController,
+    this.endAnchorKey,
+    this.reserveEndSpace = false,
   }) : children = null;
   final List<Widget>? children;
   final IndexedWidgetBuilder? itemBuilder;
@@ -512,6 +561,11 @@ class PocketList extends StatefulWidget {
   final EdgeInsets padding;
   final ScrollController? controller;
   final PocketListAnchorController? anchorController;
+
+  /// Reserve only the remaining viewport below a newly sent message. The
+  /// space shrinks to zero as later rows grow; ordinary lists add no space.
+  final Key? endAnchorKey;
+  final bool reserveEndSpace;
   @override
   State<PocketList> createState() => _PocketListState();
 }
@@ -521,6 +575,8 @@ class _PocketListState extends State<PocketList> {
   // outside the cache extent without becoming new content on the return trip.
   final _presented = <(Type, Object)>{};
   final _mountedItems = <(Type, Object), _PocketListItemState>{};
+  double? _endAnchorOffset;
+  double _topInset = 0;
 
   @override
   void initState() {
@@ -531,6 +587,7 @@ class _PocketListState extends State<PocketList> {
   @override
   void didUpdateWidget(PocketList oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.endAnchorKey != widget.endAnchorKey) _endAnchorOffset = null;
     if (oldWidget.anchorController != widget.anchorController) {
       if (oldWidget.anchorController?._owner == this) {
         oldWidget.anchorController
@@ -613,6 +670,28 @@ class _PocketListState extends State<PocketList> {
         : PocketListAnchor._(chosen.widget.identity, bestY!);
   }
 
+  double? _keyOffset(Key key, ScrollController scroll) {
+    for (final item in _mountedItems.values) {
+      if (item.widget.identity.$2 != key) continue;
+      final geometry = _geometry(item);
+      if (geometry != null) return scroll.offset + geometry.y;
+    }
+    return null;
+  }
+
+  double? _revealOffset(Key key, ScrollController scroll) {
+    final measured = _keyOffset(key, scroll);
+    if (measured != null) {
+      return (measured - _topInset).clamp(
+        scroll.position.minScrollExtent,
+        scroll.position.maxScrollExtent,
+      );
+    }
+    // A newly appended message may not yet be inside the lazy cache.
+    if (widget.findChildIndexCallback?.call(key) == null) return null;
+    return scroll.position.maxScrollExtent;
+  }
+
   /// Returns true only when another layout pass could improve the estimate.
   bool _alignAnchor(PocketListAnchor anchor, ScrollController scroll) {
     final exact = _mountedItems[anchor.identity];
@@ -673,14 +752,12 @@ class _PocketListState extends State<PocketList> {
     final scrollPadding =
         widget.padding +
         EdgeInsets.only(top: insets?.top ?? 12, bottom: insets?.bottom ?? 24);
+    _topInset = scrollPadding.top;
     if (widget.itemBuilder != null) {
-      return ListView.builder(
-        controller: widget.controller,
-        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-        padding: scrollPadding,
-        itemBuilder: (context, index) =>
+      final delegate = SliverChildBuilderDelegate(
+        (context, index) =>
             _revealItem(widget.itemBuilder!(context, index), index),
-        itemCount: widget.itemCount,
+        childCount: widget.itemCount,
         findChildIndexCallback: widget.findChildIndexCallback == null
             ? null
             : (key) {
@@ -692,6 +769,43 @@ class _PocketListState extends State<PocketList> {
                 }
                 return widget.findChildIndexCallback!(key);
               },
+      );
+      if (!widget.reserveEndSpace) {
+        return ListView.custom(
+          controller: widget.controller,
+          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+          padding: scrollPadding,
+          childrenDelegate: delegate,
+        );
+      }
+      return CustomScrollView(
+        controller: widget.controller,
+        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+        slivers: [
+          SliverPadding(
+            padding: scrollPadding,
+            sliver: SliverList(delegate: delegate),
+          ),
+          if (widget.endAnchorKey case final key?)
+            SliverLayoutBuilder(
+              builder: (context, constraints) {
+                final scroll = widget.controller;
+                if (scroll != null && scroll.hasClients) {
+                  _endAnchorOffset =
+                      _keyOffset(key, scroll) ?? _endAnchorOffset;
+                }
+                final offset = _endAnchorOffset;
+                final height = offset == null
+                    ? 0.0
+                    : (offset -
+                              _topInset +
+                              constraints.viewportMainAxisExtent -
+                              constraints.precedingScrollExtent)
+                          .clamp(0.0, constraints.viewportMainAxisExtent);
+                return SliverToBoxAdapter(child: SizedBox(height: height));
+              },
+            ),
+        ],
       );
     }
     return ListView(
