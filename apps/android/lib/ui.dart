@@ -252,6 +252,16 @@ class PocketScaffold extends StatefulWidget {
 
 class _PocketScaffoldState extends State<PocketScaffold> {
   double bottomHeight = 0;
+  final _suspendAmbient = ValueNotifier(false);
+  bool _bodyScrolling = false, _drawerOpen = false;
+  void _updateAmbient() =>
+      _suspendAmbient.value = _bodyScrolling || _drawerOpen;
+  @override
+  void dispose() {
+    _suspendAmbient.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     final safe = MediaQuery.paddingOf(context);
@@ -262,7 +272,11 @@ class _PocketScaffoldState extends State<PocketScaffold> {
     return PocketReveal(
       child: Scaffold(
         key: widget.scaffoldKey,
-        onDrawerChanged: widget.onDrawerChanged,
+        onDrawerChanged: (open) {
+          _drawerOpen = open;
+          _updateAmbient();
+          widget.onDrawerChanged?.call(open);
+        },
         drawer: widget.drawer == null
             ? null
             : FilledInputTheme(
@@ -285,8 +299,22 @@ class _PocketScaffoldState extends State<PocketScaffold> {
               fit: StackFit.expand,
               children: [
                 if (LiquidGlassScope.of(context))
-                  const Positioned.fill(child: DaylightBackdrop()),
-                widget.body,
+                  Positioned.fill(
+                    child: DaylightBackdrop(suspendMotion: _suspendAmbient),
+                  ),
+                NotificationListener<ScrollNotification>(
+                  onNotification: (event) {
+                    if (event is ScrollStartNotification) {
+                      _bodyScrolling = true;
+                      _updateAmbient();
+                    } else if (event is ScrollEndNotification) {
+                      _bodyScrolling = false;
+                      _updateAmbient();
+                    }
+                    return false;
+                  },
+                  child: widget.body,
+                ),
                 Positioned(
                   top: 0,
                   left: 0,

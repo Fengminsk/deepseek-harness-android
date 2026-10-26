@@ -166,6 +166,80 @@ Widget _components() => PocketScaffold(
 );
 
 void main() {
+  testWidgets('open drawer freezes underlying light until it closes', (
+    tester,
+  ) async {
+    _phone(tester);
+    final scaffold = GlobalKey<ScaffoldState>();
+    await tester.pumpWidget(
+      _host(
+        PocketScaffold(
+          scaffoldKey: scaffold,
+          title: const Text('对话'),
+          body: const SizedBox.expand(),
+          drawer: const Drawer(child: Text('侧栏')),
+        ),
+        reduceMotion: false,
+      ),
+    );
+    await tester.pump(const Duration(seconds: 1));
+    scaffold.currentState!.openDrawer();
+    await tester.pump();
+    await tester.pumpAndSettle();
+    final light = tester.widget<DaylightBackdrop>(
+      find.byType(DaylightBackdrop),
+    );
+    expect(light.suspendMotion!.value, isTrue);
+    expect(tester.binding.transientCallbackCount, 0);
+    scaffold.currentState!.closeDrawer();
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+    expect(light.suspendMotion!.value, isFalse);
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+    expect(tester.binding.transientCallbackCount, 0);
+  });
+
+  testWidgets('ambient motion yields to scrolling without rebuilding rows', (
+    tester,
+  ) async {
+    _phone(tester);
+    var builds = 0;
+    await tester.pumpWidget(
+      _host(
+        PocketScaffold(
+          title: const Text('测试'),
+          body: Builder(
+            builder: (context) {
+              builds++;
+              return ListView(children: const [SizedBox(height: 2000)]);
+            },
+          ),
+        ),
+        reduceMotion: false,
+      ),
+    );
+    await tester.pump(const Duration(seconds: 1));
+    final backdrop = tester.widget<DaylightBackdrop>(
+      find.byType(DaylightBackdrop),
+    );
+    final before = builds;
+    final gesture = await tester.startGesture(const Offset(150, 500));
+    await gesture.moveBy(const Offset(0, -90));
+    await tester.pump();
+    expect(backdrop.suspendMotion!.value, isTrue);
+    expect(builds, before);
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pump();
+    expect(tester.binding.transientCallbackCount, 0);
+    await gesture.cancel();
+    await tester.pump(const Duration(seconds: 2));
+    expect(backdrop.suspendMotion!.value, isFalse);
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+    expect(tester.binding.hasScheduledFrame, isFalse);
+  });
+
   testWidgets(
     'night ripple stays subtle and stops when reduced motion is enabled',
     (tester) async {

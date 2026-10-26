@@ -503,165 +503,210 @@ class _ChatSidebarState extends State<ChatSidebar> {
       return Drawer(
         width: math.min(380, MediaQuery.sizeOf(context).width * .9),
         elevation: 0,
-        backgroundColor: Theme.of(context).colorScheme.surface,
+        backgroundColor: LiquidGlassScope.of(context)
+            ? Colors.transparent
+            : Theme.of(context).colorScheme.surface,
+        surfaceTintColor: Colors.transparent,
+        clipBehavior: Clip.antiAlias,
         shape: const RoundedRectangleBorder(
           borderRadius: BorderRadiusDirectional.horizontal(
             end: Radius.circular(28),
           ),
         ),
-        child: _SidebarFrame(
-          searchOpen: _searchOpen,
-          header: _header(),
-          searchField: _searchField(),
-          footer: _footer(),
-          bodyBuilder: (scrollPadding) => ListView(
-            key: const ValueKey('sidebar-scroll'),
-            padding: scrollPadding,
-            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-            children: [
-              if (_searchOpen)
+        child: _SidebarGlass(
+          child: _SidebarFrame(
+            searchOpen: _searchOpen,
+            header: _header(),
+            searchField: _searchField(),
+            footer: _footer(),
+            bodyBuilder: (scrollPadding) => ListView(
+              key: const ValueKey('sidebar-scroll'),
+              padding: scrollPadding,
+              keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+              children: [
+                if (_searchOpen)
+                  _destination(
+                    '搜索对话内容',
+                    Icons.manage_search_rounded,
+                    _searchContents,
+                    key: const ValueKey('sidebar-search-content'),
+                  ),
                 _destination(
-                  '搜索对话内容',
-                  Icons.manage_search_rounded,
-                  _searchContents,
-                  key: const ValueKey('sidebar-search-content'),
+                  '后台任务',
+                  Icons.play_circle_outline_rounded,
+                  () => _leave(widget.onOpenTasks),
+                  trailing: running == 0 ? null : Text('$running'),
                 ),
-              _destination(
-                '后台任务',
-                Icons.play_circle_outline_rounded,
-                () => _leave(widget.onOpenTasks),
-                trailing: running == 0 ? null : Text('$running'),
-              ),
-              _destination(
-                '工作区与会话',
-                Icons.folder_copy_outlined,
-                () => unawaited(_browse(LibraryPage(runtime: widget.runtime))),
-              ),
-              if (current != null)
                 _destination(
-                  '当前会话的子 Agent',
-                  Icons.account_tree_outlined,
-                  () => _page(
-                    SubagentsPage(
-                      runtime: widget.runtime,
-                      parentSessionId: widget.currentSessionId,
-                      parentTitle: librarySessionTitle(current),
+                  '工作区与会话',
+                  Icons.folder_copy_outlined,
+                  () =>
+                      unawaited(_browse(LibraryPage(runtime: widget.runtime))),
+                ),
+                if (current != null)
+                  _destination(
+                    '当前会话的子 Agent',
+                    Icons.account_tree_outlined,
+                    () => _page(
+                      SubagentsPage(
+                        runtime: widget.runtime,
+                        parentSessionId: widget.currentSessionId,
+                        parentTitle: librarySessionTitle(current),
+                      ),
                     ),
+                    key: const ValueKey('sidebar-subagents'),
                   ),
-                  key: const ValueKey('sidebar-subagents'),
-                ),
-              _SidebarMore(
-                pending: widget.runtime.interactions.length,
-                children: [
-                  _destination(
-                    '我的文件',
-                    Icons.folder_open_rounded,
-                    () => _page(FilesPage(runtime: widget.runtime)),
-                    key: const ValueKey('sidebar-more-files'),
-                  ),
-                  _destination(
-                    '自动化任务',
-                    Icons.schedule_rounded,
-                    () => _leave(widget.onOpenAutomations),
-                    key: const ValueKey('sidebar-more-automations'),
-                  ),
-                  _destination(
-                    '授权与提问',
-                    Icons.pending_actions_rounded,
-                    () => _page(ApprovalsPage(runtime: widget.runtime)),
-                    key: const ValueKey('sidebar-more-approvals'),
-                    trailing: widget.runtime.interactions.isEmpty
-                        ? null
-                        : Text('${widget.runtime.interactions.length}'),
-                  ),
-                  if (current != null) ...[
+                _SidebarMore(
+                  pending: widget.runtime.interactions.length,
+                  children: [
                     _destination(
-                      '会话文件',
-                      Icons.folder_open_outlined,
-                      () => _page(
-                        SessionFilesPage(
-                          runtime: widget.runtime,
-                          sessionId: widget.currentSessionId,
-                          onOpenDocument: (context, sessionId, path) async {
-                            await Navigator.of(context).push<void>(
-                              PocketRoute(
-                                builder: (_) => SessionDocumentPage(
-                                  runtime: widget.runtime,
-                                  sessionId: sessionId,
-                                  path: path,
+                      '我的文件',
+                      Icons.folder_open_rounded,
+                      () => _page(FilesPage(runtime: widget.runtime)),
+                      key: const ValueKey('sidebar-more-files'),
+                    ),
+                    _destination(
+                      '自动化任务',
+                      Icons.schedule_rounded,
+                      () => _leave(widget.onOpenAutomations),
+                      key: const ValueKey('sidebar-more-automations'),
+                    ),
+                    _destination(
+                      '授权与提问',
+                      Icons.pending_actions_rounded,
+                      () => _page(ApprovalsPage(runtime: widget.runtime)),
+                      key: const ValueKey('sidebar-more-approvals'),
+                      trailing: widget.runtime.interactions.isEmpty
+                          ? null
+                          : Text('${widget.runtime.interactions.length}'),
+                    ),
+                    if (current != null) ...[
+                      _destination(
+                        '会话文件',
+                        Icons.folder_open_outlined,
+                        () => _page(
+                          SessionFilesPage(
+                            runtime: widget.runtime,
+                            sessionId: widget.currentSessionId,
+                            onOpenDocument: (context, sessionId, path) async {
+                              await Navigator.of(context).push<void>(
+                                PocketRoute(
+                                  builder: (_) => SessionDocumentPage(
+                                    runtime: widget.runtime,
+                                    sessionId: sessionId,
+                                    path: path,
+                                  ),
                                 ),
-                              ),
-                            );
-                          },
+                              );
+                            },
+                          ),
                         ),
+                        key: const ValueKey('sidebar-more-session-files'),
                       ),
-                      key: const ValueKey('sidebar-more-session-files'),
-                    ),
-                    _destination(
-                      '导出当前对话',
-                      Icons.ios_share_rounded,
-                      () => _sessionAction(_SessionAction.export, current),
-                      key: const ValueKey('sidebar-more-export'),
-                    ),
+                      _destination(
+                        '导出当前对话',
+                        Icons.ios_share_rounded,
+                        () => _sessionAction(_SessionAction.export, current),
+                        key: const ValueKey('sidebar-more-export'),
+                      ),
+                    ],
                   ],
-                ],
-              ),
-              if (_library.readError != null)
-                _message('会话列表同步失败，已保留上次内容。', refresh: true)
-              else if (!_library.loading &&
-                  !_library.synchronized &&
-                  rows.isNotEmpty)
-                _message('会话列表尚未同步，管理操作暂不可用。', refresh: true),
-              if (notice != null) _message(notice, sessionId: noticeId),
-              if (workspaces.isNotEmpty) ...[
-                _label('工作区'),
-                for (final workspace in workspaces.take(3))
-                  _destination(
-                    workspace['title'] as String? ?? '未命名工作区',
-                    Icons.folder_outlined,
-                    () => unawaited(
-                      _browse(
-                        LibraryWorkspacePage(
-                          library: _library,
-                          workspaceId: workspace['workspaceId'] as String,
+                ),
+                if (_library.readError != null)
+                  _message('会话列表同步失败，已保留上次内容。', refresh: true)
+                else if (!_library.loading &&
+                    !_library.synchronized &&
+                    rows.isNotEmpty)
+                  _message('会话列表尚未同步，管理操作暂不可用。', refresh: true),
+                if (notice != null) _message(notice, sessionId: noticeId),
+                if (workspaces.isNotEmpty) ...[
+                  _label('工作区'),
+                  for (final workspace in workspaces.take(3))
+                    _destination(
+                      workspace['title'] as String? ?? '未命名工作区',
+                      Icons.folder_outlined,
+                      () => unawaited(
+                        _browse(
+                          LibraryWorkspacePage(
+                            library: _library,
+                            workspaceId: workspace['workspaceId'] as String,
+                          ),
                         ),
                       ),
+                      key: ValueKey(
+                        'sidebar-workspace:${workspace['workspaceId']}',
+                      ),
                     ),
-                    key: ValueKey(
-                      'sidebar-workspace:${workspace['workspaceId']}',
+                  if (workspaces.length > 3)
+                    _destination(
+                      '全部工作区',
+                      Icons.arrow_forward_rounded,
+                      () => unawaited(
+                        _browse(LibraryPage(runtime: widget.runtime)),
+                      ),
                     ),
-                  ),
-                if (workspaces.length > 3)
-                  _destination(
-                    '全部工作区',
-                    Icons.arrow_forward_rounded,
-                    () => unawaited(
-                      _browse(LibraryPage(runtime: widget.runtime)),
+                ],
+                if (pinned.isNotEmpty) ...[
+                  _label('置顶'),
+                  ...pinned.map(session),
+                ],
+                _label(query.isEmpty ? '最近对话' : '搜索结果'),
+                ...recent.map(session),
+                if (rows.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 16,
+                    ),
+                    child: Text(
+                      query.isEmpty ? '你的对话会保存在这里' : '没有匹配的会话',
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
                     ),
                   ),
               ],
-              if (pinned.isNotEmpty) ...[_label('置顶'), ...pinned.map(session)],
-              _label(query.isEmpty ? '最近对话' : '搜索结果'),
-              ...recent.map(session),
-              if (rows.isEmpty)
-                Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 14,
-                    vertical: 16,
-                  ),
-                  child: Text(
-                    query.isEmpty ? '你的对话会保存在这里' : '没有匹配的会话',
-                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    ),
-                  ),
-                ),
-            ],
+            ),
           ),
         ),
       );
     },
   );
+}
+
+/// One frosted pane for the drawer; grain is fixed and has no ticker.
+class _SidebarGlass extends StatelessWidget {
+  const _SidebarGlass({required this.child});
+  final Widget child;
+  @override
+  Widget build(BuildContext context) {
+    if (!LiquidGlassScope.of(context)) return child;
+    final colors = Theme.of(context).colorScheme;
+    final dark = colors.brightness == Brightness.dark;
+    final radius = const BorderRadiusDirectional.horizontal(
+      end: Radius.circular(28),
+    ).resolve(Directionality.of(context));
+    return LiquidGlass(
+      key: const ValueKey('sidebar-frosted-glass'),
+      borderRadius: radius,
+      style: LiquidGlassStyle(
+        tint: colors.surface.withValues(alpha: dark ? .76 : .64),
+        blur: 20,
+        saturation: .85,
+        refraction: 0,
+        bevel: 0,
+        rim: dark ? .16 : .25,
+        rimWidth: 1,
+      ),
+      child: CustomPaint(
+        painter: DaylightFinish(
+          shape: RoundedRectangleBorder(borderRadius: radius),
+          dark: dark,
+        ),
+        child: child,
+      ),
+    );
+  }
 }
 
 class _ArchiveRow {
@@ -942,8 +987,6 @@ class _SidebarFrame extends StatelessWidget {
             return Stack(
               fit: StackFit.expand,
               children: [
-                if (LiquidGlassScope.of(context))
-                  const Positioned.fill(child: DaylightBackdrop()),
                 bodyBuilder(
                   EdgeInsets.fromLTRB(
                     10 + media.padding.left,

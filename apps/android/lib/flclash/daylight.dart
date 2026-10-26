@@ -1,12 +1,14 @@
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart';
 import 'package:material_ui/material_ui.dart';
 
 /// A quiet console-inspired ambient field with distant light and a drifting
 /// ribbon. Static atmosphere and moving light have separate paint boundaries.
 class DaylightBackdrop extends StatefulWidget {
-  const DaylightBackdrop({super.key});
+  const DaylightBackdrop({this.suspendMotion, super.key});
+  final ValueListenable<bool>? suspendMotion;
 
   @override
   State<DaylightBackdrop> createState() => _DaylightBackdropState();
@@ -20,9 +22,30 @@ class _DaylightBackdropState extends State<DaylightBackdrop>
   );
 
   @override
+  void initState() {
+    super.initState();
+    widget.suspendMotion?.addListener(_syncMotion);
+  }
+
+  @override
+  void didUpdateWidget(DaylightBackdrop oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.suspendMotion != widget.suspendMotion) {
+      oldWidget.suspendMotion?.removeListener(_syncMotion);
+      widget.suspendMotion?.addListener(_syncMotion);
+      _syncMotion();
+    }
+  }
+
+  @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    _syncMotion();
+  }
+
+  void _syncMotion() {
     final animate =
+        widget.suspendMotion?.value != true &&
         !MediaQuery.disableAnimationsOf(context) &&
         Theme.of(context).colorScheme.surface.toARGB32() != 0xff000000;
     if (animate && !_ripple.isAnimating) {
@@ -34,6 +57,7 @@ class _DaylightBackdropState extends State<DaylightBackdrop>
 
   @override
   void dispose() {
+    widget.suspendMotion?.removeListener(_syncMotion);
     _ripple.dispose();
     super.dispose();
   }

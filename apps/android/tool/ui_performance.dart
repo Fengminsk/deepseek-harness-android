@@ -104,7 +104,7 @@ class _PerformanceAppState extends State<_PerformanceApp> {
         'rssBefore': rssBefore,
         'rssAfter': ProcessInfo.currentRss,
         'peakRss': ProcessInfo.maxRss,
-        'requests': runtime.requests,
+        'requests': Map<String, int>.of(runtime.requests),
       };
       // ignore: avoid_print
       print('DSH_UI_PERF ${jsonEncode(report)}');

@@ -11,6 +11,23 @@ import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.EventChannel
 import org.json.JSONObject
 import java.util.UUID
+import java.util.concurrent.Executors
+
+/** One process-owned queue preserves save/read order across Activity recreation. */
+private object LocalPreferenceIo {
+    private val worker = Executors.newSingleThreadExecutor { task -> Thread(task, "dsh-preferences") }
+    private val main = Handler(Looper.getMainLooper())
+    fun call(result: MethodChannel.Result, code: String, operation: () -> Any?) {
+        worker.execute {
+            try {
+                val value = operation()
+                main.post { result.success(value) }
+            } catch (failure: Exception) {
+                main.post { result.error(code, failure.message, null) }
+            }
+        }
+    }
+}
 
 /** Flutter talks to the service over Binder; no HTTP listener is needed by the App. */
 class MainActivity : FlutterActivity() {
@@ -245,6 +262,7 @@ class MainActivity : FlutterActivity() {
             override fun onListen(arguments: Any?, sink: EventChannel.EventSink) { events = sink; deliverNavigation() }
             override fun onCancel(arguments: Any?) { events = null }
         })
+        val preferenceContext = applicationContext
         MethodChannel(engine.dartExecutor.binaryMessenger, "dsh/runtime").setMethodCallHandler { call, result ->
             when (call.method) {
                 "app.metadata" -> result.success(AuthTabs.metadata(this))
@@ -389,33 +407,29 @@ class MainActivity : FlutterActivity() {
                     JSONObject().put("runId", call.argument<String>("runId") ?: ""), result)
                 "isolatedManual.cancel" -> sendNativeManual(15,
                     JSONObject().put("runId", call.argument<String>("runId") ?: ""), result)
-                "terminal.shell.load" -> result.success(
-                    getSharedPreferences("terminal", MODE_PRIVATE).getString("shell", "system-sh")
-                )
-                "terminal.shell.save" -> {
-                    try {
-                        val shellId = call.arguments as String
-                        require(shellId in setOf("system-sh", "system-mksh", "system-bash"))
-                        check(getSharedPreferences("terminal", MODE_PRIVATE).edit()
-                            .putString("shell", shellId).commit()) { "Shell choice could not be saved" }
-                        result.success(null)
-                    } catch (_: Exception) {
-                        result.error("terminal-shell-choice", "无法保存 Shell 选择", null)
-                    }
+                "terminal.shell.load" -> LocalPreferenceIo.call(result, "terminal-shell-choice") {
+                    preferenceContext.getSharedPreferences("terminal", MODE_PRIVATE).getString("shell", "system-sh")
                 }
-                "appearance.load" -> result.success(getSharedPreferences("appearance", MODE_PRIVATE).getString("value", "{}"))
-                "appearance.save" -> {
-                    try {
-                        val raw = call.arguments as String
-                        require(raw.length < 4096) { "Theme settings too large" }
-                        val value = JSONObject(raw)
-                        require(value.getString("mode") in setOf("system", "light", "dark"))
-                        require(value.getString("glass") in setOf("none", "standard", "ultra"))
-                        require(value.getString("style") in setOf("vivid", "tinted", "soft", "monochrome"))
-                        require(value.getDouble("textScale") == 0.0 || value.getDouble("textScale") in 0.8..1.5)
-                        check(getSharedPreferences("appearance", MODE_PRIVATE).edit().putString("value", value.toString()).commit()) { "Theme settings could not be saved" }
-                        result.success(null)
-                    } catch (exception: Exception) { result.error("preferences", exception.message, null) }
+                "terminal.shell.save" -> LocalPreferenceIo.call(result, "terminal-shell-choice") {
+                    val shellId = call.arguments as String
+                    require(shellId in setOf("system-sh", "system-mksh", "system-bash"))
+                    check(preferenceContext.getSharedPreferences("terminal", MODE_PRIVATE).edit()
+                        .putString("shell", shellId).commit()) { "Shell choice could not be saved" }
+                    null
+                }
+                "appearance.load" -> LocalPreferenceIo.call(result, "preferences") {
+                    preferenceContext.getSharedPreferences("appearance", MODE_PRIVATE).getString("value", "{}")
+                }
+                "appearance.save" -> LocalPreferenceIo.call(result, "preferences") {
+                    val raw = call.arguments as String
+                    require(raw.length < 4096) { "Theme settings too large" }
+                    val value = JSONObject(raw)
+                    require(value.getString("mode") in setOf("system", "light", "dark"))
+                    require(value.getString("glass") in setOf("none", "standard", "ultra"))
+                    require(value.getString("style") in setOf("vivid", "tinted", "soft", "monochrome"))
+                    require(value.getDouble("textScale") == 0.0 || value.getDouble("textScale") in 0.8..1.5)
+                    check(preferenceContext.getSharedPreferences("appearance", MODE_PRIVATE).edit().putString("value", value.toString()).commit()) { "Theme settings could not be saved" }
+                    null
                 }
                 "start" -> {
                     if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {

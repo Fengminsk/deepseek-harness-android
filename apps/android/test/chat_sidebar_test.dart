@@ -1,13 +1,17 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:dsh_android/account_state.dart';
 import 'package:dsh_android/chat_sidebar.dart';
 import 'package:dsh_android/flclash/popup.dart';
+import 'package:dsh_android/flclash/daylight.dart';
 import 'package:dsh_android/library.dart';
 import 'package:dsh_android/session_search.dart';
 import 'package:dsh_android/ui.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
@@ -165,6 +169,76 @@ Future<void> dispose(WidgetTester tester) async {
 }
 
 void main() {
+  testWidgets('frosted sidebar has no ambient animation in either theme', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final folder = Platform.environment['DSH_SIDEBAR_CAPTURE_DIR'];
+    final font = Platform.environment['DSH_DAYLIGHT_CAPTURE_FONT'];
+    if (folder != null && font != null) {
+      await tester.runAsync(() async {
+        await (FontLoader('SidebarPreview')..addFont(
+              Future.value(
+                ByteData.sublistView(await File(font).readAsBytes()),
+              ),
+            ))
+            .load();
+        await (FontLoader(
+          'MaterialIcons',
+        )..addFont(rootBundle.load('fonts/MaterialIcons-Regular.otf'))).load();
+      });
+    }
+    for (final brightness in Brightness.values) {
+      final runtime = LibraryRuntime();
+      final harness = SidebarHarness(runtime);
+      final capture = GlobalKey();
+      try {
+        await tester.pumpWidget(
+          RepaintBoundary(
+            key: capture,
+            child: harness.host(
+              glass: true,
+              brightness: brightness,
+              reduceMotion: false,
+              fontFamily: font == null ? null : 'SidebarPreview',
+            ),
+          ),
+        );
+        await harness.open(tester);
+        await tester.pumpAndSettle();
+        expect(key('sidebar-frosted-glass'), findsOneWidget);
+        expect(find.byType(DaylightBackdrop), findsNothing);
+        expect(tester.binding.transientCallbackCount, 0);
+        expect(tester.binding.hasScheduledFrame, isFalse);
+        if (folder != null) {
+          await tester.runAsync(() async {
+            final image =
+                await (capture.currentContext!.findRenderObject()!
+                        as RenderRepaintBoundary)
+                    .toImage(pixelRatio: 2);
+            try {
+              final data = (await image.toByteData(
+                format: ui.ImageByteFormat.png,
+              ))!;
+              await Directory(folder).create(recursive: true);
+              await File('$folder/sidebar-${brightness.name}.png')
+                  .writeAsBytes(data.buffer.asUint8List());
+            } finally {
+              image.dispose();
+            }
+          });
+        }
+        expect(tester.takeException(), isNull);
+      } finally {
+        await dispose(tester);
+        runtime.dispose();
+      }
+    }
+  });
+
   testWidgets('floating chrome overlays the full scrolling library viewport', (
     tester,
   ) async {
