@@ -241,35 +241,55 @@ void main() {
   });
 
   testWidgets(
-    'night ripple stays subtle and stops when reduced motion is enabled',
+    'diffuse light moves across the page and respects reduced motion',
     (tester) async {
       _phone(tester);
-      final key = GlobalKey();
-      Widget scene(bool reduce) => RepaintBoundary(
-        key: key,
-        child: _host(
-          const PocketScaffold(title: Text('外观'), body: SizedBox.expand()),
-          brightness: Brightness.dark,
-          reduceMotion: reduce,
-        ),
-      );
-      await tester.pumpWidget(scene(false));
-      await tester.pump(const Duration(milliseconds: 500));
-      final before = await _pixels(tester, key);
-      await tester.pump(const Duration(seconds: 4));
-      final after = await _pixels(tester, key);
-      var biggestChange = 0;
-      for (var i = 0; i < before.length; i++) {
-        final difference = (before[i] - after[i]).abs();
-        if (difference > biggestChange) biggestChange = difference;
+      for (final brightness in Brightness.values) {
+        final key = GlobalKey();
+        Widget scene(bool reduce) => RepaintBoundary(
+          key: key,
+          child: _host(
+            const PocketScaffold(title: Text('外观'), body: SizedBox.expand()),
+            brightness: brightness,
+            reduceMotion: reduce,
+          ),
+        );
+        await tester.pumpWidget(scene(false));
+        await tester.pump(const Duration(milliseconds: 500));
+        final before = await _pixels(tester, key);
+        await tester.pump(const Duration(seconds: 4));
+        final after = await _pixels(tester, key);
+        var biggestChange = 0, movingPixels = 0, sampledPixels = 0;
+        for (var y = 130; y < 780; y++) {
+          for (var x = 20; x < 370; x++) {
+            final offset = (y * 390 + x) * 4;
+            var change = 0;
+            for (var channel = 0; channel < 3; channel++) {
+              final delta = (before[offset + channel] - after[offset + channel])
+                  .abs();
+              if (delta > change) change = delta;
+            }
+            if (change > biggestChange) biggestChange = change;
+            if (change >= 2) movingPixels++;
+            sampledPixels++;
+          }
+        }
+        expect(
+          movingPixels / sampledPixels,
+          greaterThan(.2),
+          reason: '$brightness must move a broad field, not just a thin line.',
+        );
+        expect(
+          biggestChange,
+          inInclusiveRange(2, brightness == Brightness.dark ? 12 : 18),
+        );
+        await tester.pumpWidget(scene(true));
+        await tester.pumpAndSettle();
+        final still = await _pixels(tester, key);
+        await tester.pump(const Duration(seconds: 4));
+        expect(await _pixels(tester, key), orderedEquals(still));
+        expect(tester.binding.hasScheduledFrame, isFalse);
       }
-      expect(biggestChange, inInclusiveRange(1, 12));
-      await tester.pumpWidget(scene(true));
-      await tester.pumpAndSettle();
-      final still = await _pixels(tester, key);
-      await tester.pump(const Duration(seconds: 4));
-      expect(await _pixels(tester, key), orderedEquals(still));
-      expect(tester.binding.hasScheduledFrame, isFalse);
     },
   );
   testWidgets(

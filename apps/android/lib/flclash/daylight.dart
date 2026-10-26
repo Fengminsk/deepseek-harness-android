@@ -4,8 +4,8 @@ import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart';
 import 'package:material_ui/material_ui.dart';
 
-/// A quiet console-inspired ambient field with distant light and a drifting
-/// ribbon. Static atmosphere and moving light have separate paint boundaries.
+/// Diffuse, overlapping light fields with sparse distant particles.
+/// Static atmosphere and moving light have separate paint boundaries.
 class DaylightBackdrop extends StatefulWidget {
   const DaylightBackdrop({this.suspendMotion, super.key});
   final ValueListenable<bool>? suspendMotion;
@@ -146,38 +146,44 @@ class _RipplePainter extends CustomPainter {
     final light = dark ? const Color(0xffa2b5d5) : const Color(0xff9daec7);
     canvas.save();
     canvas.clipRect(rect);
-    final drift = math.sin(time) * size.height * .012;
-    final path = Path()
-      ..moveTo(-size.width * .2, size.height * .24 + drift)
-      ..cubicTo(
-        size.width * .55,
-        size.height * .23 - drift,
-        size.width * .18,
-        size.height * .63 + drift,
-        size.width * 1.2,
-        size.height * .65,
-      );
-    // Feather the same curve with translucent strokes. Cost stays bounded;
-    // unlike MaskFilter, these do not allocate offscreen blur surfaces.
-    for (var band = 12; band >= 1; band--) {
-      canvas.drawPath(
-        path,
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = size.width * .018 * band
-          ..shader = LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [
-              light.withValues(alpha: 0),
-              light.withValues(alpha: dark ? .0025 : .0035),
-              light.withValues(alpha: dark ? .004 : .005),
-              light.withValues(alpha: 0),
-            ],
-            stops: const [0, .25, .7, 1],
-          ).createShader(rect),
-      );
-    }
+    // Three broad radial gradients have no line contour or offscreen blur.
+    // Their centers, spread and intensity move independently over the same loop.
+    _wash(
+      canvas,
+      center: Offset(
+        size.width * (.08 + .28 * math.sin(time)),
+        size.height * (.38 + .14 * math.cos(time)),
+      ),
+      spread: Offset(
+        size.width * (1.05 + .1 * math.cos(time)),
+        size.height * .66,
+      ),
+      angle: -.24 + .12 * math.sin(time),
+      color: const Color(0xff779fc8),
+      opacity: (dark ? .085 : .16) * (.9 + .1 * math.cos(time)),
+    );
+    _wash(
+      canvas,
+      center: Offset(
+        size.width * (.8 + .24 * math.cos(time + .9)),
+        size.height * (.24 + .17 * math.sin(time + .9)),
+      ),
+      spread: Offset(size.width * 1.12, size.height * .55),
+      angle: .32 + .1 * math.cos(time),
+      color: const Color(0xfffff9ec),
+      opacity: (dark ? .045 : .42) * (.88 + .12 * math.sin(time + .9)),
+    );
+    _wash(
+      canvas,
+      center: Offset(
+        size.width * (.5 + .3 * math.cos(time - 1.4)),
+        size.height * (.82 + .12 * math.sin(time - 1.4)),
+      ),
+      spread: Offset(size.width * 1.15, size.height * .57),
+      angle: -.4,
+      color: const Color(0xffb2c4df),
+      opacity: (dark ? .055 : .13) * (.9 + .1 * math.cos(time - 1.4)),
+    );
     final paint = Paint();
     for (var i = 0; i < 26; i++) {
       final x = ((i * .61803398875 + .13) % 1) * size.width;
@@ -190,6 +196,37 @@ class _RipplePainter extends CustomPainter {
       paint.color = light.withValues(alpha: (dark ? .035 : .055) * twinkle);
       canvas.drawCircle(center, i % 7 == 0 ? 1.15 : .65, paint);
     }
+    canvas.restore();
+  }
+
+  void _wash(
+    Canvas canvas, {
+    required Offset center,
+    required Offset spread,
+    required double angle,
+    required Color color,
+    required double opacity,
+  }) {
+    canvas.save();
+    canvas.translate(center.dx, center.dy);
+    canvas.rotate(angle);
+    canvas.scale(spread.dx, spread.dy);
+    canvas.drawCircle(
+      Offset.zero,
+      1,
+      Paint()
+        ..shader = ui.Gradient.radial(
+          Offset.zero,
+          1,
+          [
+            color.withValues(alpha: opacity),
+            color.withValues(alpha: opacity * .6),
+            color.withValues(alpha: opacity * .15),
+            color.withValues(alpha: 0),
+          ],
+          const [0, .35, .72, 1],
+        ),
+    );
     canvas.restore();
   }
 

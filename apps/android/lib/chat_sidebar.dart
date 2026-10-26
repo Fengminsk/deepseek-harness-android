@@ -690,7 +690,9 @@ class _SidebarGlass extends StatelessWidget {
       key: const ValueKey('sidebar-frosted-glass'),
       borderRadius: radius,
       style: LiquidGlassStyle(
-        tint: colors.surface.withValues(alpha: dark ? .76 : .64),
+        tint: dark
+            ? colors.surface.withValues(alpha: .76)
+            : Colors.white.withValues(alpha: .88),
         blur: 20,
         saturation: .85,
         refraction: 0,
