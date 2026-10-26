@@ -3,5 +3,11 @@
   "ranges": "夜里 -3~0°C，温差 12~15°C。风力 6~7 级（35~40 km/h）。",
   "reasoningFontSize": 13,
   "answerFontSize": 16,
-  "completed": "已完成"
+  "completed": "已完成",
+  "completionAnchor": {
+    "paragraphs": [0, 12],
+    "frameDisplacement": 0,
+    "heightChange": 0,
+    "dragDisplacement": -40
+  }
 }

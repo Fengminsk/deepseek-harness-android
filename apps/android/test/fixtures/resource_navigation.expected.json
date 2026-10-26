@@ -1,6 +1,4 @@
 {
-  "tabFontSize": 13,
-  "maximumTabHeight": 52,
-  "idleGuideShowsTabs": false,
-  "fileReaderInstancesForRepeatedTap": 1
+  "menuTitles": ["文件", "文件改动", "技能", "后台任务", "浏览器", "终端"],
+  "returnTitle": "会话资源"
 }

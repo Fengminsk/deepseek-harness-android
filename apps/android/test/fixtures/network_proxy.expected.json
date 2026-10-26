@@ -1,0 +1,9 @@
+{
+  "modes": ["手机网络 / VPN", "本机代理"],
+  "defaultPort": 7890,
+  "testButton": "测试此配置",
+  "toolChoices": ["系统 VPN 设置", "FlClash", "v2rayNG"],
+  "openTool": "打开代理工具",
+  "savedPending": "Agent 仍使用上次配置",
+  "applied": "Agent 已生效"
+}

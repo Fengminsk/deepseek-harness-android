@@ -32,6 +32,7 @@ import 'permission_policy.dart';
 import 'settings_general.dart';
 import 'session_log_upload_settings.dart';
 import 'manual_isolated_script.dart';
+import 'network_proxy_settings.dart';
 
 class SettingsPage extends StatelessWidget {
   const SettingsPage({required this.runtime, super.key});
@@ -177,6 +178,12 @@ class SettingsPage extends StatelessWidget {
                       ? '已开启 · 与 App 共享运行时'
                       : '使用原版 Web 界面',
                   onTap: () => open(WebSettingsPage(runtime: runtime)),
+                ),
+                PocketRow(
+                  icon: Icons.vpn_key_outlined,
+                  title: '网络代理',
+                  subtitle: '手机 VPN、本机代理与连接测试',
+                  onTap: () => open(NetworkProxyPage(runtime: runtime)),
                 ),
                 PocketRow(
                   icon: Icons.notifications_outlined,

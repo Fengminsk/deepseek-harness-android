@@ -3,5 +3,10 @@
   "embedded-vector": { "width": 128, "height": 128 },
   "no-content-type": { "scheme": "https", "decoded": true, "closed": true },
   "application/octet-stream": { "scheme": "https", "decoded": true, "closed": true },
-  "image/png": { "scheme": "https", "decoded": true, "closed": true }
+  "binary/octet-stream": { "scheme": "https", "decoded": true, "closed": true },
+  "text/plain": { "scheme": "https", "decoded": true, "closed": true },
+  "image/png": { "scheme": "https", "decoded": true, "closed": true },
+  "image/svg+xml": { "scheme": "https", "decoded": true, "closed": true },
+  "invalid header": { "scheme": "https", "decoded": true, "closed": true },
+  "image/png; charset=\"broken": { "scheme": "https", "decoded": true, "closed": true }
 }

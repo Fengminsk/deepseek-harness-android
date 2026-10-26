@@ -439,6 +439,22 @@ class MainActivity : FlutterActivity() {
                     check(edit.commit()) { "Reasoning choice could not be saved" }
                     null
                 }
+                "network.proxy.read" -> LocalPreferenceIo.call(result, "proxy-read") {
+                    NetworkProxyPreferences(preferenceContext).read().toString()
+                }
+                "network.proxy.route" -> LocalPreferenceIo.call(result, "proxy-read") {
+                    NetworkProxyPreferences(preferenceContext).route().toString()
+                }
+                "network.proxy.save" -> LocalPreferenceIo.call(result, "proxy-save") {
+                    NetworkProxyPreferences(preferenceContext).save(JSONObject(call.arguments as String)).toString()
+                }
+                "network.proxy.test" -> try {
+                    NetworkProxyPreferences.testAsync(preferenceContext, JSONObject(call.arguments as String), result)
+                } catch (failure: Exception) { result.error("proxy-test", failure.message, null) }
+                "network.proxy.openTool" -> try {
+                    NetworkProxyPreferences(preferenceContext).openTool(this, call.arguments as? String ?: "")
+                    result.success(null)
+                } catch (failure: Exception) { result.error("proxy-tool", failure.message ?: "无法打开代理工具", null) }
                 "appearance.load" -> LocalPreferenceIo.call(result, "preferences") {
                     preferenceContext.getSharedPreferences("appearance", MODE_PRIVATE).getString("value", "{}")
                 }

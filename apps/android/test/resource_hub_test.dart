@@ -183,237 +183,195 @@ void main() {
   final expected = jsonDecode(
     File('test/fixtures/resource_navigation.expected.json').readAsStringSync(),
   ) as Map<String, dynamic>;
+
+  testWidgets('resource menu has no bottom bar and opens independent pages', (
+    tester,
+  ) async {
+    final runtime = _ResourceRuntime();
+    await _mount(tester, runtime, glass: true);
+    expect(runtime.calls, isEmpty);
+    for (final title in expected['menuTitles'] as List) {
+      expect(find.text(title as String), findsOneWidget);
+    }
+    expect(
+      tester.widget<PocketScaffold>(find.byType(PocketScaffold)).bottom,
+      isNull,
+    );
+    await tester.tap(find.byKey(const ValueKey('resource-files')));
+    await tester.pumpAndSettle();
+    expect(find.byType(SessionFilesPage), findsOneWidget);
+    await tester.tap(find.byTooltip('返回上级'));
+    await tester.pumpAndSettle();
+    expect(find.text(expected['returnTitle'] as String), findsOneWidget);
+    expect(find.byType(SessionFilesPage, skipOffstage: false), findsNothing);
+    await tester.tap(find.byKey(const ValueKey('resource-browser')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('browser-address')), findsOneWidget);
+    await tester.enterText(
+      find.byKey(const ValueKey('browser-address')),
+      'https://example.org/draft',
+    );
+    await tester.tap(find.byTooltip('返回'));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('browser-address'), skipOffstage: false),
+      findsNothing,
+    );
+    expect(
+      tester.widget<PocketScaffold>(find.byType(PocketScaffold)).bottom,
+      isNull,
+    );
+    expect(
+      runtime.calls.any(
+        (call) => call.$1 == 'session.ensure' || call.$1 == 'session.send',
+      ),
+      false,
+    );
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+    runtime.dispose();
+  });
+
   testWidgets(
-    'glass resource tabs use compact typography and stop hidden motion',
+    'resource re-entry starts at the menu without retaining readers',
     (tester) async {
       final runtime = _ResourceRuntime();
-      await _mount(tester, runtime, glass: true);
-      expect(find.byKey(const ValueKey('resource-tabs')), findsNothing);
+      await _mount(tester, runtime);
+      await tester.tap(find.byKey(const ValueKey('resource-changes')));
+      await tester.pumpAndSettle();
+      expect(runtime.historyReads, 1);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await _mount(tester, runtime);
+      expect(find.text(expected['returnTitle'] as String), findsOneWidget);
+      expect(
+        find.byType(SessionChangesPage, skipOffstage: false),
+        findsNothing,
+      );
+      expect(runtime.historyReads, 1);
+      expect(
+        runtime.calls.any((call) => call.$2['namespace'] == 'workspaceFiles'),
+        false,
+      );
       await tester.tap(find.byKey(const ValueKey('resource-files')));
       await tester.pumpAndSettle();
-      final tab = find.byKey(const ValueKey('resource-tab-files'));
-      final label = tester.widget<Text>(
-        find.descendant(of: tab, matching: find.text('文件')),
-      );
-      expect(label.style!.fontSize, expected['tabFontSize']);
+      expect(find.byType(SessionFilesPage), findsOneWidget);
+      expect(runtime.historyReads, 1);
+      await tester.pumpWidget(const SizedBox.shrink());
+      runtime.dispose();
+    },
+  );
+
+  testWidgets(
+    'leaving terminal views detaches readers while the process stays alive',
+    (tester) async {
+      final runtime = _ResourceRuntime()..terminalId = 'existing-pty';
+      await _mount(tester, runtime);
+      await tester.tap(find.byKey(const ValueKey('resource-terminal')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('terminal-existing-pty')));
+      await tester.pumpAndSettle();
+      expect(find.byType(SessionTerminalView), findsOneWidget);
+      await tester.tap(find.byTooltip('返回'));
+      await tester.pumpAndSettle();
       expect(
-        tester.getSize(tab).height,
-        lessThanOrEqualTo(expected['maximumTabHeight']),
+        find.byType(SessionTerminalView, skipOffstage: false),
+        findsNothing,
       );
-      final guide = find.byKey(
-        const ValueKey('resource-page-session-guide'),
-        skipOffstage: false,
+      expect(find.byType(SessionTerminalsPage), findsOneWidget);
+      await tester.tap(find.byTooltip('返回'));
+      await tester.pumpAndSettle();
+      expect(
+        find.byType(SessionTerminalsPage, skipOffstage: false),
+        findsNothing,
       );
-      final ticker = find
-          .descendant(
-            of: guide,
-            matching: find.byType(TickerMode, skipOffstage: false),
-          )
-          .first;
-      expect(tester.widget<TickerMode>(ticker).enabled, false);
+      final reads = runtime.calls
+          .where((call) => call.$1 == 'terminal.list')
+          .length;
+      runtime.connection('failed');
+      await tester.pumpAndSettle();
+      runtime.connection('ready');
+      await tester.pumpAndSettle();
+      expect(
+        runtime.calls.where((call) => call.$1 == 'terminal.list'),
+        hasLength(reads),
+      );
+      expect(runtime.terminalId, 'existing-pty');
+      expect(
+        runtime.calls.any(
+          (call) => call.$1 == 'terminal.close' || call.$1 == 'terminal.create',
+        ),
+        false,
+      );
+      await tester.tap(find.byKey(const ValueKey('resource-terminal')));
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const ValueKey('terminal-existing-pty')),
+        findsOneWidget,
+      );
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox.shrink());
       runtime.dispose();
     },
   );
 
-  testWidgets(
-    'tabs mount on selection and retain browser draft and file scroll',
-    (tester) async {
-      final runtime = _ResourceRuntime();
-      await _mount(tester, runtime);
-      expect(runtime.calls, isEmpty);
-      await tester.tap(find.byKey(const ValueKey('resource-files')));
-      await tester.pumpAndSettle();
-      final listing = find.byKey(const ValueKey('file-browser-list'));
-      await tester.drag(listing, const Offset(0, -520));
-      await tester.pumpAndSettle();
-      final before = tester.widget<ListView>(listing).controller!.offset;
-      expect(before, greaterThan(0));
-      expect(runtime.historyReads, 0);
-      await tester.tap(find.byKey(const ValueKey('resource-tab-guide')));
-      await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const ValueKey('resource-browser')));
-      await tester.pumpAndSettle();
-      await tester.enterText(
-        find.byKey(const ValueKey('browser-address')),
-        'https://example.org/draft',
-      );
-      await tester.tap(find.byKey(const ValueKey('resource-tab-files')));
-      await tester.pumpAndSettle();
-      expect(tester.widget<ListView>(listing).controller!.offset, before);
-      await tester.tap(find.byKey(const ValueKey('resource-tab-browser')));
-      await tester.pumpAndSettle();
-      expect(
-        tester
-            .widget<TextField>(find.byKey(const ValueKey('browser-address')))
-            .controller!
-            .text,
-        'https://example.org/draft',
-      );
-      expect(runtime.calls.any((call) => call.$1 == 'session.ensure'), false);
-      expect(runtime.calls.any((call) => call.$1 == 'session.send'), false);
-      await tester.pumpWidget(const SizedBox.shrink());
-      runtime.dispose();
-    },
-  );
-
-  testWidgets(
-    'Session changes isolate tabs; re-entry restores safe identities',
-    (tester) async {
-      final runtime = _ResourceRuntime();
-      await _mount(tester, runtime);
-      await tester.tap(find.byKey(const ValueKey('resource-browser')));
-      await tester.pumpAndSettle();
-      await tester.enterText(
-        find.byKey(const ValueKey('browser-address')),
-        'https://example.org/private-draft',
-      );
-      await _mount(tester, runtime, sessionId: 'other');
-      expect(find.byKey(const ValueKey('resource-tab-browser')), findsNothing);
-      expect(find.byKey(const ValueKey('resource-browser')), findsOneWidget);
-      expect(runtime.calls, isEmpty);
-      await _mount(tester, runtime, sessionId: 'session');
-      expect(
-        find.byKey(const ValueKey('resource-tab-browser')),
-        findsOneWidget,
-      );
-      expect(find.byKey(const ValueKey('browser-address')), findsOneWidget);
-      expect(
-        tester
-            .widget<TextField>(find.byKey(const ValueKey('browser-address')))
-            .controller!
-            .text,
-        isEmpty,
-      );
-      await tester.tap(find.byKey(const ValueKey('resource-close-browser')));
-      await tester.pumpAndSettle();
-      expect(find.byKey(const ValueKey('resource-tab-browser')), findsNothing);
-      expect(find.byKey(const ValueKey('resource-browser')), findsOneWidget);
-      await tester.pumpWidget(const SizedBox.shrink());
-      runtime.dispose();
-    },
-  );
-
-  testWidgets('re-entry reads only the selected tab until another is chosen', (
-    tester,
-  ) async {
-    final runtime = _ResourceRuntime();
-    await _mount(tester, runtime);
-    await tester.tap(find.byKey(const ValueKey('resource-files')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('resource-tab-guide')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('resource-changes')));
-    await tester.pumpAndSettle();
-    int fileReads() => runtime.calls
-        .where(
-          (call) =>
-              call.$1 == 'api.call' && call.$2['namespace'] == 'workspaceFiles',
-        )
-        .length;
-    expect(fileReads(), 1);
-    expect(runtime.historyReads, 1);
-    await tester.pumpWidget(const SizedBox.shrink());
-    await _mount(tester, runtime);
-    expect(find.byType(SessionChangesPage), findsOneWidget);
-    expect(runtime.historyReads, 2);
-    expect(fileReads(), 1);
-    await tester.tap(find.byKey(const ValueKey('resource-tab-files')));
-    await tester.pumpAndSettle();
-    expect(fileReads(), 2);
-    await tester.pumpWidget(const SizedBox.shrink());
-    runtime.dispose();
-  });
-
-  testWidgets('terminal remains attached on tab switch and reconnect', (
-    tester,
-  ) async {
-    final runtime = _ResourceRuntime();
-    runtime.terminalId = 'existing-pty';
-    await _mount(tester, runtime);
-    await tester.tap(find.byKey(const ValueKey('resource-terminal')));
-    await tester.pumpAndSettle();
-    expect(
-      runtime.calls.where((call) => call.$1 == 'terminal.list'),
-      hasLength(1),
-    );
-    await tester.tap(find.byKey(const ValueKey('resource-tab-guide')));
-    await tester.pumpAndSettle();
-    runtime.connection('failed');
-    await tester.pumpAndSettle();
-    runtime.connection('ready');
-    await tester.pumpAndSettle();
-    expect(
-      runtime.calls.where((call) => call.$1 == 'terminal.list'),
-      hasLength(2),
-    );
-    expect(runtime.terminalId, 'existing-pty');
-    expect(runtime.calls.any((call) => call.$1 == 'terminal.create'), false);
-    await tester.tap(find.byKey(const ValueKey('resource-tab-terminal')));
-    await tester.pumpAndSettle();
-    expect(find.byType(SessionTerminalsPage), findsOneWidget);
-    await tester.tap(find.byKey(const ValueKey('resource-close-terminal')));
-    await tester.pumpAndSettle();
-    expect(runtime.calls.any((call) => call.$1 == 'terminal.close'), false);
-    expect(runtime.terminalId, 'existing-pty');
-    expect(find.byKey(const ValueKey('resource-tab-terminal')), findsNothing);
-    await tester.pumpWidget(const SizedBox.shrink());
-    runtime.dispose();
-  });
-
-  testWidgets('resource back selects guide without closing the tab', (
-    tester,
-  ) async {
-    final runtime = _ResourceRuntime();
-    await tester.pumpWidget(
-      MaterialApp(
-        theme: pocketTheme(Brightness.light),
-        home: Builder(
-          builder: (context) => Scaffold(
-            body: TextButton(
-              onPressed: () => Navigator.of(context).push<void>(
-                PocketRoute<void>(
-                  builder: (_) => SessionResourcesPage(
-                    runtime: runtime,
-                    sessionId: 'session',
+  for (final systemBack in [false, true]) {
+    testWidgets(
+      'file directory then root return to the resource menu (system=$systemBack)',
+      (tester) async {
+        final runtime = _ResourceRuntime();
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: pocketTheme(Brightness.light),
+            home: Builder(
+              builder: (context) => Scaffold(
+                body: TextButton(
+                  onPressed: () => Navigator.of(context).push<void>(
+                    PocketRoute<void>(
+                      builder: (_) => SessionResourcesPage(
+                        runtime: runtime,
+                        sessionId: 'session',
+                      ),
+                    ),
                   ),
+                  child: const Text('打开资源'),
                 ),
               ),
-              child: const Text('打开资源'),
             ),
           ),
-        ),
-      ),
+        );
+        await tester.tap(find.text('打开资源'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const ValueKey('resource-files')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('folder'));
+        await tester.pumpAndSettle();
+        Future<void> back() async {
+          if (systemBack) {
+            await tester.binding.handlePopRoute();
+          } else {
+            await tester.tap(find.byTooltip('返回上级'));
+          }
+          await tester.pumpAndSettle();
+        }
+
+        await back();
+        expect(find.text('会话文件'), findsOneWidget);
+        // The root callback must not re-enter maybePop when another owner vetoes.
+        await back();
+        expect(find.text(expected['returnTitle'] as String), findsOneWidget);
+        expect(
+          find.byType(SessionFilesPage, skipOffstage: false),
+          findsNothing,
+        );
+        await tester.tap(find.byTooltip('返回'));
+        await tester.pumpAndSettle();
+        expect(find.text('打开资源'), findsOneWidget);
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+        runtime.dispose();
+      },
     );
-    await tester.tap(find.text('打开资源'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('resource-files')));
-    await tester.pumpAndSettle();
-    // The file root previously re-entered maybePop indefinitely when the hub
-    // vetoed this same route, starving the UI thread until Android killed it.
-    await tester.tap(find.byTooltip('返回上级'));
-    await tester.pumpAndSettle();
-    expect(find.text('会话资源'), findsOneWidget);
-    await tester.tap(find.byKey(const ValueKey('resource-tab-files')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('folder'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('resource-tab-guide')));
-    await tester.pumpAndSettle();
-    // A retained file directory must not intercept another tab's route back.
-    await tester.tap(find.byKey(const ValueKey('resource-browser')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byTooltip('返回'));
-    await tester.pumpAndSettle();
-    expect(find.byKey(const ValueKey('resource-browser')), findsOneWidget);
-    expect(find.byKey(const ValueKey('resource-tab-browser')), findsOneWidget);
-    await tester.tap(find.byTooltip('返回'));
-    await tester.pumpAndSettle();
-    expect(find.text('打开资源'), findsOneWidget);
-    await tester.pumpWidget(const SizedBox.shrink());
-    runtime.dispose();
-  });
+  }
 
   testWidgets(
     'resource hub keeps one Session and opens original file browser',
@@ -475,7 +433,7 @@ void main() {
     expect(find.text('summarize'), findsOneWidget);
     expect(runtime.calls.any((call) => call.$1 == 'session.ensure'), false);
     expect(runtime.calls.any((call) => call.$1 == 'session.send'), false);
-    await tester.tap(find.byKey(const ValueKey('resource-tab-guide')));
+    await tester.tap(find.byTooltip('返回'));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('resource-tasks')));
     await tester.pumpAndSettle();

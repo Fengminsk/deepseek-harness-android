@@ -1542,6 +1542,7 @@ class CommonPopupMenuItem {
   const CommonPopupMenuItem({
     required this.label,
     this.glyph,
+    this.leading,
     this.onPressed,
     this.danger = false,
     this.checked,
@@ -1553,6 +1554,9 @@ class CommonPopupMenuItem {
 
   final String label;
   final IconData? glyph;
+
+  /// Optional artwork constrained to the same footprint as a menu glyph.
+  final Widget? leading;
   final VoidCallback? onPressed;
   final bool danger;
   final bool? checked;
@@ -1757,7 +1761,9 @@ class _CommonPopupMenuState extends State<CommonPopupMenu>
       final checked = item.checked == true;
       final row =
           (checked ? _itemArrowPadding : _itemPadding).horizontal +
-          (item.glyph != null ? _itemIconSize + 12 : 0) +
+          (item.leading != null || item.glyph != null
+              ? _itemIconSize + 12
+              : 0) +
           label +
           (checked ? 8 + _submenuArrowSize : 0);
       width = math.max(width, row);
@@ -2082,7 +2088,10 @@ class _CommonPopupMenuState extends State<CommonPopupMenu>
           padding: arrow != null ? _itemArrowPadding : _itemPadding,
           child: Row(
             children: [
-              if (item.glyph case final glyph?) ...[
+              if (item.leading case final leading?) ...[
+                SizedBox.square(dimension: _itemIconSize, child: leading),
+                const SizedBox(width: 12),
+              ] else if (item.glyph case final glyph?) ...[
                 Icon(glyph, size: _itemIconSize, color: foregroundColor),
                 const SizedBox(width: 12),
               ],

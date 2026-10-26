@@ -275,6 +275,7 @@ class AccountState extends ChangeNotifier {
         profile = value;
         profileFresh = true;
         final record = value?['value'];
+        reportAccountAvatarProfile(record is Json ? record : null);
         avatar.setUrl(
           record is Json ? record['avatarUrl'] as String? : null,
           retryFailed: true,

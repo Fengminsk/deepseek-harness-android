@@ -83,6 +83,7 @@ class AgentService : Service() {
     private var mode = "active"
     private var modeToken = ""
     @Volatile private var nodeStarted = false
+    @Volatile private var appliedProxy: JSONObject? = null
     @Volatile private var runtimeLease: RuntimeProcessLease? = null
     @Volatile private var bootStopped = false
     @Volatile private var mutationAllowed = false
@@ -280,6 +281,11 @@ class AgentService : Service() {
                 }
             } else if (frame.getString("method").startsWith("runtime.transition.")) {
                 send(client, error(id, "服务切换必须通过原生维护入口执行"))
+            } else if (frame.getString("method") == "runtime.proxy.status") {
+                if (!appClients.containsKey(client)) send(client, error(id, "代理状态连接已断开"))
+                else send(client, JSONObject().put("id", id).put("result", JSONObject()
+                    .put("phase", phase).put("generation", recovery.generation)
+                    .put("configuration", appliedProxy ?: JSONObject.NULL)))
             } else if (frame.getString("method") == "runtime.background.configure") {
                 try {
                     val value = frame.getJSONObject("params").get("keepAwakeWhileWorking")
@@ -542,6 +548,7 @@ class AgentService : Service() {
                 } catch (exception: Exception) { fail(exception.message ?: "Runtime connection failed") }
             }
             bootStage = "starting-node"
+            appliedProxy = NetworkProxyPreferences(this).installEnvironment()
             synchronized(nodeStartLock) {
                 if (!lifecycle.acceptsFrames()) return
                 nodeStarted = true

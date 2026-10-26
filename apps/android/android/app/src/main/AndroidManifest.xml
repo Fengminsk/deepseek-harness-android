@@ -91,6 +91,9 @@
 
          In particular, this is used by the Flutter engine in io.flutter.plugin.text.ProcessTextPlugin. -->
     <queries>
+        <package android:name="com.follow.clash" />
+        <package android:name="com.github.metacubex.clash.meta" />
+        <package android:name="com.v2ray.ang" />
         <intent>
             <action android:name="android.support.customtabs.action.CustomTabsService" />
         </intent>

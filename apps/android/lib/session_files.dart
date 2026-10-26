@@ -353,15 +353,11 @@ class SessionFilesPage extends StatefulWidget {
     required this.runtime,
     required this.sessionId,
     required this.onOpenDocument,
-    this.manageRouteBack = true,
     super.key,
   });
   final RuntimeController runtime;
   final String sessionId;
   final OpenSessionDocument onOpenDocument;
-
-  /// A resource hub handles its own route back; its retained tabs must not veto it.
-  final bool manageRouteBack;
 
   @override
   State<SessionFilesPage> createState() => _SessionFilesPageState();
@@ -526,11 +522,11 @@ class _SessionFilesPageState extends State<SessionFilesPage>
     final path = _model.path,
         parts = path.isEmpty ? <String>[] : path.split('/');
     return PopScope(
-      canPop: !widget.manageRouteBack || path.isEmpty,
+      canPop: path.isEmpty,
       onPopInvokedWithResult: (didPop, _) {
         // Another owner can veto this route even when our directory is root.
         // Re-entering maybePop here would endlessly invoke the same veto.
-        if (!didPop && widget.manageRouteBack) _backDirectory();
+        if (!didPop) _backDirectory();
       },
       child: FileBrowserChrome(
         title: path.isEmpty ? '会话文件' : parts.last,

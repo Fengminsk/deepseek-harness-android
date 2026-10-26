@@ -273,7 +273,9 @@ class _ChatTimelineState extends State<ChatTimeline>
       _submittedKey = null;
       _listAnchor.cancel(stopReveal: true);
     }
-    if (!widget.followSubmittedMessage) _listAnchor.cancel();
+    if (oldWidget.followSubmittedMessage && !widget.followSubmittedMessage) {
+      _listAnchor.cancel();
+    }
     if (oldWidget.sessionId != widget.sessionId ||
         oldWidget.runtime != widget.runtime) {
       _detachChanges();
@@ -281,7 +283,7 @@ class _ChatTimelineState extends State<ChatTimeline>
       _observed = null;
     }
     if (oldWidget.sessionId != widget.sessionId) {
-      _listAnchor.cancel();
+      _listAnchor.cancel(discardSpace: true);
       _loadingEarlier = false;
       _olderError = null;
       _retire(_sources.values.toList());
@@ -485,6 +487,31 @@ class _ChatTimelineState extends State<ChatTimeline>
       final nowExpanded = _isExpanded(group);
       if (wasExpanded != null && wasExpanded != nowExpanded) {
         final motion = _chainMotion(group.key, wasExpanded);
+        if (wasExpanded && !nowExpanded && group.reason == 'completed') {
+          final replyKeys = <Key>{
+            for (final row in _display)
+              if (row.parent == null &&
+                  row.entry?.kind == ChatEntryKind.assistant)
+                ValueKey((widget.sessionId, _displayKeys[row.key] ?? row.key)),
+            if (widget.live case final live?
+                when _assistantReplyBlocks(live.content).isNotEmpty)
+              ValueKey((
+                widget.sessionId,
+                'assistant-step:${live.turn}:${live.step}',
+              )),
+          };
+          final anchor = _listAnchor.capture(keys: replyKeys);
+          final scrolling =
+              widget.controller.hasClients &&
+              widget.controller.position.isScrollingNotifier.value;
+          if (anchor != null && !scrolling) {
+            _listAnchor.hold(
+              anchor,
+              motion,
+              immediate: MediaQuery.disableAnimationsOf(context),
+            );
+          }
+        }
         if (MediaQuery.disableAnimationsOf(context)) {
           motion.value = nowExpanded ? 1 : 0;
         } else if (nowExpanded) {

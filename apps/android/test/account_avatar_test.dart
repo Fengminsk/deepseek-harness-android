@@ -1,15 +1,23 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:dsh_android/account_avatar.dart';
+import 'package:dsh_android/network_proxy.dart';
+import 'package:dsh_android/runtime.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
 final _png = base64Decode(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==',
+);
+
+Future<Uint8List> _fetchAvatar(String url) => fetchAccountAvatar(
+  url,
+  readRoute: () async => const NetworkProxyRoute(mode: 'direct'),
 );
 
 class _Headers extends Fake implements HttpHeaders {
@@ -48,13 +56,19 @@ class _Client extends Fake implements HttpClient {
   _Client(this.response);
   final _Response response;
   final requested = <Uri>[];
+  final redirects = <_Response>[];
+  VoidCallback? onRequest;
   bool closed = false;
   @override
   Duration? connectionTimeout;
+  String Function(Uri)? proxy;
+  @override
+  set findProxy(String Function(Uri)? value) => proxy = value;
   @override
   Future<HttpClientRequest> getUrl(Uri url) async {
     requested.add(url);
-    return _Request(response);
+    onRequest?.call();
+    return _Request(redirects.isEmpty ? response : redirects.removeAt(0));
   }
 
   @override
@@ -62,6 +76,212 @@ class _Client extends Fake implements HttpClient {
 }
 
 void main() {
+  testWidgets(
+    'the default avatar client reads the saved native proxy configuration',
+    (tester) async {
+      var reads = 0;
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        RuntimeController.channel,
+        (call) async {
+          expect(call.method, 'network.proxy.route');
+          reads++;
+          return jsonEncode({
+            'mode': 'system',
+            'url': 'http://127.0.0.1:8080',
+          });
+        },
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          RuntimeController.channel,
+          null,
+        ),
+      );
+      await tester.runAsync(() async {
+        final client = _Client(_Response(_Headers('text/plain'), bytes: _png));
+        await HttpOverrides.runZoned(
+          () => fetchAccountAvatar('https://example.test/avatar'),
+          createHttpClient: (_) => client,
+        );
+        expect(reads, 1);
+        expect(client.proxy!(client.requested.single), 'PROXY 127.0.0.1:8080');
+        expect(client.closed, isTrue);
+      });
+    },
+  );
+
+  testWidgets(
+    'avatar requests retain one proxy route through redirects and read the next saved route',
+    (tester) async {
+      await tester.runAsync(() async {
+        var selected = const NetworkProxyRoute(
+          mode: 'local',
+          url: 'http://127.0.0.1:7897',
+        );
+        var reads = 0;
+        Future<NetworkProxyRoute> read() async {
+          reads++;
+          return selected;
+        }
+
+        final proxied =
+            _Client(_Response(_Headers('binary/octet-stream'), bytes: _png))
+              ..redirects.add(
+                _Response(
+                  _Headers(null, 'https://cdn.example.test/avatar'),
+                  statusCode: 302,
+                ),
+              )
+              ..onRequest = () =>
+                  selected = const NetworkProxyRoute(mode: 'direct');
+        await HttpOverrides.runZoned(
+          () => fetchAccountAvatar(
+            'https://example.test/avatar',
+            readRoute: read,
+          ),
+          createHttpClient: (_) => proxied,
+        );
+        expect(reads, 1);
+        expect(proxied.requested, hasLength(2));
+        for (final uri in proxied.requested) {
+          expect(proxied.proxy!(uri), 'PROXY 127.0.0.1:7897');
+        }
+        expect(proxied.closed, isTrue);
+        final direct = _Client(_Response(_Headers('text/plain'), bytes: _png));
+        await HttpOverrides.runZoned(
+          () => fetchAccountAvatar(
+            'https://example.test/avatar',
+            readRoute: read,
+          ),
+          createHttpClient: (_) => direct,
+        );
+        expect(reads, 2);
+        expect(direct.proxy!(direct.requested.single), 'DIRECT');
+        expect(direct.closed, isTrue);
+      });
+    },
+  );
+
+  testWidgets(
+    'unavailable proxy configuration fails without a direct request; embedded images remain local',
+    (tester) async {
+      await tester.runAsync(() async {
+        var reads = 0, creations = 0;
+        Future<NetworkProxyRoute> unavailable() async {
+          reads++;
+          throw MissingPluginException('fixture native channel unavailable');
+        }
+
+        HttpClient client(NetworkProxyRoute route) {
+          creations++;
+          return _Client(_Response(_Headers('image/png'), bytes: _png));
+        }
+
+        await expectLater(
+          fetchAccountAvatar(
+            'https://example.test/avatar',
+            readRoute: unavailable,
+            clientFactory: client,
+          ),
+          throwsA(isA<MissingPluginException>()),
+        );
+        expect(reads, 1);
+        expect(creations, 0);
+        final embedded = await fetchAccountAvatar(
+          'data:image/png;base64,${base64Encode(_png)}',
+          readRoute: unavailable,
+          clientFactory: client,
+        );
+        expect(embedded, _png);
+        expect(reads, 1);
+        expect(creations, 0);
+      });
+    },
+  );
+
+  test('avatar diagnostics reveal categories without account or URL data', () async {
+    final messages = <String>[];
+    final previous = debugPrint;
+    debugPrint = (message, {wrapWidth}) {
+      if (message != null) messages.add(message);
+    };
+    final loader = AccountAvatarLoader(
+      fetch: (_) async {
+        throw const FormatException('private-error-token secret-name');
+      },
+    );
+    try {
+      reportAccountAvatarProfile({'name': 'secret-name'});
+      reportAccountAvatarProfile({'avatarUrl': null});
+      reportAccountAvatarProfile({'avatarUrl': ''});
+      reportAccountAvatarProfile({
+        'avatarUrl':
+            'https://private-user.example.test/secret-path?token=private-query',
+      });
+      reportAccountAvatarProfile({
+        'avatarUrl': 'data:image/png;base64,private-image',
+      });
+      final client = _Client(
+        _Response(_Headers('private/private-content'), statusCode: 403),
+      );
+      await HttpOverrides.runZoned(() async {
+        await expectLater(
+          _fetchAvatar(
+            'https://private-user.example.test/secret-path?token=private-query',
+          ),
+          throwsFormatException,
+        );
+      }, createHttpClient: (_) => client);
+      loader.setUrl('https://private-user.example.test/secret-path');
+      await Future<void>.delayed(Duration.zero);
+      final records = messages
+          .map(
+            (line) =>
+                jsonDecode(line.substring('[account-avatar] '.length)) as Map,
+          )
+          .toList();
+      expect(records.take(3).map((record) => record['field']), [
+        'missing',
+        'null',
+        'empty',
+      ]);
+      expect(records[3]['scheme'], 'https');
+      expect(records[3]['host'], 'redacted');
+      expect(
+        records.singleWhere(
+          (record) => record['event'] == 'response',
+        )['status'],
+        403,
+      );
+      expect(
+        records.singleWhere((record) => record['event'] == 'response')['type'],
+        'other',
+      );
+      expect(
+        records.singleWhere(
+          (record) => record['event'] == 'request-failed',
+        )['stage'],
+        'response',
+      );
+      expect(records.last, {'event': 'failed', 'category': 'format'});
+      final output = messages.join('\n');
+      for (final secret in [
+        'secret-name',
+        'private-user',
+        'secret-path',
+        'private-query',
+        'private-image',
+        'private-content',
+        'private-error-token',
+      ]) {
+        expect(output, isNot(contains(secret)));
+      }
+    } finally {
+      loader.dispose();
+      debugPrint = previous;
+    }
+  });
+
   test(
     'one shared picture survives both readers and retries only a failure',
     () async {
@@ -139,11 +359,11 @@ void main() {
         throwsFormatException,
       );
       await expectLater(
-        fetchAccountAvatar('https://token@platform.deepseek.com/picture'),
+        _fetchAvatar('https://token@platform.deepseek.com/picture'),
         throwsFormatException,
       );
       await expectLater(
-        fetchAccountAvatar('data:text/html;base64,AAA'),
+        _fetchAvatar('data:text/html;base64,AAA'),
         throwsFormatException,
       );
       final base = accountAvatarUri('https://platform.deepseek.com/picture/a');
@@ -206,7 +426,7 @@ void main() {
         ).toString(),
       };
       for (final entry in sources.entries) {
-        final bytes = await fetchAccountAvatar(entry.value);
+        final bytes = await _fetchAvatar(entry.value);
         final codec = await ui.instantiateImageCodec(bytes);
         try {
           final frame = await codec.getNextFrame();
@@ -222,10 +442,19 @@ void main() {
           codec.dispose();
         }
       }
-      for (final type in [null, 'application/octet-stream', 'image/png']) {
+      for (final type in [
+        null,
+        'application/octet-stream',
+        'binary/octet-stream',
+        'text/plain',
+        'image/png',
+        'image/svg+xml',
+        'invalid header',
+        'image/png; charset="broken',
+      ]) {
         final client = _Client(_Response(_Headers(type), bytes: _png));
         final bytes = await HttpOverrides.runZoned(
-          () => fetchAccountAvatar('http://images.example.test/avatar'),
+          () => _fetchAvatar('http://images.example.test/avatar'),
           createHttpClient: (_) => client,
         );
         results[type ?? 'no-content-type'] = {
@@ -244,6 +473,73 @@ void main() {
     );
   });
 
+  testWidgets('unknown CDN MIME accepts SVG bytes without running a browser', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final source = utf8.encode(
+        '\uFEFF <?xml version="1.0"?>\n<!-- avatar -->\n'
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
+        '<rect width="24" height="24" fill="#407cff"/></svg>',
+      );
+      final client = _Client(_Response(_Headers('text/plain'), bytes: source));
+      final bytes = await HttpOverrides.runZoned(
+        () => _fetchAvatar('https://images.example.test/avatar'),
+        createHttpClient: (_) => client,
+      );
+      final codec = await ui.instantiateImageCodec(bytes);
+      try {
+        final frame = await codec.getNextFrame();
+        try {
+          expect([frame.image.width, frame.image.height], [128, 128]);
+        } finally {
+          frame.image.dispose();
+        }
+      } finally {
+        codec.dispose();
+      }
+      expect(client.closed, isTrue);
+    });
+  });
+
+  testWidgets(
+    'HTTP 200 error pages fail image decoding and the size cap remains',
+    (tester) async {
+      await tester.runAsync(() async {
+        for (final body in [
+          utf8.encode(
+            '<html><body>Image temporarily unavailable</body></html>',
+          ),
+          utf8.encode('{"error":"unavailable"}'),
+        ]) {
+          final client = _Client(
+            _Response(_Headers('text/plain'), bytes: body),
+          );
+          await HttpOverrides.runZoned(() async {
+            await expectLater(
+              _fetchAvatar('https://images.example.test/avatar'),
+              throwsA(isA<Exception>()),
+            );
+          }, createHttpClient: (_) => client);
+          expect(client.closed, isTrue);
+        }
+        final client = _Client(
+          _Response(
+            _Headers('binary/octet-stream'),
+            bytes: Uint8List(accountAvatarByteLimit + 1),
+          ),
+        );
+        await HttpOverrides.runZoned(() async {
+          await expectLater(
+            _fetchAvatar('https://images.example.test/avatar'),
+            throwsFormatException,
+          );
+        }, createHttpClient: (_) => client);
+        expect(client.closed, isTrue);
+      });
+    },
+  );
+
   testWidgets('invalid picture data and downgrade redirects retain fallback', (
     tester,
   ) async {
@@ -256,14 +552,14 @@ void main() {
       );
       await HttpOverrides.runZoned(() async {
         await expectLater(
-          fetchAccountAvatar('https://example.test/avatar'),
+          _fetchAvatar('https://example.test/avatar'),
           throwsFormatException,
         );
       }, createHttpClient: (_) => client);
       expect(client.requested, hasLength(1));
       expect(client.closed, isTrue);
       await expectLater(
-        fetchAccountAvatar('data:image/png;base64,bm90IGEgcGljdHVyZQ=='),
+        _fetchAvatar('data:image/png;base64,bm90IGEgcGljdHVyZQ=='),
         throwsA(isA<Exception>()),
       );
       await expectLater(
@@ -271,7 +567,7 @@ void main() {
         throwsFormatException,
       );
       await expectLater(
-        fetchAccountAvatar('data:image/svg+xml,%3Csvg%3Ebroken'),
+        _fetchAvatar('data:image/svg+xml,%3Csvg%3Ebroken'),
         throwsA(anything),
       );
     });

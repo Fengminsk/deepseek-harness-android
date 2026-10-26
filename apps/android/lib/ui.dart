@@ -449,9 +449,48 @@ class PocketListAnchorController {
   _PocketListState? _owner;
   int _revision = 0;
   ScrollController? _revealingScroll;
+  PocketListAnchor? _heldAnchor;
+  VoidCallback? _releaseHeld;
+  (Type, Object)? _spaceIdentity;
+  double _space = 0;
+  bool _releaseSpace = false;
 
-  PocketListAnchor? capture({int minIndex = 0}) =>
-      _owner?._captureAnchor(minIndex);
+  PocketListAnchor? capture({int minIndex = 0, Set<Key>? keys}) =>
+      _owner?._captureAnchor(minIndex, keys: keys);
+
+  /// Corrects scroll offset during sliver layout, before each animation frame
+  /// paints. Keeps the same point inside a long, partially visible answer row.
+  void hold(
+    PocketListAnchor anchor,
+    Animation<double> motion, {
+    bool immediate = false,
+  }) {
+    cancel(releaseSpace: false);
+    _releaseSpace = false;
+    _heldAnchor = anchor;
+    final revision = _revision;
+    void status(AnimationStatus status) {
+      if (status != AnimationStatus.dismissed &&
+          status != AnimationStatus.completed) {
+        return;
+      }
+      // A collapsed chain retires its lazy rows on the following frame.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (_revision == revision) {
+            _heldAnchor = null;
+            _releaseHeld?.call();
+            _releaseHeld = null;
+          }
+        });
+        WidgetsBinding.instance.ensureVisualUpdate();
+      });
+    }
+
+    motion.addStatusListener(status);
+    _releaseHeld = () => motion.removeStatusListener(status);
+    if (immediate) status(AnimationStatus.dismissed);
+  }
 
   /// Lift an actual keyed row below the floating header. Layout refinements
   /// stay cancellable so a drag, session switch or newer send always wins.
@@ -509,8 +548,20 @@ class PocketListAnchorController {
     WidgetsBinding.instance.addPostFrameCallback((_) => settle(12, 0));
   }
 
-  void cancel({bool stopReveal = false}) {
+  void cancel({
+    bool stopReveal = false,
+    bool releaseSpace = true,
+    bool discardSpace = false,
+  }) {
     _revision++;
+    _heldAnchor = null;
+    _releaseHeld?.call();
+    _releaseHeld = null;
+    if (releaseSpace) _releaseSpace = true;
+    if (discardSpace) {
+      _spaceIdentity = null;
+      _space = 0;
+    }
     final scroll = _revealingScroll;
     _revealingScroll = null;
     if (stopReveal && scroll != null && scroll.hasClients) {
@@ -520,7 +571,7 @@ class PocketListAnchorController {
   }
 
   void dispose() {
-    cancel();
+    cancel(discardSpace: true);
     _owner = null;
   }
 }
@@ -643,17 +694,22 @@ class _PocketListState extends State<PocketList> {
     if (!box.attached || !box.hasSize) return null;
     return (
       index: item.widget.index,
-      y: render.localToGlobal(Offset.zero, ancestor: box).dy,
-      height: render.size.height,
+      y:
+          render.localToGlobal(Offset.zero, ancestor: box).dy +
+          (render is _RenderPocketReadingInset ? render.inset : 0),
+      height:
+          render.size.height -
+          (render is _RenderPocketReadingInset ? render.inset : 0),
       viewportHeight: box.size.height,
     );
   }
 
-  PocketListAnchor? _captureAnchor(int minIndex) {
+  PocketListAnchor? _captureAnchor(int minIndex, {Set<Key>? keys}) {
     _PocketListItemState? chosen;
     double? bestY;
     for (final item in _mountedItems.values) {
       if (item.widget.index < minIndex) continue;
+      if (keys != null && !keys.contains(item.widget.identity.$2)) continue;
       final geometry = _geometry(item);
       if (geometry == null ||
           geometry.y + geometry.height <= 0 ||
@@ -668,6 +724,51 @@ class _PocketListState extends State<PocketList> {
     return chosen == null
         ? null
         : PocketListAnchor._(chosen.widget.identity, bestY!);
+  }
+
+  double? _heldCorrection(
+    RenderSliverMultiBoxAdaptor list,
+    SliverConstraints constraints,
+  ) {
+    final controller = widget.anchorController;
+    final anchor = controller?._heldAnchor;
+    final scroll = widget.controller;
+    if (controller == null || scroll == null || !scroll.hasClients) return 0;
+    // Retire only space already passed by the user's scroll. Correcting that
+    // same amount before paint keeps the content under their finger in place.
+    if (controller._releaseSpace &&
+        controller._space > 0 &&
+        scroll.offset > 0) {
+      final item = _mountedItems[controller._spaceIdentity];
+      final render = item?.context.findRenderObject();
+      final amount = math.min(controller._space, scroll.offset);
+      controller._space -= amount;
+      if (render is _RenderPocketReadingInset) render.inset = controller._space;
+      return -amount;
+    }
+    if (anchor == null) return 0;
+    final item = _mountedItems[anchor.identity];
+    if (item == null) return 0;
+    final render = item.context.findRenderObject();
+    RenderObject? box = render;
+    while (box != null && box.parent != list) {
+      box = box.parent;
+    }
+    if (box is! RenderBox || box.parent != list) return 0;
+    final offset = list.childScrollOffset(box);
+    if (offset == null) return 0;
+    final inset = render is _RenderPocketReadingInset ? render.inset : 0.0;
+    final target =
+        constraints.precedingScrollExtent + offset + inset - anchor.y;
+    if (target < scroll.position.minScrollExtent - .01 &&
+        render is _RenderPocketReadingInset) {
+      controller._spaceIdentity = anchor.identity;
+      controller._space = inset + scroll.position.minScrollExtent - target;
+      controller._releaseSpace = false;
+      render.inset = controller._space;
+      return null;
+    }
+    return math.max(scroll.position.minScrollExtent, target) - scroll.offset;
   }
 
   double? _keyOffset(Key key, ScrollController scroll) {
@@ -778,34 +879,45 @@ class _PocketListState extends State<PocketList> {
           childrenDelegate: delegate,
         );
       }
-      return CustomScrollView(
-        controller: widget.controller,
-        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-        slivers: [
-          SliverPadding(
-            padding: scrollPadding,
-            sliver: SliverList(delegate: delegate),
-          ),
-          if (widget.endAnchorKey case final key?)
-            SliverLayoutBuilder(
-              builder: (context, constraints) {
-                final scroll = widget.controller;
-                if (scroll != null && scroll.hasClients) {
-                  _endAnchorOffset =
-                      _keyOffset(key, scroll) ?? _endAnchorOffset;
-                }
-                final offset = _endAnchorOffset;
-                final height = offset == null
-                    ? 0.0
-                    : (offset -
-                              _topInset +
-                              constraints.viewportMainAxisExtent -
-                              constraints.precedingScrollExtent)
-                          .clamp(0.0, constraints.viewportMainAxisExtent);
-                return SliverToBoxAdapter(child: SizedBox(height: height));
-              },
+      return NotificationListener<ScrollStartNotification>(
+        onNotification: (notification) {
+          if (notification.depth == 0 && notification.dragDetails != null) {
+            widget.anchorController?.cancel();
+          }
+          return false;
+        },
+        child: CustomScrollView(
+          controller: widget.controller,
+          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+          slivers: [
+            SliverPadding(
+              padding: scrollPadding,
+              sliver: _PocketAnchorSliver(
+                correct: _heldCorrection,
+                child: SliverList(delegate: delegate),
+              ),
             ),
-        ],
+            if (widget.endAnchorKey case final key?)
+              SliverLayoutBuilder(
+                builder: (context, constraints) {
+                  final scroll = widget.controller;
+                  if (scroll != null && scroll.hasClients) {
+                    _endAnchorOffset =
+                        _keyOffset(key, scroll) ?? _endAnchorOffset;
+                  }
+                  final offset = _endAnchorOffset;
+                  final height = offset == null
+                      ? 0.0
+                      : (offset -
+                                _topInset +
+                                constraints.viewportMainAxisExtent -
+                                constraints.precedingScrollExtent)
+                            .clamp(0.0, constraints.viewportMainAxisExtent);
+                  return SliverToBoxAdapter(child: SizedBox(height: height));
+                },
+              ),
+          ],
+        ),
       );
     }
     return ListView(
@@ -831,6 +943,52 @@ class _PocketListState extends State<PocketList> {
       owner: widget.anchorController == null ? null : this,
       child: child,
     );
+  }
+}
+
+class _PocketAnchorSliver extends SingleChildRenderObjectWidget {
+  const _PocketAnchorSliver({required this.correct, required super.child});
+  final double? Function(RenderSliverMultiBoxAdaptor, SliverConstraints)
+  correct;
+  @override
+  RenderObject createRenderObject(BuildContext context) =>
+      _RenderPocketAnchorSliver(correct);
+  @override
+  void updateRenderObject(
+    BuildContext context,
+    _RenderPocketAnchorSliver renderObject,
+  ) {
+    renderObject.correct = correct;
+  }
+}
+
+class _RenderPocketAnchorSliver extends RenderProxySliver {
+  _RenderPocketAnchorSliver(this.correct);
+  double? Function(RenderSliverMultiBoxAdaptor, SliverConstraints) correct;
+  @override
+  void performLayout() {
+    super.performLayout();
+    if (geometry!.scrollOffsetCorrection != null ||
+        child is! RenderSliverMultiBoxAdaptor) {
+      return;
+    }
+    double? correction;
+    invokeLayoutCallback<SliverConstraints>((constraints) {
+      correction = correct(child! as RenderSliverMultiBoxAdaptor, constraints);
+    });
+    if (correction == null) {
+      super.performLayout();
+      invokeLayoutCallback<SliverConstraints>((constraints) {
+        correction = correct(
+          child! as RenderSliverMultiBoxAdaptor,
+          constraints,
+        );
+      });
+    }
+    final offset = correction;
+    if (offset != null && offset.abs() > .01) {
+      geometry = SliverGeometry(scrollOffsetCorrection: offset);
+    }
   }
 }
 
@@ -877,14 +1035,76 @@ class _PocketListItemState extends State<_PocketListItem> {
   }
 
   @override
+  void deactivate() {
+    widget.owner?._unregister(this);
+    super.deactivate();
+  }
+
+  @override
+  void activate() {
+    super.activate();
+    widget.owner?._register(this);
+  }
+
+  @override
   void dispose() {
     widget.owner?._unregister(this);
     super.dispose();
   }
 
   @override
-  Widget build(BuildContext context) =>
-      PocketReveal(animate: animate, child: widget.child);
+  Widget build(BuildContext context) {
+    final child = PocketReveal(animate: animate, child: widget.child);
+    if (widget.owner?.widget.reserveEndSpace != true) return child;
+    return _PocketReadingInset(
+      inset:
+          widget.owner?.widget.anchorController?._spaceIdentity ==
+              widget.identity
+          ? widget.owner!.widget.anchorController!._space
+          : 0,
+      child: child,
+    );
+  }
+}
+
+class _PocketReadingInset extends SingleChildRenderObjectWidget {
+  const _PocketReadingInset({required this.inset, required super.child});
+  final double inset;
+  @override
+  RenderObject createRenderObject(BuildContext context) =>
+      _RenderPocketReadingInset(inset);
+  @override
+  void updateRenderObject(
+    BuildContext context,
+    _RenderPocketReadingInset renderObject,
+  ) {
+    renderObject.inset = inset;
+  }
+}
+
+class _RenderPocketReadingInset extends RenderShiftedBox {
+  _RenderPocketReadingInset(this._inset) : super(null);
+  double _inset;
+  double get inset => _inset;
+  set inset(double value) {
+    if (_inset == value) return;
+    _inset = value;
+    markNeedsLayout();
+  }
+
+  @override
+  void performLayout() {
+    final child = this.child;
+    if (child == null) {
+      size = constraints.constrain(Size(0, _inset));
+      return;
+    }
+    child.layout(constraints, parentUsesSize: true);
+    size = constraints.constrain(
+      Size(child.size.width, child.size.height + _inset),
+    );
+    (child.parentData! as BoxParentData).offset = Offset(0, _inset);
+  }
 }
 
 class PocketEmpty extends StatelessWidget {

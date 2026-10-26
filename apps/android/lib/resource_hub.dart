@@ -13,10 +13,9 @@ import 'tasks.dart';
 import 'ui.dart';
 import 'workspace_changes.dart';
 
-enum _ResourceKind { guide, files, changes, skills, tasks, browser, terminal }
+enum _ResourceKind { files, changes, skills, tasks, browser, terminal }
 
 const _resourceTitles = <_ResourceKind, String>{
-  _ResourceKind.guide: '资源',
   _ResourceKind.files: '文件',
   _ResourceKind.changes: '文件改动',
   _ResourceKind.skills: '技能',
@@ -25,20 +24,9 @@ const _resourceTitles = <_ResourceKind, String>{
   _ResourceKind.terminal: '终端',
 };
 
-class _ResourceLayout {
-  const _ResourceLayout(this.tabs, this.selected);
-  final List<_ResourceKind> tabs;
-  final _ResourceKind selected;
-}
-
-// Only page kinds and selection survive a route re-entry. A RuntimeController
-// owns the weak key; no URL, file bytes, process identity, or Agent state is saved.
-final _resourceLayouts = Expando<Map<String, _ResourceLayout>>();
-
-/// Session-scoped mobile tabs for existing resources. Selecting a tab mounts
-/// its reader once and keeps it mounted until the tab is removed. Opening the
-/// workspace never creates a terminal, browser request, or Agent turn.
-class SessionResourcesPage extends StatefulWidget {
+/// Opens each Session resource in its own route. Returning disposes that view;
+/// terminal processes and background tasks keep their runtime-owned lifecycle.
+class SessionResourcesPage extends StatelessWidget {
   const SessionResourcesPage({
     super.key,
     required this.runtime,
@@ -48,280 +36,63 @@ class SessionResourcesPage extends StatefulWidget {
   final RuntimeController runtime;
   final String sessionId;
 
-  @override
-  State<SessionResourcesPage> createState() => _SessionResourcesPageState();
-}
-
-class _SessionResourcesPageState extends State<SessionResourcesPage> {
-  late List<_ResourceKind> _tabs;
-  late _ResourceKind _selected;
-  final _mounted = <_ResourceKind>{};
-  final _tabKeys = {for (final kind in _ResourceKind.values) kind: GlobalKey()};
-
-  @override
-  void initState() {
-    super.initState();
-    _restore();
-    _reveal(_selected);
-  }
-
-  void _restore() {
-    final saved = _resourceLayouts[widget.runtime]?[widget.sessionId];
-    _tabs = [...?saved?.tabs];
-    if (!_tabs.contains(_ResourceKind.guide)) {
-      _tabs.insert(0, _ResourceKind.guide);
-    }
-    _selected = saved != null && _tabs.contains(saved.selected)
-        ? saved.selected
-        : _ResourceKind.guide;
-    _mounted
-      ..clear()
-      ..add(_ResourceKind.guide)
-      ..add(_selected);
-  }
-
-  void _save() {
-    final layouts =
-        _resourceLayouts[widget.runtime] ?? <String, _ResourceLayout>{};
-    layouts[widget.sessionId] = _ResourceLayout(List.of(_tabs), _selected);
-    _resourceLayouts[widget.runtime] = layouts;
-  }
-
-  @override
-  void didUpdateWidget(SessionResourcesPage oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.runtime == widget.runtime &&
-        oldWidget.sessionId == widget.sessionId) {
-      return;
-    }
-    _restore();
-  }
-
-  void _select(_ResourceKind kind) {
-    setState(() {
-      if (!_tabs.contains(kind)) _tabs.add(kind);
-      _mounted.add(kind);
-      _selected = kind;
-    });
-    _save();
-    _reveal(kind);
-  }
-
-  void _reveal(_ResourceKind kind) {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || _selected != kind) return;
-      final context = _tabKeys[kind]?.currentContext;
-      if (context != null) {
-        Scrollable.ensureVisible(
-          context,
-          alignment: 0.5,
-          duration: const Duration(milliseconds: 180),
-        );
-      }
-    });
-  }
-
-  void _close(_ResourceKind kind) {
-    if (kind == _ResourceKind.guide) return;
-    setState(() {
-      final index = _tabs.indexOf(kind);
-      _tabs.remove(kind);
-      _mounted.remove(kind);
-      if (_selected == kind) {
-        _selected = _tabs[index > 0 ? index - 1 : 0];
-      }
-    });
-    _save();
-    _reveal(_selected);
-  }
-
-  @override
-  void dispose() {
-    _save();
-    super.dispose();
-  }
-
   Future<void> _openDocument(BuildContext context, String id, String path) =>
       Navigator.of(context).push<void>(
         PocketRoute<void>(
-          builder: (_) => SessionDocumentPage(
-            runtime: widget.runtime,
-            sessionId: id,
-            path: path,
-          ),
+          builder: (_) =>
+              SessionDocumentPage(runtime: runtime, sessionId: id, path: path),
         ),
       );
 
   Widget _page(_ResourceKind kind) => switch (kind) {
-    _ResourceKind.guide => PocketScaffold(
-      title: const Text('会话资源'),
-      body: PocketList(
-        children: [
-          PocketSection(
-            children: [
-              for (final kind in _ResourceKind.values.skip(1))
-                PocketRow(
-                  key: ValueKey('resource-${kind.name}'),
-                  icon: switch (kind) {
-                    _ResourceKind.files => Icons.folder_open_outlined,
-                    _ResourceKind.changes => Icons.difference_outlined,
-                    _ResourceKind.skills => Icons.auto_stories_outlined,
-                    _ResourceKind.tasks => Icons.play_circle_outline_rounded,
-                    _ResourceKind.browser => Icons.public_rounded,
-                    _ResourceKind.terminal => Icons.terminal_rounded,
-                    _ResourceKind.guide => Icons.apps_rounded,
-                  },
-                  title: _resourceTitles[kind]!,
-                  onTap: () => _select(kind),
-                ),
-            ],
-          ),
-        ],
-      ),
-    ),
     _ResourceKind.files => SessionFilesPage(
-      runtime: widget.runtime,
-      sessionId: widget.sessionId,
-      manageRouteBack: false,
+      runtime: runtime,
+      sessionId: sessionId,
       onOpenDocument: _openDocument,
     ),
     _ResourceKind.changes => SessionChangesPage(
-      runtime: widget.runtime,
-      sessionId: widget.sessionId,
+      runtime: runtime,
+      sessionId: sessionId,
     ),
     _ResourceKind.skills => SessionResourceSkillsPage(
-      runtime: widget.runtime,
-      sessionId: widget.sessionId,
+      runtime: runtime,
+      sessionId: sessionId,
     ),
-    _ResourceKind.tasks => TasksPage(
-      runtime: widget.runtime,
-      sessionId: widget.sessionId,
-    ),
-    _ResourceKind.browser => SessionBrowserPage(runtime: widget.runtime),
+    _ResourceKind.tasks => TasksPage(runtime: runtime, sessionId: sessionId),
+    _ResourceKind.browser => SessionBrowserPage(runtime: runtime),
     _ResourceKind.terminal => SessionTerminalsPage(
-      runtime: widget.runtime,
-      sessionId: widget.sessionId,
+      runtime: runtime,
+      sessionId: sessionId,
     ),
   };
 
-  Widget _tab(_ResourceKind kind) {
-    final selected = _selected == kind;
-    return Padding(
-      key: _tabKeys[kind],
-      padding: const EdgeInsets.only(left: 8),
-      child: Semantics(
-        button: true,
-        selected: selected,
-        label: '${_resourceTitles[kind]}标签',
-        child: GlassSurface(
-          radius: 24,
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              InkWell(
-                key: ValueKey('resource-tab-${kind.name}'),
-                onTap: () => _select(kind),
-                borderRadius: BorderRadius.circular(24),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 15,
-                    vertical: 12,
-                  ),
-                  child: Text(
-                    _resourceTitles[kind]!,
-                    maxLines: 1,
-                    style: Theme.of(context).textTheme.bodySmall!.copyWith(
-                      fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-                      color: selected
-                          ? Theme.of(context).colorScheme.onSurface
-                          : Theme.of(context).colorScheme.onSurfaceVariant,
-                    ),
-                  ),
-                ),
-              ),
-              if (kind != _ResourceKind.guide)
-                IconButton(
-                  key: ValueKey('resource-close-${kind.name}'),
-                  tooltip: kind == _ResourceKind.terminal
-                      ? '收起终端视图，进程继续运行'
-                      : '关闭${_resourceTitles[kind]}标签',
-                  onPressed: () => _close(kind),
-                  icon: const Icon(Icons.close_rounded, size: 17),
-                  style: IconButton.styleFrom(
-                    fixedSize: const Size.square(44),
-                    minimumSize: const Size.square(44),
-                    maximumSize: const Size.square(44),
-                    shape: const CircleBorder(),
-                  ),
-                ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
   @override
-  Widget build(BuildContext context) {
-    final keyboardOpen = MediaQuery.viewInsetsOf(context).bottom > 0;
-    final showTabs = !keyboardOpen && _tabs.length > 1;
-    return PopScope(
-      canPop: _selected == _ResourceKind.guide,
-      onPopInvokedWithResult: (didPop, _) {
-        if (!didPop && _selected != _ResourceKind.guide) {
-          _select(_ResourceKind.guide);
-        }
-      },
-      child: Material(
-        color: Theme.of(context).scaffoldBackgroundColor,
-        child: Column(
+  Widget build(BuildContext context) => PocketScaffold(
+    title: const Text('会话资源'),
+    body: PocketList(
+      children: [
+        PocketSection(
           children: [
-            Expanded(
-              child: MediaQuery.removePadding(
-                context: context,
-                removeBottom: showTabs,
-                child: IndexedStack(
-                  index: _tabs.indexOf(_selected),
-                  children: [
-                    for (final kind in _tabs)
-                      KeyedSubtree(
-                        key: ValueKey(
-                          'resource-page-${widget.sessionId}-${kind.name}',
-                        ),
-                        child: TickerMode(
-                          enabled: _selected == kind,
-                          child: ExcludeFocus(
-                            excluding: _selected != kind,
-                            child: _mounted.contains(kind)
-                                ? _page(kind)
-                                : const SizedBox.shrink(),
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-            ),
-            if (showTabs)
-              SafeArea(
-                top: false,
-                child: SizedBox(
-                  height: 56,
-                  child: SingleChildScrollView(
-                    key: const ValueKey('resource-tabs'),
-                    scrollDirection: Axis.horizontal,
-                    padding: const EdgeInsets.only(right: 12),
-                    child: Row(
-                      children: [for (final kind in _tabs) _tab(kind)],
-                    ),
-                  ),
-                ),
+            for (final kind in _ResourceKind.values)
+              PocketRow(
+                key: ValueKey('resource-${kind.name}'),
+                icon: switch (kind) {
+                  _ResourceKind.files => Icons.folder_open_outlined,
+                  _ResourceKind.changes => Icons.difference_outlined,
+                  _ResourceKind.skills => Icons.auto_stories_outlined,
+                  _ResourceKind.tasks => Icons.play_circle_outline_rounded,
+                  _ResourceKind.browser => Icons.public_rounded,
+                  _ResourceKind.terminal => Icons.terminal_rounded,
+                },
+                title: _resourceTitles[kind]!,
+                onTap: () => Navigator.of(context)
+                    .push<void>(PocketRoute<void>(builder: (_) => _page(kind))),
               ),
           ],
         ),
-      ),
-    );
-  }
+      ],
+    ),
+  );
 }
 
 /// Reads finished-turn change announcements from this Session's original log.

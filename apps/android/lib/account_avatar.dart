@@ -8,10 +8,95 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:material_ui/material_ui.dart';
 
+import 'network_proxy.dart';
+
 typedef AccountAvatarFetch = Future<Uint8List> Function(String url);
 const accountAvatarByteLimit = 2 * 1024 * 1024;
 
 enum AccountAvatarStatus { loading, ready, failed }
+
+/// Diagnostic output contains source categories only, never account fields,
+/// complete URLs, image data or exception messages.
+void reportAccountAvatarProfile(Map<String, dynamic>? profile) {
+  final source = profile?['avatarUrl'];
+  _avatarDiagnostic('profile', {
+    'field': profile == null
+        ? 'no-profile'
+        : !profile.containsKey('avatarUrl')
+        ? 'missing'
+        : source == null
+        ? 'null'
+        : source is! String
+        ? 'invalid-type'
+        : source.trim().isEmpty
+        ? 'empty'
+        : 'present',
+    if (source is String && source.isNotEmpty) ..._avatarSource(source),
+  });
+}
+
+Map<String, String> _avatarSource(String source) {
+  final uri = Uri.tryParse(source);
+  final scheme = uri?.scheme;
+  return {
+    'scheme': switch (scheme) {
+      null => 'invalid',
+      '' => 'relative',
+      'https' || 'http' || 'data' => scheme,
+      _ => 'other',
+    },
+    'host': switch (uri?.host) {
+      'platform.deepseek.com' || 'chat.deepseek.com' => 'deepseek',
+      'thirdwx.qlogo.cn' || 'wx.qlogo.cn' => 'wechat',
+      'q.qlogo.cn' => 'qq',
+      'gravatar.com' ||
+      'www.gravatar.com' ||
+      'secure.gravatar.com' => 'gravatar',
+      null || '' => 'none',
+      _ => 'redacted',
+    },
+  };
+}
+
+String _avatarContentType(String? value) => switch (value) {
+  null => 'missing',
+  'image/png' ||
+  'image/jpeg' ||
+  'image/webp' ||
+  'image/gif' ||
+  'image/svg+xml' ||
+  'image/avif' ||
+  'image/bmp' ||
+  'application/octet-stream' ||
+  'text/html' ||
+  'application/json' => value,
+  _ => 'other',
+};
+
+String? _avatarResponseType(HttpHeaders headers) {
+  try {
+    return headers.contentType?.mimeType;
+  } on FormatException {
+    // A malformed CDN header does not change whether the body is an image.
+    return 'invalid';
+  } on HttpException {
+    // Dart's MIME parser also reports unterminated parameters as HTTP errors.
+    return 'invalid';
+  }
+}
+
+String _avatarFailure(Object failure) => switch (failure) {
+  TimeoutException() => 'timeout',
+  HandshakeException() => 'tls',
+  SocketException() => 'network',
+  HttpException() => 'http',
+  FormatException() => 'format',
+  _ => 'other',
+};
+
+void _avatarDiagnostic(String event, Map<String, Object?> fields) {
+  debugPrint('[account-avatar] ${jsonEncode({'event': event, ...fields})}');
+}
 
 /// One image observation belongs to one profile URL and one load attempt.
 class AccountAvatarSnapshot {
@@ -63,6 +148,7 @@ class AccountAvatarLoader extends ChangeNotifier {
         snapshot.status != AccountAvatarStatus.ready) {
       return;
     }
+    _avatarDiagnostic('render-failed', _avatarSource(snapshot.url));
     _snapshot = AccountAvatarSnapshot(snapshot.url, AccountAvatarStatus.failed);
     notifyListeners();
   }
@@ -81,15 +167,18 @@ class AccountAvatarLoader extends ChangeNotifier {
     notifyListeners();
     unawaited(() async {
       try {
+        _avatarDiagnostic('load', _avatarSource(url));
         final bytes = await _fetch(url);
         if (_disposed || generation != _generation) return;
+        _avatarDiagnostic('ready', {'bytes': bytes.length});
         _snapshot = AccountAvatarSnapshot(
           url,
           AccountAvatarStatus.ready,
           bytes,
         );
-      } catch (_) {
+      } catch (failure) {
         if (_disposed || generation != _generation) return;
+        _avatarDiagnostic('failed', {'category': _avatarFailure(failure)});
         _snapshot = AccountAvatarSnapshot(url, AccountAvatarStatus.failed);
       }
       notifyListeners();
@@ -119,13 +208,20 @@ Uri accountAvatarUri(String url) {
 
 /// Public profile pictures may be embedded images or network URLs. Legacy HTTP
 /// sources are upgraded before the request; redirects cannot downgrade HTTPS.
-Future<Uint8List> fetchAccountAvatar(String url) async {
+/// Network loads capture one saved route for their entire redirect chain. The
+/// optional factories replace platform reads and client creation in tests.
+Future<Uint8List> fetchAccountAvatar(
+  String url, {
+  Future<NetworkProxyRoute> Function() readRoute = readNetworkProxyRoute,
+  HttpClient Function(NetworkProxyRoute) clientFactory = createProxyHttpClient,
+}) async {
   final source = Uri.tryParse(url);
   if (source?.scheme == 'data') {
     if (url.length > accountAvatarByteLimit * 3 + 100) {
       throw const FormatException('Account picture is too large');
     }
     final data = UriData.parse(url);
+    _avatarDiagnostic('embedded', {'type': _avatarContentType(data.mimeType)});
     if (!const {
       'image/png',
       'image/jpeg',
@@ -142,15 +238,34 @@ Future<Uint8List> fetchAccountAvatar(String url) async {
         ? source!.replace(scheme: 'https').toString()
         : url,
   );
-  final client = HttpClient()..connectionTimeout = const Duration(seconds: 8);
+  late final HttpClient client;
+  try {
+    final route = await readRoute();
+    client = clientFactory(route)
+      ..connectionTimeout = const Duration(seconds: 8);
+  } catch (failure) {
+    _avatarDiagnostic('request-failed', {
+      'stage': 'proxy-configuration',
+      'category': _avatarFailure(failure),
+    });
+    rethrow;
+  }
+  var stage = 'connect';
   try {
     HttpClientResponse? response;
     for (var redirects = 0; redirects <= 3; redirects++) {
+      stage = 'connect';
       final request = await client
           .getUrl(uri)
           .timeout(const Duration(seconds: 10));
       request.followRedirects = false;
+      stage = 'headers';
       response = await request.close().timeout(const Duration(seconds: 15));
+      _avatarDiagnostic('response', {
+        ..._avatarSource(uri.toString()),
+        'status': response.statusCode,
+        'type': _avatarContentType(_avatarResponseType(response.headers)),
+      });
       if (!{
         HttpStatus.movedPermanently,
         HttpStatus.found,
@@ -161,6 +276,7 @@ Future<Uint8List> fetchAccountAvatar(String url) async {
         break;
       }
       final location = response.headers.value(HttpHeaders.locationHeader);
+      stage = 'redirect';
       if (redirects == 3 || location == null) {
         throw const FormatException(
           'Account picture redirected too many times',
@@ -173,22 +289,38 @@ Future<Uint8List> fetchAccountAvatar(String url) async {
     if (loaded == null) {
       throw const FormatException('Missing account picture');
     }
-    final type = loaded.headers.contentType?.mimeType;
-    // Public CDN objects can omit Content-Type or use octet-stream. Decode the
-    // bounded body before accepting it instead of rejecting valid pictures.
+    final type = _avatarResponseType(loaded.headers);
+    stage = 'response';
+    // The public avatar CDN returns nonstandard MIME values for valid images.
+    // Only a bounded, successfully decoded body qualifies as a picture.
     if (loaded.statusCode != HttpStatus.ok ||
-        (loaded.headers.contentType?.primaryType != 'image' &&
-            type != null &&
-            type != 'application/octet-stream') ||
         loaded.contentLength > accountAvatarByteLimit) {
       throw const FormatException('Account picture is unavailable');
     }
+    stage = 'body';
     final bytes = await readAccountAvatarBytes(loaded)
         .timeout(const Duration(seconds: 15));
+    stage = 'decode';
     return await decodeAccountAvatar(bytes, type: type);
+  } catch (failure) {
+    _avatarDiagnostic('request-failed', {
+      'stage': stage,
+      'category': _avatarFailure(failure),
+    });
+    rethrow;
   } finally {
     client.close(force: true);
   }
+}
+
+bool _avatarHasSvgPrefix(Uint8List bytes) {
+  final prefix = utf8.decode(
+    Uint8List.sublistView(bytes, 0, bytes.length < 1024 ? bytes.length : 1024),
+    allowMalformed: true,
+  );
+  return RegExp(
+    r'^\uFEFF?\s*(?:<\?xml[\s\S]*?\?>\s*)?(?:<!--[\s\S]*?-->\s*)*<svg(?:\s|>)',
+  ).hasMatch(prefix);
 }
 
 /// Validate raster data and rasterize SVG once for both account surfaces.
@@ -197,9 +329,13 @@ Future<Uint8List> decodeAccountAvatar(Uint8List bytes, {String? type}) async {
   if (bytes.isEmpty || bytes.length > accountAvatarByteLimit) {
     throw const FormatException('Account picture is empty or too large');
   }
-  if (type == 'image/svg+xml') {
-    if (bytes.length > 256 * 1024 ||
-        !utf8.decode(bytes, allowMalformed: true).contains('<svg')) {
+  final svg =
+      _avatarHasSvgPrefix(bytes) ||
+      (type == 'image/svg+xml' &&
+          bytes.length <= 256 * 1024 &&
+          utf8.decode(bytes, allowMalformed: true).contains('<svg'));
+  if (svg) {
+    if (bytes.length > 256 * 1024) {
       throw const FormatException('Unsupported account picture SVG');
     }
     final info = await vg.loadPicture(SvgBytesLoader(bytes), null);
