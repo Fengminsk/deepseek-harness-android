@@ -37,6 +37,10 @@ class TerminalScreenData {
     required this.cursorVisible,
     required this.cursorStyle,
     required this.cursorBlink,
+    required this.applicationCursorKeys,
+    required this.bracketedPaste,
+    required this.mouseTracking,
+    required this.sgrMouse,
     required this.palette,
     this.foreground,
     this.background,
@@ -46,7 +50,9 @@ class TerminalScreenData {
   });
 
   final int cols, rows, start, cursorCol, cursorRow;
-  final bool cursorVisible, cursorBlink;
+  final bool cursorVisible, cursorBlink, applicationCursorKeys, bracketedPaste;
+  final String mouseTracking;
+  final bool sgrMouse;
   final String cursorStyle;
   final Map<int, Color> palette;
   final Color? foreground, background, cursorColor;
@@ -64,6 +70,10 @@ class TerminalScreenData {
     final cursorVisible = value['cursorVisible'] ?? true;
     final cursorStyle = value['cursorStyle'] ?? 'block';
     final cursorBlink = value['cursorBlink'] ?? true;
+    final applicationCursorKeys = value['applicationCursorKeys'] ?? false;
+    final bracketedPaste = value['bracketedPaste'] ?? false;
+    final mouseTracking = value['mouseTracking'] ?? 'off';
+    final sgrMouse = value['sgrMouse'] ?? false;
     final palette = value['palette'] ?? const <String, Object>{};
     if (cols is! int ||
         cols < 2 ||
@@ -79,6 +89,10 @@ class TerminalScreenData {
         stylesTruncated is! bool ||
         cursorVisible is! bool ||
         cursorBlink is! bool ||
+        applicationCursorKeys is! bool ||
+        bracketedPaste is! bool ||
+        !const ['off', 'click', 'drag', 'any'].contains(mouseTracking) ||
+        sgrMouse is! bool ||
         !const ['block', 'underline', 'bar'].contains(cursorStyle) ||
         palette is! Map) {
       throw const FormatException('Invalid terminal view');
@@ -149,6 +163,10 @@ class TerminalScreenData {
       cursorVisible: cursorVisible,
       cursorStyle: cursorStyle as String,
       cursorBlink: cursorBlink,
+      applicationCursorKeys: applicationCursorKeys,
+      bracketedPaste: bracketedPaste,
+      mouseTracking: mouseTracking as String,
+      sgrMouse: sgrMouse,
       palette: colors,
       foreground: specialColor('foreground'),
       background: specialColor('background'),

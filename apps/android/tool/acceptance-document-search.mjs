@@ -11,9 +11,13 @@ try {
   const java = 'android/app/src/main/java/com/minnnng/dsh_android'
   execFileSync('javac', ['-encoding', 'UTF-8', '-d', output,
     join(project, java, 'DocumentTextSearch.java'), join(project, java, 'DocumentSearchJob.java'),
-    join(project, 'android/app/src/test/java/com/minnnng/dsh_android/DocumentTextSearchTest.java')],
+    join(project, java, 'DocumentColumns.java'), join(project, java, 'DocumentSearchColumns.java'),
+    join(project, 'android/app/src/test/java/com/minnnng/dsh_android/DocumentTextSearchTest.java'),
+    join(project, 'android/app/src/test/java/com/minnnng/dsh_android/DocumentSearchColumnsTest.java')],
   { stdio: 'inherit', windowsHide: true })
   execFileSync('java', ['-cp', output, 'com.minnnng.dsh_android.DocumentTextSearchTest'],
+    { stdio: 'inherit', windowsHide: true })
+  execFileSync('java', ['-cp', output, 'com.minnnng.dsh_android.DocumentSearchColumnsTest'],
     { stdio: 'inherit', windowsHide: true })
 } finally {
   const target = realpathSync(output)

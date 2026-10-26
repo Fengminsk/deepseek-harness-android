@@ -2,7 +2,6 @@ package com.minnnng.dsh_android
 
 import android.content.ComponentName
 import android.content.Context
-import android.content.Intent
 import android.content.ServiceConnection
 import android.os.Bundle
 import android.os.Handler
@@ -41,7 +40,9 @@ object IsolatedWorkerProbe {
     private fun inspectBound(app: Context, input: ParcelFileDescriptor, token: String): Report {
         val finished = CountDownLatch(1)
         val active = AtomicBoolean(true)
+        val bindingLock = Any()
         val outcome = AtomicReference<Outcome?>()
+        val deathLink = AtomicReference<Pair<IBinder, IBinder.DeathRecipient>?>()
         val markerPath = File(app.filesDir, "ptc-isolation-$token").absolutePath
         val replies = Messenger(Handler(Looper.getMainLooper()) { message ->
             if (message.what == IsolatedWorkerService.RESULT) {
@@ -55,16 +56,23 @@ object IsolatedWorkerProbe {
         })
         val connection = object : ServiceConnection {
             override fun onServiceConnected(name: ComponentName, binder: IBinder) {
-                if (!active.get()) return
                 try {
-                    ParcelFileDescriptor.dup(input.fileDescriptor).use { copy ->
-                        val request = Message.obtain(null, IsolatedWorkerService.PROBE)
-                        request.replyTo = replies
-                        request.data = Bundle().apply {
-                            putParcelable(IsolatedWorkerService.INPUT, copy)
-                            putString(IsolatedWorkerService.TOKEN, token)
+                    synchronized(bindingLock) {
+                        if (!active.get()) return
+                        val death = IBinder.DeathRecipient {
+                            fail(IllegalStateException("Isolated worker process died"))
                         }
-                        Messenger(binder).send(request)
+                        binder.linkToDeath(death, 0)
+                        deathLink.set(binder to death)
+                        ParcelFileDescriptor.dup(input.fileDescriptor).use { copy ->
+                            val request = Message.obtain(null, IsolatedWorkerService.PROBE)
+                            request.replyTo = replies
+                            request.data = Bundle().apply {
+                                putParcelable(IsolatedWorkerService.INPUT, copy)
+                                putString(IsolatedWorkerService.TOKEN, token)
+                            }
+                            Messenger(binder).send(request)
+                        }
                     }
                 } catch (error: Exception) { fail(error) }
             }
@@ -80,14 +88,17 @@ object IsolatedWorkerProbe {
         }
         var bound = false
         try {
-            bound = app.bindService(Intent(app, IsolatedWorkerService::class.java), connection, Context.BIND_AUTO_CREATE)
+            bound = IsolatedWorkerBinding.bind(app, connection)
             check(bound) { "Could not bind isolated worker" }
             check(finished.await(5, TimeUnit.SECONDS)) { "Isolated worker did not answer within 5 seconds" }
             val result = checkNotNull(outcome.get()) { "Isolated worker returned no outcome" }
             result.error?.let { throw it }
             return checkNotNull(result.report) { "Isolated worker returned no report" }
         } finally {
-            active.set(false)
+            synchronized(bindingLock) {
+                active.set(false)
+                deathLink.getAndSet(null)?.let { (binder, death) -> binder.unlinkToDeath(death, 0) }
+            }
             if (bound) app.unbindService(connection)
         }
     }

@@ -46,8 +46,20 @@ String workspaceSkipReason(String? reason) => switch (reason) {
 const privateWorkspaceDocumentScope = 'pocket-private-workspace';
 
 bool privateWorkspacePreviewSupported(String name) => const {
-  'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'pdf',
-  'xls', 'xlsx', 'doc', 'docx', 'ppt', 'pptx',
+  'png',
+  'jpg',
+  'jpeg',
+  'gif',
+  'webp',
+  'bmp',
+  'svg',
+  'pdf',
+  'xls',
+  'xlsx',
+  'doc',
+  'docx',
+  'ppt',
+  'pptx',
 }.contains(name.toLowerCase().split('.').last);
 
 Future<Json> _call(
@@ -660,6 +672,13 @@ class _WorkspaceTextPageState extends State<WorkspaceTextPage> {
   }) async {
     if (loading || !widget.runtime.ready) return;
     final attempt = generation;
+    final expectedVersion = reset ? null : version;
+    final expectedRoot = reset ? null : root;
+    final expectedBytes = reset
+        ? null
+        : root == null
+        ? null
+        : bytes;
     setState(() {
       loading = true;
       retryIndex = targetIndex;
@@ -676,11 +695,21 @@ class _WorkspaceTextPageState extends State<WorkspaceTextPage> {
       if (!mounted || attempt != generation) return;
       final next = result['nextOffset'] as int;
       final end = result['eof'] as bool;
+      final resultBytes = result['bytes'];
       if (result['path'] != widget.path ||
           result['offset'] != offset ||
+          result['root'] is! String ||
+          resultBytes is! int ||
+          resultBytes < 0 ||
+          next > resultBytes ||
           next < offset ||
           !end && next == offset ||
-          result['version'] is! String) {
+          end != (next == resultBytes) ||
+          result['text'] is! String ||
+          result['version'] is! String ||
+          expectedVersion != null && result['version'] != expectedVersion ||
+          expectedRoot != null && result['root'] != expectedRoot ||
+          expectedBytes != null && resultBytes != expectedBytes) {
         throw const FormatException('Invalid file continuation');
       }
       setState(() {

@@ -1,0 +1,22 @@
+[
+  {
+    "isError": false,
+    "content": "<path><workspace>/created.txt</path>\n<type>file</type>\n<content>\nCreated file\n</content>"
+  },
+  {
+    "isError": false,
+    "content": "<path><workspace>/absolute-created.txt</path>\n<type>file</type>\n<content>\nCreated file\n</content>"
+  },
+  {
+    "isError": true,
+    "content": "Error: Android file tools require a path inside the App workspace. Use android_files for user-authorized documents."
+  },
+  {
+    "isError": true,
+    "content": "Error: Android file tools require a path inside the App workspace. Use android_files for user-authorized documents."
+  },
+  {
+    "isError": true,
+    "content": "Error: cannot access \"<workspace>/swappable/escape.txt\": outside the App workspace"
+  }
+]

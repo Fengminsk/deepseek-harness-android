@@ -12,9 +12,43 @@ class _DocumentRuntime extends RuntimeController {
     phase = 'ready';
   }
   int generation = 1;
+  Future<dynamic> Function()? onSettingsRead;
   @override
   int get connectionGeneration => generation;
+
+  void reconnect() {
+    generation++;
+    notifyListeners();
+  }
+
+  @override
+  Future<dynamic> call(String method, [Json params = const {}]) async {
+    if (method == 'api.call' &&
+        params['namespace'] == 'settings' &&
+        params['method'] == 'describe') {
+      return onSettingsRead == null
+          ? {
+              'writable': true,
+              'namespaces': [_settingsDescriptor(false)],
+            }
+          : onSettingsRead!();
+    }
+    return super.call(method, params);
+  }
 }
+
+Json _settingsDescriptor(bool enabled) => {
+  'ns': 'ui-settings',
+  'revision': 1,
+  'value': {'enabled': enabled},
+  'schema': {
+    'type': 'object',
+    'dict': {
+      'enabled': {'type': 'boolean'},
+    },
+  },
+  'secrets': <Json>[],
+};
 
 void main() {
   const codec = StandardMethodCodec();
@@ -37,8 +71,12 @@ void main() {
     return bytes == null ? null : codec.decodeEnvelope(bytes);
   }
 
-  Future<void> start(WidgetTester tester) async {
+  Future<void> start(
+    WidgetTester tester, {
+    Future<dynamic> Function()? onSettingsRead,
+  }) async {
     runtime = _DocumentRuntime();
+    runtime.onSettingsRead = onSettingsRead;
     addTearDown(runtime.dispose);
     created.clear();
     disposed.clear();
@@ -80,6 +118,60 @@ void main() {
     await tester.pumpAndSettle();
     expect(created, hasLength(1));
   }
+
+  testWidgets(
+    'HTML scripts require an accepted Host preference and update one retained reader',
+    (tester) async {
+      final pending = Completer<dynamic>();
+      await start(tester, onSettingsRead: () => pending.future);
+      final id = created.single['id'] as int;
+      final options = const StandardMessageCodec().decodeMessage(
+        ByteData.sublistView(created.single['params'] as Uint8List),
+      ) as Map;
+      expect(options['interactiveHtml'], isFalse);
+      final calls = <MethodCall>[];
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        MethodChannel('dsh/document-preview/$id'),
+        (call) async {
+          calls.add(call);
+          return true;
+        },
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          MethodChannel('dsh/document-preview/$id'),
+          null,
+        ),
+      );
+      pending.complete({
+        'writable': true,
+        'namespaces': [_settingsDescriptor(true)],
+      });
+      await tester.pumpAndSettle();
+      expect(calls.map((call) => call.method), ['setInteractiveHtml']);
+      expect(calls.single.arguments, true);
+      expect(
+        created,
+        hasLength(1),
+        reason: 'preference update keeps the reader',
+      );
+
+      runtime.onSettingsRead = () async => {
+        'writable': true,
+        'namespaces': [_settingsDescriptor(false)],
+      };
+      runtime.reconnect();
+      await tester.pumpAndSettle();
+      expect(calls.map((call) => call.arguments), [true, false]);
+      expect(created, hasLength(2), reason: 'new connection owns a new reader');
+      final recovered = const StandardMessageCodec().decodeMessage(
+        ByteData.sublistView(created.last['params'] as Uint8List),
+      ) as Map;
+      expect(recovered['interactiveHtml'], isFalse);
+      await tester.pumpWidget(const SizedBox());
+    },
+    variant: TargetPlatformVariant.only(TargetPlatform.android),
+  );
 
   testWidgets(
     'document toolbar sends the bound Session path to Android system open',
@@ -169,6 +261,39 @@ void main() {
   );
 
   testWidgets(
+    'toolbar refresh uses the original reader without replacing its view',
+    (tester) async {
+      await start(tester);
+      final id = created.single['id'] as int;
+      final calls = <MethodCall>[];
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        MethodChannel('dsh/document-preview/$id'),
+        (call) async {
+          calls.add(call);
+          return true;
+        },
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          MethodChannel('dsh/document-preview/$id'),
+          null,
+        ),
+      );
+      await tester.tap(
+        find.byWidgetPredicate(
+          (widget) => widget is GlassButton && widget.label == '重新读取文件',
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(calls.map((call) => call.method), ['refresh']);
+      expect(created, hasLength(1));
+      expect(disposed, isNot(contains(id)));
+      await tester.pumpWidget(const SizedBox());
+    },
+    variant: TargetPlatformVariant.only(TargetPlatform.android),
+  );
+
+  testWidgets(
     'same-document line updates keep the view and refresh uses the latest line',
     (tester) async {
       await start(tester);
@@ -180,9 +305,19 @@ void main() {
       });
       await tester.pumpAndSettle();
       expect(created, hasLength(1));
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        MethodChannel('dsh/document-preview/$first'),
+        (call) async => false,
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          MethodChannel('dsh/document-preview/$first'),
+          null,
+        ),
+      );
       await tester.tap(
         find.byWidgetPredicate(
-          (widget) => widget is GlassButton && widget.label == '重新打开文档',
+          (widget) => widget is GlassButton && widget.label == '重新读取文件',
         ),
       );
       await tester.pumpAndSettle();

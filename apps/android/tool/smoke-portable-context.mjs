@@ -83,6 +83,7 @@ function environment() {
   for (const key of Object.keys(env)) if (/^(DSH_|DEEPSEEK_|OPENAI_|ANTHROPIC_|POCKET_)/i.test(key)) delete env[key]
   const origin = `http://127.0.0.1:${model.address().port}`
   return { ...env, DSH_HOME: home, DSH_AGENTS_HOME: join(home, '.agents'), DSH_TELEMETRY_DISABLED: '1',
+    DSH_ANDROID_SHELL_EXECUTION_MODE: 'app-uid-approved',
     DEEPSEEK_BASE_URL: origin, POCKET_CONTEXT_MODEL_ORIGIN: origin, TMP: scratch, TEMP: scratch, TMPDIR: scratch }
 }
 

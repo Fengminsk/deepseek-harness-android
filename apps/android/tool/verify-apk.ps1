@@ -11,6 +11,7 @@ param(
     [string[]]$ExpectedAbi = @('arm64-v8a'),
     [string]$ExpectedPackageName = 'com.minnnng.dsh_android',
     [string]$ExpectedRuntimeSha256 = '',
+    [string]$ExpectedPackagedLinuxUtilitySha256 = '',
     [string]$Aapt2Path = ''
 )
 
@@ -20,6 +21,7 @@ $failures = [Collections.Generic.List[string]]::new()
 $requiredLibraries = @(
     'libflutter.so', 'libnode.so', 'libc++_shared.so',
     'libdsh_runtime.so', 'libdsh_system.so', 'libpocket_file_publish.so',
+    'libpocket_ptc_script.so',
     'libpocket_node_cli.so', 'libpocket_terminal_helper.so', 'libpocket_shell_supervisor.so',
     'libpocket_require_builtin.so', 'libpocket_ripgrep.so'
 )
@@ -30,6 +32,7 @@ $result = [ordered]@{
     manifest = $null
     abi = [ordered]@{ expected = @($ExpectedAbi); actual = @(); requiredLibraries = $requiredLibraries; libraries = @{} }
     runtime = $null
+    linuxGuestPayload = [ordered]@{ present = $false; entries = @() }
     aapt2 = $null
     errors = @()
 }
@@ -115,10 +118,30 @@ function Get-StreamSha256([IO.Stream]$Stream) {
     finally { $hasher.Dispose() }
 }
 
+function Get-BoundedStreamSha256([IO.Stream]$Stream, [long]$ExpectedBytes) {
+    # ZIP metadata is untrusted. Never inflate more than the pinned ELF size.
+    $hasher = [Security.Cryptography.IncrementalHash]::CreateHash([Security.Cryptography.HashAlgorithmName]::SHA256)
+    $buffer = [byte[]]::new(65536)
+    $remaining = $ExpectedBytes
+    try {
+        while ($remaining -gt 0) {
+            $count = $Stream.Read($buffer, 0, [int][Math]::Min($buffer.Length, $remaining))
+            if ($count -le 0) { throw 'Candidate ZIP entry ended before its declared length.' }
+            $hasher.AppendData($buffer, 0, $count)
+            $remaining -= $count
+        }
+        if ($Stream.Read($buffer, 0, 1) -ne 0) { throw 'Candidate ZIP entry exceeded its declared length.' }
+        return [Convert]::ToHexString($hasher.GetHashAndReset()).ToLowerInvariant()
+    } finally { $hasher.Dispose() }
+}
+
 try {
     if ($ExpectedVersionCode -lt 1) { throw 'ExpectedVersionCode must be positive.' }
     if ($ExpectedRuntimeSha256 -and $ExpectedRuntimeSha256 -cnotmatch '^[a-fA-F0-9]{64}$') {
         throw 'ExpectedRuntimeSha256 must be a 64-character hexadecimal SHA256 digest.'
+    }
+    if ($ExpectedPackagedLinuxUtilitySha256 -and $ExpectedPackagedLinuxUtilitySha256 -cnotmatch '^[a-fA-F0-9]{64}$') {
+        throw 'ExpectedPackagedLinuxUtilitySha256 must be a 64-character hexadecimal SHA256 digest.'
     }
     if ($ExpectedAbi.Count -eq 0 -or @($ExpectedAbi | Where-Object { $_ -notmatch '^[a-zA-Z0-9_-]+$' }).Count -gt 0) {
         throw 'ExpectedAbi must contain one or more Android ABI names.'
@@ -135,6 +158,31 @@ try {
             $entries = [Collections.Generic.Dictionary[string, IO.Compression.ZipArchiveEntry]]::new([StringComparer]::Ordinal)
             foreach ($entry in $zip.Entries) {
                 if (-not $entries.TryAdd($entry.FullName, $entry)) { $failures.Add("Duplicate ZIP entry: $($entry.FullName)") }
+            }
+            # Guest execution has separate distribution and device gates.
+            # Detect known names plus the two pinned ELF digests under any name.
+            # Only entries with the exact small ELF lengths are inflated.
+            $guestNames = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+            foreach ($entry in @($zip.Entries | Where-Object {
+                -not $_.FullName.EndsWith('/') -and $_.FullName -match '(?i)(?:^|/)(?:libdsh_proot(?:_loader)?_candidate\.so|libpocket_linux_guest_supervisor\.so|libpocket_proot\.so|alpine-minirootfs[^/]*|(?:lib)?proot(?:[-_.][^/]*)?\.so|rootfs\.tar(?:\.gz)?)$'
+            })) { [void]$guestNames.Add($entry.FullName) }
+            $candidateHashes = @{
+                1334216 = 'c22cdb13c5de4b6e0022f7ede7a5ca0bf88675d4b674aa339a885b96d8b26f7f'
+                9952 = 'c5e85afb7599bd82f2419fb054d597514d5c9578954288bef0c5320cd8b63fbf'
+            }
+            foreach ($entry in $zip.Entries) {
+                if ($entry.FullName.EndsWith('/') -or $guestNames.Contains($entry.FullName)) { continue }
+                $pinnedHash = $candidateHashes[[int]$entry.Length]
+                if (-not $pinnedHash) { continue }
+                $stream = $entry.Open()
+                try { $actual = Get-BoundedStreamSha256 $stream $entry.Length }
+                finally { $stream.Dispose() }
+                if ($actual -ceq $pinnedHash) { [void]$guestNames.Add($entry.FullName) }
+            }
+            $guestEntries = @($guestNames | Sort-Object)
+            $result.linuxGuestPayload = [ordered]@{ present = $guestEntries.Count -gt 0; entries = $guestEntries }
+            foreach ($guestEntry in $guestEntries) {
+                $failures.Add("Linux guest payload is not approved for this APK: $guestEntry")
             }
             if (-not $entries.ContainsKey('AndroidManifest.xml')) { $failures.Add('AndroidManifest.xml is missing.') }
             $nativeEntries = @($zip.Entries | Where-Object { $_.FullName -cmatch '^lib/[^/]+/' })
@@ -153,6 +201,18 @@ try {
             }
             foreach ($abi in $ExpectedAbi) {
                 if ($actualAbi -cnotcontains $abi) { $failures.Add("Expected ABI is missing: $abi") }
+            }
+            if ($ExpectedPackagedLinuxUtilitySha256) {
+                $utilityEntryName = 'lib/arm64-v8a/libpocket_linux_utility.so'
+                if (-not $entries.ContainsKey($utilityEntryName) -or $entries[$utilityEntryName].Length -eq 0) {
+                    $failures.Add("Packaged Linux utility missing or empty: $utilityEntryName")
+                } else {
+                    $utilityStream = $entries[$utilityEntryName].Open()
+                    try { $utilityHash = Get-StreamSha256 $utilityStream } finally { $utilityStream.Dispose() }
+                    if ($utilityHash -cne $ExpectedPackagedLinuxUtilitySha256.ToLowerInvariant()) {
+                        $failures.Add('Packaged Linux utility checksum mismatch.')
+                    }
+                }
             }
             $ripgrepLock = (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'runtime-lock.json') -Raw | ConvertFrom-Json).ripgrep
             $ripgrepEntryName = 'lib/arm64-v8a/libpocket_ripgrep.so'

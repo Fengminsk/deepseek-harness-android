@@ -88,6 +88,8 @@ ctx.tools.register(defineTool({
 
 `ctx.tools.guard(guard)` 在可扩展的 `tools/pre-execute` waterfall（瀑布式事件）之后注册单调同步守卫：返回的理由会拒绝调用，后续监听器无法把该拒绝重新变为允许。流水线事件给插件更多控制——`tools/pre-execute` 决定允许／拒绝／询问，`tools/execute` 为超时或重试包装分发，`tools/post-execute` 检查或替换结果，`tools/result` 观测冻结的最终结果。
 
+注册表在异步策略开始前将每次调用绑定到确切的可见工具注册。若该注册在分发或后续值替换前被移除、遮蔽或替换，调用返回 `UNKNOWN_TOOL`；同名新注册不能继承之前的策略决定。无关工具的注册不会中断该调用。
+
 工具的 `projectContent` 在执行后策略之前安装执行期间准备的图文内容。策略仍可替换或阻止这些内容；`finalizeContent` 保留为策略之后的最终内容处理。
 
 ### Host 展示描述

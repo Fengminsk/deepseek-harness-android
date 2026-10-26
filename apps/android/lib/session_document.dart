@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
@@ -5,6 +7,7 @@ import 'package:material_ui/material_ui.dart';
 import 'runtime.dart';
 import 'ui.dart';
 import 'external_file_action.dart';
+import 'settings_general.dart';
 
 /// Original DSH document readers, scoped to one Session, under native chrome.
 /// The service remains shared with chat; leaving this route only closes reads.
@@ -28,6 +31,53 @@ class SessionDocumentPage extends StatefulWidget {
 
 class _SessionDocumentPageState extends State<SessionDocumentPage> {
   final externalOpen = ExternalFileOpenController();
+  late DeveloperToolsPreference _developerTools;
+  bool _interactiveHtml = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _observeDeveloperTools();
+  }
+
+  void _observeDeveloperTools() {
+    _developerTools = DeveloperToolsPreference(widget.runtime)
+      ..addListener(_updateInteractiveHtml);
+    unawaited(_developerTools.start());
+  }
+
+  void _updateInteractiveHtml() {
+    final next = _developerTools.confirmed && _developerTools.enabled;
+    if (!mounted || next == _interactiveHtml) return;
+    _interactiveHtml = next;
+    final channel = _navigation;
+    if (channel != null) unawaited(_publishInteractiveHtml(channel, next));
+  }
+
+  Future<void> _publishInteractiveHtml(
+    MethodChannel channel,
+    bool enabled,
+  ) async {
+    try {
+      await channel.invokeMethod<bool>('setInteractiveHtml', enabled);
+    } on PlatformException catch (_) {
+      // The native reader may already have been disposed by navigation.
+    } on MissingPluginException catch (_) {
+      // A previous native build cannot change this preview in place.
+    }
+  }
+
+  @override
+  void didUpdateWidget(SessionDocumentPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.runtime == widget.runtime) return;
+    _navigation?.setMethodCallHandler(null);
+    _navigation = null;
+    _developerTools.removeListener(_updateInteractiveHtml);
+    _developerTools.dispose();
+    _interactiveHtml = false;
+    _observeDeveloperTools();
+  }
 
   @override
   void didChangeDependencies() {
@@ -40,12 +90,39 @@ class _SessionDocumentPageState extends State<SessionDocumentPage> {
   MethodChannel? _navigation;
   bool _opening = false;
   bool _openingExternal = false;
+  bool _reloading = false;
+
+  Future<void> _refreshDocument() async {
+    if (_reloading) return;
+    _reloading = true;
+    final channel = _navigation;
+    final generation = widget.runtime.connectionGeneration;
+    try {
+      if (channel != null &&
+          await channel.invokeMethod<bool>('refresh') == true) {
+        return;
+      }
+    } on PlatformException catch (_) {
+      // The original reader has not mounted yet; reopening is the recovery.
+    } on MissingPluginException catch (_) {
+      // Older native builds do not have the in-place refresh command.
+    } finally {
+      _reloading = false;
+    }
+    if (mounted &&
+        _navigation == channel &&
+        widget.runtime.connectionGeneration == generation &&
+        ModalRoute.of(context)?.isCurrent == true) {
+      setState(() => retry++);
+    }
+  }
 
   void _connect(int viewId, int generation) {
     if (!mounted || generation != widget.runtime.connectionGeneration) return;
     _navigation?.setMethodCallHandler(null);
     final channel = MethodChannel('dsh/document-preview/$viewId');
     _navigation = channel;
+    unawaited(_publishInteractiveHtml(channel, _interactiveHtml));
     channel.setMethodCallHandler((call) async {
       if (call.method != 'openDocument') throw MissingPluginException();
       if (!mounted ||
@@ -107,6 +184,8 @@ class _SessionDocumentPageState extends State<SessionDocumentPage> {
   @override
   void dispose() {
     externalOpen.dispose();
+    _developerTools.removeListener(_updateInteractiveHtml);
+    _developerTools.dispose();
     _navigation?.setMethodCallHandler(null);
     super.dispose();
   }
@@ -129,27 +208,26 @@ class _SessionDocumentPageState extends State<SessionDocumentPage> {
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (!widget.privateWorkspace) GlassButton(
-              icon: Icons.open_in_new_rounded,
-              label: '在其他应用中打开',
-              onPressed: !widget.runtime.ready || _openingExternal
-                  ? null
-                  : () async {
-                      setState(() => _openingExternal = true);
-                      await externalOpen.open(
-                        context,
-                        sessionId: widget.sessionId,
-                        path: widget.path,
-                      );
-                      if (mounted) setState(() => _openingExternal = false);
-                    },
-            ),
+            if (!widget.privateWorkspace)
+              GlassButton(
+                icon: Icons.open_in_new_rounded,
+                label: '在其他应用中打开',
+                onPressed: !widget.runtime.ready || _openingExternal
+                    ? null
+                    : () async {
+                        setState(() => _openingExternal = true);
+                        await externalOpen.open(
+                          context,
+                          sessionId: widget.sessionId,
+                          path: widget.path,
+                        );
+                        if (mounted) setState(() => _openingExternal = false);
+                      },
+              ),
             GlassButton(
               icon: Icons.refresh_rounded,
-              label: '重新打开文档',
-              onPressed: widget.runtime.ready
-                  ? () => setState(() => retry++)
-                  : null,
+              label: '重新读取文件',
+              onPressed: widget.runtime.ready ? _refreshDocument : null,
             ),
           ],
         ),
@@ -159,6 +237,7 @@ class _SessionDocumentPageState extends State<SessionDocumentPage> {
             ? const Center(child: Text('请在 Android 应用中打开文档。'))
             : AndroidView(
                 key: ValueKey((
+                  widget.runtime,
                   widget.sessionId,
                   widget.path,
                   widget.line,
@@ -177,6 +256,9 @@ class _SessionDocumentPageState extends State<SessionDocumentPage> {
                   'sessionId': widget.sessionId,
                   'path': widget.path,
                   'privateWorkspace': widget.privateWorkspace,
+                  // The WebView starts fail-closed. The accepted Host setting is
+                  // sent through its fixed method channel without replacing it.
+                  'interactiveHtml': false,
                   if (_line != null) 'line': _line,
                   'locale': Localizations.localeOf(context).toLanguageTag(),
                   'dark': theme.brightness == Brightness.dark,

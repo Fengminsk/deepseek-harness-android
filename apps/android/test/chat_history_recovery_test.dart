@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:dsh_android/chat_projection.dart';
 import 'package:dsh_android/runtime.dart';
@@ -26,10 +27,20 @@ class _Runtime extends RuntimeController {
           'liveMessages': <String, dynamic>{},
           'errors': <String, dynamic>{},
         };
-      case 'session.read':
+      case 'session.readWindow':
         historyIds.add(params['sessionId'] as String);
         historyParams.add(params);
-        return historyPage != null ? historyPage!(params) : history!();
+        final response = historyPage != null
+            ? await historyPage!(params)
+            : await history!();
+        if (response.containsKey('firstSeq')) return response;
+        final records = (response['events'] as List).cast<Json>();
+        return {
+          ...response,
+          'firstSeq': records.isEmpty ? null : records.first['seq'],
+          'throughSeq': records.isEmpty ? -1 : records.last['seq'],
+          'hasMore': false,
+        };
       case 'session.read.release':
         return {'released': true};
       default:
@@ -91,6 +102,30 @@ List<Json> _recovered() => [
   }),
 ];
 
+Future<MockStreamHandlerEventSink> _attachEvents(_Runtime runtime) async {
+  final messenger =
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+  final listening = Completer<MockStreamHandlerEventSink>();
+  messenger.setMockStreamHandler(
+    RuntimeController.events,
+    MockStreamHandler.inline(onListen: (_, sink) => listening.complete(sink)),
+  );
+  addTearDown(
+    () => messenger.setMockStreamHandler(RuntimeController.events, null),
+  );
+  await runtime.start();
+  return listening.future;
+}
+
+void _deliverEvent(MockStreamHandlerEventSink sink, String id, Json event) {
+  sink.success(
+    jsonEncode({
+      'method': 'session.event',
+      'params': {'sessionId': id, 'event': event},
+    }),
+  );
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -137,11 +172,11 @@ void main() {
         isEmpty,
       );
       final reads = runtime.requests
-          .where((call) => call == 'session.read')
+          .where((call) => call == 'session.readWindow')
           .length;
       await runtime.refresh();
       expect(
-        runtime.requests.where((call) => call == 'session.read').length,
+        runtime.requests.where((call) => call == 'session.readWindow').length,
         reads,
       );
     },
@@ -208,72 +243,185 @@ void main() {
     },
   );
 
-  test('history pages reuse one snapshot and finish without a release RPC', () async {
-    final runtime = _Runtime();
-    addTearDown(runtime.dispose);
-    runtime.historyPage = (params) async {
-      if (params['offset'] == 0) {
-        return {
-          'events': [for (var i = 0; i < 200; i++) _event(i, 'x', {})],
-          'snapshot': 'read-once',
-        };
-      }
-      return {
-        'events': [_event(200, 'x', {})],
-      };
-    };
-    await runtime.openSession('s');
-    expect(runtime.historyParams, [
-      {'sessionId': 's', 'offset': 0},
-      {'sessionId': 's', 'offset': 200, 'snapshot': 'read-once'},
-    ]);
-    expect(runtime.timelines['s'], hasLength(201));
-    expect(runtime.requests.contains('session.read.release'), isFalse);
-  });
-
   test(
-    'paged history includes live events without duplicating page overlap',
+    'opening reads one bounded tail and loads older rows at a fixed cut',
     () async {
       final runtime = _Runtime();
       addTearDown(runtime.dispose);
-      final lastPage = Completer<Json>();
-      runtime.historyPage = (params) {
-        if (params['offset'] == 0) {
-          return Future.value({
-            'events': [for (var i = 0; i < 200; i++) _event(i, 'x', {})],
-            'snapshot': 'stable-history',
-          });
+      runtime.historyPage = (params) async {
+        if (!params.containsKey('beforeSeq')) {
+          return {
+            'events': [for (var i = 200; i <= 400; i++) _event(i, 'x', {})],
+            'firstSeq': 200,
+            'throughSeq': 400,
+            'hasMore': true,
+          };
         }
-        return lastPage.future;
+        return {
+          'events': [for (var i = 0; i < 200; i++) _event(i, 'x', {})],
+          'firstSeq': 0,
+          'throughSeq': 400,
+          'hasMore': false,
+        };
       };
-      runtime.timelines['s'] = [_event(199, 'x', {}), _event(201, 'x', {})];
+      await runtime.openSession('s');
+      expect(runtime.timelines['s'], hasLength(201));
+      final before = runtime.timelines['s'];
+      expect(await runtime.loadOlderSession('s'), 200);
+      expect(runtime.historyParams, [
+        {'sessionId': 's'},
+        {'sessionId': 's', 'throughSeq': 400, 'beforeSeq': 200},
+      ]);
+      expect(identical(runtime.timelines['s'], before), isTrue);
+      expect(runtime.timelines['s'], hasLength(401));
+      expect(runtime.historyWindows['s']!.hasMore, isFalse);
+    },
+  );
+
+  test(
+    'tail window includes live events without bringing old display rows back',
+    () async {
+      final runtime = _Runtime();
+      addTearDown(runtime.dispose);
+      final sink = await _attachEvents(runtime);
+      final tail = Completer<Json>();
+      runtime.historyPage = (params) => tail.future;
+      _deliverEvent(sink, 's', _event(199, 'x', {}));
+      _deliverEvent(sink, 's', _event(201, 'x', {}));
+      await Future<void>.delayed(Duration.zero);
       final read = runtime.openSession('s');
       await Future<void>.delayed(Duration.zero);
-      expect(runtime.historyParams.last['offset'], 200);
-      runtime.timelines['s']!.add(_event(202, 'x', {}));
-      lastPage.complete({
-        'events': [_event(200, 'x', {})],
+      expect(runtime.historyParams.last, {'sessionId': 's'});
+      _deliverEvent(sink, 's', _event(202, 'x', {}));
+      await Future<void>.delayed(Duration.zero);
+      tail.complete({
+        'events': [for (var i = 198; i <= 200; i++) _event(i, 'x', {})],
+        'firstSeq': 198,
+        'throughSeq': 200,
+        'hasMore': true,
       });
       await read;
       expect(runtime.timelines['s']!.map((event) => event['seq']), [
-        for (var i = 0; i <= 202; i++) i,
+        198,
+        199,
+        200,
+        201,
+        202,
       ]);
     },
   );
 
-  test('failed later history page releases its snapshot', () async {
+  test(
+    'cold read drops old process rows but retains a fresh live event',
+    () async {
+      final runtime = _Runtime();
+      addTearDown(runtime.dispose);
+      final sink = await _attachEvents(runtime);
+
+      runtime.history = () async => {
+        'events': [
+          _event(0, 'turn/start', {'turn': 1}),
+        ],
+      };
+      await runtime.openSession('s');
+      // The old carrier displayed this row, but its durable history never
+      // confirmed it before the process was replaced.
+      runtime.timelines['s']!.add(_event(90, 'tool/call', {'callId': 'ghost'}));
+      await runtime.restart();
+      runtime.phase = 'ready';
+
+      final cold = Completer<Json>();
+      runtime.history = () => cold.future;
+      final reading = runtime.openSession('s');
+      _deliverEvent(
+        sink,
+        's',
+        _event(2, 'assistant/message', {'text': 'new process'}),
+      );
+      await Future<void>.delayed(Duration.zero);
+      cold.complete({
+        'events': [
+          _event(0, 'turn/start', {'turn': 1}),
+          _event(1, 'turn/end', {'turn': 1}),
+        ],
+      });
+      await reading;
+      expect(runtime.timelines['s']!.map((event) => event['seq']), [0, 1, 2]);
+      expect(runtime.timelines['s']!.last['data']['text'], 'new process');
+    },
+  );
+
+  test('an unconfirmed disconnect keeps same-process display rows', () async {
+    final runtime = _Runtime();
+    addTearDown(runtime.dispose);
+    runtime.history = () async => {
+      'events': [
+        _event(0, 'turn/start', {'turn': 1}),
+      ],
+    };
+    await runtime.openSession('s');
+    runtime.timelines['s']!.add(
+      _event(1, 'assistant/message', {'text': 'live'}),
+    );
+    runtime.fail(StateError('temporary Binder disconnect'));
+    runtime.phase = 'ready';
+    await runtime.openSession('s');
+    expect(runtime.timelines['s']!.map((event) => event['seq']), [0, 1]);
+  });
+
+  test('failed older page preserves the already visible window', () async {
     final runtime = _Runtime();
     addTearDown(runtime.dispose);
     runtime.historyPage = (params) async {
-      if (params['offset'] == 0) {
+      if (!params.containsKey('beforeSeq')) {
         return {
-          'events': [for (var i = 0; i < 200; i++) _event(i, 'x', {})],
-          'snapshot': 'read-once',
+          'events': [_event(200, 'x', {})],
+          'firstSeq': 200,
+          'throughSeq': 200,
+          'hasMore': true,
         };
       }
       throw StateError('page unavailable');
     };
-    await expectLater(runtime.openSession('s'), throwsStateError);
-    expect(runtime.requests.last, 'session.read.release');
+    await runtime.openSession('s');
+    await expectLater(runtime.loadOlderSession('s'), throwsStateError);
+    expect(runtime.timelines['s']!.map((event) => event['seq']), [200]);
+    expect(runtime.historyWindows['s']!.hasMore, isTrue);
   });
+
+  test(
+    'older page from a replaced connection cannot prepend stale records',
+    () async {
+      final runtime = _Runtime();
+      addTearDown(runtime.dispose);
+      final older = Completer<Json>();
+      runtime.historyPage = (params) async {
+        if (params.containsKey('beforeSeq')) return older.future;
+        return {
+          'events': [
+            _event(200, 'turn/start', {'turn': 3}),
+          ],
+          'firstSeq': 200,
+          'throughSeq': 200,
+          'hasMore': true,
+        };
+      };
+      await runtime.openSession('s');
+      final pending = runtime.loadOlderSession('s');
+      await Future<void>.delayed(Duration.zero);
+      await runtime.restart();
+      runtime.phase = 'ready';
+      await runtime.openSession('s');
+      older.complete({
+        'events': [
+          _event(0, 'turn/start', {'turn': 1}),
+        ],
+        'firstSeq': 0,
+        'throughSeq': 200,
+        'hasMore': false,
+      });
+      expect(await pending, 0);
+      expect(runtime.timelines['s']!.map((event) => event['seq']), [200]);
+    },
+  );
 }

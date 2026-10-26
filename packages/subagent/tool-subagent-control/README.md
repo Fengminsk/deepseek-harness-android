@@ -77,6 +77,8 @@ The tool forwards its execution signal, which owns admission only until inbox ac
 
 `list_agents` derives the root id from the calling agent, reads the service catalog without a cursor, refines each candidate's status through the live Agent registry, and omits one-shot children because they cannot accept `send_message`. Descendant traversal preserves each parent catalog's event order. Unknown modes produce diagnostics while their catalogs remain traversable; unreadable catalogs produce diagnostics and stop that branch. Descendants absent from reachable catalogs cannot be discovered.
 
+The Android restricted PTC carrier can attest a first-party `list_agents` definition with `isFirstPartyListAgentsDefinition(definition, agent)`. The plugin weakly records the exact definition and the service scope it captured when registering. Attestation requires the captured Agent registry to resolve the exact live calling Agent; it is not inferred from the tool name or schema. Cordis provides different service proxies to different scopes, so the carrier checks its own Agent registry separately instead of comparing proxy identities. It also checks that the definition remains visible for that Agent and binds the current `ToolRuntime.registrationIdentity`; attestation alone does not grant execution or keep a removed registration valid.
+
 ### Source map
 
 | File | Role |

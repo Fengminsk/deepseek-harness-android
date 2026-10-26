@@ -20,7 +20,8 @@ public final class RuntimeInterruptionRecordTest {
             RuntimeInterruptionRecord first = RuntimeInterruptionRecord.read(directory);
             check(first != null && first.kind.equals(RuntimeInterruptionRecord.RUNTIME_LOST)
                     && first.timeMillis == 1_782_000_000_000L, "runtime loss did not survive a cold read");
-            String raw = Files.readString(new File(directory, "agent-interruption-v1").toPath());
+            String raw = new String(Files.readAllBytes(new File(directory, "agent-interruption-v1").toPath()),
+                    StandardCharsets.UTF_8);
             check(raw.equals("1\nruntime-lost\n1782000000000\n"), "record carried unexpected task data");
             RuntimeInterruptionRecord.write(directory, RuntimeInterruptionRecord.SERVICE_TIMEOUT, 1_782_000_100_000L);
             RuntimeInterruptionRecord second = RuntimeInterruptionRecord.read(directory);
@@ -34,8 +35,8 @@ public final class RuntimeInterruptionRecordTest {
             }
             check(RuntimeInterruptionRecord.read(directory).kind.equals(RuntimeInterruptionRecord.SERVICE_TIMEOUT),
                     "invalid write changed the prior receipt");
-            Files.writeString(new File(directory, "agent-interruption-v1").toPath(),
-                    "1\nruntime-lost\nunknown\n", StandardCharsets.UTF_8);
+            Files.write(new File(directory, "agent-interruption-v1").toPath(),
+                    "1\nruntime-lost\nunknown\n".getBytes(StandardCharsets.UTF_8));
             try {
                 RuntimeInterruptionRecord.read(directory);
                 throw new AssertionError("Torn receipt was presented as confirmed");

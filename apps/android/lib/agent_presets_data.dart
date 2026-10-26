@@ -22,6 +22,7 @@ class AgentPresetOption {
   final bool isDefault;
   String get label => name?.trim().isNotEmpty == true ? name! : id;
   bool get available => broken == null;
+
   /// Mirrors the shipped roster display rule; a named override owns its ID.
   bool get requiresCodingTools =>
       name == null && (id == 'ptc' || id == 'minimal');
@@ -159,13 +160,24 @@ class AgentPresetsController extends ChangeNotifier {
     String namespace,
     String method, [
     Json args = const {},
-  ]) => runtime
-      .call('api.call', {
-        'namespace': namespace,
-        'method': method,
-        'args': args,
-      })
-      .timeout(agentPresetRequestTimeout);
+  ]) async {
+    if (namespace == 'settings' && method == 'describe') {
+      return runtime.describeConfiguration();
+    }
+    final writesSettings = namespace == 'settings';
+    if (writesSettings) runtime.invalidateConfigurationRead();
+    try {
+      return await runtime
+          .call('api.call', {
+            'namespace': namespace,
+            'method': method,
+            'args': args,
+          })
+          .timeout(agentPresetRequestTimeout);
+    } finally {
+      if (writesSettings) runtime.invalidateConfigurationRead();
+    }
+  }
 
   void _publish() {
     if (!_disposed) notifyListeners();

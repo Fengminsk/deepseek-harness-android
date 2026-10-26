@@ -151,55 +151,66 @@ Future<void> close(WidgetTester tester) async {
 }
 
 void main() {
-  testWidgets('supported binary workspace file opens in the private document reader', (
-    tester,
-  ) async {
-    final runtime = WorkspaceRuntime();
-    addTearDown(runtime.dispose);
-    final calls = <MethodCall>[];
-    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
-      RuntimeController.channel,
-      (call) async {
-        calls.add(call);
-        return null;
-      },
-    );
-    addTearDown(
-      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+  testWidgets(
+    'supported binary workspace file opens in the private document reader',
+    (tester) async {
+      final runtime = WorkspaceRuntime();
+      addTearDown(runtime.dispose);
+      final calls = <MethodCall>[];
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
         RuntimeController.channel,
-        null,
-      ),
-    );
-    runtime.handle = (method, params) async => listing(
-      '',
-      entries: [
-        {
-          'name': 'report.pdf',
-          'path': 'report.pdf',
-          'kind': 'file',
-          'bytes': 42,
+        (call) async {
+          calls.add(call);
+          return null;
         },
-      ],
-    );
-    await open(tester, WorkspaceFilesPage(runtime: runtime));
-    await tester.longPress(find.byKey(const ValueKey('workspace-entry-report.pdf')));
-    await tester.pumpAndSettle();
-    expect(find.text('在其他应用中打开'), findsOneWidget);
-    await tap(tester, find.text('预览文件'));
-    final page = tester.widget<SessionDocumentPage>(find.byType(SessionDocumentPage));
-    expect(page.privateWorkspace, isTrue);
-    expect(page.sessionId, privateWorkspaceDocumentScope);
-    expect(page.path, 'report.pdf');
-    expect(calls, isEmpty);
-    expect(
-      runtime.calls.where((call) => call.$1 == 'workspace.files.read'),
-      isEmpty,
-    );
-    await close(tester);
-  });
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          RuntimeController.channel,
+          null,
+        ),
+      );
+      runtime.handle = (method, params) async => listing(
+        '',
+        entries: [
+          {
+            'name': 'report.pdf',
+            'path': 'report.pdf',
+            'kind': 'file',
+            'bytes': 42,
+          },
+        ],
+      );
+      await open(tester, WorkspaceFilesPage(runtime: runtime));
+      await tester.longPress(
+        find.byKey(const ValueKey('workspace-entry-report.pdf')),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('在其他应用中打开'), findsOneWidget);
+      await tap(tester, find.text('预览文件'));
+      final page = tester.widget<SessionDocumentPage>(
+        find.byType(SessionDocumentPage),
+      );
+      expect(page.privateWorkspace, isTrue);
+      expect(page.sessionId, privateWorkspaceDocumentScope);
+      expect(page.path, 'report.pdf');
+      expect(calls, isEmpty);
+      expect(
+        runtime.calls.where((call) => call.$1 == 'workspace.files.read'),
+        isEmpty,
+      );
+      await close(tester);
+    },
+  );
 
   test('private reader chooses the original renderer formats, not arbitrary binary', () {
-    for (final name in ['photo.png', 'report.pdf', 'slides.pptx', 'sheet.xlsx', 'picture.webp']) {
+    for (final name in [
+      'photo.png',
+      'report.pdf',
+      'slides.pptx',
+      'sheet.xlsx',
+      'picture.webp',
+    ]) {
       expect(privateWorkspacePreviewSupported(name), isTrue);
     }
     for (final name in ['archive.zip', 'app.apk', 'binary.dat']) {
@@ -640,6 +651,52 @@ void main() {
       expect(find.text('第一段'), findsOneWidget);
       await tap(tester, find.byTooltip('从头重新读取工作区文件'));
       expect(runtime.calls.last.$2, {'path': 'notes/report.txt', 'offset': 0});
+      expect(tester.takeException(), isNull);
+      await close(tester);
+    },
+  );
+
+  testWidgets(
+    'a mismatched continuation never replaces the visible workspace text',
+    (tester) async {
+      final runtime = WorkspaceRuntime();
+      addTearDown(runtime.dispose);
+      final invalid = <Json>[
+        {'version': 'file-replaced'},
+        {'root': 'different-workspace'},
+        {'bytes': 21},
+        {'nextOffset': 21},
+        {'eof': false},
+        {'offset': 7},
+      ];
+      var corruptIndex = 0;
+      runtime.handle = (_, params) async {
+        final offset = params['offset'] as int;
+        if (offset == 0) {
+          return textPage(next: 8, eof: false, text: '已核实的第一段');
+        }
+        final page = textPage(offset: 8, text: '不可拼接的第二段');
+        if (corruptIndex < invalid.length) page.addAll(invalid[corruptIndex]);
+        return page;
+      };
+      await open(
+        tester,
+        WorkspaceTextPage(runtime: runtime, path: 'notes/report.txt'),
+      );
+      for (final mismatch in invalid) {
+        await tap(tester, find.text(corruptIndex == 0 ? '下一段' : '重试读取'));
+        expect(runtime.calls.last.$2['version'], 'file-1');
+        expect(find.text('已核实的第一段'), findsOneWidget, reason: '$mismatch');
+        expect(find.text('不可拼接的第二段'), findsNothing, reason: '$mismatch');
+        expect(
+          find.text('返回内容未能确认，已显示内容保留。请刷新后重试。'),
+          findsOneWidget,
+          reason: '$mismatch',
+        );
+        corruptIndex++;
+      }
+      await tap(tester, find.text('重试读取'));
+      expect(find.text('不可拼接的第二段'), findsOneWidget);
       expect(tester.takeException(), isNull);
       await close(tester);
     },

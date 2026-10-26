@@ -1,0 +1,48 @@
+{
+  "events": [
+    {
+      "seq": 1,
+      "time": 1792922640000,
+      "type": "user/message",
+      "surfaceOp": "append",
+      "data": {
+        "id": "context-1",
+        "role": "user",
+        "source": {"kind": "runtime-context"},
+        "content": [{"type": "text", "text": "private runtime note"}]
+      }
+    },
+    {
+      "seq": 2,
+      "time": 1792922641000,
+      "type": "user/message",
+      "surfaceOp": "append",
+      "data": {
+        "id": "human-2",
+        "role": "user",
+        "source": {"kind": "user"},
+        "content": [{"type": "text", "text": "human question"}]
+      }
+    },
+    {
+      "seq": 3,
+      "time": 1792922642000,
+      "type": "assistant/message",
+      "surfaceOp": "append",
+      "data": {
+        "turn": 1,
+        "step": 1,
+        "message": {
+          "id": "answer-3",
+          "role": "assistant",
+          "content": [{"type": "text", "text": "assistant answer"}]
+        }
+      }
+    }
+  ],
+  "expected": {
+    "humanText": "human question",
+    "hiddenContext": "private runtime note",
+    "actionRows": 1
+  }
+}

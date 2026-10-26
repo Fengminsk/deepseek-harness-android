@@ -13,9 +13,32 @@ import 'tasks.dart';
 import 'ui.dart';
 import 'workspace_changes.dart';
 
-/// Mobile navigation for resources belonging to one existing DSH Session.
-/// Opening this page only reads the Session; it never creates or resumes work.
-class SessionResourcesPage extends StatelessWidget {
+enum _ResourceKind { guide, files, changes, skills, tasks, browser, terminal }
+
+const _resourceTitles = <_ResourceKind, String>{
+  _ResourceKind.guide: '资源',
+  _ResourceKind.files: '文件',
+  _ResourceKind.changes: '文件改动',
+  _ResourceKind.skills: '技能',
+  _ResourceKind.tasks: '后台任务',
+  _ResourceKind.browser: '浏览器',
+  _ResourceKind.terminal: '终端',
+};
+
+class _ResourceLayout {
+  const _ResourceLayout(this.tabs, this.selected);
+  final List<_ResourceKind> tabs;
+  final _ResourceKind selected;
+}
+
+// Only page kinds and selection survive a route re-entry. A RuntimeController
+// owns the weak key; no URL, file bytes, process identity, or Agent state is saved.
+final _resourceLayouts = Expando<Map<String, _ResourceLayout>>();
+
+/// Session-scoped mobile tabs for existing resources. Selecting a tab mounts
+/// its reader once and keeps it mounted until the tab is removed. Opening the
+/// workspace never creates a terminal, browser request, or Agent turn.
+class SessionResourcesPage extends StatefulWidget {
   const SessionResourcesPage({
     super.key,
     required this.runtime,
@@ -25,92 +48,272 @@ class SessionResourcesPage extends StatelessWidget {
   final RuntimeController runtime;
   final String sessionId;
 
-  void _open(BuildContext context, Widget page) {
-    Navigator.of(context).push<void>(PocketRoute<void>(builder: (_) => page));
+  @override
+  State<SessionResourcesPage> createState() => _SessionResourcesPageState();
+}
+
+class _SessionResourcesPageState extends State<SessionResourcesPage> {
+  late List<_ResourceKind> _tabs;
+  late _ResourceKind _selected;
+  final _mounted = <_ResourceKind>{};
+  final _tabKeys = {for (final kind in _ResourceKind.values) kind: GlobalKey()};
+
+  @override
+  void initState() {
+    super.initState();
+    _restore();
+    _reveal(_selected);
+  }
+
+  void _restore() {
+    final saved = _resourceLayouts[widget.runtime]?[widget.sessionId];
+    _tabs = [...?saved?.tabs];
+    if (!_tabs.contains(_ResourceKind.guide)) {
+      _tabs.insert(0, _ResourceKind.guide);
+    }
+    _selected = saved != null && _tabs.contains(saved.selected)
+        ? saved.selected
+        : _ResourceKind.guide;
+    _mounted
+      ..clear()
+      ..add(_ResourceKind.guide)
+      ..add(_selected);
+  }
+
+  void _save() {
+    final layouts =
+        _resourceLayouts[widget.runtime] ?? <String, _ResourceLayout>{};
+    layouts[widget.sessionId] = _ResourceLayout(List.of(_tabs), _selected);
+    _resourceLayouts[widget.runtime] = layouts;
   }
 
   @override
-  Widget build(BuildContext context) => PocketScaffold(
-    title: const Text('会话资源'),
-    body: PocketList(
-      children: [
-        PocketSection(
+  void didUpdateWidget(SessionResourcesPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.runtime == widget.runtime &&
+        oldWidget.sessionId == widget.sessionId) {
+      return;
+    }
+    _restore();
+  }
+
+  void _select(_ResourceKind kind) {
+    setState(() {
+      if (!_tabs.contains(kind)) _tabs.add(kind);
+      _mounted.add(kind);
+      _selected = kind;
+    });
+    _save();
+    _reveal(kind);
+  }
+
+  void _reveal(_ResourceKind kind) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _selected != kind) return;
+      final context = _tabKeys[kind]?.currentContext;
+      if (context != null) {
+        Scrollable.ensureVisible(
+          context,
+          alignment: 0.5,
+          duration: const Duration(milliseconds: 180),
+        );
+      }
+    });
+  }
+
+  void _close(_ResourceKind kind) {
+    if (kind == _ResourceKind.guide) return;
+    setState(() {
+      final index = _tabs.indexOf(kind);
+      _tabs.remove(kind);
+      _mounted.remove(kind);
+      if (_selected == kind) {
+        _selected = _tabs[index > 0 ? index - 1 : 0];
+      }
+    });
+    _save();
+    _reveal(_selected);
+  }
+
+  @override
+  void dispose() {
+    _save();
+    super.dispose();
+  }
+
+  Future<void> _openDocument(BuildContext context, String id, String path) =>
+      Navigator.of(context).push<void>(
+        PocketRoute<void>(
+          builder: (_) => SessionDocumentPage(
+            runtime: widget.runtime,
+            sessionId: id,
+            path: path,
+          ),
+        ),
+      );
+
+  Widget _page(_ResourceKind kind) => switch (kind) {
+    _ResourceKind.guide => PocketScaffold(
+      title: const Text('会话资源'),
+      body: PocketList(
+        children: [
+          PocketSection(
+            children: [
+              for (final kind in _ResourceKind.values.skip(1))
+                PocketRow(
+                  key: ValueKey('resource-${kind.name}'),
+                  icon: switch (kind) {
+                    _ResourceKind.files => Icons.folder_open_outlined,
+                    _ResourceKind.changes => Icons.difference_outlined,
+                    _ResourceKind.skills => Icons.auto_stories_outlined,
+                    _ResourceKind.tasks => Icons.play_circle_outline_rounded,
+                    _ResourceKind.browser => Icons.public_rounded,
+                    _ResourceKind.terminal => Icons.terminal_rounded,
+                    _ResourceKind.guide => Icons.apps_rounded,
+                  },
+                  title: _resourceTitles[kind]!,
+                  onTap: () => _select(kind),
+                ),
+            ],
+          ),
+        ],
+      ),
+    ),
+    _ResourceKind.files => SessionFilesPage(
+      runtime: widget.runtime,
+      sessionId: widget.sessionId,
+      onOpenDocument: _openDocument,
+    ),
+    _ResourceKind.changes => SessionChangesPage(
+      runtime: widget.runtime,
+      sessionId: widget.sessionId,
+    ),
+    _ResourceKind.skills => SessionResourceSkillsPage(
+      runtime: widget.runtime,
+      sessionId: widget.sessionId,
+    ),
+    _ResourceKind.tasks => TasksPage(
+      runtime: widget.runtime,
+      sessionId: widget.sessionId,
+    ),
+    _ResourceKind.browser => SessionBrowserPage(runtime: widget.runtime),
+    _ResourceKind.terminal => SessionTerminalsPage(
+      runtime: widget.runtime,
+      sessionId: widget.sessionId,
+    ),
+  };
+
+  Widget _tab(_ResourceKind kind) {
+    final selected = _selected == kind;
+    return Padding(
+      key: _tabKeys[kind],
+      padding: const EdgeInsets.only(left: 8),
+      child: Semantics(
+        button: true,
+        selected: selected,
+        label: '${_resourceTitles[kind]}标签',
+        child: GlassSurface(
+          radius: 24,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              InkWell(
+                key: ValueKey('resource-tab-${kind.name}'),
+                onTap: () => _select(kind),
+                borderRadius: BorderRadius.circular(24),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 15,
+                    vertical: 12,
+                  ),
+                  child: Text(
+                    _resourceTitles[kind]!,
+                    maxLines: 1,
+                    style: TextStyle(
+                      fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                      color: selected
+                          ? Theme.of(context).colorScheme.onSurface
+                          : Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+              ),
+              if (kind != _ResourceKind.guide)
+                IconButton(
+                  key: ValueKey('resource-close-${kind.name}'),
+                  tooltip: kind == _ResourceKind.terminal
+                      ? '收起终端视图，进程继续运行'
+                      : '关闭${_resourceTitles[kind]}标签',
+                  onPressed: () => _close(kind),
+                  icon: const Icon(Icons.close_rounded, size: 17),
+                  style: IconButton.styleFrom(
+                    fixedSize: const Size.square(44),
+                    minimumSize: const Size.square(44),
+                    maximumSize: const Size.square(44),
+                    shape: const CircleBorder(),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final keyboardOpen = MediaQuery.viewInsetsOf(context).bottom > 0;
+    return PopScope(
+      canPop: _selected == _ResourceKind.guide,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && _selected != _ResourceKind.guide) {
+          _select(_ResourceKind.guide);
+        }
+      },
+      child: ColoredBox(
+        color: Theme.of(context).scaffoldBackgroundColor,
+        child: Column(
           children: [
-            PocketRow(
-              key: const ValueKey('resource-files'),
-              icon: Icons.folder_open_outlined,
-              title: '文件',
-              onTap: () => _open(
-                context,
-                SessionFilesPage(
-                  runtime: runtime,
-                  sessionId: sessionId,
-                  onOpenDocument: (context, id, path) =>
-                      Navigator.of(context).push<void>(
-                        PocketRoute<void>(
-                          builder: (_) => SessionDocumentPage(
-                            runtime: runtime,
-                            sessionId: id,
-                            path: path,
-                          ),
+            Expanded(
+              child: MediaQuery.removePadding(
+                context: context,
+                removeBottom: true,
+                child: IndexedStack(
+                  index: _tabs.indexOf(_selected),
+                  children: [
+                    for (final kind in _tabs)
+                      KeyedSubtree(
+                        key: ValueKey(
+                          'resource-page-${widget.sessionId}-${kind.name}',
                         ),
+                        child: _mounted.contains(kind)
+                            ? _page(kind)
+                            : const SizedBox.shrink(),
                       ),
+                  ],
                 ),
               ),
             ),
-            PocketRow(
-              key: const ValueKey('resource-changes'),
-              icon: Icons.difference_outlined,
-              title: '文件改动',
-              onTap: () => _open(
-                context,
-                SessionChangesPage(runtime: runtime, sessionId: sessionId),
-              ),
-            ),
-            PocketRow(
-              key: const ValueKey('resource-skills'),
-              icon: Icons.auto_stories_outlined,
-              title: '技能',
-              onTap: () => _open(
-                context,
-                SessionResourceSkillsPage(
-                  runtime: runtime,
-                  sessionId: sessionId,
+            if (!keyboardOpen)
+              SafeArea(
+                top: false,
+                child: SizedBox(
+                  height: 64,
+                  child: SingleChildScrollView(
+                    key: const ValueKey('resource-tabs'),
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.only(right: 12),
+                    child: Row(
+                      children: [for (final kind in _tabs) _tab(kind)],
+                    ),
+                  ),
                 ),
               ),
-            ),
-            PocketRow(
-              key: const ValueKey('resource-tasks'),
-              icon: Icons.play_circle_outline_rounded,
-              title: '后台任务',
-              onTap: () => _open(
-                context,
-                TasksPage(runtime: runtime, sessionId: sessionId),
-              ),
-            ),
-            PocketRow(
-              key: const ValueKey('resource-browser'),
-              icon: Icons.public_rounded,
-              title: '浏览器',
-              onTap: () => _open(
-                context,
-                SessionBrowserPage(runtime: runtime),
-              ),
-            ),
-            PocketRow(
-              key: const ValueKey('resource-terminal'),
-              icon: Icons.terminal_rounded,
-              title: '终端',
-              onTap: () => _open(
-                context,
-                SessionTerminalsPage(runtime: runtime, sessionId: sessionId),
-              ),
-            ),
           ],
         ),
-      ],
-    ),
-  );
+      ),
+    );
+  }
 }
 
 /// Reads finished-turn change announcements from this Session's original log.
@@ -131,6 +334,7 @@ class SessionChangesPage extends StatefulWidget {
 
 class _SessionChangesPageState extends State<SessionChangesPage> {
   final _projection = ChatChangesProjection();
+  List<Json> _events = const [];
   late WorkspaceChangesController _changes;
   bool _reading = false;
   String? _error;
@@ -162,7 +366,8 @@ class _SessionChangesPageState extends State<SessionChangesPage> {
       sessionId: widget.sessionId,
     )..addListener(_changed);
     widget.runtime.addListener(_changed);
-    _projection.reconcile(const []);
+    _events = const [];
+    _projection.reconcile(_events);
     unawaited(_read());
   }
 
@@ -180,7 +385,13 @@ class _SessionChangesPageState extends State<SessionChangesPage> {
     });
     if (!runtime.ready) return;
     try {
-      await runtime.openSession(sessionId);
+      final events = await runtime.readCompleteSession(sessionId);
+      if (mounted &&
+          epoch == _readEpoch &&
+          runtime == widget.runtime &&
+          sessionId == widget.sessionId) {
+        _events = events;
+      }
     } catch (_) {
       if (mounted &&
           epoch == _readEpoch &&
@@ -209,9 +420,7 @@ class _SessionChangesPageState extends State<SessionChangesPage> {
 
   @override
   Widget build(BuildContext context) {
-    _projection.reconcile(
-      widget.runtime.timelines[widget.sessionId] ?? const [],
-    );
+    _projection.reconcile(_events);
     final entries = _projection.entries;
     return PocketScaffold(
       title: const Text('文件改动'),

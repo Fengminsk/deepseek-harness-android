@@ -29,6 +29,26 @@ class ChatCompaction {
   final String? summary;
 }
 
+enum ChatRetryState { scheduled, started, cancelled }
+
+/// The current original retry attempt; event sequence changes when the same
+/// retry chain schedules another attempt. No absolute deadline is persisted.
+class ChatRetry {
+  const ChatRetry({
+    required this.attemptSeq,
+    required this.turn,
+    required this.number,
+    required this.maximum,
+    required this.delayMs,
+    required this.failure,
+    required this.state,
+  });
+
+  final int attemptSeq, turn, number, delayMs;
+  final String maximum, failure;
+  final ChatRetryState state;
+}
+
 /// An immutable row over the already-loaded Session window.
 class ChatEntry {
   const ChatEntry({
@@ -49,6 +69,7 @@ class ChatEntry {
     this.details,
     this.detailsTitle,
     this.interrupted = false,
+    this.retry,
   });
 
   final String key;
@@ -64,6 +85,7 @@ class ChatEntry {
   final ToolActivity? tool;
   final int? turn, step;
   final String? details, detailsTitle;
+  final ChatRetry? retry;
 }
 
 /// Chat interpretation of the loaded log, matching the original Web's append
@@ -625,7 +647,7 @@ class ChatProjection {
     if (id is! String || id.isEmpty) return;
     if (event['type'] == 'llm/retry') {
       final chain = _retries.putIfAbsent(id, () => _RetryChain(event));
-      chain.attempts.add(_RetryAttempt(data));
+      chain.attempts.add(_RetryAttempt(event['seq'] as int, data));
       _putRetry(id, chain);
     } else {
       final chain = _retries[id];
@@ -668,6 +690,7 @@ class ChatProjection {
         details: chain.attempts.length > 1
             ? chain.attempts.map((attempt) => attempt.describe()).join('\n\n')
             : null,
+        retry: current.info,
       ),
     );
   }
@@ -732,22 +755,43 @@ class _RetryChain {
 }
 
 class _RetryAttempt {
-  _RetryAttempt(this.data);
+  _RetryAttempt(this.seq, this.data);
+  final int seq;
   final Json data;
   String state = 'scheduled';
 
+  ChatRetry get info {
+    final delay = data['delayMs'];
+    final retry = data['retry'];
+    final maximum = data['mode'] == 'always'
+        ? '∞'
+        : '${data['maxRetries'] ?? '?'}';
+    return ChatRetry(
+      attemptSeq: seq,
+      turn: data['turn'] is int ? data['turn'] as int : -1,
+      number: retry is int && retry > 0 ? retry : 1,
+      maximum: maximum,
+      delayMs: delay is num && delay.isFinite && delay > 0 ? delay.ceil() : 0,
+      failure: chatFailureText(_record(data['failure'])),
+      state: switch (state) {
+        'started' => ChatRetryState.started,
+        'cancelled' => ChatRetryState.cancelled,
+        _ => ChatRetryState.scheduled,
+      },
+    );
+  }
+
   String describe() {
-    final maximum = data['mode'] == 'always' ? '∞' : data['maxRetries'];
+    final attempt = info;
     final status = switch (state) {
       'started' => '已开始',
       'cancelled' => '已取消',
       _ => '等待中',
     };
-    final delay = data['delayMs'] as num?;
-    final seconds = delay == null ? null : (delay / 1000).ceil();
-    return '第 ${data['retry']}/$maximum 次重试 · $status'
-        '${state == 'scheduled' && seconds != null ? ' · 计划等待 $seconds 秒' : ''}'
-        '\n${chatFailureText(_record(data['failure']))}';
+    final seconds = (attempt.delayMs / 1000).ceil();
+    return '第 ${attempt.number}/${attempt.maximum} 次重试 · $status'
+        '${state == 'scheduled' && attempt.delayMs > 0 ? ' · 计划等待 $seconds 秒' : ''}'
+        '\n${attempt.failure}';
   }
 }
 

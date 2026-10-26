@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:dsh_android/chat_messages.dart';
+import 'package:dsh_android/chat_turn_navigation.dart';
 import 'package:dsh_android/main.dart';
 import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/resource_hub.dart';
@@ -17,6 +18,7 @@ import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'chat_projection_test.dart' as fixture;
+import 'subagents_data_test.dart' as child_fixture;
 
 class _ChatRuntime extends RuntimeController {
   _ChatRuntime(this.history) {
@@ -31,6 +33,7 @@ class _ChatRuntime extends RuntimeController {
   final calls = <({String method, Json params})>[];
   int draft = 0;
   bool codingToolsEnabled = true;
+  bool childCatalogEnabled = false;
   String catalogTitle = '历史会话';
   final libraryStreams = <String, List<StreamController<Json>>>{};
 
@@ -129,6 +132,40 @@ class _ChatRuntime extends RuntimeController {
               .take(200)
               .toList(),
         };
+      case 'session.readWindow':
+        if (params['sessionId'] != 'history') {
+          throw StateError('Unexpected session window read');
+        }
+        final before = params['beforeSeq'] as int?;
+        final eligible = history
+            .where((row) => before == null || (row['seq'] as int) < before)
+            .toList();
+        final page = eligible.length <= 200
+            ? eligible
+            : eligible.sublist(eligible.length - 200);
+        return {
+          'events': page,
+          'firstSeq': page.isEmpty ? null : page.first['seq'],
+          'throughSeq': history.isEmpty ? -1 : history.last['seq'],
+          'hasMore': eligible.length > page.length,
+        };
+      case 'session.turnOutline':
+        if (params['sessionId'] != 'history') {
+          throw StateError('Unexpected turn outline read');
+        }
+        return {
+          'asOfSeq': history.isEmpty ? -1 : history.last['seq'],
+          'turns': history.isEmpty
+              ? <Json>[]
+              : <Json>[
+                  {
+                    'turn': 1,
+                    'seq': history.first['seq'],
+                    'prompt': 'Question',
+                    'response': '',
+                  },
+                ],
+        };
       case 'tasks.list':
         return {
           'epoch': 'fixture-epoch',
@@ -149,8 +186,32 @@ class _ChatRuntime extends RuntimeController {
         return {
           'parentSessionId': params['parentSessionId'],
           'parentAvailable': false,
-          'entries': <Json>[],
+          'entries': <Json>[
+            if (childCatalogEnabled && params['parentSessionId'] == 'history')
+              {
+                'id': 'child',
+                'mode': 'continuable',
+                'label': '分析员',
+                'address': {
+                  'parentSessionId': 'history',
+                  'childSessionId': 'child',
+                  'mode': 'continuable',
+                },
+                'attached': false,
+                'running': false,
+              },
+          ],
           'nextOffset': null,
+        };
+      case 'subagents.inspect':
+        if (!childCatalogEnabled) throw StateError('Unexpected child inspect');
+        return {
+          ...child_fixture.inspection(),
+          'address': {
+            'parentSessionId': 'history',
+            'childSessionId': 'child',
+            'mode': 'continuable',
+          },
         };
     }
     throw StateError('Unexpected $method');
@@ -457,8 +518,8 @@ void main() {
       await tester.pumpWidget(_host(runtime));
       await _openHistory(tester);
       expect(
-        runtime.calls.where((call) => call.method == 'session.read'),
-        hasLength(2),
+        runtime.calls.where((call) => call.method == 'session.readWindow'),
+        hasLength(1),
       );
       expect(
         _scroll(tester).position.extentAfter,
@@ -467,6 +528,32 @@ void main() {
             'One jump to an estimated ListView extent is not the true tail.',
       );
       expect(find.text('LAST_SAVED_REPLY', findRichText: true), findsWidgets);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'a saved conversation keeps turn navigation reachable from the top bar',
+    (tester) async {
+      _phone(tester);
+      final runtime = _ChatRuntime([fixture.input(0, 'Question')]);
+      addTearDown(runtime.dispose);
+      await tester.pumpWidget(_host(runtime));
+      await _openHistory(tester);
+      await tester.tap(find.byTooltip('会话更多'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('会话轮次').last);
+      await tester.pumpAndSettle();
+      expect(find.byType(ChatTurnNavigatorPage), findsOneWidget);
+      expect(find.text('Question'), findsOneWidget);
+      expect(
+        runtime.calls.any((call) => call.method == 'session.turnOutline'),
+        isTrue,
+      );
+      expect(
+        runtime.calls.any((call) => call.method == 'session.send'),
+        isFalse,
+      );
       expect(tester.takeException(), isNull);
     },
   );
@@ -587,7 +674,7 @@ void main() {
       expect(find.text('可读的新标题'), findsOneWidget);
       expect(find.text('历史会话'), findsNothing);
       expect(
-        runtime.calls.where((call) => call.method == 'session.read'),
+        runtime.calls.where((call) => call.method == 'session.readWindow'),
         hasLength(1),
       );
       expect(tester.takeException(), isNull);
@@ -642,7 +729,7 @@ void main() {
       expect(find.byType(TasksPage), findsNothing);
       expect(find.text('Task completed', findRichText: true), findsWidgets);
       expect(
-        runtime.calls.where((call) => call.method == 'session.read'),
+        runtime.calls.where((call) => call.method == 'session.readWindow'),
         hasLength(1),
       );
       expect(runtime.navigationRequest, isNull);
@@ -665,9 +752,6 @@ void main() {
     await tester.enterText(find.byType(TextField), '父会话未发送的草稿');
     await tester.tap(find.byTooltip('打开侧栏'));
     await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('更多'));
-    await tester.tap(find.text('更多'));
-    await tester.pumpAndSettle();
     await tester.tap(find.text('当前会话的子 Agent'));
     await tester.pumpAndSettle();
     expect(find.byType(SubagentsPage), findsOneWidget);
@@ -679,6 +763,47 @@ void main() {
     await tester.binding.handlePopRoute();
     await tester.pumpAndSettle();
     expect(find.text('父会话未发送的草稿'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('child transcript returns to the same parent draft and scroll', (
+    tester,
+  ) async {
+    _phone(tester);
+    final runtime = _ChatRuntime([
+      fixture.input(0, 'Question'),
+      for (var i = 1; i <= 80; i++)
+        fixture.assistant(i, 'Parent reply $i', step: i),
+    ])..childCatalogEnabled = true;
+    addTearDown(runtime.dispose);
+    await tester.pumpWidget(_host(runtime));
+    await _openHistory(tester);
+    await tester.enterText(find.byType(TextField), '保留的父会话草稿');
+    final parentScroll = _scroll(tester);
+    expect(parentScroll.position.maxScrollExtent, greaterThan(120));
+    parentScroll.jumpTo(120);
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('打开侧栏'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('当前会话的子 Agent'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('分析员'));
+    await tester.pumpAndSettle();
+    expect(find.byType(SubagentConversationPage), findsOneWidget);
+    expect(find.text('saved input'), findsOneWidget);
+    expect(
+      runtime.calls.where((call) => call.method == 'subagents.inspect'),
+      hasLength(2),
+    );
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    expect(find.text('保留的父会话草稿'), findsOneWidget);
+    expect(identical(_scroll(tester), parentScroll), isTrue);
+    expect(_scroll(tester).offset, closeTo(120, 1));
+    expect(runtime.calls.any((call) => call.method == 'session.send'), isFalse);
     expect(tester.takeException(), isNull);
   });
 }

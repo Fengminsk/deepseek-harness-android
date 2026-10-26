@@ -3,6 +3,8 @@ import 'package:dsh_android/ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
+import 'support/settle_ui.dart';
+
 void main() {
   for (final brightness in Brightness.values) {
     for (final glass in [false, true]) {
@@ -44,7 +46,7 @@ void main() {
               ),
             ),
           );
-          await tester.pumpAndSettle();
+          await settleUi(tester);
           expect(find.bySemanticsLabel('底层操作'), findsNothing);
           Finder action(String text) => find.ancestor(
             of: find.text(text),
@@ -75,7 +77,7 @@ void main() {
           expect(panelBounds.width, lessThanOrEqualTo(360));
           expect(panelBounds.height, lessThan(300));
           await tester.tapAt(const Offset(8, 800));
-          await tester.pumpAndSettle();
+          await settleUi(tester);
           expect(background, 0);
           expect(accepted, 0);
           expect(find.text('保留当前编辑？'), findsOneWidget);

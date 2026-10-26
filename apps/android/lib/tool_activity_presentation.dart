@@ -235,7 +235,9 @@ bool toolActivityNeedsAttention(ToolActivity activity) {
 String toolActivityName(ToolActivity activity) => switch (activity.name) {
   'android_shell' || 'bash' || 'pwsh' || 'terminal_send' => '执行命令',
   'android_files' => switch (activity.args?['action']) {
+    'roots' => '查看授权目录',
     'read' => '读取文件',
+    'read_image' => '读取图片',
     'list' => '浏览文件',
     'search' => '搜索文件',
     _ => '授权文件',
@@ -254,6 +256,32 @@ String toolActivityName(ToolActivity activity) => switch (activity.name) {
   'spawn_agent' || 'subagent' => '调用子智能体',
   _ => activity.name.isEmpty ? '工具调用' : activity.name,
 };
+
+/// Progress describes a currently pending invocation using its actual tool
+/// arguments. Keep this next to [toolActivityName] so the compact row and the
+/// live status cannot disagree about Android-specific file actions.
+String toolActivityProgressLabel(ToolActivity activity) =>
+    switch (activity.name) {
+      'web_search' || 'web_fetch' || 'search' || 'fetch' => '正在搜索',
+      'android_shell' ||
+      'shell' ||
+      'bash' ||
+      'pwsh' ||
+      'terminal_send' => '正在运行命令',
+      'android_files' => switch (activity.args?['action']) {
+        'roots' => '正在查看授权目录',
+        'list' => '正在浏览文件',
+        'read' || 'read_image' => '正在读取文件',
+        'search' => '正在搜索文件',
+        _ => '正在处理授权文件',
+      },
+      'read' => '正在读取文件',
+      'grep' || 'glob' => '正在搜索文件',
+      'write' || 'edit' => '正在修改文件',
+      'spawn_agent' || 'subagent' => '正在协作',
+      'skill' => '正在使用技能',
+      _ => '正在处理',
+    };
 
 /// Group only calls of the same user-facing family. Unknown plugin tools keep
 /// their exact identity instead of being merged into one generic tools group.

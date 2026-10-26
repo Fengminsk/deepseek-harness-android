@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:dsh_android/runtime.dart';
+import 'package:dsh_android/confirmation.dart';
 import 'package:dsh_android/subagent_model_settings.dart';
 import 'package:dsh_android/ui.dart';
 import 'package:flutter/rendering.dart';
@@ -27,6 +28,8 @@ class SubagentSettingsRuntime extends RuntimeController {
   bool writable = true, describeFails = false, catalogFails = false;
   bool conflictOnce = false, loseReply = false, applyBeforeLoss = false;
   Json value = {'enabled': false, 'allowedModels': <Json>[]};
+  Json base = {'enabled': false, 'allowedModels': <Json>[]};
+  Json user = {};
   Json catalog = {
     'groups': [
       {
@@ -54,7 +57,8 @@ class SubagentSettingsRuntime extends RuntimeController {
     'ns': subagentModelSettingsNamespace,
     'revision': revision,
     'value': copy(value),
-    'user': copy(value),
+    'base': copy(base),
+    'user': copy(user),
     'schema': {
       'type': 'object',
       'dict': {
@@ -134,9 +138,16 @@ class SubagentSettingsRuntime extends RuntimeController {
         }
         if (!loseReply || applyBeforeLoss) {
           for (final operation in args['ops'] as List) {
-            expect(operation['op'], 'set');
-            value[(operation['path'] as List).single as String] =
-                operation['value'];
+            final field = (operation['path'] as List).single as String;
+            if (operation['op'] == 'set') {
+              value[field] = jsonDecode(jsonEncode(operation['value']));
+              user[field] = jsonDecode(jsonEncode(operation['value']));
+            } else if (operation['op'] == 'unset') {
+              user.remove(field);
+              value[field] = jsonDecode(jsonEncode(base[field]));
+            } else {
+              fail('Unexpected settings operation: $operation');
+            }
           }
           revision++;
         }
@@ -643,6 +654,123 @@ void main() {
         isTrue,
       );
       expect(runtime.writes, isEmpty);
+    },
+  );
+
+  testWidgets(
+    'reset previews inherited model policy and unsets only user overrides',
+    (tester) async {
+      final runtime = SubagentSettingsRuntime()
+        ..base = {
+          'enabled': true,
+          'allowedModels': [route('deepseek', 'pro')],
+        }
+        ..user = {
+          'enabled': false,
+          'allowedModels': [route('local', 'flash')],
+        }
+        ..value = {
+          'enabled': false,
+          'allowedModels': [route('local', 'flash')],
+        };
+      await openPage(tester, runtime);
+      await tap(tester, find.text('恢复继承的模型设置'));
+      expect(find.textContaining('1 个授权模型'), findsOneWidget);
+      final confirmation = find.byType(PocketConfirmation);
+      await tap(
+        tester,
+        find.descendant(of: confirmation, matching: find.text('恢复默认值')),
+      );
+      expect(runtime.writes, hasLength(1));
+      expect(runtime.writes.single, {
+        'ns': subagentModelSettingsNamespace,
+        'expectedRevision': 4,
+        'ops': [
+          {
+            'op': 'unset',
+            'path': ['enabled'],
+          },
+          {
+            'op': 'unset',
+            'path': ['allowedModels'],
+          },
+        ],
+      });
+      expect(runtime.value, runtime.base);
+      expect(runtime.user, isEmpty);
+      expect(find.byType(PocketConfirmation), findsNothing);
+      expect(runtime.writes, hasLength(1));
+    },
+  );
+
+  testWidgets(
+    'remote settings revision closes reset review before an old write',
+    (tester) async {
+      final runtime = SubagentSettingsRuntime()
+        ..user = {
+          'enabled': true,
+          'allowedModels': [route('deepseek', 'flash')],
+        }
+        ..value = {
+          'enabled': true,
+          'allowedModels': [route('deepseek', 'flash')],
+        };
+      await openPage(tester, runtime);
+      await tap(tester, find.text('恢复继承的模型设置'));
+      expect(find.byType(PocketConfirmation), findsOneWidget);
+      runtime.changedElsewhere({
+        'enabled': true,
+        'allowedModels': [route('local', 'flash')],
+      });
+      await tester.pumpAndSettle();
+      expect(find.byType(PocketConfirmation), findsNothing);
+      expect(runtime.writes, isEmpty);
+      await reveal(tester, candidate('local', 'flash'));
+      expect(
+        tester.widget<PocketTile>(candidate('local', 'flash')).selected,
+        isTrue,
+      );
+    },
+  );
+
+  testWidgets(
+    'reset leaves inherited fields alone and waits for a local draft to settle',
+    (tester) async {
+      final runtime = SubagentSettingsRuntime()
+        ..base = {
+          'enabled': true,
+          'allowedModels': [route('deepseek', 'pro')],
+        }
+        ..user = {
+          'allowedModels': [route('deepseek', 'flash')],
+        }
+        ..value = {
+          'enabled': true,
+          'allowedModels': [route('deepseek', 'flash')],
+        };
+      await openPage(tester, runtime);
+      await tap(tester, candidate('local', 'flash'));
+      await reveal(tester, find.text('恢复继承的模型设置'));
+      expect(find.text('请先保存或放弃当前修改'), findsOneWidget);
+      expect(
+        tester.widget<PocketRow>(
+          find.widgetWithText(PocketRow, '恢复继承的模型设置'),
+        ).onTap,
+        isNull,
+      );
+      await tap(tester, candidate('local', 'flash'));
+      await tap(tester, find.text('恢复继承的模型设置'));
+      await tap(
+        tester,
+        find.descendant(
+          of: find.byType(PocketConfirmation),
+          matching: find.text('恢复默认值'),
+        ),
+      );
+      expect(runtime.writes.single['ops'], [
+        {'op': 'unset', 'path': ['allowedModels']},
+      ]);
+      expect(runtime.value, runtime.base);
     },
   );
 

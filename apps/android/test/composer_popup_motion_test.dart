@@ -11,6 +11,8 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
+import 'support/settle_ui.dart';
+
 // The original commands.list descriptor fields, including input-bearing commands
 // and an unrelated plugin row, exercise the actual command menu arrangement.
 const _catalog = <Json>[
@@ -162,9 +164,10 @@ class _Runtime extends RuntimeController {
                 ((call.params['namespace'] == 'commands' &&
                         call.params['method'] == 'list') ||
                     (call.params['namespace'] == 'session' &&
-                        const ['projections', 'modelCatalog'].contains(
-                          call.params['method'],
-                        )) ||
+                        const [
+                          'projections',
+                          'modelCatalog',
+                        ].contains(call.params['method'])) ||
                     (call.params['namespace'] == 'pluginInventory' &&
                         call.params['method'] == 'list') ||
                     (call.params['namespace'] == 'settings' &&
@@ -234,7 +237,7 @@ Future<(_Runtime, _Routes)> _chat(
       home: ChatPage(runtime: service),
     ),
   );
-  await tester.pumpAndSettle();
+  await settleUi(tester);
   return (service, routes);
 }
 
@@ -334,7 +337,7 @@ void main() {
         expect(opening.height, inExclusiveRange(anchor.height, menu.height));
         expect(_sourceOpacity(tester), 0);
         await press.up();
-        await tester.pumpAndSettle();
+        await settleUi(tester);
         expect(route.animation!.status, AnimationStatus.completed);
         expect(find.text('文件  file'), findsOneWidget);
         expect(find.text('目标  goal'), findsOneWidget);
@@ -350,7 +353,7 @@ void main() {
         expect(returning.height, inExclusiveRange(0, menu.height));
         expect(returning.center.dy, greaterThan(menu.center.dy));
         expect(_sourceOpacity(tester), 0);
-        await tester.pumpAndSettle();
+        await settleUi(tester);
         expect(find.byType(ComposerCommands), findsNothing);
         expect(_sourceOpacity(tester), 1);
         runtime.expectOnlyDiscovery();
@@ -365,7 +368,7 @@ void main() {
       (tester) async {
         final (runtime, routes) = await _chat(tester);
         await tester.enterText(_editor, '保留这段未发送草稿');
-        await tester.pumpAndSettle();
+        await settleUi(tester);
         final editor = tester.getRect(_editor);
         final viewport = tester.getRect(_chatList);
         final list = tester.widget<ListView>(_chatList);
@@ -376,7 +379,7 @@ void main() {
         expect(tester.getRect(_editor), editor);
         expect(tester.getRect(_chatList), viewport);
         expect(list.controller!.offset, scrollOffset);
-        await tester.pumpAndSettle();
+        await settleUi(tester);
         expect(tester.getRect(_editor), editor);
         expect(tester.getRect(_chatList), viewport);
         expect(list.controller!.offset, scrollOffset);
@@ -388,7 +391,7 @@ void main() {
           expect(menu.contains(outside), isFalse);
           await tester.tapAt(outside);
         }
-        await tester.pumpAndSettle();
+        await settleUi(tester);
         expect(routes.active, isEmpty);
         expect(find.byType(ChatPage), findsOneWidget);
         expect(find.byType(ComposerCommands), findsNothing);
@@ -420,15 +423,15 @@ void main() {
       await tester.tapAt(anchor);
       await tester.pump();
       expect(routes.popups, hasLength(1));
-      await tester.pumpAndSettle();
+      await settleUi(tester);
       expect(find.byType(ComposerCommands), findsNothing);
       await tester.tapAt(anchor);
-      await tester.pumpAndSettle();
+      await settleUi(tester);
       expect(routes.popups, hasLength(2));
       expect(routes.maxActive, 1);
       expect(find.byType(ComposerCommands), findsOneWidget);
       await tester.binding.handlePopRoute();
-      await tester.pumpAndSettle();
+      await settleUi(tester);
       runtime.expectOnlyDiscovery();
       expect(tester.takeException(), isNull);
     },
@@ -460,7 +463,7 @@ void main() {
     (tester) async {
       final (runtime, _) = await _chat(tester);
       await tester.tap(find.byTooltip('添加与指令'));
-      await tester.pumpAndSettle();
+      await settleUi(tester);
       final recognizer = _rowRecognizer(tester);
       addTearDown(recognizer.dispose);
       final file = tester.getCenter(find.text('文件  file'));
@@ -495,7 +498,7 @@ void main() {
       tester.binding.pointerRouter.route(
         PointerUpEvent(pointer: 7002, position: goal),
       );
-      await tester.pumpAndSettle();
+      await settleUi(tester);
       expect(find.byType(ComposerCommands), findsNothing);
       expect(find.byType(ChatGoalPage), findsOneWidget);
       runtime.expectOnlyDiscovery();
@@ -514,7 +517,7 @@ void main() {
         );
         final press = await tester.startGesture(tester.getCenter(_source));
         await tester.pump(kPressTimeout + const Duration(milliseconds: 1));
-        await tester.pumpAndSettle();
+        await settleUi(tester);
         final surface = tester.renderObject<RenderBox>(
           find.byType(PopupMenuCard),
         );
@@ -540,11 +543,11 @@ void main() {
           );
         }
         await press.up();
-        await tester.pumpAndSettle();
+        await settleUi(tester);
         expect(ElasticPress.paintBoundsOf(surface), resting);
         expect(find.byType(ComposerCommands), findsOneWidget);
         await tester.binding.handlePopRoute();
-        await tester.pumpAndSettle();
+        await settleUi(tester);
         runtime.expectOnlyDiscovery();
         expect(tester.takeException(), isNull);
       },
@@ -557,14 +560,14 @@ void main() {
       final (runtime, _) = await _chat(tester, scale: 2);
       await tester.enterText(_editor, '第一行\n第二行\n第三行\n第四行\n第五行');
       tester.view.viewInsets = const FakeViewPadding(bottom: 320);
-      await tester.pumpAndSettle();
+      await settleUi(tester);
       final editor = tester.getRect(_editor);
       final viewport = tester.getRect(_chatList);
       await tester.tap(find.byTooltip('添加与指令'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
       expect(tester.takeException(), isNull);
-      await tester.pumpAndSettle();
+      await settleUi(tester);
       final menu = tester.getRect(find.byType(ComposerCommands));
       expect(menu.left, greaterThanOrEqualTo(0));
       expect(menu.right, lessThanOrEqualTo(360));
@@ -586,13 +589,13 @@ void main() {
         150,
         scrollable: menuScroll,
       );
-      await tester.pumpAndSettle();
+      await settleUi(tester);
       expect(
         find.text('plugin-status  plugin-status').hitTestable(),
         findsOneWidget,
       );
       await tester.binding.handlePopRoute();
-      await tester.pumpAndSettle();
+      await settleUi(tester);
       expect(
         tester.widget<TextField>(_editor).controller!.text,
         contains('第五行'),
@@ -608,12 +611,12 @@ void main() {
       final runtime = _Runtime()..catalogResponse = Completer<List<Json>>();
       final (_, routes) = await _chat(tester, runtime: runtime);
       await tester.tap(find.byTooltip('添加与指令'));
-      await tester.pumpAndSettle();
+      await settleUi(tester);
       expect(find.text('正在读取会话菜单…'), findsOneWidget);
       await tester.binding.handlePopRoute();
-      await tester.pumpAndSettle();
+      await settleUi(tester);
       runtime.catalogResponse!.complete(_catalog);
-      await tester.pumpAndSettle();
+      await settleUi(tester);
       expect(find.byType(ComposerCommands), findsNothing);
       expect(routes.popups, hasLength(1));
       expect(routes.active, isEmpty);

@@ -1,0 +1,5 @@
+# Chat model retry status
+
+The Android transcript projects the original `llm/retry`, `llm/retry-started`, `step/end`, and `turn/end` events by retry ID and attempt. A scheduled attempt in the currently running turn counts down from its first visible render, matching the Web `ModelRetryItem` clock choice without trusting a Host timestamp from another clock. It stops animating when the attempt starts, is cancelled, the turn stops, or the row leaves the viewport. An incomplete earlier turn shown while a newer turn runs remains a static record.
+
+The compact row expands in place to show the recorded delay, a failure message passed through the existing credential-safe display policy, and prior attempts. It does not start or cancel a retry. History reopening reads the saved Session events and never fabricates a new request or deadline. The owner-local event fixture and Flutter tests cover countdown, attempt replacement, cancellation, redaction, and the new-turn boundary; phone timing and lifecycle behavior remain unverified.

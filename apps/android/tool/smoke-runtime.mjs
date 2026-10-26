@@ -61,7 +61,8 @@ lines.on('line', line => {
     assert.equal(frame.params.root, 'smoke-root')
     assert.equal(frame.params.path, 'test.txt')
     fileReads++
-    send({ id: frame.id, result: { text: 'authorized fixture text', offset: 0, nextOffset: 23, truncated: false } })
+    send({ id: frame.id, result: { text: 'authorized fixture text', offset: 0, nextOffset: 23,
+      truncated: false, version: 'a'.repeat(64) } })
   }
   else if (frame.method === 'session.event' && frame.params.sessionId === 'android-smoke-shared'
     && frame.params.event.type === 'turn/end') turnEnded.resolve(frame.params.event)
@@ -85,6 +86,21 @@ try {
   await Promise.race([(async () => {
     await boot.promise
     assert.equal((await request('runtime.info')).profile, 'android')
+    assert.deepEqual((await request('runtime.permissions')).programmaticTools, {
+      available: false,
+      filesystem: 'read-only',
+      writableRoots: [],
+      network: 'off',
+      reason: 'isolated-executor-unwired',
+      modelPtc: {
+        available: false,
+        reason: 'device-isolation-unverified',
+        language: 'typescript-function-body',
+        reviewedTools: ['list_agents'],
+        filesystem: 'none',
+        network: 'off',
+      },
+    })
     assert.equal((await request('web.status')).enabled, false)
     const settings = await request('settings.describe')
     const defaultModel = settings.find(form => form.ns === 'agent-default-model')

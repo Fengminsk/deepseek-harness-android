@@ -66,6 +66,39 @@ private class DocumentPreviewView(
     init {
         require(session.isNotBlank() && session.length <= 256)
         require(DocumentPreviewPolicy.document(session, session, options.getString("path"), documentLine(options)))
+        navigation.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "refresh" -> {
+                    if (destroyed || failed || webDestroyed) {
+                        result.success(false)
+                    } else {
+                        // Invoke only the fixed, packaged document owner command.
+                        runCatching {
+                            web.evaluateJavascript("window.__PocketDocumentRefresh?.() === true") { value ->
+                                result.success(value == "true")
+                            }
+                        }.onFailure { result.success(false) }
+                    }
+                }
+                "setInteractiveHtml" -> {
+                    val enabled = call.arguments as? Boolean
+                    if (enabled == null || destroyed || failed || webDestroyed) {
+                        result.success(false)
+                    } else {
+                        // Store first so a still-loading shell receives the latest
+                        // accepted preference through its Session-bound ready frame.
+                        options.put("interactiveHtml", enabled)
+                        val fixed = if (enabled) "true" else "false"
+                        runCatching {
+                            web.evaluateJavascript("window.__PocketDocumentSetInteractive?.($fixed) === true") { value ->
+                                result.success(value == "true")
+                            }
+                        }.onFailure { result.success(false) }
+                    }
+                }
+                else -> result.notImplemented()
+            }
+        }
         web.setBackgroundColor(runCatching { Color.parseColor(options.optString("background")) }.getOrDefault(Color.TRANSPARENT))
         container.addView(web, FrameLayout.LayoutParams(-1, -1))
         web.settings.apply {
@@ -331,6 +364,7 @@ private class DocumentPreviewView(
     override fun dispose() {
         if (destroyed) return
         destroyed = true
+        navigation.setMethodCallHandler(null)
         cancelAll()
         destroyWeb()
         container.removeAllViews()

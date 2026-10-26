@@ -155,6 +155,15 @@ describe('dsh-tool-subagent-control/list-agents', () => {
     expect(parameters.properties?.scope?.description).toContain('accept only interrupt_agent')
   })
 
+  it('attests the exact first-party definition and its live calling Agent', async () => {
+    const { ctx, parent } = await setup([])
+    const definition = ctx.tools.get('list_agents', parent)
+    expect(definition).toBeDefined()
+    expect(tool.isFirstPartyListAgentsDefinition(definition!, parent)).toBe(true)
+    expect(tool.isFirstPartyListAgentsDefinition({ ...definition! }, parent)).toBe(false)
+    expect(tool.isFirstPartyListAgentsDefinition(definition!, Object.create(parent))).toBe(false)
+  })
+
   it('renders the empty result as (no subagents)', async () => {
     const { ctx, parent } = await setup([])
     await ctx.sessions.flush(parent.session)

@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:dsh_android/chat_messages.dart';
 import 'package:dsh_android/chat_message_actions.dart';
 import 'package:dsh_android/chat_projection.dart';
@@ -113,6 +116,97 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('runtime context text'), findsOneWidget);
       expect(find.text('full system instructions'), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'ordinary command and status use one-line rows while preserving full results',
+    (tester) async {
+      final projection = ChatProjection()
+        ..reconcile([
+          fixture.system(0, 'internal system instructions'),
+          fixture.input(
+            1,
+            'runtime-only details',
+            source: {'kind': 'runtime-context'},
+          ),
+          fixture.input(2, 'user request'),
+          fixture.event(3, 'command/run', {
+            'commandId': 'run-1',
+            'name': 'status',
+          }),
+          fixture.event(4, 'command/done', {
+            'commandId': 'run-1',
+            'kind': 'success',
+            'text': '结果第一行\n指令结果中的第二行',
+          }),
+          fixture.event(5, 'turn/end', {
+            'turn': 1,
+            'reason': {'kind': 'max-tokens'},
+          }),
+        ]);
+      final scroll = ScrollController();
+      addTearDown(scroll.dispose);
+      await tester.pumpWidget(
+        host(
+          ChatTimeline(
+            sessionId: 'status-rows',
+            projection: projection,
+            controller: scroll,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('user request'), findsOneWidget);
+      expect(find.textContaining('internal system instructions'), findsNothing);
+      expect(find.textContaining('runtime-only details'), findsNothing);
+      expect(find.textContaining('任务状态 · 本轮达到输出长度上限'), findsOneWidget);
+      expect(find.text('/status'), findsOneWidget);
+      expect(find.textContaining('指令结果中的第二行'), findsNothing);
+      expect(find.byType(PocketCard), findsNothing);
+
+      await tester.tap(find.text('/status'));
+      await tester.pumpAndSettle();
+      expect(
+        find.textContaining('指令结果中的第二行', findRichText: true),
+        findsWidgets,
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'failed status keeps its first reason inline and folds long diagnostics',
+    (tester) async {
+      await tester.pumpWidget(
+        host(
+          ChatMessage(
+            storageId: 'failed-status',
+            entry: ChatEntry(
+              key: 'turn-end:1',
+              seq: 1,
+              kind: ChatEntryKind.notice,
+              event: fixture.event(1, 'turn/end', const {}),
+              title: '本轮任务未完成',
+              text: '服务在任务完成前退出，本轮任务未完成。\n仅在详情里查看的诊断内容。',
+              details: '错误栈只在详情里查看。',
+              error: true,
+            ),
+          ),
+        ),
+      );
+      expect(find.byType(PocketCard), findsNothing);
+      expect(
+        find.textContaining('服务在任务完成前退出', findRichText: true),
+        findsWidgets,
+      );
+      expect(find.textContaining('仅在详情里查看的诊断内容'), findsNothing);
+      expect(find.textContaining('错误栈只在详情里查看'), findsNothing);
+      await tester.tap(find.textContaining('服务在任务完成前退出'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('仅在详情里查看的诊断内容'), findsWidgets);
+      expect(find.text('错误栈只在详情里查看。'), findsOneWidget);
+      expect(tester.takeException(), isNull);
     },
   );
 
@@ -426,6 +520,97 @@ void main() {
       ]),
       'visible\n\nsecond',
     );
+  });
+
+  testWidgets('settled reasoning is a quiet process row outside the answer', (
+    tester,
+  ) async {
+    final snapshot = jsonDecode(
+      File('test/fixtures/chat_assistant_process.expected.json')
+          .readAsStringSync(),
+    ) as Json;
+    final expected = snapshot['expected'] as Json;
+    final projection = ChatProjection()
+      ..reconcile((snapshot['events'] as List).cast<Json>());
+    final scroll = ScrollController();
+    addTearDown(scroll.dispose);
+    await tester.pumpWidget(
+      host(
+        ChatTimeline(
+          sessionId: 'reasoning',
+          projection: projection,
+          controller: scroll,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text(expected['processTitle'] as String), findsOneWidget);
+    expect(find.text('思考过程'), findsNothing);
+    expect(find.text(expected['hiddenReasoning'] as String), findsNothing);
+    expect(
+      find.textContaining(expected['answer'] as String, findRichText: true),
+      findsWidgets,
+    );
+    expect(
+      find.ancestor(
+        of: find.text(expected['processTitle'] as String),
+        matching: find.byType(ChatMessageActions),
+      ),
+      findsNothing,
+    );
+    await tester.tap(find.text(expected['processTitle'] as String));
+    await tester.pumpAndSettle();
+    expect(
+      find.textContaining(
+        expected['hiddenReasoning'] as String,
+        findRichText: true,
+      ),
+      findsWidgets,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('live reasoning remains separate as reply text arrives', (
+    tester,
+  ) async {
+    final projection = ChatProjection()..reconcile([]);
+    final scroll = ScrollController();
+    addTearDown(scroll.dispose);
+    Widget timeline(List<dynamic> content) => host(
+      ChatTimeline(
+        sessionId: 'live-reasoning',
+        projection: projection,
+        controller: scroll,
+        running: true,
+        live: ChatLiveMessage(
+          identity: 'live-1',
+          content: content,
+          turn: 1,
+          step: 1,
+        ),
+      ),
+    );
+    await tester.pumpWidget(
+      timeline(const [
+        {'type': 'reasoning', 'text': 'private live detail'},
+      ]),
+    );
+    expect(find.text('正在思考'), findsOneWidget);
+    expect(find.text('private live detail'), findsNothing);
+    await tester.pumpWidget(
+      timeline(const [
+        {'type': 'reasoning', 'text': 'private live detail'},
+        {'type': 'text', 'text': 'Visible reply'},
+      ]),
+    );
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(find.text('已思考'), findsOneWidget);
+    expect(find.text('private live detail'), findsNothing);
+    expect(
+      find.textContaining('Visible reply', findRichText: true),
+      findsWidgets,
+    );
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets(

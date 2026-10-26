@@ -80,6 +80,7 @@ class ModelsSnapshot {
     this.descriptors,
     this.catalog, {
     this.catalogFresh = true,
+    this.catalogCached = false,
   });
   final List<ModelProvider> providers;
   final List<Json> descriptors;
@@ -88,6 +89,9 @@ class ModelsSnapshot {
   /// A failed catalog read cannot authorize choosing a model, even when the
   /// separately read provider settings are current.
   final bool catalogFresh;
+
+  /// A prior catalog is display-only while the current read is unavailable.
+  final bool catalogCached;
   Json? descriptor(String ns) {
     for (final row in descriptors) {
       if (row['ns'] == ns) return row;
@@ -95,7 +99,10 @@ class ModelsSnapshot {
     return null;
   }
 
-  static Future<ModelsSnapshot> read(RuntimeController runtime) async {
+  static Future<ModelsSnapshot> read(
+    RuntimeController runtime, {
+    Json? fallbackCatalog,
+  }) async {
     // The remote catalog may need an account listing. Its failure must not
     // suppress independent local provider and settings management.
     final catalogRead = modelsApi(runtime, 'session', 'modelCatalog')
@@ -137,6 +144,7 @@ class ModelsSnapshot {
       rows.map((row) => ModelProvider(row, owning(row))).toList(),
       descriptors,
       catalogResult.value ??
+          fallbackCatalog ??
           {
             'default': modelObjectAt(
               descriptors
@@ -149,6 +157,7 @@ class ModelsSnapshot {
             'routableProviders': <String>[],
           },
       catalogFresh: catalogResult.fresh,
+      catalogCached: !catalogResult.fresh && fallbackCatalog != null,
     );
   }
 }
@@ -158,7 +167,8 @@ class ModelsSnapshot {
 class ModelsDirectoryController extends ChangeNotifier {
   ModelsDirectoryController(this.runtime)
     : _phase = runtime.phase,
-      _connection = runtime.connectionGeneration {
+      _connection = runtime.connectionGeneration,
+      _accountRevision = runtime.accountSnapshot?.revision {
     runtime.addListener(_runtimeChanged);
   }
   final RuntimeController runtime;
@@ -167,6 +177,7 @@ class ModelsDirectoryController extends ChangeNotifier {
   bool loading = false, fresh = false, _disposed = false;
   bool get retryPending => _retry != null;
   int _revision = 0, _connection;
+  int? _accountRevision, _catalogConnection, _catalogAccountRevision;
   String _phase;
   Future<void>? _refresh;
   Timer? _retry;
@@ -203,11 +214,13 @@ class ModelsDirectoryController extends ChangeNotifier {
 
   void _runtimeChanged() {
     if (_phase == runtime.phase &&
-        _connection == runtime.connectionGeneration) {
+        _connection == runtime.connectionGeneration &&
+        _accountRevision == runtime.accountSnapshot?.revision) {
       return;
     }
     _phase = runtime.phase;
     _connection = runtime.connectionGeneration;
+    _accountRevision = runtime.accountSnapshot?.revision;
     _revision++;
     _refresh = null;
     _cancelRetry();
@@ -234,6 +247,12 @@ class ModelsDirectoryController extends ChangeNotifier {
     }
     final revision = ++_revision;
     final connection = runtime.connectionGeneration;
+    final accountRevision = runtime.accountSnapshot?.revision;
+    final fallbackCatalog =
+        _catalogConnection == connection &&
+            _catalogAccountRevision == accountRevision
+        ? snapshot?.catalog
+        : null;
     loading = true;
     error = null;
     notifyListeners();
@@ -246,11 +265,16 @@ class ModelsDirectoryController extends ChangeNotifier {
               connection == runtime.connectionGeneration &&
               runtime.ready;
           try {
-            final next = await ModelsSnapshot.read(runtime);
+            final next = await ModelsSnapshot.read(
+              runtime,
+              fallbackCatalog: fallbackCatalog,
+            );
             if (!current()) return;
             snapshot = next;
             fresh = true;
             if (next.catalogFresh) {
+              _catalogConnection = connection;
+              _catalogAccountRevision = accountRevision;
               _retryAttempt = 0;
             } else {
               _scheduleRetry();

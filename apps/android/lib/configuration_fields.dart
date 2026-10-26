@@ -106,6 +106,69 @@ class _ConfigurationStructurePageState
     error = null;
   });
 
+  List<int> get subagentChoices {
+    if (widget.namespace != 'subagent' ||
+        field.type != 'number' ||
+        field.meta['step'] != 1 ||
+        widget.path.length != 1) {
+      return const [];
+    }
+    final candidates = switch (widget.path.single) {
+      'maxDepth' => const [0, 1, 2, 3],
+      'maxActiveSubagents' => const [1, 2, 4, 8, 16],
+      _ => const <int>[],
+    };
+    return candidates
+        .where((candidate) => field.validate(candidate) == null)
+        .toList(growable: false);
+  }
+
+  /// Choices match the actual volatile android-runtime Shell budgets. The
+  /// schema still validates every value, including custom numbers below.
+  List<int> get androidShellChoices {
+    if (widget.namespace != 'android-runtime' ||
+        field.type != 'number' ||
+        widget.path.length != 1) {
+      return const [];
+    }
+    final candidates = switch (widget.path.single) {
+      'shellTimeoutMs' => const [10000, 30000, 60000, 120000, 300000],
+      'shellOutputLimit' => const [4096, 16384, 65536, 262144, 1048576],
+      _ => const <int>[],
+    };
+    return candidates
+        .where((candidate) => field.validate(candidate) == null)
+        .toList(growable: false);
+  }
+
+  /// The original timed question tool accepts -1 (wait indefinitely) or a
+  /// positive whole-second timeout. Keep its distinct semantics visible.
+  List<int> get askUserTimeoutChoices {
+    if (widget.namespace != 'tool-ask-user' ||
+        widget.path.length != 1 ||
+        widget.path.single != 'timeout' ||
+        !field.branchChoice) {
+      return const [];
+    }
+    return const [-1, 60, 120, 300]
+        .where((candidate) => field.validate(candidate) == null)
+        .toList(growable: false);
+  }
+
+  String androidShellChoiceLabel(int option) =>
+      widget.path.single == 'shellTimeoutMs'
+      ? option < 60000
+            ? '${option ~/ 1000} 秒'
+            : '${option ~/ 60000} 分钟'
+      : option < 1048576
+      ? '${option ~/ 1024} KiB'
+      : '1 MiB';
+
+  void selectSubagentChoice(int option) {
+    text.text = '$option';
+    changed(option);
+  }
+
   Future<ConfigurationFieldResult?> child(
     ConfigurationFieldSchema schema,
     String title,
@@ -446,6 +509,56 @@ class _ConfigurationStructurePageState
         ],
       );
     }
+    if (askUserTimeoutChoices.isNotEmpty) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          PocketSection(
+            title: '等待用户回答',
+            divided: true,
+            children: [
+              for (final option in askUserTimeoutChoices)
+                PocketTile(
+                  key: ValueKey('ask-user-timeout:$option'),
+                  title: Text(presentation.option(widget.path, option)),
+                  selected: value == option,
+                  trailing: value == option
+                      ? const Icon(Icons.check_rounded)
+                      : null,
+                  onTap: enabled
+                      ? () {
+                          text.text = option == -1 ? '' : '$option';
+                          changed(option);
+                        }
+                      : null,
+                ),
+            ],
+          ),
+          const Padding(
+            padding: EdgeInsets.fromLTRB(18, 22, 18, 10),
+            child: Text('其他等待时间（秒）'),
+          ),
+          TextDocumentField(
+            fieldKey: const Key('structure-value'),
+            controller: text,
+            readOnly: !enabled,
+            errorText: error,
+            keyboardType: const TextInputType.numberWithOptions(
+              signed: false,
+              decimal: false,
+            ),
+            onChanged: (input) => setState(() {
+              dirty = true;
+              final parsed = int.tryParse(input);
+              value = parsed;
+              error = parsed == null || parsed < 1
+                  ? '请输入正整数秒数。'
+                  : field.validate(parsed);
+            }),
+          ),
+        ],
+      );
+    }
     if (field.branchChoice) {
       final matches = field.alternatives
           .where((branch) => branch.acceptsKind(value))
@@ -471,6 +584,102 @@ class _ConfigurationStructurePageState
               trailing: const Icon(Icons.chevron_right_rounded, size: 18),
               onTap: enabled ? () => chooseBranch(branch) : null,
             ),
+        ],
+      );
+    }
+    if (subagentChoices.isNotEmpty) {
+      final depth = widget.path.single == 'maxDepth';
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          PocketSection(
+            title: depth ? '允许的递归层数' : '同时运行的子 Agent 数',
+            divided: true,
+            children: [
+              for (final option in subagentChoices)
+                PocketTile(
+                  key: ValueKey('subagent-choice:$option'),
+                  title: Text(
+                    depth && option == 0
+                        ? '关闭子 Agent'
+                        : depth
+                        ? '$option 层'
+                        : '$option 个',
+                  ),
+                  selected: value == option,
+                  trailing: value == option
+                      ? const Icon(Icons.check_rounded)
+                      : null,
+                  onTap: enabled ? () => selectSubagentChoice(option) : null,
+                ),
+            ],
+          ),
+          const Padding(
+            padding: EdgeInsets.fromLTRB(18, 22, 18, 10),
+            child: Text('其他整数'),
+          ),
+          TextDocumentField(
+            fieldKey: const Key('structure-value'),
+            controller: text,
+            readOnly: !enabled,
+            errorText: error,
+            keyboardType: const TextInputType.numberWithOptions(
+              signed: false,
+              decimal: false,
+            ),
+            onChanged: (input) => setState(() {
+              dirty = true;
+              final parsed = int.tryParse(input);
+              value = parsed;
+              error = parsed == null ? '请输入有效整数。' : field.validate(parsed);
+            }),
+          ),
+        ],
+      );
+    }
+    if (androidShellChoices.isNotEmpty) {
+      final timeout = widget.path.single == 'shellTimeoutMs';
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          PocketSection(
+            title: timeout ? '命令执行时间' : '每路输出保留大小',
+            divided: true,
+            children: [
+              for (final option in androidShellChoices)
+                PocketTile(
+                  key: ValueKey('android-shell-choice:$option'),
+                  title: Text(androidShellChoiceLabel(option)),
+                  selected: value == option,
+                  trailing: value == option
+                      ? const Icon(Icons.check_rounded)
+                      : null,
+                  onTap: enabled
+                      ? () {
+                          text.text = '$option';
+                          changed(option);
+                        }
+                      : null,
+                ),
+            ],
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(18, 22, 18, 10),
+            child: Text(timeout ? '其他毫秒数' : '其他字节数'),
+          ),
+          TextDocumentField(
+            fieldKey: const Key('structure-value'),
+            controller: text,
+            readOnly: !enabled,
+            errorText: error,
+            keyboardType: const TextInputType.numberWithOptions(decimal: false),
+            onChanged: (input) => setState(() {
+              dirty = true;
+              final parsed = int.tryParse(input);
+              value = parsed;
+              error = parsed == null ? '请输入有效整数。' : field.validate(parsed);
+            }),
+          ),
         ],
       );
     }

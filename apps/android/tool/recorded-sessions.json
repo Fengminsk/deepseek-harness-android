@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "saf-image",
+      "script": "smoke-authorized-image.mjs",
+      "input": "scenarios/saf-image.json",
+      "expected": "expected/saf-image-session.expected.json"
+    }
+  ]
+}

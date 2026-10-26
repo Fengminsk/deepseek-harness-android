@@ -45,6 +45,7 @@ async function fixture(policy, exercise) {
   const child = spawn(process.execPath, ['--import', new URL('./shell-smoke-loader.mjs', import.meta.url).href,
     join(root, '.cache/android/runtime-bundle/bootstrap.mjs')], {
     cwd: workspace, env: { ...process.env, DSH_HOME: home, DSH_TELEMETRY_DISABLED: '1',
+      DSH_ANDROID_SHELL_EXECUTION_MODE: 'app-uid-approved',
       DEEPSEEK_BASE_URL: `http://127.0.0.1:${model.address().port}` }, stdio: ['pipe', 'pipe', 'pipe'],
   })
   const exited = once(child, 'exit')

@@ -1,0 +1,11 @@
+{
+  "sessionId": "android-saf-image-smoke",
+  "userText": "Read the authorized red.png image.",
+  "toolCallId": "saf-image-call",
+  "toolInput": {
+    "action": "read_image",
+    "root": "saf-image-root",
+    "path": "red.png"
+  },
+  "modelReply": "SAF_IMAGE_OK"
+}

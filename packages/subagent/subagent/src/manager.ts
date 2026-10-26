@@ -121,6 +121,12 @@ type SettlementAttempt =
   | Exclude<SettlementState, 'ready'>
   | { readonly done: Promise<void> }
 
+/** A failed release remains closed while later owner teardown retries it. */
+interface RetainedRelease {
+  readonly release: () => Promise<void>
+  retry?: Promise<void> | undefined
+}
+
 /** Render only the safe outer message from execution or teardown failures. */
 function failureMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'unknown teardown failure'
@@ -130,6 +136,8 @@ function failureMessage(error: unknown): string {
 export class SubagentManager {
   /** Child session id → its live Activation. Process-local, never durable. */
   private readonly resident = new Map<SessionId, Activation>()
+  /** Failed handle releases remain owned and closed until a later teardown retry succeeds. */
+  private readonly retainedReleases = new Map<Activation, RetainedRelease>()
   /** Root identities retain their pool across child settlement without retaining dead roots. */
   private readonly rootPools = new WeakMap<Agent, ActivationPool>()
   /** Materializations admitted before drain, tracked through publication or rollback. */
@@ -255,9 +263,16 @@ export class SubagentManager {
       const pending = [...this.materializations].filter(item => item.lineage.includes(parent))
       const children = [...this.resident.values()].filter(item => activationAgent(item) !== parent && item.ancestry.has(parent))
       observed ||= children.some(item => item.kind === 'local' && item.handle.agent.status !== 'idle')
-      await Promise.all(children.flatMap(item => item.kind === 'local' ? [item.handle.agent.whenIdle()] : []))
+      await Promise.all(children.flatMap(item => item.kind === 'local' && !this.retainedReleases.has(item)
+        ? [item.handle.agent.whenIdle()] : []))
       const waits: Promise<unknown>[] = pending.map(item => item.settled)
       for (const item of children) {
+        if (this.retainedReleases.has(item)) {
+          // A failed release has no caller receipt. Join its retry directly;
+          // waiting on its result would strand the parent behind a live handle.
+          waits.push(this.dispose(item))
+          continue
+        }
         if (item.kind === 'external' || item.closing !== undefined) {
           waits.push(item.result.promise.catch(() => undefined))
           continue
@@ -753,7 +768,9 @@ export class SubagentManager {
     return this.materializeTracked(
       { ...inputs, signal: AbortSignal.any([inputs.signal, controller.signal]) }, lineage, pool, releaseSlot,
     ).catch((error: unknown) => {
-      releaseSlot()
+      // A rollback can fail after a handle exists. Its resident Activation
+      // still owns the slot; freeing it would admit an untracked live child.
+      if (![...this.resident.values()].some(item => item.releaseSlot === releaseSlot)) releaseSlot()
       if (error instanceof Error && error.name === 'AbortError') this.assertAdmitting(inputs.parent)
       throw error
     }).finally(() => {
@@ -768,6 +785,17 @@ export class SubagentManager {
    * @returns the shared close transaction.
    */
   private dispose(activation: Activation): Promise<void> {
+    const retained = this.retainedReleases.get(activation)
+    if (retained !== undefined) {
+      // The previous close is settled but remains the admission barrier. A
+      // retry replaces that failed transaction without reopening the child.
+      if (retained.retry !== undefined) return retained.retry
+      const retry = retained.release()
+      retained.retry = retry
+      activation.closing = retry
+      void retry.then(() => { retained.retry = undefined }, () => { retained.retry = undefined })
+      return retry
+    }
     return this.close(activation, () => this.finishDisposal(activation, true))
   }
 
@@ -981,13 +1009,32 @@ export class SubagentManager {
   /** Release an Activation whose start edge was not published. */
   private rollbackUnpublished(activation: Activation, error: unknown): Promise<void> {
     return this.close(activation, async () => {
-      try {
-        await (activation.kind === 'local' ? activation.handle.dispose() : activation.run.dispose())
-      } finally {
+      const forget = (): void => {
+        this.retainedReleases.delete(activation)
         this.resident.delete(activation.childId)
         activation.releaseSlot()
         this.releaseOwnership(activation.childId)
         activation.result.reject(error)
+      }
+      const release = async (): Promise<void> => {
+        await (activation.kind === 'local' ? activation.handle.dispose() : activation.run.dispose())
+        forget()
+      }
+      try {
+        await release()
+      } catch (failure: unknown) {
+        if (activation.kind === 'local' && this.ctx.agents.get(activation.childId) !== activation.handle.agent) {
+          forget()
+          throw failure
+        }
+        this.retainedReleases.set(activation, { release })
+        try {
+          if (activation.kind === 'local') activation.handle.agent.cancel({ kind: 'parent' })
+          else activation.controller.abort({ kind: 'parent' })
+        } catch (stopFailure: unknown) {
+          this.ctx.logger.warn(`subagent "${activation.childId}" failed to stop after rollback: ${failureMessage(stopFailure)}`)
+        }
+        throw failure
       }
     })
   }
@@ -1150,37 +1197,55 @@ export class SubagentManager {
         { cause: error },
       ))
     }
+    const releaseHandle = (): Promise<void> => activation.kind === 'local'
+      ? activation.handle.dispose()
+      : activation.run.dispose()
+    const combinedFailure = (): SubagentError | undefined => {
+      let failure: SubagentError | undefined
+      if (failures.length === 1) {
+        failure = failures[0]
+      } else if (failures.length > 1) {
+        failure = new SubagentError(
+          `subagent "${childId}" activation teardown failed at ${failures.length} boundaries: `
+          + failures.map(item => detail(item)).join('; '),
+          'ACTIVATION_TEARDOWN_FAILED',
+          { cause: new AggregateError(failures) },
+        )
+      }
+      return failure
+    }
+    const finalize = (): void => {
+      this.retainedReleases.delete(activation)
+      const failure = combinedFailure()
+      this.resident.delete(childId)
+      activation.releaseSlot()
+      const terminal: SubagentResult = failure === undefined ? result : { output: [], stopReason: 'error' }
+      this.notifySettlement(activation, result)
+      this.releaseOwnership(childId)
+      activation.observer.settle(terminal)
+      if (resultFailure === undefined) activation.result.resolve(result)
+      else activation.result.reject(resultFailure.error)
+      if (failure !== undefined) throw failure
+    }
     try {
-      if (activation.kind === 'local') await activation.handle.dispose()
-      else await (externalDisposal ?? activation.run.dispose())
+      await (externalDisposal ?? releaseHandle())
     } catch (error: unknown) {
       failures.push(new SubagentError(
         `subagent "${childId}" activation handle disposal failed: ${detail(error)}`,
         'ACTIVATION_TEARDOWN_FAILED',
         { cause: error },
       ))
+      if (activation.kind === 'local' && this.ctx.agents.get(childId) !== activation.handle.agent) {
+        finalize()
+        return
+      }
+      this.retainedReleases.set(activation, { release: async () => {
+        await releaseHandle()
+        finalize()
+      } })
+      throw combinedFailure()
     }
-
-    let failure: SubagentError | undefined
-    if (failures.length === 1) {
-      failure = failures[0]
-    } else if (failures.length > 1) {
-      failure = new SubagentError(
-        `subagent "${childId}" activation teardown failed at ${failures.length} boundaries: `
-        + failures.map(item => detail(item)).join('; '),
-        'ACTIVATION_TEARDOWN_FAILED',
-        { cause: new AggregateError(failures) },
-      )
-    }
-    this.resident.delete(childId)
-    activation.releaseSlot()
-    const terminal: SubagentResult = failure === undefined ? result : { output: [], stopReason: 'error' }
-    this.notifySettlement(activation, result)
-    this.releaseOwnership(childId)
-    activation.observer.settle(terminal)
-    if (resultFailure === undefined) activation.result.resolve(result)
-    else activation.result.reject(resultFailure.error)
-    if (failure !== undefined) throw failure
+    finalize()
   }
 
   /** Deliver the captured execution result to the durable direct parent after cleanup. */

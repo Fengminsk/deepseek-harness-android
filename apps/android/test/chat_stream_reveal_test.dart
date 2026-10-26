@@ -16,7 +16,7 @@ class _Harness {
   int layouts = 0;
 
   Widget view(
-    String text, {
+    String? text, {
     bool reduced = false,
     Future<void> Function(Uri)? onOpenLink,
   }) => MaterialApp(
@@ -39,9 +39,11 @@ class _Harness {
                   child: ChatContent(
                     storageId: 'stream',
                     streaming: true,
-                    content: [
-                      {'type': 'text', 'text': text},
-                    ],
+                    content: text == null
+                        ? const []
+                        : [
+                            {'type': 'text', 'text': text},
+                          ],
                     onOpenLink: onOpenLink,
                   ),
                 ),
@@ -102,6 +104,44 @@ int _light(Uint8List pixels, Iterable<Rect> boxes) =>
     _region(pixels, boxes).fold(0, (sum, value) => sum + value);
 
 void main() {
+  testWidgets(
+    'first text after an empty live row reveals without changing layout',
+    (tester) async {
+      final harness = _Harness();
+      await tester.pumpWidget(harness.view(null));
+      await tester.pumpAndSettle();
+      expect(find.byType(ChatStreamReveal), findsNothing);
+
+      await tester.pumpWidget(harness.view('First live words'));
+      final first = await harness.pixels(tester);
+      final boxes = harness.boxes(tester, 'First live words', 0, 16);
+      final layoutCount = harness.layouts;
+      expect(tester.layers.whereType<ShaderMaskLayer>(), hasLength(1));
+      await tester.pump(const Duration(milliseconds: 90));
+      final middle = await harness.pixels(tester);
+      await tester.pump(PocketEntryMotion.duration);
+      final settled = await harness.pixels(tester);
+      expect(_light(middle, boxes), greaterThan(_light(first, boxes)));
+      expect(_light(settled, boxes), greaterThan(_light(middle, boxes)));
+      expect(harness.layouts, layoutCount);
+      expect(tester.layers.whereType<ShaderMaskLayer>(), isEmpty);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('first live text respects reduced motion', (tester) async {
+    final harness = _Harness();
+    await tester.pumpWidget(harness.view(null, reduced: true));
+    await tester.pumpAndSettle();
+    await tester.pumpWidget(harness.view('First live words', reduced: true));
+    final first = await harness.pixels(tester);
+    expect(tester.layers.whereType<ShaderMaskLayer>(), isEmpty);
+    await tester.pump(PocketEntryMotion.duration);
+    expect(await harness.pixels(tester), orderedEquals(first));
+    expect(tester.binding.hasScheduledFrame, isFalse);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets(
     'Markdown after a composited code block reveals only its appended glyphs',
     (tester) async {
@@ -210,10 +250,7 @@ void main() {
                 axisDirectionToAxis(state.axisDirection) == Axis.horizontal,
           );
       expect(horizontal.position.maxScrollExtent, greaterThan(0));
-      await tester.drag(
-        find.byType(Scrollable).first,
-        const Offset(-150, 0),
-      );
+      await tester.drag(find.byType(Scrollable).first, const Offset(-150, 0));
       await tester.pumpAndSettle();
       expect(horizontal.position.pixels, greaterThan(0));
       expect(tester.takeException(), isNull);

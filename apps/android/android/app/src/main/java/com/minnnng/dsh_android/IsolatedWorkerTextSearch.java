@@ -32,7 +32,7 @@ public final class IsolatedWorkerTextSearch {
 
     public record Hit(int line, int column, String preview) {}
     public record Result(List<Hit> hits, boolean truncated) {
-        public Result { hits = List.copyOf(hits); }
+        public Result { hits = AndroidJava28.copyList(hits); }
     }
 
     private IsolatedWorkerTextSearch() {}

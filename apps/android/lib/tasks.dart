@@ -5,7 +5,9 @@ import 'package:material_ui/material_ui.dart';
 
 import 'approvals.dart';
 import 'jobs.dart';
+import 'job_output.dart';
 import 'runtime.dart';
+import 'runtime_selection.dart';
 import 'subagents.dart';
 import 'ui.dart';
 
@@ -276,14 +278,25 @@ class _TasksPageState extends State<TasksPage> with WidgetsBindingObserver {
   }
 
   @override
-  Widget build(BuildContext context) => ListenableBuilder(
-    listenable: widget.runtime,
+  Widget build(BuildContext context) => RuntimeSelectionBuilder(
+    runtime: widget.runtime,
+    select: () => (
+      widget.runtime.connectionGeneration,
+      widget.runtime.phase,
+      widget.runtime.taskState,
+      widget.runtime.taskSessions,
+      widget.runtime.taskJobs,
+      widget.runtime.tasksNextOffset,
+      widget.runtime.tasksError,
+      widget.runtime.interactions,
+    ),
     builder: (context, _) {
       final runtime = widget.runtime;
       final active = ((runtime.taskState['active'] as List?) ?? [])
           .cast<Json>();
       final backgroundJobs =
           (runtime.taskState['summary'] as Json?)?['backgroundJobs'] as int?;
+      final jobs = runtime.taskJobs;
       final packageOperations =
           (runtime.taskState['summary'] as Json?)?['packageOperations'] as int?;
       stopping.removeWhere(
@@ -394,6 +407,35 @@ class _TasksPageState extends State<TasksPage> with WidgetsBindingObserver {
                   ),
                 ],
               ),
+            if (jobs != null && jobs.isNotEmpty) ...[
+              const Padding(padding: EdgeInsets.all(12), child: Text('独立后台作业')),
+              for (final job in jobs)
+                PocketSection(
+                  children: [
+                    PocketRow(
+                      icon: Icons.terminal_rounded,
+                      title: '${job['label']}',
+                      subtitle:
+                          '${jobStatusLabel('${job['status']}')}'
+                          '${job['progress'] == null ? '' : ' · ${job['progress']}'}'
+                          '${job['owner'] == null ? ' · 共享作业' : ' · ${title('${job['owner']}')}'}'
+                          '${confirmed ? '' : ' · 上次状态'}',
+                      onTap: current
+                          ? () => Navigator.push(
+                              context,
+                              PocketRoute<void>(
+                                builder: (_) => JobOutputPage(
+                                  runtime: runtime,
+                                  sessionId: job['owner'] as String?,
+                                  job: job,
+                                ),
+                              ),
+                            )
+                          : null,
+                    ),
+                  ],
+                ),
+            ],
             for (final row in active)
               PocketSection(
                 children: [

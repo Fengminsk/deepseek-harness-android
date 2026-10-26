@@ -38,6 +38,7 @@ class _SubagentsPageState extends State<SubagentsPage>
   String? error;
   Timer? timer;
   int generation = 0;
+  late int connectionGeneration;
   late String phase;
   Object? epoch;
 
@@ -46,6 +47,7 @@ class _SubagentsPageState extends State<SubagentsPage>
     super.initState();
     phase = widget.runtime.phase;
     epoch = widget.runtime.taskState['epoch'];
+    connectionGeneration = widget.runtime.connectionGeneration;
     WidgetsBinding.instance.addObserver(this);
     widget.runtime.addListener(runtimeChanged);
     unawaited(refresh());
@@ -58,11 +60,13 @@ class _SubagentsPageState extends State<SubagentsPage>
 
   void runtimeChanged() {
     if (phase == widget.runtime.phase &&
-        epoch == widget.runtime.taskState['epoch']) {
+        epoch == widget.runtime.taskState['epoch'] &&
+        connectionGeneration == widget.runtime.connectionGeneration) {
       return;
     }
     phase = widget.runtime.phase;
     epoch = widget.runtime.taskState['epoch'];
+    connectionGeneration = widget.runtime.connectionGeneration;
     generation++;
     setState(() {
       current = false;
@@ -80,6 +84,7 @@ class _SubagentsPageState extends State<SubagentsPage>
   Future<void> refresh({bool more = false}) async {
     if (!widget.runtime.ready || loading || more && nextOffset == null) return;
     final attempt = generation;
+    final connection = widget.runtime.connectionGeneration;
     setState(() => loading = true);
     try {
       final targetCount = more ? 30 : entries.length.clamp(30, 1 << 30);
@@ -97,7 +102,12 @@ class _SubagentsPageState extends State<SubagentsPage>
                     })
                     .timeout(subagentRequestTimeout)
                 as Json;
-        if (!mounted || attempt != generation || !widget.runtime.ready) return;
+        if (!mounted ||
+            attempt != generation ||
+            !widget.runtime.ready ||
+            connection != widget.runtime.connectionGeneration) {
+          return;
+        }
         if (result['parentSessionId'] != widget.parentSessionId) {
           throw const FormatException('Mismatched catalog parent');
         }
@@ -109,6 +119,11 @@ class _SubagentsPageState extends State<SubagentsPage>
         if (following == null || more || rows.length >= targetCount) break;
         offset = following;
       } while (true);
+      if (!mounted ||
+          attempt != generation ||
+          connection != widget.runtime.connectionGeneration) {
+        return;
+      }
       setState(() {
         final byId = <String, Json>{
           if (more)
@@ -129,6 +144,71 @@ class _SubagentsPageState extends State<SubagentsPage>
       }
     } finally {
       if (mounted && attempt == generation) setState(() => loading = false);
+    }
+  }
+
+  Future<void> openEntry(Json entry) async {
+    final address = SubagentAddress.fromCatalogEntry(
+      entry,
+      widget.parentSessionId,
+    );
+    bool stillListed() => entries.any((row) {
+      final latest = SubagentAddress.fromCatalogEntry(
+        row,
+        widget.parentSessionId,
+      );
+      return row['id'] == entry['id'] &&
+          latest?.key == address?.key &&
+          latest?.mode == address?.mode;
+    });
+    if (!current ||
+        !widget.runtime.ready ||
+        address == null ||
+        !stillListed()) {
+      return;
+    }
+    final attempt = generation;
+    final connection = widget.runtime.connectionGeneration;
+    try {
+      final inspected =
+          await widget.runtime
+                  .call('subagents.inspect', {
+                    'address': address.json,
+                    'maxMessages': 1,
+                  })
+                  .timeout(subagentRequestTimeout)
+              as Json;
+      if (!mounted ||
+          attempt != generation ||
+          !current ||
+          !widget.runtime.ready ||
+          connection != widget.runtime.connectionGeneration ||
+          !stillListed()) {
+        return;
+      }
+      final verified = SubagentAddress.fromInspection(inspected, address);
+      if (verified == null) {
+        throw const FormatException('Mismatched child inspection');
+      }
+      await Navigator.push<void>(
+        context,
+        PocketRoute<void>(
+          builder: (_) => SubagentConversationPage(
+            runtime: widget.runtime,
+            address: verified,
+            label: entry['label'] as String?,
+          ),
+        ),
+      );
+      if (mounted) unawaited(refresh());
+    } catch (failure) {
+      if (mounted &&
+          attempt == generation &&
+          connection == widget.runtime.connectionGeneration) {
+        setState(() {
+          error = '子会话地址已失效或无法确认，请刷新后重试。错误：${subagentFailureCode(failure)}';
+        });
+      }
     }
   }
 
@@ -190,26 +270,25 @@ class _SubagentsPageState extends State<SubagentsPage>
                               ? '正在运行'
                               : '当前未运行'
                         : '上次状态'}',
-                onTap: entry['address'] is Json
-                    ? () async {
-                        await Navigator.push<void>(
-                          context,
-                          PocketRoute<void>(
-                            builder: (_) => SubagentConversationPage(
-                              runtime: widget.runtime,
-                              address: SubagentAddress.fromJson(
-                                entry['address'] as Json,
-                              ),
-                              label: entry['label'] as String?,
-                            ),
-                          ),
-                        );
-                        if (mounted) unawaited(refresh());
-                      }
+                onTap:
+                    current &&
+                        widget.runtime.ready &&
+                        SubagentAddress.fromCatalogEntry(
+                              entry,
+                              widget.parentSessionId,
+                            ) !=
+                            null
+                    ? () => openEntry(entry)
                     : null,
               ),
               if (entry['address'] == null)
-                const _SubagentNote('外部任务没有可打开的本地子会话地址。'),
+                const _SubagentNote('外部任务没有可打开的本地子会话地址。')
+              else if (SubagentAddress.fromCatalogEntry(
+                    entry,
+                    widget.parentSessionId,
+                  ) ==
+                  null)
+                const _SubagentNote('父子会话地址不一致，不能打开此条目。'),
             ],
           ),
         if (nextOffset != null)
@@ -373,6 +452,11 @@ class _SubagentConversationPageState extends State<SubagentConversationPage>
   }
 
   ChatLiveMessage? get live {
+    if (!conversation.current ||
+        !widget.runtime.ready ||
+        conversation.address.key != widget.address.key) {
+      return null;
+    }
     final value = widget.runtime.liveMessages[widget.address.childSessionId];
     if (value == null) return null;
     return ChatLiveMessage(

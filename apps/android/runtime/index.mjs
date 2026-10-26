@@ -1,12 +1,23 @@
 import Schema from '@deepseek-ai/schemastery'
 import { randomUUID } from 'node:crypto'
 import { createRequire } from 'node:module'
+import { join } from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { establishAttachmentHome } from '@deepseek-ai/dsh-attachment-local'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { AndroidCredentials } from './credentials.mjs'
 import { registerAndroidShell } from './tool-android-shell.mjs'
+import { registerModelFileReadGuard } from './model-file-read-guard.mjs'
+import { NativeIsolatedToolCallbacks } from './native-isolated-tool-callbacks.mjs'
+import { IsolatedToolCallJournal } from './isolated-tool-call-journal.mjs'
+import { createNativeIsolatedExecutionBridge } from './native-isolated-execution-bridge.mjs'
+import { createAppOwnedListAgentsPtcOwner } from './model-ptc-owner.mjs'
+import { modelPtcCapability, registerAndroidPtcTool } from './tool-isolated-ptc.mjs'
+import { NativeWorkflowGuestCallbacks } from './native-workflow-guest-callbacks.mjs'
+import { createNativeWorkflowPrivateOwner } from './native-workflow-private-owner.mjs'
+import { NativeLinuxCommands } from './native-linux-commands.mjs'
+import { registerIsolatedLinuxTool } from './tool-isolated-linux.mjs'
 import AndroidShell from './android-shell.mjs'
 import { WebAccess } from './web-access.mjs'
 import { AppSessions } from './sessions.mjs'
@@ -21,6 +32,8 @@ import AndroidAccountCallback from './account-callback.mjs'
 import { AppAttachments } from './attachments.mjs'
 import { createRuntimeTransport } from './transport.mjs'
 import { AppDocumentSearch } from './document-search.mjs'
+import { readAuthorizedDocument } from './document-read.mjs'
+import { readAuthorizedImage, renderAuthorizedImage } from './authorized-image.mjs'
 import { AppDocumentPreview, PRIVATE_WORKSPACE_SCOPE } from './document-preview.mjs'
 import { AppChatImages } from './chat-images.mjs'
 import { AppReferenceDiscovery } from './reference-discovery.mjs'
@@ -99,16 +112,61 @@ function remoteFailure(error) {
   } }
 }
 
+// A source-controlled release gate, never a model argument, profile setting
+// or remote switch. Open only after the isolated UID, callback retirement and
+// process-death suites have passed on a non-rooted production-class device.
+const MODEL_PTC_DEVICE_ACCEPTED = false
+
 /** Android is an additional carrier over the same DSH services and session log. */
 export function apply(ctx, config) {
+  registerModelFileReadGuard(ctx)
   const ipc = createRuntimeTransport()
   const { transport } = ipc
+  const nativeToolCallbacks = new NativeIsolatedToolCallbacks(transport,
+    new IsolatedToolCallJournal(join(resolveDshHome(), 'isolated-tool-call-journal')))
+  ctx.provide('nativeIsolatedToolCallbacks', nativeToolCallbacks)
+  // The model tool remains gated off. Capture the original scoped definition
+  // only when an actual Agent execution later needs a reviewed callback.
+  const modelPtcBridge = createNativeIsolatedExecutionBridge(transport)
+  ctx.inject(['subagents'], modelCtx => {
+    const owner = createAppOwnedListAgentsPtcOwner({
+      bridge: modelPtcBridge, callbacks: nativeToolCallbacks, runtime: modelCtx.tools,
+      services: { subagents: modelCtx.subagents, agents: modelCtx.agents },
+    })
+    modelCtx.provide('appModelPtcOwner', owner)
+    modelCtx.effect(() => () => owner.close())
+    registerAndroidPtcTool(modelCtx, {
+      owner, available: () => MODEL_PTC_DEVICE_ACCEPTED,
+    })
+  })
+  const nativeWorkflowCallbacks = new NativeWorkflowGuestCallbacks(transport)
+  ctx.provide('nativeWorkflowGuestCallbacks', nativeWorkflowCallbacks)
+  let privateWorkflowOwner
+  // Only trusted App code can attach an already admitted run and live parent.
+  // The model-authored workflow modules remain protected and disabled.
+  ctx.inject(['subagents', 'agentPresets', 'sessionQuery'], workflowCtx => {
+    const workflowOwner = createNativeWorkflowPrivateOwner(workflowCtx, nativeWorkflowCallbacks, transport)
+    privateWorkflowOwner = workflowOwner
+    workflowCtx.provide('nativeWorkflowPrivateOwner', workflowOwner)
+    workflowCtx.effect(() => async () => {
+      if (privateWorkflowOwner === workflowOwner) privateWorkflowOwner = undefined
+      await workflowOwner.dispose()
+    })
+  })
+  const nativeLinuxCommands = new NativeLinuxCommands(transport)
+  ctx.provide('nativeLinuxCommands', nativeLinuxCommands)
+  registerIsolatedLinuxTool(ctx, nativeLinuxCommands)
   const credentials = new AndroidCredentials(ctx, transport)
   ctx.plugin(AndroidShell)
   ctx.plugin(AndroidAccountCallback)
   ctx.effect(() => {
     transport.start()
-    return () => ipc.close()
+    return async () => {
+      await nativeToolCallbacks.dispose()
+      await nativeWorkflowCallbacks.dispose()
+      await nativeLinuxCommands.dispose()
+      ipc.close()
+    }
   })
   // Connection needs the Keystore provider before the shared Session controller can activate.
   ctx.inject(['sessionController', 'typertGateway', 'connection', 'accountCallback', 'fileUploads',
@@ -153,11 +211,13 @@ export function apply(ctx, config) {
     }),
   })
   let attachments
+  let packageOperations
   const sessions = new AppSessions(ctx, (method, request) => invoke('session', method, { request }),
     (sessionId, ids) => attachments.content(sessionId, ids), {
       content: (sessionId, ids) => attachments.commandContent(sessionId, ids),
       execute: args => invoke('commands', 'execute', args),
-    }, (agentId, agentPreset) => invoke('agentPresets', 'select', { agentId, agentPreset }))
+    }, (agentId, agentPreset) => invoke('agentPresets', 'select', { agentId, agentPreset }),
+    () => packageOperations?.assertWorkAllowed())
   attachments = new AppAttachments(ctx, {
     directory: () => transport.request('native.attachments.directory', {}),
     ensureSession: sessionId => sessions.ensure(sessionId),
@@ -175,7 +235,10 @@ export function apply(ctx, config) {
   }, { shellContext: (sessionId, callId) => shell.context(sessionId, callId), receipts: interactionReceipts })
   tasks = new AppTasks(ctx, transport, { interactions: () => interactions.snapshot() })
   const taskCompletion = new AppTaskCompletion(ctx, transport)
-  const packageOperations = new AppPackageOperations(ctx)
+  packageOperations = new AppPackageOperations(ctx, {
+    pendingAppSessions: () => sessions.pendingCount(),
+    terminalActivity: () => terminals.activitySnapshot(),
+  })
   const subagents = new AppSubagents(ctx, {
     invoke,
     follow: (request, signal) => ctx.typertGateway.stream({
@@ -304,19 +367,49 @@ export function apply(ctx, config) {
   })
   const describe = () => describeAndroidSettings(ctx)
   transport.onRequest(async (method, params) => {
+    if (method === 'native.toolCallback') return nativeToolCallbacks.call(params)
+    if (method === 'native.toolCallback.cancel') return nativeToolCallbacks.close(params)
+    if (method === 'native.workflowCallback') return nativeWorkflowCallbacks.call(params)
+    if (method === 'native.workflowCallback.cancel') return nativeWorkflowCallbacks.close(params)
     if (method === 'userText.mask') return maskUserText(params)
-    if (method.startsWith('workspaceChanges.')) return workspaceChanges.call(method.slice('workspaceChanges.'.length), params)
+    if (method.startsWith('workspaceChanges.')) {
+      const action = method.slice('workspaceChanges.'.length)
+      if (action === 'summary' || action === 'diff') {
+        return packageOperations.runWork(() => workspaceChanges.call(action, params))
+      }
+      return workspaceChanges.call(action, params)
+    }
     if (method.startsWith('references.')) {
-      try { return await references.call(method.slice('references.'.length), params) }
+      const action = method.slice('references.'.length)
+      try {
+        return await (action === 'list'
+          ? packageOperations.runWork(() => references.call(action, params))
+          : references.call(action, params))
+      }
       catch (error) { return remoteFailure(error) }
     }
-    if (method.startsWith('library.')) return library.call(method.slice('library.'.length), params)
-    if (method.startsWith('workspace.files.')) return workspaceFiles.call(method.slice('workspace.files.'.length), params)
-    if (method.startsWith('document.')) return documentPreview.call(method.slice('document.'.length), params)
+    if (method.startsWith('library.')) {
+      const action = method.slice('library.'.length)
+      try { return await packageOperations.runWork(() => library.call(action, params)) }
+      catch (error) { return remoteFailure(error) }
+    }
+    if (method.startsWith('workspace.files.')) {
+      const action = method.slice('workspace.files.'.length)
+      if (action === 'search') return packageOperations.runWork(() => workspaceFiles.call(action, params))
+      return workspaceFiles.call(action, params)
+    }
+    if (method.startsWith('document.')) {
+      const action = method.slice('document.'.length)
+      if (action === 'call') return packageOperations.runWork(() => documentPreview.call(action, params))
+      return documentPreview.call(action, params)
+    }
     if (method.startsWith('terminal.')) {
       const action = method.slice('terminal.'.length)
-      if (!['list', 'create', 'read', 'write', 'resize', 'close'].includes(action)) {
+      if (!['list', 'shells', 'create', 'read', 'write', 'resize', 'rename', 'close'].includes(action)) {
         throw new Error(`Unsupported terminal action: ${action}`)
+      }
+      if (['create', 'write', 'resize', 'rename'].includes(action)) {
+        return packageOperations.runWork(() => terminals[action](params))
       }
       return terminals[action](params)
     }
@@ -327,6 +420,14 @@ export function apply(ctx, config) {
         shell: shell.policy(),
         fileTools: { sandboxMode: ctx.get('fs')?.sandboxMode ?? null },
         presets: { available: !!ctx.get('permissionPresets') },
+        programmaticTools: {
+          available: false,
+          filesystem: 'read-only',
+          writableRoots: [],
+          network: 'off',
+          reason: 'isolated-executor-unwired',
+          modelPtc: modelPtcCapability(MODEL_PTC_DEVICE_ACCEPTED),
+        },
       }
       case 'runtime.live': return live.snapshot()
       case 'runtime.transition.reserve': return packageOperations.reserve(params)
@@ -336,34 +437,35 @@ export function apply(ctx, config) {
       case 'tasks.list': return tasks.list(params)
       case 'tasks.session': return tasks.session(params)
       case 'tasks.cancel': return tasks.cancel(params)
+      case 'tasks.killUnownedJob': return tasks.killUnownedJob(params)
       case 'tasks.removeQueued': return tasks.removeQueued(params)
       case 'subagents.catalog': return subagents.call('catalog', params)
       case 'subagents.inspect': return subagents.call('inspect', params)
       case 'subagents.page': return subagents.call('page', params)
-      case 'subagents.send': return subagents.call('send', params)
-      case 'subagents.interrupt': return subagents.call('interrupt', params)
+      case 'subagents.send': return packageOperations.runWork(() => subagents.call('send', params))
+      case 'subagents.interrupt': return packageOperations.runWork(() => subagents.call('interrupt', params))
       case 'account.signIn': {
         const client = params.client
         if (typeof client !== 'object' || client === null || typeof client.version !== 'string'
           || typeof client.locale !== 'string' || !Number.isSafeInteger(client.timezoneOffsetSeconds)) {
           throw new TypeError('Account client version, locale, and timezone are required')
         }
-        return ctx.accountCallback.signIn(client)
+        return packageOperations.runWork(() => ctx.accountCallback.signIn(client))
       }
       case 'interactions.list': return interactions.snapshot()
-      case 'interactions.reply': return interactions.reply(params)
-      case 'interactions.dismiss': return interactions.dismiss(params)
+      case 'interactions.reply': return packageOperations.runWork(() => interactions.reply(params))
+      case 'interactions.dismiss': return packageOperations.runWork(() => interactions.dismiss(params))
       case 'interactions.wait': return interactions.wait(params)
       case 'web.status': return web.status()
-      case 'web.configure': return web.configure(params)
-      case 'web.rotate': return web.rotate()
+      case 'web.configure': return packageOperations.runWork(() => web.configure(params))
+      case 'web.rotate': return packageOperations.runWork(() => web.rotate())
       case 'api.call': {
         try {
-          return await invoke(requiredString(params.namespace, 'namespace'),
-            requiredString(params.method, 'method'), params.args ?? {})
+          return await packageOperations.runWork(() => invoke(requiredString(params.namespace, 'namespace'),
+            requiredString(params.method, 'method'), params.args ?? {}))
         } catch (error) { return remoteFailure(error) }
       }
-      case 'chat.image.preview': return chatImages.preview(params)
+      case 'chat.image.preview': return packageOperations.runWork(() => chatImages.preview(params))
       case 'api.subscribe': return streams.subscribe(params)
       case 'api.ack': return streams.ack(params)
       case 'api.unsubscribe': return streams.unsubscribe(params)
@@ -374,13 +476,13 @@ export function apply(ctx, config) {
         catch (error) { return remoteFailure(error) }
       }
       case 'session.command': return sessions.command(params)
-      case 'attachments.prepare': return attachments.prepare(params)
+      case 'attachments.prepare': return packageOperations.runWork(() => attachments.prepare(params))
       case 'attachments.preview': return attachments.preview(params)
       case 'attachments.release': return attachments.release(params)
-      case 'session.export.prepare': return exports.prepare(params)
+      case 'session.export.prepare': return packageOperations.runWork(() => exports.prepare(params))
       case 'session.export.cancel': return exports.cancel(params)
       case 'session.export.release': return exports.release(params)
-      case 'session.attachmentFile.prepare': return attachmentFiles.prepare(params)
+      case 'session.attachmentFile.prepare': return packageOperations.runWork(() => attachmentFiles.prepare(params))
       case 'session.attachmentFile.info': return attachmentFiles.info(params)
       case 'session.attachmentFile.read': return attachmentFiles.read(params)
       case 'session.attachmentFile.cancel': return attachmentFiles.cancel(params)
@@ -388,13 +490,13 @@ export function apply(ctx, config) {
       case 'settings.describe': return describe()
       case 'configuration.transfer.export': return configurationTransfers.export()
       case 'configuration.transfer.preview': return configurationTransfers.preview(params)
-      case 'configuration.transfer.apply': return configurationTransfers.apply(params)
+      case 'configuration.transfer.apply': return packageOperations.runWork(() => configurationTransfers.apply(params))
       case 'configuration.transfer.release': return configurationTransfers.release(params)
       case 'settings.mutate': {
         requiredString(params.ns, 'ns')
         if (!Array.isArray(params.ops) || !Number.isSafeInteger(params.revision)) throw new TypeError('ops and revision are required')
         try {
-          await ctx.settings.mutate(params.ns, params.ops, params.revision)
+          await packageOperations.runWork(() => ctx.settings.mutate(params.ns, params.ops, params.revision))
         } catch (error) {
           if (error.code !== 'SETTINGS_CONFLICT') throw error
           return { _pocket_error: { code: error.code, message: error.message,
@@ -406,26 +508,39 @@ export function apply(ctx, config) {
       case 'credentials.set': {
         const value = requiredString(params.value, 'value').trim()
         if (!/^[\x21-\x7e]+$/.test(value)) throw new TypeError('API Key must contain printable ASCII without spaces')
-        await credentials.set(credentialRef(requiredString(params.ref, 'ref')), value)
+        await packageOperations.runWork(() => credentials.set(credentialRef(requiredString(params.ref, 'ref')), value))
         return { configured: true }
       }
       case 'credentials.unset': {
-        await credentials.unset(credentialRef(requiredString(params.ref, 'ref')))
+        await packageOperations.runWork(() => credentials.unset(credentialRef(requiredString(params.ref, 'ref'))))
         return { configured: false }
       }
       // Child transcripts require their durable parent address and belong to the subagent/task entry points.
       case 'sessions.list': return library.sidebar()
+      case 'session.readWindow': {
+        try { return await history.readWindow(params) }
+        catch (error) { return remoteFailure(error) }
+      }
+      case 'session.turnOutline': {
+        try { return await history.turnOutline(params) }
+        catch (error) { return remoteFailure(error) }
+      }
       case 'session.read': {
         try { return await history.read(params) }
         catch (error) { return remoteFailure(error) }
       }
       case 'session.read.release': return history.release(params)
+      case 'workflow.inspect': {
+        if (!privateWorkflowOwner) throw new Error('Private workflow owner is unavailable')
+        return privateWorkflowOwner.inspectRun(params)
+      }
       case 'session.cancel': return tasks.cancel(params)
       case 'documents.roots': return transport.request('native.documents.roots', {})
       case 'documents.list': return transport.request('native.documents.list', params)
-      case 'documents.read': return transport.request('native.documents.read', params)
-      case 'documents.revoke': return transport.request('native.documents.revoke', params)
-      case 'documents.search': return documentSearch.run(params, { owner: params.owner })
+      case 'documents.read': return readAuthorizedDocument(
+        request => transport.request('native.documents.read', request), params)
+      case 'documents.revoke': return packageOperations.runWork(() => transport.request('native.documents.revoke', params))
+      case 'documents.search': return packageOperations.runWork(() => documentSearch.run(params, { owner: params.owner }))
       case 'documents.search.cancel': return documentSearch.cancel(params, { owner: params.owner })
       default: throw new Error(`Unsupported App method: ${method}`)
     }
@@ -440,10 +555,10 @@ export function apply(ctx, config) {
   })
   ctx.on('settings/document-updated', () => transport.notify('settings.changed'))
   ctx.effect(() => ctx.tools.register(defineTool({
-    name: 'android_files', description: 'List authorized Android document roots, list a relative directory, read UTF-8 text in chunks, or search literal text below an authorized root. Search is bounded and reports skipped files and incomplete results. content:// URIs are not shell paths.',
+    name: 'android_files', description: 'List authorized Android document roots, list a relative directory, read UTF-8 text in chunks, read_image as a PNG/JPEG/WebP/GIF model image, or search literal text below an authorized root. Pass the previous read version when continuing at a nonzero offset. Search is bounded and reports skipped files and incomplete results. content:// URIs are not shell paths.',
     parameters: { action: { type: 'string', required: true }, root: { type: 'string' }, path: { type: 'string' }, offset: { type: 'integer' },
-      query: { type: 'string' }, caseSensitive: { type: 'boolean' } },
-    output: { schema: { type: 'json' }, render: (_args, result) => [{ type: 'text', text: JSON.stringify(result) }] },
+      version: { type: 'string' }, query: { type: 'string' }, caseSensitive: { type: 'boolean' } },
+    output: { schema: { type: 'json' }, render: renderAuthorizedImage },
     async execute(args, execution) {
       if (args.action === 'roots') return transport.request('native.documents.roots', {})
       if (args.action === 'search') {
@@ -453,9 +568,13 @@ export function apply(ctx, config) {
           caseSensitive: args.caseSensitive ?? false,
         }, { owner: `tool:${execution.agent.session.id}:${execution.callId}`, signal: execution.signal })
       }
-      if (args.action !== 'list' && args.action !== 'read') throw new Error('action must be roots, list, read or search')
+      if (args.action === 'read_image') return readAuthorizedImage(ctx, transport,
+        { root: args.root, path: args.path ?? '' }, execution)
+      if (args.action !== 'list' && args.action !== 'read') throw new Error('action must be roots, list, read, read_image or search')
       requiredString(args.root, 'root')
-      return transport.request(`native.documents.${args.action}`, { root: args.root, path: args.path ?? '', offset: args.offset ?? 0 })
+      if (args.action === 'read') return readAuthorizedDocument(
+        request => transport.request('native.documents.read', request), args, true)
+      return transport.request('native.documents.list', { root: args.root, path: args.path ?? '' })
     },
   })))
   ctx.effect(() => {

@@ -99,6 +99,35 @@ Json _used(int seq, Json selection) => {
 };
 
 void main() {
+  test(
+    'streaming keeps the model projection incremental and replacement replays',
+    () {
+      final projection = SessionModelProjection();
+      final events = [_selected(0, _pro), _used(1, _flash)];
+      projection.reconcile(events);
+      for (var i = 0; i < 100; i++) {
+        projection.reconcile(events);
+      }
+      expect(projection.processedEventCount, 2);
+      expect(projection.next, nextSessionModel(events));
+      events.add(_used(2, _pro));
+      projection.reconcile(events);
+      expect(projection.processedEventCount, 3);
+      events.add(_used(3, _flash));
+      projection.reconcile(events);
+      expect(projection.next, _flash);
+      final olderWindow = [_selected(-1, _flash), ...events];
+      projection.reconcile(olderWindow);
+      expect(projection.next, nextSessionModel(olderWindow));
+      final otherSession = [_used(0, _pro)];
+      projection.reconcile(otherSession);
+      expect(projection.next, _pro);
+      otherSession.clear();
+      projection.reconcile(otherSession);
+      expect(projection.next, isNull);
+    },
+  );
+
   test('a blank Session leaves default selection to its caller', () {
     expect(nextSessionModel(const []), isNull);
     expect(

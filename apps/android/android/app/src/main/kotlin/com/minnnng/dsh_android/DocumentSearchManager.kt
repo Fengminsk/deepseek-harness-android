@@ -1,6 +1,7 @@
 package com.minnnng.dsh_android
 
 import android.content.Context
+import android.database.Cursor
 import android.net.Uri
 import android.os.CancellationSignal
 import android.os.OperationCanceledException
@@ -8,6 +9,7 @@ import android.os.SystemClock
 import android.provider.DocumentsContract
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.FileNotFoundException
 import java.io.IOException
 import java.nio.charset.CharacterCodingException
 import java.util.concurrent.CancellationException
@@ -94,6 +96,12 @@ class DocumentSearchManager(private val context: Context) {
         fun same(other: Entry) = uri == other.uri && name == other.name && mime == other.mime &&
             size == other.size && modified == other.modified
     }
+    internal class CursorValues(private val cursor: Cursor) : DocumentSearchColumns.Values {
+        override fun isNull(index: Int) = cursor.isNull(index)
+        override fun string(index: Int): String? = cursor.getString(index)
+        override fun longValue(index: Int) = cursor.getLong(index)
+        override fun intValue(index: Int) = cursor.getInt(index)
+    }
     private class Budget(val reason: String) : RuntimeException(reason)
 
     fun run(params: JSONObject): JSONObject {
@@ -134,10 +142,9 @@ class DocumentSearchManager(private val context: Context) {
                 checkAccess()
                 val result = resolver.query(uri, projection, null, null, null, job.signal)?.use { cursor ->
                     if (!cursor.moveToFirst()) throw IOException("Document moved or deleted")
-                    Entry(uri, relative, cursor.getString(1) ?: "", cursor.getString(2) ?: "",
-                        if (cursor.isNull(3)) null else cursor.getLong(3),
-                        if (cursor.isNull(4)) null else cursor.getLong(4),
-                        !cursor.isNull(5) && cursor.getInt(5) and DocumentsContract.Document.FLAG_VIRTUAL_DOCUMENT != 0, depth)
+                    val row = DocumentSearchColumns(cursor.columnNames, false,
+                        DocumentsContract.Document.FLAG_VIRTUAL_DOCUMENT).read(CursorValues(cursor))
+                    Entry(uri, relative, row.name, row.mime, row.size, row.modified, row.virtual, depth)
                 } ?: throw IOException("Document provider unavailable")
                 checkAccess()
                 return result
@@ -169,19 +176,20 @@ class DocumentSearchManager(private val context: Context) {
                         val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(entry.uri, DocumentsContract.getDocumentId(entry.uri))
                         val children = mutableListOf<Entry>()
                         resolver.query(childrenUri, projection, null, null, null, job.signal)?.use { cursor ->
+                            val columns = DocumentSearchColumns(cursor.columnNames, true,
+                                DocumentsContract.Document.FLAG_VIRTUAL_DOCUMENT)
+                            val values = CursorValues(cursor)
                             while (cursor.moveToNext()) {
                                 checkAccess()
                                 if (++entriesSeen > limits.maxEntries) throw Budget("entries")
-                                val name = cursor.getString(1) ?: ""
+                                val row = columns.read(values)
+                                val name = row.name
                                 if (name.isEmpty() || name.length > 1024 || name == "." || name == ".." ||
                                     name.contains('/') || name.contains('\\')) { skipPath(entry.path, "unsupported_name"); continue }
                                 val childPath = if (entry.path.isEmpty()) name else "${entry.path}/$name"
                                 if (childPath.length > 4096) { skipPath(entry.path, "path_length"); continue }
-                                val child = Entry(DocumentsContract.buildDocumentUriUsingTree(entry.uri, cursor.getString(0)),
-                                    childPath, name, cursor.getString(2) ?: "",
-                                    if (cursor.isNull(3)) null else cursor.getLong(3),
-                                    if (cursor.isNull(4)) null else cursor.getLong(4),
-                                    !cursor.isNull(5) && cursor.getInt(5) and DocumentsContract.Document.FLAG_VIRTUAL_DOCUMENT != 0, entry.depth + 1)
+                                val child = Entry(DocumentsContract.buildDocumentUriUsingTree(entry.uri, row.documentId),
+                                    childPath, name, row.mime, row.size, row.modified, row.virtual, entry.depth + 1)
                                 children.add(child)
                             }
                         } ?: throw IOException("Directory provider unavailable")
@@ -218,6 +226,13 @@ class DocumentSearchManager(private val context: Context) {
                             }
                         }
                         if (!before.same(info(entry.uri, entry.path, entry.depth))) { skip(entry, "changed"); continue }
+                        if (result.matches.isNotEmpty()) {
+                            // Some providers retain a document URI after moving the file. Re-resolve
+                            // the displayed relative path before publishing any match from that URI.
+                            val currentPath = try { access.document(root, entry.path, job.signal) }
+                                catch (_: FileNotFoundException) { null }
+                            if (currentPath != entry.uri) { skip(entry, "changed"); continue }
+                        }
                         for (match in result.matches) matches.put(JSONObject()
                             .put("path", entry.path).put("lineNumber", match.lineNumber)
                             .put("line", match.line).put("previewTruncated", match.previewTruncated))

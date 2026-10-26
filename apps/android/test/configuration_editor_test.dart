@@ -181,10 +181,95 @@ Json androidToolsFixture() {
         for (final name in values.keys)
           name: {
             'type': 'number',
-            'meta': {'min': 1, 'step': 1},
+            'meta': {
+              'min': name == 'shellOutputLimit' ? 1024 : 1,
+              'step': 1,
+              if (name == 'shellTimeoutMs') 'max': 3600000,
+              if (name == 'shellOutputLimit') 'max': 1048576,
+            },
           },
       },
     },
+  };
+}
+
+Json originalToolFixture(String namespace) {
+  final (values, schema) = switch (namespace) {
+    'tool-fs' => (
+      <String, dynamic>{
+        'read': true,
+        'readImage': true,
+        'write': true,
+        'edit': true,
+        'readLimit': 2000,
+      },
+      <String, dynamic>{
+        'read': {'type': 'boolean'},
+        'readImage': {'type': 'boolean'},
+        'write': {'type': 'boolean'},
+        'edit': {'type': 'boolean'},
+        'readLimit': {
+          'type': 'number',
+          'meta': {'min': 1, 'step': 1},
+        },
+      },
+    ),
+    'tool-web' => (
+      <String, dynamic>{'search': true, 'fetch': true, 'searchMaxResults': 5},
+      <String, dynamic>{
+        'search': {'type': 'boolean'},
+        'fetch': {'type': 'boolean'},
+        'searchMaxResults': {
+          'type': 'number',
+          'meta': {'min': 1, 'step': 1},
+        },
+      },
+    ),
+    'tool-fs-search' => (
+      <String, dynamic>{
+        'sampleOverCapGlobResults': true,
+        'globMaxResults': 200,
+      },
+      <String, dynamic>{
+        'sampleOverCapGlobResults': {'type': 'boolean'},
+        'globMaxResults': {
+          'type': 'number',
+          'meta': {'min': 1, 'step': 1},
+        },
+      },
+    ),
+    'tool-ask-user' => (
+      <String, dynamic>{'mode': 'timed', 'timeout': 120},
+      <String, dynamic>{
+        'mode': {
+          'type': 'union',
+          'list': [
+            {'type': 'const', 'value': 'legacy'},
+            {'type': 'const', 'value': 'timed'},
+          ],
+        },
+        'timeout': {
+          'type': 'union',
+          'list': [
+            {'type': 'const', 'value': -1},
+            {
+              'type': 'number',
+              'meta': {'min': 1, 'step': 1, 'max': 2147483},
+            },
+          ],
+        },
+      },
+    ),
+    _ => throw ArgumentError.value(namespace),
+  };
+  return {
+    'ns': namespace,
+    'revision': 7,
+    'base': cloneConfiguration(values),
+    'value': cloneConfiguration(values),
+    'user': {},
+    'secrets': [],
+    'schema': {'type': 'object', 'dict': schema},
   };
 }
 
@@ -280,6 +365,143 @@ void main() {
       )..addFont(rootBundle.load('fonts/MaterialIcons-Regular.otf'))).load();
     }
   });
+
+  testWidgets(
+    'original file and web capabilities are grouped switches with versioned writes',
+    (tester) async {
+      final runtime = SettingsRuntime(originalToolFixture('tool-fs'));
+      await openEditor(tester, runtime, width: 420);
+      expect(group('capabilities'), findsOneWidget);
+      expect(group('read-limits'), findsNothing);
+      await openGroup(tester, 'capabilities');
+      expect(find.byType(PocketSwitchRow), findsNWidgets(4));
+      expect(find.text('读取文件'), findsOneWidget);
+      expect(find.text('read'), findsNothing);
+      expect(find.text('高级 JSON 编辑'), findsNothing);
+      await tester.tap(field('write'));
+      await tester.pumpAndSettle();
+      expect(tester.widget<PocketSwitchRow>(field('write')).value, isFalse);
+      await back(tester);
+      expect(runtime.writes, isEmpty);
+      await tester.tap(find.byTooltip('保存并应用'));
+      await tester.pumpAndSettle();
+      expect(runtime.writes.single['expectedRevision'], 7);
+      expect(runtime.writes.single['ops'], [
+        {
+          'op': 'set',
+          'path': ['write'],
+          'value': false,
+        },
+      ]);
+      expect((runtime.remote['value'] as Json)['write'], isFalse);
+      expect(runtime.remote['revision'], 8);
+    },
+  );
+
+  testWidgets(
+    'original web and search booleans stay native while budgets remain secondary',
+    (tester) async {
+      for (final (namespace, groupId, switchCount, budgetGroup) in [
+        ('tool-web', 'web-capabilities', 2, 'web-limits'),
+        ('tool-fs-search', 'search-behavior', 1, 'search-limits'),
+      ]) {
+        final runtime = SettingsRuntime(originalToolFixture(namespace));
+        await openEditor(tester, runtime, width: 420);
+        expect(group(groupId), findsOneWidget);
+        expect(group(budgetGroup), findsNothing);
+        await openGroup(tester, groupId);
+        expect(find.byType(PocketSwitchRow), findsNWidgets(switchCount));
+        expect(find.byType(TextField), findsNothing);
+        await back(tester);
+        await tester.tap(find.text('高级设置'));
+        await tester.pumpAndSettle();
+        expect(group(budgetGroup), findsOneWidget);
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pumpAndSettle();
+      }
+    },
+  );
+
+  testWidgets(
+    'timed questions use a named choice page and stage exact DSH timeout',
+    (tester) async {
+      final runtime = SettingsRuntime(originalToolFixture('tool-ask-user'));
+      await openEditor(tester, runtime, width: 420);
+      expect(group('questions'), findsOneWidget);
+      await openGroup(tester, 'questions');
+      expect(summary(tester, 'mode'), '带超时的提问');
+      expect(summary(tester, 'timeout'), '2 分钟');
+      await tester.tap(field('mode'));
+      await tester.pumpAndSettle();
+      expect(find.text('常规提问'), findsOneWidget);
+      await back(tester);
+      await tester.tap(field('timeout'));
+      await tester.pumpAndSettle();
+      expect(find.text('等待用户回答'), findsOneWidget);
+      expect(find.text('值类型'), findsNothing);
+      expect(find.text('高级 JSON 编辑'), findsNothing);
+      await tester.tap(find.byKey(const ValueKey('ask-user-timeout:-1')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('完成编辑'));
+      await tester.pumpAndSettle();
+      expect(summary(tester, 'timeout'), '一直等待');
+      await back(tester);
+      expect(runtime.writes, isEmpty);
+      await tester.tap(find.byTooltip('保存并应用'));
+      await tester.pumpAndSettle();
+      expect(runtime.writes.single['expectedRevision'], 7);
+      expect(runtime.writes.single['ops'], [
+        {
+          'op': 'set',
+          'path': ['timeout'],
+          'value': -1,
+        },
+      ]);
+    },
+  );
+
+  testWidgets(
+    'timed question seconds remain editable across refresh and require revision merge',
+    (tester) async {
+      final runtime = SettingsRuntime(originalToolFixture('tool-ask-user'));
+      await openEditor(tester, runtime);
+      await openGroup(tester, 'questions');
+      await tester.tap(field('timeout'));
+      await tester.pumpAndSettle();
+      final input = find.byKey(const Key('structure-value'));
+      await tester.enterText(input, '0');
+      await tester.pumpAndSettle();
+      expect(find.text('请输入正整数秒数。'), findsWidgets);
+      runtime.remote['revision'] = 8;
+      (runtime.remote['value'] as Json)['timeout'] = 300;
+      await runtime.refreshForms();
+      await tester.pumpAndSettle();
+      expect(tester.widget<TextField>(input).controller!.text, '0');
+      expect(runtime.writes, isEmpty);
+      await tester.enterText(input, '45');
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('完成编辑'));
+      await tester.pumpAndSettle();
+      expect(summary(tester, 'timeout'), '45 秒');
+      await back(tester);
+      expect(runtime.writes, isEmpty);
+      await tester.tap(find.text('保留我的修改'));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('合并到草稿'));
+      await tester.tap(find.text('合并到草稿'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('保存并应用'));
+      await tester.pumpAndSettle();
+      expect(runtime.writes.single['expectedRevision'], 8);
+      expect(runtime.writes.single['ops'], [
+        {
+          'op': 'set',
+          'path': ['timeout'],
+          'value': 45,
+        },
+      ]);
+    },
+  );
 
   for (final brightness in Brightness.values) {
     for (final scale in [1.0, 1.8]) {
@@ -1408,7 +1630,7 @@ void main() {
               ),
             )
             .maxLines,
-        1,
+        isNull,
       );
       final rowElement = tester.element(field('baseURL'));
       await editField(tester, 'baseURL', 'https://local.example');
@@ -1697,5 +1919,70 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Agent'), findsOneWidget);
     expect(find.text('Agent 执行'), findsOneWidget);
+  });
+
+  testWidgets('Android Shell budgets use bounded choices and revisioned save', (
+    tester,
+  ) async {
+    final runtime = SettingsRuntime(androidToolsFixture());
+    await openEditor(tester, runtime, width: 390);
+    await openGroup(tester, 'shell');
+    expect(find.text('执行超时（毫秒）'), findsOneWidget);
+    expect(find.text('输出上限（字节）'), findsOneWidget);
+    await tester.tap(field('shellTimeoutMs'));
+    await tester.pumpAndSettle();
+    expect(find.text('1 分钟'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('android-shell-choice:120000')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('完成编辑'));
+    await tester.pumpAndSettle();
+    await tester.tap(field('shellOutputLimit'));
+    await tester.pumpAndSettle();
+    expect(find.text('64 KiB'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('android-shell-choice:262144')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('完成编辑'));
+    await tester.pumpAndSettle();
+    expect(runtime.writes, isEmpty);
+    await back(tester);
+    await tester.tap(find.byTooltip('保存并应用'));
+    await tester.pumpAndSettle();
+    expect(runtime.writes.single['expectedRevision'], 1);
+    expect(runtime.writes.single['ops'], [
+      {
+        'op': 'set',
+        'path': ['shellTimeoutMs'],
+        'value': 120000,
+      },
+      {
+        'op': 'set',
+        'path': ['shellOutputLimit'],
+        'value': 262144,
+      },
+    ]);
+  });
+
+  testWidgets('Android Shell choices enforce the original host bounds', (
+    tester,
+  ) async {
+    final runtime = SettingsRuntime(androidToolsFixture());
+    await openEditor(tester, runtime, width: 390);
+    await openGroup(tester, 'shell');
+    await tester.tap(field('shellOutputLimit'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('structure-value')), '512');
+    await tester.pumpAndSettle();
+    expect(find.text('数值不能小于 1024。'), findsOneWidget);
+    await tester.enterText(find.byKey(const Key('structure-value')), '262144');
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('完成编辑'));
+    await tester.pumpAndSettle();
+    await back(tester);
+    runtime.remote['revision'] = 2;
+    await tester.tap(find.byTooltip('保存并应用'));
+    await tester.pumpAndSettle();
+    expect(runtime.writes, isEmpty);
+    expect(runtime.remote['value']['shellOutputLimit'], 65536);
+    expect(find.textContaining('冲突'), findsWidgets);
   });
 }

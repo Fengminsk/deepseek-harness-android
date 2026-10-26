@@ -840,6 +840,10 @@ void main() {
             child: MaterialApp(
               debugShowCheckedModeBanner: false,
               theme: pocketTheme(brightness),
+              builder: (context, child) => MediaQuery(
+                data: MediaQuery.of(context).copyWith(disableAnimations: true),
+                child: child!,
+              ),
               home: LiquidGlassScope(
                 enabled: true,
                 child: RecoveryPage(controller: controller),

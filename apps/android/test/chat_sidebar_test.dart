@@ -178,6 +178,8 @@ void main() {
     expect(find.text('工作区'), findsOneWidget);
     expect(find.text('已归档任务'), findsNothing);
     expect(find.text('子 Agent 会话'), findsNothing);
+    expect(key('sidebar-subagents'), findsOneWidget);
+    expect(key('sidebar-more-subagents'), findsNothing);
     expect(find.text('已同步'), findsNothing);
     expect(runtime.library.synchronized, isTrue);
     expect(runtime.watches, hasLength(2));
@@ -228,7 +230,7 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 80));
       final first = tester.widget<SizeTransition>(key('sidebar-more-reveal:0'));
-      final last = tester.widget<SizeTransition>(key('sidebar-more-reveal:5'));
+      final last = tester.widget<SizeTransition>(key('sidebar-more-reveal:4'));
       expect(first.sizeFactor.value, greaterThan(0));
       expect(first.sizeFactor.value, lessThan(1));
       expect(last.sizeFactor.value, 0);

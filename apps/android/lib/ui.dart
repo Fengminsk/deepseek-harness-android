@@ -15,6 +15,7 @@ import 'flclash/button.dart';
 import 'flclash/input.dart';
 import 'flclash/switch.dart';
 import 'flclash/dashboard_card.dart';
+import 'flclash/daylight.dart';
 import 'flclash/floating_header.dart';
 import 'entry_motion.dart';
 
@@ -84,7 +85,13 @@ class GlassSurface extends StatelessWidget {
       : LiquidGlass(
           style: LiquidGlassStyle.regular(Theme.of(context).colorScheme),
           borderRadius: BorderRadius.circular(radius),
-          child: child,
+          child: CustomPaint(
+            painter: DaylightFinish(
+              shape: AppShape.all(radius),
+              dark: Theme.of(context).brightness == Brightness.dark,
+            ),
+            child: child,
+          ),
         );
 }
 
@@ -277,6 +284,8 @@ class _PocketScaffoldState extends State<PocketScaffold> {
             child: Stack(
               fit: StackFit.expand,
               children: [
+                if (LiquidGlassScope.of(context))
+                  const Positioned.fill(child: DaylightBackdrop()),
                 widget.body,
                 Positioned(
                   top: 0,
@@ -404,12 +413,58 @@ class _PocketInsets extends InheritedWidget {
       top != oldWidget.top || bottom != oldWidget.bottom;
 }
 
+/// Preserves a mounted list row when variable-height items are inserted above
+/// it. A lazy sliver's max extent is only an estimate until those rows have
+/// been laid out, so an extent delta alone is not a reliable scroll anchor.
+class PocketListAnchorController {
+  _PocketListState? _owner;
+  int _revision = 0;
+
+  PocketListAnchor? capture({int minIndex = 0}) =>
+      _owner?._captureAnchor(minIndex);
+
+  void restore(PocketListAnchor anchor, ScrollController scroll) {
+    final owner = _owner;
+    if (owner == null) return;
+    final revision = ++_revision;
+    void settle(int remaining, int stableFrames) {
+      if (_revision != revision || _owner != owner || !scroll.hasClients) {
+        return;
+      }
+      final moved = owner._alignAnchor(anchor, scroll);
+      final stable = moved ? 0 : stableFrames + 1;
+      if (remaining > 0 && stable < 2) {
+        WidgetsBinding.instance.addPostFrameCallback(
+          (_) => settle(remaining - 1, stable),
+        );
+        WidgetsBinding.instance.scheduleFrame();
+      }
+    }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) => settle(12, 0));
+  }
+
+  void cancel() => _revision++;
+
+  void dispose() {
+    cancel();
+    _owner = null;
+  }
+}
+
+class PocketListAnchor {
+  const PocketListAnchor._(this.identity, this.y);
+  final (Type, Object) identity;
+  final double y;
+}
+
 class PocketList extends StatefulWidget {
   const PocketList({
     super.key,
     required this.children,
     this.padding = const EdgeInsets.symmetric(horizontal: 20),
     this.controller,
+    this.anchorController,
   }) : itemBuilder = null,
        itemCount = null,
        findChildIndexCallback = null;
@@ -420,6 +475,7 @@ class PocketList extends StatefulWidget {
     this.findChildIndexCallback,
     this.padding = const EdgeInsets.symmetric(horizontal: 20),
     this.controller,
+    this.anchorController,
   }) : children = null;
   final List<Widget>? children;
   final IndexedWidgetBuilder? itemBuilder;
@@ -427,6 +483,7 @@ class PocketList extends StatefulWidget {
   final int? Function(Key)? findChildIndexCallback;
   final EdgeInsets padding;
   final ScrollController? controller;
+  final PocketListAnchorController? anchorController;
   @override
   State<PocketList> createState() => _PocketListState();
 }
@@ -435,6 +492,152 @@ class _PocketListState extends State<PocketList> {
   // Keep only identities, not widgets or buffers. Lazy rows may be disposed
   // outside the cache extent without becoming new content on the return trip.
   final _presented = <(Type, Object)>{};
+  final _mountedItems = <(Type, Object), _PocketListItemState>{};
+
+  @override
+  void initState() {
+    super.initState();
+    widget.anchorController?._owner = this;
+  }
+
+  @override
+  void didUpdateWidget(PocketList oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.anchorController != widget.anchorController) {
+      if (oldWidget.anchorController?._owner == this) {
+        oldWidget.anchorController
+          ?..cancel()
+          .._owner = null;
+      }
+      widget.anchorController?._owner = this;
+    }
+  }
+
+  @override
+  void dispose() {
+    if (widget.anchorController?._owner == this) {
+      widget.anchorController
+        ?..cancel()
+        .._owner = null;
+    }
+    _mountedItems.clear();
+    super.dispose();
+  }
+
+  void _register(_PocketListItemState item) {
+    _mountedItems[item.widget.identity] = item;
+  }
+
+  void _unregister(_PocketListItemState item) {
+    if (identical(_mountedItems[item.widget.identity], item)) {
+      _mountedItems.remove(item.widget.identity);
+    }
+  }
+
+  ({int index, double y, double height, double viewportHeight})? _geometry(
+    _PocketListItemState item,
+  ) {
+    // A lazy sliver can retain a child from its previous index for one or
+    // more frames after a prepend. Its old paint transform is not evidence of
+    // where that keyed row now belongs.
+    final key = item.widget.identity.$2;
+    if (key is Key &&
+        widget.findChildIndexCallback != null &&
+        widget.findChildIndexCallback!(key) != item.widget.index) {
+      return null;
+    }
+    final render = item.context.findRenderObject();
+    if (render is! RenderBox || !render.attached || !render.hasSize) {
+      return null;
+    }
+    final viewport = RenderAbstractViewport.maybeOf(render);
+    if (viewport == null || viewport is! RenderBox) {
+      return null;
+    }
+    final box = viewport as RenderBox;
+    if (!box.attached || !box.hasSize) return null;
+    return (
+      index: item.widget.index,
+      y: render.localToGlobal(Offset.zero, ancestor: box).dy,
+      height: render.size.height,
+      viewportHeight: box.size.height,
+    );
+  }
+
+  PocketListAnchor? _captureAnchor(int minIndex) {
+    _PocketListItemState? chosen;
+    double? bestY;
+    for (final item in _mountedItems.values) {
+      if (item.widget.index < minIndex) continue;
+      final geometry = _geometry(item);
+      if (geometry == null ||
+          geometry.y + geometry.height <= 0 ||
+          geometry.y >= geometry.viewportHeight) {
+        continue;
+      }
+      if (bestY == null || geometry.y < bestY) {
+        chosen = item;
+        bestY = geometry.y;
+      }
+    }
+    return chosen == null
+        ? null
+        : PocketListAnchor._(chosen.widget.identity, bestY!);
+  }
+
+  /// Returns true only when another layout pass could improve the estimate.
+  bool _alignAnchor(PocketListAnchor anchor, ScrollController scroll) {
+    final exact = _mountedItems[anchor.identity];
+    final measured = exact == null ? null : _geometry(exact);
+    if (measured != null) {
+      final delta = measured.y - anchor.y;
+      if (delta.abs() < .5) return false;
+      final position = scroll.position;
+      final target = (position.pixels + delta).clamp(
+        position.minScrollExtent,
+        position.maxScrollExtent,
+      );
+      if ((target - position.pixels).abs() < .5) return false;
+      scroll.jumpTo(target);
+      return true;
+    }
+
+    final key = anchor.identity.$2;
+    final targetIndex = key is Key
+        ? widget.findChildIndexCallback?.call(key)
+        : null;
+    if (targetIndex == null) return false;
+    final visible =
+        <({int index, double y, double height, double viewportHeight})>[];
+    for (final item in _mountedItems.values) {
+      final geometry = _geometry(item);
+      if (geometry != null &&
+          geometry.height > 0 &&
+          geometry.y + geometry.height > 0 &&
+          geometry.y < geometry.viewportHeight) {
+        visible.add(geometry);
+      }
+    }
+    if (visible.isEmpty) return false;
+    visible.sort(
+      (a, b) => (a.index - targetIndex).abs().compareTo(
+        (b.index - targetIndex).abs(),
+      ),
+    );
+    final nearest = visible.first;
+    final extent =
+        visible.map((item) => item.height).reduce((a, b) => a + b) /
+        visible.length;
+    final estimate = nearest.y + (targetIndex - nearest.index) * extent;
+    final position = scroll.position;
+    final target = (position.pixels + estimate - anchor.y).clamp(
+      position.minScrollExtent,
+      position.maxScrollExtent,
+    );
+    if ((target - position.pixels).abs() < .5) return false;
+    scroll.jumpTo(target);
+    return true;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -482,6 +685,8 @@ class _PocketListState extends State<PocketList> {
       key: _PocketListItemKey(identity),
       presented: _presented,
       identity: identity,
+      index: index,
+      owner: widget.anchorController == null ? null : this,
       child: child,
     );
   }
@@ -496,10 +701,14 @@ class _PocketListItem extends StatefulWidget {
     super.key,
     required this.presented,
     required this.identity,
+    required this.index,
+    required this.owner,
     required this.child,
   });
   final Set<(Type, Object)> presented;
   final (Type, Object) identity;
+  final int index;
+  final _PocketListState? owner;
   final Widget child;
   @override
   State<_PocketListItem> createState() => _PocketListItemState();
@@ -508,6 +717,28 @@ class _PocketListItem extends StatefulWidget {
 class _PocketListItemState extends State<_PocketListItem> {
   // Recording belongs to mount, not the eager ListView's widget construction.
   late final animate = widget.presented.add(widget.identity);
+
+  @override
+  void initState() {
+    super.initState();
+    widget.owner?._register(this);
+  }
+
+  @override
+  void didUpdateWidget(_PocketListItem oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.owner != widget.owner ||
+        oldWidget.identity != widget.identity) {
+      oldWidget.owner?._unregister(this);
+      widget.owner?._register(this);
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.owner?._unregister(this);
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) =>
@@ -675,31 +906,36 @@ class PocketSection extends StatelessWidget {
                     ),
               ),
             ),
-          Material(
-            color: Theme.of(context).colorScheme.surfaceContainerLow,
+          DaylightSurface(
             shape: AppShape.xl,
-            clipBehavior: Clip.antiAlias,
-            child: _PocketGroup(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  for (var i = 0; i < children.length; i++) ...[
-                    if (i > 0 &&
-                        (divided ||
-                            (children[i - 1] is PocketRow &&
-                                children[i] is PocketRow)))
-                      Padding(
-                        padding: const EdgeInsets.only(left: 56, right: 18),
-                        child: Divider(
-                          height: 1,
-                          thickness: .5,
-                          color: Theme.of(context).colorScheme.outlineVariant
-                              .withValues(alpha: .4),
+            color: Theme.of(context).colorScheme.surfaceContainerLow,
+            enabled: LiquidGlassScope.of(context),
+            child: Material(
+              type: MaterialType.transparency,
+              shape: AppShape.xl,
+              clipBehavior: Clip.antiAlias,
+              child: _PocketGroup(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    for (var i = 0; i < children.length; i++) ...[
+                      if (i > 0 &&
+                          (divided ||
+                              (children[i - 1] is PocketRow &&
+                                  children[i] is PocketRow)))
+                        Padding(
+                          padding: const EdgeInsets.only(left: 56, right: 18),
+                          child: Divider(
+                            height: 1,
+                            thickness: .5,
+                            color: Theme.of(context).colorScheme.outlineVariant
+                                .withValues(alpha: .4),
+                          ),
                         ),
-                      ),
-                    children[i],
+                      children[i],
+                    ],
                   ],
-                ],
+                ),
               ),
             ),
           ),

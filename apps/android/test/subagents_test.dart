@@ -12,6 +12,8 @@ import 'subagents_data_test.dart' as fixture;
 class _Runtime extends fixture.SubagentsRuntime {
   bool failSend = false;
   String mode = 'continuable';
+  Json? catalogOverride, inspectionOverride;
+  Completer<Json>? pendingInspection;
   Json catalog(String parent) => {
     'parentSessionId': parent,
     'parentAvailable': true,
@@ -45,16 +47,18 @@ class _Runtime extends fixture.SubagentsRuntime {
     calls.add((method, params));
     switch (method) {
       case 'subagents.catalog':
-        return catalog(params['parentSessionId'] as String);
+        return catalogOverride ?? catalog(params['parentSessionId'] as String);
       case 'subagents.inspect':
-        return fixture.inspection(
-          mode: mode,
-          canPrompt: mode == 'continuable',
-          reason: mode == 'one-shot' ? 'one-shot' : null,
-          submission: params['requestId'] == null
-              ? null
-              : {'requestId': params['requestId'], 'state': 'not-observed'},
-        );
+        if (pendingInspection != null) return pendingInspection!.future;
+        return inspectionOverride ??
+            fixture.inspection(
+              mode: mode,
+              canPrompt: mode == 'continuable',
+              reason: mode == 'one-shot' ? 'one-shot' : null,
+              submission: params['requestId'] == null
+                  ? null
+                  : {'requestId': params['requestId'], 'state': 'not-observed'},
+            );
       case 'subagents.send':
         if (failSend) throw TimeoutException('lost acknowledgement');
         return {'messageId': 'accepted'};
@@ -236,6 +240,81 @@ void main() {
         isTrue,
       );
       expect(tester.takeException(), isNull);
+      await close(tester);
+    },
+  );
+
+  testWidgets(
+    'catalog row with another parent is inert and never inspects a child',
+    (tester) async {
+      final runtime = _Runtime();
+      addTearDown(runtime.dispose);
+      runtime.catalogOverride = {
+        ...runtime.catalog('parent'),
+        'entries': [
+          {
+            'id': 'child',
+            'label': '错误归属',
+            'mode': 'continuable',
+            'address': {...fixture.address.json, 'parentSessionId': 'other'},
+          },
+        ],
+      };
+      await open(
+        tester,
+        SubagentsPage(runtime: runtime, parentSessionId: 'parent'),
+      );
+      expect(find.text('父子会话地址不一致，不能打开此条目。'), findsOneWidget);
+      await tap(tester, find.text('错误归属'));
+      expect(find.byType(SubagentConversationPage), findsNothing);
+      expect(
+        runtime.calls.where((call) => call.$1 == 'subagents.inspect'),
+        isEmpty,
+      );
+      await close(tester);
+    },
+  );
+
+  testWidgets('expired child inspection cannot open stale catalog history', (
+    tester,
+  ) async {
+    final runtime = _Runtime();
+    addTearDown(runtime.dispose);
+    runtime.inspectionOverride = {
+      ...fixture.inspection(),
+      'address': {...fixture.address.json, 'childSessionId': 'different'},
+    };
+    await open(
+      tester,
+      SubagentsPage(runtime: runtime, parentSessionId: 'parent'),
+    );
+    await tap(tester, find.text('文件分析员'));
+    expect(find.byType(SubagentConversationPage), findsNothing);
+    expect(find.textContaining('子会话地址已失效'), findsOneWidget);
+    expect(
+      runtime.calls.where((call) => call.$1 == 'subagents.inspect'),
+      hasLength(1),
+    );
+    await close(tester);
+  });
+
+  testWidgets(
+    'pending child open is discarded after parent runtime disconnects',
+    (tester) async {
+      final runtime = _Runtime()..pendingInspection = Completer<Json>();
+      addTearDown(runtime.dispose);
+      await open(
+        tester,
+        SubagentsPage(runtime: runtime, parentSessionId: 'parent'),
+      );
+      await tester.tap(find.text('文件分析员'));
+      await tester.pump();
+      runtime.phase = 'restarting';
+      runtime.notifyListeners();
+      runtime.pendingInspection!.complete(fixture.inspection());
+      await tester.pumpAndSettle();
+      expect(find.byType(SubagentConversationPage), findsNothing);
+      expect(find.textContaining('服务尚未就绪'), findsOneWidget);
       await close(tester);
     },
   );

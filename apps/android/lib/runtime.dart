@@ -16,7 +16,23 @@ import 'models_data.dart';
 
 typedef Json = Map<String, dynamic>;
 
+/// The native transcript keeps one bounded loaded window and a fixed read cut.
+class SessionHistoryWindow {
+  SessionHistoryWindow({
+    required this.throughSeq,
+    required this.firstSeq,
+    required this.hasMore,
+    required this.generation,
+  });
+  final int throughSeq;
+  int? firstSeq;
+  bool hasMore;
+  final int generation;
+  bool loading = false;
+}
+
 class RuntimeController extends ChangeNotifier {
+  static const configurationReadTimeout = Duration(seconds: 20);
   static const channel = MethodChannel('dsh/runtime');
   static const events = EventChannel('dsh/events');
   StreamSubscription<dynamic>? _subscription;
@@ -28,6 +44,36 @@ class RuntimeController extends ChangeNotifier {
   int _webRead = 0;
   List<Json> sessions = [];
   List<Json> forms = [];
+  Future<dynamic>? _configurationRead;
+  (int, Object)? _configurationReadKey;
+
+  /// Share only an in-flight authoritative read, never a cached permission or
+  /// revision. Reconnects, replaced catalogs and writes fence older flights.
+  Future<dynamic> describeConfiguration() {
+    final key = (connectionGeneration, forms);
+    if (_configurationReadKey == key && _configurationRead != null) {
+      return _configurationRead!;
+    }
+    _configurationReadKey = key;
+    late final Future<dynamic> operation;
+    operation =
+        call('api.call', {
+          'namespace': 'settings',
+          'method': 'describe',
+          'args': <String, dynamic>{},
+        }).timeout(configurationReadTimeout).whenComplete(() {
+          if (identical(_configurationRead, operation)) {
+            _configurationRead = null;
+          }
+        });
+    return _configurationRead = operation;
+  }
+
+  void invalidateConfigurationRead() {
+    _configurationRead = null;
+    _configurationReadKey = null;
+  }
+
   List<Json> interactions = [];
   String? interactionsError;
   int _interactionsRevision = -1;
@@ -111,18 +157,27 @@ class RuntimeController extends ChangeNotifier {
 
   final _remoteEvents = StreamController<Json>.broadcast(sync: true);
   Stream<Json> get remoteEvents => _remoteEvents.stream;
+  final _liveSessionEvents = StreamController<Json>.broadcast(sync: true);
+
+  /// Newly delivered Session events only. History reads never enter this feed.
+  Stream<Json> get liveSessionEvents => _liveSessionEvents.stream;
   late final AppApiStreams _apiStreams = AppApiStreams(
     (method, params) => call(method, params),
   );
   final Map<String, List<Json>> timelines = {};
+  final Map<String, SessionHistoryWindow> historyWindows = {};
   final Map<String, int> _timelineGenerations = {};
   final Map<String, Object> _historyReads = {};
+  final Set<String> _replacedHistory = {};
+  final Map<String, ({int generation, List<Json> events})> _unreadLiveEvents =
+      {};
   final Map<String, String> streaming = {};
   final Map<String, Json> liveMessages = {};
   final Map<String, String> statuses = {};
   final Map<String, String> sessionErrors = {};
   Json taskState = {};
   List<Json> taskSessions = [];
+  List<Json>? taskJobs;
   int? tasksNextOffset;
   String? tasksError;
   Future<void>? _tasksRefresh;
@@ -237,11 +292,16 @@ class RuntimeController extends ChangeNotifier {
     }
   }
 
+  void _advanceConnectionGeneration() {
+    _connectionGeneration++;
+    _unreadLiveEvents.clear();
+  }
+
   void fail(Object exception) {
     _bindingDisconnected = false;
     _statusRevision++;
     _wakeResume();
-    _connectionGeneration++;
+    _advanceConnectionGeneration();
     error = '$exception';
     phase = 'failed';
     _invalidateWeb();
@@ -262,8 +322,24 @@ class RuntimeController extends ChangeNotifier {
             final id = data['sessionId'] as String;
             final event = data['event'] as Json;
             final timeline = timelines.putIfAbsent(id, () => []);
+            // A confirmed replacement must not bring old display rows back
+            // when the repaired history is read. Retain only new notifications.
+            if (_replacedHistory.contains(id)) {
+              final pending = _unreadLiveEvents[id];
+              final events = pending?.generation == _connectionGeneration
+                  ? pending!.events
+                  : <Json>[];
+              if (!events.any((item) => item['seq'] == event['seq'])) {
+                events.add(event);
+              }
+              _unreadLiveEvents[id] = (
+                generation: _connectionGeneration,
+                events: events,
+              );
+            }
             if (!timeline.any((item) => item['seq'] == event['seq'])) {
               timeline.add(event);
+              _liveSessionEvents.add({'sessionId': id, 'event': event});
             }
             if (event['type'] == 'assistant/message') streaming.remove(id);
           case 'session.stream':
@@ -332,7 +408,7 @@ class RuntimeController extends ChangeNotifier {
     final newProcess =
         !disconnected && (changedProcess || nextPhase == 'starting');
     if (disconnected || newProcess || (ready && nextPhase != 'ready')) {
-      _connectionGeneration++;
+      _advanceConnectionGeneration();
       _interactionsRevision = -1;
       _apiStreams.setReady(false);
       _markLiveUnconfirmed();
@@ -341,7 +417,9 @@ class RuntimeController extends ChangeNotifier {
     if (newProcess) {
       // These projections belong to one native process. A transient disconnect
       // may retain them as unconfirmed; a new process must supply a new baseline.
+      _replacedHistory.addAll(timelines.keys);
       taskState = {};
+      taskJobs = null;
       liveMessages.clear();
       statuses.clear();
       streaming.clear();
@@ -456,7 +534,7 @@ class RuntimeController extends ChangeNotifier {
               // Binder absence is not proof of a new Node process. Preserve
               // existing projections as unconfirmed until native status arrives.
               _statusRevision++;
-              _connectionGeneration++;
+              _advanceConnectionGeneration();
               _bindingDisconnected = true;
               phase = 'starting';
               error = null;
@@ -510,8 +588,10 @@ class RuntimeController extends ChangeNotifier {
     _invalidateWeb();
     error = null;
     _interactionsRevision = -1;
-    _connectionGeneration++;
+    _replacedHistory.addAll(timelines.keys);
+    _advanceConnectionGeneration();
     taskState = {};
+    taskJobs = null;
     _markLiveUnconfirmed();
     statuses.clear();
     streaming.clear();
@@ -542,22 +622,52 @@ class RuntimeController extends ChangeNotifier {
     return decoded;
   }
 
-  Future<void> refreshForms() async {
-    final generation = _connectionGeneration;
-    final next = (await call('settings.describe') as List).cast<Json>();
-    if (_disposed || generation != _connectionGeneration) return;
-    forms = next;
-    for (final form in forms) {
-      if (form['ns'] == 'agent-default-model' && form['value'] is Json) {
-        final selected = form['value'] as Json;
-        if (selected['provider'] is String && selected['model'] is String) {
-          provider = selected['provider'] as String;
-          model = selected['model'] as String;
-          reasoningEffort = selected['reasoningEffort'] as String?;
-        }
-      }
+  Future<void>? _formsRefresh;
+  int? _formsRefreshConnection;
+  bool _formsRefreshAgain = false;
+
+  Future<void> refreshForms() {
+    final generation = connectionGeneration;
+    if (_formsRefresh != null && _formsRefreshConnection == generation) {
+      _formsRefreshAgain = true;
+      return _formsRefresh!;
     }
-    notifyListeners();
+    _formsRefreshConnection = generation;
+    bool current() => !_disposed && generation == connectionGeneration;
+    late final Future<void> operation;
+    operation =
+        () async {
+          do {
+            _formsRefreshAgain = false;
+            final next = (await call(
+              'settings.describe',
+            ).timeout(configurationReadTimeout) as List).cast<Json>();
+            if (!current()) return;
+            // A newer invalidation arrived during this read. Read once more before
+            // publishing, rather than exposing an intermediate stale catalog.
+            if (_formsRefreshAgain) continue;
+            forms = next;
+            for (final form in forms) {
+              if (form['ns'] == 'agent-default-model' &&
+                  form['value'] is Json) {
+                final selected = form['value'] as Json;
+                if (selected['provider'] is String &&
+                    selected['model'] is String) {
+                  provider = selected['provider'] as String;
+                  model = selected['model'] as String;
+                  reasoningEffort = selected['reasoningEffort'] as String?;
+                }
+              }
+            }
+            notifyListeners();
+          } while (_formsRefreshAgain && current());
+        }().whenComplete(() async {
+          if (!identical(_formsRefresh, operation)) return;
+          _formsRefresh = null;
+          // An invalidation can land between the loop exit and this completion.
+          if (_formsRefreshAgain && current()) await refreshForms();
+        });
+    return _formsRefresh = operation;
   }
 
   Future<void> refresh() async {
@@ -607,10 +717,10 @@ class RuntimeController extends ChangeNotifier {
     }
   }
 
-  void _applyTasks(Json snapshot) {
+  bool _applyTasks(Json snapshot) {
     if (snapshot['epoch'] == taskState['epoch'] &&
         (snapshot['revision'] as int) < (taskState['revision'] as int? ?? -1)) {
-      return;
+      return false;
     }
     taskState = {
       'epoch': snapshot['epoch'],
@@ -618,6 +728,7 @@ class RuntimeController extends ChangeNotifier {
       'summary': snapshot['summary'],
       'active': snapshot['active'],
     };
+    return true;
   }
 
   Future<void> refreshTasks() {
@@ -638,8 +749,9 @@ class RuntimeController extends ChangeNotifier {
     try {
       final snapshot = await call('tasks.list') as Json;
       if (generation != _connectionGeneration) return;
-      _applyTasks(snapshot);
+      if (!_applyTasks(snapshot)) return;
       taskSessions = (snapshot['sessions'] as List).cast<Json>();
+      taskJobs = (snapshot['jobs'] as List?)?.cast<Json>();
       tasksNextOffset = snapshot['nextOffset'] as int?;
       tasksError = null;
     } catch (failure) {
@@ -656,7 +768,8 @@ class RuntimeController extends ChangeNotifier {
     final generation = _connectionGeneration;
     final snapshot = await call('tasks.list', {'offset': offset}) as Json;
     if (generation != _connectionGeneration) return;
-    _applyTasks(snapshot);
+    if (!_applyTasks(snapshot)) return;
+    taskJobs = (snapshot['jobs'] as List?)?.cast<Json>();
     final byId = {for (final row in taskSessions) row['sessionId']: row};
     for (final row in (snapshot['sessions'] as List).cast<Json>()) {
       byId[row['sessionId']] = row;
@@ -830,6 +943,7 @@ class RuntimeController extends ChangeNotifier {
     final id =
         'android-${DateTime.now().microsecondsSinceEpoch}-${random.nextInt(1 << 30)}';
     timelines[id] = [];
+    historyWindows.remove(id);
     _timelineGenerations[id] = _connectionGeneration;
     return id;
   }
@@ -843,6 +957,104 @@ class RuntimeController extends ChangeNotifier {
         !_disposed &&
         generation == _connectionGeneration &&
         identical(_historyReads[id], read);
+    late final Json window;
+    try {
+      window = await call('session.readWindow', {'sessionId': id}) as Json;
+      if (!current()) return;
+      final accumulated = (window['events'] as List).cast<Json>().toList();
+      final firstSeq = window['firstSeq'] as int?;
+      final throughSeq = window['throughSeq'] as int;
+      if (accumulated.isNotEmpty && firstSeq != accumulated.first['seq']) {
+        throw StateError('Session window has an invalid first sequence');
+      }
+      // A transient disconnect may resume the same process and keep its
+      // displayed rows. A confirmed replacement instead trusts only the
+      // repaired history and notifications from the replacement process.
+      final seen = {for (final event in accumulated) event['seq'] as int};
+      final pending = _unreadLiveEvents[id];
+      final currentEvents = _replacedHistory.contains(id)
+          ? pending?.generation == generation
+                ? pending!.events
+                : <Json>[]
+          : timelines[id] ?? <Json>[];
+      for (final event in currentEvents) {
+        final seq = event['seq'] as int;
+        if (seq >= (firstSeq ?? 0) && seen.add(seq)) {
+          accumulated.add(event);
+        }
+      }
+      accumulated.sort((a, b) => (a['seq'] as int).compareTo(b['seq'] as int));
+      timelines[id] = accumulated;
+      historyWindows[id] = SessionHistoryWindow(
+        throughSeq: throughSeq,
+        firstSeq: firstSeq,
+        hasMore: window['hasMore'] == true,
+        generation: generation,
+      );
+      _timelineGenerations[id] = generation;
+      _replacedHistory.remove(id);
+      _unreadLiveEvents.remove(id);
+      notifyListeners();
+    } catch (_) {
+      if (current()) rethrow;
+    } finally {
+      if (identical(_historyReads[id], read)) _historyReads.remove(id);
+    }
+  }
+
+  /// Prepend one original Turn-aware page. The caller owns the visual anchor;
+  /// no listener notification should make the chat shell follow the tail.
+  Future<int> loadOlderSession(String id) async {
+    final window = historyWindows[id];
+    final timeline = timelines[id];
+    if (window == null ||
+        timeline == null ||
+        !window.hasMore ||
+        window.firstSeq == null ||
+        window.loading ||
+        window.generation != _connectionGeneration) {
+      return 0;
+    }
+    window.loading = true;
+    try {
+      final page = await call('session.readWindow', {
+        'sessionId': id,
+        'throughSeq': window.throughSeq,
+        'beforeSeq': window.firstSeq,
+      }) as Json;
+      if (_disposed ||
+          window.generation != _connectionGeneration ||
+          !identical(historyWindows[id], window) ||
+          !identical(timelines[id], timeline)) {
+        return 0;
+      }
+      final records = (page['events'] as List).cast<Json>();
+      final nextFirst = page['firstSeq'] as int?;
+      if (records.isEmpty ||
+          nextFirst == null ||
+          nextFirst >= window.firstSeq! ||
+          records.first['seq'] != nextFirst) {
+        throw StateError('Older Session page did not advance');
+      }
+      final newEvents = records
+          .where((event) => (event['seq'] as int) < window.firstSeq!)
+          .toList();
+      if (newEvents.isEmpty) {
+        throw StateError('Older Session page overlaps the loaded window');
+      }
+      timeline.insertAll(0, newEvents);
+      window.firstSeq = nextFirst;
+      window.hasMore = page['hasMore'] == true;
+      return newEvents.length;
+    } finally {
+      window.loading = false;
+    }
+  }
+
+  /// Audit surfaces explicitly requesting the complete ledger retain the
+  /// original stable-snapshot reader. Chat itself uses bounded windows.
+  Future<List<Json>> readCompleteSession(String id) async {
+    final generation = _connectionGeneration;
     final accumulated = <Json>[];
     var offset = 0;
     String? snapshot;
@@ -851,26 +1063,15 @@ class RuntimeController extends ChangeNotifier {
         final request = <String, dynamic>{'sessionId': id, 'offset': offset};
         if (snapshot != null) request['snapshot'] = snapshot;
         final page = await call('session.read', request) as Json;
+        if (_disposed || generation != _connectionGeneration) {
+          throw StateError('Session history reader changed during the audit');
+        }
         snapshot = page['snapshot'] as String?;
-        if (!current()) return;
         final records = (page['events'] as List).cast<Json>();
         accumulated.addAll(records);
-        if (records.length < 200) break;
+        if (records.length < 200) return accumulated;
         offset = (records.last['seq'] as int) + 1;
       }
-      // Merge notifications received while the historical pages were loading.
-      final seen = {for (final event in accumulated) event['seq'] as int};
-      for (final event in timelines[id] ?? <Json>[]) {
-        if (seen.add(event['seq'] as int)) {
-          accumulated.add(event);
-        }
-      }
-      accumulated.sort((a, b) => (a['seq'] as int).compareTo(b['seq'] as int));
-      timelines[id] = accumulated;
-      _timelineGenerations[id] = generation;
-      notifyListeners();
-    } catch (_) {
-      if (current()) rethrow;
     } finally {
       if (snapshot != null) {
         try {
@@ -879,10 +1080,9 @@ class RuntimeController extends ChangeNotifier {
             'snapshot': snapshot,
           });
         } catch (_) {
-          // A disconnected runtime also releases all in-memory snapshots.
+          // A disconnected runtime also releases temporary snapshots.
         }
       }
-      if (identical(_historyReads[id], read)) _historyReads.remove(id);
     }
   }
 
@@ -935,7 +1135,7 @@ class RuntimeController extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _cancelResume();
-    _connectionGeneration++;
+    _advanceConnectionGeneration();
     _plugins?.dispose();
     _library?.dispose();
     _credentials?.dispose();
@@ -946,6 +1146,7 @@ class RuntimeController extends ChangeNotifier {
     unawaited(_subscription?.cancel());
     unawaited(_apiStreams.close());
     unawaited(_remoteEvents.close());
+    unawaited(_liveSessionEvents.close());
     super.dispose();
   }
 }

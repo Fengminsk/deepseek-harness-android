@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/tasks.dart';
+import 'package:dsh_android/jobs.dart';
 import 'package:dsh_android/subagents.dart';
 import 'package:dsh_android/ui.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -43,6 +44,23 @@ class _TasksRuntime extends RuntimeController {
   bool rejectStop = false;
   Completer<void>? stopResponse;
   Json? inspectedChild;
+  StreamController<Json>? jobFeed;
+  Json? jobFollowArgs;
+
+  @override
+  Stream<Json> watchApi(
+    String namespace,
+    String method, {
+    Json args = const {},
+    Json Function()? resumeArgs,
+  }) {
+    if (namespace != 'job' || method != 'follow') {
+      throw StateError('Unexpected job stream');
+    }
+    jobFollowArgs = (resumeArgs ?? () => args)();
+    jobFeed = StreamController<Json>(sync: true);
+    return jobFeed!.stream;
+  }
 
   @override
   Future<void> refreshLive() async {}
@@ -85,6 +103,41 @@ Widget _host(RuntimeController runtime) => MaterialApp(
 );
 
 void main() {
+  testWidgets(
+    'global task center opens an owned independent job without visiting its chat',
+    (tester) async {
+      final runtime = _TasksRuntime()
+        ..taskJobs = [
+          {
+            'id': 'bash-global',
+            'kind': 'bash',
+            'label': '后台构建',
+            'owner': 'task-a',
+            'status': 'running',
+            'progress': '3/10',
+            'startedAt': 1,
+            'output': {'earliest': 0, 'total': 0},
+          },
+        ];
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox());
+        await runtime.jobFeed?.close();
+        runtime.dispose();
+      });
+      await tester.pumpWidget(_host(runtime));
+      await tester.pumpAndSettle();
+      expect(find.text('独立后台作业'), findsOneWidget);
+      expect(find.text('后台构建'), findsOneWidget);
+      expect(find.textContaining('3/10'), findsOneWidget);
+      await tester.tap(find.text('后台构建'));
+      await tester.pumpAndSettle();
+      expect(find.byType(JobOutputPage), findsOneWidget);
+      expect(runtime.jobFollowArgs, {
+        'request': {'sessionId': 'task-a', 'jobId': 'bash-global'},
+      });
+    },
+  );
+
   testWidgets('task page reads last interruption without replaying task work', (
     tester,
   ) async {

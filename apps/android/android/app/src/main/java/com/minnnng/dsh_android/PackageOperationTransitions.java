@@ -79,7 +79,7 @@ public final class PackageOperationTransitions implements AutoCloseable {
                 return;
             }
             if (!reply.accepted()) { end(pending, reply); return; }
-            if (reply.epoch() == null || reply.epoch().isBlank() || !"reserved".equals(reply.state())) {
+            if (reply.epoch() == null || AndroidJava28.isBlank(reply.epoch()) || !"reserved".equals(reply.state())) {
                 end(pending, denied("runtime/transition-unconfirmed", "服务切换预留结果未确认，旧服务保持运行"));
                 return;
             }

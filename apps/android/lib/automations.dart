@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:material_ui/material_ui.dart';
 
+import 'automation_recurrence.dart';
 import 'automations_data.dart';
 import 'confirmation.dart';
 import 'runtime.dart';
@@ -255,10 +256,11 @@ class _AutomationDetailPageState extends State<AutomationDetailPage> {
       if (result['code'] != null) {
         error = automationError(result['code'] as String);
       } else {
-        // A catalog refresh can already show a newer committed record.
-        final saved =
-            (catalog.current ? current : null) ??
-            {...draft.base, ...(result['record'] as Json)};
+        // The write receipt names the committed record. A catalog readback may
+        // lag behind it and must not revert the editor to the previous rule.
+        final saved = result['record'] is Json
+            ? {...draft.base, ...(result['record'] as Json)}
+            : (catalog.current ? current : null) ?? draft.base;
         draft.reset(saved);
         syncFields();
         notice = '已保存任务。';
@@ -322,6 +324,53 @@ class _AutomationDetailPageState extends State<AutomationDetailPage> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) Navigator.pop(context);
     });
+  }
+
+  Future<void> chooseRepeat() async {
+    if (!editable) return;
+    final selection = await Navigator.push<AutomationRepeatSelection>(
+      context,
+      PocketRoute(
+        builder: (_) => AutomationRepeatPage(
+          kind: draft.values['kind']!,
+          weekdays: draft.values['weekdays']!,
+        ),
+      ),
+    );
+    if (!mounted || selection == null) return;
+    setState(() {
+      draft.values['kind'] = selection.kind;
+      if (selection.weekdays != null) {
+        draft.values['weekdays'] = selection.weekdays!;
+      }
+    });
+  }
+
+  Future<void> chooseInterval() async {
+    if (!editable) return;
+    final seconds = await Navigator.push<int>(
+      context,
+      PocketRoute(
+        builder: (_) => AutomationIntervalPage(
+          seconds: draft.values['seconds']!,
+        ),
+      ),
+    );
+    if (!mounted || seconds == null) return;
+    fields['seconds']!.text = '$seconds';
+  }
+
+  Future<void> chooseWeekdays() async {
+    if (!editable) return;
+    final weekdays = await Navigator.push<String>(
+      context,
+      PocketRoute(
+        builder: (_) =>
+            AutomationWeekdaysPage(weekdays: draft.values['weekdays']!),
+      ),
+    );
+    if (!mounted || weekdays == null) return;
+    setState(() => draft.values['weekdays'] = weekdays);
   }
 
   Widget input(String key, String label, {String? hint, int lines = 1}) =>
@@ -428,30 +477,14 @@ class _AutomationDetailPageState extends State<AutomationDetailPage> {
               PocketSection(
                 title: '执行规则',
                 children: [
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(20, 4, 20, 16),
-                    child: Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: [
-                        for (final entry in const {
-                          'at': '单次',
-                          'every': '固定间隔',
-                          'daily': '每天',
-                          'weekly': '每周',
-                          'cron': 'Cron',
-                        }.entries)
-                          PocketChoice(
-                            label: Text(entry.value),
-                            selected: kind == entry.key,
-                            onSelected: editable
-                                ? (_) => setState(
-                                    () => draft.values['kind'] = entry.key,
-                                  )
-                                : null,
-                          ),
-                      ],
+                  PocketRow(
+                    icon: Icons.repeat_rounded,
+                    title: '重复',
+                    subtitle: automationRepeatLabel(
+                      kind!,
+                      draft.values['weekdays']!,
                     ),
+                    onTap: editable ? chooseRepeat : null,
                   ),
                   if (kind == 'at') input('date', '日期', hint: 'YYYY-MM-DD'),
                   if (kind == 'at' || kind == 'daily' || kind == 'weekly')
@@ -463,48 +496,25 @@ class _AutomationDetailPageState extends State<AutomationDetailPage> {
                       '单次任务以 UTC 显示已保存的时刻；修改时按上方明确指定的时区解释。',
                     ),
                   if (kind == 'every')
-                    input('seconds', '间隔秒数', hint: '至少 60 秒'),
+                    PocketRow(
+                      icon: Icons.timer_outlined,
+                      title: '重复间隔',
+                      subtitle: automationIntervalSummary(draft.values['seconds']!),
+                      onTap: editable ? chooseInterval : null,
+                    ),
                   if (kind == 'cron') ...[
                     input('expression', 'Cron 表达式', hint: '分 时 日 月 星期'),
                     const AutomationNotice('使用原版五字段 Cron 规则，时区与有效性由本地服务校验。'),
                   ],
                   if (kind == 'weekly')
-                    Padding(
-                      padding: const EdgeInsets.all(20),
-                      child: Wrap(
-                        spacing: 8,
-                        runSpacing: 8,
-                        children: [
-                          for (var day = 1; day <= 7; day++)
-                            PocketChoice(
-                              label: Text(
-                                const ['一', '二', '三', '四', '五', '六', '日'][day -
-                                    1],
-                              ),
-                              selected: draft.values['weekdays']!
-                                  .split(',')
-                                  .contains('$day'),
-                              onSelected: editable
-                                  ? (_) {
-                                      final days = draft.values['weekdays']!
-                                          .split(',')
-                                          .map(int.parse)
-                                          .toSet();
-                                      if (!days.remove(day)) {
-                                        days.add(day);
-                                      } else if (days.isEmpty) {
-                                        days.add(day);
-                                      }
-                                      final ordered = days.toList()..sort();
-                                      setState(
-                                        () => draft.values['weekdays'] = ordered
-                                            .join(','),
-                                      );
-                                    }
-                                  : null,
-                            ),
-                        ],
+                    PocketRow(
+                      icon: Icons.calendar_view_week_rounded,
+                      title: '星期',
+                      subtitle: automationRepeatLabel(
+                        kind,
+                        draft.values['weekdays']!,
                       ),
+                      onTap: editable ? chooseWeekdays : null,
                     ),
                   Padding(
                     padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),

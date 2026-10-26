@@ -2,7 +2,6 @@ package com.minnnng.dsh_android
 
 import android.content.ComponentName
 import android.content.Context
-import android.content.Intent
 import android.content.ServiceConnection
 import android.os.Bundle
 import android.os.Handler
@@ -55,6 +54,7 @@ object IsolatedWorkerBridge {
         val finished = CountDownLatch(1)
         val outcome = AtomicReference<Outcome?>()
         val remote = AtomicReference<Messenger?>()
+        val deathLink = AtomicReference<Pair<IBinder, IBinder.DeathRecipient>?>()
         val active = AtomicBoolean(true)
         val sendLock = Any()
         val replies = Messenger(Handler(Looper.getMainLooper()) { message ->
@@ -70,8 +70,13 @@ object IsolatedWorkerBridge {
                 val worker = Messenger(binder)
                 try {
                     synchronized(sendLock) {
-                        remote.set(worker)
                         if (!active.get() || outcome.get() != null) return
+                        val death = IBinder.DeathRecipient {
+                            fail(IllegalStateException("Isolated worker process died"))
+                        }
+                        binder.linkToDeath(death, 0)
+                        deathLink.set(binder to death)
+                        remote.set(worker)
                         ParcelFileDescriptor.dup(input.fileDescriptor).use { copy ->
                             val kind = when {
                                 edit != null -> IsolatedWorkerService.EDIT_TEXT
@@ -110,7 +115,7 @@ object IsolatedWorkerBridge {
         var bound = false
         var terminal = false
         try {
-            bound = app.bindService(Intent(app, IsolatedWorkerService::class.java), connection, Context.BIND_AUTO_CREATE)
+            bound = IsolatedWorkerBinding.bind(app, connection)
             check(bound) { "Could not bind isolated worker" }
             val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
             while (true) {
@@ -136,6 +141,7 @@ object IsolatedWorkerBridge {
                         })
                     } catch (_: Exception) { /* A dead worker cannot keep processing this request. */ }
                 }
+                deathLink.getAndSet(null)?.let { (binder, death) -> binder.unlinkToDeath(death, 0) }
             }
             if (bound) app.unbindService(connection)
         }

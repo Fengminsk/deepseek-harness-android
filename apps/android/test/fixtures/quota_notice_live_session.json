@@ -1,0 +1,6 @@
+[
+  {"sessionId":"owner-session","event":{"seq":10,"type":"turn/end","data":{"reason":{"kind":"completed"}}}},
+  {"sessionId":"owner-session","event":{"seq":11,"type":"turn/end","data":{"reason":{"kind":"error","error":{"code":"AUTH","message":"private upstream detail"}}}}},
+  {"sessionId":"owner-session","event":{"seq":12,"type":"turn/end","data":{"reason":{"kind":"error","error":{"code":"ACCOUNT_QUOTA","message":"private upstream detail"}}}}},
+  {"sessionId":"owner-session","event":{"seq":13,"type":"turn/end","data":{"reason":{"kind":"error","error":{"code":"QUOTA","message":"private upstream detail"}}}}}
+]

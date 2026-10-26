@@ -105,27 +105,29 @@ class LiquidGlassStyle {
     final dark = colorScheme.brightness == Brightness.dark;
     return dark
         ? LiquidGlassStyle(
-            tint: colorScheme.surfaceContainerHighest.withValues(alpha: 0.62),
+            tint: colorScheme.surfaceContainerHighest.withValues(alpha: 0.58),
             contrast: -0.4,
-            saturation: 2.84,
-            rim: 0.28,
-            rimWidth: 1.2,
+            blur: 8,
+            saturation: 1.35,
+            rim: 0.38,
+            rimWidth: 1.4,
             rimTail: 0.17,
             rimFocus: 1,
             rimAdded: 0.38,
-            hairlineSide: 0.75,
+            hairlineSide: 0.48,
           )
         : const LiquidGlassStyle(
-            tint: Color(0x8AFDFDFD),
+            tint: Color(0x9EFDFCF7),
             contrast: 0.4,
-            saturation: 2.08,
-            rim: 0.28,
-            rimWidth: 1.2,
+            blur: 8,
+            saturation: 1.25,
+            rim: 0.48,
+            rimWidth: 1.4,
             rimTail: 0.17,
             rimFocus: 1,
             rimAdded: 0.38,
-            hairline: 0.25,
-            hairlineSide: 0.75,
+            hairline: 0.14,
+            hairlineSide: 0.38,
           );
   }
 
@@ -138,17 +140,18 @@ class LiquidGlassStyle {
             blur: 0,
             haze: 0.72,
             hazeBlur: 15.6,
-            saturation: 1.925,
-            rim: 0.35,
+            saturation: 1.35,
+            rim: 0.42,
           )
         : const LiquidGlassStyle(
-            tint: Color(0x93F4F4F4),
+            tint: Color(0x9EF7F6EF),
             contrast: 0.4,
             blur: 0,
             haze: 0.72,
             hazeBlur: 15.6,
-            saturation: 2.1,
-            hairline: 0.35,
+            saturation: 1.25,
+            rim: 0.48,
+            hairline: 0.2,
           );
   }
 
@@ -930,7 +933,7 @@ class _RenderLiquidGlass extends RenderProxyBox {
                   size.height /
                   math.sqrt2 *
                   (1 + (_fading ? _glowSpread * (1 - _press) : 0)),
-              strength: _press * 0.16,
+              strength: _press * 0.23,
             ),
       );
     }
@@ -1128,7 +1131,15 @@ class _LiquidGlassLayer extends Layer {
   _Placement? _held;
 
   ui.Picture? _frost;
-  (Rect, BorderRadius, Path?, LiquidGlassStyle, LiquidGlassRim?)? _frostKey;
+  (
+    Rect,
+    BorderRadius,
+    Path?,
+    LiquidGlassStyle,
+    LiquidGlassRim?,
+    LiquidGlassGlow,
+  )?
+  _frostKey;
 
   int _capturedPass = -1;
   ui.Picture? _captured;
@@ -1202,7 +1213,7 @@ class _LiquidGlassLayer extends Layer {
   ];
 
   void _addFrost(ui.SceneBuilder builder) {
-    final key = (rect, corners, outline, style, rim);
+    final key = (rect, corners, outline, style, rim, glow);
     if (_frost == null || key != _frostKey) {
       _frost?.dispose();
       _frost = _paintFrost();
@@ -1373,6 +1384,27 @@ class _LiquidGlassLayer extends Layer {
           hairline..strokeWidth = _hairlineWidth,
         );
       this.rim?._paintShine(canvas, rect, corners.topLeft.x);
+    }
+    // Keep the local press response when shader filters are unavailable.
+    // Callers already clip to the pane; text and icons are painted afterwards.
+    if (glow.strength > 0) {
+      double alpha(double falloff) =>
+          (glow.strength * (glow.wash + (1 - glow.wash) * falloff)).clamp(0, 1);
+      canvas.drawRect(
+        rect,
+        Paint()
+          ..blendMode = BlendMode.plus
+          ..shader = ui.Gradient.radial(
+            rect.topLeft + glow.center,
+            math.max(glow.reach, 1) * 2,
+            [
+              Colors.white.withValues(alpha: alpha(1)),
+              Colors.white.withValues(alpha: alpha(math.exp(-1))),
+              Colors.white.withValues(alpha: alpha(math.exp(-4))),
+            ],
+            const [0, .5, 1],
+          ),
+      );
     }
   }
 }

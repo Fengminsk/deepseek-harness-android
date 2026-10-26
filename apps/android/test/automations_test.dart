@@ -38,6 +38,76 @@ Future<String> fieldText(WidgetTester tester, String name) async {
 }
 
 void main() {
+  testWidgets(
+    'repeat choice is staged, saved as an exact Host rule, and keeps the write receipt',
+    (tester) async {
+      final runtime = AutomationRuntime();
+      final catalog = AutomationsController(runtime);
+      await catalog.refresh();
+      addTearDown(() {
+        catalog.dispose();
+        runtime.dispose();
+      });
+      runtime.handler = (method, _) async {
+        if (method == 'catalog') return [taskFixture()];
+        if (method == 'update') {
+          return {
+            'id': 'task-a',
+            'updated': true,
+            'record': {
+              ...taskFixture(),
+              'kind': 'weekly',
+              'time': '12:00:00.123',
+              'timeZone': 'UTC',
+              'weekdays': [1, 2, 3, 4, 5],
+            },
+          };
+        }
+        throw StateError(method);
+      };
+      await tester.pumpWidget(
+        host(
+          AutomationDetailPage(
+            catalog: catalog,
+            record: taskFixture(),
+            onOpenSession: (_) {},
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tapVisible(tester, find.widgetWithText(PocketRow, '重复'));
+      await tapVisible(
+        tester,
+        find.byKey(const ValueKey('automation-repeat-workdays')),
+      );
+      expect(
+        runtime.requests.where((item) => item.method == 'update'),
+        isEmpty,
+      );
+      expect(find.text('周一至周五'), findsWidgets);
+      await tapVisible(tester, find.text('保存任务'));
+      final update = runtime.requests.singleWhere(
+        (item) => item.method == 'update',
+      );
+      expect(update.args['request']['change'], {
+        'kind': 'weekly',
+        'weekly': {
+          'time': '12:00:00.123',
+          'time_zone': 'UTC',
+          'weekdays': [1, 2, 3, 4, 5],
+        },
+      });
+      // The catalog deliberately still returns the old every-hour row.
+      await tester.scrollUntilVisible(
+        find.widgetWithText(PocketRow, '重复'),
+        250,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('周一至周五'), findsWidgets);
+    },
+  );
+
   testWidgets('session link uses SessionListEntry header identity', (
     tester,
   ) async {
@@ -163,7 +233,17 @@ void main() {
       await tapVisible(tester, find.text('保留草稿，采用当前比较记录'));
       expect(await fieldText(tester, 'title'), '我的名称');
       expect(await fieldText(tester, 'prompt'), 'Web 指令');
-      expect(await fieldText(tester, 'seconds'), '7200');
+      await tapVisible(tester, find.text('重复间隔'));
+      expect(
+        tester
+            .widget<TextField>(
+              find.byKey(const ValueKey('automation-interval-amount')),
+            )
+            .controller!
+            .text,
+        '2',
+      );
+      expect(find.text('每 2 小时'), findsOneWidget);
     },
   );
 

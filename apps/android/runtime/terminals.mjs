@@ -1,4 +1,6 @@
 import { spawn as nodeSpawn } from 'node:child_process'
+import { constants as fsConstants } from 'node:fs'
+import { access } from 'node:fs/promises'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
 
@@ -6,16 +8,36 @@ const require = createRequire(import.meta.url)
 const MAX_TERMINALS = 8
 const MAX_INPUT_BYTES = 65536
 const MAX_PENDING_OUTPUT_BYTES = 262144
+const MAX_PENDING_TERMINAL_REPLY_BYTES = 32768
 const MAX_VIEW_LINES = 500
 const MAX_VIEW_CELLS = 100000
 const MAX_VIEW_RUNS = 10000
 const START_TIMEOUT_MS = 3000
 const CLOSE_TIMEOUT_MS = 3000
 const WORKDIR_TIMEOUT_MS = 8000
+const SHELL_DISCOVERY_TIMEOUT_MS = 5000
+const SYSTEM_SHELLS = Object.freeze([
+  Object.freeze({ id: 'system-sh', label: '系统 Shell', path: '/system/bin/sh' }),
+  Object.freeze({ id: 'system-mksh', label: 'mksh', path: '/system/bin/mksh' }),
+  Object.freeze({ id: 'system-bash', label: 'Bash', path: '/system/bin/bash' }),
+])
+
+async function executableShell(path) { await access(path, fsConstants.X_OK) }
 
 function identity(value, label) {
   if (typeof value !== 'string' || !/^[\w-]{1,128}$/.test(value)) {
     throw new TypeError(`Invalid ${label}`)
+  }
+  return value
+}
+
+function terminalName(value) {
+  const graphemes = typeof value === 'string'
+    ? [...new Intl.Segmenter('und', { granularity: 'grapheme' }).segment(value)].length : 0
+  if (typeof value !== 'string' || value !== value.trim()
+    || !value || graphemes > 64
+    || /[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/u.test(value)) {
+    throw new TypeError('Terminal name must be 1–64 visible characters')
   }
   return value
 }
@@ -60,6 +82,10 @@ export function observeTerminalDisplay(screen) {
   let cursorVisible = true
   let cursorStyle = 'block'
   let cursorBlink = true
+  let applicationCursorKeys = false
+  let bracketedPaste = false
+  const mouseModes = new Set()
+  let sgrMouse = false
 
   const index = value => /^\d{1,3}$/.test(value) && Number(value) < 256 ? Number(value) : null
   const color = value => {
@@ -74,21 +100,31 @@ export function observeTerminalDisplay(screen) {
       channels = [value.slice(1, width + 1), value.slice(width + 1, 2 * width + 1), value.slice(2 * width + 1)]
     }
     return `#${channels.map(channel => {
-      const value = rgb
-        ? Math.round(Number.parseInt(channel, 16) * 255 / (16 ** channel.length - 1))
-        : Number.parseInt(channel.padEnd(2, '0').slice(0, 2), 16)
+      const value = Math.round(Number.parseInt(channel, 16) * 255 / (16 ** channel.length - 1))
       return value.toString(16).padStart(2, '0')
     }).join('')}`
   }
+  const replyColor = (code, prefix, value) => {
+    if (!value) return false
+    const rgb = value.slice(1).match(/../g).map(channel => `${channel}${channel}`).join('/')
+    screen.input(`\x1b]${code};${prefix}rgb:${rgb}\x07`)
+    return true
+  }
   const observeOsc = (code, handler) => subscriptions.push(screen.parser.registerOscHandler(code,
-    data => { if (data.length <= 4096) handler(data); return false }))
+    data => data.length <= 4096 && handler(data) === true))
   observeOsc(4, data => {
     const parts = data.split(';')
+    let answered = false
     for (let i = 0; i + 1 < parts.length; i += 2) {
       const key = index(parts[i])
+      if (key !== null && parts[i + 1] === '?') {
+        answered = replyColor(4, `${key};`, indexed.get(key)) || answered
+        continue
+      }
       const value = color(parts[i + 1])
       if (key !== null && value !== null) indexed.set(key, value)
     }
+    return answered
   })
   observeOsc(104, data => {
     if (data === '') indexed.clear()
@@ -99,11 +135,17 @@ export function observeTerminalDisplay(screen) {
   })
   for (const [offset, key] of ['foreground', 'background', 'cursor'].entries()) {
     observeOsc(10 + offset, data => {
+      let answered = false
       for (const [partOffset, part] of data.split(';').entries()) {
         const target = ['foreground', 'background', 'cursor'][offset + partOffset]
+        if (target && part === '?') {
+          answered = replyColor(10 + offset + partOffset, '', special.get(target)) || answered
+          continue
+        }
         const value = color(part)
         if (target && value !== null) special.set(target, value)
       }
+      return answered
     })
     observeOsc(110 + offset, () => special.delete(key))
   }
@@ -111,9 +153,17 @@ export function observeTerminalDisplay(screen) {
     params => { handler(params); return false }))
   observeCsi({ prefix: '?', final: 'h' }, params => {
     if (params.includes(25)) cursorVisible = true
+    if (params.includes(1)) applicationCursorKeys = true
+    if (params.includes(2004)) bracketedPaste = true
+    for (const mode of [1000, 1002, 1003]) if (params.includes(mode)) mouseModes.add(mode)
+    if (params.includes(1006)) sgrMouse = true
   })
   observeCsi({ prefix: '?', final: 'l' }, params => {
     if (params.includes(25)) cursorVisible = false
+    if (params.includes(1)) applicationCursorKeys = false
+    if (params.includes(2004)) bracketedPaste = false
+    for (const mode of [1000, 1002, 1003]) if (params.includes(mode)) mouseModes.delete(mode)
+    if (params.includes(1006)) sgrMouse = false
   })
   observeCsi({ intermediates: ' ', final: 'q' }, params => {
     if (params.length !== 1 || !Number.isInteger(params[0])) return
@@ -129,13 +179,18 @@ export function observeTerminalDisplay(screen) {
   subscriptions.push(screen.parser.registerEscHandler({ final: 'c' }, () => {
     indexed.clear(); special.clear()
     cursorVisible = true; cursorStyle = 'block'; cursorBlink = true
+    applicationCursorKeys = false; bracketedPaste = false
+    mouseModes.clear(); sgrMouse = false
     return false
   }))
   return {
     snapshot() {
       return {
         palette: { indexed: Object.fromEntries(indexed), ...Object.fromEntries(special) },
-        cursorVisible, cursorStyle, cursorBlink,
+        cursorVisible, cursorStyle, cursorBlink, applicationCursorKeys, bracketedPaste,
+        mouseTracking: mouseModes.has(1003) ? 'any' : mouseModes.has(1002) ? 'drag'
+          : mouseModes.has(1000) ? 'click' : 'off',
+        sgrMouse,
       }
     },
     dispose() { for (const subscription of subscriptions) subscription.dispose() },
@@ -210,10 +265,12 @@ export function projectTerminalView(screen, displayState) {
 
 /** One Host-generation PTY with a bounded recoverable screen; no transcript writes. */
 class TerminalProcess {
-  constructor({ id, sessionId, cwd, cols, rows, spawn, helper, makeScreen, closeTimeoutMs }) {
+  constructor({ id, sessionId, cwd, cols, rows, shell, spawn, helper, makeScreen, closeTimeoutMs }) {
     this.id = id
     this.sessionId = sessionId
     this.cwd = cwd
+    this.shellId = shell.id
+    this.name = '终端'
     this.cols = cols
     this.rows = rows
     this.closeTimeoutMs = closeTimeoutMs
@@ -224,7 +281,7 @@ class TerminalProcess {
     this.screen = screen
     this.serializer = serializer
     this.displayState = screen.parser ? observeTerminalDisplay(screen) : null
-    this.child = spawn(helper, [cwd, String(cols), String(rows), '/system/bin/sh'], {
+    this.child = spawn(helper, [cwd, String(cols), String(rows), shell.path], {
       cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'],
       env: scrubbedEnvironment(sessionId),
     })
@@ -237,6 +294,18 @@ class TerminalProcess {
     this._started = Promise.withResolvers()
     this._finished = Promise.withResolvers()
     this._started.promise.catch(() => {})
+    this._pendingTerminalReplyBytes = 0
+    this._terminalReplySubscription = this.screen.onData?.(reply => {
+      const bytes = Buffer.byteLength(reply, 'utf8')
+      if (bytes > 4096 || this._pendingTerminalReplyBytes + bytes > MAX_PENDING_TERMINAL_REPLY_BYTES) {
+        this._fatal(new Error('PTY terminal response backlog exceeded its limit'))
+        return
+      }
+      this._pendingTerminalReplyBytes += bytes
+      void this._started.promise.then(() => this.write(reply)).catch(() => {}).finally(() => {
+        this._pendingTerminalReplyBytes -= bytes
+      })
+    })
     this._startTimer = setTimeout(() => this._started.reject(new Error('PTY startup acknowledgement timed out')),
       START_TIMEOUT_MS)
     this.child.stdout.on('data', chunk => {
@@ -336,7 +405,8 @@ class TerminalProcess {
   async started() { await this._started.promise }
 
   info() {
-    return { id: this.id, sessionId: this.sessionId, cwd: this.cwd,
+    return { id: this.id, sessionId: this.sessionId, cwd: this.cwd, name: this.name,
+      shellId: this.shellId,
       cols: this.cols, rows: this.rows, state: this.state, exitCode: this.exitCode,
       ...(this.error ? { error: this.error } : {}) }
   }
@@ -405,7 +475,10 @@ class TerminalProcess {
 
   async close() {
     if (this._closing) return this._closing
-    this._closing = this._close().then(() => this.displayState?.dispose())
+    this._closing = this._close().finally(() => {
+      this.displayState?.dispose()
+      this._terminalReplySubscription?.dispose()
+    })
     return this._closing
   }
 
@@ -439,18 +512,29 @@ class TerminalProcess {
 /** App-local terminal service. Processes remain owned by the Node Host, not a page. */
 export class AppTerminals {
   constructor({ resolveDirectory, spawn = nodeSpawn, helper = helperPath, makeScreen = screenFactory,
-    workdirTimeoutMs = WORKDIR_TIMEOUT_MS, closeTimeoutMs = CLOSE_TIMEOUT_MS } = {}) {
+    probeShell = executableShell, workdirTimeoutMs = WORKDIR_TIMEOUT_MS,
+    closeTimeoutMs = CLOSE_TIMEOUT_MS } = {}) {
     this.resolveDirectory = resolveDirectory
     this.spawn = spawn
     this.helper = helper
     this.makeScreen = makeScreen
+    this.probeShell = probeShell
     this.workdirTimeoutMs = workdirTimeoutMs
     this.closeTimeoutMs = closeTimeoutMs
     this.sessions = new Map()
     this.closed = new Map()
     this.pending = new Map()
+    this.pendingShells = new Map()
     this.owners = new Map()
+    this.activeCreates = 0
     this.disposed = false
+  }
+
+  /** Count retained terminals and in-flight allocations before replacing the Host runtime. */
+  activitySnapshot() {
+    let live = 0
+    for (const entries of this.sessions.values()) live += entries.size
+    return { live, pending: this.activeCreates }
   }
 
   _session(sessionId) {
@@ -460,6 +544,31 @@ export class AppTerminals {
   list({ sessionId }) {
     identity(sessionId, 'sessionId')
     return [...this._session(sessionId).values()].map(item => item.info())
+  }
+
+  /** Discover only fixed Android system shells. Discovery never allocates a PTY. */
+  async shells() {
+    const available = []
+    for (const shell of SYSTEM_SHELLS) {
+      let timer
+      try {
+        await Promise.race([
+          this.probeShell(shell.path),
+          new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error('Shell discovery timed out')),
+              SHELL_DISCOVERY_TIMEOUT_MS)
+          }),
+        ])
+      }
+      catch (error) {
+        if (['ENOENT', 'ENOTDIR', 'EACCES'].includes(error?.code)) continue
+        throw new Error('Shell discovery failed', { cause: error })
+      } finally {
+        clearTimeout(timer)
+      }
+      available.push({ id: shell.id, label: shell.label })
+    }
+    return available
   }
 
   async _owner(sessionId, scope) {
@@ -502,8 +611,16 @@ export class AppTerminals {
     return owner.cleanup
   }
 
-  async create({ sessionId, id, cols = 80, rows = 24 }) {
+  async create(params) {
+    this.activeCreates++
+    try { return await this._create(params) }
+    finally { this.activeCreates-- }
+  }
+
+  async _create({ sessionId, id, cols = 80, rows = 24, shellId = 'system-sh' }) {
     identity(sessionId, 'sessionId'); identity(id, 'terminalId'); dimensions(cols, rows)
+    const shell = SYSTEM_SHELLS.find(entry => entry.id === shellId)
+    if (!shell) throw new TypeError('Unsupported terminal shell')
     if (this.disposed) throw new Error('Terminal service has stopped')
     let directoryTimer
     const resolved = await Promise.race([
@@ -522,13 +639,39 @@ export class AppTerminals {
     const key = `${sessionId}\0${id}`
     if (this.closed.get(sessionId)?.has(id)) throw new Error('This terminal identity was closed')
     const existing = this._session(sessionId).get(id)
-    if (existing) return existing.info()
-    if (this.pending.has(key)) return this.pending.get(key)
+    if (existing) {
+      if (existing.shellId !== shellId) throw new Error('Terminal identity uses a different shell')
+      return existing.info()
+    }
+    if (this.pending.has(key)) {
+      if (this.pendingShells.get(key) !== shellId) throw new Error('Terminal identity uses a different shell')
+      return this.pending.get(key)
+    }
     if (this._session(sessionId).size + [...this.pending.keys()].filter(item => item.startsWith(`${sessionId}\0`)).length
       >= MAX_TERMINALS) throw new Error('Session terminal limit reached')
     const operation = (async () => {
       if (this.disposed || owner.stopped) throw new Error('Terminal Session owner has stopped')
-      const item = new TerminalProcess({ id, sessionId, cwd: resolved.cwd, cols, rows, spawn: this.spawn,
+      let shellTimer
+      try {
+        await Promise.race([
+          this.probeShell(shell.path),
+          new Promise((_, reject) => {
+            shellTimer = setTimeout(() => reject(new Error('Shell discovery timed out')),
+              SHELL_DISCOVERY_TIMEOUT_MS)
+          }),
+        ])
+      }
+      catch (error) {
+        if (['ENOENT', 'ENOTDIR', 'EACCES'].includes(error?.code)) {
+          throw new Error('Selected terminal shell is unavailable', { cause: error })
+        }
+        throw new Error('Selected terminal shell could not be checked', { cause: error })
+      } finally { clearTimeout(shellTimer) }
+      if (this.disposed || owner.stopped || this.closed.get(sessionId)?.has(id)) {
+        throw new Error('Terminal closed during shell discovery')
+      }
+      const item = new TerminalProcess({ id, sessionId, cwd: resolved.cwd, cols, rows, shell,
+        spawn: this.spawn,
         helper: this.helper(), makeScreen: this.makeScreen, closeTimeoutMs: this.closeTimeoutMs })
       try { await item.started() }
       catch (error) {
@@ -548,8 +691,9 @@ export class AppTerminals {
       return item.info()
     })()
     this.pending.set(key, operation)
+    this.pendingShells.set(key, shellId)
     try { return await operation }
-    finally { this.pending.delete(key) }
+    finally { this.pending.delete(key); this.pendingShells.delete(key) }
   }
 
   _get(sessionId, id) {
@@ -562,6 +706,19 @@ export class AppTerminals {
   read(params) { return this._get(params.sessionId, params.id).read() }
   write(params) { return this._get(params.sessionId, params.id).write(params.data) }
   resize(params) { return this._get(params.sessionId, params.id).resize(params.cols, params.rows) }
+  rename({ sessionId, id, name }) {
+    if (this.disposed || this.closed.get(sessionId)?.has(id)
+      || this.owners.get(sessionId)?.stopped) {
+      throw new Error('Terminal is unavailable')
+    }
+    const item = this._get(sessionId, id)
+    const next = terminalName(name)
+    if (item.name !== next) {
+      item.name = next
+      item.revision++
+    }
+    return item.info()
+  }
 
   async close({ sessionId, id }) {
     identity(sessionId, 'sessionId'); identity(id, 'terminalId')

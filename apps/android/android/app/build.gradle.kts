@@ -1,7 +1,43 @@
+import java.security.MessageDigest
+
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
+}
+
+// The candidate PRoot and Alpine images have not passed the distribution gate.
+// Reject accidental source-set inclusion before Android packaging starts. The
+// final APK verifier separately checks the assembled artifact.
+val unreviewedLinuxGuestInputs = fileTree("src") {
+    include("**/libdsh_proot_candidate.so")
+    include("**/libdsh_proot_loader_candidate.so")
+    include("**/libpocket_linux_guest_supervisor.so")
+    include("**/alpine-minirootfs*")
+    include("**/rootfs.tar*")
+}
+if (!unreviewedLinuxGuestInputs.isEmpty) {
+    throw GradleException("Linux guest payload is not approved for APK packaging")
+}
+val pinnedCandidateDigestByLength = mapOf(
+    1334216L to "c22cdb13c5de4b6e0022f7ede7a5ca0bf88675d4b674aa339a885b96d8b26f7f",
+    9952L to "c5e85afb7599bd82f2419fb054d597514d5c9578954288bef0c5320cd8b63fbf",
+)
+for (input in fileTree("src").files) {
+    val expected = pinnedCandidateDigestByLength[input.length()] ?: continue
+    val digest = MessageDigest.getInstance("SHA-256")
+    input.inputStream().buffered().use { stream ->
+        val buffer = ByteArray(65536)
+        while (true) {
+            val count = stream.read(buffer)
+            if (count < 0) break
+            digest.update(buffer, 0, count)
+        }
+    }
+    val actual = digest.digest().joinToString("") { "%02x".format(it) }
+    if (actual == expected) {
+        throw GradleException("Pinned Linux guest ELF is not approved for APK packaging: ${input.name}")
+    }
 }
 
 android {
@@ -17,6 +53,7 @@ android {
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.minnnng.dsh_android"
+        testInstrumentationRunner = "com.minnnng.dsh_android.IsolatedScriptAcceptanceInstrumentation"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = 28
@@ -25,6 +62,8 @@ android {
         externalNativeBuild { cmake {
             cppFlags += "-std=c++20"
             arguments += "-DANDROID_STL=c++_shared"
+            // Cache values from a manual NDK experiment must never leak into App builds.
+            arguments += "-DDSH_BUILD_LINUX_GUEST_SUPERVISOR=OFF"
         } }
         // Uses the version code from pubspec.yaml. When using split APKs, 1000 * ABI_VERSION
         // is added automatically by Flutter. (https://developer.android.com/studio/build/configure-apk-splits#configure-APK-versions)

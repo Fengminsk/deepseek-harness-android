@@ -106,13 +106,12 @@ class _TrajectoryRuntime extends RuntimeController {
   }
 
   @override
-  Future<void> openSession(String id) async {
+  Future<List<Json>> readCompleteSession(String id) async {
     reads++;
     await readGate?.future;
     if (reject) throw StateError('History unavailable');
-    if (superseded) return;
-    timelines[id] = List.of(records);
-    notifyListeners();
+    if (superseded) throw StateError('History read was superseded');
+    return List.of(records);
   }
 }
 

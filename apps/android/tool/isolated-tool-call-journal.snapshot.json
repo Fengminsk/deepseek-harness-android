@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "states": [
+    "absent",
+    "prepared",
+    "dispatch-unconfirmed",
+    "result-unconfirmed",
+    "confirmed"
+  ],
+  "restartReplay": "ANDROID_TOOL_REPLAY",
+  "payloadsPersisted": false
+}

@@ -2,6 +2,7 @@ package com.minnnng.dsh_android
 
 import android.app.Service
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
@@ -204,6 +205,9 @@ class IsolatedWorkerService : Service() {
                 val stat = Os.fstat(descriptor.fileDescriptor)
                 require(OsConstants.S_ISREG(stat.st_mode) && stat.st_size in 0..IsolatedWorkerInput.MAX_TEXT_BYTES.toLong()) {
                     "Isolated-worker text must be a regular file of at most 64 KiB"
+                }
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+                    throw IllegalStateException("Read-only descriptor verification requires Android 11 or newer")
                 }
                 require((Os.fcntlInt(descriptor.fileDescriptor, OsConstants.F_GETFL, 0) and OsConstants.O_ACCMODE) == OsConstants.O_RDONLY) {
                     "Isolated-worker text descriptor must be read-only"

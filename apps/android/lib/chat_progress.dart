@@ -3,29 +3,41 @@ import 'package:material_ui/material_ui.dart';
 import 'entry_motion.dart';
 import 'chat_reply_sources.dart';
 import 'tool_activity_data.dart';
+import 'tool_activity_presentation.dart';
+
+/// Returns only real calls still awaiting a result, including active PTC
+/// children. Settled children cannot keep a stale progress indicator alive.
+List<ToolActivity> _pendingActivities(Iterable<ToolActivity> calls) {
+  final pending = <ToolActivity>[];
+  final seen = <String>{};
+  void collect(ToolActivity call) {
+    if (call.phase != ToolActivityPhase.pending || !seen.add(call.identity)) {
+      return;
+    }
+    final before = pending.length;
+    for (final child in call.children) {
+      collect(child);
+    }
+    // An active PTC child describes the work more precisely than its parent.
+    // A completed or interrupted child never keeps a stale progress label.
+    if (pending.length == before) pending.add(call);
+  }
+
+  for (final call in calls) {
+    collect(call);
+  }
+  return pending;
+}
+
+bool chatHasPendingActivity(Iterable<ToolActivity> calls) =>
+    _pendingActivities(calls).isNotEmpty;
 
 /// A current activity label uses actual pending calls, never estimated work.
 String chatProgressLabel(Iterable<ToolActivity> calls, {bool writing = false}) {
-  final pending = calls
-      .where((call) => call.phase == ToolActivityPhase.pending)
-      .toList();
+  final pending = _pendingActivities(calls);
   if (pending.isEmpty) return writing ? '正在回复' : '正在思考';
-  final names = pending.map((call) => call.name).toSet();
-  if (names.every(
-    (name) =>
-        const ['web_search', 'web_fetch', 'search', 'fetch'].contains(name),
-  )) {
-    return '正在搜索';
-  }
-  if (names.every((name) => const ['android_shell', 'shell'].contains(name))) {
-    return '正在运行命令';
-  }
-  if (names.every((name) => name == 'read')) return '正在读取文件';
-  if (names.every((name) => const ['write', 'edit'].contains(name))) {
-    return '正在修改文件';
-  }
-  if (names.every((name) => name.contains('subagent'))) return '正在协作';
-  return '正在处理';
+  final labels = pending.map(toolActivityProgressLabel).toSet();
+  return labels.length == 1 ? labels.single : '正在处理';
 }
 
 class ChatProgressLine extends StatelessWidget {

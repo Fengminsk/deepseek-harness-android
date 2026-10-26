@@ -103,7 +103,7 @@ class _ModelsPageState extends State<ModelsPage> {
           if (data != null) ...[
             if (!data.catalogFresh)
               ModelNotice(
-                '实时模型目录尚未恢复；已显示当前服务商配置和保存的默认模型。'
+                '${data.catalogCached ? '实时模型目录尚未恢复；正在显示上次读取的模型目录、当前服务商配置和保存的默认模型。' : '实时模型目录尚未恢复；已显示当前服务商配置和保存的默认模型。'}'
                 '${directory.retryPending ? '稍后会自动重试。' : '请点击刷新重试。'}'
                 '恢复前不能更改默认模型。',
               ),
@@ -512,34 +512,22 @@ class _DefaultModelPageState extends ModelDraftState<DefaultModelPage> {
                         children: [
                           const Text('推理强度'),
                           const SizedBox(height: 8),
-                          Wrap(
-                            spacing: 8,
-                            runSpacing: 8,
-                            children: [
-                              PocketChoice(
-                                label: const Text('服务商默认'),
-                                selected: draft['reasoningEffort'] == null,
-                                onSelected: busy
-                                    ? null
-                                    : (_) => field(
-                                        ['reasoningEffort'],
-                                        null,
-                                        unset: true,
-                                      ),
-                              ),
+                          SegmentedControl<String?>(
+                            key: const ValueKey('default-reasoning-effort'),
+                            segments: [
+                              (null, '服务商默认'),
                               for (final effort
                                   in model['reasoning']['efforts'] as List)
-                                PocketChoice(
-                                  label: Text('${effort['name']}'),
-                                  selected:
-                                      draft['reasoningEffort'] == effort['id'],
-                                  onSelected: busy
-                                      ? null
-                                      : (_) => field([
-                                          'reasoningEffort',
-                                        ], effort['id']),
-                                ),
+                                ('${effort['id']}', '${effort['name']}'),
                             ],
+                            value: draft['reasoningEffort'] as String?,
+                            onChanged: busy
+                                ? null
+                                : (value) => field(
+                                    ['reasoningEffort'],
+                                    value,
+                                    unset: value == null,
+                                  ),
                           ),
                         ],
                       ),

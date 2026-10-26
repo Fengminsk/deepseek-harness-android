@@ -11,6 +11,11 @@ const paths = {
   webUi: 'packages/bundle/web-app/cordis.patch.yml',
   standardPreset: 'packages/bundle/web-app/presets/standard.patch.yml',
   androidDisabled: 'apps/android/runtime/cordis.patch.yml',
+  bundleBase: 'packages/bundle/base/cordis.patch.yml',
+  bundleHeadless: 'packages/bundle/headless/cordis.patch.yml',
+  bundleSdkMinimal: 'packages/bundle/sdk-minimal/cordis.patch.yml',
+  bundleSdkApp: 'packages/bundle/sdk-app/cordis.patch.yml',
+  bundleAcpApp: 'packages/bundle/acp-app/cordis.patch.yml',
 }
 const texts = Object.fromEntries(await Promise.all(Object.entries(paths).map(async ([kind, path]) =>
   [kind, await readFile(resolve(root, path), 'utf8')])))
@@ -25,14 +30,63 @@ test('the committed ledger covers current source declarations without certifying
   const result = await auditParity(root)
   assert.deepEqual(result.errors, [])
   assert.equal(result.ok, true)
-  assert.deepEqual(Object.keys(result.counts).sort(), ['androidDisabled', 'standardDelegation', 'standardPreset', 'webUi'])
+  assert.match(result.scope, /insert\/override rows from base, headless/u)
+  assert.deepEqual(Object.keys(result.counts).sort(),
+    ['androidDisabled', 'optionalBundle', 'standardDelegation', 'standardNested', 'standardPreset', 'webService', 'webUi'])
   assert.ok(result.counts.webUi > 0)
+  assert.ok(result.counts.webService > 0)
   assert.ok(result.counts.standardDelegation > 0)
+  assert.ok(result.counts.optionalBundle > 0)
   assert.equal(Object.values(result.counts).reduce((sum, count) => sum + count, 0), baseline.entries.length)
   // Existing implementation files are deliberately not proof of feature or device acceptance.
   const missing = baseline.entries.find(entry => entry.key === 'webUi/ui-sidebar-documentpreview')
   assert.equal(missing.status, 'partial')
   assert.notEqual(missing.evidence.device, 'verified')
+})
+
+test('optional bundle rows retain source identity even when plugins repeat between bundles', () => {
+  const rows = inventory()
+  const base = rows.find(row => row.key === 'optionalBundle/base/insert/llm')
+  const minimal = rows.find(row => row.key === 'optionalBundle/sdk-minimal/insert/llm')
+  assert.equal(base.plugin, minimal.plugin)
+  assert.notEqual(base.source, minimal.source)
+  assert.equal(base.sourceDigest, minimal.sourceDigest)
+  assert.ok(rows.some(row => row.key === 'optionalBundle/headless/override/tools'))
+  assert.ok(rows.some(row => row.key === 'optionalBundle/acp-app/insert/acp'))
+  assert.ok(rows.some(row => row.key === 'optionalBundle/sdk-app/insert/sdk-jsonrpc-server'))
+})
+
+test('new or changed optional bundle declarations require a manual ledger review', async () => {
+  const added = patches()
+  added.bundleHeadless.push({ insert: [{ id: 'new-runner', name: '@test/new-runner' }] })
+  const addition = await check(manifest(), collectParityInventory(added))
+  assert.ok(addition.errors.includes('Unmapped source declaration: optionalBundle/headless/insert/new-runner'))
+  const changed = patches()
+  changed.bundleAcpApp.flatMap(row => row.insert ?? [])
+    .find(row => row.id === 'acp').config.provider = 'other'
+  const modification = await check(manifest(), collectParityInventory(changed))
+  assert.ok(modification.errors.some(error => error.includes(
+    'optionalBundle/acp-app/insert/acp: source declaration changed')))
+  const removed = patches()
+  removed.bundleSdkMinimal[0].insert = removed.bundleSdkMinimal[0].insert
+    .filter(row => row.id !== 'sdk-jsonrpc-server')
+  const deletion = await check(manifest(), collectParityInventory(removed))
+  assert.ok(deletion.errors.includes(
+    'Stale or unknown manifest entry: optionalBundle/sdk-minimal/insert/sdk-jsonrpc-server'))
+})
+
+test('unassessed optional rows cannot be promoted to partial without Android mapping', async () => {
+  const item = manifest().entries.find(row => row.key === 'optionalBundle/headless/insert/headless-runner')
+  assert.equal(item.status, 'unassessed')
+  assert.deepEqual(item.android, [])
+  const ledger = manifest()
+  ledger.entries.find(row => row.key === item.key).status = 'partial'
+  const result = await check(ledger)
+  assert.ok(result.errors.includes(`${item.key}: partial mapping requires Android source references`))
+  const exaggerated = manifest()
+  exaggerated.entries.find(row => row.key === item.key).evidence.behavior = 'verified'
+  const claim = await check(exaggerated)
+  assert.ok(claim.errors.includes(`${item.key}: unassessed rows cannot claim Android mapping or evidence`))
 })
 
 test('JavaScript in patch tags remains inert during inventory collection', () => {
@@ -45,11 +99,12 @@ test('JavaScript in patch tags remains inert during inventory collection', () =>
   assert.equal(globalThis.pocketParityShouldNeverRun, undefined)
 })
 
-for (const kind of ['webUi', 'standardPreset', 'standardDelegation', 'androidDisabled']) {
+for (const kind of ['webUi', 'webService', 'standardPreset', 'standardDelegation', 'androidDisabled']) {
   test(`an unreviewed new ${kind} declaration fails the ledger check`, async () => {
     const world = patches()
-    const row = { id: 'ui-audit-new-feature', name: '@test/new-feature', disabled: true }
-    if (kind === 'webUi') world.webUi.push({ insert: [row] })
+    const id = kind === 'webService' ? 'audit-new-service' : 'ui-audit-new-feature'
+    const row = { id, name: '@test/new-feature', disabled: true }
+    if (kind === 'webUi' || kind === 'webService') world.webUi.push({ insert: [row] })
     else if (kind === 'androidDisabled') world.androidDisabled.push(row)
     else {
       const standard = world.standardPreset.flatMap(item => item.insert ?? [])
@@ -59,9 +114,43 @@ for (const kind of ['webUi', 'standardPreset', 'standardDelegation', 'androidDis
     }
     const result = await check(manifest(), collectParityInventory(world))
     assert.equal(result.ok, false)
-    assert.ok(result.errors.includes(`Unmapped source declaration: ${kind}/ui-audit-new-feature`))
+    assert.ok(result.errors.includes(`Unmapped source declaration: ${kind}/${id}`))
   })
 }
+
+test('removing or changing a Web service requires ledger review', async () => {
+  const removed = patches()
+  for (const row of removed.webUi) {
+    if (Array.isArray(row.insert)) row.insert = row.insert.filter(item => item.id !== 'workspace-files')
+  }
+  const removedResult = await check(manifest(), collectParityInventory(removed))
+  assert.ok(removedResult.errors.includes('Stale or unknown manifest entry: webService/workspace-files'))
+  const changed = patches()
+  changed.webUi.flatMap(row => row.insert ?? []).find(row => row.id === 'workspace-files')
+    .name = '@test/replaced-workspace-files'
+  const changedResult = await check(manifest(), collectParityInventory(changed))
+  assert.ok(changedResult.errors.some(error => error.includes('webService/workspace-files: source plugin changed')))
+})
+
+test('an unreviewed nested non-delegation plugin fails the ledger check', async () => {
+  const world = patches()
+  const standard = world.standardPreset.flatMap(item => item.insert ?? [])
+    .find(item => item.id === 'preset-standard').config.plugins
+  standard.find(item => item.id === 'planning').config.push({
+    id: 'new-policy', name: '@test/new-policy',
+  })
+  const result = await check(manifest(), collectParityInventory(world))
+  assert.equal(result.ok, false)
+  assert.ok(result.errors.includes('Unmapped source declaration: standardNested/planning/new-policy'))
+})
+
+test('nested plugin groups require an inspectable plugin sequence', () => {
+  const world = patches()
+  const standard = world.standardPreset.flatMap(item => item.insert ?? [])
+    .find(item => item.id === 'preset-standard').config.plugins
+  standard.find(item => item.id === 'planning').config = {}
+  assert.throws(() => collectParityInventory(world), /Expected nested plugins in planning/u)
+})
 
 test('removing an original declaration leaves a stale ledger entry that fails', async () => {
   const world = patches()

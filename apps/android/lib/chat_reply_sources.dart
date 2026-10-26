@@ -31,6 +31,7 @@ class ChatReplySource {
   final List<ChatReplySourceRecord> records;
 
   Uri? get destination {
+    if (RegExp(r'[\x00-\x20\x7f]').hasMatch(url)) return null;
     final uri = Uri.tryParse(url);
     return uri != null &&
             ['http', 'https'].contains(uri.scheme) &&
@@ -68,6 +69,14 @@ class ChatReplySources {
   final List<ChatReplySource> entries;
   final bool truncated;
   bool get isEmpty => entries.isEmpty;
+
+  /// Put links actually present in the answer first, retaining source order
+  /// within both groups. Search/fetch observations remain visible afterward.
+  List<ChatReplySource> forAnswer(Set<String> answerLinks) =>
+      List.unmodifiable([
+        ...entries.where((source) => answerLinks.contains(source.url)),
+        ...entries.where((source) => !answerLinks.contains(source.url)),
+      ]);
 
   /// Tool projections may replace objects while the same result stays visible.
   /// Compare recorded facts before invalidating a reply's open sources route.

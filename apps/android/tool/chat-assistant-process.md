@@ -1,0 +1,5 @@
+# Assistant process in the Android transcript
+
+The original DSH conversation projection places an assistant step's reasoning in its process group and the authored reply outside that group. The Android reading flow follows that separation for both a live stream and a saved Session. Reasoning appears as one collapsed process row before the reply; tapping the row reads the recorded text in place. While a live step contains only reasoning, its row says `正在思考` (Thinking) with the active sweep and suppresses the duplicate generic progress row when no tool activity exists. Once reply text arrives or the stream stops, the row says `已思考` (Thought). The reply text and attachments remain in their authored order, and long-press copy selects only authored text.
+
+The owner-local `chat_assistant_process.expected.json` fixture records an assistant message with reasoning and reply blocks. Flutter tests assert that the process is outside the answer's copy target, hidden until opened, and stable as live text arrives. This presentation does not infer private reasoning that the provider never emitted. Phone rendering and animation timing remain unverified.

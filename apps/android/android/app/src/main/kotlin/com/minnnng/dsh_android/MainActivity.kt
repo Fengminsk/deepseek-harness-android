@@ -40,6 +40,8 @@ class MainActivity : FlutterActivity() {
     private var bound = false
     private var connection: ServiceConnection? = null
     private var foreground = false
+    private var isolatedReviewDialog: android.app.AlertDialog? = null
+    private var isolatedReviewPreparing = false
     private var notificationSessionId: String? = null
     private var runtimeRequested = false
     private var notificationPermission: MethodChannel.Result? = null
@@ -258,10 +260,24 @@ class MainActivity : FlutterActivity() {
                 "background.systemStatus" -> {
                     val power = getSystemService(PowerManager::class.java)
                     val activity = getSystemService(android.app.ActivityManager::class.java)
+                    val notifications = getSystemService(android.app.NotificationManager::class.java)
+                    val permission = Build.VERSION.SDK_INT < 33 ||
+                        checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                    val appEnabled = notifications.areNotificationsEnabled()
+                    fun channelState(id: String): String {
+                        if (!permission) return "permission"
+                        if (!appEnabled) return "app-disabled"
+                        val channel = notifications.getNotificationChannel(id) ?: return "channel-uncreated"
+                        return if (channel.importance == android.app.NotificationManager.IMPORTANCE_NONE)
+                            "channel-disabled" else "enabled"
+                    }
                     result.success(JSONObject()
                         .put("batteryOptimizationsIgnored", power.isIgnoringBatteryOptimizations(packageName))
                         .put("backgroundRestricted", activity.isBackgroundRestricted)
-                        .put("powerSaveMode", power.isPowerSaveMode).toString())
+                        .put("powerSaveMode", power.isPowerSaveMode)
+                        .put("notifications", JSONObject()
+                            .put("background", channelState("agent"))
+                            .put("completion", channelState("task-completed"))).toString())
                 }
                 "background.lastInterruption" -> {
                     try {
@@ -319,6 +335,11 @@ class MainActivity : FlutterActivity() {
                     startActivity(ApprovalNotifications.settingsIntent(this))
                     result.success(null)
                 }
+                "background.notificationSettings" -> {
+                    startActivity(Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                        .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, packageName))
+                    result.success(null)
+                }
                 "notifications.request" -> {
                     if (Build.VERSION.SDK_INT >= 33 &&
                         checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
@@ -345,6 +366,42 @@ class MainActivity : FlutterActivity() {
                         val request = JSONObject(call.arguments as String)
                         sendCall(JSONObject().put("method", "recovery.call").put("params", request), result)
                     } catch (_: Exception) { result.error("recovery/request-invalid", "恢复请求无法读取", null) }
+                }
+                "isolatedApproval.review" -> reviewIsolatedApproval(
+                    call.argument<String>("requestId") ?: "",
+                    call.argument<String>("snapshotSha256") ?: "", result,
+                )
+                "isolatedManual.prepare" -> {
+                    if (!foreground) result.error("manual-background", "请在 App 前台发起隔离运行", null)
+                    else try {
+                        val params = JSONObject().put("sessionId", call.argument<String>("sessionId") ?: "")
+                            .put("workspaceId", call.argument<String>("workspaceId") ?: "")
+                            .put("file", call.argument<String>("file") ?: "")
+                            .put("writable", call.argument<Boolean>("writable") ?: false)
+                            .put("host", call.argument<String>("host") ?: "")
+                            .put("program", call.argument<String>("program") ?: "")
+                            .put("inputJson", call.argument<String>("inputJson") ?: "")
+                            .put("deadlineMillis", call.argument<Int>("deadlineMillis") ?: 0)
+                        sendNativeManual(13, JSONObject().put("params", params), result)
+                    } catch (_: Exception) { result.error("manual-invalid", "手动运行配置无效", null) }
+                }
+                "isolatedManual.status" -> sendNativeManual(14,
+                    JSONObject().put("runId", call.argument<String>("runId") ?: ""), result)
+                "isolatedManual.cancel" -> sendNativeManual(15,
+                    JSONObject().put("runId", call.argument<String>("runId") ?: ""), result)
+                "terminal.shell.load" -> result.success(
+                    getSharedPreferences("terminal", MODE_PRIVATE).getString("shell", "system-sh")
+                )
+                "terminal.shell.save" -> {
+                    try {
+                        val shellId = call.arguments as String
+                        require(shellId in setOf("system-sh", "system-mksh", "system-bash"))
+                        check(getSharedPreferences("terminal", MODE_PRIVATE).edit()
+                            .putString("shell", shellId).commit()) { "Shell choice could not be saved" }
+                        result.success(null)
+                    } catch (_: Exception) {
+                        result.error("terminal-shell-choice", "无法保存 Shell 选择", null)
+                    }
                 }
                 "appearance.load" -> result.success(getSharedPreferences("appearance", MODE_PRIVATE).getString("value", "{}"))
                 "appearance.save" -> {
@@ -434,6 +491,105 @@ class MainActivity : FlutterActivity() {
             result.error("disconnected", "服务连接中断，操作结果未确认，请重新读取状态", null)
         }
         return id
+    }
+    private fun reviewIsolatedApproval(
+        requestId: String, snapshotSha256: String, result: MethodChannel.Result,
+    ) {
+        if (!foreground || isolatedReviewDialog != null || isolatedReviewPreparing) {
+            result.error("approval-unavailable", "请在前台完成当前授权确认", null)
+            return
+        }
+        try { UUID.fromString(requestId) }
+        catch (_: Exception) { result.error("approval-invalid", "授权请求已失效", null); return }
+        isolatedReviewPreparing = true
+        try {
+            val sent = sendCall(JSONObject().put("method", "runtime.isolatedApprovals.detail")
+                .put("params", JSONObject().put("requestId", requestId)), object : MethodChannel.Result {
+            override fun success(value: Any?) {
+                isolatedReviewPreparing = false
+                if (!foreground) { result.error("approval-background", "授权确认已中断", null); return }
+                try {
+                    val review = JSONObject(value as String)
+                    if (review.getString("requestId") != requestId || review.getBoolean("active"))
+                        throw IllegalStateException("Approval no longer pending")
+                    if (review.getString("snapshotSha256") != snapshotSha256)
+                        throw IllegalStateException("Approval snapshot changed")
+                    if (System.currentTimeMillis() >= review.getLong("expiresAtMillis"))
+                        throw IllegalStateException("Approval expired")
+                    showIsolatedApproval(review, result)
+                } catch (_: Exception) { result.error("approval-stale", "授权请求已变化，请刷新页面", null) }
+            }
+            override fun error(code: String, message: String?, details: Any?) {
+                isolatedReviewPreparing = false
+                result.error(code, message, details)
+            }
+            override fun notImplemented() {
+                isolatedReviewPreparing = false
+                result.notImplemented()
+            }
+            })
+            // sendCall invokes the wrapper's error callback on a disconnected peer.
+            // Keep this guard for any future synchronous return path.
+            if (sent == null) isolatedReviewPreparing = false
+        } catch (_: Exception) {
+            isolatedReviewPreparing = false
+            result.error("approval-disconnected", "授权服务已断开，请刷新后重试", null)
+        }
+    }
+
+    private fun showIsolatedApproval(review: JSONObject, result: MethodChannel.Result) {
+        var decided = false
+        val dialog = IsolatedApprovalDialog.create(this, review,
+            onAllow = {
+                decided = true
+                if (!foreground) result.error("approval-background", "授权确认已中断", null)
+                else sendNativeIsolatedApproval(review.getString("requestId"),
+                    review.getString("challenge"), review.getString("snapshotSha256"), result)
+            }, onDismiss = {
+                isolatedReviewDialog = null
+                if (!decided) result.success(false)
+            })
+        isolatedReviewDialog = dialog
+        try { dialog.show() }
+        catch (failure: Exception) {
+            isolatedReviewDialog = null
+            throw failure
+        }
+    }
+
+    private fun sendNativeIsolatedApproval(
+        requestId: String, challenge: String, snapshotSha256: String,
+        result: MethodChannel.Result,
+    ) {
+        val peer = service
+        if (peer == null) { result.error("approval-disconnected", "授权服务已断开", null); return }
+        val id = UUID.randomUUID().toString()
+        pending[id] = result
+        try {
+            val payload = WirePayload.encode(JSONObject().put("id", id)
+                .put("requestId", requestId).put("challenge", challenge)
+                .put("snapshotSha256", snapshotSha256).toString())
+            try { peer.send(Message.obtain(null, 12).apply { replyTo = replies; data = payload }) }
+            finally { WirePayload.close(payload) }
+        } catch (_: Exception) {
+            pending.remove(id)
+            result.error("approval-disconnected", "授权结果未确认，请重新读取状态", null)
+        }
+    }
+    private fun sendNativeManual(kind: Int, frame: JSONObject, result: MethodChannel.Result) {
+        val peer = service
+        if (peer == null) { result.error("manual-disconnected", "服务连接中断，请读取运行状态", null); return }
+        val id = UUID.randomUUID().toString()
+        frame.put("id", id)
+        pending[id] = result
+        try {
+            val payload = WirePayload.encode(frame.toString())
+            try { peer.send(Message.obtain(null, kind).apply { replyTo = replies; data = payload }) }
+            finally { WirePayload.close(payload) }
+        } catch (_: Exception) {
+            pending.remove(id)
+            result.error("manual-disconnected", "结果未确认，请读取运行状态，勿重复提交", null)
+        }
     }
     private fun clearRestartObserver() {
         val binder = restartBinder
@@ -622,6 +778,7 @@ class MainActivity : FlutterActivity() {
     }
     override fun onPause() {
         foreground = false
+        isolatedReviewDialog?.dismiss()
         publishNotificationView()
         bindingHandshake.backgrounded()
         super.onPause()

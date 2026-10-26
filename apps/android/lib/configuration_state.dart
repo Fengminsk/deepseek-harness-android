@@ -69,13 +69,23 @@ class ConfigurationEditingController extends ChangeNotifier {
     return cloneConfiguration(raw);
   }
 
-  Future<dynamic> _api(String method, [Json args = const {}]) => runtime
-      .call('api.call', {
-        'namespace': 'settings',
-        'method': method,
-        'args': args,
-      })
-      .timeout(configurationRequestTimeout);
+  Future<dynamic> _api(String method, [Json args = const {}]) async {
+    if (method == 'describe') {
+      return runtime.describeConfiguration();
+    }
+    runtime.invalidateConfigurationRead();
+    try {
+      return await runtime
+          .call('api.call', {
+            'namespace': 'settings',
+            'method': method,
+            'args': args,
+          })
+          .timeout(configurationRequestTimeout);
+    } finally {
+      runtime.invalidateConfigurationRead();
+    }
+  }
 
   void _publish() {
     if (!_disposed) notifyListeners();
@@ -168,11 +178,6 @@ class ConfigurationEditingController extends ChangeNotifier {
             if (!current()) return;
             fresh = false;
             _readError = '无法核对配置：$failure\n草稿已保留。';
-          } finally {
-            if (current()) {
-              loading = false;
-              _publish();
-            }
           }
         }().whenComplete(() {
           if (!identical(_refresh, operation)) return;

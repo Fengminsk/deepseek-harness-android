@@ -4,6 +4,7 @@ import 'package:material_ui/material_ui.dart';
 
 import 'configuration_edits.dart';
 import 'configuration_state.dart';
+import 'confirmation.dart';
 import 'models.dart' show ModelDraftGuard, ModelNotice;
 import 'runtime.dart';
 import 'ui.dart';
@@ -82,6 +83,7 @@ class _SubagentModelSettingsPageState extends State<SubagentModelSettingsPage>
   late int connection;
   late String phase;
   Object? forms;
+  bool resetReview = false;
 
   @override
   void initState() {
@@ -127,6 +129,7 @@ class _SubagentModelSettingsPageState extends State<SubagentModelSettingsPage>
       failures = [];
       catalogFresh = catalogLoading = catalogRequested = false;
       catalogError = null;
+      resetReview = false;
       search.clear();
       _connect();
     }
@@ -142,6 +145,7 @@ class _SubagentModelSettingsPageState extends State<SubagentModelSettingsPage>
     forms = widget.runtime.forms;
     catalogRequest++;
     setState(() {
+      resetReview = false;
       catalogLoading = catalogFresh = catalogRequested = false;
       catalogError = connectionChanged ? '连接已变化，正在核对模型目录。' : '模型配置已更新，正在核对目录。';
     });
@@ -330,6 +334,40 @@ class _SubagentModelSettingsPageState extends State<SubagentModelSettingsPage>
         },
       ],
     );
+  }
+
+  List<Json> get _resetOperations {
+    final user = controller.accepted?['user'];
+    if (user is! Map) return const [];
+    return [
+      for (final field in const ['enabled', 'allowedModels'])
+        if (user.containsKey(field))
+          {
+            'op': 'unset',
+            'path': [field],
+          },
+    ];
+  }
+
+  _Selection? get _inheritedSelection {
+    final base = controller.accepted?['base'];
+    return base is Json ? _selection(base) : null;
+  }
+
+  bool get _canReset =>
+      controller.canEdit &&
+      controller.fresh &&
+      controller.writable &&
+      widget.runtime.ready &&
+      !controller.conflict &&
+      !controller.hasDraft &&
+      _resetOperations.isNotEmpty &&
+      _inheritedSelection != null;
+
+  Future<void> _reset() async {
+    if (!_canReset) return;
+    final saved = await controller.save(operations: _resetOperations);
+    if (mounted && saved) setState(() => resetReview = false);
   }
 
   bool _canSave(_Selection selection) =>
@@ -556,69 +594,107 @@ class _SubagentModelSettingsPageState extends State<SubagentModelSettingsPage>
   @override
   Widget build(BuildContext context) {
     final selection = _selection(controller.draft);
+    final inherited = _inheritedSelection;
     return ModelDraftGuard(
       hasEdits: () => controller.hasDraft || controller.uncertain,
       busy: controller.busy,
-      child: PocketScaffold(
-        title: const Text('子 Agent 模型'),
-        trailing: GlassButton(
-          icon: Icons.refresh_rounded,
-          label: '刷新子 Agent 模型设置',
-          onPressed: controller.loading || controller.busy || catalogLoading
-              ? null
-              : _refresh,
-        ),
-        bottom: PocketButton(
-          key: const ValueKey('save-subagent-models'),
-          onPressed: selection != null && _canSave(selection)
-              ? () => _save(selection)
-              : null,
-          child: Text(_saveLabel(selection)),
-        ),
-        body: PocketList(
-          padding: const EdgeInsets.all(20),
-          children: [
-            for (final message in [controller.error, controller.notice])
-              if (message != null) ModelNotice(message),
-            if (controller.uncertain || controller.conflict) _recovery(),
-            if (controller.loading && controller.draft == null)
-              const ModelNotice('正在读取子 Agent 模型设置…'),
-            if (controller.draft != null && selection == null)
-              const ModelNotice('配置中存在无效的模型标识，请核对原配置。未改动任何配置。'),
-            if (selection != null) ...[
-              if (selection.duplicateCount > 0)
-                const ModelNotice('配置包含重复的模型，已合并显示。保存时会合并重复项。'),
-              PocketSection(
-                children: [
-                  PocketSwitchRow(
-                    key: const ValueKey('subagent-model-enabled'),
-                    leading: const Icon(Icons.account_tree_outlined),
-                    title: const Text('允许 Agent 选择子任务模型'),
-                    value: selection.enabled,
-                    onChanged: controller.canEdit && controller.writable
-                        ? (enabled) => controller.edit(['enabled'], enabled)
-                        : null,
-                  ),
-                ],
-              ),
-              ModelNotice(
-                selection.enabled
-                    ? '选择子任务可用的模型。Agent 会选择模型及其支持的推理强度，仅影响新会话。'
-                    : '子 Agent 使用配置的默认模型，或继承父 Agent 的模型。已选模型会保留。',
-              ),
-              if (selection.enabled)
-                ..._models(selection)
-              else if (selection.routes.isNotEmpty)
+      child: PocketConfirmationLayer(
+        confirmation: resetReview
+            ? PocketConfirmation(
+                title: '恢复子 Agent 模型默认值？',
+                message: inherited == null
+                    ? '继承配置尚未确认，请刷新后重试。'
+                    : '将撤销子 Agent 模型选择的用户覆盖，恢复为：'
+                          '${inherited.enabled ? '允许选择' : '使用默认或继承模型'}，'
+                          '${inherited.routes.length} 个授权模型。'
+                          '已有会话记录的模型策略不会改变。',
+                secondaryLabel: '取消',
+                onSecondary: controller.busy
+                    ? null
+                    : () => setState(() => resetReview = false),
+                primaryLabel: '恢复默认值',
+                onPrimary: _canReset ? _reset : null,
+              )
+            : null,
+        child: PocketScaffold(
+          title: const Text('子 Agent 模型'),
+          trailing: GlassButton(
+            icon: Icons.refresh_rounded,
+            label: '刷新子 Agent 模型设置',
+            onPressed: controller.loading || controller.busy || catalogLoading
+                ? null
+                : _refresh,
+          ),
+          bottom: PocketButton(
+            key: const ValueKey('save-subagent-models'),
+            onPressed: selection != null && _canSave(selection)
+                ? () => _save(selection)
+                : null,
+            child: Text(_saveLabel(selection)),
+          ),
+          body: PocketList(
+            padding: const EdgeInsets.all(20),
+            children: [
+              for (final message in [controller.error, controller.notice])
+                if (message != null) ModelNotice(message),
+              if (controller.uncertain || controller.conflict) _recovery(),
+              if (controller.loading && controller.draft == null)
+                const ModelNotice('正在读取子 Agent 模型设置…'),
+              if (controller.draft != null && selection == null)
+                const ModelNotice('配置中存在无效的模型标识，请核对原配置。未改动任何配置。'),
+              if (selection != null) ...[
+                if (selection.duplicateCount > 0)
+                  const ModelNotice('配置包含重复的模型，已合并显示。保存时会合并重复项。'),
                 PocketSection(
                   children: [
-                    _comparison(
-                      '已保留 ${selection.routes.length} 个模型',
-                      controller.draft,
+                    PocketSwitchRow(
+                      key: const ValueKey('subagent-model-enabled'),
+                      leading: const Icon(Icons.account_tree_outlined),
+                      title: const Text('允许 Agent 选择子任务模型'),
+                      value: selection.enabled,
+                      onChanged: controller.canEdit && controller.writable
+                          ? (enabled) => controller.edit(['enabled'], enabled)
+                          : null,
                     ),
                   ],
                 ),
+                ModelNotice(
+                  selection.enabled
+                      ? '选择子任务可用的模型。Agent 会选择模型及其支持的推理强度，仅影响新会话。'
+                      : '子 Agent 使用配置的默认模型，或继承父 Agent 的模型。已选模型会保留。',
+                ),
+                if (_resetOperations.isNotEmpty)
+                  PocketSection(
+                    title: '恢复默认值',
+                    children: [
+                      PocketRow(
+                        icon: Icons.restore_rounded,
+                        title: '恢复继承的模型设置',
+                        subtitle: inherited == null
+                            ? '继承配置尚未确认'
+                            : controller.hasDraft
+                            ? '请先保存或放弃当前修改'
+                            : '先核对继承值，再撤销用户覆盖',
+                        onTap: _canReset
+                            ? () => setState(() => resetReview = true)
+                            : null,
+                      ),
+                    ],
+                  ),
+                if (selection.enabled)
+                  ..._models(selection)
+                else if (selection.routes.isNotEmpty)
+                  PocketSection(
+                    children: [
+                      _comparison(
+                        '已保留 ${selection.routes.length} 个模型',
+                        controller.draft,
+                      ),
+                    ],
+                  ),
+              ],
             ],
-          ],
+          ),
         ),
       ),
     );

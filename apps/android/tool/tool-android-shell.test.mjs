@@ -44,7 +44,10 @@ const [
 ])
 resolver.deregister()
 
-async function fixture(t, { approval = true, policy = 'ask', timeoutMs = 60000 } = {}) {
+async function fixture(t, { approval = true, policy = 'ask', timeoutMs = 60000, legacy = true } = {}) {
+  const previousExecutionMode = process.env.DSH_ANDROID_SHELL_EXECUTION_MODE
+  if (legacy) process.env.DSH_ANDROID_SHELL_EXECUTION_MODE = 'app-uid-approved'
+  else delete process.env.DSH_ANDROID_SHELL_EXECUTION_MODE
   const directory = await mkdtemp(join(tmpdir(), 'android-shell-approval-'))
   const configPath = join(directory, 'cordis.yml')
   const rows = [
@@ -81,6 +84,8 @@ async function fixture(t, { approval = true, policy = 'ask', timeoutMs = 60000 }
   let ctx, shell
   let cwd = directory
   t.after(async () => {
+    if (previousExecutionMode === undefined) delete process.env.DSH_ANDROID_SHELL_EXECUTION_MODE
+    else process.env.DSH_ANDROID_SHELL_EXECUTION_MODE = previousExecutionMode
     for (const { child } of spawned) child.finish()
     await ctx?.fiber.dispose()
     spawn.mock.restore()
@@ -146,6 +151,23 @@ test('real Loader tool waits for one-shot approval and records the exact call id
   assert.equal(f.shell.context(String(f.session.id), 'shell-1'), undefined)
   assert.deepEqual(f.outcomes(), ['allowed-once'])
   assert.equal(f.session.snapshotEvents().find(event => event.type === 'approval/asked').data.callId, 'shell-1')
+})
+
+test('default policy does not advertise an App-UID Shell to the model or ask for approval', async t => {
+  const f = await fixture(t, { legacy: false })
+  assert.equal(f.ctx.tools.get('android_shell'), undefined)
+  assert.deepEqual(f.shell.policy(), { tool: 'android_shell', available: false,
+    reason: 'isolated-executor-unavailable', executionIdentity: null,
+    approval: 'unavailable', workspaceConfinement: false })
+  process.env.DSH_ANDROID_SHELL_EXECUTION_MODE = 'app-uid-approved'
+  assert.equal(f.ctx.tools.get('android_shell'), undefined,
+    'a later process-mode change cannot add a tool to an active Agent')
+  delete process.env.DSH_ANDROID_SHELL_EXECUTION_MODE
+  let prompts = 0
+  f.ctx.on('approval/request', () => { prompts++; return Promise.resolve('allowed-once') })
+  assert.equal((await f.execute()).isError, true)
+  assert.equal(prompts, 0)
+  assert.equal(f.spawned.length, 0)
 })
 
 for (const outcome of ['rejected', 'cancelled', 'unavailable']) {
@@ -283,6 +305,21 @@ test('other tools keep their original execution policy', async t => {
   f.ctx.on('approval/request', () => { prompts++; return Promise.resolve('rejected') })
   const result = await f.execute(undefined, { name: 'fixture_read', arguments: {} })
   assert.equal(result.isError, false)
+  assert.equal(prompts, 0)
+  assert.equal(f.spawned.length, 0)
+})
+
+test('required isolation denies Android Shell before asking for approval', async t => {
+  const f = await fixture(t)
+  const previous = process.env.DSH_ANDROID_SHELL_EXECUTION_MODE
+  process.env.DSH_ANDROID_SHELL_EXECUTION_MODE = 'isolated-required'
+  t.after(() => {
+    if (previous === undefined) delete process.env.DSH_ANDROID_SHELL_EXECUTION_MODE
+    else process.env.DSH_ANDROID_SHELL_EXECUTION_MODE = previous
+  })
+  let prompts = 0
+  f.ctx.on('approval/request', () => { prompts++; return Promise.resolve('allowed-once') })
+  assert.equal((await f.execute()).isError, true)
   assert.equal(prompts, 0)
   assert.equal(f.spawned.length, 0)
 })

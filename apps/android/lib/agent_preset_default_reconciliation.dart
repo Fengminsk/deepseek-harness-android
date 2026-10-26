@@ -46,13 +46,24 @@ class AgentPresetDefaultReconciler extends ChangeNotifier {
     String namespace,
     String method, [
     Json args = const {},
-  ]) => runtime
-      .call('api.call', {
-        'namespace': namespace,
-        'method': method,
-        'args': args,
-      })
-      .timeout(agentPresetRequestTimeout);
+  ]) async {
+    if (namespace == 'settings' && method == 'describe') {
+      return runtime.describeConfiguration();
+    }
+    final writesSettings = namespace == 'settings';
+    if (writesSettings) runtime.invalidateConfigurationRead();
+    try {
+      return await runtime
+          .call('api.call', {
+            'namespace': namespace,
+            'method': method,
+            'args': args,
+          })
+          .timeout(agentPresetRequestTimeout);
+    } finally {
+      if (writesSettings) runtime.invalidateConfigurationRead();
+    }
+  }
 
   bool _current(int connection) =>
       !_disposed &&

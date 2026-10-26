@@ -5,6 +5,10 @@ import { presentSessionEvent } from './live-state.mjs'
 const PAGE_SIZE = 200
 const DEFAULT_LEASE_MS = 120_000
 const DEFAULT_RETAINED_BYTES = 128 * 1024 * 1024
+const WINDOW_MESSAGES = 80
+const WINDOW_MAX_MESSAGES = 200
+const WINDOW_MAX_EVENTS = 500
+const WINDOW_MAX_BYTES = 4 * 1024 * 1024
 
 function validateAddress(params) {
   if (typeof params?.sessionId !== 'string' || !params.sessionId.trim()) {
@@ -35,6 +39,72 @@ function page(events, offset) {
 
 function historyError(code, message) {
   return Object.assign(new Error(message), { code })
+}
+
+function validateWindowAddress(params) {
+  if (typeof params?.sessionId !== 'string' || !params.sessionId.trim()) {
+    throw new TypeError('sessionId must be a non-empty string')
+  }
+  for (const field of ['beforeSeq', 'throughSeq']) {
+    const value = params[field]
+    if (value !== undefined && (!Number.isSafeInteger(value) || value < 0 || Object.is(value, -0))) {
+      throw new TypeError(`${field} must be a non-negative safe integer`)
+    }
+  }
+  if (params.beforeSeq !== undefined && params.throughSeq === undefined) {
+    throw new TypeError('throughSeq is required when reading an older window')
+  }
+  return params
+}
+
+function outlineFrom(snapshot) {
+  if (snapshot?.kind !== 'sequenced') return []
+  const value = snapshot.values?.turnOutline
+  if (!Array.isArray(value)) return []
+  const turns = []
+  let previousTurn = -1
+  let previousSeq = -1
+  for (const item of value) {
+    if (!item || !Number.isSafeInteger(item.turn) || item.turn < 0
+      || !Number.isSafeInteger(item.seq) || item.seq < 0
+      || item.turn <= previousTurn || item.seq <= previousSeq) return []
+    turns.push({ turn: item.turn, seq: item.seq,
+      prompt: typeof item.prompt === 'string' ? item.prompt : '',
+      response: typeof item.response === 'string' ? item.response : '' })
+    previousTurn = item.turn
+    previousSeq = item.seq
+  }
+  return turns
+}
+
+function boundedWindow(records, hasMore) {
+  const events = []
+  let bytes = 0
+  let nextSeq = Number.MAX_SAFE_INTEGER
+  for (let index = records.length - 1; index >= 0; index--) {
+    const event = records[index]?.event
+    if (!event || !Number.isSafeInteger(event.seq) || event.seq < 0 || event.seq >= nextSeq) {
+      throw historyError('SESSION_HISTORY_INVALID_PAGE', 'The original Session page contains an invalid event.')
+    }
+    const presented = presentSessionEvent(event)
+    const size = Buffer.byteLength(JSON.stringify(presented), 'utf8')
+    if (size > WINDOW_MAX_BYTES) {
+      throw historyError('SESSION_HISTORY_EVENT_TOO_LARGE', 'One Session event exceeds the reading window budget.')
+    }
+    if (events.length >= WINDOW_MAX_EVENTS || bytes + size > WINDOW_MAX_BYTES) break
+    events.push(presented)
+    bytes += size
+    nextSeq = event.seq
+  }
+  events.reverse()
+  if (events.length === 0 && records.length > 0) {
+    throw historyError('SESSION_HISTORY_INVALID_PAGE', 'The original Session page made no progress.')
+  }
+  if (events.length === 0 && hasMore) {
+    throw historyError('SESSION_HISTORY_INVALID_PAGE', 'The original Session page has no cursor for older events.')
+  }
+  return { events, hasMore: hasMore || events.length < records.length,
+    firstSeq: events[0]?.seq ?? null }
 }
 
 /**
@@ -137,6 +207,48 @@ export class AppSessionHistory {
     // opening page needs a lease; short histories release immediately.
     if (offset !== 0 || visible.length < PAGE_SIZE) return { events: visible }
     return { events: visible, snapshot: this.#retain(sessionId, events) }
+  }
+
+  /** Exact original whole-session projection, without scanning the event log. */
+  async turnOutline(params) {
+    const { sessionId } = validateWindowAddress(params)
+    if (this.#closed) throw historyError('SESSION_HISTORY_UNAVAILABLE', 'Session history reader has closed.')
+    const snapshot = await this.controller.projections({ sessionId: SessionId(sessionId) }, new AbortController().signal)
+    if (this.#closed) throw historyError('SESSION_HISTORY_UNAVAILABLE', 'Session history reader has closed.')
+    return { turns: outlineFrom(snapshot), asOfSeq: snapshot?.kind === 'sequenced' ? snapshot.asOfSeq : null }
+  }
+
+  /** A bounded native window from the original cold-safe, Turn-aware page service. */
+  async readWindow(params) {
+    const { sessionId, beforeSeq } = validateWindowAddress(params)
+    if (this.#closed) throw historyError('SESSION_HISTORY_UNAVAILABLE', 'Session history reader has closed.')
+    let throughSeq = params.throughSeq
+    let turns
+    if (throughSeq === undefined) {
+      const snapshot = await this.controller.projections({ sessionId: SessionId(sessionId) }, new AbortController().signal)
+      if (snapshot?.kind !== 'sequenced') {
+        throw historyError('SESSION_HISTORY_PROJECTION_UNAVAILABLE', 'An exact Session history cursor is unavailable.')
+      }
+      throughSeq = snapshot.asOfSeq
+      turns = outlineFrom(snapshot)
+    }
+    if (throughSeq < -1 || !Number.isSafeInteger(throughSeq)) {
+      throw historyError('SESSION_HISTORY_INVALID_CURSOR', 'The Session projection cursor is invalid.')
+    }
+    if (this.#closed) throw historyError('SESSION_HISTORY_UNAVAILABLE', 'Session history reader has closed.')
+    const page = await this.controller.page({
+      address: { kind: 'session', sessionId: SessionId(sessionId) },
+      throughSeq,
+      ...(beforeSeq === undefined ? {} : { beforeSeq }),
+      maxMessages: WINDOW_MAX_MESSAGES,
+      turnWindow: { minMessages: WINDOW_MESSAGES, minTurns: 2 },
+    }, new AbortController().signal)
+    if (this.#closed) throw historyError('SESSION_HISTORY_UNAVAILABLE', 'Session history reader has closed.')
+    const bounded = boundedWindow(page.records, page.hasMore)
+    if (beforeSeq !== undefined && bounded.firstSeq !== null && bounded.firstSeq >= beforeSeq) {
+      throw historyError('SESSION_HISTORY_INVALID_PAGE', 'An older Session page did not move backward.')
+    }
+    return { ...bounded, throughSeq, ...(turns === undefined ? {} : { turns }) }
   }
 
   release(params) {

@@ -24,6 +24,7 @@ class WorkspaceChangesPreference extends ChangeNotifier {
   late final VoidCallback _releaseReconciler;
   bool _enabled = false, _confirmed = false;
   bool _disposed = false;
+  Json? _reconciledDescriptor;
   bool get enabled => _enabled;
   bool get confirmed => _confirmed;
   Future<void> start() => _form.start();
@@ -39,9 +40,13 @@ class WorkspaceChangesPreference extends ChangeNotifier {
     final changed = _enabled != enabled || _confirmed != confirmed;
     _enabled = enabled;
     _confirmed = confirmed;
-    if (confirmed && !enabled && !_form.busy) {
+    if (confirmed &&
+        !enabled &&
+        !_form.busy &&
+        !identical(_reconciledDescriptor, _form.accepted)) {
       // The Host accepted false. Recheck the roster and default even when an
       // unrelated settings invalidation arrives while this view stays mounted.
+      _reconciledDescriptor = _form.accepted;
       unawaited(defaultReconciler.reconcile());
     }
     if (changed) notifyListeners();

@@ -163,7 +163,7 @@ class JobOutputPage extends StatefulWidget {
     required this.job,
   });
   final RuntimeController runtime;
-  final String sessionId;
+  final String? sessionId;
   final Json job;
   @override
   State<JobOutputPage> createState() => _JobOutputPageState();
@@ -201,7 +201,7 @@ class _JobOutputPageState extends State<JobOutputPage> {
           'follow',
           resumeArgs: () => {
             'request': {
-              'sessionId': widget.sessionId,
+              if (widget.sessionId != null) 'sessionId': widget.sessionId,
               'jobId': jobId,
               if (output.cursor != null) 'from': output.cursor,
             },
@@ -292,13 +292,15 @@ class _JobOutputPageState extends State<JobOutputPage> {
       notice = null;
     });
     try {
-      final result = await runtime.call('api.call', {
-        'namespace': 'job',
-        'method': 'kill',
-        'args': {
-          'request': {'sessionId': widget.sessionId, 'jobId': jobId},
-        },
-      }) as Json;
+      final result = widget.sessionId == null
+          ? await runtime.call('tasks.killUnownedJob', {'jobId': jobId}) as Json
+          : await runtime.call('api.call', {
+              'namespace': 'job',
+              'method': 'kill',
+              'args': {
+                'request': {'sessionId': widget.sessionId, 'jobId': jobId},
+              },
+            }) as Json;
       if (!ownsReceipt()) return;
       setState(
         () => notice = result['outcome'] == 'already-finished'

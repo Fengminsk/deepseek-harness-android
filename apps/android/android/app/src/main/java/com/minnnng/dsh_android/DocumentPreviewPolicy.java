@@ -26,8 +26,8 @@ public final class DocumentPreviewPolicy {
     }
 
     public static boolean callable(String namespace, String method) {
-        return namespace.equals("workspaceFiles") && Set.of("stat", "read", "readBytes", "list").contains(method)
-            || namespace.equals("officeToPdf") && Set.of("render", "generation").contains(method);
+        return namespace.equals("workspaceFiles") && AndroidJava28.setOf("stat", "read", "readBytes", "list").contains(method)
+            || namespace.equals("officeToPdf") && AndroidJava28.setOf("render", "generation").contains(method);
     }
 
     public static boolean external(String value) {

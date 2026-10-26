@@ -190,11 +190,71 @@ void main() {
       );
       await tester.pumpWidget(view(true));
       await tester.pumpAndSettle();
+      if (scroll.hasClients) {
+        scroll.jumpTo(scroll.position.maxScrollExtent);
+        await tester.pumpAndSettle();
+      }
       expect(find.text('正在思考'), findsOneWidget);
       expect(find.byType(ChatRollingCount), findsNothing);
       await tester.pumpWidget(view(false));
       await tester.pumpAndSettle();
       expect(find.byType(ChatProgressLine), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'streaming answer replaces generic progress but keeps real pending work visible',
+    (tester) async {
+      final events = <Json>[fixture.input(0, 'question')];
+      final projection = ChatProjection();
+      final scroll = ScrollController();
+      addTearDown(scroll.dispose);
+      final live = ChatLiveMessage(
+        identity: 'answer-attempt',
+        turn: 1,
+        step: 1,
+        content: const [
+          {'type': 'text', 'text': 'An answer is appearing.'},
+        ],
+      );
+      Widget view({ChatLiveMessage? stream}) => host(
+        ChatTimeline(
+          sessionId: 'stream-progress',
+          projection: projection..reconcile(events),
+          events: events,
+          controller: scroll,
+          running: true,
+          live: stream,
+        ),
+      );
+
+      await tester.pumpWidget(view());
+      await tester.pumpAndSettle();
+      expect(find.text('正在思考'), findsOneWidget);
+
+      await tester.pumpWidget(view(stream: live));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('An answer is appearing.'), findsOneWidget);
+      expect(find.byType(ChatProgressLine), findsNothing);
+
+      events.add(tools.callEvent(1, id: 'real-call'));
+      await tester.pumpWidget(view(stream: live));
+      await tester.pumpAndSettle();
+      expect(find.byType(ChatProgressLine), findsOneWidget);
+      expect(find.text('正在运行命令'), findsOneWidget);
+      expect(
+        chatHasPendingActivity(
+          projection.entries.where((e) => e.tool != null).map((e) => e.tool!),
+        ),
+        isTrue,
+      );
+
+      events.add(tools.resultEvent(2, id: 'real-call'));
+      await tester.pumpWidget(view(stream: live));
+      await tester.pumpAndSettle();
+      expect(find.byType(ChatProgressLine), findsNothing);
+      expect(find.textContaining('An answer is appearing.'), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );

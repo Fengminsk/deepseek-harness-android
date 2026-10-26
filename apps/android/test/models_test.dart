@@ -525,6 +525,39 @@ void main() {
     },
   );
 
+  testWidgets(
+    'a same-connection catalog outage keeps the last verified listing as read-only display',
+    (tester) async {
+      final runtime = ModelsRuntime([
+        section('agent-default-model', {'provider': 'acme', 'model': 'one'}),
+      ]);
+      addTearDown(runtime.dispose);
+      await mount(tester, ModelsPage(runtime: runtime));
+      expect(runtime.models.snapshot?.catalogFresh, isTrue);
+      expect(runtime.models.snapshot?.catalog['groups'], isNotEmpty);
+
+      runtime.failCatalog = true;
+      await runtime.models.refresh();
+      await tester.pumpAndSettle();
+      expect(runtime.models.snapshot?.catalogFresh, isFalse);
+      expect(runtime.models.snapshot?.catalogCached, isTrue);
+      expect(runtime.models.snapshot?.catalog['groups'], isNotEmpty);
+      expect(find.textContaining('上次读取的模型目录'), findsOneWidget);
+      await tap(tester, 'one');
+      expect(find.text('保存默认模型'), findsNothing);
+
+      runtime.fail(StateError('service restarted'));
+      runtime.recover();
+      await tester.pumpAndSettle();
+      expect(runtime.models.snapshot?.catalogFresh, isFalse);
+      expect(runtime.models.snapshot?.catalogCached, isFalse);
+      expect(runtime.models.snapshot?.catalog['groups'], isEmpty);
+      runtime.failCatalog = false;
+      await runtime.models.refresh();
+      await tester.pumpAndSettle();
+    },
+  );
+
   testWidgets('failed settings read retries without exposing its exception', (
     tester,
   ) async {

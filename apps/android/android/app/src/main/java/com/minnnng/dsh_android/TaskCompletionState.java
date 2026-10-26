@@ -11,7 +11,7 @@ public final class TaskCompletionState {
 
     /** Claims one real completion once; the persisted watermark also fences process replacement. */
     public boolean claim(String sessionId, long endSeq, long persistedSeq) {
-        if (sessionId == null || sessionId.isBlank() || sessionId.length() > 512 || endSeq < 0) {
+        if (sessionId == null || AndroidJava28.isBlank(sessionId) || sessionId.length() > 512 || endSeq < 0) {
             throw new IllegalArgumentException("Invalid task completion");
         }
         if (closed || endSeq <= Math.max(settled.getOrDefault(sessionId, -1L), persistedSeq)) return false;
@@ -27,7 +27,7 @@ public final class TaskCompletionState {
     /** A null session or a paused Activity never suppresses another view's completion. */
     public void viewing(String owner, String sessionId, boolean foreground) {
         if (closed) return;
-        if (foreground && sessionId != null && !sessionId.isBlank()) visible.put(owner, sessionId);
+        if (foreground && sessionId != null && !AndroidJava28.isBlank(sessionId)) visible.put(owner, sessionId);
         else visible.remove(owner);
     }
 

@@ -13,6 +13,7 @@ import ToolRuntime, {
   TOOL_ABORTED, TOOL_ABORTED_BEFORE_DISPATCH,
   type InferArgs, type ParameterSchemaSpec, type PreToolDecision, type PostToolDecision,
   type JsonSchemaNode, type ToolDefinition, type ToolDispatchExecution, type ToolExecutionResult, type ToolExecutionToken,
+  type ToolRunContext,
 } from '@deepseek-ai/dsh-tools'
 import type { JsonValue } from '@deepseek-ai/dsh-util-values'
 
@@ -573,6 +574,30 @@ describe('ToolRuntime', () => {
     })
   })
 
+  it('does not validate a post-policy value through a later same-name registration', async () => {
+    const ctx = await setup()
+    try {
+      const unregister = ctx.tools.register(echoTool)
+      ctx.on('tools/post-execute', async () => {
+        unregister()
+        ctx.tools.register({
+          ...echoTool,
+          output: { schema: { type: 'number' }, render: () => [{ type: 'text', text: 'new' }] },
+        })
+        return { kind: 'accept', value: 12 }
+      })
+      const result = await ctx.tools.execute({
+        signal: testToolSignal, callId: ToolCallId('post-replaced'), name: 'echo', arguments: {},
+      })
+      expect(result.error).toEqual({
+        message: 'unknown tool "echo"',
+        info: { name: 'ToolNotFoundError', code: 'UNKNOWN_TOOL' },
+      })
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
   it('normalizes wrapper-authored failure metadata and contexts', async () => {
     const ctx = await setup()
     ctx.tools.register(echoTool)
@@ -709,6 +734,118 @@ describe('ToolRuntime', () => {
     const thrown = await ctx.tools.execute({ signal: testToolSignal, callId: ToolCallId('c2'), name: 'boom', arguments: {} })
     expect(thrown.isError).toBe(true)
     expect(thrown.content[0]).toMatchObject({ text: 'Error: exploded' })
+  })
+
+  it.each(['new definition', 'same definition'] as const)(
+    'does not dispatch a %s registered under the approved name after policy waits',
+    async (replacementKind) => {
+      const ctx = await setup()
+      const entered = Promise.withResolvers<undefined>()
+      const release = Promise.withResolvers<undefined>()
+      const observed: ToolExecutionResult[] = []
+      let originalCalls = 0
+      let replacementCalls = 0
+      const original: ToolDefinition = {
+        ...echoTool,
+        async execute() { originalCalls++; return 'original' },
+      }
+      const replacement: ToolDefinition = {
+        ...echoTool,
+        async execute() { replacementCalls++; return 'replacement' },
+      }
+      const unregister = ctx.tools.register(original)
+      ctx.on('tools/pre-execute', async (_exec, next) => {
+        entered.resolve(undefined)
+        await release.promise
+        return next()
+      })
+      ctx.on('tools/result', (_exec, result) => { observed.push(result) })
+      const running = ctx.tools.execute({
+        signal: testToolSignal, callId: ToolCallId('reviewed'), name: 'echo', arguments: {},
+      })
+      try {
+        await entered.promise
+        unregister()
+        ctx.tools.register(replacementKind === 'same definition' ? original : replacement)
+        release.resolve(undefined)
+        const result = await running
+        expect(result.error).toEqual({
+          message: 'unknown tool "echo"',
+          info: { name: 'ToolNotFoundError', code: 'UNKNOWN_TOOL' },
+        })
+        expect(observed).toEqual([result])
+        expect(originalCalls).toBe(0)
+        expect(replacementCalls).toBe(0)
+
+        const fresh = await ctx.tools.execute({
+          signal: testToolSignal, callId: ToolCallId('fresh'), name: 'echo', arguments: {},
+        })
+        expect(fresh.isError).toBe(false)
+        expect(fresh.value).toBe(replacementKind === 'same definition' ? 'original' : 'replacement')
+      } finally {
+        release.resolve(undefined)
+        await running
+        await ctx.fiber.dispose()
+      }
+    },
+  )
+
+  it('keeps cancellation authoritative when a registered tool changes during policy', async () => {
+    const ctx = await setup()
+    const entered = Promise.withResolvers<undefined>()
+    const release = Promise.withResolvers<undefined>()
+    const controller = new AbortController()
+    let calls = 0
+    const unregister = ctx.tools.register({ ...echoTool, async execute() { calls++; return 'old' } })
+    ctx.on('tools/pre-execute', async (_exec, next) => {
+      entered.resolve(undefined)
+      await release.promise
+      return next()
+    })
+    const running = ctx.tools.execute({
+      signal: controller.signal, callId: ToolCallId('cancelled-review'), name: 'echo', arguments: {},
+    })
+    try {
+      await entered.promise
+      unregister()
+      ctx.tools.register({ ...echoTool, async execute() { calls++; return 'new' } })
+      controller.abort()
+      release.resolve(undefined)
+      const result = await running
+      expect(result.error?.info?.code).toBe(TOOL_ABORTED_BEFORE_DISPATCH)
+      expect(calls).toBe(0)
+    } finally {
+      release.resolve(undefined)
+      await running
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('runs the selected tool when unrelated registrations change during policy', async () => {
+    const ctx = await setup()
+    const entered = Promise.withResolvers<undefined>()
+    const release = Promise.withResolvers<undefined>()
+    ctx.tools.register(echoTool)
+    ctx.on('tools/pre-execute', async (_exec, next) => {
+      entered.resolve(undefined)
+      await release.promise
+      return next()
+    })
+    const running = ctx.tools.execute({
+      signal: testToolSignal, callId: ToolCallId('stable-review'), name: 'echo', arguments: { text: 'kept' },
+    })
+    try {
+      await entered.promise
+      ctx.tools.register({ ...echoTool, name: 'unrelated' })
+      release.resolve(undefined)
+      const result = await running
+      expect(result.isError).toBe(false)
+      expect(result.value).toBe('kept')
+    } finally {
+      release.resolve(undefined)
+      await running
+      await ctx.fiber.dispose()
+    }
   })
 
   it('normalizes a hostile thrown value whose inspection and coercion both throw', async () => {
@@ -2571,6 +2708,45 @@ describe('ToolRuntime.get', () => {
   it('get() returns undefined for unknown tool names', async () => {
     const ctx = await setup()
     expect(ctx.tools.get('nope')).toBeUndefined()
+  })
+
+  it('registrationIdentity pins a visible registration, not its reusable definition object', async () => {
+    const ctx = await setup()
+    expect(ctx.tools.registrationIdentity('echo')).toBeUndefined()
+    const remove = ctx.tools.register(echoTool)
+    const first = ctx.tools.registrationIdentity('echo')
+    expect(first).toBeDefined()
+    expect(Object.isFrozen(first)).toBe(true)
+    expect(ctx.tools.registrationIdentity('echo')).toBe(first)
+    remove()
+    expect(ctx.tools.registrationIdentity('echo')).toBeUndefined()
+    const removeAgain = ctx.tools.register(echoTool)
+    expect(ctx.tools.get('echo')).toBe(echoTool)
+    expect(ctx.tools.registrationIdentity('echo')).not.toBe(first)
+    removeAgain()
+  })
+
+  it('isActiveExecution accepts only a live context minted for this tool body', async () => {
+    const ctx = await setup()
+    let captured: ToolRunContext | undefined
+    ctx.tools.register(defineTool({
+      name: 'active-probe', description: 'Check body ownership', parameters: {},
+      output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
+      async execute(_args, exec) {
+        captured = exec
+        expect(ctx.tools.isActiveExecution(exec)).toBe(true)
+        expect(ctx.tools.isActiveExecution({ ...exec })).toBe(false)
+        await Promise.resolve()
+        expect(ctx.tools.isActiveExecution(exec)).toBe(true)
+        return 'done'
+      },
+    }))
+    expect(ctx.tools.isActiveExecution({ token: Symbol('forged') } as ToolRunContext)).toBe(false)
+    const result = await ctx.tools.execute({ signal: testToolSignal, callId: ToolCallId('active'),
+      name: 'active-probe', arguments: {} })
+    expect(result.isError).toBe(false)
+    expect(captured).toBeDefined()
+    expect(ctx.tools.isActiveExecution(captured!)).toBe(false)
   })
 })
 

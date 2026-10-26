@@ -6,6 +6,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'runtime.dart';
+import 'runtime_selection.dart';
 import 'ui.dart';
 import 'text_document_page.dart';
 import 'files.dart';
@@ -30,6 +31,7 @@ import 'web_search_settings.dart';
 import 'permission_policy.dart';
 import 'settings_general.dart';
 import 'session_log_upload_settings.dart';
+import 'manual_isolated_script.dart';
 
 class SettingsPage extends StatelessWidget {
   const SettingsPage({required this.runtime, super.key});
@@ -40,8 +42,16 @@ class SettingsPage extends StatelessWidget {
         Navigator.push(context, PocketRoute<void>(builder: (_) => page));
     return PocketScaffold(
       title: const Text('设置'),
-      body: ListenableBuilder(
-        listenable: runtime,
+      body: RuntimeSelectionBuilder(
+        runtime: runtime,
+        select: () => (
+          runtime.connectionGeneration,
+          runtime.phase,
+          runtime.forms,
+          runtime.model,
+          runtime.interactions.length,
+          runtime.web['phase'],
+        ),
         builder: (context, _) => PocketList(
           padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
           children: [
@@ -112,9 +122,15 @@ class SettingsPage extends StatelessWidget {
                 ),
                 PocketRow(
                   icon: Icons.verified_user_outlined,
-                  title: '执行权限',
-                  subtitle: '查看 Shell 与文件工具的实际边界',
+                  title: '沙箱与执行权限',
+                  subtitle: '脚本可写范围、联网与现有工具权限',
                   onTap: () => open(ExecutionPermissionsPage(runtime: runtime)),
+                ),
+                PocketRow(
+                  icon: Icons.code_rounded,
+                  title: '手动隔离脚本',
+                  subtitle: '选择一次运行的文件与联网范围',
+                  onTap: () => open(ManualIsolatedScriptPage(runtime: runtime)),
                 ),
                 PocketRow(
                   icon: Icons.extension_outlined,
@@ -264,14 +280,16 @@ class ConfigurationListPage extends StatelessWidget {
     'llm-pi-ai' => '模型与连接',
     'agent-loop' ||
     'subagent' ||
-    'subagent-model-selection-settings' => 'Agent',
+    'subagent-model-selection-settings' ||
+    'tool-ask-user' => 'Agent',
     'web' ||
     'web-search-deepseek' ||
     'web-deepseek-api' ||
     'web-search-exa' ||
     'web-fetch-http' => '联网工具',
+    'tool-web' => '联网工具',
     'session-log-deepseek' => '会话与隐私',
-    'android-runtime' => '设备工具',
+    'android-runtime' || 'tool-fs' || 'tool-fs-search' => '设备工具',
     'ui-settings-account' => '高级维护',
     'ui-theme' ||
     'ui-settings' ||
@@ -306,8 +324,10 @@ class ConfigurationListPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) => PocketScaffold(
     title: const Text('Agent 与工具'),
-    body: ListenableBuilder(
-      listenable: runtime,
+    body: RuntimeSelectionBuilder(
+      runtime: runtime,
+      select: () =>
+          (runtime.connectionGeneration, runtime.phase, runtime.forms),
       builder: (context, _) => PocketList(
         padding: const EdgeInsets.all(20),
         children: [

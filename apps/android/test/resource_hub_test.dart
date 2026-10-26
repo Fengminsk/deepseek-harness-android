@@ -19,15 +19,19 @@ class _ResourceRuntime extends RuntimeController {
   String? terminalId;
   int terminalRevision = 1;
 
+  void connection(String next) {
+    phase = next;
+    notifyListeners();
+  }
+
   @override
-  Future<void> openSession(String id) async {
+  Future<List<Json>> readCompleteSession(String id) async {
     historyReads++;
-    timelines[id] = [
+    return [
       changeEvent(1, 'turn/start', 1),
       changeEvent(2, 'workspace/changes', 1),
       changeEvent(3, 'turn/end', 1),
     ];
-    notifyListeners();
   }
 
   @override
@@ -54,7 +58,13 @@ class _ResourceRuntime extends RuntimeController {
               {'id': terminalId, 'cwd': '/work', 'state': 'running'},
             ];
     }
+    if (method == 'terminal.shells') {
+      return [
+        {'id': 'system-sh', 'label': '系统 Shell'},
+      ];
+    }
     if (method == 'terminal.create') {
+      expectSync(params['shellId'], 'system-sh');
       terminalId = params['id'] as String;
       return {'id': terminalId, 'state': 'running'};
     }
@@ -106,10 +116,14 @@ class _ResourceRuntime extends RuntimeController {
       };
     }
     if (namespace == 'workspaceFiles' && operation == 'list') {
+      final path = (params['args'] as Json)['path'] as String;
       return {
-        'path': '',
+        'path': path,
         'entries': [
           {'name': 'notes.md', 'type': 'file', 'size': 24},
+          {'name': 'folder', 'type': 'directory'},
+          for (var i = 0; i < 45; i++)
+            {'name': 'file-$i.txt', 'type': 'file', 'size': i},
         ],
         'truncated': false,
       };
@@ -133,7 +147,11 @@ class _ResourceRuntime extends RuntimeController {
   }
 }
 
-Future<void> _mount(WidgetTester tester, RuntimeController runtime) async {
+Future<void> _mount(
+  WidgetTester tester,
+  RuntimeController runtime, {
+  String sessionId = 'session',
+}) async {
   tester.view.physicalSize = const Size(390, 844);
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.resetPhysicalSize);
@@ -148,13 +166,197 @@ Future<void> _mount(WidgetTester tester, RuntimeController runtime) async {
         ),
         child: child!,
       ),
-      home: SessionResourcesPage(runtime: runtime, sessionId: 'session'),
+      home: SessionResourcesPage(runtime: runtime, sessionId: sessionId),
     ),
   );
   await tester.pumpAndSettle();
 }
 
 void main() {
+  testWidgets(
+    'tabs mount on selection and retain browser draft and file scroll',
+    (tester) async {
+      final runtime = _ResourceRuntime();
+      await _mount(tester, runtime);
+      expect(runtime.calls, isEmpty);
+      await tester.tap(find.byKey(const ValueKey('resource-files')));
+      await tester.pumpAndSettle();
+      final listing = find.byKey(const ValueKey('file-browser-list'));
+      await tester.drag(listing, const Offset(0, -520));
+      await tester.pumpAndSettle();
+      final before = tester.widget<ListView>(listing).controller!.offset;
+      expect(before, greaterThan(0));
+      expect(runtime.historyReads, 0);
+      await tester.tap(find.byKey(const ValueKey('resource-tab-guide')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('resource-browser')));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const ValueKey('browser-address')),
+        'https://example.org/draft',
+      );
+      await tester.tap(find.byKey(const ValueKey('resource-tab-files')));
+      await tester.pumpAndSettle();
+      expect(tester.widget<ListView>(listing).controller!.offset, before);
+      await tester.tap(find.byKey(const ValueKey('resource-tab-browser')));
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<TextField>(find.byKey(const ValueKey('browser-address')))
+            .controller!
+            .text,
+        'https://example.org/draft',
+      );
+      expect(runtime.calls.any((call) => call.$1 == 'session.ensure'), false);
+      expect(runtime.calls.any((call) => call.$1 == 'session.send'), false);
+      await tester.pumpWidget(const SizedBox.shrink());
+      runtime.dispose();
+    },
+  );
+
+  testWidgets(
+    'Session changes isolate tabs; re-entry restores safe identities',
+    (tester) async {
+      final runtime = _ResourceRuntime();
+      await _mount(tester, runtime);
+      await tester.tap(find.byKey(const ValueKey('resource-browser')));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const ValueKey('browser-address')),
+        'https://example.org/private-draft',
+      );
+      await _mount(tester, runtime, sessionId: 'other');
+      expect(find.byKey(const ValueKey('resource-tab-browser')), findsNothing);
+      expect(find.byKey(const ValueKey('resource-browser')), findsOneWidget);
+      expect(runtime.calls, isEmpty);
+      await _mount(tester, runtime, sessionId: 'session');
+      expect(
+        find.byKey(const ValueKey('resource-tab-browser')),
+        findsOneWidget,
+      );
+      expect(find.byKey(const ValueKey('browser-address')), findsOneWidget);
+      expect(
+        tester
+            .widget<TextField>(find.byKey(const ValueKey('browser-address')))
+            .controller!
+            .text,
+        isEmpty,
+      );
+      await tester.tap(find.byKey(const ValueKey('resource-close-browser')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('resource-tab-browser')), findsNothing);
+      expect(find.byKey(const ValueKey('resource-browser')), findsOneWidget);
+      await tester.pumpWidget(const SizedBox.shrink());
+      runtime.dispose();
+    },
+  );
+
+  testWidgets('re-entry reads only the selected tab until another is chosen', (
+    tester,
+  ) async {
+    final runtime = _ResourceRuntime();
+    await _mount(tester, runtime);
+    await tester.tap(find.byKey(const ValueKey('resource-files')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('resource-tab-guide')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('resource-changes')));
+    await tester.pumpAndSettle();
+    int fileReads() => runtime.calls
+        .where(
+          (call) =>
+              call.$1 == 'api.call' && call.$2['namespace'] == 'workspaceFiles',
+        )
+        .length;
+    expect(fileReads(), 1);
+    expect(runtime.historyReads, 1);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await _mount(tester, runtime);
+    expect(find.byType(SessionChangesPage), findsOneWidget);
+    expect(runtime.historyReads, 2);
+    expect(fileReads(), 1);
+    await tester.tap(find.byKey(const ValueKey('resource-tab-files')));
+    await tester.pumpAndSettle();
+    expect(fileReads(), 2);
+    await tester.pumpWidget(const SizedBox.shrink());
+    runtime.dispose();
+  });
+
+  testWidgets('terminal remains attached on tab switch and reconnect', (
+    tester,
+  ) async {
+    final runtime = _ResourceRuntime();
+    runtime.terminalId = 'existing-pty';
+    await _mount(tester, runtime);
+    await tester.tap(find.byKey(const ValueKey('resource-terminal')));
+    await tester.pumpAndSettle();
+    expect(
+      runtime.calls.where((call) => call.$1 == 'terminal.list'),
+      hasLength(1),
+    );
+    await tester.tap(find.byKey(const ValueKey('resource-tab-guide')));
+    await tester.pumpAndSettle();
+    runtime.connection('failed');
+    await tester.pumpAndSettle();
+    runtime.connection('ready');
+    await tester.pumpAndSettle();
+    expect(
+      runtime.calls.where((call) => call.$1 == 'terminal.list'),
+      hasLength(2),
+    );
+    expect(runtime.terminalId, 'existing-pty');
+    expect(runtime.calls.any((call) => call.$1 == 'terminal.create'), false);
+    await tester.tap(find.byKey(const ValueKey('resource-tab-terminal')));
+    await tester.pumpAndSettle();
+    expect(find.byType(SessionTerminalsPage), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('resource-close-terminal')));
+    await tester.pumpAndSettle();
+    expect(runtime.calls.any((call) => call.$1 == 'terminal.close'), false);
+    expect(runtime.terminalId, 'existing-pty');
+    expect(find.byKey(const ValueKey('resource-tab-terminal')), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+    runtime.dispose();
+  });
+
+  testWidgets('resource back selects guide without closing the tab', (
+    tester,
+  ) async {
+    final runtime = _ResourceRuntime();
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: pocketTheme(Brightness.light),
+        home: Builder(
+          builder: (context) => Scaffold(
+            body: TextButton(
+              onPressed: () => Navigator.of(context).push<void>(
+                PocketRoute<void>(
+                  builder: (_) => SessionResourcesPage(
+                    runtime: runtime,
+                    sessionId: 'session',
+                  ),
+                ),
+              ),
+              child: const Text('打开资源'),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('打开资源'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('resource-browser')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('返回'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('resource-browser')), findsOneWidget);
+    expect(find.byKey(const ValueKey('resource-tab-browser')), findsOneWidget);
+    await tester.tap(find.byTooltip('返回'));
+    await tester.pumpAndSettle();
+    expect(find.text('打开资源'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
+    runtime.dispose();
+  });
+
   testWidgets(
     'resource hub keeps one Session and opens original file browser',
     (tester) async {
@@ -175,7 +377,7 @@ void main() {
         find.byType(SessionFilesPage),
       );
       expect(page.sessionId, 'session');
-      expect(find.text('notes.md'), findsOneWidget);
+      expect(find.text('folder'), findsOneWidget);
       expect(runtime.calls.any((call) => call.$1 == 'session.ensure'), false);
       await tester.pumpWidget(const SizedBox.shrink());
       runtime.dispose();
@@ -215,7 +417,7 @@ void main() {
     expect(find.text('summarize'), findsOneWidget);
     expect(runtime.calls.any((call) => call.$1 == 'session.ensure'), false);
     expect(runtime.calls.any((call) => call.$1 == 'session.send'), false);
-    await tester.tap(find.byIcon(Icons.arrow_back_rounded));
+    await tester.tap(find.byKey(const ValueKey('resource-tab-guide')));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('resource-tasks')));
     await tester.pumpAndSettle();
@@ -231,6 +433,19 @@ void main() {
     'terminal entry creates a Session PTY, sends input and closes it',
     (tester) async {
       final runtime = _ResourceRuntime();
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        RuntimeController.channel,
+        (call) async {
+          if (call.method == 'terminal.shell.load') return 'system-sh';
+          throw StateError('Unexpected ${call.method}');
+        },
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          RuntimeController.channel,
+          null,
+        ),
+      );
       await _mount(tester, runtime);
       await tester.tap(find.byKey(const ValueKey('resource-terminal')));
       await tester.pumpAndSettle();
@@ -244,16 +459,27 @@ void main() {
       );
       await tester.tap(find.byTooltip('新建终端'));
       await tester.pumpAndSettle();
+      expect(
+        runtime.calls.map((call) => call.$1),
+        containsAllInOrder(['terminal.shells', 'terminal.create']),
+      );
       expect(find.byType(SessionTerminalView), findsOneWidget);
       expect(find.textContaining('ready'), findsOneWidget);
       await tester.enterText(find.byType(TextField).last, 'pwd');
-      await tester.tap(find.byTooltip('发送命令'));
       await tester.pump();
       expect(
         runtime.calls
             .lastWhere((call) => call.$1 == 'terminal.write')
             .$2['data'],
-        'pwd\r',
+        'pwd',
+      );
+      await tester.tap(find.byTooltip('发送回车'));
+      await tester.pump();
+      expect(
+        runtime.calls
+            .lastWhere((call) => call.$1 == 'terminal.write')
+            .$2['data'],
+        '\r',
       );
       await tester.tap(find.byTooltip('关闭终端进程'));
       await tester.pumpAndSettle();

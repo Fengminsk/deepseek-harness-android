@@ -207,11 +207,29 @@ test('job baseline includes jobs predating observation; stopping still requires 
   const h = await harness(t, { jobs: { snapshot: () => records,
     events: { subscribe(filter, callback) { assert.deepEqual(filter, { owners: 'all' }); listener = callback; return () => { closed = true } } } } })
   assert.equal(h.tasks.summary().summary.backgroundJobs, 2)
+  assert.deepEqual((await h.tasks.list()).jobs, records,
+    'the global task center must be able to open each existing job, not only display a count')
   records[0].status = 'completed'
   listener({ type: 'settled' })
   assert.equal(h.notices.at(-1).data.summary.backgroundJobs, 1)
   h.tasks.close()
   assert.equal(closed, true)
+})
+
+test('global task center may kill only unowned jobs without fabricating a session', async t => {
+  const calls = []
+  const h = await harness(t, { jobs: { snapshot: () => [], events: { subscribe: () => () => {} },
+    kill(id, caller, reason) {
+      calls.push({ id, caller, reason })
+      if (id !== 'shared') throw new Error('job/not-found')
+      if (caller !== undefined) throw new Error('unexpected owner')
+      return 'requested'
+    } } })
+  assert.deepEqual(h.tasks.killUnownedJob({ jobId: 'shared' }), { outcome: 'requested' })
+  assert.deepEqual(calls, [{ id: 'shared', caller: undefined, reason: 'cancelled by the user' }])
+  assert.throws(() => h.tasks.killUnownedJob({ jobId: 'owned' }), /job\/not-found/)
+  assert.throws(() => h.tasks.killUnownedJob({ jobId: '' }), /jobId/)
+  assert.deepEqual(h.calls, [], 'stopping a job must not cancel the owning Agent turn')
 })
 
 test('unfinished historical job never claims to be alive after process loss', async t => {

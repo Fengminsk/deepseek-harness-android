@@ -88,6 +88,8 @@ The generated [configuration catalog](../../../docs/config-catalog.md#deepseek-a
 
 `ctx.tools.guard(guard)` registers a monotonic synchronous guard after the extensible `tools/pre-execute` waterfall: a returned reason denies the call, and no later listener can turn that denial back into permission. The pipeline's events give plugins more control — `tools/pre-execute` decides allow/deny/ask, `tools/execute` wraps dispatch for timeout or retry, `tools/post-execute` inspects or replaces the result, and `tools/result` observes the frozen final outcome.
 
+The registry binds each call to the exact visible registration before asynchronous policy begins. If that registration is removed, shadowed, or replaced before dispatch or a later value replacement, the call receives `UNKNOWN_TOOL`; a new registration with the same name cannot inherit the prior policy decision. An unrelated registration does not interrupt the call.
+
 A tool’s `projectContent` installs execution-prepared content before post-execute policies. Policies may still replace or block it; `finalizeContent` remains the final content transform after those policies.
 
 ### Host presentation descriptors

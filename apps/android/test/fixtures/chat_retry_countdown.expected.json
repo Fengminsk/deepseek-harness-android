@@ -1,0 +1,18 @@
+{
+  "events": [
+    {"seq": 0, "type": "turn/start", "data": {"turn": 1}},
+    {"seq": 1, "type": "step/start", "data": {"turn": 1, "step": 1}},
+    {"seq": 2, "type": "llm/retry", "data": {"retryId": "retry-one", "turn": 1, "step": 1, "retry": 1, "mode": "normal", "maxRetries": 3, "delayMs": 2500, "failure": {"code": "AUTH", "message": "private credential fragment"}}},
+    {"seq": 3, "type": "llm/retry-started", "data": {"retryId": "retry-one", "turn": 1, "step": 1, "retry": 1}},
+    {"seq": 4, "type": "llm/retry", "data": {"retryId": "retry-one", "turn": 1, "step": 1, "retry": 2, "mode": "normal", "maxRetries": 3, "delayMs": 1500, "failure": {"code": "NETWORK", "message": "网络临时中断"}}},
+    {"seq": 5, "type": "step/end", "data": {"turn": 1, "step": 1}}
+  ],
+  "expected": {
+    "scheduled": "正在重试模型请求（1/3） · 3 秒",
+    "afterOneSecond": "正在重试模型请求（1/3） · 2 秒",
+    "started": "已重试模型请求（1/3） · 3 秒",
+    "secondAttempt": "正在重试模型请求（2/3） · 2 秒",
+    "cancelled": "模型请求重试已取消（2/3） · 2 秒",
+    "safeAuthFailure": "模型认证失败，请检查模型与凭据。"
+  }
+}

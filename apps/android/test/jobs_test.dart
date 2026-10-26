@@ -334,6 +334,40 @@ void main() {
     },
   );
 
+  testWidgets(
+    'unowned global job follows without a session and stops through the fenced local route',
+    (tester) async {
+      final runtime = _JobsRuntime();
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox());
+        for (final feed in runtime.feeds) {
+          await feed.close();
+        }
+        runtime.dispose();
+      });
+      final shared = _job('running')..remove('owner');
+      await tester.pumpWidget(
+        _host(JobOutputPage(runtime: runtime, sessionId: null, job: shared)),
+      );
+      await tester.pumpAndSettle();
+      expect(runtime.resumeArguments.single(), {
+        'request': {'jobId': 'bash-123'},
+      });
+      runtime.feeds.single.add({
+        'type': 'item',
+        'value': {'type': 'opened', 'job': shared, 'from': 0},
+      });
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('停止子进程'));
+      await tester.pumpAndSettle();
+      expect(runtime.calls.single, {
+        'method': 'tasks.killUnownedJob',
+        'jobId': 'bash-123',
+      });
+      expect(find.text('正在停止'), findsOneWidget);
+    },
+  );
+
   testWidgets('job output view marks missing middle bytes and stderr', (
     tester,
   ) async {

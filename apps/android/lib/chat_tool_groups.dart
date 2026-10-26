@@ -39,8 +39,7 @@ class ChatToolGroup {
     final parts = [
       if (attentionCount > 0) '$attentionCount 项需查看',
       if (unknownCount > 0) '$unknownCount 项待确认',
-      if (pendingCount > 0 &&
-          (pendingCount < entries.length || needsAttention))
+      if (pendingCount > 0 && (pendingCount < entries.length || needsAttention))
         '$pendingCount 项等待结果',
     ];
     return parts.isEmpty ? '' : ' · ${parts.join(' · ')}';
@@ -138,20 +137,55 @@ class ChatToolGroupHeader extends StatelessWidget {
       },
       onTap: onToggle,
       title: ExcludeSemantics(
-        child: Row(
-          children: [
-            if (group.titlePrefix.isNotEmpty)
-              Text(group.titlePrefix, style: style),
-            ChatRollingCount(value: group.entries.length, style: style),
-            Expanded(
-              child: Text(
-                ' ${group.countUnit}${group.titleSuffix}',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: style,
-              ),
-            ),
-          ],
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final fullTitle = group.title;
+            final painter = TextPainter(
+              text: TextSpan(text: fullTitle, style: style),
+              textDirection: Directionality.of(context),
+              textScaler: MediaQuery.textScalerOf(context),
+              maxLines: 1,
+            )..layout();
+            final fitsOnOneLine = painter.width <= constraints.maxWidth;
+            painter.dispose();
+            final countLine = Row(
+              children: [
+                if (group.titlePrefix.isNotEmpty)
+                  Text(group.titlePrefix, style: style),
+                ChatRollingCount(value: group.entries.length, style: style),
+                Flexible(child: Text(' ${group.countUnit}', style: style)),
+              ],
+            );
+            if (fitsOnOneLine || group.titleSuffix.isEmpty) {
+              return Row(
+                children: [
+                  if (group.titlePrefix.isNotEmpty)
+                    Text(group.titlePrefix, style: style),
+                  ChatRollingCount(value: group.entries.length, style: style),
+                  Expanded(
+                    child: Text(
+                      ' ${group.countUnit}${group.titleSuffix}',
+                      softWrap: true,
+                      style: style,
+                    ),
+                  ),
+                ],
+              );
+            }
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                countLine,
+                const SizedBox(height: 2),
+                Text(
+                  group.titleSuffix.replaceFirst(' · ', ''),
+                  softWrap: true,
+                  style: style,
+                ),
+              ],
+            );
+          },
         ),
       ),
     );

@@ -12,6 +12,10 @@ class ChatKeyboardShortcuts {
     required this.focusComposer,
     required this.toggleSidebar,
     required this.openSettings,
+    required this.canOpenSessionResource,
+    required this.openFiles,
+    required this.openBrowser,
+    required this.openTerminal,
     required this.dismiss,
   });
 
@@ -23,6 +27,10 @@ class ChatKeyboardShortcuts {
   final VoidCallback focusComposer;
   final VoidCallback toggleSidebar;
   final VoidCallback openSettings;
+  final bool Function() canOpenSessionResource;
+  final VoidCallback openFiles;
+  final VoidCallback openBrowser;
+  final VoidCallback openTerminal;
   final bool Function() dismiss;
 
   void attach() => HardwareKeyboard.instance.addHandler(handle);
@@ -37,6 +45,14 @@ class ChatKeyboardShortcuts {
     // on an Apple keyboard. Either can be connected to an Android device.
     final primary = keyboard.isControlPressed != keyboard.isMetaPressed;
     if (keyboard.isControlPressed && keyboard.isMetaPressed) return false;
+    // The original terminal action uses Control+Backquote even on Apple
+    // keyboards; it does not follow the Command/Control primary modifier.
+    if (keyboard.isControlPressed &&
+        event.logicalKey == LogicalKeyboardKey.backquote) {
+      if (!canOpenSessionResource()) return false;
+      openTerminal();
+      return true;
+    }
     if (primary) {
       switch (event.logicalKey) {
         case LogicalKeyboardKey.keyN:
@@ -54,6 +70,14 @@ class ChatKeyboardShortcuts {
           return true;
         case LogicalKeyboardKey.comma:
           openSettings();
+          return true;
+        case LogicalKeyboardKey.keyP:
+          if (!canOpenSessionResource()) return false;
+          openFiles();
+          return true;
+        case LogicalKeyboardKey.keyT:
+          if (!canOpenSessionResource()) return false;
+          openBrowser();
           return true;
       }
       return false;

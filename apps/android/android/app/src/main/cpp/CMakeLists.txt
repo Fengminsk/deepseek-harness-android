@@ -44,10 +44,47 @@ set_target_properties(pocket_shell_supervisor PROPERTIES PREFIX "lib" SUFFIX ".s
   POSITION_INDEPENDENT_CODE TRUE)
 target_link_options(pocket_shell_supervisor PRIVATE "-pie" "-Wl,-z,max-page-size=16384")
 
+# Candidate fixed utility executable: packaged by Android as an extracted native
+# library, never copied into the writable app home directory for execution.
+add_executable(pocket_linux_utility linux_utility.c linux_guest_sha256_core.c)
+set_target_properties(pocket_linux_utility PROPERTIES PREFIX "lib" SUFFIX ".so"
+  POSITION_INDEPENDENT_CODE TRUE)
+target_compile_options(pocket_linux_utility PRIVATE -Wall -Wextra -Werror)
+target_link_options(pocket_linux_utility PRIVATE "-pie" "-Wl,-z,max-page-size=16384")
+
+# Debug-only syscall observation. The isolated test process receives an already
+# open directory FD and asks whether that capability also permits child opens.
+# No model or production guest code loads this library.
+if(CMAKE_BUILD_TYPE MATCHES "^[Dd]ebug$")
+  add_library(pocket_guest_storage_probe SHARED guest_storage_probe.c)
+  target_compile_options(pocket_guest_storage_probe PRIVATE -Wall -Wextra -Werror)
+  target_link_options(pocket_guest_storage_probe PRIVATE "-Wl,-z,max-page-size=16384")
+endif()
+
+# Source-only Linux guest launch experiment. Ordinary Flutter/Gradle builds do
+# not compile or package this target, and never include PRoot or Alpine payloads.
+option(DSH_BUILD_LINUX_GUEST_SUPERVISOR "Build the unshipped Linux guest probe supervisor" OFF)
+if(DSH_BUILD_LINUX_GUEST_SUPERVISOR)
+  add_executable(pocket_linux_guest_supervisor EXCLUDE_FROM_ALL
+    linux_guest_supervisor.c linux_guest_sha256_core.c linux_guest_children.c)
+  set_target_properties(pocket_linux_guest_supervisor PROPERTIES PREFIX "lib" SUFFIX ".so"
+    POSITION_INDEPENDENT_CODE TRUE)
+  target_compile_options(pocket_linux_guest_supervisor PRIVATE -Wall -Wextra -Werror)
+  target_link_options(pocket_linux_guest_supervisor PRIVATE "-pie" "-Wl,-z,max-page-size=16384")
+endif()
+
 add_library(dsh_runtime SHARED runtime.cpp)
 target_include_directories(dsh_runtime PRIVATE "${NODE_ROOT}/include/node")
 target_link_libraries(dsh_runtime node log)
 target_link_options(dsh_runtime PRIVATE "-Wl,-z,max-page-size=16384")
+
+# This V8-only JNI provider is loaded solely by the isolated guest process.
+# It creates no Node Environment and offers no Node or Android host objects to JS.
+add_library(pocket_ptc_script SHARED ptc_script_engine.cpp)
+target_include_directories(pocket_ptc_script PRIVATE "${NODE_ROOT}/include/node")
+target_compile_options(pocket_ptc_script PRIVATE -std=c++20 -fvisibility=hidden)
+target_link_libraries(pocket_ptc_script node)
+target_link_options(pocket_ptc_script PRIVATE "-Wl,-z,max-page-size=16384")
 add_library(dsh_system SHARED "${REPOSITORY_ROOT}/native/system/packages/entry/src/flock.c")
 target_include_directories(dsh_system PRIVATE "${NODE_ROOT}/include/node")
 target_compile_definitions(dsh_system PRIVATE NAPI_VERSION=8)

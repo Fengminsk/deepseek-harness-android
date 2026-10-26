@@ -10,6 +10,7 @@ import 'approvals.dart';
 import 'entry_motion.dart';
 import 'export.dart';
 import 'files.dart';
+import 'flclash/daylight.dart';
 import 'flclash/popup.dart';
 import 'library.dart';
 import 'library_data.dart';
@@ -536,6 +537,19 @@ class _ChatSidebarState extends State<ChatSidebar> {
                 Icons.folder_copy_outlined,
                 () => unawaited(_browse(LibraryPage(runtime: widget.runtime))),
               ),
+              if (current != null)
+                _destination(
+                  '当前会话的子 Agent',
+                  Icons.account_tree_outlined,
+                  () => _page(
+                    SubagentsPage(
+                      runtime: widget.runtime,
+                      parentSessionId: widget.currentSessionId,
+                      parentTitle: librarySessionTitle(current),
+                    ),
+                  ),
+                  key: const ValueKey('sidebar-subagents'),
+                ),
               _SidebarMore(
                 pending: widget.runtime.interactions.length,
                 children: [
@@ -582,17 +596,6 @@ class _ChatSidebarState extends State<ChatSidebar> {
                         ),
                       ),
                       key: const ValueKey('sidebar-more-session-files'),
-                    ),
-                    _destination(
-                      '当前会话的子 Agent',
-                      Icons.account_tree_outlined,
-                      () => _page(
-                        SubagentsPage(
-                          runtime: widget.runtime,
-                          parentSessionId: widget.currentSessionId,
-                        ),
-                      ),
-                      key: const ValueKey('sidebar-more-subagents'),
                     ),
                     _destination(
                       '导出当前对话',
@@ -939,6 +942,8 @@ class _SidebarFrame extends StatelessWidget {
             return Stack(
               fit: StackFit.expand,
               children: [
+                if (LiquidGlassScope.of(context))
+                  const Positioned.fill(child: DaylightBackdrop()),
                 bodyBuilder(
                   EdgeInsets.fromLTRB(
                     10 + media.padding.left,

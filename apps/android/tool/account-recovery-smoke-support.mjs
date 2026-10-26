@@ -101,7 +101,18 @@ export class RecoveryFixturePlatform {
     }
     if (path === '/api/v0/users/get_unnotified_bonuses') { platform([]); return }
     if (path.endsWith('/messages')) {
+      record.purpose = JSON.stringify(body.system ?? '').includes('Create a concise title')
+        ? 'title' : 'turn'
       response.writeHead(200, { 'content-type': 'text/event-stream' })
+      if (this.mode === 'hold-inference') {
+        record.status = 'stream-held'
+        response.write(`data: ${JSON.stringify({ type: 'message_start', message: {
+          id: `recovery-${this.requests.length}`, model: body.model,
+          usage: { input_tokens: 1, output_tokens: 0 },
+        } })}\n\n`)
+        response.once('close', () => { record.status = 'stream-closed' })
+        return
+      }
       for (const event of [
         { type: 'message_start', message: { id: `recovery-${this.requests.length}`, model: body.model, usage: { input_tokens: 1, output_tokens: 0 } } },
         { type: 'content_block_start', index: 0, content_block: { type: 'text', text: 'Recovery fixture completed' } },
@@ -124,7 +135,11 @@ export class RecoveryFixturePlatform {
 }
 
 /** One independent Node generation. Native credentials are reconstructed from disk. */
-export async function launchRecoveryFixture({ processes, root, home, origin, fail, register }) {
+export async function launchRecoveryFixture({ processes, root, home, origin, fail, register,
+  bootstrapPath = join(root, '.cache/android/runtime-bundle/bootstrap.mjs'),
+  preload = new URL('./account-recovery-smoke-loader.mjs', import.meta.url).href,
+  extraEnv = {},
+}) {
   const vault = new RecoveryFixtureVault(home)
   const ipc = createSocketServer()
   let socket, lines, child, port, closing
@@ -228,12 +243,11 @@ export async function launchRecoveryFixture({ processes, root, home, origin, fai
     if (stopped) throw new Error('Fixture runtime stopping')
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
       ['PATH', 'PATHEXT', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'TEMP', 'TMP'].includes(key.toUpperCase())))
-    child = processes.spawn(process.execPath, ['--import', new URL('./account-recovery-smoke-loader.mjs', import.meta.url).href,
-      join(root, '.cache/android/runtime-bundle/bootstrap.mjs')], {
+    child = processes.spawn(process.execPath, ['--import', preload, bootstrapPath], {
       cwd: join(home, 'workspace'), stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...env, HOME: home, USERPROFILE: home, DSH_HOME: home, DSH_TELEMETRY_DISABLED: '1',
         DEEPSEEK_BASE_URL: `${origin}/anthropic`, POCKET_ACCOUNT_FIXTURE_ORIGIN: origin,
-        POCKET_ACCOUNT_FIXTURE_IPC_PORT: String(port) },
+        POCKET_ACCOUNT_FIXTURE_IPC_PORT: String(port), ...extraEnv },
     })
     child.once('error', reject)
     child.once('exit', (code, signal) => { ended = true; reject(new Error(`Fixture runtime exited: ${code ?? signal}`)) })

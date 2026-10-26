@@ -102,3 +102,78 @@ test('retention budget is bounded and fails visibly instead of silently changing
     await assert.rejects(history.read({ sessionId: 'one' }), error => error.code === 'SESSION_HISTORY_TOO_LARGE')
   } finally { history.close() }
 })
+
+test('native turn window uses original projection cursor and cold-safe page, never full inspect', async () => {
+  const calls = []
+  const events = Array.from({ length: 600 }, (_, seq) => ({ seq, type: 'session/title', data: { title: `${seq}` } }))
+  const history = new AppSessionHistory({
+    inspect() { assert.fail('bounded navigation must not inspect the complete history') },
+    async projections(request) {
+      calls.push(['projections', request.sessionId])
+      return { kind: 'sequenced', asOfSeq: 599, values: { turnOutline: [
+        { turn: 1, seq: 0, prompt: 'first', response: 'done' },
+        { turn: 2, seq: 300, prompt: 'second', response: '' },
+      ] } }
+    },
+    async page(request) {
+      calls.push(['page', request])
+      const end = request.beforeSeq ?? 600
+      const first = Math.max(0, end - 300)
+      return { records: events.slice(first, end).map(event => ({ type: 'event', event })), hasMore: first > 0 }
+    },
+  })
+  try {
+    const latest = await history.readWindow({ sessionId: 's' })
+    assert.equal(latest.throughSeq, 599)
+    assert.deepEqual(latest.events.map(event => event.seq), Array.from({ length: 300 }, (_, at) => at + 300))
+    assert.deepEqual(latest.turns.map(turn => turn.turn), [1, 2])
+    assert.equal(latest.hasMore, true)
+    const older = await history.readWindow({ sessionId: 's', throughSeq: latest.throughSeq, beforeSeq: latest.firstSeq })
+    assert.equal(older.firstSeq, 0)
+    assert.equal(older.hasMore, false)
+    assert.equal('turns' in older, false)
+    assert.deepEqual(calls.map(call => call[0]), ['projections', 'page', 'page'])
+    assert.equal(calls[1][1].turnWindow.minTurns, 2)
+  } finally { history.close() }
+})
+
+test('native window truncates dense tool-only history by event and byte budgets without skipping a cursor', async () => {
+  const events = Array.from({ length: 1100 }, (_, seq) => ({ seq, type: 'tool/result', data: { text: 'x'.repeat(100) } }))
+  const history = new AppSessionHistory({
+    async projections() { return { kind: 'sequenced', asOfSeq: 1099, values: {} } },
+    async page({ beforeSeq }) {
+      const end = beforeSeq ?? events.length
+      return { records: events.slice(0, end).map(event => ({ type: 'event', event })), hasMore: false }
+    },
+  })
+  try {
+    const first = await history.readWindow({ sessionId: 's' })
+    assert.equal(first.events.length, 500)
+    assert.equal(first.firstSeq, 600)
+    assert.equal(first.hasMore, true)
+    const second = await history.readWindow({ sessionId: 's', throughSeq: first.throughSeq, beforeSeq: first.firstSeq })
+    assert.equal(second.events.length, 500)
+    assert.equal(second.firstSeq, 100)
+    assert.equal(second.hasMore, true)
+    const third = await history.readWindow({ sessionId: 's', throughSeq: first.throughSeq, beforeSeq: second.firstSeq })
+    assert.equal(third.firstSeq, 0)
+    assert.equal(third.events.length, 100)
+    assert.equal(third.hasMore, false)
+  } finally { history.close() }
+})
+
+test('malformed projection and stalled older page fail without an invented navigation item', async () => {
+  const history = new AppSessionHistory({
+    async projections() { return { kind: 'sequenced', asOfSeq: 20, values: { turnOutline: [
+      { turn: 2, seq: 10, prompt: 'ok', response: '' },
+      { turn: 1, seq: 0, prompt: 'out of order', response: '' },
+    ] } } },
+    async page() { return { records: [{ type: 'event', event: { seq: 10, type: 'turn/start', data: { turn: 2 } } }], hasMore: true } },
+  })
+  try {
+    assert.deepEqual((await history.turnOutline({ sessionId: 's' })).turns, [])
+    await assert.rejects(history.readWindow({ sessionId: 's', throughSeq: 20, beforeSeq: 10 }),
+      error => error.code === 'SESSION_HISTORY_INVALID_PAGE')
+    await assert.rejects(history.readWindow({ sessionId: 's', beforeSeq: 10 }), TypeError)
+  } finally { history.close() }
+})

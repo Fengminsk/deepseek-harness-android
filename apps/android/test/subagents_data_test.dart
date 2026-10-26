@@ -91,6 +91,46 @@ class SubagentsRuntime extends RuntimeController {
 }
 
 void main() {
+  test('child address requires the exact catalog parent, id and inspected descriptor', () {
+    final row = <String, dynamic>{
+      'id': 'child',
+      'mode': 'continuable',
+      'address': address.json,
+    };
+    expect(SubagentAddress.fromCatalogEntry(row, 'parent')?.key, address.key);
+    expect(SubagentAddress.fromCatalogEntry(row, 'other'), isNull);
+    expect(
+      SubagentAddress.fromCatalogEntry({...row, 'id': 'other'}, 'parent'),
+      isNull,
+    );
+    expect(
+      SubagentAddress.fromCatalogEntry({...row, 'mode': 'one-shot'}, 'parent'),
+      isNull,
+    );
+    expect(
+      SubagentAddress.fromCatalogEntry({...row, 'address': null}, 'parent'),
+      isNull,
+    );
+    expect(
+      SubagentAddress.fromInspection(inspection(), address)?.key,
+      address.key,
+    );
+    expect(
+      SubagentAddress.fromInspection({
+        ...inspection(),
+        'address': {...address.json, 'parentSessionId': 'other'},
+      }, address),
+      isNull,
+    );
+    expect(
+      SubagentAddress.fromInspection({
+        ...inspection(),
+        'address': {...address.json, 'mode': 'one-shot'},
+      }, address)?.mode,
+      'one-shot',
+    );
+  });
+
   late SubagentsRuntime runtime;
   late SubagentConversation conversation;
 

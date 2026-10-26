@@ -77,7 +77,8 @@ async function until(read, accept, label) {
 async function launch() {
   if (stopping) throw new Error('Task recovery fixture stopped')
   const runtime = await launchRecoveryFixture({ processes, root, home, origin, fail: failed.reject,
-    register: runtime => generations.push(runtime) })
+    register: runtime => generations.push(runtime),
+    extraEnv: { DSH_ANDROID_SHELL_EXECUTION_MODE: 'app-uid-approved' } })
   await runtime.wait(frame => frame.method === 'runtime.ready')
   assert.equal((await runtime.request('web.status')).enabled, false)
   return runtime

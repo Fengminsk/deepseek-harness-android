@@ -17,11 +17,23 @@ class ConfigurationPresentation {
       path.last;
 
   String? description(List<String> path, ConfigurationFieldSchema field) =>
-      field.description ?? _fields[namespace]?[path.join('.')]?.$2;
+      _fields[namespace]?[path.join('.')]?.$2 ?? field.description;
 
   String option(List<String> path, dynamic value) =>
-      _options['$namespace.${path.join('.')}']?[value] ??
-      configurationStructureSummary(value);
+      namespace == 'tool-ask-user' &&
+          path.join('.') == 'timeout' &&
+          value is num
+      ? value == -1
+            ? '一直等待'
+            : value == 120
+            ? '2 分钟'
+            : value == 60
+            ? '1 分钟'
+            : value == 300
+            ? '5 分钟'
+            : '$value 秒'
+      : _options['$namespace.${path.join('.')}']?[value] ??
+            configurationStructureSummary(value);
 
   bool offerOption(List<String> path, dynamic value) =>
       !(namespace == 'ui-chat' &&
@@ -59,6 +71,93 @@ class ConfigurationFieldGroup {
 }
 
 const _groups = <String, List<ConfigurationFieldGroup>>{
+  'tool-fs': [
+    ConfigurationFieldGroup(
+      id: 'capabilities',
+      title: '文件能力',
+      summary: '读取、图片读取、写入与编辑',
+      description: '决定此 Agent 预设向模型提供哪些工作区文件工具。实际可访问范围仍受 Android 工作区和授权策略限制。',
+      symbol: ConfigurationGroupSymbol.folder,
+      paths: {'read', 'readImage', 'write', 'edit'},
+    ),
+    ConfigurationFieldGroup(
+      id: 'read-limits',
+      title: '读取限制',
+      summary: '行数、单行与流式读取预算',
+      description: '控制文件读取结果的大小；不会扩大 Agent 的文件访问权限。通常保留原版默认值即可。',
+      symbol: ConfigurationGroupSymbol.settings,
+      advanced: true,
+      paths: {
+        'readLimit',
+        'readMaxLineLength',
+        'readMaxBytes',
+        'readStreamMinSize',
+      },
+    ),
+  ],
+  'tool-fs-search': [
+    ConfigurationFieldGroup(
+      id: 'search-behavior',
+      title: '搜索行为',
+      summary: '目录结果超过上限时的取样方式',
+      description: '仅改变 glob 超出结果上限时的呈现取样，不扩大搜索范围或可访问目录。',
+      symbol: ConfigurationGroupSymbol.search,
+      paths: {'sampleOverCapGlobResults'},
+    ),
+    ConfigurationFieldGroup(
+      id: 'search-limits',
+      title: '搜索限制',
+      summary: '结果、输出与超时预算',
+      description: '限制 glob 和 grep 的结果、原始输出及执行时长；达到上限会按原版工具规则返回截断或错误。',
+      symbol: ConfigurationGroupSymbol.settings,
+      advanced: true,
+      paths: {
+        'globMaxResults',
+        'grepMaxMatches',
+        'grepMaxLineBytes',
+        'searchMetaMaxBytes',
+        'rawOutputMaxBytes',
+        'graceMs',
+        'stderrMaxBytes',
+        'timeoutMs',
+      },
+    ),
+  ],
+  'tool-web': [
+    ConfigurationFieldGroup(
+      id: 'web-capabilities',
+      title: '联网能力',
+      summary: '网页搜索与读取',
+      description: '决定此 Agent 预设是否提供网页搜索和读取工具。实际联网仍受提供方配置与网络策略限制。',
+      symbol: ConfigurationGroupSymbol.search,
+      paths: {'search', 'fetch'},
+    ),
+    ConfigurationFieldGroup(
+      id: 'web-limits',
+      title: '联网限制',
+      summary: '结果数、查询数与超时',
+      description: '控制单次网页工具调用的结果和时间预算，不能代替网络授权。',
+      symbol: ConfigurationGroupSymbol.settings,
+      advanced: true,
+      paths: {
+        'searchMaxResults',
+        'searchMaxQueries',
+        'fetchTimeoutMs',
+        'searchTimeoutMs',
+        'fetchMaxOutputChars',
+      },
+    ),
+  ],
+  'tool-ask-user': [
+    ConfigurationFieldGroup(
+      id: 'questions',
+      title: '向用户提问',
+      summary: '提问方式与等待时间',
+      description: '决定此 Agent 预设提问时的工具形式。等待时间仅用于带超时的提问方式；修改后返回上一页统一保存。',
+      symbol: ConfigurationGroupSymbol.settings,
+      paths: {'mode', 'timeout'},
+    ),
+  ],
   'android-runtime': [
     ConfigurationFieldGroup(
       id: 'shell',
@@ -147,6 +246,44 @@ String? _localized(dynamic value) {
 }
 
 const _fields = <String, Map<String, (String, String?)>>{
+  // Original DSH tool schemas in packages/fs, packages/web and packages/interaction.
+  'tool-fs': {
+    'read': ('读取文件', '允许 Agent 读取其工作区内的文件。'),
+    'readImage': ('读取图片', '允许 Agent 通过文件工具读取其工作区内的图片。'),
+    'write': ('写入文件', '允许 Agent 使用文件写入工具；实际路径仍受工作区沙箱限制。'),
+    'edit': ('编辑文件', '允许 Agent 使用文件编辑工具；实际路径仍受工作区沙箱限制。'),
+    'readLimit': ('每次读取行数上限', null),
+    'readMaxLineLength': ('单行长度上限', null),
+    'readMaxBytes': ('每次读取字节上限', null),
+    'readStreamMinSize': ('流式读取起始大小', null),
+  },
+  'tool-fs-search': {
+    'sampleOverCapGlobResults': (
+      '超出上限时均衡取样',
+      '开启后，glob 超出上限时在顶层条目间取样；关闭后优先保留最近修改的结果。',
+    ),
+    'globMaxResults': ('文件名搜索结果上限', null),
+    'grepMaxMatches': ('正文匹配上限', null),
+    'grepMaxLineBytes': ('匹配行预览字节上限', null),
+    'searchMetaMaxBytes': ('搜索卡片信息上限', null),
+    'rawOutputMaxBytes': ('搜索原始输出上限', null),
+    'graceMs': ('结束进程宽限（毫秒）', null),
+    'stderrMaxBytes': ('错误输出上限', null),
+    'timeoutMs': ('搜索超时（毫秒）', null),
+  },
+  'tool-web': {
+    'search': ('网页搜索', '向 Agent 提供网页搜索工具；仍须有可用的搜索提供方。'),
+    'fetch': ('读取网页', '向 Agent 提供网页读取工具；仍须有可用的读取提供方。'),
+    'searchMaxResults': ('搜索结果上限', null),
+    'searchMaxQueries': ('单次查询数上限', null),
+    'fetchTimeoutMs': ('网页读取超时（毫秒）', null),
+    'searchTimeoutMs': ('网页搜索超时（毫秒）', null),
+    'fetchMaxOutputChars': ('网页正文字符上限', null),
+  },
+  'tool-ask-user': {
+    'mode': ('提问方式', '常规提问会一直等待用户；带超时的提问可在指定时间后让 Agent 继续。'),
+    'timeout': ('提问等待时间', '仅带超时的提问方式使用；一直等待不会自动继续。'),
+  },
   // packages/session/session-log-deepseek/src/index.ts Config.enabled.
   'session-log-deepseek': {
     'enabled': ('上传会话日志', '随 DeepSeek 官方模型请求上传会话日志。关闭不会删除手机上的会话。'),
@@ -319,6 +456,7 @@ const _shellFields = <String, (String, String?)>{
 };
 
 const _options = <String, Map<dynamic, String>>{
+  'tool-ask-user.mode': {'legacy': '常规提问', 'timed': '带超时的提问'},
   'ui-settings-account.step': {
     'welcome': '欢迎',
     'credit': '额度',

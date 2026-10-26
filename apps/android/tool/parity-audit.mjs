@@ -7,13 +7,19 @@ import { DEFAULT_SCHEMA, Type, load } from 'js-yaml'
 
 const paths = {
   webUi: 'packages/bundle/web-app/cordis.patch.yml',
+  webService: 'packages/bundle/web-app/cordis.patch.yml',
   standardPreset: 'packages/bundle/web-app/presets/standard.patch.yml',
   androidDisabled: 'apps/android/runtime/cordis.patch.yml',
+  bundleBase: 'packages/bundle/base/cordis.patch.yml',
+  bundleHeadless: 'packages/bundle/headless/cordis.patch.yml',
+  bundleSdkMinimal: 'packages/bundle/sdk-minimal/cordis.patch.yml',
+  bundleSdkApp: 'packages/bundle/sdk-app/cordis.patch.yml',
+  bundleAcpApp: 'packages/bundle/acp-app/cordis.patch.yml',
 }
-const kinds = ['webUi', 'standardPreset', 'standardDelegation', 'androidDisabled']
+const kinds = ['webUi', 'webService', 'standardPreset', 'standardNested', 'standardDelegation', 'androidDisabled', 'optionalBundle']
 const levels = ['core', 'ui', 'behavior', 'device']
 const states = new Set(['unverified', 'partial', 'verified', 'not-applicable'])
-const statuses = new Set(['not-migrated', 'partial', 'adapted', 'upstream-disabled'])
+const statuses = new Set(['unassessed', 'not-migrated', 'partial', 'adapted', 'upstream-disabled'])
 const manifestPath = 'apps/android/tool/parity-manifest.json'
 
 // Configuration expressions are retained as data. Auditing must never evaluate them.
@@ -69,27 +75,62 @@ export function collectParityInventory(patches) {
   if (delegations.length !== 1 || !Array.isArray(delegations[0].config)) {
     throw new Error('Expected exactly one standard delegation group')
   }
+  const nested = standard.filter(row => row.group === true && row.id !== 'delegation')
+    .flatMap(group => {
+      if (!Array.isArray(group.config)) throw new Error(`Expected nested plugins in ${group.id}`)
+      return group.config.map(row => ({ group: group.id, row }))
+    })
+  const optional = Object.entries({
+    base: 'bundleBase', headless: 'bundleHeadless',
+    'sdk-minimal': 'bundleSdkMinimal', 'sdk-app': 'bundleSdkApp',
+    'acp-app': 'bundleAcpApp',
+  }).flatMap(([bundle, sourceKey]) => {
+    const patch = patches[sourceKey]
+    if (!Array.isArray(patch) || patch.length === 0) {
+      throw new Error(`Expected optional bundle patch: ${bundle}`)
+    }
+    return patch.flatMap(row => {
+      if (!row || typeof row !== 'object' || Array.isArray(row)) {
+        throw new Error(`Invalid optional bundle row in ${bundle}`)
+      }
+      if (Object.hasOwn(row, 'insert')) {
+        if (!Array.isArray(row.insert) || row.insert.length === 0) {
+          throw new Error(`Expected inserted plugins in ${bundle}`)
+        }
+        return row.insert.map(item => ({ bundle, mode: 'insert', row: item,
+          source: paths[sourceKey] }))
+      }
+      return [{ bundle, mode: 'override', row, source: paths[sourceKey] }]
+    })
+  })
   const rows = {
     webUi: inserted(patches.webUi).filter(row => row.id?.startsWith('ui-')),
+    webService: inserted(patches.webUi).filter(row => !row.id?.startsWith('ui-')),
     standardPreset: standard,
+    standardNested: nested,
     standardDelegation: delegations[0].config,
     androidDisabled: patches.androidDisabled.filter(row => row.disabled === true
       || row.disabled instanceof InertExpression),
+    optionalBundle: optional,
   }
   const inventory = []
   const seen = new Set()
   for (const kind of kinds) {
-    for (const row of rows[kind]) {
+    for (const item of rows[kind]) {
+      const row = ['standardNested', 'optionalBundle'].includes(kind) ? item.row : item
       if (typeof row.id !== 'string' || !/^[a-z][a-z0-9-]*$/u.test(row.id)) {
         throw new Error(`Invalid source declaration id in ${kind}`)
       }
-      const key = `${kind}/${row.id}`
+      const key = kind === 'standardNested' ? `${kind}/${item.group}/${row.id}`
+        : kind === 'optionalBundle' ? `${kind}/${item.bundle}/${item.mode}/${row.id}`
+          : `${kind}/${row.id}`
       if (seen.has(key)) throw new Error(`Duplicate source declaration: ${key}`)
       seen.add(key)
       inventory.push({
         key, kind, id: row.id,
         plugin: row.name ?? null,
-        source: paths[kind === 'standardDelegation' ? 'standardPreset' : kind],
+        source: kind === 'optionalBundle' ? item.source
+          : paths[['standardDelegation', 'standardNested'].includes(kind) ? 'standardPreset' : kind],
         sourceDigest: digest(row),
       })
     }
@@ -164,6 +205,10 @@ export async function validateParityManifest(root, manifest, inventory) {
     if (['partial', 'adapted'].includes(entry.status) && entry.android?.length === 0) {
       errors.push(`${key}: ${entry.status} mapping requires Android source references`)
     }
+    if (entry.status === 'unassessed' && (entry.android?.length !== 0
+      || levels.some(level => entry.evidence?.[level] !== 'unverified'))) {
+      errors.push(`${key}: unassessed rows cannot claim Android mapping or evidence`)
+    }
     for (const level of levels) {
       const state = entry.evidence?.[level]
       if (!states.has(state)) errors.push(`${key}: invalid ${level} evidence state ${state}`)
@@ -217,7 +262,7 @@ export async function auditParity(root = resolve(import.meta.dirname, '../../..'
   const patches = Object.fromEntries(await Promise.all(Object.entries(paths).map(async ([kind, path]) =>
     [kind, parseParityPatch(await readFile(resolve(root, path), 'utf8'))])))
   const manifest = JSON.parse(await readFile(resolve(root, manifestPath), 'utf8'))
-  return validateParityManifest(root, manifest, collectParityInventory(patches))
+  return { ...await validateParityManifest(root, manifest, collectParityInventory(patches)), scope: manifest.scope }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
@@ -229,6 +274,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     } else {
       console.log(`Parity ledger covers ${Object.values(result.counts).reduce((sum, count) => sum + count, 0)} declarations.`)
       console.log(JSON.stringify({ counts: result.counts, evidence: result.evidence }))
+      console.log(`Scope: ${result.scope}`)
       console.log('Coverage is not completion. Unverified and partial migration claims remain open.')
     }
   } catch (error) {

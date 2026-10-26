@@ -6,6 +6,7 @@ import 'package:dsh_android/terminal_screen.dart';
 import 'package:dsh_android/ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/gestures.dart';
 import 'package:material_ui/material_ui.dart';
 
 Json terminalView() => {
@@ -48,11 +49,23 @@ Json terminalView() => {
 class _TerminalRuntime extends RuntimeController {
   final writes = <String>[];
   final resizes = <({int cols, int rows})>[];
+  final renames = <String>[];
+  final createdShellIds = <String>[];
+  List<Json> shellOptions = [
+    {'id': 'system-sh', 'label': '系统 Shell'},
+    {'id': 'system-mksh', 'label': 'mksh'},
+  ];
+  bool failShellDiscovery = false;
+  String terminalName = '终端';
   int cols = 8, rows = 2, revision = 1;
   bool failWrites = false;
   bool failHeldWrite = false;
   bool failReadAfterWrite = false;
   bool advanceRevisionOnRead = false;
+  bool appCursorKeys = false;
+  bool bracketedPaste = false;
+  String mouseTracking = 'off';
+  bool sgrMouse = false;
   Completer<void>? holdFirstWrite;
   int testConnection = 0;
 
@@ -70,6 +83,30 @@ class _TerminalRuntime extends RuntimeController {
 
   @override
   Future<dynamic> call(String method, [Json params = const {}]) async {
+    if (method == 'terminal.shells') {
+      if (failShellDiscovery) throw StateError('Shell discovery failed');
+      return shellOptions;
+    }
+    if (method == 'terminal.create') {
+      createdShellIds.add(params['shellId'] as String);
+      return {'state': 'running'};
+    }
+    if (method == 'terminal.list') {
+      return [
+        {
+          'id': 'terminal-1',
+          'name': terminalName,
+          'cwd': '/workspace',
+          'state': 'running',
+        },
+      ];
+    }
+    if (method == 'terminal.rename') {
+      terminalName = params['name'] as String;
+      renames.add(terminalName);
+      revision++;
+      return {'name': terminalName};
+    }
     if (method == 'terminal.read') {
       if (failReadAfterWrite && writes.isNotEmpty) {
         throw StateError('Read unavailable');
@@ -78,7 +115,12 @@ class _TerminalRuntime extends RuntimeController {
       final view = terminalView();
       view['cols'] = cols;
       view['rows'] = rows;
+      view['applicationCursorKeys'] = appCursorKeys;
+      view['bracketedPaste'] = bracketedPaste;
+      view['mouseTracking'] = mouseTracking;
+      view['sgrMouse'] = sgrMouse;
       return {
+        'name': terminalName,
         'state': 'running',
         'revision': revision,
         'display': '\u001b[31mred\u001b[0m',
@@ -109,6 +151,127 @@ class _TerminalRuntime extends RuntimeController {
 }
 
 void main() {
+  testWidgets(
+    'shell picker discovers without spawning and persists the selected installed shell',
+    (tester) async {
+      final runtime = _TerminalRuntime();
+      final saved = <String>[];
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        RuntimeController.channel,
+        (call) async {
+          if (call.method == 'terminal.shell.load') return 'system-sh';
+          if (call.method == 'terminal.shell.save') {
+            saved.add(call.arguments as String);
+            return null;
+          }
+          throw StateError('Unexpected ${call.method}');
+        },
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          RuntimeController.channel,
+          null,
+        ),
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: pocketTheme(Brightness.dark),
+          home: SessionTerminalsPage(runtime: runtime, sessionId: 'session-A'),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('选择 Shell'));
+      await tester.pumpAndSettle();
+      expect(find.text('mksh'), findsOneWidget);
+      expect(runtime.createdShellIds, isEmpty);
+      await tester.tap(find.text('mksh'));
+      await tester.pumpAndSettle();
+      expect(saved, ['system-mksh']);
+      expect(runtime.createdShellIds, ['system-mksh']);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  testWidgets(
+    'failed or malformed shell discovery can retry without allocating a PTY',
+    (tester) async {
+      final runtime = _TerminalRuntime()..failShellDiscovery = true;
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        RuntimeController.channel,
+        (call) async => 'system-sh',
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          RuntimeController.channel,
+          null,
+        ),
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: pocketTheme(Brightness.dark),
+          home: SessionTerminalsPage(runtime: runtime, sessionId: 'session-A'),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('选择 Shell'));
+      await tester.pumpAndSettle();
+      expect(find.text('无法读取已安装的 Shell。'), findsOneWidget);
+      expect(runtime.createdShellIds, isEmpty);
+      runtime
+        ..failShellDiscovery = false
+        ..shellOptions = [
+          {'id': '/data/local/tmp/bash', 'label': 'Bash'},
+        ];
+      await tester.tap(find.text('重试'));
+      await tester.pumpAndSettle();
+      expect(find.text('无法读取已安装的 Shell。'), findsOneWidget);
+      runtime.shellOptions = [
+        {'id': 'system-sh', 'label': '系统 Shell'},
+      ];
+      await tester.tap(find.text('重试'));
+      await tester.pumpAndSettle();
+      expect(find.text('系统 Shell'), findsOneWidget);
+      expect(runtime.createdShellIds, isEmpty);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  testWidgets(
+    'terminal name is edited on a separate page and refreshes the list',
+    (tester) async {
+      final runtime = _TerminalRuntime();
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: pocketTheme(Brightness.dark),
+          home: SessionTerminalsPage(runtime: runtime, sessionId: 'session-A'),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('终端'), findsWidgets);
+      await tester.tap(find.byTooltip('重命名终端'));
+      await tester.pumpAndSettle();
+      expect(find.text('终端名称'), findsWidgets);
+      await tester.enterText(find.byType(TextField).first, '   ');
+      await tester.tap(find.byTooltip('保存名称'));
+      await tester.pumpAndSettle();
+      expect(find.text('请输入不超过 64 个字符的名称。'), findsOneWidget);
+      expect(runtime.renames, isEmpty);
+      await tester.enterText(find.byType(TextField).first, '构建任务');
+      await tester.tap(find.byTooltip('保存名称'));
+      await tester.pumpAndSettle();
+      expect(runtime.renames, ['构建任务']);
+      expect(find.text('构建任务'), findsOneWidget);
+      await tester.tap(find.byTooltip('重命名终端'));
+      await tester.pumpAndSettle();
+      final family = '👨‍👩‍👧‍👦' * 64;
+      await tester.enterText(find.byType(TextField).first, family);
+      await tester.tap(find.byTooltip('保存名称'));
+      await tester.pumpAndSettle();
+      expect(runtime.renames.last, family);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
   test(
     'terminal fit uses the actual viewport and stays within host limits',
     () {
@@ -179,8 +342,44 @@ void main() {
     source['cursorStyle'] = 'circle';
     expect(() => TerminalScreenData.parse(source), throwsFormatException);
     source['cursorStyle'] = 'bar';
+    source['applicationCursorKeys'] = 'yes';
+    expect(() => TerminalScreenData.parse(source), throwsFormatException);
+    source['applicationCursorKeys'] = true;
+    expect(TerminalScreenData.parse(source).applicationCursorKeys, true);
+    source['bracketedPaste'] = 'yes';
+    expect(() => TerminalScreenData.parse(source), throwsFormatException);
+    source['bracketedPaste'] = true;
+    expect(TerminalScreenData.parse(source).bracketedPaste, true);
+    source['mouseTracking'] = 'drag';
+    source['sgrMouse'] = true;
+    expect(TerminalScreenData.parse(source).mouseTracking, 'drag');
+    expect(TerminalScreenData.parse(source).sgrMouse, true);
+    source['mouseTracking'] = 'legacy';
+    expect(() => TerminalScreenData.parse(source), throwsFormatException);
+    source['mouseTracking'] = 'drag';
+    source['sgrMouse'] = 'yes';
+    expect(() => TerminalScreenData.parse(source), throwsFormatException);
+    source['sgrMouse'] = true;
     (source['palette'] as Map)['indexed'] = {'256': '#123456'};
     expect(() => TerminalScreenData.parse(source), throwsFormatException);
+  });
+
+  test('SGR mouse reports require tracked mode and valid grid coordinates', () {
+    String? encode(String action, {String tracking = 'drag', bool sgr = true,
+      int button = 0, int col = 4, int row = 2}) => terminalSgrMouseInput(
+        tracking: tracking, sgrMouse: sgr, action: action, button: button,
+        col: col, row: row, cols: 8, rows: 3);
+    expect(encode('down'), '\u001b[<0;4;2M');
+    expect(encode('up'), '\u001b[<0;4;2m');
+    expect(encode('move'), '\u001b[<32;4;2M');
+    expect(encode('move', tracking: 'any', button: 3), '\u001b[<35;4;2M');
+    expect(encode('wheelUp'), '\u001b[<64;4;2M');
+    expect(encode('wheelDown'), '\u001b[<65;4;2M');
+    expect(encode('move', tracking: 'click'), isNull);
+    expect(encode('down', sgr: false), isNull);
+    expect(encode('down', tracking: 'off'), isNull);
+    expect(encode('down', col: 9), isNull);
+    expect(encode('down', row: 0), isNull);
   });
 
   testWidgets('styled cell and cursor use independent colors', (tester) async {
@@ -414,6 +613,9 @@ void main() {
       await tester.pump(const Duration(milliseconds: 200));
       expect(runtime.resizes.last.cols, greaterThan(narrowColumns));
 
+      await tester.tap(find.text('实时输入'));
+      await tester.pump();
+      expect(find.text('草稿输入'), findsOneWidget);
       await tester.tap(find.text('Esc'));
       await tester.pump(const Duration(milliseconds: 20));
       expect(runtime.writes.last, '\u001b');
@@ -494,6 +696,239 @@ void main() {
   );
 
   testWidgets(
+    'live IME commits only completed text and sends return after pending text',
+    (tester) async {
+      final runtime = _TerminalRuntime();
+      addTearDown(runtime.dispose);
+      final held = Completer<void>();
+      runtime.holdFirstWrite = held;
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: pocketTheme(Brightness.dark),
+          home: SessionTerminalView(
+            runtime: runtime,
+            sessionId: 'session',
+            id: 'pty',
+          ),
+        ),
+      );
+      await tester.pump();
+      final field = find.byType(TextField);
+      final controller = tester.widget<TextField>(field).controller!;
+      expect(find.text('实时输入'), findsOneWidget);
+      controller.value = const TextEditingValue(
+        text: '中',
+        selection: TextSelection.collapsed(offset: 1),
+        composing: TextRange(start: 0, end: 1),
+      );
+      await tester.pump();
+      expect(runtime.writes, isEmpty);
+      controller.value = const TextEditingValue(
+        text: '中文',
+        selection: TextSelection.collapsed(offset: 2),
+      );
+      await tester.pump();
+      expect(runtime.writes, ['中文']);
+      await tester.enterText(field, '中文后续');
+      await tester.tap(find.byTooltip('发送回车'));
+      await tester.pump();
+      expect(runtime.writes, ['中文']);
+      await tester.ensureVisible(find.text('Ctrl-C'));
+      await tester.pump();
+      await tester.tap(find.text('Ctrl-C'));
+      await tester.pump();
+      expect(runtime.writes, ['中文']);
+      expect(find.textContaining('请等当前输入送达'), findsOneWidget);
+      held.complete();
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 20));
+      expect(runtime.writes, ['中文', '后续', '\r']);
+      expect(controller.text, '');
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  testWidgets('uncertain live input stays visible without automatic replay', (
+    tester,
+  ) async {
+    final runtime = _TerminalRuntime()..failWrites = true;
+    addTearDown(runtime.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: pocketTheme(Brightness.dark),
+        home: SessionTerminalView(
+          runtime: runtime,
+          sessionId: 'session',
+          id: 'pty',
+        ),
+      ),
+    );
+    await tester.pump();
+    final field = find.byType(TextField);
+    await tester.enterText(field, 'x');
+    await tester.pump();
+    expect(runtime.writes, isEmpty);
+    expect(find.textContaining('输入送达状态未知'), findsOneWidget);
+    runtime.failWrites = false;
+    await tester.enterText(field, 'xy');
+    await tester.pump();
+    expect(runtime.writes, isEmpty);
+    expect(tester.widget<TextField>(field).controller!.text, 'xy');
+    await tester.tap(find.byTooltip('发送回车'));
+    await tester.pump();
+    expect(runtime.writes, ['xy\r']);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('hardware arrows use the active application cursor mode', (
+    tester,
+  ) async {
+    final runtime = _TerminalRuntime()..appCursorKeys = true;
+    addTearDown(runtime.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: pocketTheme(Brightness.dark),
+        home: SessionTerminalView(
+          runtime: runtime,
+          sessionId: 'session',
+          id: 'pty',
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.tap(find.byType(TextField));
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.arrowUp);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.arrowUp);
+    await tester.pump();
+    expect(runtime.writes.last, '\u001bOA');
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('on-screen arrows follow application cursor mode', (
+    tester,
+  ) async {
+    final runtime = _TerminalRuntime()..appCursorKeys = true;
+    addTearDown(runtime.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: pocketTheme(Brightness.dark),
+        home: SessionTerminalView(
+          runtime: runtime,
+          sessionId: 'session',
+          id: 'pty',
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.tap(find.text('↑'));
+    await tester.pump();
+    expect(runtime.writes.last, '\u001bOA');
+    runtime.appCursorKeys = false;
+    runtime.revision++;
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.tap(find.text('↑'));
+    await tester.pump();
+    expect(runtime.writes.last, '\u001b[A');
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets(
+    'draft input brackets paste and places Return after the delimiter',
+    (tester) async {
+      final runtime = _TerminalRuntime()..bracketedPaste = true;
+      addTearDown(runtime.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: pocketTheme(Brightness.dark),
+          home: SessionTerminalView(
+            runtime: runtime,
+            sessionId: 'session',
+            id: 'pty',
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.tap(find.text('实时输入'));
+      await tester.pump();
+      await tester.enterText(find.byType(TextField), 'echo ok');
+      await tester.tap(find.byTooltip('发送命令'));
+      await tester.pump(const Duration(milliseconds: 20));
+      expect(runtime.writes.last, '\u001b[200~echo ok\u001b[201~\r');
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller!.text,
+        '',
+      );
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.enterText(find.byType(TextField), 'draft');
+      await tester.pump();
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller!.text,
+        'draft',
+      );
+      expect(
+        tester
+            .widget<GlassButton>(
+              find.ancestor(
+                of: find.byTooltip('仅发送输入，不按回车'),
+                matching: find.byType(GlassButton),
+              ),
+            )
+            .onPressed,
+        isNotNull,
+      );
+      await tester.tap(find.byTooltip('仅发送输入，不按回车'));
+      await tester.pump(const Duration(milliseconds: 20));
+      expect(runtime.writes.last, '\u001b[200~draft\u001b[201~');
+      runtime.bracketedPaste = false;
+      runtime.revision++;
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.enterText(find.byType(TextField), 'plain');
+      await tester.pump();
+      await tester.tap(find.byTooltip('发送命令'));
+      await tester.pump(const Duration(milliseconds: 20));
+      expect(runtime.writes.last, 'plain\r');
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  testWidgets('hardware mouse reports use the current Session PTY write path', (
+    tester,
+  ) async {
+    final runtime = _TerminalRuntime()
+      ..mouseTracking = 'drag'
+      ..sgrMouse = true;
+    addTearDown(runtime.dispose);
+    await tester.pumpWidget(MaterialApp(
+      theme: pocketTheme(Brightness.dark),
+      home: SessionTerminalView(runtime: runtime, sessionId: 'session', id: 'pty'),
+    ));
+    await tester.pump();
+    final row = find.byKey(const ValueKey('terminal-line-0'));
+    expect(row, findsOneWidget);
+    await tester.ensureVisible(row);
+    await tester.pump();
+    expect(row.hitTestable(), findsOneWidget);
+    final point = tester.getTopLeft(row) +
+        Offset(50, tester.getSize(row).height / 2);
+    final mouse = await tester.startGesture(point, kind: PointerDeviceKind.mouse);
+    await tester.pump();
+    await mouse.moveBy(const Offset(9, 0));
+    await tester.pump();
+    await mouse.up();
+    await tester.pump();
+    expect(runtime.writes.first, matches(RegExp(r'^\x1b\[<0;[1-8];1M$')));
+    expect(runtime.writes.last, matches(RegExp(r'^\x1b\[<0;[1-8];1m$')));
+    expect(runtime.writes, contains(matches(RegExp(r'^\x1b\[<32;[1-8];1M$'))));
+    final count = runtime.writes.length;
+    final touch = await tester.startGesture(point, kind: PointerDeviceKind.touch);
+    await touch.up();
+    await tester.pump();
+    expect(runtime.writes.length, count);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets(
     'hardware PTY keys preserve bytes without consuming IME composition',
     (tester) async {
       final runtime = _TerminalRuntime();
@@ -508,6 +943,8 @@ void main() {
           ),
         ),
       );
+      await tester.pump();
+      await tester.tap(find.text('实时输入'));
       await tester.pump();
       final field = find.byType(TextField);
       await tester.tap(field);
@@ -569,6 +1006,8 @@ void main() {
           ),
         ),
       );
+      await tester.pump();
+      await tester.tap(find.text('实时输入'));
       await tester.pump();
       final field = find.byType(TextField);
       await tester.enterText(field, 'pwd');

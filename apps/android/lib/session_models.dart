@@ -527,37 +527,27 @@ class _SessionModelPageState extends State<SessionModelPage>
                   ),
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 16),
-                    child: Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: [
-                        PocketChoice(
-                          label: Text(
-                            reasoning?['defaultEffort'] == null
-                                ? '服务商默认'
-                                : '默认 · ${effortLabel({...selection!, 'reasoningEffort': reasoning!['defaultEffort']})}',
-                          ),
-                          selected: selection?['reasoningEffort'] == null,
-                          onSelected: busy
-                              ? null
-                              : (_) => choose(
-                                  Json.of(selection!)
-                                    ..remove('reasoningEffort'),
-                                ),
+                    child: SegmentedControl<String?>(
+                      key: const ValueKey('session-reasoning-effort'),
+                      segments: [
+                        (
+                          null,
+                          reasoning?['defaultEffort'] == null
+                              ? '服务商默认'
+                              : '默认 · ${effortLabel({...selection!, 'reasoningEffort': reasoning!['defaultEffort']})}',
                         ),
                         for (final effort in efforts)
-                          PocketChoice(
-                            label: Text('${effort['name']}'),
-                            selected:
-                                selection?['reasoningEffort'] == effort['id'],
-                            onSelected: busy
-                                ? null
-                                : (_) => choose({
-                                    ...selection!,
-                                    'reasoningEffort': effort['id'],
-                                  }),
-                          ),
+                          ('${effort['id']}', '${effort['name']}'),
                       ],
+                      value: selection?['reasoningEffort'] as String?,
+                      onChanged: busy
+                          ? null
+                          : (value) => choose(
+                              value == null
+                                  ? (Json.of(selection!)
+                                      ..remove('reasoningEffort'))
+                                  : {...selection!, 'reasoningEffort': value},
+                            ),
                     ),
                   ),
                   for (final effort in efforts)

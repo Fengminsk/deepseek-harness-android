@@ -8,6 +8,7 @@ import 'chat_feedback_widgets.dart';
 import 'chat_message_actions.dart';
 import 'chat_reply_sources.dart';
 import 'chat_reply_sources_sheet.dart';
+import 'chat_source_identity.dart';
 import 'entry_motion.dart';
 import 'flclash/popup.dart';
 import 'ui.dart';
@@ -347,6 +348,9 @@ class _ChatReplyBarState extends State<ChatReplyBar> {
             if (!widget.sources.isEmpty)
               _ReplyButton(
                 icon: Icons.public_rounded,
+                leading: _SourceMarks(
+                  sources: widget.sources.forAnswer(_answerLinks),
+                ),
                 label: '来源',
                 showLabel: true,
                 onPressed: () => unawaited(_showSources()),
@@ -378,11 +382,13 @@ class _ReplyButton extends StatelessWidget {
     required this.icon,
     required this.label,
     required this.onPressed,
+    this.leading,
     this.showLabel = false,
   });
   final IconData icon;
   final String label;
   final VoidCallback? onPressed;
+  final Widget? leading;
   final bool showLabel;
   @override
   Widget build(BuildContext context) {
@@ -420,7 +426,7 @@ class _ReplyButton extends StatelessWidget {
               child: TextButton.icon(
                 onPressed: onPressed,
                 style: style,
-                icon: Icon(icon, size: 20),
+                icon: leading ?? Icon(icon, size: 20),
                 label: Text(label),
               ),
             )
@@ -430,8 +436,37 @@ class _ReplyButton extends StatelessWidget {
               style: style.copyWith(
                 fixedSize: const WidgetStatePropertyAll(Size.square(44)),
               ),
-              icon: Icon(icon, size: 20),
+              icon: leading ?? Icon(icon, size: 20),
             ),
+    );
+  }
+}
+
+class _SourceMarks extends StatelessWidget {
+  const _SourceMarks({required this.sources});
+  final List<ChatReplySource> sources;
+
+  @override
+  Widget build(BuildContext context) {
+    final hosts = sources
+        .where((source) => source.destination != null)
+        .map((source) => source.host)
+        .toSet()
+        .take(3)
+        .toList();
+    if (hosts.isEmpty) return const Icon(Icons.public_rounded, size: 20);
+    return SizedBox(
+      width: 20 + (hosts.length - 1) * 14,
+      height: 20,
+      child: Stack(
+        children: [
+          for (var i = 0; i < hosts.length; i++)
+            Positioned(
+              left: i * 14,
+              child: ChatSourceHostMark(host: hosts[i], size: 20),
+            ),
+        ],
+      ),
     );
   }
 }

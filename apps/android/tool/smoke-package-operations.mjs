@@ -174,8 +174,41 @@ async function smoke() {
     assert.equal(reserved.accepted, true)
     assert.equal(reserved.state, 'reserved')
     async function assertClosedAdmission() {
-      await assert.rejects(packageCall('inspect', { spec: bundle }), /服务正在切换模式/)
-      await assert.rejects(packageCall('registries'), /服务正在切换模式/)
+      for (const [method, args] of [['inspect', { spec: bundle }], ['registries', {}]]) {
+        const result = await packageCall(method, args)
+        assert.equal(result?._pocket_error?.code, 'ANDROID_RUNTIME_TRANSITION',
+          `${method} must return the App gateway's structured refusal`)
+      }
+      const session = await request('api.call', { namespace: 'session', method: 'create',
+        args: { request: { sessionId: 'package-smoke-rejected' } } })
+      assert.equal(session?._pocket_error?.code, 'ANDROID_RUNTIME_TRANSITION',
+        'direct Gateway session creation must obey the same maintenance admission')
+      assert.equal((await request('runtime.live')).statuses['package-smoke-rejected'], undefined)
+      for (const [method, params] of [['library.sessionCreate', {}], ['references.list', {}]]) {
+        const rejected = await request(method, params)
+        assert.equal(rejected?._pocket_error?.code, 'ANDROID_RUNTIME_TRANSITION',
+          `${method} must not start a Session or reference provider during replacement`)
+      }
+      for (const [method, params] of [
+        ['attachments.prepare', {}],
+        ['session.export.prepare', {}],
+        ['session.attachmentFile.prepare', {}],
+        ['documents.search', {}],
+        ['workspace.files.search', {}],
+        ['document.call', {}],
+        ['workspaceChanges.summary', {}],
+        ['chat.image.preview', {}],
+        ['configuration.transfer.apply', {}],
+        ['settings.mutate', { ns: 'agent', ops: [], revision: 0 }],
+        ['credentials.set', { ref: 'missing', value: 'example' }],
+        ['credentials.unset', { ref: 'missing' }],
+        ['web.configure', {}],
+        ['web.rotate', {}],
+        ['documents.revoke', {}],
+      ]) {
+        await assert.rejects(request(method, params), /服务正在切换模式/,
+          `${method} must be refused before starting App file or preview work`)
+      }
       assert.equal((await fixtureCalls()).length, 2, 'rejected admission must start no package command')
       assert.equal((await request('tasks.summary')).summary.packageOperations, 0)
     }
@@ -199,7 +232,10 @@ async function smoke() {
     console.log(JSON.stringify({ realAndroidProfile: true, originalPluginManagerApi: true, fixturePnpmProcesses: 3,
       readyPackageBaseline: true, concurrentInspectAndRegistries: true, nestedRegistryCountsOnce: true,
       idleAgentPreservesPackageActivity: true, freshStartedAndSettledSnapshots: true, activeReservationRefused: true,
-      reservedAdmissionRefused: true, committedAdmissionRefused: true, releaseRestoresAdmission: true }))
+      reservedAdmissionRefused: true, committedAdmissionRefused: true,
+      directGatewayAdmissionRefused: true, libraryAndReferenceAdmissionRefused: true,
+      fileAndPreviewAdmissionRefused: true, settingsAndGrantAdmissionRefused: true,
+      releaseRestoresAdmission: true }))
   } finally {
     clearTimeout(timeout)
     stopping = true

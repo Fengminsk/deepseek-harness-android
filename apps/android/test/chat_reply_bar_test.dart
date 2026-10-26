@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:dsh_android/chat_feedback.dart';
 import 'package:dsh_android/chat_reply_bar.dart';
 import 'package:dsh_android/chat_reply_sources.dart';
+import 'package:dsh_android/chat_source_identity.dart';
 import 'package:dsh_android/flclash/popup.dart';
 import 'package:dsh_android/ui.dart';
 import 'package:flutter/services.dart';
@@ -303,8 +304,8 @@ void main() {
           ChatReplySources.fromActivities([
             sourceActivity('search', 'web_search', {
               'sources': [
-                {'url': 'https://example.org/a', 'title': title},
                 {'url': 'https://example.org/b', 'title': 'B'},
+                {'url': 'https://example.org/a', 'title': title},
               ],
               'truncated': false,
             }),
@@ -326,7 +327,22 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('来源'));
       await tester.pumpAndSettle();
-      expect(find.text('回答链接 · 搜索结果'), findsOneWidget);
+      expect(find.text('回答中引用'), findsOneWidget);
+      expect(find.text('其他检索结果'), findsOneWidget);
+      expect(
+        tester.getTopLeft(find.text('A')).dy,
+        lessThan(tester.getTopLeft(find.text('B')).dy),
+      );
+      for (final mark in tester.widgetList<ChatSourceHostMark>(
+        find.byType(ChatSourceHostMark),
+      )) {
+        expect(mark.host, 'example.org');
+      }
+      final marks = find.byType(ChatSourceHostMark);
+      for (var i = 0; i < marks.evaluate().length; i++) {
+        final size = tester.getSize(marks.at(i));
+        expect(size.width, size.height, reason: 'one icon must stay circular');
+      }
       current.value = sources('A');
       await tester.pumpAndSettle();
       expect(find.byKey(const Key('reply-sources-sheet')), findsOneWidget);

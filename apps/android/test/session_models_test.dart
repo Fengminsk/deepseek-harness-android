@@ -362,6 +362,31 @@ void main() {
     },
   );
 
+  testWidgets('reasoning slider commits the catalog effort on release', (
+    tester,
+  ) async {
+    final runtime = _Runtime();
+    await _open(tester, runtime);
+    final control = find.byKey(const ValueKey('session-reasoning-effort'));
+    await Scrollable.ensureVisible(tester.element(control), alignment: .5);
+    await tester.pumpAndSettle();
+    expect(enabled(tester), isFalse);
+    final bounds = tester.getRect(control);
+    final gesture = await tester.startGesture(
+      Offset(bounds.left + bounds.width / 2, bounds.center.dy),
+    );
+    await gesture.moveTo(
+      Offset(bounds.left + bounds.width * 5 / 6, bounds.center.dy),
+    );
+    await tester.pump();
+    expect(enabled(tester), isFalse);
+    await gesture.up();
+    await tester.pumpAndSettle();
+    expect(enabled(tester), isTrue);
+    await tap(tester, applyButton);
+    expect(runtime.applied.single['reasoningEffort'], 'max');
+  });
+
   testWidgets(
     'unavailable current route is retained and never replaced with catalog default',
     (tester) async {

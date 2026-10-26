@@ -113,7 +113,7 @@ void main() {
     },
   );
 
-  test('PTC sources dedupe exact URLs while preserving fetch status and provenance', () {
+  test('PTC sources dedupe exact URLs while preserving fetch status and source details', () {
     final fetch = sourceActivity('child', 'web_fetch', {
       'url': 'https://example.org/a',
       'statusCode': 404,

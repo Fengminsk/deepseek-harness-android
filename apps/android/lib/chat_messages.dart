@@ -15,10 +15,12 @@ import 'chat_skills.dart';
 import 'chat_tool_groups.dart';
 import 'chat_user_references.dart';
 import 'chat_turn_extras.dart';
+import 'chat_turn_navigation.dart';
 import 'chat_workflow_runs.dart';
 import 'subagents_data.dart';
 import 'chat_reading.dart';
 import 'chat_progress.dart';
+import 'chat_retry_row.dart';
 import 'chat_stream_reveal.dart';
 import 'image_preview.dart';
 import 'tool_activity_details.dart' show ToolActivitySummaryRow;
@@ -141,6 +143,8 @@ class ChatTimeline extends StatefulWidget {
     this.onOpenImage,
     this.onBranch,
     this.onOpenWorkflowChild,
+    this.showTurnNavigation = true,
+    this.historyHeader,
     super.key,
   });
   final String sessionId;
@@ -153,6 +157,8 @@ class ChatTimeline extends StatefulWidget {
   /// Original loaded Session window, including log-only todo/present events.
   final List<Json> events;
   final ChatLiveMessage? live;
+  final bool showTurnNavigation;
+  final Widget? historyHeader;
   final Widget? footer;
   final ChatOpenLink? onOpenLink;
   final ChatOpenFile? onOpenFile;
@@ -185,13 +191,54 @@ class _ChatTimelineState extends State<ChatTimeline>
   late ChatTurnExtras _extras;
   List<ToolActivity> _progressCalls = const [];
   final _changeRows = <String, ChatChangesTurn>{};
+  final _listAnchor = PocketListAnchorController();
   (ChatProjection, int, int, int, int, int, int, int?)? _observed;
   int _generation = 0;
+  bool _loadingEarlier = false;
+  String? _olderError;
 
   @override
   void initState() {
     super.initState();
     _attachChanges();
+  }
+
+  Future<void> _readEarlier() async {
+    final runtime = widget.runtime;
+    if (runtime == null ||
+        _loadingEarlier ||
+        runtime.historyWindows[widget.sessionId]?.hasMore != true) {
+      return;
+    }
+    final sessionId = widget.sessionId;
+    setState(() {
+      _loadingEarlier = true;
+      _olderError = null;
+    });
+    try {
+      final added = await runtime.loadOlderSession(sessionId);
+      if (!mounted || widget.sessionId != sessionId) return;
+      // Capture the actual painted row after any concurrent replies or user
+      // scrolling. Sliver max extent is an estimate for unloaded row heights.
+      final anchor = _listAnchor.capture(minIndex: 1);
+      setState(() {
+        _loadingEarlier = false;
+        if (added > 0) {
+          widget.projection.reconcile(widget.events);
+          _observed = null;
+        }
+      });
+      if (added > 0 && anchor != null) {
+        _listAnchor.restore(anchor, widget.controller);
+      }
+    } catch (_) {
+      if (mounted && widget.sessionId == sessionId) {
+        setState(() {
+          _loadingEarlier = false;
+          _olderError = '读取更早消息失败，点击重试';
+        });
+      }
+    }
   }
 
   void _attachChanges() {
@@ -201,16 +248,11 @@ class _ChatTimelineState extends State<ChatTimeline>
     _changesController = WorkspaceChangesController(
       runtime: runtime,
       sessionId: widget.sessionId,
-    )..addListener(_changesChanged);
-  }
-
-  void _changesChanged() {
-    if (mounted) setState(() {});
+    );
   }
 
   void _detachChanges() {
     _extras.dispose();
-    _changesController?.removeListener(_changesChanged);
     _changesController?.dispose();
     _changesController = null;
   }
@@ -225,6 +267,9 @@ class _ChatTimelineState extends State<ChatTimeline>
       _observed = null;
     }
     if (oldWidget.sessionId != widget.sessionId) {
+      _listAnchor.cancel();
+      _loadingEarlier = false;
+      _olderError = null;
       _retire(_sources.values.toList());
       _sources.clear();
       _expanded.clear();
@@ -253,6 +298,7 @@ class _ChatTimelineState extends State<ChatTimeline>
 
   @override
   void dispose() {
+    _listAnchor.dispose();
     _generation++;
     _detachChanges();
     _retire(_sources.values.toList());
@@ -476,6 +522,7 @@ class _ChatTimelineState extends State<ChatTimeline>
     final stream = widget.live;
     final sessionId = widget.sessionId;
     final footer = widget.footer;
+    final activeTurn = widget.running ? _activeProgressTurn() : null;
     final showLive =
         stream != null &&
         !widget.projection.hasSettledAssistant(
@@ -485,30 +532,91 @@ class _ChatTimelineState extends State<ChatTimeline>
     final liveKey = showLive
         ? 'assistant-step:${stream.turn}:${stream.step}'
         : null;
+    final reasoningOnly =
+        showLive &&
+        _assistantReasoningText(stream.content) != null &&
+        _assistantReplyBlocks(stream.content).isEmpty;
+    final showingAuthoredReply =
+        showLive &&
+        chatMessageText(_assistantReplyBlocks(stream.content)).isNotEmpty;
+    final hasPendingActivity = chatHasPendingActivity(_progressCalls);
     final showProgress =
         widget.running &&
         stream?.interrupted != true &&
-        stream?.unconfirmed != true;
+        stream?.unconfirmed != true &&
+        !((reasoningOnly || showingAuthoredReply) && !hasPendingActivity);
     final progressIndex = rows.length + (showLive ? 1 : 0);
     final count =
         progressIndex + (showProgress ? 1 : 0) + (footer == null ? 0 : 1);
+    final historyWindow = widget.showTurnNavigation
+        ? widget.runtime?.historyWindows[sessionId]
+        : null;
+    final showNavigation = historyWindow != null;
+    final headerCount = showNavigation || widget.historyHeader != null ? 1 : 0;
     return PocketList.builder(
       controller: widget.controller,
+      anchorController: _listAnchor,
       padding: const EdgeInsets.symmetric(horizontal: 24),
-      itemCount: count,
+      itemCount: count + headerCount,
       findChildIndexCallback: (key) {
         if (key is! ValueKey<(String, String)> || key.value.$1 != sessionId) {
           return null;
         }
         final identity = key.value.$2;
-        if (identity == liveKey) return rows.length;
-        if (identity == 'progress' && showProgress) return progressIndex;
-        if (identity == 'footer' && footer != null) return count - 1;
-        return _positions[identity];
+        if (identity == 'turn-navigation' && headerCount == 1) return 0;
+        if (identity == liveKey) return rows.length + headerCount;
+        if (identity == 'progress' && showProgress) {
+          return progressIndex + headerCount;
+        }
+        if (identity == 'footer' && footer != null) {
+          return count - 1 + headerCount;
+        }
+        final row = _positions[identity];
+        return row == null ? null : row + headerCount;
       },
       itemBuilder: (context, index) {
-        if (index < rows.length) {
-          final item = rows[index];
+        if (headerCount == 1 && index == 0) {
+          if (widget.historyHeader case final header?) {
+            return KeyedSubtree(
+              key: ValueKey((sessionId, 'turn-navigation')),
+              child: header,
+            );
+          }
+          return Padding(
+            key: ValueKey((sessionId, 'turn-navigation')),
+            padding: const EdgeInsets.only(top: 6, bottom: 8),
+            child: Row(
+              children: [
+                TextButton.icon(
+                  onPressed: () => Navigator.of(context).push<void>(
+                    PocketRoute(
+                      builder: (_) => ChatTurnNavigatorPage(
+                        runtime: widget.runtime!,
+                        sessionId: sessionId,
+                      ),
+                    ),
+                  ),
+                  icon: const Icon(
+                    Icons.format_list_numbered_rounded,
+                    size: 18,
+                  ),
+                  label: const Text('会话轮次'),
+                ),
+                const Spacer(),
+                if (historyWindow?.hasMore == true)
+                  TextButton(
+                    onPressed: _loadingEarlier ? null : _readEarlier,
+                    child: Text(
+                      _olderError ?? (_loadingEarlier ? '读取中…' : '更早消息'),
+                    ),
+                  ),
+              ],
+            ),
+          );
+        }
+        final rowIndex = index - headerCount;
+        if (rowIndex < rows.length) {
+          final item = rows[rowIndex];
           if (item.group case final group?) {
             return ChatToolGroupHeader(
               key: ValueKey((sessionId, group.key)),
@@ -538,10 +646,13 @@ class _ChatTimelineState extends State<ChatTimeline>
               key: ValueKey((sessionId, row.key)),
               child: controller == null
                   ? const SizedBox.shrink()
-                  : ChatChangesCard(
-                      controller: controller,
-                      change: change,
-                      enabled: controller.enabled,
+                  : ListenableBuilder(
+                      listenable: controller,
+                      builder: (context, _) => ChatChangesCard(
+                        controller: controller,
+                        change: change,
+                        enabled: controller.enabled,
+                      ),
                     ),
             );
           }
@@ -575,6 +686,7 @@ class _ChatTimelineState extends State<ChatTimeline>
           }
           final message = ChatMessage(
             entry: row,
+            activeTurn: row.retry != null && activeTurn == row.retry!.turn,
             runtime: widget.runtime,
             sessionId: sessionId,
             storageId: '$sessionId:${row.key}',
@@ -611,7 +723,8 @@ class _ChatTimelineState extends State<ChatTimeline>
             child: child,
           );
         }
-        if (showLive && index == rows.length) {
+        if (showLive && rowIndex == rows.length) {
+          final reply = _assistantReplyBlocks(stream.content);
           return KeyedSubtree(
             key: ValueKey((sessionId, liveKey!)),
             child: Padding(
@@ -619,15 +732,28 @@ class _ChatTimelineState extends State<ChatTimeline>
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  ChatContent(
-                    content: stream.content,
-                    streaming: true,
-                    sessionId: sessionId,
-                    storageId: '$sessionId:$liveKey',
-                    onOpenLink: widget.onOpenLink,
-                    onOpenAttachment: widget.onOpenAttachment,
-                    onOpenImage: widget.onOpenImage,
-                  ),
+                  if (_assistantReasoningText(stream.content) case final text?)
+                    _AssistantReasoningRow(
+                      text: text,
+                      storageId: '$sessionId:$liveKey:reasoning',
+                      running:
+                          widget.running &&
+                          reply.isEmpty &&
+                          !stream.interrupted &&
+                          !stream.unconfirmed,
+                      sessionId: sessionId,
+                      onOpenLink: widget.onOpenLink,
+                    ),
+                  if (reply.isNotEmpty)
+                    ChatContent(
+                      content: reply,
+                      streaming: true,
+                      sessionId: sessionId,
+                      storageId: '$sessionId:$liveKey',
+                      onOpenLink: widget.onOpenLink,
+                      onOpenAttachment: widget.onOpenAttachment,
+                      onOpenImage: widget.onOpenImage,
+                    ),
                   if (stream.unconfirmed)
                     Text(
                       '回复状态待确认',
@@ -643,7 +769,7 @@ class _ChatTimelineState extends State<ChatTimeline>
             ),
           );
         }
-        if (showProgress && index == progressIndex) {
+        if (showProgress && rowIndex == progressIndex) {
           return Padding(
             key: ValueKey((sessionId, 'progress')),
             padding: const EdgeInsets.symmetric(vertical: 14),
@@ -668,6 +794,7 @@ class ChatMessage extends StatelessWidget {
     required this.entry,
     required this.storageId,
     this.runtime,
+    this.activeTurn = false,
     this.sessionId,
     this.onOpenLink,
     this.onOpenFile,
@@ -681,6 +808,7 @@ class ChatMessage extends StatelessWidget {
   });
   final ChatEntry entry;
   final RuntimeController? runtime;
+  final bool activeTurn;
   final String storageId;
   final String? sessionId;
   final ChatOpenLink? onOpenLink;
@@ -761,17 +889,27 @@ class ChatMessage extends StatelessWidget {
         }
         return _statusCard(context);
       case ChatEntryKind.notice:
+        if (entry.retry case final retry?) {
+          return ChatRetryRow(
+            retry: retry,
+            activeTurn: activeTurn,
+            history: entry.details,
+          );
+        }
         return _statusCard(context);
       case ChatEntryKind.user:
       case ChatEntryKind.assistant:
         final user = entry.kind == ChatEntryKind.user;
-        return Align(
+        final reply = user
+            ? entry.content
+            : _assistantReplyBlocks(entry.content);
+        final answer = Align(
           alignment: user ? Alignment.centerRight : Alignment.centerLeft,
           child: Container(
             constraints: BoxConstraints(
               maxWidth: MediaQuery.sizeOf(context).width * (user ? .8 : 1),
             ),
-            margin: const EdgeInsets.symmetric(vertical: 10),
+            margin: EdgeInsets.only(top: 10, bottom: user ? 0 : 10),
             padding: EdgeInsets.symmetric(
               horizontal: user ? 18 : 0,
               vertical: user ? 10 : 6,
@@ -786,13 +924,13 @@ class ChatMessage extends StatelessWidget {
                   )
                 : null,
             child: ChatMessageActions(
-              text: chatMessageText(entry.content),
+              text: chatMessageText(reply),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   ChatContent(
-                    content: entry.content,
+                    content: reply,
                     runtime: runtime,
                     sessionId: sessionId,
                     storageId: storageId,
@@ -817,42 +955,66 @@ class ChatMessage extends StatelessWidget {
             ),
           ),
         );
+        if (user) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              answer,
+              ChatUserMessageActions(
+                text: chatMessageText(reply),
+                time: entry.event['time'] is int
+                    ? entry.event['time'] as int
+                    : null,
+              ),
+            ],
+          );
+        }
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (_assistantReasoningText(entry.content) case final text?)
+              _AssistantReasoningRow(
+                text: text,
+                storageId: '$storageId:reasoning',
+                runtime: runtime,
+                sessionId: sessionId,
+                onOpenLink: onOpenLink,
+                onOpenFile: onOpenFile,
+              ),
+            if (reply.isNotEmpty || entry.interrupted) answer,
+          ],
+        );
     }
   }
 
   Widget _statusCard(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 10),
-      child: PocketCard(
-        padding: const EdgeInsets.all(18),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text(
-              entry.title ?? '会话状态',
-              style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                color: entry.error ? colors.error : colors.onSurfaceVariant,
-              ),
+    final title = entry.title ?? '会话状态';
+    final summary = entry.text?.trim();
+    return _ChatDisclosure(
+      storageId: '$storageId:status',
+      title:
+          entry.kind == ChatEntryKind.command && !entry.error ||
+              summary == null ||
+              summary.isEmpty
+          ? title
+          : '$title · ${summary.split('\n').first}',
+      icon: entry.kind == ChatEntryKind.command
+          ? Icons.terminal_rounded
+          : Icons.info_outline_rounded,
+      color: entry.error ? colors.error : null,
+      body: (context) => Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (summary != null && summary.isNotEmpty)
+            PocketMarkdown(
+              data: entry.text!,
+              sessionId: sessionId,
+              onOpenLink: onOpenLink,
+              onOpenFile: onOpenFile,
             ),
-            if (entry.text?.isNotEmpty == true) ...[
-              const SizedBox(height: 8),
-              PocketMarkdown(
-                data: entry.text!,
-                sessionId: sessionId,
-                onOpenLink: onOpenLink,
-                onOpenFile: onOpenFile,
-              ),
-            ],
-            if (entry.details != null)
-              _ChatDisclosure(
-                storageId: '$storageId:details',
-                title: entry.detailsTitle ?? '详情',
-                icon: Icons.history_rounded,
-                body: (_) => SelectableText(entry.details!),
-              ),
-          ],
-        ),
+          if (entry.details case final String details) SelectableText(details),
+        ],
       ),
     );
   }
@@ -989,6 +1151,58 @@ class _CompactCommandMessageState extends State<_CompactCommandMessage> {
       ],
     );
   }
+}
+
+List<dynamic> _assistantReplyBlocks(List<dynamic> content) => [
+  for (final block in content)
+    if (block is! Json || block['type'] != 'reasoning') block,
+];
+
+String? _assistantReasoningText(List<dynamic> content) {
+  final parts = <String>[];
+  for (final block in content) {
+    if (block is Json && block['type'] == 'reasoning') {
+      final text = block['text'];
+      if (text is String && text.trim().isNotEmpty) parts.add(text);
+    }
+  }
+  return parts.isEmpty ? null : parts.join('\n\n');
+}
+
+/// The original assistant step presents reasoning as process activity; the
+/// authored answer occupies its own reading row and copy target.
+class _AssistantReasoningRow extends StatelessWidget {
+  const _AssistantReasoningRow({
+    required this.text,
+    required this.storageId,
+    this.running = false,
+    this.runtime,
+    this.sessionId,
+    this.onOpenLink,
+    this.onOpenFile,
+  });
+
+  final String text, storageId;
+  final bool running;
+  final RuntimeController? runtime;
+  final String? sessionId;
+  final ChatOpenLink? onOpenLink;
+  final ChatOpenFile? onOpenFile;
+
+  @override
+  Widget build(BuildContext context) => _ChatDisclosure(
+    storageId: storageId,
+    title: running ? '正在思考' : '已思考',
+    titleWidget: running ? const ChatProgressLabel(text: '正在思考') : null,
+    icon: Icons.psychology_outlined,
+    body: (_) => PocketMarkdown(
+      data: text,
+      runtime: runtime,
+      sessionId: sessionId,
+      onOpenLink: onOpenLink,
+      onOpenFile: onOpenFile,
+    ),
+  );
 }
 
 /// Blocks stay in authored order; unsupported blocks remain inspectable.
@@ -1466,10 +1680,14 @@ class _ChatDisclosure extends StatefulWidget {
     required this.title,
     required this.icon,
     required this.body,
+    this.color,
+    this.titleWidget,
   });
   final String storageId, title;
   final IconData icon;
   final WidgetBuilder body;
+  final Color? color;
+  final Widget? titleWidget;
   @override
   State<_ChatDisclosure> createState() => _ChatDisclosureState();
 }
@@ -1501,17 +1719,21 @@ class _ChatDisclosureState extends State<_ChatDisclosure> {
     children: [
       ToolActivitySummaryRow(
         icon: widget.icon,
-        title: Text(
-          widget.title,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: TextStyle(
-            fontSize: 14,
-            color: Theme.of(context).colorScheme.onSurfaceVariant,
-          ),
-        ),
+        title:
+            widget.titleWidget ??
+            Text(
+              widget.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 14,
+                color:
+                    widget.color ??
+                    Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
         label: widget.title,
-        color: Theme.of(context).colorScheme.onSurfaceVariant,
+        color: widget.color ?? Theme.of(context).colorScheme.onSurfaceVariant,
         opened: expanded,
         onTap: toggle,
       ),

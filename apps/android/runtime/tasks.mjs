@@ -231,7 +231,10 @@ export class AppTasks {
       const row = this.project(id, snapshot, session ? 'live' : snapshot ? 'cached' : 'unavailable', header)
       return { ...row, history: row.history.slice(0, 1) }
     })
-    return { ...this.summary(), sessions, nextOffset: offset + limit < ordered.length ? offset + limit : null }
+    // A task-center read is a trusted local Host view. Keep job observation
+    // separate from the per-session history and from model-consuming cursors.
+    return { ...this.summary(), sessions, jobs: this.jobs?.snapshot() ?? null,
+      nextOffset: offset + limit < ordered.length ? offset + limit : null }
   }
 
   /** Explicit history read uses the original read-only Session observation and its crash-recovery projection. */
@@ -252,6 +255,14 @@ export class AppTasks {
 
   cancel(params) {
     return this.ctx.sessionController.cancel({ sessionId: identity(params.sessionId) })
+  }
+
+  /** The local task center may stop an unowned job without inventing a Session. */
+  killUnownedJob(params) {
+    if (typeof params.jobId !== 'string' || !params.jobId.trim()) throw new TypeError('jobId must be a non-empty string')
+    if (!this.jobs) throw new Error('Background job registry is unavailable')
+    // The registry's caller fence rejects owned ids when caller is absent.
+    return { outcome: this.jobs.kill(params.jobId, undefined, 'cancelled by the user') }
   }
 
   removeQueued(params) {

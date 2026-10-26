@@ -12,7 +12,7 @@ registerHooks({
 })
 const { AppSessions } = await import(source)
 
-function fixture({ exists = false, invoke, select, resolve } = {}) {
+function fixture({ exists = false, invoke, select, resolve, admit } = {}) {
   const calls = []
   const sessions = new AppSessions({
     sessionController: { resolveAgent: async id => resolve ? resolve(id)
@@ -25,7 +25,7 @@ function fixture({ exists = false, invoke, select, resolve } = {}) {
   }, async () => [], undefined, async (sessionId, agentPreset) => {
     calls.push({ method: 'selectPreset', params: { sessionId, agentPreset } })
     return select ? select(sessionId, agentPreset) : agentPreset
-  })
+  }, admit)
   return { sessions, calls }
 }
 const message = { sessionId: 'draft', requestId: 'first', text: 'hello', provider: 'p', model: 'm' }
@@ -96,6 +96,30 @@ test('first send waits until an earlier preset selection settles', async () => {
   release.resolve()
   await Promise.all([selection, sent])
   assert.deepEqual(h.calls.map(call => call.method), ['selectPreset', 'prompt'])
+})
+
+test('pending App submission is visible before original Agent admission and retires after settlement', async () => {
+  const entered = Promise.withResolvers(), release = Promise.withResolvers()
+  const h = fixture({ exists: true, invoke: async method => {
+    if (method === 'prompt') { entered.resolve(); await release.promise }
+    return { accepted: true }
+  } })
+  const sent = h.sessions.send(message)
+  assert.equal(h.sessions.pendingCount(), 1)
+  await entered.promise
+  assert.equal(h.sessions.pendingCount(), 1)
+  release.resolve()
+  await sent
+  await Promise.resolve()
+  assert.equal(h.sessions.pendingCount(), 0)
+})
+
+test('maintenance admission refuses new App submission before queuing or resolving it', () => {
+  const h = fixture({ resolve: () => { assert.fail('reserved request must not reach controller') },
+    admit: () => { throw Object.assign(new Error('switching'), { code: 'ANDROID_RUNTIME_TRANSITION' }) } })
+  assert.throws(() => h.sessions.send(message), { code: 'ANDROID_RUNTIME_TRANSITION' })
+  assert.equal(h.sessions.pendingCount(), 0)
+  assert.deepEqual(h.calls, [])
 })
 
 test('selection after first admission preserves the original started-session refusal without replay', async () => {

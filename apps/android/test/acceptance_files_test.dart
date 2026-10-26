@@ -20,6 +20,7 @@ class _FilesRuntime extends RuntimeController {
   final revocations = <String>[];
   bool failNextPage = false;
   bool failFirstPage = false;
+  String documentVersion = 'a' * 64;
   Completer<Json>? readBarrier;
   Completer<List<Json>>? rootsBarrier;
   Object? rootsError;
@@ -58,6 +59,7 @@ class _FilesRuntime extends RuntimeController {
           'offset': 0,
           'nextOffset': 19,
           'truncated': true,
+          'version': documentVersion,
         };
       }
       if (failNextPage) {
@@ -71,6 +73,7 @@ class _FilesRuntime extends RuntimeController {
         'offset': 19,
         'nextOffset': 28,
         'truncated': false,
+        'version': documentVersion,
       };
     }
     throw StateError('Unexpected call $method $params');
@@ -359,6 +362,7 @@ void main() {
           'offset': 19,
           'nextOffset': 28,
           'truncated': false,
+          'version': 'a' * 64,
         });
         await tester.pumpAndSettle();
         expect(find.text('旧连接下一段'), findsNothing);
@@ -370,6 +374,7 @@ void main() {
             'offset': 19,
             'nextOffset': 19,
             'truncated': false,
+            'version': 'a' * 64,
           });
         }
         await tester.pumpWidget(const SizedBox.shrink());
@@ -512,6 +517,34 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('第一段中文🙂'), findsOneWidget);
       expect(runtime.reads.last['offset'], 0);
+    },
+  );
+
+  testWidgets(
+    'same-name replacement between SAF pages is rejected until a fresh first page',
+    (tester) async {
+      final runtime = _FilesRuntime();
+      await tester.pumpWidget(
+        _host(TextFilePage(runtime: runtime, root: 'file-id', path: '')),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('第一段中文🙂'), findsOneWidget);
+      runtime.documentVersion = 'b' * 64;
+      await tester.tap(find.text('下一段'));
+      await tester.pumpAndSettle();
+      expect(find.text('第二段'), findsNothing);
+      expect(find.text('第一段中文🙂'), findsOneWidget);
+      expect(find.textContaining('不能把另一版本的内容接到当前页'), findsOneWidget);
+      expect(find.textContaining('尚未核实'), findsOneWidget);
+      expect(runtime.reads.last['offset'], 19);
+      await tester.tap(find.text('从头重新读取'));
+      await tester.pumpAndSettle();
+      expect(runtime.reads.last['offset'], 0);
+      expect(find.text('第一段中文🙂'), findsOneWidget);
+      expect(find.textContaining('尚未核实'), findsNothing);
+      await tester.tap(find.text('下一段'));
+      await tester.pumpAndSettle();
+      expect(find.text('第二段'), findsOneWidget);
     },
   );
 

@@ -1,11 +1,17 @@
 import 'dart:convert';
+import 'dart:io';
+import 'dart:ui' show Tristate;
 
 import 'package:dsh_android/chat_projection.dart';
 import 'package:dsh_android/chat_progress.dart';
+import 'package:dsh_android/chat_messages.dart';
 import 'package:dsh_android/chat_tool_groups.dart';
 import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/tool_activity_data.dart';
+import 'package:dsh_android/tool_activity.dart';
+import 'package:dsh_android/ui.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter/rendering.dart' show RenderParagraph;
 import 'package:material_ui/material_ui.dart';
 
 import 'chat_projection_test.dart' as chat;
@@ -139,6 +145,139 @@ void main() {
         tester.widget<ChatRollingCount>(find.byType(ChatRollingCount)).value,
         3,
       );
+      expect(tester.takeException(), isNull);
+    },
+  );
+  testWidgets(
+    'group status stays readable and actionable at narrow large text',
+    (tester) async {
+      tester.view.physicalSize = const Size(280, 700);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final expected = jsonDecode(
+        File('test/fixtures/chat_tool_group_header.expected.json')
+            .readAsStringSync(),
+      ) as Map<String, dynamic>;
+      final projection = ChatProjection()
+        ..reconcile([
+          tool.callEvent(0, id: 'completed'),
+          tool.resultEvent(
+            1,
+            id: 'completed',
+            text: jsonEncode({'stdout': 'ok', 'exitCode': 0}),
+          ),
+          tool.callEvent(2, id: 'pending'),
+          tool.callEvent(3, id: 'failed'),
+          tool.resultEvent(
+            4,
+            id: 'failed',
+            text: jsonEncode({'stdout': '', 'exitCode': 7}),
+          ),
+        ]);
+      final group = groupChatTools(projection.entries).single.group!;
+      expect(group.title, expected['title']);
+      expect(group.status, expected['status']);
+      var expanded = false;
+      await tester.pumpWidget(
+        MaterialApp(
+          builder: (context, child) => MediaQuery(
+            data: MediaQuery.of(context).copyWith(
+              textScaler: const TextScaler.linear(2),
+              disableAnimations: true,
+            ),
+            child: child!,
+          ),
+          home: Scaffold(
+            body: StatefulBuilder(
+              builder: (context, setState) => ChatToolGroupHeader(
+                group: group,
+                expanded: expanded,
+                onToggle: () => setState(() => expanded = !expanded),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final status = find.text(expected['narrowStatusLine'] as String);
+      expect(status, findsOneWidget);
+      expect(tester.widget<Text>(status).maxLines, isNull);
+      expect(
+        tester.renderObject<RenderParagraph>(status).didExceedMaxLines,
+        isFalse,
+      );
+      final row = find.byType(ChatToolGroupHeader);
+      expect(tester.getSize(row).height, greaterThanOrEqualTo(48));
+      final semantics = find.byWidgetPredicate(
+        (widget) =>
+            widget is Semantics &&
+            widget.properties.label == expected['semantics'],
+      );
+      expect(semantics, findsOneWidget);
+      expect(tester.getSemantics(semantics).label, expected['semantics']);
+      await tester.tap(row);
+      await tester.pumpAndSettle();
+      expect(expanded, isTrue);
+      expect(
+        tester.getSemantics(semantics).flagsCollection.isExpanded,
+        Tristate.isTrue,
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+  testWidgets(
+    'narrow transcript retains tool warnings while expanding grouped calls',
+    (tester) async {
+      tester.view.physicalSize = const Size(280, 700);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final projection = ChatProjection()
+        ..reconcile([
+          tool.callEvent(0, id: 'completed'),
+          tool.resultEvent(
+            1,
+            id: 'completed',
+            text: '{"stdout":"ok","exitCode":0}',
+          ),
+          tool.callEvent(2, id: 'pending'),
+          tool.callEvent(3, id: 'failed'),
+          tool.resultEvent(4, id: 'failed', text: '{"stdout":"","exitCode":7}'),
+        ]);
+      final scroll = ScrollController();
+      addTearDown(scroll.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: pocketTheme(Brightness.light),
+          home: MediaQuery(
+            data: const MediaQueryData(
+              size: Size(280, 700),
+              textScaler: TextScaler.linear(2),
+            ),
+            child: PocketScaffold(
+              title: const Text('会话'),
+              body: ChatTimeline(
+                sessionId: 'narrow-tools',
+                projection: projection,
+                controller: scroll,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final status = find.text('1 项需查看 · 1 项等待结果');
+      expect(status, findsOneWidget);
+      expect(
+        tester.getSize(find.byType(ChatToolGroupHeader)).height,
+        greaterThan(48),
+      );
+      expect(find.byType(ToolActivityCard), findsNothing);
+      await tester.tap(find.byType(ChatToolGroupHeader));
+      await tester.pumpAndSettle();
+      expect(find.byType(ToolActivityCard), findsNWidgets(3));
+      expect(status, findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );

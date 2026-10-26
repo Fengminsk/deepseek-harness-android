@@ -1,0 +1,21 @@
+# Android Session terminal
+
+English | [中文](android-terminal.zh.md)
+
+## Input and process ownership
+
+Each terminal belongs to one live Session owner in the embedded Host. Leaving the page detaches the view while its PTY continues running; losing the Host ends that PTY, and reopening the page never starts a replacement automatically. The native helper acknowledges each input and resize frame before the App reports acceptance.
+
+The terminal list lets a user rename a running or exited terminal on a separate text page. The name is scoped to that Session and PTY, survives page detachment, and never changes the process or its working directory. Names are bounded and control characters are rejected. Since the PTY itself ends when the Host dies, its name is not restored after Host restart.
+
+The new-terminal button uses the last App-private shell choice. Its separate picker checks whether Android's fixed system `sh`, `mksh` and `bash` paths are actually executable; opening the picker does not allocate a PTY. Selecting a shell saves its ID and starts a terminal, while discovery failures offer Retry. At creation the Host checks only the chosen path, so a failed probe of another candidate cannot prevent that shell from starting; the native PTY helper independently accepts only those three fixed `/system/bin` paths. If a remembered shell disappears after an OS change, startup stops and the user can choose another. A terminal runs with the App's ordinary UID and permissions; shell choice is not a sandbox or a general Linux container.
+
+The input field starts in **Live input** mode. An IME composition stays local until the keyboard commits text; committed text travels to the PTY in order, and Return follows any pending text acknowledgement. A successful acknowledgement removes only the sent prefix, preserving text typed while the write was pending. Other control keys wait until that visible text has drained to avoid reordering it. If delivery cannot be confirmed or the sent prefix was edited, the remaining text stays visible and automatic sending stops; the user must inspect the terminal before explicitly retrying. **Draft input** mode sends the field on request and remains available for pasting a command as one operation. If the program enabled bracketed-paste mode, draft text is enclosed in paste delimiters and Return follows the closing delimiter; live character input remains unchanged. Control-key buttons and supported hardware keys send raw terminal bytes; on-screen and hardware arrows both follow the program's application-cursor setting. Both modes remain with the PTY and are restored from the Host screen snapshot when the page reopens.
+
+## Display and replies
+
+The Host projects its bounded xterm grid as styled cells and keeps program-set OSC palette and cursor settings with the PTY. OSC hexadecimal colors scale each channel to eight bits, including short and extended forms. xterm cursor-position and device-attribute query replies return through the same acknowledged PTY input channel as user keys. OSC 4 and OSC 10–12 queries receive a reply only for a color previously set by that program; no App theme color is invented for an unset value. A single automatic reply is limited to 4 KiB and the outstanding reply backlog to 32 KiB. Exceeding those limits fails the terminal instead of accumulating unbounded input.
+
+When a program enables DECSET 1006 with mouse tracking 1000, 1002 or 1003, the Host retains that mode with the PTY and the terminal view sends SGR button, release, drag, motion and wheel reports from a hardware mouse or stylus through acknowledged terminal input. Reports use one-based coordinates in the current visible grid; motion follows the program's click, drag or any-event mode. Reopening the page reads the live mode again. Touch remains available for scrolling the terminal history. Programs requesting only older mouse encodings receive no mouse reports.
+
+This is not complete VT/OSC or Web terminal-controller parity. Older mouse encodings, every terminal query, desktop tab recovery and process restoration after Host death remain separate work. Host and Flutter tests do not establish Android IME, hardware pointer, shell availability, PTY or process behavior on a device.

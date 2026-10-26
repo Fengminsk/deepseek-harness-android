@@ -91,7 +91,7 @@ async function checkDocuments(t, mode) {
       const message = JSON.parse(raw); assert.equal(typeof message.id, 'string', 'every native control frame has an id'); frames.push(message);
       const reply = payload => page.evaluate(value => window.PocketDocument.onmessage?.({ data: JSON.stringify(value) }), { id: message.id, ...payload });
       const metadata = () => ({ absolutePath: `/workspace/${path}`, version: `${revision}`, bytes: content.length });
-      if (message.kind === 'ready') return reply({ result: { sessionId: 'document-session', path, line, locale: 'en', dark: path.endsWith('.pdf'), topInset: 72, bottomInset: 20, background: path.endsWith('.pdf') ? '#151515' : '#ffffff', foreground: path.endsWith('.pdf') ? '#ffffff' : '#151515' } });
+      if (message.kind === 'ready') return reply({ result: { sessionId: 'document-session', path, line, interactiveHtml: false, locale: 'en', dark: path.endsWith('.pdf'), topInset: 72, bottomInset: 20, background: path.endsWith('.pdf') ? '#151515' : '#ffffff', foreground: path.endsWith('.pdf') ? '#ffffff' : '#151515' } });
       if (message.kind === 'navigate') {
         assert.equal(message.sessionId, 'document-session');
         return message.path === 'denied.md'
@@ -108,10 +108,20 @@ async function checkDocuments(t, mode) {
           return reply({ result: ok({ ...metadata(), text: selected.join('\n'), offset, lines: selected.length, eof: offset + selected.length > lines.length }) });
         }
         if (message.method === 'readBytes') {
+          let target = content;
+          let absolutePath = `/workspace/${path}`;
+          if (message.args.path !== path && mode === 'interactive') {
+            const name = message.args.path.split('/').at(-1);
+            target = name === 'local.js'
+              ? Buffer.from('const tag=document.createElement("strong");tag.id="ran";tag.className="token";tag.textContent="local script ran";document.body.append(tag);try{parent.__UNSAFE_HTML__=true}catch{}')
+              : name === 'local.css' ? Buffer.from('.token { color: rgb(12, 34, 56) }') : undefined;
+            absolutePath = `/workspace/${message.args.path}`;
+          }
+          if (!target) return reply({ result: fail('workspace-files/not-found', 'Dependency is not in the bound session') });
           const range = message.args.options?.range; const offset = range?.offset ?? 0;
-          const data = content.subarray(offset, range?.length === undefined ? undefined : offset + range.length);
+          const data = target.subarray(offset, range?.length === undefined ? undefined : offset + range.length);
           const id = `lease-${message.id}`; leases.set(id, data);
-          return reply({ result: ok({ ...metadata(), offset, eof: offset + data.length >= content.length, data: { encoding: 'android-byte-lease', id, length: data.length } }) });
+          return reply({ result: ok({ ...metadata(), absolutePath, bytes: target.length, offset, eof: offset + data.length >= target.length, data: { encoding: 'android-byte-lease', id, length: data.length } }) });
         }
       }
       if (message.kind === 'bytes') {
@@ -147,16 +157,32 @@ async function checkDocuments(t, mode) {
     ['sample.pdf', tinyPdf(), '[data-pdf-preview] canvas'],
     ['table.csv', Buffer.from('Name,Value\nOriginal,42\nSecond,43'), '[data-excel-preview]'],
     ['table.xlsx', workbookBytes, '[data-excel-preview]'],
-    ['page.html', Buffer.from('<h1>HTML preview</h1><script>parent.__UNSAFE_HTML__=true</script><img src="https://example.invalid/no-network">'), 'iframe[data-html-preview]'],
+    ['page.html', Buffer.from(mode === 'interactive'
+      ? '<h1>HTML preview</h1><link rel="stylesheet" href="./local.css"><script src="./local.js"></script>'
+      : '<h1>HTML preview</h1><script>parent.__UNSAFE_HTML__=true</script><img src="https://example.invalid/no-network">'), 'iframe[data-html-preview]'],
     ['letter.docx', Buffer.from('unsupported office fixture'), '[data-textpreview-failed]'],
   ]) {
-    if ((mode === 'external') !== (name === 'links.md')) continue;
+    if (mode === 'interactive' ? name !== 'page.html' : (mode === 'external') !== (name === 'links.md')) continue;
     const state = await open(name, fixture);
     try {
       await state.page.locator(selector).first().waitFor({ state: 'attached', timeout: 20_000 });
       if (name.endsWith('.txt')) {
         await state.change('Updated through original resource feed');
         await state.page.getByText('Updated through original resource feed', { exact: true }).waitFor();
+        const reads = state.frames.filter(frame => frame.kind === 'call' && frame.method === 'read').length;
+        assert.equal(await state.page.evaluate(() => {
+          window.__readerBeforeRefresh = document.querySelector('[data-textpreview-state]');
+          return window.__PocketDocumentRefresh();
+        }), true);
+        for (let attempt = 0; attempt < 60 &&
+            state.frames.filter(frame => frame.kind === 'call' && frame.method === 'read').length <= reads; attempt++) {
+          await new Promise(resolve => setTimeout(resolve, 50));
+        }
+        assert.ok(state.frames.filter(frame => frame.kind === 'call' && frame.method === 'read').length > reads,
+          'native refresh rereads the original file');
+        assert.equal(await state.page.evaluate(() =>
+          window.__readerBeforeRefresh === document.querySelector('[data-textpreview-state]')), true,
+        'refresh keeps the original document owner mounted');
       }
       if (name.endsWith('.md')) {
         assert.ok((await state.page.locator('[data-document-markdown] h1').boundingBox()).y >= 118,
@@ -237,6 +263,24 @@ async function checkDocuments(t, mode) {
       if (name.endsWith('.html')) {
         assert.equal(await state.page.locator('iframe[data-html-preview]').getAttribute('sandbox'), '');
         assert.equal(await state.page.evaluate(() => window.__UNSAFE_HTML__), undefined);
+        if (mode === 'interactive') {
+          assert.equal(await state.page.frameLocator('iframe[data-html-preview]').locator('#ran').count(), 0,
+            'unconfirmed settings cannot run document scripts');
+          assert.equal(await state.page.evaluate(() => window.__PocketDocumentSetInteractive(true)), true);
+          await state.page.waitForFunction(() => document.querySelector('iframe[data-html-preview]')?.getAttribute('sandbox') === 'allow-scripts');
+          await state.page.frameLocator('iframe[data-html-preview]').locator('#ran').waitFor();
+          assert.equal(await state.page.frameLocator('iframe[data-html-preview]').locator('#ran').evaluate(node => getComputedStyle(node).color), 'rgb(12, 34, 56)');
+          assert.equal(await state.page.evaluate(() => window.__UNSAFE_HTML__), undefined,
+            'running HTML is opaque and cannot access the Session bridge or parent');
+          const related = state.frames.filter(frame => frame.kind === 'call' && frame.method === 'readBytes' && frame.args.path !== name);
+          assert.deepEqual(related.map(frame => frame.args.path), ['./local.css', './local.js']);
+          assert.ok(related.every(frame => frame.args.options.baseFile === name || frame.args.options.baseFile === `/workspace/${name}`),
+            'dependencies use original source path and bound Session authority');
+          assert.equal(await state.page.evaluate(() => window.__PocketDocumentSetInteractive(false)), true);
+          await state.page.waitForFunction(() => document.querySelector('iframe[data-html-preview]')?.getAttribute('sandbox') === '');
+          assert.equal(await state.page.frameLocator('iframe[data-html-preview]').locator('#ran').count(), 0,
+            'disabling retires the running iframe');
+        }
       }
       if (name.endsWith('.docx')) await state.page.getByText(/unavailable|not available/i).first().waitFor();
       assert.equal(state.leases.size, 0, `${name}: no retained byte lease after decode`);
@@ -267,9 +311,10 @@ async function checkDocuments(t, mode) {
       throw error;
     } finally { await state.page.close(); }
   }
-  assert.deepEqual(mediaRequests, mode === 'external' ? [] : [{ method: 'GET', path: MEDIA_PATH }, { method: 'HEAD', path: MEDIA_PATH }]);
+  assert.deepEqual(mediaRequests, mode !== 'formats' ? [] : [{ method: 'GET', path: MEDIA_PATH }, { method: 'HEAD', path: MEDIA_PATH }]);
   console.log(`Original document renderers passed: ${reports.join(', ')}`);
 }
 
 test('original document-only client renders supported formats, watches changes, and isolates HTML', { timeout: 120_000 }, t => checkDocuments(t, 'formats'));
 test('original Markdown links use native routing, preserve source reading, and honor line navigation', { timeout: 60_000 }, t => checkDocuments(t, 'external'));
+test('accepted HTML preference mounts bounded local dependencies only in an opaque script iframe', { timeout: 60_000 }, t => checkDocuments(t, 'interactive'));

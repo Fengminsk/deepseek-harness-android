@@ -4,4 +4,8 @@
          to allow setting breakpoints, to provide hot reload, etc.
     -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <application>
+        <service android:name=".DebugGuestStorageProbeService" android:exported="false"
+            android:isolatedProcess="true" android:process=":guest_storage_probe" />
+    </application>
 </manifest>

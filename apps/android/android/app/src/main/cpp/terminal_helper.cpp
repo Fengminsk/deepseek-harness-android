@@ -40,6 +40,15 @@ bool exact_number(const char* text, int minimum, int maximum, int* result) {
   return true;
 }
 
+// A Flutter or Node caller cannot turn the PTY helper into an arbitrary
+// executable launcher. Only immutable Android system-shell locations qualify.
+bool allowed_shell(const char* path) {
+  return path != nullptr &&
+      (strcmp(path, "/system/bin/sh") == 0 ||
+       strcmp(path, "/system/bin/mksh") == 0 ||
+       strcmp(path, "/system/bin/bash") == 0);
+}
+
 void terminate_group(pid_t child, int* final_status = nullptr) {
   if (child <= 0) return;
   kill(-child, SIGTERM);
@@ -65,7 +74,7 @@ int main(int argc, char** argv) {
   int cols = 0, rows = 0;
   if (argc != 5 || !exact_number(argv[2], 2, 500, &cols)
       || !exact_number(argv[3], 1, 200, &rows) || argv[1][0] != '/'
-      || strcmp(argv[4], "/system/bin/sh") != 0) {
+      || !allowed_shell(argv[4])) {
     fputs("Invalid terminal startup", stderr);
     return 64;
   }
@@ -96,7 +105,7 @@ int main(int argc, char** argv) {
       write(startup_pipe[1], &failure, 1);
       _exit(73);
     }
-    char* const args[] = { const_cast<char*>("/system/bin/sh"), const_cast<char*>("-i"), nullptr };
+    char* const args[] = { argv[4], const_cast<char*>("-i"), nullptr };
     execv(args[0], args);
     const char failure = 74;
     write(startup_pipe[1], &failure, 1);

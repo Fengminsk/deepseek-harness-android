@@ -24,7 +24,7 @@ public final class BrowserUrlPolicy {
                 throw new IllegalArgumentException("protocol");
             if (uri.getRawUserInfo() != null) throw new IllegalArgumentException("credentials");
             String host = uri.getHost();
-            if (host == null || host.isBlank()) throw new IllegalArgumentException("invalid");
+            if (host == null || AndroidJava28.isBlank(host)) throw new IllegalArgumentException("invalid");
             String normalizedHost = host.toLowerCase(Locale.ROOT).replaceFirst("[.]+$", "");
             // No in-process WebView loads remote content: Custom Tabs owns redirects.
             // Reject direct local/numeric authorities even when the listener is disabled.

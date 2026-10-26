@@ -35,6 +35,7 @@
     "FloatingHeader's scrim also supports bottom-edge chrome on pages and the chat sidebar, without shrinking the scroll viewport.",
     "LiquidGlass exposes its existing analytic corner renderer through borderRadius so long composer panels avoid 64-ray outline interpolation artifacts.",
     "Popup glyphs and text use the app's existing Flutter icons and platform fonts; menu rows accept DSH section labels, descriptions and in-place retry actions.",
-    "Popup routes and carried presses honor reduced motion, and cancelled row gestures release their pointer even after winning the gesture arena."
+    "Popup routes and carried presses honor reduced motion, and cancelled row gestures release their pointer even after winning the gesture arena.",
+    "DSH daylight surfaces add fixed micrograin and directional highlights to dashboard cards; regular and pill glass use softer saturation and thicker frost. Press glow also renders in the software fallback with glow-aware picture caching."
   ]
 }

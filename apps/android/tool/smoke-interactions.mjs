@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { createServer } from 'node:http'
 import { once } from 'node:events'
-import { resolve, join } from 'node:path'
+import { basename, resolve, join, sep } from 'node:path'
 import { createInterface } from 'node:readline'
 import { verifySchedule } from './smoke-schedule.mjs'
 import { SearchNativeFixture, verifyDocumentSearch } from './smoke-document-search.mjs'
@@ -95,6 +95,7 @@ lines.on('line', line => {
   }
 })
 let socket, deadline
+let succeeded = false
 const started = performance.now()
 let phase = 'startup'
 const checkpoint = value => {
@@ -398,6 +399,7 @@ try {
       gatewayModelEndpoints: true, accountStream: true, jobStream: true, sessionStream: true,
       pluginManagement: true, sessionExport: true, originalCommands: true, fileAttachmentAdmission: true }))
   })(), new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error(`Interaction smoke timed out during ${phase}`)), 120000) })])
+  succeeded = true
 } finally {
   clearTimeout(deadline)
   socket?.terminate()
@@ -406,4 +408,12 @@ try {
   lines.close()
   model.closeAllConnections()
   await new Promise(resolve => model.close(resolve))
+  if (succeeded) {
+    const cacheRoot = resolve(root, '.cache/android')
+    const target = resolve(home)
+    assert.ok(target.startsWith(cacheRoot + sep)
+      && /^interactions-[A-Za-z0-9]{6}$/.test(basename(target)),
+    'refusing to remove an unexpected interaction fixture path')
+    await rm(target, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 })
+  }
 }

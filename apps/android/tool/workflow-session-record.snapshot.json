@@ -1,0 +1,33 @@
+[
+  {
+    "type": "tool-workflow/run-start",
+    "data": {
+      "runId": "00000000-0000-4000-8000-000000000001",
+      "name": "review"
+    }
+  },
+  {
+    "type": "tool-workflow/agent-start",
+    "data": {
+      "runId": "00000000-0000-4000-8000-000000000001",
+      "seq": 1,
+      "label": "Review a file",
+      "childId": "[child]"
+    }
+  },
+  {
+    "type": "tool-workflow/agent-end",
+    "data": {
+      "runId": "00000000-0000-4000-8000-000000000001",
+      "seq": 1,
+      "outcome": "completed"
+    }
+  },
+  {
+    "type": "tool-workflow/run-end",
+    "data": {
+      "runId": "00000000-0000-4000-8000-000000000001",
+      "stopReason": "completed"
+    }
+  }
+]

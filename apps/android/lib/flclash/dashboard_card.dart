@@ -2,6 +2,8 @@
 import 'package:material_ui/material_ui.dart';
 
 import 'context.dart';
+import 'daylight.dart';
+import 'liquid_glass.dart';
 import 'shape.dart';
 import 'surface.dart';
 
@@ -62,12 +64,11 @@ class DashboardCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final shape = AppShape.all(34);
     final content = Padding(padding: padding, child: child);
-    return Container(
-      decoration: ShapeDecoration(
-        color: SurfaceLevel.card.colorOf(context.colorScheme),
-        shape: shape,
-        shadows: DashboardShadows.e1(context),
-      ),
+    return DaylightSurface(
+      color: SurfaceLevel.card.colorOf(context.colorScheme),
+      shape: shape,
+      shadows: DashboardShadows.e1(context),
+      enabled: LiquidGlassScope.of(context),
       child: SurfaceScope(
         level: SurfaceLevel.card,
         child: Material(

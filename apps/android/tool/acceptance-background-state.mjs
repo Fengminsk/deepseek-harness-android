@@ -17,12 +17,14 @@ try {
     'android/app/src/test/java/com/minnnng/dsh_android/PackageOperationTransitionsTest.java',
     'android/app/src/main/java/com/minnnng/dsh_android/RuntimeLifecycle.java',
     'android/app/src/test/java/com/minnnng/dsh_android/RuntimeLifecycleTest.java',
+    'android/app/src/main/java/com/minnnng/dsh_android/RuntimeProcessLease.java',
+    'android/app/src/test/java/com/minnnng/dsh_android/RuntimeProcessLeaseTest.java',
     'android/app/src/main/java/com/minnnng/dsh_android/RuntimeInterruptionRecord.java',
     'android/app/src/test/java/com/minnnng/dsh_android/RuntimeInterruptionRecordTest.java',
     'android/app/src/main/java/com/minnnng/dsh_android/RuntimeTransport.java',
     'android/app/src/test/java/com/minnnng/dsh_android/RuntimeTransportTest.java',
   ].map(path => join(project, path))
-  execFileSync('javac', ['-encoding', 'UTF-8', '-d', output, ...sources], { stdio: 'inherit', windowsHide: true })
+  execFileSync('javac', ['-encoding', 'UTF-8', '-sourcepath', join(project, 'android/app/src/main/java'), '-d', output, ...sources], { stdio: 'inherit', windowsHide: true })
   execFileSync('java', ['-cp', output, 'com.minnnng.dsh_android.BackgroundTaskStateTest'], {
     stdio: 'inherit', windowsHide: true,
   })
@@ -33,6 +35,9 @@ try {
     stdio: 'inherit', windowsHide: true,
   })
   execFileSync('java', ['-cp', output, 'com.minnnng.dsh_android.RuntimeLifecycleTest'], {
+    stdio: 'inherit', windowsHide: true,
+  })
+  execFileSync('java', ['-cp', output, 'com.minnnng.dsh_android.RuntimeProcessLeaseTest'], {
     stdio: 'inherit', windowsHide: true,
   })
   execFileSync('java', ['-cp', output, 'com.minnnng.dsh_android.RuntimeInterruptionRecordTest'], {

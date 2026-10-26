@@ -1,0 +1,13 @@
+# Bilingual-pair consistency record for android-terminal.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write docs/android-terminal.md
+/android-session-terminal:
+  en: 75073da8b0e9bf79
+  zh: ce6c91caabab6de5
+/android-session-terminal/input-and-process-ownership:
+  en: 9cd5c8c6f6db520f
+  zh: 7677cad8e9ffb1de
+/android-session-terminal/display-and-replies:
+  en: 0a8433d937b4deb4
+  zh: 1b2e98d45c23ee58

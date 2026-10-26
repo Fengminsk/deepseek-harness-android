@@ -25,6 +25,41 @@ class SubagentAddress {
     mode: value['mode'] as String,
   );
 
+  /// Catalog labels and ids are display data. Only an address for this exact
+  /// direct parent and child may be used to request the original transcript.
+  static SubagentAddress? fromCatalogEntry(Json entry, String parentSessionId) {
+    final id = entry['id'];
+    final raw = entry['address'];
+    if (parentSessionId.isEmpty ||
+        id is! String ||
+        id.isEmpty ||
+        raw is! Json ||
+        raw['parentSessionId'] != parentSessionId ||
+        raw['childSessionId'] != id ||
+        raw['mode'] != entry['mode'] ||
+        !const {'continuable', 'one-shot', 'unknown'}.contains(raw['mode'])) {
+      return null;
+    }
+    return SubagentAddress.fromJson(raw);
+  }
+
+  /// `inspect` follows the original addressed Session and checks its own
+  /// descriptor. A historical catalog row alone cannot authorize navigation.
+  static SubagentAddress? fromInspection(
+    Json inspection,
+    SubagentAddress requested,
+  ) {
+    final raw = inspection['address'];
+    if (raw is! Json ||
+        inspection['snapshot'] is! Json ||
+        raw['parentSessionId'] != requested.parentSessionId ||
+        raw['childSessionId'] != requested.childSessionId ||
+        !const {'continuable', 'one-shot', 'unknown'}.contains(raw['mode'])) {
+      return null;
+    }
+    return SubagentAddress.fromJson(raw);
+  }
+
   Json get json => {
     'parentSessionId': parentSessionId,
     'childSessionId': childSessionId,
@@ -141,6 +176,7 @@ class SubagentConversation extends ChangeNotifier {
   SubagentConversation(this.runtime, this.address) {
     _phase = runtime.phase;
     _taskEpoch = runtime.taskState['epoch'];
+    _connectionGeneration = runtime.connectionGeneration;
     final retained = _retainedSubmissions[runtime]?[address.key];
     if (retained != null) {
       submission = retained.submission;
@@ -166,6 +202,7 @@ class SubagentConversation extends ChangeNotifier {
   bool _disposed = false, _refreshAgain = false, _replaceHistory = false;
   late String _phase;
   Object? _taskEpoch;
+  late int _connectionGeneration;
 
   Json get capabilities => (inspection?['capabilities'] as Json?) ?? {};
   Json get task => (inspection?['task'] as Json?) ?? {};
@@ -183,9 +220,14 @@ class SubagentConversation extends ChangeNotifier {
 
   void _runtimeChanged() {
     final epoch = runtime.taskState['epoch'];
-    if (runtime.phase == _phase && epoch == _taskEpoch) return;
+    if (runtime.phase == _phase &&
+        epoch == _taskEpoch &&
+        runtime.connectionGeneration == _connectionGeneration) {
+      return;
+    }
     _phase = runtime.phase;
     _taskEpoch = epoch;
+    _connectionGeneration = runtime.connectionGeneration;
     _generation++;
     _replaceHistory = true;
     current = false;
@@ -232,8 +274,8 @@ class SubagentConversation extends ChangeNotifier {
                   .timeout(subagentRequestTimeout)
               as Json;
       if (_disposed || generation != _generation || !runtime.ready) return;
-      final nextAddress = SubagentAddress.fromJson(value['address'] as Json);
-      if (nextAddress.key != address.key) {
+      final nextAddress = SubagentAddress.fromInspection(value, address);
+      if (nextAddress == null) {
         throw const FormatException('Mismatched child address');
       }
       final snapshot = value['snapshot'] as Json;

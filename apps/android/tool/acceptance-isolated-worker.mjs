@@ -15,12 +15,16 @@ try {
     'android/app/src/main/java/com/minnnng/dsh_android/IsolatedWorkerTextEdit.java',
     'android/app/src/main/java/com/minnnng/dsh_android/IsolatedWorkerTextSearch.java',
     'android/app/src/main/java/com/minnnng/dsh_android/IsolatedWorkerWriteback.java',
+    'android/app/src/main/java/com/minnnng/dsh_android/GuestTerminal.java',
+    'android/app/src/main/java/com/minnnng/dsh_android/GuestEchoFrame.java',
     'android/app/src/test/java/com/minnnng/dsh_android/IsolatedWorkerInputTest.java',
     'android/app/src/test/java/com/minnnng/dsh_android/IsolatedWorkerTextEditTest.java',
     'android/app/src/test/java/com/minnnng/dsh_android/IsolatedWorkerTextSearchTest.java',
     'android/app/src/test/java/com/minnnng/dsh_android/IsolatedWorkerWritebackTest.java',
+    'android/app/src/test/java/com/minnnng/dsh_android/GuestTerminalTest.java',
+    'android/app/src/test/java/com/minnnng/dsh_android/GuestEchoFrameTest.java',
   ].map(path => join(project, path))
-  execFileSync('javac', ['-encoding', 'UTF-8', '-d', output, ...sources], {
+  execFileSync('javac', ['-encoding', 'UTF-8', '-sourcepath', join(project, 'android/app/src/main/java'), '-d', output, ...sources], {
     stdio: 'inherit', windowsHide: true,
   })
   execFileSync('java', ['-cp', output, 'com.minnnng.dsh_android.IsolatedWorkerInputTest'], {
@@ -33,6 +37,12 @@ try {
     stdio: 'inherit', windowsHide: true,
   })
   execFileSync('java', [`-Djava.io.tmpdir=${output}`, '-cp', output, 'com.minnnng.dsh_android.IsolatedWorkerWritebackTest'], {
+    stdio: 'inherit', windowsHide: true,
+  })
+  execFileSync('java', ['-cp', output, 'com.minnnng.dsh_android.GuestTerminalTest'], {
+    stdio: 'inherit', windowsHide: true,
+  })
+  execFileSync('java', ['-cp', output, 'com.minnnng.dsh_android.GuestEchoFrameTest'], {
     stdio: 'inherit', windowsHide: true,
   })
 } finally {

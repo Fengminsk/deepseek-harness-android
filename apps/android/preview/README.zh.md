@@ -18,13 +18,17 @@ node --test apps/android/preview/browser.test.mjs
 
 唯一通道为 `window.PocketDocument.postMessage(JSON.stringify(frame))`；响应通过 `PocketDocument.onmessage` 接收。每条消息都有唯一 `id`，无需等待响应的取消、ACK、取消订阅和释放消息也不例外。
 
-- `ready` 返回固定会话、路径、语言区域、主题、可选行号，以及原生标题和底部预留空间。预留空间设在文档滚动内容内，使内容仍可从原生悬浮标题后方滚过。
+- `ready` 返回固定会话、路径、语言区域、主题、可选行号、已确认的交互式 HTML 偏好，以及原生标题和底部预留空间。预留空间设在文档滚动内容内，使内容仍可从原生悬浮标题后方滚过。
 - `call` 将原版服务的位置参数转为具名参数。原生宿主独立限制文档客户端只能访问绑定会话及允许的 `workspaceFiles`/`officeToPdf` 方法。调用返回原版 `RemoteResult` 结构。
 - 二进制结果使用字节租约。`bytes` 每条消息最多读取 256 KiB；解码成功或失败时均执行 `release`。关闭或中止会取消未完成的调用，并由原生文档生命周期回收废弃租约。
 - `subscribe` 打开原版文件变更流。事件可能先于订阅回执到达。只有原版消费者处理事件之后，`ack` 才携带该事件的序号和代次发送；`unsubscribe` 关闭事件流。
 - `external` 通过原版 Markdown 委托转发用户点击的 HTTP(S) 链接。原生宿主校验 URL 后打开系统浏览器；文档 WebView 不跳转，也不创建新窗口。本地文件委托保持原有行为。
+- 原生工具栏的刷新调用已挂载的原版预览 owner 的 `refresh` 命令，保留渲染器、滚动位置和已选控制项。命令尚未绑定时，原生页面会重新打开阅读器作为恢复路径。该命令不接收调用方提供的脚本或文件路径。
+- `setInteractiveHtml` 只传入原版 Host `ui-settings.enabled` 已确认值的布尔量。核对完成前阅读器保持静态；模式切换保留阅读器并卸载先前的 HTML iframe，不接收调用方提供的脚本或路径。
 
-原生宿主只允许精确的应用资源源地址和已打包的文档资源。静态资源 URL 不带查询参数。原版 HTML 保留沙箱 iframe，且不授予脚本执行权限。Markdown 内嵌本地图片使用原版 `api/file?path=...` 路由，需要独立的原生媒体适配器绑定会话；该适配器并非通用网络或文件系统桥接。
+原生宿主只允许精确的应用资源源地址和已打包的文档资源。静态资源 URL 不带查询参数。原版 HTML 默认静态显示；已确认开启偏好后，原版渲染器通过会话范围的读取打包有上限的本地 JS/CSS，只在无同源权限的 `sandbox="allow-scripts"` iframe 内运行脚本，不授予 `allow-same-origin` 或原生桥接访问。Markdown 内嵌本地图片使用原版 `api/file?path=...` 路由，需要独立的原生媒体适配器绑定会话；该适配器并非通用网络或文件系统桥接。
+
+原版 DSH 把远程 HTTPS HTML 资源交给浏览器处理，并保留 Markdown 图片的外部 URL。Android 文档 WebView 目前对所有外部 HTTP(S) 请求返回 403。`DocumentRemoteResourcePolicy` 只提供经过宿主测试的 URL 语法和重定向预检，刻意未接入 WebView 加载。Android 的 [`shouldInterceptRequest`](https://developer.android.com/reference/android/webkit/WebViewClient#shouldInterceptRequest(android.webkit.WebView,android.webkit.WebResourceRequest)) 只报告最初的 URL，不报告后续重定向 URL；[`isForMainFrame`](https://developer.android.com/reference/android/webkit/WebResourceRequest#isForMainFrame()) 为 false 时同时包含 iframe。今后启用远程加载前，需要区分资源类型、将已验证的公网 DNS 地址固定到 TLS 连接、保持浏览器源站／CORS 与请求语义、取得明确的用户网络授权、限制字节数和并发数，并在文档退出时取消全部请求。用户主动点击的外部链接仍可交给系统浏览器。
 
 ## 当前验证范围
 

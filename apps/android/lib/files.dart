@@ -562,10 +562,11 @@ class _TextFilePageState extends State<TextFilePage> {
 
   final scroll = ScrollController();
   final starts = <int>[0];
-  String? text, error;
+  String? text, error, documentVersion;
   int index = 0, retryIndex = 0, retryOffset = 0;
   bool more = false, loading = false;
   bool current = false, retryReset = false, retryPreserveScroll = false;
+  bool restartRequired = false, reconfirmRequired = false;
   bool openingExternal = false;
   int generation = 0;
   late int connection;
@@ -596,6 +597,8 @@ class _TextFilePageState extends State<TextFilePage> {
       retryOffset = starts[index];
       retryReset = true;
       retryPreserveScroll = true;
+      reconfirmRequired = true;
+      restartRequired = false;
     });
   }
 
@@ -624,18 +627,27 @@ class _TextFilePageState extends State<TextFilePage> {
       final next = result['nextOffset'] as int;
       final hasMore = result['truncated'] == true;
       final content = result['text'] as String;
+      final version = result['version'];
       if (result['offset'] != offset ||
           next < offset ||
-          (hasMore && next == offset)) {
+          (hasMore && next == offset) ||
+          version is! String ||
+          !RegExp(r'^[0-9a-f]{64}$').hasMatch(version)) {
         throw const FormatException('文件分段信息无效，请重新打开文件');
+      }
+      if (!reset && documentVersion != null && version != documentVersion) {
+        throw const _DocumentChanged();
       }
       if (!mounted || attempt != generation) return;
       setState(() {
         text = content;
+        documentVersion = version;
         index = targetIndex;
         more = hasMore;
         error = null;
         current = true;
+        restartRequired = false;
+        reconfirmRequired = false;
         if (reset) {
           starts.clear();
           starts.add(offset);
@@ -646,7 +658,18 @@ class _TextFilePageState extends State<TextFilePage> {
       if (!preserveScroll && scroll.hasClients) scroll.jumpTo(0);
     } catch (failure) {
       if (mounted && attempt == generation) {
-        setState(() => error = '读取未完成，已显示的内容仍保留。\n$failure');
+        setState(() {
+          current = false;
+          error = '读取未完成，已显示的内容仍保留。\n$failure';
+          if (failure is _DocumentChanged) {
+            restartRequired = true;
+            reconfirmRequired = false;
+            retryIndex = 0;
+            retryOffset = 0;
+            retryReset = true;
+            retryPreserveScroll = false;
+          }
+        });
       }
     } finally {
       if (mounted && attempt == generation) setState(() => loading = false);
@@ -752,7 +775,13 @@ class _TextFilePageState extends State<TextFilePage> {
                           reset: retryReset,
                           preserveScroll: retryPreserveScroll,
                         ),
-                  child: Text(!current && text != null ? '重新确认当前段' : '重试读取'),
+                  child: Text(
+                    restartRequired
+                        ? '从头重新读取'
+                        : reconfirmRequired
+                        ? '重新确认当前段'
+                        : '重试读取',
+                  ),
                 ),
               ),
             ],
@@ -769,4 +798,11 @@ class _TextFilePageState extends State<TextFilePage> {
       ],
     ),
   );
+}
+
+class _DocumentChanged implements Exception {
+  const _DocumentChanged();
+
+  @override
+  String toString() => '文件已移动或变化，不能把另一版本的内容接到当前页；请从头读取。';
 }

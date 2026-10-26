@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:material_ui/material_ui.dart';
 
 import 'runtime.dart';
+import 'capability_audit.dart';
 import 'overlay_keepalive_settings.dart';
 import 'tasks.dart';
 import 'ui.dart';
@@ -23,6 +24,23 @@ String backgroundStateLabel(Json state) => switch (state['taskState']) {
   _ => '任务状态尚未确认',
 };
 
+String notificationDeliveryLabel(Object? state) => switch (state) {
+  'enabled' => '系统通知已允许',
+  'permission' => '需要允许通知权限',
+  'app-disabled' => '应用通知已关闭',
+  'channel-disabled' => '此类通知已关闭',
+  'channel-uncreated' => '通知类别尚未建立，服务启动后再核对',
+  _ => '通知状态待确认',
+};
+
+Future<(T?, Object?)> _readBackgroundSource<T>(Future<T> Function() read) async {
+  try {
+    return (await read(), null);
+  } catch (error) {
+    return (null, error);
+  }
+}
+
 /// Displays service-owned state; merely visiting this page changes no system policy.
 class BackgroundSettingsPage extends StatefulWidget {
   const BackgroundSettingsPage({required this.runtime, super.key});
@@ -34,8 +52,8 @@ class BackgroundSettingsPage extends StatefulWidget {
 class _BackgroundSettingsPageState extends State<BackgroundSettingsPage>
     with WidgetsBindingObserver {
   Json? background, system;
-  String? error, settingsError;
-  bool loading = false, saving = false, active = true;
+  String? error, settingsError, notificationError, systemError;
+  bool loading = false, saving = false, active = true, notificationBusy = false;
   bool? requestedSetting;
   int readAttempt = 0, writeAttempt = 0;
   int? snapshotConnection;
@@ -63,12 +81,17 @@ class _BackgroundSettingsPageState extends State<BackgroundSettingsPage>
     });
   }
 
-  void withdrawObservations() {
+  void withdrawTaskObservation() {
     background = background == null
         ? null
         : {...background!, 'fresh': false, 'taskState': 'unconfirmed'};
     snapshotConnection = null;
+  }
+
+  void withdrawObservations() {
+    withdrawTaskObservation();
     system = null;
+    systemError = null;
   }
 
   void runtimeChanged() {
@@ -109,35 +132,60 @@ class _BackgroundSettingsPageState extends State<BackgroundSettingsPage>
         connection == widget.runtime.connectionGeneration &&
         phase == widget.runtime.phase;
     setState(() => loading = true);
+    final runtimeRead = _readBackgroundSource(
+      () => widget.runtime.call('runtime.status'),
+    );
+    final systemRead = _readBackgroundSource(
+      () => RuntimeController.channel.invokeMethod<String>(
+        'background.systemStatus',
+      ),
+    );
+    Future<void> observeRuntime() async {
+      final (runtimeValue, runtimeFailure) = await runtimeRead;
+      if (ownsRead()) {
+        setState(() {
+          if (runtimeFailure != null) {
+            withdrawTaskObservation();
+            error = '后台状态未确认，请刷新后再操作：$runtimeFailure';
+          } else {
+            try {
+              final next = (runtimeValue as Json)['background'] as Json;
+              background = widget.runtime.ready
+                  ? next
+                  : {...next, 'fresh': false, 'taskState': widget.runtime.phase};
+              snapshotConnection = connection;
+              error = null;
+            } catch (failure) {
+              withdrawTaskObservation();
+              error = '后台状态未确认，请刷新后再操作：$failure';
+            }
+          }
+        });
+      }
+    }
+
+    Future<void> observeSystem() async {
+      final (systemValue, systemFailure) = await systemRead;
+      if (ownsRead()) {
+        setState(() {
+          if (systemFailure != null) {
+            system = null;
+            systemError = 'Android 系统状态未确认：$systemFailure';
+          } else {
+            try {
+              system = jsonDecode(systemValue as String) as Json;
+              systemError = null;
+            } catch (failure) {
+              system = null;
+              systemError = 'Android 系统状态未确认：$failure';
+            }
+          }
+        });
+      }
+    }
+
     try {
-      final values = await Future.wait<dynamic>([
-        widget.runtime.call('runtime.status'),
-        RuntimeController.channel.invokeMethod<String>(
-          'background.systemStatus',
-        ),
-      ]);
-      final next = (values[0] as Json)['background'] as Json;
-      final policy = jsonDecode(values[1] as String) as Json;
-      if (ownsRead()) {
-        setState(() {
-          // Native policy remains readable during startup and recovery, but an
-          // unavailable Agent cannot inherit an old working-state claim.
-          background = widget.runtime.ready
-              ? next
-              : {...next, 'fresh': false, 'taskState': widget.runtime.phase};
-          snapshotConnection = connection;
-          system = policy;
-          error = null;
-        });
-      }
-    } catch (failure) {
-      if (ownsRead()) {
-        setState(() {
-          // Old counts cannot become proof that work is still executing.
-          withdrawObservations();
-          error = '后台状态未确认，请刷新后再操作：$failure';
-        });
-      }
+      await Future.wait([observeRuntime(), observeSystem()]);
     } finally {
       if (ownsRead()) setState(() => loading = false);
     }
@@ -188,6 +236,35 @@ class _BackgroundSettingsPageState extends State<BackgroundSettingsPage>
     }
   }
 
+  Future<void> requestNotificationPermission() async {
+    if (notificationBusy) return;
+    setState(() => notificationBusy = true);
+    try {
+      await RuntimeController.channel.invokeMethod<void>('notifications.request');
+      if (mounted) setState(() => notificationError = null);
+      await refresh();
+    } catch (failure) {
+      if (mounted) setState(() => notificationError = '无法请求通知权限：$failure');
+    } finally {
+      if (mounted) setState(() => notificationBusy = false);
+    }
+  }
+
+  Future<void> openNotificationSettings() async {
+    if (notificationBusy) return;
+    setState(() => notificationBusy = true);
+    try {
+      await RuntimeController.channel.invokeMethod<void>(
+        'background.notificationSettings',
+      );
+      if (mounted) setState(() => notificationError = null);
+    } catch (failure) {
+      if (mounted) setState(() => notificationError = '无法打开系统通知设置：$failure');
+    } finally {
+      if (mounted) setState(() => notificationBusy = false);
+    }
+  }
+
   @override
   void dispose() {
     timer?.cancel();
@@ -200,6 +277,9 @@ class _BackgroundSettingsPageState extends State<BackgroundSettingsPage>
   Widget build(BuildContext context) {
     final state = background;
     final policy = system;
+    final notifications = policy?['notifications'] is Json
+        ? policy!['notifications'] as Json
+        : null;
     return PocketScaffold(
       title: const Text('后台执行'),
       trailing: GlassButton(
@@ -214,6 +294,14 @@ class _BackgroundSettingsPageState extends State<BackgroundSettingsPage>
               padding: const EdgeInsets.only(bottom: 18),
               child: Text(
                 error!,
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+            ),
+          if (systemError != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 18),
+              child: Text(
+                systemError!,
                 style: TextStyle(color: Theme.of(context).colorScheme.error),
               ),
             ),
@@ -311,6 +399,57 @@ class _BackgroundSettingsPageState extends State<BackgroundSettingsPage>
                         OverlayKeepaliveSettingsPage(runtime: widget.runtime),
                   ),
                 ),
+              ),
+            ],
+          ),
+          PocketSection(
+            title: '隔离执行',
+            children: [
+              PocketRow(
+                icon: Icons.rule_folder_outlined,
+                title: '文件操作审计',
+                subtitle: '核对中断后的文件操作与执行记录',
+                onTap: () => Navigator.push(
+                  context,
+                  PocketRoute<void>(
+                    builder: (_) =>
+                        CapabilityAuditPage(runtime: widget.runtime),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          PocketSection(
+            title: '通知提醒',
+            children: [
+              PocketRow(
+                icon: Icons.notifications_active_outlined,
+                title: '后台运行状态通知',
+                subtitle: notificationDeliveryLabel(notifications?['background']),
+              ),
+              PocketRow(
+                icon: Icons.mark_chat_read_outlined,
+                title: '任务完成提醒',
+                subtitle: notificationDeliveryLabel(notifications?['completion']),
+              ),
+              if (notifications?['background'] == 'permission' ||
+                  notifications?['completion'] == 'permission')
+                PocketRow(
+                  icon: Icons.notifications_none_rounded,
+                  title: '允许系统通知',
+                  subtitle: '仅在你点击后请求 Android 通知权限',
+                  onTap: notificationBusy ? null : requestNotificationPermission,
+                ),
+              if (notificationError != null)
+                PocketRow(
+                  icon: Icons.error_outline_rounded,
+                  title: notificationError!,
+                ),
+              PocketRow(
+                icon: Icons.tune_rounded,
+                title: '打开系统通知设置',
+                subtitle: '分别检查应用通知、后台运行状态和任务完成类别；返回后重新读取状态。',
+                onTap: notificationBusy ? null : openNotificationSettings,
               ),
             ],
           ),

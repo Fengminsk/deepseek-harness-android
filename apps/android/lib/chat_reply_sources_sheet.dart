@@ -1,6 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 
 import 'chat_reply_sources.dart';
+import 'chat_source_identity.dart';
 import 'entry_motion.dart';
 import 'flclash/surface.dart';
 import 'ui.dart';
@@ -126,6 +127,13 @@ class _ReplySourcesSheetState extends State<_ReplySourcesSheet> {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     final surface = SurfaceLevel.floatingOf(colors).colorOf(colors);
+    final ordered = widget.sources.forAnswer(widget.answerLinks);
+    final cited = ordered
+        .where((source) => widget.answerLinks.contains(source.url))
+        .toList();
+    final other = ordered
+        .where((source) => !widget.answerLinks.contains(source.url))
+        .toList();
     final toolbarHeight = MediaQuery.textScalerOf(context)
         .scale(22)
         .clamp(48.0, 88.0);
@@ -171,28 +179,25 @@ class _ReplySourcesSheetState extends State<_ReplySourcesSheet> {
                               24 + MediaQuery.paddingOf(context).bottom,
                             ),
                             children: [
-                              PocketSection(
-                                divided: true,
-                                children: [
-                                  for (final source in widget.sources.entries)
-                                    _SourceRow(
-                                      source: source,
-                                      answerLinked: widget.answerLinks.contains(
-                                        source.url,
-                                      ),
-                                      failure:
-                                          source.destination?.toString() ==
-                                              _failureUrl
-                                          ? _failure
-                                          : null,
-                                      onTap:
-                                          !_opening &&
-                                              source.destination != null
-                                          ? () => _open(source.destination!)
-                                          : null,
-                                    ),
-                                ],
-                              ),
+                              if (cited.isNotEmpty) ...[
+                                _sourceHeading(context, '回答中引用'),
+                                PocketSection(
+                                  divided: true,
+                                  children: [
+                                    for (final source in cited) _row(source),
+                                  ],
+                                ),
+                              ],
+                              if (other.isNotEmpty) ...[
+                                if (cited.isNotEmpty)
+                                  _sourceHeading(context, '其他检索结果'),
+                                PocketSection(
+                                  divided: true,
+                                  children: [
+                                    for (final source in other) _row(source),
+                                  ],
+                                ),
+                              ],
                               if (widget.sources.truncated)
                                 Padding(
                                   padding: const EdgeInsets.all(16),
@@ -303,46 +308,57 @@ class _ReplySourcesSheetState extends State<_ReplySourcesSheet> {
       ),
     );
   }
+
+  Widget _sourceHeading(BuildContext context, String title) => Padding(
+    padding: const EdgeInsets.fromLTRB(8, 20, 8, 10),
+    child: Text(title, style: Theme.of(context).textTheme.labelMedium),
+  );
+
+  Widget _row(ChatReplySource source) => _SourceRow(
+    source: source,
+    failure: source.destination?.toString() == _failureUrl ? _failure : null,
+    onTap: !_opening && source.destination != null
+        ? () => _open(source.destination!)
+        : null,
+  );
 }
 
 class _SourceRow extends StatelessWidget {
-  const _SourceRow({
-    required this.source,
-    required this.answerLinked,
-    required this.onTap,
-    this.failure,
-  });
+  const _SourceRow({required this.source, required this.onTap, this.failure});
   final ChatReplySource source;
-  final bool answerLinked;
   final VoidCallback? onTap;
   final String? failure;
   @override
   Widget build(BuildContext context) {
-    final facts = <String>{
-      if (answerLinked) '回答链接',
-      for (final record in source.records)
-        record.kind == ChatReplySourceKind.search
-            ? '搜索结果'
-            : '读取 · HTTP ${record.statusCode}',
-    }.join(' · ');
+    final failedStatus = source.records
+        .where(
+          (record) =>
+              record.kind == ChatReplySourceKind.fetch &&
+              record.statusCode != null &&
+              record.statusCode! >= 400,
+        )
+        .map((record) => record.statusCode)
+        .firstOrNull;
     return PocketTile(
-      leading: const Icon(Icons.public_rounded),
+      leading: source.host.isEmpty
+          ? const Icon(Icons.public_rounded)
+          : ChatSourceHostMark(host: source.host),
       title: Text(source.label),
       subtitle: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(source.url, maxLines: 2, overflow: TextOverflow.ellipsis),
+          Text(source.url, maxLines: 1, overflow: TextOverflow.ellipsis),
           if (source.snippet?.isNotEmpty == true)
             Padding(
-              padding: const EdgeInsets.only(top: 6),
+              padding: const EdgeInsets.only(top: 4),
               child: Text(
                 source.snippet!,
-                maxLines: 4,
+                maxLines: 2,
                 overflow: TextOverflow.ellipsis,
               ),
             ),
           if (source.publishedAt?.isNotEmpty == true) Text(source.publishedAt!),
-          Padding(padding: const EdgeInsets.only(top: 4), child: Text(facts)),
+          if (failedStatus != null) Text('网页状态 · HTTP $failedStatus'),
           if (failure != null)
             PocketReveal(
               child: Semantics(

@@ -1,0 +1,11 @@
+# Linux guest trace controller (host contract)
+
+`LinuxGuestTraceController` is the App-side observer for one **already started and pinned** native supervisor. It does not start PRoot, expose a model Shell, or accept a guest-provided process handle. A future trusted launcher must inject `SupervisorSource` from the supervisor's OS-owned stdout, stderr and process handle after the App has admitted the run, verified the image and executable digests, and observed the isolated UID over Binder.
+
+The observer drains stdout and stderr concurrently so the supervisor cannot block on a full pipe. Only stdout is interpreted as `DSH_TRACE_V1`; stderr is drained and discarded. Trace bytes are bounded to 2 MiB and fed to `LinuxGuestLaunchSession.acceptTrace`. A successful supervisor exit alone is insufficient: App stdout and stderr must reach EOF within the deadline, the trace must end with a valid retirement ledger, the session must have no pending broker calls, and `LinuxGuestRunJournal.complete` must durably commit its publication marker. The journal, rather than guest output, supplies the visible completion decision.
+
+The supervisor's exit code zero is an **indirect attestation** that its private OS trace pipe reached EOF, the tracer exited successfully, and all observed descendants were reaped. This assumes the injected source is the pinned native supervisor. It is not a substitute for device evidence that the final launcher, Binder connection, seccomp, descriptor inheritance and process-group cancellation meet that assumption. The native candidate remains disabled for distribution.
+
+Cancellation revokes the live session and asks the source to terminate its process group and unblock both streams. A timeout, broken or truncated stream, nonzero exit, pending broker call, or cancellation cannot publish success. A completed candidate without a durable publication marker is read back as `INTERRUPTED_UNCONFIRMED`, never as success. A completed decision already committed by the journal is immutable; later cancellation cannot rewrite it.
+
+Run `node apps/android/tool/acceptance-linux-guest-trace-controller.mjs` from the repository root for host contract tests. These use injected streams and process outcomes; they do not prove Android process isolation or execute the native supervisor.

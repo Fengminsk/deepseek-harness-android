@@ -1,0 +1,83 @@
+{
+  "format": "android-profile-recorded-session-projection/v1",
+  "sessionId": "android-saf-image-smoke",
+  "events": [
+    {
+      "type": "user/message",
+      "content": [
+        {
+          "type": "text",
+          "text": "Read the authorized red.png image."
+        }
+      ]
+    },
+    {
+      "type": "request/header",
+      "provider": "deepseek-official",
+      "model": "deepseek-flash",
+      "androidFilesTool": true
+    },
+    {
+      "type": "assistant/message",
+      "step": 1,
+      "content": [
+        {
+          "type": "tool-call",
+          "name": "android_files",
+          "arguments": {
+            "action": "read_image",
+            "root": "saf-image-root",
+            "path": "red.png"
+          }
+        }
+      ]
+    },
+    {
+      "type": "tool/call",
+      "step": 1,
+      "name": "android_files",
+      "arguments": {
+        "action": "read_image",
+        "root": "saf-image-root",
+        "path": "red.png"
+      }
+    },
+    {
+      "type": "tool/result",
+      "step": 1,
+      "isError": false,
+      "content": [
+        {
+          "type": "text",
+          "text": "已授权 Android 图片 {\"root\":\"saf-image-root\",\"path\":\"red.png\"}，image/png，1×1，91 字节。"
+        },
+        {
+          "type": "image",
+          "attachment": {
+            "id": "{{image}}",
+            "mediaType": "image/png",
+            "bytes": 91,
+            "width": 1,
+            "height": 1,
+            "name": "red.png"
+          }
+        }
+      ]
+    },
+    {
+      "type": "assistant/message",
+      "step": 2,
+      "content": [
+        {
+          "type": "text",
+          "text": "SAF_IMAGE_OK"
+        }
+      ]
+    },
+    {
+      "type": "turn/end",
+      "reason": "completed"
+    }
+  ],
+  "modelInputUsedUploadedFile": true
+}

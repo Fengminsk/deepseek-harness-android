@@ -15,12 +15,14 @@ import android.os.Looper
 import android.util.Log
 import org.json.JSONObject
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 /** Private one-line completion notices. This owner never starts, restores, or retries a task. */
 class TaskCompletionNotifications(private val context: Context) : AutoCloseable {
     private val manager = context.getSystemService(NotificationManager::class.java)
     private val preferences = context.getSharedPreferences("task-completion-notices", Context.MODE_PRIVATE)
     private val state = TaskCompletionState()
+    private val delivery = TaskCompletionDelivery()
     private val writer = Executors.newSingleThreadExecutor()
     private val main = Handler(Looper.getMainLooper())
     private var closed = false
@@ -30,6 +32,18 @@ class TaskCompletionNotifications(private val context: Context) : AutoCloseable 
             description = "后台任务完成后的简短提醒"
             lockscreenVisibility = Notification.VISIBILITY_PRIVATE
         })
+        // A process can die after the watermark commits but before main.post delivers the notice.
+        // The pending receipt is committed in the same edit and replayed only as a notification.
+        writer.execute {
+            try {
+                val plan = TaskCompletionRecovery.inspect(preferences.all)
+                removeInvalidPending(plan.invalidKeys)
+                if (plan.candidates.isNotEmpty()) main.post { restorePending(plan.candidates, 0) }
+            } catch (error: RuntimeException) {
+                // A damaged preference store must not crash Service creation or invent a task result.
+                Log.w("PocketTaskNotice", "Pending completion recovery could not be read", error)
+            }
+        }
     }
 
     /** Receives only live successful-driver signals; no historical event or idle snapshot reaches this method. */
@@ -47,14 +61,20 @@ class TaskCompletionNotifications(private val context: Context) : AutoCloseable 
         val key = "end:$sessionId"
         if (!state.claim(sessionId, endSeq, preferences.getLong(key, -1))) return
         val eligible = state.shouldAlert(sessionId) && allowed()
-        // Durable claim precedes delivery. A crash can omit a notice, but never replay it or a task.
+        val ticket = delivery.add(sessionId, endSeq, preview, eligible)
+        // Commit the watermark and pending notice atomically. A crash never restarts a task.
         writer.execute {
-            val saved = try { preferences.edit().putLong(key, endSeq).commit() }
+            val saved = try {
+                val edit = preferences.edit().putLong(key, endSeq)
+                if (eligible) edit.putString(pendingKey(sessionId), TaskCompletionReceipt.encode(endSeq, preview))
+                else edit.remove(pendingKey(sessionId))
+                edit.commit()
+            }
             catch (error: Exception) { false }
+            ticket.finish(saved)
             main.post {
-                if (!saved) Log.w("PocketTaskNotice", "Completion notification state could not be saved")
-                else if (!closed && eligible && state.isCurrentClaim(sessionId, endSeq)
-                    && state.shouldAlert(sessionId) && allowed()) show(sessionId, preview)
+                delivery.delivered(ticket)
+                if (!closed) deliver(ticket)
             }
         }
     }
@@ -71,7 +91,8 @@ class TaskCompletionNotifications(private val context: Context) : AutoCloseable 
         manager.areNotificationsEnabled() &&
         manager.getNotificationChannel(CHANNEL_ID)?.importance != NotificationManager.IMPORTANCE_NONE
 
-    private fun show(sessionId: String, preview: String?) {
+    /** True only after Android accepts the notice; a failed post keeps the durable receipt. */
+    private fun show(sessionId: String, preview: String?): Boolean {
         val intent = Intent(context, MainActivity::class.java)
             .setAction(OPEN_ACTION)
             .setData(Uri.Builder().scheme("pocket-notification").authority("completed").appendPath(sessionId).build())
@@ -85,28 +106,123 @@ class TaskCompletionNotifications(private val context: Context) : AutoCloseable 
             .setContentText(preview ?: "本轮任务已完成，轻点查看回复。")
             .setCategory(Notification.CATEGORY_MESSAGE)
             .setVisibility(Notification.VISIBILITY_PRIVATE)
-            .setContentIntent(open).setAutoCancel(true).setOnlyAlertOnce(false)
+            .setContentIntent(open).setAutoCancel(true).setOnlyAlertOnce(true)
         if (Build.VERSION.SDK_INT >= 29) notice.setAllowSystemGeneratedContextualActions(false)
         try { manager.notify(tag(sessionId), NOTIFICATION_ID, notice.build()) }
         catch (error: SecurityException) {
-            // The user can revoke notification permission after allowed(); the result remains in its Session.
-            Log.w("PocketTaskNotice", "Completion notification permission changed")
+            // Permission can be revoked after allowed() and before notify().
+            Log.w("PocketTaskNotice", "Completion notification permission changed", error)
+            return false
+        } catch (error: RuntimeException) {
+            Log.w("PocketTaskNotice", "Completion notification could not be posted", error)
+            return false
+        }
+        return true
+    }
+
+    private fun deliver(ticket: TaskCompletionDelivery.Ticket) {
+        if (!ticket.isPersisted) {
+            Log.w("PocketTaskNotice", "Completion notification state could not be saved")
+            return
+        }
+        val shouldAck = try {
+            val required = ticket.eligible && state.isCurrentClaim(ticket.sessionId, ticket.endSeq)
+                && state.shouldAlert(ticket.sessionId) && allowed()
+            val posted = required && show(ticket.sessionId, ticket.preview)
+            TaskCompletionDelivery.shouldAcknowledge(true, required, posted)
+        } catch (error: RuntimeException) {
+            // Keep the committed receipt for the next Service generation.
+            Log.w("PocketTaskNotice", "Completion delivery could not be confirmed", error)
+            false
+        }
+        if (shouldAck) acknowledge(ticket.sessionId, ticket.endSeq)
+    }
+
+    private fun restorePending(candidates: List<TaskCompletionRecovery.Candidate>, offset: Int) {
+        if (closed) return
+        val next = minOf(offset + RESTORE_BATCH_SIZE, candidates.size)
+        for (index in offset until next) {
+            val candidate = candidates[index]
+            val sessionId = candidate.sessionId
+            val receipt = candidate.receipt
+            var acknowledged = true
+            try {
+                if (state.claim(sessionId, receipt.endSeq, -1L) && state.shouldAlert(sessionId) && allowed()) {
+                    acknowledged = show(sessionId, receipt.preview)
+                }
+            } catch (invalid: IllegalArgumentException) {
+                Log.w("PocketTaskNotice", "Invalid pending completion receipt")
+            } catch (failure: RuntimeException) {
+                // Retain the receipt for a later Service generation, without replaying the task.
+                acknowledged = false
+                Log.w("PocketTaskNotice", "Pending completion delivery failed", failure)
+            }
+            if (acknowledged) acknowledge(sessionId, receipt.endSeq)
+        }
+        if (next < candidates.size) main.post { restorePending(candidates, next) }
+    }
+
+    private fun removeInvalidPending(keys: List<String>) {
+        if (keys.isEmpty()) return
+        try {
+            val edit = preferences.edit()
+            keys.forEach { edit.remove(it) }
+            if (!edit.commit()) Log.w("PocketTaskNotice", "Invalid completion receipts could not be cleared")
+        } catch (error: RuntimeException) {
+            Log.w("PocketTaskNotice", "Invalid completion receipts could not be cleared", error)
+        }
+    }
+
+    private fun acknowledge(sessionId: String, endSeq: Long) {
+        if (!writer.isShutdown) {
+            writer.execute { acknowledgePersisted(sessionId, endSeq) }
+            return
+        }
+        // close() already shut down the writer and has only its bounded teardown window left.
+        acknowledgePersisted(sessionId, endSeq)
+    }
+
+    private fun acknowledgePersisted(sessionId: String, endSeq: Long) {
+        val key = pendingKey(sessionId)
+        val receipt = try { TaskCompletionReceipt.decode(preferences.getString(key, null)) }
+        catch (invalid: ClassCastException) { null }
+        if (receipt?.endSeq == endSeq) removePending(key)
+    }
+
+    private fun removePending(key: String) {
+        try {
+            if (!preferences.edit().remove(key).commit())
+                Log.w("PocketTaskNotice", "Completion notice acknowledgement could not be saved")
+        } catch (error: RuntimeException) {
+            Log.w("PocketTaskNotice", "Completion notice acknowledgement could not be saved", error)
         }
     }
 
     override fun close() {
         if (closed) return
+        // Service transition and unexpected Node exit may kill this process immediately afterwards.
+        // Give accepted writes a bounded chance to commit, then deliver only committed notices.
+        writer.shutdown()
+        try { writer.awaitTermination(SHUTDOWN_DRAIN_MS, TimeUnit.MILLISECONDS) }
+        catch (error: InterruptedException) { Thread.currentThread().interrupt() }
+        delivery.persistedAtShutdown().forEach { deliver(it) }
+        val unfinished = delivery.unfinishedCount()
+        if (unfinished > 0) Log.w("PocketTaskNotice", "$unfinished completion watermark write(s) did not finish before shutdown")
+        delivery.clear()
         closed = true
         state.close()
-        writer.shutdown()
     }
 
     private fun tag(sessionId: String) = "pocket-completed:$sessionId"
+    private fun pendingKey(sessionId: String) = "$PENDING_PREFIX$sessionId"
 
     companion object {
         const val MESSAGE_VIEWING = 10
         const val OPEN_ACTION = "com.minnnng.dsh_android.OPEN_COMPLETED_TASK"
         private const val CHANNEL_ID = "task-completed"
+        private const val PENDING_PREFIX = "pending:"
         private const val NOTIFICATION_ID = 3
+        private const val RESTORE_BATCH_SIZE = 8
+        private const val SHUTDOWN_DRAIN_MS = 250L
     }
 }

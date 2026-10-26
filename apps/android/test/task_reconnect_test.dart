@@ -25,6 +25,9 @@ Json tasks(String epoch) => {
   'sessions': [
     {'sessionId': epoch},
   ],
+  'jobs': [
+    {'id': 'job-$epoch', 'status': 'running'},
+  ],
   'nextOffset': null,
 };
 
@@ -54,6 +57,7 @@ void main() {
       await old;
       expect(runtime.taskState['epoch'], 'new-process');
       expect(runtime.taskSessions.single['sessionId'], 'new-process');
+      expect(runtime.taskJobs!.single['id'], 'job-new-process');
     },
   );
 
@@ -137,6 +141,9 @@ void main() {
       runtime.liveMessages['s'] = message('current process');
       runtime.statuses['s'] = 'running';
       runtime.streaming['s'] = 'current delta';
+      runtime.taskJobs = [
+        {'id': 'old-job', 'status': 'running'},
+      ];
       status('ready', generation: 'first-process');
       await tester.pump();
       expect(runtime.liveMessages['s']!['content'], [
@@ -147,6 +154,7 @@ void main() {
       expect(runtime.liveMessages, isEmpty);
       expect(runtime.statuses, isEmpty);
       expect(runtime.streaming, isEmpty);
+      expect(runtime.taskJobs, isNull);
       runtime.dispose();
       await tester.pump();
     },

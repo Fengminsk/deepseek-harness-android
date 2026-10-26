@@ -1,0 +1,18 @@
+[
+  {
+    "case": "original",
+    "isError": false,
+    "privateNameVisible": true
+  },
+  {
+    "case": "guarded-directory",
+    "isError": true,
+    "privateNameVisible": false
+  },
+  {
+    "case": "replaced-file",
+    "isError": true,
+    "providerDenied": true,
+    "privateNameVisible": false
+  }
+]

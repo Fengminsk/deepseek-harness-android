@@ -4,6 +4,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:dynamic_color/dynamic_color.dart';
 
 import 'runtime.dart';
+import 'runtime_selection.dart';
 import 'files.dart';
 import 'ui.dart';
 import 'appearance.dart';
@@ -19,13 +20,18 @@ import 'session_models.dart';
 import 'session_model_projection.dart';
 import 'models_label.dart';
 import 'session_document.dart';
+import 'session_files.dart';
+import 'session_browser.dart';
+import 'session_terminal.dart';
 import 'models.dart';
 import 'account.dart';
+import 'account_quota_notice.dart';
 import 'settings.dart';
 import 'flclash/popup.dart';
 import 'automations.dart';
 import 'chat_projection.dart';
 import 'chat_messages.dart';
+import 'chat_turn_navigation.dart';
 import 'chat_sidebar.dart';
 import 'agent_presets.dart';
 import 'skills.dart';
@@ -57,6 +63,10 @@ class _PocketHarnessAppState extends State<PocketHarnessApp>
     with WidgetsBindingObserver {
   final runtime = RuntimeController();
   final appearance = AppearanceController();
+  final rootNavigator = GlobalKey<NavigatorState>();
+  late final quotaNotices = AccountQuotaNoticeController(
+    runtime.liveSessionEvents,
+  );
   @override
   void initState() {
     super.initState();
@@ -68,6 +78,7 @@ class _PocketHarnessAppState extends State<PocketHarnessApp>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    quotaNotices.dispose();
     runtime.dispose();
     appearance.dispose();
     super.dispose();
@@ -86,6 +97,7 @@ class _PocketHarnessAppState extends State<PocketHarnessApp>
       builder: (context, _) => DynamicColorBuilder(
         builder: (light, dark) => MaterialApp(
           title: 'Pocket Harness',
+          navigatorKey: rootNavigator,
           debugShowCheckedModeBanner: false,
           locale: const Locale('zh', 'CN'),
           supportedLocales: const [Locale('zh', 'CN'), Locale('en')],
@@ -125,7 +137,18 @@ class _PocketHarnessAppState extends State<PocketHarnessApp>
               quality: appearance.quality,
               child: LiquidGlassHost(
                 enabled: appearance.glassEnabled,
-                child: child!,
+                child: AccountQuotaNoticeHost(
+                  runtime: runtime,
+                  notices: quotaNotices,
+                  openAccount: () {
+                    rootNavigator.currentState?.push<void>(
+                      PocketRoute<void>(
+                        builder: (_) => AccountPage(runtime: runtime),
+                      ),
+                    );
+                  },
+                  child: child!,
+                ),
               ),
             ),
           ),
@@ -159,6 +182,7 @@ class _ChatPageState extends State<ChatPage> {
   final skillDraftPreparation = <String, Future<void>>{};
   final skillCatalogs = <String, SessionSkillsController>{};
   final chatProjections = <String, ChatProjection>{};
+  SessionModelProjection modelProjection = SessionModelProjection();
   late AttachmentDrafts attachments;
   late ChatGoalPlanController goalPlan;
   late WorkspaceChangesPreference codingTools;
@@ -223,6 +247,19 @@ class _ChatPageState extends State<ChatPage> {
         inputFocus.unfocus();
         navigate(SettingsPage(runtime: runtime));
       },
+      canOpenSessionResource: () =>
+          runtime.ready &&
+          !localDraftSessions.contains(sessionId) &&
+          ((runtime.timelines[sessionId]?.isNotEmpty ?? false) ||
+              runtime.sessions.any(
+                (item) => (item['header'] as Json?)?['id'] == sessionId,
+              )),
+      openFiles: openSessionFiles,
+      openBrowser: () =>
+          openSessionResource(SessionBrowserPage(runtime: runtime)),
+      openTerminal: () => openSessionResource(
+        SessionTerminalsPage(runtime: runtime, sessionId: sessionId),
+      ),
       focusComposer: inputFocus.requestFocus,
       dismiss: () {
         if (inputFocus.hasFocus) {
@@ -269,6 +306,7 @@ class _ChatPageState extends State<ChatPage> {
       skillCatalogs.clear();
       skillDraftPreparation.clear();
       chatProjections.clear();
+      modelProjection = SessionModelProjection();
       oldWidget.runtime.removeListener(handleNavigation);
       attachments.removeListener(attachmentChanged);
       attachments.dispose();
@@ -339,6 +377,9 @@ class _ChatPageState extends State<ChatPage> {
         ),
       );
     });
+    // Navigation must schedule its own frame, including when a hidden page's
+    // runtime selection correctly ignores this otherwise unrelated event.
+    WidgetsBinding.instance.ensureVisualUpdate();
   }
 
   @override
@@ -369,6 +410,30 @@ class _ChatPageState extends State<ChatPage> {
       ).then((_) {
         if (mounted) unawaited(currentModelCatalog.refresh());
       }),
+    );
+  }
+
+  void openSessionResource(Widget page) {
+    scaffold.currentState?.closeDrawer();
+    inputFocus.unfocus();
+    navigate(page);
+  }
+
+  void openSessionFiles() {
+    openSessionResource(
+      SessionFilesPage(
+        runtime: runtime,
+        sessionId: sessionId,
+        onOpenDocument: (context, id, path) => Navigator.of(context).push<void>(
+          PocketRoute<void>(
+            builder: (_) => SessionDocumentPage(
+              runtime: runtime,
+              sessionId: id,
+              path: path,
+            ),
+          ),
+        ),
+      ),
     );
   }
 
@@ -842,8 +907,28 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   @override
-  Widget build(BuildContext context) => ListenableBuilder(
-    listenable: runtime,
+  Widget build(BuildContext context) => RuntimeSelectionBuilder(
+    runtime: runtime,
+    select: () => (
+      runtime.connectionGeneration,
+      runtime.phase,
+      runtime.error,
+      runtime.provider,
+      runtime.model,
+      runtime.reasoningEffort,
+      runtime.sessions,
+      runtime.timelines[sessionId],
+      runtime.timelines[sessionId]?.length,
+      runtime.liveMessages[sessionId],
+      runtime.streaming[sessionId],
+      runtime.statuses[sessionId],
+      runtime.sessionErrors[sessionId],
+      runtime.interactions,
+      runtime.interactionsError,
+      runtime.historyWindows[sessionId],
+      runtime.historyWindows[sessionId]?.loading,
+      runtime.historyWindows[sessionId]?.hasMore,
+    ),
     builder: (context, _) {
       synchronizeNotificationViewing();
       final viewedSessionId = sessionId;
@@ -860,7 +945,7 @@ class _ChatPageState extends State<ChatPage> {
         ChatProjection.new,
       )..reconcile(events);
       final modelSelection =
-          nextSessionModel(events) ??
+          (modelProjection..reconcile(events)).next ??
           {'provider': runtime.provider, 'model': runtime.model};
       final stream = runtime.liveMessages[sessionId];
       final live = stream == null
@@ -939,6 +1024,16 @@ class _ChatPageState extends State<ChatPage> {
                   onOpen: inputFocus.unfocus,
                   popupBuilder: (_) => CommonPopupMenu(
                     items: [
+                      CommonPopupMenuItem(
+                        label: '会话轮次',
+                        glyph: Icons.format_list_numbered_rounded,
+                        onPressed: () => navigate(
+                          ChatTurnNavigatorPage(
+                            runtime: runtime,
+                            sessionId: sessionId,
+                          ),
+                        ),
+                      ),
                       CommonPopupMenuItem(
                         label: '会话资源',
                         glyph: Icons.folder_copy_outlined,
@@ -1021,20 +1116,11 @@ class _ChatPageState extends State<ChatPage> {
                     const PocketMark(size: 58),
                     const SizedBox(height: 25),
                     const Text(
-                      '把想法，交给行动。',
+                      '新对话',
                       style: TextStyle(
                         fontSize: 26,
                         fontWeight: FontWeight.w600,
                         letterSpacing: -1,
-                      ),
-                      textAlign: TextAlign.center,
-                    ),
-                    const SizedBox(height: 12),
-                    Text(
-                      '你的随身 Agent，就在这台手机里。',
-                      style: TextStyle(
-                        fontSize: 13,
-                        color: colors.onSurfaceVariant,
                       ),
                       textAlign: TextAlign.center,
                     ),
@@ -1055,7 +1141,6 @@ class _ChatPageState extends State<ChatPage> {
                     _Suggestion(
                       icon: Icons.terminal_rounded,
                       title: '执行任务',
-                      subtitle: '从一个小任务开始',
                       onTap: () => suggest('请检查当前应用工作目录中的文件，并说明你可以执行哪些任务。'),
                     ),
                     if (runtime.error != null)
@@ -1374,11 +1459,12 @@ class _Suggestion extends StatelessWidget {
   const _Suggestion({
     required this.icon,
     required this.title,
-    required this.subtitle,
+    this.subtitle,
     required this.onTap,
   });
   final IconData icon;
-  final String title, subtitle;
+  final String title;
+  final String? subtitle;
   final VoidCallback onTap;
   @override
   Widget build(BuildContext context) => PocketCard(

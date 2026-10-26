@@ -8,11 +8,26 @@ const project = fileURLToPath(new URL('../', import.meta.url))
 const temporaryRoot = realpathSync(tmpdir())
 const output = mkdtempSync(join(temporaryRoot, 'pocket-completion-'))
 try {
-  execFileSync('javac', ['-encoding', 'UTF-8', '-d', output,
+  execFileSync('javac', ['-encoding', 'UTF-8', '-sourcepath', join(project, 'android/app/src/main/java'), '-d', output,
     join(project, 'android/app/src/main/java/com/minnnng/dsh_android/TaskCompletionState.java'),
+    join(project, 'android/app/src/main/java/com/minnnng/dsh_android/TaskCompletionDelivery.java'),
+    join(project, 'android/app/src/main/java/com/minnnng/dsh_android/TaskCompletionReceipt.java'),
+    join(project, 'android/app/src/main/java/com/minnnng/dsh_android/TaskCompletionRecovery.java'),
     join(project, 'android/app/src/test/java/com/minnnng/dsh_android/TaskCompletionStateTest.java'),
+    join(project, 'android/app/src/test/java/com/minnnng/dsh_android/TaskCompletionDeliveryTest.java'),
+    join(project, 'android/app/src/test/java/com/minnnng/dsh_android/TaskCompletionReceiptTest.java'),
+    join(project, 'android/app/src/test/java/com/minnnng/dsh_android/TaskCompletionRecoveryTest.java'),
   ], { stdio: 'inherit', windowsHide: true })
   execFileSync('java', ['-cp', output, 'com.minnnng.dsh_android.TaskCompletionStateTest'], {
+    stdio: 'inherit', windowsHide: true,
+  })
+  execFileSync('java', ['-cp', output, 'com.minnnng.dsh_android.TaskCompletionDeliveryTest'], {
+    stdio: 'inherit', windowsHide: true,
+  })
+  execFileSync('java', ['-cp', output, 'com.minnnng.dsh_android.TaskCompletionReceiptTest'], {
+    stdio: 'inherit', windowsHide: true,
+  })
+  execFileSync('java', ['-cp', output, 'com.minnnng.dsh_android.TaskCompletionRecoveryTest'], {
     stdio: 'inherit', windowsHide: true,
   })
 } finally {

@@ -1,0 +1,74 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <instrumentation
+        android:name="com.minnnng.dsh_android.IsolatedScriptAcceptanceInstrumentation"
+        android:targetPackage="com.minnnng.dsh_android"
+        android:targetProcesses="com.minnnng.dsh_android:agent" />
+    <instrumentation
+        android:name="com.minnnng.dsh_android.PtcFunctionBodyInstrumentation"
+        android:targetPackage="com.minnnng.dsh_android"
+        android:targetProcesses="com.minnnng.dsh_android:agent" />
+    <instrumentation
+        android:name="com.minnnng.dsh_android.ManualIsolatedScriptSelectionInstrumentation"
+        android:targetPackage="com.minnnng.dsh_android"
+        android:targetProcesses="com.minnnng.dsh_android:agent" />
+    <instrumentation
+        android:name="com.minnnng.dsh_android.DocumentSearchColumnsInstrumentation"
+        android:targetPackage="com.minnnng.dsh_android"
+        android:targetProcesses="com.minnnng.dsh_android:agent" />
+    <instrumentation
+        android:name="com.minnnng.dsh_android.SafGrantReadInstrumentation"
+        android:targetPackage="com.minnnng.dsh_android"
+        android:targetProcesses="com.minnnng.dsh_android:agent" />
+    <instrumentation
+        android:name="com.minnnng.dsh_android.NativeWorkflowAcceptanceInstrumentation"
+        android:targetPackage="com.minnnng.dsh_android"
+        android:targetProcesses="com.minnnng.dsh_android:agent" />
+    <instrumentation
+        android:name="com.minnnng.dsh_android.NativeWorkflowProcessDeathInstrumentation"
+        android:targetPackage="com.minnnng.dsh_android"
+        android:targetProcesses="com.minnnng.dsh_android:agent" />
+    <instrumentation
+        android:name="com.minnnng.dsh_android.FileBrokerProviderInstrumentation"
+        android:targetPackage="com.minnnng.dsh_android"
+        android:targetProcesses="com.minnnng.dsh_android:agent" />
+    <instrumentation
+        android:name="com.minnnng.dsh_android.TaskCompletionCrashInstrumentation"
+        android:targetPackage="com.minnnng.dsh_android"
+        android:targetProcesses="com.minnnng.dsh_android:agent" />
+    <instrumentation
+        android:name="com.minnnng.dsh_android.LinuxCommandAcceptanceInstrumentation"
+        android:targetPackage="com.minnnng.dsh_android"
+        android:targetProcesses="com.minnnng.dsh_android:agent" />
+    <instrumentation
+        android:name="com.minnnng.dsh_android.UpgradePersistenceInstrumentation"
+        android:targetPackage="com.minnnng.dsh_android"
+        android:targetProcesses="com.minnnng.dsh_android:agent" />
+    <instrumentation
+        android:name="com.minnnng.dsh_android.LinuxImageSnapshotInstrumentation"
+        android:targetPackage="com.minnnng.dsh_android"
+        android:targetProcesses="com.minnnng.dsh_android:agent" />
+    <instrumentation
+        android:name="com.minnnng.dsh_android.LinuxImageGuestBridgeInstrumentation"
+        android:targetPackage="com.minnnng.dsh_android"
+        android:targetProcesses="com.minnnng.dsh_android:agent" />
+    <instrumentation
+        android:name="com.minnnng.dsh_android.LinuxImageInstallationInstrumentation"
+        android:targetPackage="com.minnnng.dsh_android"
+        android:targetProcesses="com.minnnng.dsh_android:agent" />
+    <instrumentation
+        android:name="com.minnnng.dsh_android.GuestStorageProbeInstrumentation"
+        android:targetPackage="com.minnnng.dsh_android"
+        android:targetProcesses="com.minnnng.dsh_android:agent" />
+    <instrumentation
+        android:name="com.minnnng.dsh_android.LinuxGuestBinderInstrumentation"
+        android:targetPackage="com.minnnng.dsh_android"
+        android:targetProcesses="com.minnnng.dsh_android:agent" />
+    <instrumentation
+        android:name="com.minnnng.dsh_android.LinuxGuestImageHandoffInstrumentation"
+        android:targetPackage="com.minnnng.dsh_android"
+        android:targetProcesses="com.minnnng.dsh_android:agent" />
+    <instrumentation
+        android:name="com.minnnng.dsh_android.LinuxGuestPinnedImageInstrumentation"
+        android:targetPackage="com.minnnng.dsh_android"
+        android:targetProcesses="com.minnnng.dsh_android:agent" />
+</manifest>

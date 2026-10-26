@@ -1,0 +1,9 @@
+# Sub Agent settings choices
+
+The original `packages/subagent/subagent/src/index.ts` exposes `maxDepth` and `maxActiveSubagents` as live, bounded integer settings. Depth defaults to 1 and accepts 0 to disable delegation; concurrent children default to 8 and require at least 1. The bundled schema remains the authority for both limits and saving.
+
+Pocket Harness opens each field on its own page. Common depth values 0–3 and capacity values 1, 2, 4, 8, 16 appear as full-width choices. The page omits any choice rejected by the current Host schema. A text field on that same detail page accepts other integers, validates against the same schema, and preserves the existing value when the user returns without finishing. Choosing a value stages a configuration draft; the parent configuration page still requires Save and applies its revision/conflict rules.
+
+This is limited to the two exact fields in the bundled `subagent` namespace. Other plugins retain schema-driven controls. Widget tests cover bounded choices, exact staged values, invalid input and custom values; device presentation remains unverified.
+
+The separate Sub Agent model-selection page also exposes restoration when the original Settings descriptor reports a user override for `enabled` or `allowedModels`. It previews the Host's inherited policy, then sends `unset` only for those overridden fields at the observed revision. The page does not offer restoration while an unsaved draft or unresolved conflict exists. A changed runtime observation closes the review before any write; the shared editing controller re-reads immediately before mutation and keeps an uncertain result for explicit reconciliation. Existing Sessions retain their recorded model-selection policy. Widget tests cover both-field and single-field restoration, local drafts and external changes; device behavior remains unverified.

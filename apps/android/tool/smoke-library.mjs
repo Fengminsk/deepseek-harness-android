@@ -70,6 +70,7 @@ function launch() {
     join(root, '.cache/android/runtime-bundle/bootstrap.mjs')], {
     cwd: workspace,
     env: { ...process.env, DSH_HOME: home, DSH_TELEMETRY_DISABLED: '1',
+      DSH_ANDROID_SHELL_EXECUTION_MODE: 'app-uid-approved',
       ...(process.platform === 'win32' ? { POCKET_LIBRARY_TEST_SHELL: 'C:/Program Files/Git/bin/sh.exe' } : {}),
       DEEPSEEK_BASE_URL: `http://127.0.0.1:${model.address().port}` },
     stdio: ['pipe', 'pipe', 'pipe'],

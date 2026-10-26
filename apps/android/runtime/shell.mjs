@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { posix } from 'node:path'
+import { requireSupportedShellExecution } from './shell-execution-policy.mjs'
 
 function shellInvocation(command) {
   if (process.platform !== 'android') return { executable: '/bin/sh', args: ['-c', command] }
@@ -55,10 +56,12 @@ function groupState(pid) {
  * detached process group. A command which creates a new session can escape
  * that group, and a process group is not a filesystem or permission sandbox.
  */
-export function runShell(command, cwd, { timeoutMs = 60000, outputLimit = 65536, signal } = {}) {
+export function runShell(command, cwd, { timeoutMs = 60000, outputLimit = 65536, signal,
+  executionMode = 'app-uid-approved' } = {}) {
   if (typeof command !== 'string' || command.length === 0) throw new TypeError('command must be non-empty')
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 3600000) throw new TypeError('Invalid timeout')
   if (!Number.isInteger(outputLimit) || outputLimit < 1024 || outputLimit > 1048576) throw new TypeError('Invalid output limit')
+  requireSupportedShellExecution(executionMode)
   const { executable, args } = shellInvocation(command)
   const android = process.platform === 'android'
   return new Promise((resolve, reject) => {

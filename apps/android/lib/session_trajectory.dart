@@ -31,6 +31,7 @@ class SessionTrajectoryPage extends StatefulWidget {
 
 class _SessionTrajectoryPageState extends State<SessionTrajectoryPage> {
   final projection = SessionTrajectoryProjection();
+  List<Json> _events = const [];
   final search = TextEditingController();
   bool loading = true, includeLifecycle = false;
   String? loadError;
@@ -71,14 +72,10 @@ class _SessionTrajectoryPageState extends State<SessionTrajectoryPage> {
       if (!widget.runtime.ready) {
         throw StateError('服务尚未连接，请稍后重试。');
       }
-      final before = widget.runtime.timelines[widget.sessionId];
-      await widget.runtime.openSession(widget.sessionId);
+      final events = await widget.runtime.readCompleteSession(widget.sessionId);
       if (!mounted || epoch != readEpoch) return;
-      final after = widget.runtime.timelines[widget.sessionId];
-      if (after == null || identical(after, before)) {
-        throw StateError('会话读取被另一项操作取代，完整记录尚未确认。请重试。');
-      }
-      projection.reconcile(after);
+      _events = events;
+      projection.reconcile(_events);
       setState(() => loading = false);
     } catch (error) {
       if (!mounted || epoch != readEpoch) return;
@@ -123,9 +120,7 @@ class _SessionTrajectoryPageState extends State<SessionTrajectoryPage> {
 
   @override
   Widget build(BuildContext context) {
-    projection.reconcile(
-      widget.runtime.timelines[widget.sessionId] ?? const [],
-    );
+    projection.reconcile(_events);
     if (loading || loadError != null) {
       return PocketScaffold(
         title: const Text('会话轨迹'),

@@ -29,6 +29,16 @@
         </service>
         <service android:name=".IsolatedWorkerService" android:exported="false"
             android:isolatedProcess="true" android:process=":ptc_isolated" />
+        <service android:name=".IsolatedGuestService" android:exported="false"
+            android:isolatedProcess="true" android:process=":ptc_guest" />
+        <service android:name=".IsolatedScriptService" android:exported="false"
+            android:isolatedProcess="true" android:process=":ptc_script" />
+        <service android:name=".IsolatedShellProbeService" android:exported="false"
+            android:isolatedProcess="true" android:process=":shell_probe" />
+        <service android:name=".IsolatedLinuxCommandService" android:exported="false"
+            android:isolatedProcess="true" android:process=":linux_command" />
+        <service android:name=".IsolatedLinuxGuestBinderService" android:exported="false"
+            android:isolatedProcess="true" android:process=":linux_guest_binder" />
         <receiver android:name=".ApprovalActionReceiver" android:exported="false"
             android:process=":agent" />
         <!-- The official completion page only requests focus; it carries no credentials. -->

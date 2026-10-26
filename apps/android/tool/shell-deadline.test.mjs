@@ -14,6 +14,8 @@ function fixture(t, { rows = { 972301: 'S' }, unreadable = false, rowOwners = {}
   const platform = Object.getOwnPropertyDescriptor(process, 'platform')
   const getuid = Object.getOwnPropertyDescriptor(process, 'getuid')
   const nativeDirectory = process.env.DSH_ANDROID_NATIVE_LIBRARY_DIR
+  const executionMode = process.env.DSH_ANDROID_SHELL_EXECUTION_MODE
+  process.env.DSH_ANDROID_SHELL_EXECUTION_MODE = 'app-uid-approved'
   Object.defineProperty(process, 'platform', { ...platform, value: 'android' })
   Object.defineProperty(process, 'getuid', { configurable: true, value: () => 10496 })
   process.env.DSH_ANDROID_NATIVE_LIBRARY_DIR = '/app/native'
@@ -75,6 +77,8 @@ function fixture(t, { rows = { 972301: 'S' }, unreadable = false, rowOwners = {}
     else delete process.getuid
     if (nativeDirectory === undefined) delete process.env.DSH_ANDROID_NATIVE_LIBRARY_DIR
     else process.env.DSH_ANDROID_NATIVE_LIBRARY_DIR = nativeDirectory
+    if (executionMode === undefined) delete process.env.DSH_ANDROID_SHELL_EXECUTION_MODE
+    else process.env.DSH_ANDROID_SHELL_EXECUTION_MODE = executionMode
   })
   return { child, calls, rows, spawn }
 }
@@ -97,6 +101,41 @@ test('Android refuses to run directly when the native supervisor path is absent'
   const f = fixture(t)
   delete process.env.DSH_ANDROID_NATIVE_LIBRARY_DIR
   assert.throws(() => runShell('printf unsafe', '/private/work'), /supervisor directory is unavailable/)
+  assert.equal(f.spawn.mock.callCount(), 0)
+})
+
+test('unset execution mode refuses App-UID Shell before selecting the native supervisor', t => {
+  const f = fixture(t)
+  delete process.env.DSH_ANDROID_SHELL_EXECUTION_MODE
+  delete process.env.DSH_ANDROID_NATIVE_LIBRARY_DIR
+  assert.throws(() => runShell('printf unsafe', '/private/work'),
+    { code: 'SHELL_SANDBOX_UNAVAILABLE' })
+  assert.equal(f.spawn.mock.callCount(), 0)
+})
+
+test('required Shell isolation refuses App-UID execution before supervisor selection or spawn', t => {
+  const f = fixture(t)
+  delete process.env.DSH_ANDROID_NATIVE_LIBRARY_DIR
+  assert.throws(() => runShell('printf unsafe', '/private/work', { executionMode: 'isolated-required' }),
+    { code: 'SHELL_SANDBOX_UNAVAILABLE' })
+  assert.equal(f.spawn.mock.callCount(), 0)
+})
+
+test('process policy cannot silently downgrade isolation to App-UID execution', t => {
+  const f = fixture(t)
+  process.env.DSH_ANDROID_SHELL_EXECUTION_MODE = 'isolated-required'
+  assert.throws(() => runShell('printf unsafe', '/private/work', { executionMode: 'app-uid-approved' }),
+    { code: 'SHELL_SANDBOX_UNAVAILABLE' })
+  assert.equal(f.spawn.mock.callCount(), 0)
+})
+
+test('unknown Shell policy fails closed before spawn', t => {
+  const f = fixture(t)
+  assert.throws(() => runShell('printf unsafe', '/private/work', { executionMode: 'unsupported' }),
+    { code: 'SHELL_POLICY_INVALID' })
+  process.env.DSH_ANDROID_SHELL_EXECUTION_MODE = 'unsupported'
+  assert.throws(() => runShell('printf unsafe', '/private/work', { executionMode: 'app-uid-approved' }),
+    { code: 'SHELL_POLICY_INVALID' })
   assert.equal(f.spawn.mock.callCount(), 0)
 })
 

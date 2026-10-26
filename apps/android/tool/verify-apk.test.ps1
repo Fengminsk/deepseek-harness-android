@@ -9,7 +9,8 @@ param(
     [Parameter(Mandatory)][string]$SourceApkPath,
     [Parameter(Mandatory)][string]$ExpectedVersionName,
     [Parameter(Mandatory)][long]$ExpectedVersionCode,
-    [string]$Aapt2Path = ''
+    [string]$Aapt2Path = '',
+    [string]$CandidateDir = ''
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -71,7 +72,7 @@ function New-Fixture([string]$Name, [string]$Mutation = '') {
         Write-ZipEntry $zip 'assets/runtime/runtime.sha256' ([Text.Encoding]::UTF8.GetBytes("$checksum`n"))
         $abis = if ($Mutation -eq 'extra-abi') { @('arm64-v8a', 'x86_64') } else { @('arm64-v8a') }
         foreach ($abi in $abis) {
-            foreach ($library in @('libflutter.so', 'libnode.so', 'libc++_shared.so', 'libdsh_runtime.so', 'libdsh_system.so', 'libpocket_file_publish.so', 'libpocket_node_cli.so', 'libpocket_terminal_helper.so', 'libpocket_shell_supervisor.so', 'libpocket_require_builtin.so')) {
+            foreach ($library in @('libflutter.so', 'libnode.so', 'libc++_shared.so', 'libdsh_runtime.so', 'libdsh_system.so', 'libpocket_file_publish.so', 'libpocket_ptc_script.so', 'libpocket_node_cli.so', 'libpocket_terminal_helper.so', 'libpocket_shell_supervisor.so', 'libpocket_require_builtin.so')) {
                 if ($Mutation -eq 'missing-library' -and $library -eq 'libflutter.so') { continue }
                 if ($Mutation -eq 'missing-terminal-helper' -and $library -eq 'libpocket_terminal_helper.so') { continue }
                 if ($Mutation -eq 'missing-shell-supervisor' -and $library -eq 'libpocket_shell_supervisor.so') { continue }
@@ -79,6 +80,11 @@ function New-Fixture([string]$Name, [string]$Mutation = '') {
                 Write-ZipEntry $zip "lib/$abi/$library" ([byte[]]@(127, 69, 76, 70))
             }
         }
+        if ($Mutation -eq 'guest-proot') { Write-ZipEntry $zip 'lib/arm64-v8a/libdsh_proot_candidate.so' ([byte[]]@(127, 69, 76, 70)) }
+        if ($Mutation -eq 'guest-supervisor') { Write-ZipEntry $zip 'lib/arm64-v8a/libpocket_linux_guest_supervisor.so' ([byte[]]@(127, 69, 76, 70)) }
+        if ($Mutation -eq 'guest-rootfs') { Write-ZipEntry $zip 'assets/guest/alpine-minirootfs-3.24.3-aarch64.tar.gz' ([byte[]]@(31, 139, 8, 0)) }
+        if ($Mutation -eq 'guest-renamed-proot') { Write-ZipEntry $zip 'assets/guest/opaque.bin' $candidateProotBytes }
+        if ($Mutation -eq 'guest-renamed-loader') { Write-ZipEntry $zip 'assets/guest/opaque-loader.bin' $candidateLoaderBytes }
         if ($Mutation -eq 'duplicate') { Write-ZipEntry $zip 'assets/runtime/runtime.sha256' ([Text.Encoding]::UTF8.GetBytes($runtimeHash)) }
     } finally { $zip.Dispose(); $file.Dispose() }
     return $path
@@ -91,6 +97,20 @@ function Assert-Rejected([string]$Name, [hashtable]$Outcome, [string]$ErrorPatte
 }
 
 try {
+    $candidateProotBytes = [byte[]]@()
+    $candidateLoaderBytes = [byte[]]@()
+    if ($CandidateDir) {
+        $probePath = Join-Path $CandidateDir 'libdsh_proot_candidate.so'
+        $loaderPath = Join-Path $CandidateDir 'libdsh_proot_loader_candidate.so'
+        if ((Get-FileHash -LiteralPath $probePath -Algorithm SHA256).Hash.ToLowerInvariant() -cne
+                'c22cdb13c5de4b6e0022f7ede7a5ca0bf88675d4b674aa339a885b96d8b26f7f' -or
+            (Get-FileHash -LiteralPath $loaderPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne
+                'c5e85afb7599bd82f2419fb054d597514d5c9578954288bef0c5320cd8b63fbf') {
+            throw 'CandidateDir does not contain the pinned ELF pair.'
+        }
+        $candidateProotBytes = [IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $probePath).Path)
+        $candidateLoaderBytes = [IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $loaderPath).Path)
+    }
     $manifestResources = @{}
     $pinnedResources = @{}
     $source = [IO.Compression.ZipFile]::OpenRead((Resolve-Path -LiteralPath $SourceApkPath).Path)
@@ -143,6 +163,13 @@ try {
     Assert-Rejected 'Manifest versionName mismatch' (Invoke-Verifier $baseline 'wrong-version') 'Version name mismatch'
     Assert-Rejected 'Manifest versionCode mismatch' (Invoke-Verifier $baseline $ExpectedVersionName ($ExpectedVersionCode + 1)) 'Version code mismatch'
     Assert-Rejected 'duplicate runtime checksum entry' (Invoke-Verifier (New-Fixture 'duplicate' 'duplicate')) 'Duplicate ZIP entry'
+    Assert-Rejected 'unreviewed PRoot candidate' (Invoke-Verifier (New-Fixture 'guest-proot' 'guest-proot')) 'Linux guest payload is not approved'
+    Assert-Rejected 'unreviewed guest supervisor' (Invoke-Verifier (New-Fixture 'guest-supervisor' 'guest-supervisor')) 'Linux guest payload is not approved'
+    Assert-Rejected 'unreviewed Alpine rootfs' (Invoke-Verifier (New-Fixture 'guest-rootfs' 'guest-rootfs')) 'Linux guest payload is not approved'
+    if ($CandidateDir) {
+        Assert-Rejected 'renamed PRoot candidate' (Invoke-Verifier (New-Fixture 'guest-renamed-proot' 'guest-renamed-proot')) 'Linux guest payload is not approved'
+        Assert-Rejected 'renamed PRoot loader' (Invoke-Verifier (New-Fixture 'guest-renamed-loader' 'guest-renamed-loader')) 'Linux guest payload is not approved'
+    }
     $trusted = Invoke-Verifier $baseline $ExpectedVersionName $ExpectedVersionCode $runtimeHash
     if ($trusted.exitCode -ne 0 -or -not $trusted.report.success) { throw 'Matching trusted runtime digest was rejected.' }
     $cases.Add(@{ name = 'trusted runtime digest matches packaged runtime'; passed = $true })

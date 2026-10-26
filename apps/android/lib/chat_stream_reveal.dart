@@ -28,12 +28,18 @@ class _ChatStreamRevealState extends State<ChatStreamReveal>
     duration: PocketEntryMotion.duration,
   );
   bool _enabled = true;
+  bool _mountedWithMotion = false;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     _enabled = !MediaQuery.disableAnimationsOf(context);
-    if (!_enabled) _motion.stop();
+    if (!_mountedWithMotion) {
+      _mountedWithMotion = true;
+      if (_enabled) _motion.forward(from: 0);
+    } else if (!_enabled) {
+      _motion.stop();
+    }
   }
 
   @override
@@ -88,7 +94,7 @@ class _StreamRender extends RenderProxyBox {
   final _previous = <String>[];
   final _arrivals = <int, List<_TextArrival>>{};
   String revision;
-  bool enabled, _changed = true, _initial = true;
+  bool enabled, _changed = true;
   static final _duration = PocketEntryMotion.duration.inMicroseconds;
   final _isolationShader = ui.Gradient.linear(
     Offset.zero,
@@ -155,7 +161,7 @@ class _StreamRender extends RenderProxyBox {
       arrivals.removeWhere(
         (range) => now - range.at >= _duration || range.end > prefix,
       );
-      if (enabled && !_initial && prefix < next.length) {
+      if (enabled && prefix < next.length) {
         arrivals.add(_TextArrival(prefix, next.length, now));
       }
       if (i < _previous.length) {
@@ -166,7 +172,6 @@ class _StreamRender extends RenderProxyBox {
     }
     _previous.length = paragraphs.length;
     _arrivals.removeWhere((key, _) => key >= paragraphs.length);
-    _initial = false;
   }
 
   @override

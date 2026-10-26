@@ -782,8 +782,12 @@ void main() {
       runtime.notifyListeners();
       await tester.pumpAndSettle();
       expect(find.text('/goal 整理项目'), findsOneWidget);
-      expect(find.text('目标已保存', findRichText: true), findsWidgets);
       expect(find.text('/feedback'), findsOneWidget);
+      await tester.tap(find.text('/goal 整理项目'));
+      await tester.pumpAndSettle();
+      expect(find.text('目标已保存', findRichText: true), findsWidgets);
+      await tester.tap(find.text('/feedback'));
+      await tester.pumpAndSettle();
       expect(find.text('指令执行中…', findRichText: true), findsWidgets);
       expect(find.text('会话指令'), findsNothing);
     },
@@ -1088,6 +1092,8 @@ void main() {
         ),
       );
       expect(find.text('report.txt'), findsOneWidget);
+      await tester.tap(find.text('会话指令'));
+      await tester.pumpAndSettle();
       expect(find.text('原命令的结果', findRichText: true), findsWidgets);
       expect(tester.takeException(), isNull);
     },

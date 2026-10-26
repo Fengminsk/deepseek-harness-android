@@ -9,16 +9,21 @@ function requestedPreset(value) {
 
 /** App submissions reuse the same controller, writer leases and inbox as the Web UI. */
 export class AppSessions {
-  constructor(ctx, invoke, resolveAttachments = async () => [], commands, invokePresetSelection) {
+  constructor(ctx, invoke, resolveAttachments = async () => [], commands, invokePresetSelection,
+    admit = () => {}) {
     this.ctx = ctx
     this.invoke = invoke
     this.pending = new Map()
     this.resolveAttachments = resolveAttachments
     this.commands = commands
     this.invokePresetSelection = invokePresetSelection
+    this.admit = admit
   }
 
+  pendingCount() { return this.pending.size }
+
   enqueue(sessionId, action) {
+    this.admit()
     const operation = (this.pending.get(sessionId) ?? Promise.resolve()).then(action)
     const settled = operation.then(() => {}, () => {})
     this.pending.set(sessionId, settled)

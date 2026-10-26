@@ -1,10 +1,12 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { runShell } from './shell.mjs'
+import { isLegacyAppUidShellEnabled, requireSupportedShellExecution } from './shell-execution-policy.mjs'
 
 /**
- * Register the app-UID shell and its per-call approval request.
+ * Register the legacy App-UID shell only after an explicit diagnostic opt-in.
  *
- * This Android deployment requests approval for each command; it does not claim
+ * Without that opt-in the tool is absent. The legacy path requests approval for
+ * each command; it does not claim
  * that desktop DSH asks for every command or that Android confines a command to
  * its working directory. The original tool pipeline and ApprovalService own
  * policy, audit, answer routing and cancellation. In particular, `never` rejects
@@ -16,11 +18,23 @@ import { runShell } from './shell.mjs'
  */
 export function registerAndroidShell(ctx, config) {
   const prepared = new Map()
+  // Do not advertise a tool whose only implementation is an unconstrained
+  // App-UID process. An explicit diagnostic mode must be selected at startup;
+  // changing process.env later cannot add the tool to a live Agent.
+  if (!isLegacyAppUidShellEnabled()) return {
+    policy() {
+      return { tool: 'android_shell', available: false, reason: 'isolated-executor-unavailable',
+        executionIdentity: null, approval: 'unavailable', workspaceConfinement: false }
+    },
+    context() { return undefined },
+  }
   ctx.on('tools/result', execution => { prepared.delete(execution.token) })
   ctx.effect(() => () => prepared.clear())
   ctx.on('tools/pre-execute', async (execution, next) => {
     const downstream = await next()
     if (execution.name !== 'android_shell' || !['allow', 'ask'].includes(downstream.kind)) return downstream
+    try { requireSupportedShellExecution('app-uid-approved') }
+    catch (error) { return { kind: 'deny', reason: error.message } }
     if (!execution.agent) return { kind: 'deny', reason: 'Android shell requires an Agent session.' }
     const cwd = await ctx.workingDirectory.ensure(execution.agent, execution.signal)
     execution.signal.throwIfAborted()

@@ -41,8 +41,15 @@ public final class RuntimeInterruptionRecord {
         }
     }
 
-    /** Missing means no known interruption; corrupt records require an explicit read error. */
+    /** Also detects a process killed without Service callbacks; it never resumes that process's work. */
     public static RuntimeInterruptionRecord read(File directory) throws IOException {
+        RuntimeInterruptionRecord receipt = readReceipt(directory);
+        Long orphanedStart = RuntimeProcessLease.orphanedStart(directory);
+        if (orphanedStart == null || receipt != null && receipt.timeMillis >= orphanedStart) return receipt;
+        return new RuntimeInterruptionRecord(RUNTIME_LOST, Math.max(System.currentTimeMillis(), orphanedStart + 1));
+    }
+
+    private static RuntimeInterruptionRecord readReceipt(File directory) throws IOException {
         File file = new File(directory, NAME);
         if (!file.exists()) return null;
         if (file.length() > 64) throw new IOException("Invalid interruption receipt");

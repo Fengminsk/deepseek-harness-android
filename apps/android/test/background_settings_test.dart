@@ -79,6 +79,7 @@ class SystemPolicy {
     'batteryOptimizationsIgnored': true,
     'backgroundRestricted': false,
     'powerSaveMode': true,
+    'notifications': {'background': 'enabled', 'completion': 'enabled'},
   };
   Object? failure, openFailure;
   final calls = <String>[];
@@ -91,6 +92,11 @@ class SystemPolicy {
         return jsonEncode(value);
       case 'background.openSystemSettings':
         if (openFailure case final Object error) throw error;
+        return null;
+      case 'background.notificationSettings':
+        if (openFailure case final Object error) throw error;
+        return null;
+      case 'notifications.request':
         return null;
       default:
         throw StateError('Unexpected native call: ${call.method}');
@@ -140,6 +146,47 @@ Future<void> close(WidgetTester tester) async {
 }
 
 void main() {
+  testWidgets('notification channels are shown independently and settings open only on tap', (
+    tester,
+  ) async {
+    final runtime = BackgroundRuntime();
+    final policy = SystemPolicy()
+      ..value['notifications'] = {
+        'background': 'enabled',
+        'completion': 'channel-disabled',
+      };
+    await open(tester, runtime, policy);
+    expect(find.text('系统通知已允许'), findsOneWidget);
+    expect(find.text('此类通知已关闭'), findsOneWidget);
+    expect(policy.calls, ['background.systemStatus']);
+    await tap(tester, find.text('打开系统通知设置'));
+    expect(policy.calls.last, 'background.notificationSettings');
+    expect(runtime.writes, 0);
+    await close(tester);
+  });
+
+  testWidgets('notification permission request is explicit and refreshed afterward', (
+    tester,
+  ) async {
+    final runtime = BackgroundRuntime();
+    final policy = SystemPolicy()
+      ..value['notifications'] = {
+        'background': 'permission',
+        'completion': 'permission',
+      };
+    await open(tester, runtime, policy);
+    expect(find.text('允许系统通知'), findsOneWidget);
+    expect(policy.calls, ['background.systemStatus']);
+    await tap(tester, find.text('允许系统通知'));
+    expect(policy.calls, [
+      'background.systemStatus',
+      'notifications.request',
+      'background.systemStatus',
+    ]);
+    expect(runtime.writes, 0);
+    await close(tester);
+  });
+
   testWidgets('connection loss immediately withdraws task facts and controls', (
     tester,
   ) async {
@@ -331,7 +378,7 @@ void main() {
   );
 
   testWidgets(
-    'failed status refresh withdraws old task counts and system policy facts',
+    'failed Agent read withdraws task counts but keeps freshly read Android policy',
     (tester) async {
       final runtime = BackgroundRuntime();
       final policy = SystemPolicy();
@@ -343,9 +390,9 @@ void main() {
       expect(find.text('任务执行中'), findsNothing);
       expect(find.text('2 个任务执行 · 1 条输入排队 · 0 项等待处理'), findsNothing);
       expect(find.text('3 个活动作业'), findsNothing);
-      expect(find.text('已获得 Android 标准电池优化豁免'), findsNothing);
-      expect(find.text('Android 标准接口未报告后台限制'), findsNothing);
-      expect(find.text('未确认'), findsNWidgets(3));
+      expect(find.text('已获得 Android 标准电池优化豁免'), findsOneWidget);
+      expect(find.text('Android 标准接口未报告后台限制'), findsOneWidget);
+      expect(find.text('系统通知已允许'), findsNWidgets(2));
       expect(find.text('CPU 唤醒锁状态待确认'), findsOneWidget);
       expect(tester.widget<PocketSwitchRow>(toggle).onChanged, isNull);
       await close(tester);
@@ -361,7 +408,7 @@ void main() {
       expect(find.text('任务状态尚未确认'), findsOneWidget);
       expect(find.text('正在读取后台状态'), findsNothing);
       expect(find.textContaining('后台状态未确认'), findsOneWidget);
-      expect(find.text('未确认'), findsNWidgets(3));
+      expect(find.text('已获得 Android 标准电池优化豁免'), findsOneWidget);
       expect(toggle, findsNothing);
       await close(tester);
     },
@@ -377,11 +424,34 @@ void main() {
       await tap(tester, refresh);
       expect(find.text('已获得 Android 标准电池优化豁免'), findsNothing);
       expect(find.text('未确认'), findsNWidgets(3));
-      expect(find.text('任务执行中'), findsNothing);
-      expect(tester.widget<PocketSwitchRow>(toggle).onChanged, isNull);
+      expect(find.text('任务执行中'), findsOneWidget);
+      expect(tester.widget<PocketSwitchRow>(toggle).onChanged, isNotNull);
+      expect(find.textContaining('Android 系统状态未确认'), findsOneWidget);
       await close(tester);
     },
   );
+
+  testWidgets('native notification state refreshes while Agent status is pending', (
+    tester,
+  ) async {
+    final runtime = BackgroundRuntime();
+    final policy = SystemPolicy();
+    await open(tester, runtime, policy);
+    final pending = Completer<Json>();
+    runtime.statusResult = pending.future;
+    policy.value['notifications'] = {
+      'background': 'enabled',
+      'completion': 'channel-disabled',
+    };
+    await tap(tester, refresh);
+    expect(find.text('此类通知已关闭'), findsOneWidget);
+    expect(find.text('任务执行中'), findsOneWidget);
+    expect(runtime.reads, 2);
+    pending.complete({'background': snapshot(), 'phase': 'ready'});
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    await close(tester);
+  });
 
   testWidgets(
     'toggle remains at acknowledged value while saving and after failure',

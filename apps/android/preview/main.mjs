@@ -13,11 +13,36 @@ import { installThemeStyles } from '../../../packages/client/ui-theme/src/client
 import { sessionFileAddress } from '../../../packages/util/workspace-path/src/file-address.ts';
 import { DocumentBridge, createDocumentRemote } from './bridge.mjs';
 import { createDocumentNavigation } from './navigation.mjs';
+import { createDocumentControls } from './controls.mjs';
 import './shell.css';
 
 const PREVIEW = '@deepseek-ai/dsh-client-ui-sidebar-documentpreview';
 const observable = value => ({ getSnapshot: () => value, subscribe: () => () => {} });
+const interactiveHtml = (() => {
+  let value = false;
+  const listeners = new Set();
+  return {
+    getSnapshot: () => value,
+    subscribe: listener => { listeners.add(listener); return () => listeners.delete(listener); },
+    set(next) {
+      if (value === next) return;
+      value = next;
+      for (const listener of listeners) listener();
+    },
+  };
+})();
+let interactiveOverride = false;
+// Only the native host invokes this fixed command; document iframes have opaque
+// origins and cannot reach the parent or its Session-bound transport.
+window.__PocketDocumentSetInteractive = value => {
+  if (typeof value !== 'boolean') return false;
+  interactiveOverride = true;
+  interactiveHtml.set(value);
+  return true;
+};
 const bridge = new DocumentBridge(window.PocketDocument);
+const controls = createDocumentControls();
+window.__PocketDocumentRefresh = () => controls.refresh();
 const lifetime = new AbortController();
 const ctx = new Cordis.Context();
 let unmount;
@@ -25,6 +50,9 @@ let disposed;
 async function close() {
   if (disposed) return disposed;
   lifetime.abort();
+  controls.close();
+  delete window.__PocketDocumentRefresh;
+  delete window.__PocketDocumentSetInteractive;
   unmount?.();
   bridge.close();
   disposed = ctx.fiber.dispose();
@@ -45,6 +73,7 @@ function DocumentShell({ renderSlot, SessionProvider, reference, tab, useNavigat
 async function boot() {
   const config = await bridge.ready(lifetime.signal);
   if (!config || typeof config.sessionId !== 'string' || !config.sessionId || typeof config.path !== 'string') throw new Error('Invalid native document configuration');
+  if (!interactiveOverride) interactiveHtml.set(config.interactiveHtml === true);
   document.body.toggleAttribute('data-ds-dark-theme', config.dark === true);
   document.documentElement.style.colorScheme = config.dark ? 'dark' : 'light';
   for (const [name, value] of [['top', config.topInset], ['bottom', config.bottomInset]]) {
@@ -90,9 +119,9 @@ async function boot() {
     owner.reflect.provide('remote.workspaceFiles', remote.workspaceFiles);
     owner.reflect.provide('remote.officeToPdf', remote.officeToPdf);
     owner.reflect.provide('sidebarRightTabs', new SidebarRightTabRegistry(owner));
-    // This read-only surface has no settings host. HTML keeps the original safe
-    // static mode; the original Office service reports its unavailable result.
-    owner.reflect.provide('configForms', { get: () => undefined, developerTools: { enabled: observable(false) } });
+    // The native host relays only the accepted ui-settings.enabled preference.
+    // A document cannot modify settings or acquire another Session.
+    owner.reflect.provide('configForms', { get: () => undefined, developerTools: { enabled: interactiveHtml } });
   } });
   await services.await();
   const binding = { key: config.sessionId, ctx: services.ctx, hooks: {}, keyedHooks: {}, props: { sessionId: config.sessionId } };
@@ -122,11 +151,10 @@ async function boot() {
           : (english ? 'The document could not open. Try the link again. Tap to dismiss.' : '无法打开此文档，请重试链接。点按关闭提示。');
     }),
   });
-  let commands;
   const tab = Object.freeze({
     id: 'document', kind: 'text', contentId: address, title: config.path.split('/').at(-1), visible: true,
     signal: lifetime.signal,
-    actions: { bindCommands(value) { commands = value; return () => { if (commands === value) commands = undefined; }; },
+    actions: { bindCommands: value => controls.bind(value),
       openResource: (address, options) => links.openResource(address, options), openTab: () => links.openTab(), close() { void close(); } },
   });
   const delegates = { openExternalLink: url => bridge.openExternalLink(url), openFile: (path, options) => { void links.openFile(path, options); } };

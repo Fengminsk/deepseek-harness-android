@@ -52,6 +52,7 @@ class _SearchRuntime extends RuntimeController {
           'text': '从文件开头读取的当前内容',
           'offset': 0,
           'nextOffset': 39,
+          'version': 'a' * 64,
           'truncated': false,
         };
       default:

@@ -8,7 +8,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import { defineTool } from '@deepseek-ai/dsh-tools'
+import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type {
@@ -18,6 +18,25 @@ import { assertNever } from '@deepseek-ai/dsh-util-values'
 
 export const name = 'tool-subagent-list-agents'
 export const inject = ['tools', 'subagents', 'agents']
+
+// A deployment may review this first-party read-only definition before
+// admitting it into a more restrictive execution carrier. Keep provenance
+// private to this module: a matching tool name or schema is not evidence.
+// Cordis injects scope-local service proxies; a different Context's getters
+// cannot be compared by object identity even when they resolve the same owner.
+const firstPartyDefinitions = new WeakMap<ToolDefinition, {
+  readonly subagents: Context['subagents']
+  readonly agents: Context['agents']
+}>()
+
+/** Attest the original definition and its captured live Agent registry. */
+export function isFirstPartyListAgentsDefinition(
+  definition: ToolDefinition,
+  agent: Agent,
+): boolean {
+  const bound = firstPartyDefinitions.get(definition)
+  return bound !== undefined && bound.agents.get(agent.id) === agent
+}
 
 type ListAgentsScope = 'children' | 'descendants'
 
@@ -83,7 +102,7 @@ function project(
  * @param ctx - context carrying the tool registry, subagent service, and live Agent registry.
  */
 export function apply(ctx: Context): void {
-  ctx.tools.register(defineTool({
+  const definition = defineTool({
     name: 'list_agents',
     description:
       'List subagents you started, with their ids, labels, and status. '
@@ -174,5 +193,7 @@ export function apply(ctx: Context): void {
           return assertNever(request.scope, 'list_agents scope')
       }
     },
-  }))
+  })
+  firstPartyDefinitions.set(definition, { subagents: ctx.subagents, agents: ctx.agents })
+  ctx.tools.register(definition)
 }

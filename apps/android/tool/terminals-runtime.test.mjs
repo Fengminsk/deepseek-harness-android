@@ -64,7 +64,7 @@ test('program OSC palette and cursor modes survive projection and reset', async 
     + '\x1b]12;#abcdef\x07\x1b[?25l\x1b[3 q')
   let view = projectTerminalView(screen, display)
   assert.deepEqual(view.palette, {
-    indexed: { 1: '#ff0088', 240: '#a0b0c0' },
+    indexed: { 1: '#ff0088', 240: '#aabbcc' },
     foreground: '#123456', background: '#111111', cursor: '#abcdef',
   })
   assert.equal(view.cursorVisible, false)
@@ -76,13 +76,86 @@ test('program OSC palette and cursor modes survive projection and reset', async 
   assert.equal(view.cursorVisible, true)
   assert.equal(view.cursorStyle, 'bar')
   assert.equal(view.cursorBlink, false)
-  assert.deepEqual(view.palette, { indexed: { 240: '#a0b0c0' }, background: '#111111' })
+  assert.deepEqual(view.palette, { indexed: { 240: '#aabbcc' }, background: '#111111' })
   assert.equal(view.lines[0].runs.some(run => run.cursor), true)
   await write('\x1bc')
   view = projectTerminalView(screen, display)
   assert.deepEqual(view.palette, { indexed: {} })
   assert.equal(view.cursorVisible, true)
   assert.equal(view.cursorStyle, 'block')
+  display.dispose()
+  screen.dispose()
+})
+
+test('OSC hexadecimal colors scale each channel to eight bits', async () => {
+  const screen = await interpretedScreen(8, 2, '')
+  const display = observeTerminalDisplay(screen)
+  await new Promise(resolve => screen.write(
+    '\x1b]4;1;#abc;2;#123456789;3;#123456789abc\x07', resolve))
+  assert.deepEqual(projectTerminalView(screen, display).palette.indexed, {
+    1: '#aabbcc', 2: '#124578', 3: '#12569a',
+  })
+  display.dispose()
+  screen.dispose()
+})
+
+test('application cursor mode follows the program and resets with the screen', async () => {
+  const screen = await interpretedScreen(8, 2, '')
+  const display = observeTerminalDisplay(screen)
+  const write = source => new Promise(resolve => screen.write(source, resolve))
+  assert.equal(projectTerminalView(screen, display).applicationCursorKeys, false)
+  await write('\x1b[?1h')
+  assert.equal(projectTerminalView(screen, display).applicationCursorKeys, true)
+  await write('\x1b[?1l')
+  assert.equal(projectTerminalView(screen, display).applicationCursorKeys, false)
+  await write('\x1b[?1h\x1bc')
+  assert.equal(projectTerminalView(screen, display).applicationCursorKeys, false)
+  display.dispose()
+  screen.dispose()
+})
+
+test('bracketed paste mode follows combined DECSET/DECRST and survives a fresh reader', async () => {
+  const screen = await interpretedScreen(8, 2, '')
+  const display = observeTerminalDisplay(screen)
+  const write = source => new Promise(resolve => screen.write(source, resolve))
+  assert.equal(projectTerminalView(screen, display).bracketedPaste, false)
+  await write('\x1b[?1;2004h')
+  let view = projectTerminalView(screen, display)
+  assert.equal(view.applicationCursorKeys, true)
+  assert.equal(view.bracketedPaste, true)
+  assert.equal(projectTerminalView(screen, display).bracketedPaste, true)
+  await write('\x1b[?2004l')
+  view = projectTerminalView(screen, display)
+  assert.equal(view.applicationCursorKeys, true)
+  assert.equal(view.bracketedPaste, false)
+  await write('\x1b[?2004h\x1bc')
+  assert.equal(projectTerminalView(screen, display).bracketedPaste, false)
+  display.dispose()
+  screen.dispose()
+})
+
+test('SGR mouse tracking follows DECSET precedence, reset and page re-entry', async () => {
+  const screen = await interpretedScreen(8, 2, '')
+  const display = observeTerminalDisplay(screen)
+  const write = source => new Promise(resolve => screen.write(source, resolve))
+  assert.equal(projectTerminalView(screen, display).mouseTracking, 'off')
+  await write('\x1b[?1000;1006h')
+  assert.equal(projectTerminalView(screen, display).mouseTracking, 'click')
+  assert.equal(projectTerminalView(screen, display).sgrMouse, true)
+  await write('\x1b[?1002h')
+  assert.equal(projectTerminalView(screen, display).mouseTracking, 'drag')
+  await write('\x1b[?1003h')
+  assert.equal(projectTerminalView(screen, display).mouseTracking, 'any')
+  await write('\x1b[?1003l')
+  assert.equal(projectTerminalView(screen, display).mouseTracking, 'drag')
+  await write('\x1b[?1006l')
+  assert.equal(projectTerminalView(screen, display).sgrMouse, false)
+  await write('\x1b[?1006h')
+  assert.equal(projectTerminalView(screen, display).mouseTracking, 'drag')
+  await write('\x1bc')
+  const reset = projectTerminalView(screen, display)
+  assert.equal(reset.mouseTracking, 'off')
+  assert.equal(reset.sgrMouse, false)
   display.dispose()
   screen.dispose()
 })
@@ -95,6 +168,25 @@ test('malformed and query OSC colors cannot change projected palette', async () 
   const view = projectTerminalView(screen, display)
   assert.deepEqual(view.palette, { indexed: {} })
   assert.equal(view.cursorStyle, 'block')
+  display.dispose()
+  screen.dispose()
+})
+
+test('program OSC color queries receive only previously set colors', async () => {
+  const screen = await interpretedScreen(8, 2, '')
+  const display = observeTerminalDisplay(screen)
+  const replies = []
+  const subscription = screen.onData(data => replies.push(data))
+  const write = source => new Promise(resolve => screen.write(source, resolve))
+  await write('\x1b]4;1;#123456\x07\x1b]10;#abcdef\x07')
+  await write('\x1b]4;1;?;2;?\x07\x1b]10;?\x07\x1b]12;?\x07')
+  assert.deepEqual(replies, [
+    '\x1b]4;1;rgb:1212/3434/5656\x07',
+    '\x1b]10;rgb:abab/cdcd/efef\x07',
+  ])
+  assert.deepEqual(projectTerminalView(screen, display).palette,
+    { indexed: { 1: '#123456' }, foreground: '#abcdef' })
+  subscription.dispose()
   display.dispose()
   screen.dispose()
 })
@@ -119,11 +211,12 @@ test('terminal.read restores program palette and cursor state after page detachm
     return { screen, serializer: { serialize: () => '' } }
   } })
   await service.create({ sessionId: 'session-A', id: 'persist', cols: 8, rows: 2 })
-  children[0].child.stdout.write('\x1b]4;2;#123456\x07\x1b[?25l\x1b[4 q\x1b[32mgreen')
+  children[0].child.stdout.write('\x1b]4;2;#123456\x07\x1b[?25l\x1b[?2004h\x1b[4 q\x1b[32mgreen')
   const first = await service.read({ sessionId: 'session-A', id: 'persist' })
   assert.equal(first.view.palette.indexed[2], '#123456')
   assert.equal(first.view.cursorVisible, false)
   assert.equal(first.view.cursorStyle, 'underline')
+  assert.equal(first.view.bracketedPaste, true)
   // A fresh reader uses the same Host-owned PTY; no Flutter page-local state is required.
   const reopened = await service.read({ sessionId: 'session-A', id: 'persist' })
   assert.deepEqual(reopened.view, first.view)
@@ -131,8 +224,47 @@ test('terminal.read restores program palette and cursor state after page detachm
   await service.dispose()
 })
 
+test('terminal answers xterm cursor and device queries through the same acknowledged PTY input', async () => {
+  const { service, children } = fixture({ makeScreen: (cols, rows) => {
+    const screen = new Terminal({ cols, rows, scrollback: 500, allowProposedApi: true })
+    return { screen, serializer: { serialize: () => '' } }
+  } })
+  await service.create({ sessionId: 'session-A', id: 'queries', cols: 80, rows: 24 })
+  const child = children[0].child
+  async function query(source, expected) {
+    const frame = once(child.stdio[3], 'data')
+    child.stdout.write(source)
+    const [bytes] = await frame
+    assert.equal(bytes[0], 87)
+    assert.equal(bytes.readUInt32BE(1), Buffer.byteLength(expected))
+    assert.equal(bytes.subarray(5).toString(), expected)
+    child.stdio[4].write('W0\n')
+  }
+  await query('x\x1b[6n', '\x1b[1;2R')
+  await query('\x1b[c', '\x1b[?1;2c')
+  await query('\x1b[?6n', '\x1b[?1;2R')
+  assert.equal((await service.read({ sessionId: 'session-A', id: 'queries' })).state, 'running')
+  await service.dispose()
+})
+
+test('query floods fail the terminal instead of growing an unacknowledged reply queue', async () => {
+  const { service, children } = fixture({ makeScreen: (cols, rows) => {
+    const screen = new Terminal({ cols, rows, scrollback: 500, allowProposedApi: true })
+    return { screen, serializer: { serialize: () => '' } }
+  } })
+  await service.create({ sessionId: 'session-A', id: 'query-flood' })
+  const child = children[0].child
+  const closed = once(child, 'close')
+  child.stdout.write('\x1b[6n'.repeat(6000))
+  await closed
+  assert.equal(child.killed, true)
+  const result = await service.read({ sessionId: 'session-A', id: 'query-flood' })
+  assert.match(result.error, /response backlog/)
+  await service.dispose()
+})
+
 function fixture({ acknowledge = true, resolveDirectory, workdirTimeoutMs, closeTimeoutMs, onKill,
-  makeScreen } = {}) {
+  makeScreen, probeShell = async () => {} } = {}) {
   const children = []
   const owners = new Map()
   const scope = sessionId => {
@@ -178,6 +310,7 @@ function fixture({ acknowledge = true, resolveDirectory, workdirTimeoutMs, close
     })),
     spawn,
     helper: () => '/app/libpocket_terminal_helper.so',
+    probeShell,
     workdirTimeoutMs, closeTimeoutMs,
     makeScreen: makeScreen ?? (() => {
       let output = ''
@@ -211,6 +344,108 @@ test('one Session owns its PTY and reconnecting reads a complete screen', async 
   assert.equal(children[0].child.killed, true)
   assert.deepEqual(service.list({ sessionId: 'session-A' }), [])
   await assert.rejects(service.create({ sessionId: 'session-A', id: 'terminal-1' }), /closed/)
+})
+
+test('fixed shell discovery allocates nothing and selection reaches the native allowlist', async () => {
+  const lookedUp = []
+  const { service, children } = fixture({ probeShell: async path => {
+    lookedUp.push(path)
+    if (path === '/system/bin/bash') throw Object.assign(new Error('absent'), { code: 'ENOENT' })
+  } })
+  assert.deepEqual(await service.shells(), [
+    { id: 'system-sh', label: '系统 Shell' },
+    { id: 'system-mksh', label: 'mksh' },
+  ])
+  assert.deepEqual(lookedUp, ['/system/bin/sh', '/system/bin/mksh', '/system/bin/bash'])
+  assert.equal(children.length, 0)
+  await assert.rejects(service.create({ sessionId: 'session-A', id: 'bad', shellId: '/system/bin/bash' }),
+    /Unsupported terminal shell/)
+  await assert.rejects(service.create({ sessionId: 'session-A', id: 'missing', shellId: 'system-bash' }),
+    /unavailable/)
+  assert.equal(children.length, 0)
+  const selected = await service.create({ sessionId: 'session-A', id: 'mksh', shellId: 'system-mksh' })
+  assert.equal(selected.shellId, 'system-mksh')
+  assert.deepEqual(children[0].args, ['/app/workspace', '80', '24', '/system/bin/mksh'])
+  await assert.rejects(service.create({ sessionId: 'session-A', id: 'mksh', shellId: 'system-sh' }),
+    /different shell/)
+  assert.equal(children.length, 1)
+  await service.dispose()
+})
+
+test('opening a selected shell does not depend on an unrelated shell probe', async () => {
+  const lookedUp = []
+  const { service, children } = fixture({ probeShell: async path => {
+    lookedUp.push(path)
+    if (path !== '/system/bin/sh') throw new Error('unrelated probe failed')
+  } })
+  const opened = await service.create({ sessionId: 'session-A', id: 'selected', shellId: 'system-sh' })
+  assert.equal(opened.state, 'running')
+  assert.deepEqual(lookedUp, ['/system/bin/sh'])
+  assert.equal(children.length, 1)
+  await service.dispose()
+})
+
+test('activity snapshot includes allocation before the Session directory resolves', async () => {
+  let releaseDirectory
+  const directory = new Promise(resolve => { releaseDirectory = resolve })
+  const { service, scope } = fixture({ resolveDirectory: () => directory })
+  assert.deepEqual(service.activitySnapshot(), { live: 0, pending: 0 })
+  const opening = service.create({ sessionId: 'session-A', id: 'allocating' })
+  assert.deepEqual(service.activitySnapshot(), { live: 0, pending: 1 })
+  releaseDirectory({ cwd: '/app/workspace', owner: scope('session-A') })
+  await opening
+  assert.deepEqual(service.activitySnapshot(), { live: 1, pending: 0 })
+  await service.close({ sessionId: 'session-A', id: 'allocating' })
+  assert.deepEqual(service.activitySnapshot(), { live: 0, pending: 0 })
+  await service.dispose()
+})
+
+test('shell lookup failure and late discovery after owner disposal cannot start a PTY', async () => {
+  const failure = fixture({ probeShell: async () => { throw new Error('probe failed') } })
+  await assert.rejects(failure.service.shells(), /Shell discovery failed/)
+  assert.equal(failure.children.length, 0)
+  await failure.service.dispose()
+
+  let release
+  const deferred = new Promise(resolve => { release = resolve })
+  const pending = fixture({ probeShell: path => path === '/system/bin/sh' ? deferred : Promise.resolve() })
+  const opening = pending.service.create({ sessionId: 'session-A', id: 'late', shellId: 'system-sh' })
+  await new Promise(resolve => setImmediate(resolve))
+  const teardown = pending.owners.get('session-A').dispose()
+  release()
+  await assert.rejects(opening, /closed during shell discovery|owner has stopped/)
+  await teardown
+  assert.equal(pending.children.length, 0)
+  await pending.service.dispose()
+})
+
+test('terminal rename is Session-bound, survives page detachment and does not alter the PTY', async () => {
+  const { service, children } = fixture()
+  await service.create({ sessionId: 'session-A', id: 'terminal-1' })
+  assert.equal(service.rename({ sessionId: 'session-A', id: 'terminal-1', name: '构建任务' }).name,
+    '构建任务')
+  assert.equal(service.list({ sessionId: 'session-A' })[0].name, '构建任务')
+  assert.equal((await service.read({ sessionId: 'session-A', id: 'terminal-1' })).name, '构建任务')
+  assert.equal((await service.create({ sessionId: 'session-A', id: 'terminal-1' })).name,
+    '构建任务')
+  assert.equal(children.length, 1)
+  assert.equal(service.list({ sessionId: 'session-B' }).length, 0)
+  assert.throws(() => service.rename({ sessionId: 'session-B', id: 'terminal-1', name: 'other' }),
+    /unavailable/)
+  const family = '👨‍👩‍👧‍👦'
+  assert.equal(service.rename({ sessionId: 'session-A', id: 'terminal-1',
+    name: family.repeat(64) }).name, family.repeat(64))
+  for (const invalid of ['', ' blank ', 'a\nname', '\x1b[31m', 'a'.repeat(65), '\u202eabc']) {
+    assert.throws(() => service.rename({ sessionId: 'session-A', id: 'terminal-1', name: invalid }),
+      /Terminal name/)
+  }
+  assert.throws(() => service.rename({ sessionId: 'session-A', id: 'terminal-1',
+    name: family.repeat(65) }), /Terminal name/)
+  assert.equal(service.list({ sessionId: 'session-A' })[0].name, family.repeat(64))
+  await service.close({ sessionId: 'session-A', id: 'terminal-1' })
+  assert.throws(() => service.rename({ sessionId: 'session-A', id: 'terminal-1', name: 'late' }),
+    /unavailable/)
+  await service.dispose()
 })
 
 test('raw input is bounded and resize waits for native acceptance', async () => {
@@ -266,6 +501,7 @@ test('unresponsive Session directory lookup fails without spawning or blocking d
     resolveDirectory: () => new Promise(() => {}), workdirTimeoutMs: 10,
   })
   await assert.rejects(service.create({ sessionId: 'session-A', id: 'missing' }), /timed out/)
+  assert.deepEqual(service.activitySnapshot(), { live: 0, pending: 0 })
   assert.equal(children.length, 0)
   await service.dispose()
 })

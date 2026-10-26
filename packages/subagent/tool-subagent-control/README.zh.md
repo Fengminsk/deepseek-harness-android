@@ -75,6 +75,8 @@ kind: "package-reference"
 
 ### 列表投影
 
+Android 受限 PTC 载体可通过 `isFirstPartyListAgentsDefinition(definition, agent)` 验证原版 `list_agents` 定义。插件在注册时弱引用记录确切的定义对象及其捕获的服务作用域；验证时还要求捕获的 Agent 注册表解析到确切的在线调用 Agent，不从工具名称或结构推断来源。Cordis 会为不同作用域提供不同的服务代理，因此载体单独核对自己的 Agent 注册表，而不比较代理对象的恒等性。载体还须核对定义对当前 Agent 可见，并绑定当前 `ToolRuntime.registrationIdentity`；单独的来源验证不会授予执行权限，也不会使已移除的注册继续有效。
+
 `list_agents` 从调用 agent 推导根 id，不使用 cursor 读取服务目录，通过在线 Agent 注册表细化每个候选的状态，并省略无法接受 `send_message` 的一次性子级。后代遍历保留每个父目录的事件顺序。未知模式产生诊断，但其目录仍可遍历；无法读取的目录产生诊断，并停止该分支。可达目录中不存在的后代无法被发现。
 
 ### 源码地图

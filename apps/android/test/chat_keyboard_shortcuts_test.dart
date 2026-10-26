@@ -20,6 +20,10 @@ void main() {
       focusComposer: () => focusRequests++,
       toggleSidebar: () => sidebarToggles++,
       openSettings: () => settingsOpens++,
+      canOpenSessionResource: () => true,
+      openFiles: () {},
+      openBrowser: () {},
+      openTerminal: () {},
       dismiss: () => false,
     )..attach();
     addTearDown(shortcuts.dispose);
@@ -65,6 +69,10 @@ void main() {
       focusComposer: () => focusRequests++,
       toggleSidebar: () => sidebarToggles++,
       openSettings: () => settingsOpens++,
+      canOpenSessionResource: () => true,
+      openFiles: () {},
+      openBrowser: () {},
+      openTerminal: () {},
       dismiss: () => false,
     )..attach();
     addTearDown(shortcuts.dispose);
@@ -99,6 +107,10 @@ void main() {
       focusComposer: () {},
       toggleSidebar: () {},
       openSettings: () {},
+      canOpenSessionResource: () => true,
+      openFiles: () {},
+      openBrowser: () {},
+      openTerminal: () {},
       dismiss: () {
         if (!dismissible) return false;
         dismissals++;
@@ -134,6 +146,10 @@ void main() {
       focusComposer: () {},
       toggleSidebar: () => toggles++,
       openSettings: () => settings++,
+      canOpenSessionResource: () => true,
+      openFiles: () {},
+      openBrowser: () {},
+      openTerminal: () {},
       dismiss: () => false,
     )..attach();
     addTearDown(shortcuts.dispose);
@@ -147,5 +163,63 @@ void main() {
     await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
     await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
     expect((toggles, settings), (1, 1));
+  });
+
+  testWidgets('resource shortcuts open only for an existing active session', (
+    tester,
+  ) async {
+    var active = true;
+    var composing = false;
+    var hasSession = false;
+    var files = 0;
+    var browser = 0;
+    var terminal = 0;
+    final shortcuts = ChatKeyboardShortcuts(
+      isActive: () => active,
+      isComposing: () => composing,
+      isEditingOtherField: () => false,
+      newChat: () {},
+      searchConversations: () {},
+      focusComposer: () {},
+      toggleSidebar: () {},
+      openSettings: () {},
+      canOpenSessionResource: () => hasSession,
+      openFiles: () => files++,
+      openBrowser: () => browser++,
+      openTerminal: () => terminal++,
+      dismiss: () => false,
+    )..attach();
+    addTearDown(shortcuts.dispose);
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyP);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyT);
+    await tester.sendKeyEvent(LogicalKeyboardKey.backquote);
+    expect((files, browser, terminal), (0, 0, 0));
+
+    hasSession = true;
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyP);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyT);
+    await tester.sendKeyEvent(LogicalKeyboardKey.backquote);
+    expect((files, browser, terminal), (1, 1, 1));
+
+    composing = true;
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyP);
+    composing = false;
+    active = false;
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyT);
+    active = true;
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.backquote);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    expect((files, browser, terminal), (1, 1, 1));
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyP);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyT);
+    await tester.sendKeyEvent(LogicalKeyboardKey.backquote);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+    expect((files, browser, terminal), (2, 2, 1));
   });
 }

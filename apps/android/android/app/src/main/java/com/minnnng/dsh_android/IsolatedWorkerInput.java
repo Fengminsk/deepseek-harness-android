@@ -1,5 +1,6 @@
 package com.minnnng.dsh_android;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
@@ -42,7 +43,22 @@ public final class IsolatedWorkerInput {
     /** Read one App-granted descriptor without replacing malformed UTF-8 or truncating content. */
     public static String readUtf8(InputStream source) throws IOException {
         if (Thread.currentThread().isInterrupted()) throw new IOException("Worker input interrupted");
-        byte[] content = source.readNBytes(MAX_TEXT_BYTES + 1);
+        ByteArrayOutputStream bounded = new ByteArrayOutputStream();
+        byte[] chunk = new byte[8192];
+        while (bounded.size() <= MAX_TEXT_BYTES) {
+            int remaining = MAX_TEXT_BYTES + 1 - bounded.size();
+            int count = source.read(chunk, 0, Math.min(chunk.length, remaining));
+            if (count < 0) break;
+            if (count == 0) {
+                int one = source.read();
+                if (one < 0) break;
+                bounded.write(one);
+            } else {
+                bounded.write(chunk, 0, count);
+            }
+            if (Thread.currentThread().isInterrupted()) throw new IOException("Worker input interrupted");
+        }
+        byte[] content = bounded.toByteArray();
         if (Thread.currentThread().isInterrupted()) throw new IOException("Worker input interrupted");
         if (content.length > MAX_TEXT_BYTES) throw new IOException("Worker text exceeds 64 KiB");
         try {
