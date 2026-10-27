@@ -14,7 +14,8 @@ import SandboxPolicy from '@deepseek-ai/dsh-sandbox-policy'
 import WorkingDirectory from '@deepseek-ai/dsh-working-directory'
 import AndroidFileSystem from '../runtime/android-filesystem.mjs'
 import { isFirstPartyLinuxDefinition } from '../runtime/tool-linux-vm.mjs'
-import { ptcLinuxProgram, runPtcLinuxAcceptance, validatePtcLinuxEvidence } from './device-runtime-acceptance/ptc-linux.mjs'
+import { ptcLinuxProgram, runPtcLinuxAcceptance, validatePtcLinuxEvidence, ptcLinuxFailureDiagnostics,
+  readPtcLinuxFailureDispatch, PtcLinuxAcceptanceFailure } from './device-runtime-acceptance/ptc-linux.mjs'
 
 const sha = value => createHash('sha256').update(value).digest('hex')
 const names = ['linux_import', 'linux_exec', 'linux_export', 'linux_inspect']
@@ -129,7 +130,15 @@ test('fixture unregisters original Linux definitions and restores policy when th
   const transport = { request() { throw new Error('Unexpected native request in registration-only test') } }
   for (let attempt = 0; attempt < 2; attempt++) {
     await assert.rejects(runPtcLinuxAcceptance({ ctx, transport, agent, workspace, appWorkspaceRoot: root,
-      nativeModule: name => import(`../runtime/${name}`), invoke, settlements: [] }), /Deliberate PTC caller failure/u)
+      nativeModule: name => import(`../runtime/${name}`), invoke, settlements: [] }), error => {
+      assert.ok(error instanceof PtcLinuxAcceptanceFailure)
+      assert.match(error.message, /Deliberate PTC caller failure/u)
+      assert.equal(error.diagnostics.phase, 'ptc-invoke')
+      assert.deepEqual(error.diagnostics.requests, [])
+      assert.deepEqual(error.diagnostics.settlements, [])
+      assert.deepEqual(error.diagnostics.cleanup, { linuxOwner: { state: 'closed' }, registrations: { state: 'closed' } })
+      return true
+    })
     assert.equal(ctx.sandboxPolicy.resolve({ session: agent.session }).mode, 'read-only')
     for (const name of names) assert.equal(ctx.tools.get(name, agent), undefined)
     assert.deepEqual(await readdir(workspace), [])
@@ -159,4 +168,44 @@ test('the exact device Python body analyzes actual host files; this is script ev
   const bytes = await readFile(join(root, 'private/output.json'))
   assert.equal(run.stdout.trim(), sha(bytes))
   assert.deepEqual(JSON.parse(bytes.toString()), { count: 4, sum: 22, sourceSha256: sha(input), nonce: 'host-script-only' })
+})
+
+test('failure diagnostics distinguish pending native RPC and durable dispatch without copying sensitive or large content', () => {
+  const e = evidence(), secret = 'unrelated-path-token-command-output', huge = secret.repeat(100000)
+  const requests = e.requests.map((row, index) => ({ ...row, startedAtMs: index,
+    completedAtMs: index + 1, params: { ...row.params, command: huge, source: huge },
+    result: { ...row.result, output: huge, detail: huge } }))
+  requests[2].result = null; delete requests[2].completedAtMs
+  const live = structuredClone(e.liveEvents)
+  for (const row of live) row.data.arguments = { content: huge }
+  const diagnostic = ptcLinuxFailureDiagnostics({ phase: 'ptc-invoke', startedAt: Date.now(), requests,
+    settlements: [{ ...e.settlement, detail: huge, outputJson: huge, token: huge }],
+    liveEvents: live, durableEvents: e.durableEvents.slice(0, 3), durableRead: { state: 'read' } })
+  assert.equal(diagnostic.requests[2].observation, 'pending')
+  assert.equal(diagnostic.requests[2].completedAtMs, null)
+  assert.equal(diagnostic.requests[1].observation, 'returned')
+  assert.equal(diagnostic.liveDispatch.length, 8)
+  assert.equal(diagnostic.durableDispatch.length, 3)
+  assert.equal(diagnostic.settlements[0].state, 'COMPLETED')
+  const encoded = JSON.stringify(diagnostic)
+  assert.ok(encoded.length < 8192)
+  assert.ok(!encoded.includes(secret))
+})
+
+test('failure diagnostic reads are bounded, read-only and close their independent Session reader', async () => {
+  let closed = 0, flushes = 0
+  const started = Date.now()
+  const ctx = { sessions: { flush() { flushes++; throw new Error('diagnostics must not flush') } },
+    sessionPersistence: { async open(id, access) {
+      assert.equal(id, 'diagnostic-session'); assert.equal(access, 'read')
+      return { async read(offset, count, { signal }) {
+        assert.equal(offset, 7); assert.equal(count, 64)
+        await new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }))
+      }, async close() { closed++ } }
+    } } }
+  const result = await readPtcLinuxFailureDispatch(ctx, { id: 'diagnostic-session' }, 7)
+  assert.equal(result.state, 'timed-out')
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(closed, 1); assert.equal(flushes, 0)
+  assert.ok(Date.now() - started < 4000)
 })

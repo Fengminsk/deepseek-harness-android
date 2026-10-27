@@ -26,4 +26,4 @@
 
 `node apps/android/tool/check-device-runtime-profile.mjs` 只验证宿主启动：启动同一 profile，看到第一个生产原生准入请求即停止，不能证明真机执行。对应的完整设备检查通过前，产品能力开关保持关闭。
 
-生产服务恢复使用另一条命令：安装匹配的 release 测试 APK 后，执行 `node apps/android/tool/acceptance-agent-service-recovery-device.mjs --serial <设备> --accept-network-toggle-and-lock`。它启动真实 `AgentService`，创建一个专用 Session，不调用模型；在手机锁屏、断网及恢复网络后核对相同的运行时 generation、Agent 进程和 Session 事件哈希。脚本临时关闭 Wi-Fi 和移动数据，在 `finally` 中恢复原开关及原亮屏／息屏状态；不改变 VPN 配置、不解锁锁屏。成功后归档专用 Session。通过只证明服务与持久化会话可用，不代表正在执行的模型请求存活或断网重试已验收。
+独立的[生产服务恢复驱动](agent-service-recovery-driver.zh.md)启动真实 `AgentService`，创建一个专用 Session，不调用模型。它在锁屏断网及恢复网络后核对相同的运行时 generation、Agent 进程和 Session 事件哈希。驱动要求明确选择 ADB／设备和新的报告路径，恢复原 Wi-Fi／移动数据开关，不唤醒或解锁手机。[OLED 保护器](device-screen-protection.zh.md)独立负责物理面板保护。成功后归档专用 Session。通过仅覆盖服务与持久化会话可用性；运行中模型请求的存活与重试仍需单独证据。

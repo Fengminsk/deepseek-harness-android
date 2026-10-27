@@ -21,7 +21,7 @@ import { registerModelFileReadGuard } from '../../runtime/model-file-read-guard.
 import { registerAndroidFilesTool } from '../../runtime/tool-android-files.mjs'
 import { registerAndroidAttachmentsTool } from '../../runtime/tool-android-attachments.mjs'
 import AndroidAttachmentStore from '../../runtime/android-attachment-store.mjs'
-import { PTC_LINUX_DEVICE_CHECK, runPtcLinuxAcceptance } from './ptc-linux.mjs'
+import { PTC_LINUX_DEVICE_CHECK, PtcLinuxAcceptanceFailure, runPtcLinuxAcceptance } from './ptc-linux.mjs'
 
 // A stored, single-file ZIP containing only "readonly archive device fixture\n".
 const archiveFixture = 'UEsDBBQAAAAAAChsW12obBxMIAAAACAAAAAOAAAAYWNjZXB0YW5jZS50eHRyZWFkb25seSBhcmNoaXZlIGRldmljZSBmaXh0dXJlClBLAQIUABQAAAAAAChsW12obBxMIAAAACAAAAAOAAAAAAAAAAAAAAAAAAAAAABhY2NlcHRhbmNlLnR4dFBLBQYAAAAAAQABADwAAABMAAAAAAA='
@@ -92,7 +92,8 @@ async function runPtcChecks({ ctx, transport, agent, workspace, callbackRouting,
   const check = async (name, action) => {
     const started = Date.now()
     try { checks.push({ name, status: 'passed', ...(await action()), elapsedMs: Date.now() - started }) }
-    catch (error) { checks.push({ name, status: 'failed', error: String(error?.message ?? error).slice(0, 1000), elapsedMs: Date.now() - started }) }
+    catch (error) { checks.push({ name, status: 'failed', error: String(error?.message ?? error).slice(0, 1000),
+      ...(error instanceof PtcLinuxAcceptanceFailure ? { diagnostics: error.diagnostics } : {}), elapsedMs: Date.now() - started }) }
   }
   const invoke = (code, signal = new AbortController().signal) => ctx.tools.execute({ name: 'android_ptc',
     callId: `ptc-device-${randomUUID()}`, arguments: { code, description: 'PTC device acceptance' }, agent, signal })

@@ -18,6 +18,7 @@ import android.os.Looper
 import android.os.Message
 import android.os.Messenger
 import android.os.PowerManager
+import android.os.SystemClock
 import org.json.JSONObject
 import org.json.JSONArray
 import java.security.MessageDigest
@@ -28,6 +29,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.atomic.AtomicBoolean
 
 /** Observes the real started AgentService and a dedicated, credential-free Session.
  * The host owns temporary device connectivity/display changes and restores them.
@@ -50,18 +52,77 @@ class AgentServiceRecoveryInstrumentation : Instrumentation() {
         val completed = CompletableFuture<JSONObject>()
         val work = Executors.newSingleThreadExecutor()
         var remote: Messenger? = null
+        val startedAt = SystemClock.elapsedRealtime()
+        val startedUptime = SystemClock.uptimeMillis()
+        val progressLock = Any()
+        val diagnosticsClosed = AtomicBoolean(false)
+        var progressStage = "instrumentation-start"
+        var progressSequence = 0
+        var runtimeSummary: JSONObject? = null
+        var runtimeObservedAt: Long? = null
+        val lastProgress = AtomicReference<JSONObject?>()
+        fun progress(stage: String? = null, runtime: JSONObject? = null) = synchronized(progressLock) {
+            if (diagnosticsClosed.get()) return@synchronized
+            if (stage != null) progressStage = stage
+            if (runtime != null) {
+                val background = runtime.getJSONObject("background")
+                val summary = JSONObject()
+                for (name in listOf("keepAwakeWhileWorking", "wakeLockHeld", "fresh"))
+                    summary.put(name, background.getBoolean(name))
+                for (name in listOf("running", "queued", "waiting", "failed"))
+                    summary.put(name, background.getInt(name))
+                for (name in listOf("backgroundJobs", "packageOperations"))
+                    summary.put(name, if (background.isNull(name)) JSONObject.NULL else background.getInt(name))
+                summary.put("taskState", background.getString("taskState"))
+                    .put("powerErrorPresent", !background.isNull("powerError"))
+                    .put("notificationErrorPresent", !background.isNull("notificationError"))
+                runtimeSummary = JSONObject().put("phase", runtime.getString("phase"))
+                    .put("bootStage", runtime.getString("bootStage")).put("nodeStarted", runtime.getBoolean("nodeStarted"))
+                    .put("background", summary)
+                runtimeObservedAt = SystemClock.elapsedRealtime() - startedAt
+            }
+            val value = JSONObject().put("schema", 1).put("token", token).put("stage", progressStage)
+                .put("sequence", ++progressSequence).put("pid", android.os.Process.myPid())
+                .put("elapsedMs", SystemClock.elapsedRealtime() - startedAt)
+                .put("uptimeMs", SystemClock.uptimeMillis() - startedUptime)
+                .put("runtimeObservedAtMs", runtimeObservedAt ?: JSONObject.NULL)
+                .put("runtime", runtimeSummary ?: JSONObject.NULL)
+            lastProgress.set(value)
+            sendStatus(4, Bundle().apply { putString("progress", value.toString()) })
+        }
+        val statusProbeId = "recovery-status-$token"
+        fun observeRuntime(state: JSONObject) {
+            progress(runtime = state)
+            if (state.optString("phase") == "ready") ready.complete(state)
+            else if (state.optString("phase") == "failed") ready.completeExceptionally(IllegalStateException("Agent runtime failed to start"))
+        }
         val replies = Messenger(Handler(Looper.getMainLooper()) { message ->
             try {
                 val frame = JSONObject(WirePayload.decode(message.data))
-                if (frame.has("id")) pending[frame.getString("id")]?.complete(frame)
+                if (frame.optString("id") == statusProbeId) {
+                    if (frame.has("result")) observeRuntime(frame.getJSONObject("result"))
+                } else if (frame.has("id")) pending[frame.getString("id")]?.complete(frame)
                 else if (frame.optString("method") == "runtime.status") {
-                    val state = frame.getJSONObject("params")
-                    if (state.optString("phase") == "ready") ready.complete(state)
-                    else if (state.optString("phase") == "failed") ready.completeExceptionally(IllegalStateException("Agent runtime failed to start"))
+                    observeRuntime(frame.getJSONObject("params"))
                 }
             } catch (failure: Throwable) { completed.completeExceptionally(failure) }
             true
         })
+        val probeHandler = Handler(Looper.getMainLooper())
+        val probing = AtomicBoolean(false)
+        val probe = object : Runnable {
+            override fun run() = synchronized(progressLock) {
+                if (!probing.get()) return@synchronized
+                try {
+                    progress()
+                    val payload = WirePayload.encode(JSONObject().put("jsonrpc", "2.0").put("id", statusProbeId)
+                        .put("method", "runtime.status").put("params", JSONObject()).toString())
+                    try { remote!!.send(Message.obtain(null, 2).apply { data = payload; replyTo = replies }) }
+                    finally { WirePayload.close(payload) }
+                } catch (failure: Throwable) { completed.completeExceptionally(failure) }
+                if (probing.get()) probeHandler.postDelayed(this, 5000)
+            }
+        }
         fun call(method: String, params: JSONObject = JSONObject()): JSONObject {
             val id = UUID.randomUUID().toString()
             val response = CompletableFuture<JSONObject>()
@@ -82,7 +143,11 @@ class AgentServiceRecoveryInstrumentation : Instrumentation() {
             override fun onServiceConnected(name: ComponentName, binder: IBinder) {
                 val service = Messenger(binder)
                 remote = service
-                try { service.send(Message.obtain(null, 1).apply { replyTo = replies }); connected.complete(service) }
+                try {
+                    service.send(Message.obtain(null, 1).apply { replyTo = replies })
+                    progress("connected")
+                    connected.complete(service)
+                }
                 catch (failure: Throwable) { connected.completeExceptionally(failure) }
             }
             override fun onServiceDisconnected(name: ComponentName) {
@@ -96,20 +161,35 @@ class AgentServiceRecoveryInstrumentation : Instrumentation() {
         var success = false
         val lastObservation = AtomicReference<JSONObject?>()
         try {
+            progress("instrumentation-start")
+            progress("service-start-requested")
             uiAutomation.adoptShellPermissionIdentity("android.permission.START_FOREGROUND_SERVICES_FROM_BACKGROUND")
             try { app.startForegroundService(Intent().setClassName(app.packageName, "${app.packageName}.AgentService")) }
             finally { uiAutomation.dropShellPermissionIdentity() }
+            progress("service-started")
+            progress("bind-requested")
             bound = app.bindService(Intent().setClassName(app.packageName, "${app.packageName}.AgentService"), connection, Context.BIND_AUTO_CREATE)
             check(bound)
+            progress("bound")
             connected.get(20, TimeUnit.SECONDS)
+            probing.set(true)
+            probeHandler.post(probe)
+            progress("runtime-ready-wait")
             val startup = ready.get(120, TimeUnit.SECONDS)
+            progress("runtime-ready")
             val generation = startup.getString("generation")
             val sessionId = "android-recovery-$token"
             val address = JSONObject().put("sessionId", sessionId)
+            progress("session-ensure")
             check(call("session.ensure", address).getBoolean("created")) { "Recovery fixture Session already exists" }
+            progress("session-ensured")
+            progress("session-rename")
             call("library.sessionRename", JSONObject().put("sessionId", sessionId).put("title", "设备恢复验收 $token"))
+            progress("session-renamed")
+            progress("session-read")
             val baseline = call("session.read", address).getJSONArray("events")
             check(baseline.length() > 0) { "Recovery fixture has no durable Session event" }
+            progress("session-read-complete")
             fun digest(value: String) = MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8))
                 .joinToString("") { "%02x".format(it) }
             val expected = digest(baseline.toString())
@@ -148,6 +228,7 @@ class AgentServiceRecoveryInstrumentation : Instrumentation() {
                     .put("unknownCapabilityNetworks", counts.unknownCapabilityNetworks)
             }
             fun checkpoint(stage: String): JSONObject {
+                progress("checkpoint-$stage")
                 val state = call("runtime.status")
                 check(state.getString("phase") == "ready" && state.getString("generation") == generation)
                 check(call("runtime.info").getString("platform") == "android")
@@ -167,6 +248,7 @@ class AgentServiceRecoveryInstrumentation : Instrumentation() {
                 }
                 if (stage == "restored") check(networks.getInt("unknownCapabilityNetworks") == 0 &&
                     networks.getInt("usableUnderlyingInternetNetworks") > 0) { "Restored checkpoint lacks usable underlying internet; evidence=$networks" }
+                progress("checkpoint-$stage-complete")
                 return result
             }
             receiver = object : BroadcastReceiver() {
@@ -183,7 +265,9 @@ class AgentServiceRecoveryInstrumentation : Instrumentation() {
                             } else if (stage == "restored") {
                                 check(stages.compareAndSet(1, 2))
                                 val result = checkpoint("restored")
+                                progress("session-archive")
                                 call("library.sessionArchive", JSONObject().put("sessionId", sessionId).put("archived", true))
+                                progress("session-archived")
                                 completed.complete(result)
                             } else error("Unknown recovery stage")
                         } catch (failure: Throwable) { completed.completeExceptionally(failure) }
@@ -193,6 +277,7 @@ class AgentServiceRecoveryInstrumentation : Instrumentation() {
             app.registerReceiver(receiver, IntentFilter("${app.packageName}.acceptance.$token"),
                 "android.permission.DUMP", Handler(Looper.getMainLooper()), Context.RECEIVER_EXPORTED)
             registered = true
+            progress("ready")
             sendStatus(1, Bundle().apply { putString("ready", JSONObject().put("token", token).put("generation", generation)
                 .put("sessionId", sessionId).put("eventsSha256", expected).put("eventCount", baseline.length()).toString()) })
             report.putString("result", completed.get(180, TimeUnit.SECONDS).toString())
@@ -210,11 +295,17 @@ class AgentServiceRecoveryInstrumentation : Instrumentation() {
             lastObservation.get()?.let { report.putString("lastObservation", it.toString()) }
         }
         finally {
+            synchronized(progressLock) {
+                diagnosticsClosed.set(true)
+                probing.set(false)
+                probeHandler.removeCallbacks(probe)
+            }
             if (registered) app.unregisterReceiver(receiver)
             try { remote?.send(Message.obtain(null, 3).apply { replyTo = replies }) } catch (_: Throwable) {}
             if (bound) app.unbindService(connection)
             work.shutdownNow()
         }
+        lastProgress.get()?.let { report.putString("lastProgress", it.toString()) }
         report.putString("passed", success.toString())
         finish(if (success) Activity.RESULT_OK else Activity.RESULT_CANCELED, report)
     }

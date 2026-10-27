@@ -18,7 +18,11 @@ node apps/android/tool/device-screen-protection.mjs --adb D:\Programs\adb\adb.ex
 
 适配器在启动原生验收前预留新的报告文件，并写入不可覆盖的 `<report>.original.json`，保存设备序列号、随机标记及精确的 `wifi_on`／`mobile_data` 配置标志。已有报告和原始快照不会被覆盖。两项标志必须为 `0` 或 `1`，且至少一项开启；屏幕报告与恢复报告必须使用不同路径。配置快照不声称由哪张 SIM 卡或哪种传输方式提供已验证连接，原生验收会另外观察 Android 的已验证网络数量。
 
+仪器为服务启动、绑定、运行时就绪、会话创建／重命名／读取及检查点发送绑定 token 的进度。宿主将最后完整记录保存为 `lastProgress`，将其阶段保存为 `nativeStage`，超时也会保留。固定字段包括序号、PID、单调 elapsed／uptime 计时以及筛选后的运行时／后台摘要；未知字段、阶段、令牌及重复序号会被拒绝，不保留其内容。elapsed 包含设备休眠，uptime 不包含；两种计时都不能单独证明某个进程被冻结。主 Looper 运行时每五秒读取既有原生 `runtime.status`，包括 `bootStage`、任务数量和 wake lock 状态；`runtimeObservedAtMs` 区分新回执与保留的旧快照。这项观察不获取 wake lock，也不改变生产启动或任务策略。宿主的 150 秒就绪等待包括原生运行时等待及后续专用会话 RPC，并非只测量 Node 启动时间。不完整行继续等待，不合法进度不能阻止独立清理。
+
 每次观察必须保留原会话 ID、运行代次、事件数量及摘要，并报告 `locked=true`、`interactive=false`；正式 Agent 进程 PID 也必须不变。第 2 版网络证据记录匿名网络句柄、SDK 已知传输枚举、INTERNET／VALIDATED／VPN／NOT_SUSPENDED 标志、App 默认网络及独立统计，不输出能力对象整串、SSID、IP 地址或 UID 名单。仅包含在 AndroidTest 中的 `RecoveryNetworkEvidence.java` 按 INTERNET + VALIDATED + 非 VPN 分类，不限制传输方式，因此以太网、USB 和其他互联网传输也会计入。宿主会根据逐项事实重新核对所有统计。
+
+宿主在就绪后、离线检查点和恢复网络观察后检查相同的 Agent PID，最后一次检查位于允许仪器结束的 `restored` 命令之前。`processChecks` 保留这三次观察。最终原生检查点仍须保持同一会话／代次／摘要及锁屏状态，归档专用会话，返回唯一成功结果，并实际关闭宿主进程。预期的仪器结束后不要求目标 PID 继续存活；最终进程退役由清理阶段独立检查。`timing` 记录宿主单调时钟下的检查点偏移和在线至恢复观察的跨度。15 秒观察限制是回执等待上限，不是驻留时间；`minimumDwellMs` 为零。这些离散观察不能证明持续 15 秒离线、长时间休眠／Doze 存活或活跃任务存活。
 
 恢复网络前，两项配置标志必须实际读到关闭，且不能残留任何非 VPN 的 INTERNET 网络。没有 INTERNET 能力的 IMS 或常驻的已验证 VPN 覆盖层不代表可用的底层互联网，但仍保留在证据中。能力未知或尚未验证的非 VPN INTERNET 网络也会阻止断网验收，因为未经验证不等于不可访问。最初及恢复后的检查点要求至少存在一个 INTERNET + VALIDATED 非 VPN 网络，且没有未知能力。这些是 Android 能力观察，不是 HTTP 探测或付费模型请求。最终原生结果必须唯一且成功，保留相同会话证据，其 ADB 进程还必须实际成功关闭。
 

@@ -4,7 +4,7 @@ import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import { spawn } from 'node:child_process'
 import { resolve } from 'node:path'
-import { describeRecoveryFailure, parseRecoveryKeyguard, parseRecoveryResult, runRecoveryAcceptance, validateRecoveryNetworks } from './agent-service-recovery-driver.mjs'
+import { describeRecoveryFailure, parseRecoveryKeyguard, parseRecoveryProgress, parseRecoveryResult, runRecoveryAcceptance, validateRecoveryNetworks } from './agent-service-recovery-driver.mjs'
 import { parseRecoveryArguments, startRecoveryAdb } from './acceptance-agent-service-recovery-device.mjs'
 
 const token = 'a'.repeat(32)
@@ -27,11 +27,12 @@ const offlineEvidence = () => evidence([vpn, ims], { validated: 2, internet: 1, 
 
 function fixture(options = {}) {
   const events = [], completion = Promise.withResolvers()
-  let text = '', remainder = '', clock = 0, pidCalls = 0
+  let text = '', remainder = '', clock = 0, pidCalls = 0, nativeFinished = false
   const network = { wifi: '1', data: '0', ...options.network }
   const checkpoint = stage => ({ ...ready, stage, networkEvidence: network.wifi === '1' || network.data === '1'
     ? onlineEvidence() : (options.offlineEvidence ?? offlineEvidence()),
-    interactive: false, locked: true, ...(stage === 'offline' ? options.offline : {}) })
+    interactive: false, locked: true, ...(stage === 'offline' ? options.offline : {}),
+    ...(stage === 'restored' ? options.restored : {}) })
   const emit = (category, field, value) => { text += `INSTRUMENTATION_${category}: ${field}=${JSON.stringify(value)}\n` }
   const io = {
     events, network, completion, now: () => clock,
@@ -44,7 +45,12 @@ function fixture(options = {}) {
       if (args.join(' ') === 'dumpsys window policy') return options.policy ?? policy
       if (args[0] === 'settings') return network[args[3] === 'wifi_on' ? 'wifi' : 'data']
       if (args[0] === 'svc') { network[args[1]] = args[2] === 'enable' ? '1' : '0'; return '' }
-      if (args[0] === 'pidof') return options.changedPid && ++pidCalls > 1 ? '43' : '42'
+      if (args[0] === 'pidof') {
+        pidCalls++
+        if ((options.pidGoneAfterFinish && nativeFinished) || options.pidMissingAt === pidCalls)
+          throw new Error('Agent PID is absent')
+        return (options.changedPid && pidCalls > 1) || options.pidChangedAt === pidCalls ? '43' : '42'
+      }
       if (args[0] === 'ps') return options.liveProcess ? 'PID ARGS\n42 com.minnnng.dsh_android:agent\n' : 'PID ARGS\n'
       if (args[0] === 'am' && args[1] === 'force-stop') return ''
       if (args[0] === 'am' && args[1] === 'broadcast') {
@@ -60,6 +66,7 @@ function fixture(options = {}) {
           } else emit('STATUS', 'checkpoint', checkpoint('offline'))
         }
         if (stage === 'restored') {
+          nativeFinished = true
           emit('RESULT', 'result', checkpoint('restored'))
           text += 'INSTRUMENTATION_RESULT: passed=true\nINSTRUMENTATION_CODE: -1\n'
           if (!options.neverClose) completion.resolve({ code: 0, signal: null })
@@ -70,7 +77,8 @@ function fixture(options = {}) {
     },
     instrument: actualToken => {
       assert.equal(actualToken, token); events.push(['instrument'])
-      emit('STATUS', 'ready', { ...ready, ...options.ready })
+      for (const value of options.progress ?? []) emit('STATUS', 'progress', value)
+      if (!options.noReady) emit('STATUS', 'ready', { ...ready, ...options.ready })
       if (options.partialReady) { remainder = text.slice(-5); text = text.slice(0, -5) }
       return { pid: 1234, closed: completion.promise, output: () => text, transcript: () => text,
         stop: async () => { events.push(['stop-child']); if (!options.neverClose) completion.resolve({ code: -9, signal: 'SIGKILL' }) },
@@ -81,6 +89,106 @@ function fixture(options = {}) {
 }
 
 const run = (io, options = {}) => runRecoveryAcceptance(io, { token, signal: new AbortController().signal, budgets, ...options })
+
+const progress = (overrides = {}) => ({ schema: 1, token, stage: 'runtime-ready-wait', sequence: 1, pid: 41,
+  elapsedMs: 25, uptimeMs: 20, runtimeObservedAtMs: 24,
+  runtime: { phase: 'starting', bootStage: 'preparing-assets', nodeStarted: false,
+    background: { keepAwakeWhileWorking: true, wakeLockHeld: false, fresh: false, running: 0, queued: 0,
+      waiting: 0, failed: 0, backgroundJobs: null, packageOperations: null, taskState: 'starting',
+      powerErrorPresent: false, notificationErrorPresent: false } }, ...overrides })
+const progressLine = value => `INSTRUMENTATION_STATUS: progress=${JSON.stringify(value)}\n`
+
+test('progress retains the last complete identity-bound stage and separates elapsed from awake time', () => {
+  const first = progress(), last = progress({ stage: 'session-read', sequence: 2, elapsedMs: 100000, uptimeMs: 3000 })
+  const output = progressLine(first) + progressLine(last)
+  assert.deepEqual(parseRecoveryProgress(output + progressLine(progress({ sequence: 3 })).slice(0, -4), token), last)
+  assert.equal(parseRecoveryProgress('INSTRUMENTATION_STATUS: progress={', token), null)
+  assert.deepEqual(parseRecoveryProgress(progressLine(progress({ runtime: null, runtimeObservedAtMs: null })), token).runtime, null)
+})
+
+test('progress rejects foreign tokens, arbitrary private fields, invalid states and replayed sequence', () => {
+  const original = progress()
+  for (const value of [progress({ token: 'b'.repeat(32) }), progress({ stage: 'unknown' }), progress({ elapsedMs: -1 }),
+    progress({ elapsedMs: 3_600_001 }), progress({ account: 'private-account' }),
+    progress({ runtime: { ...original.runtime, error: 'private-message' } }),
+    progress({ runtime: { ...original.runtime, background: { ...original.runtime.background, overlay: {} } } }),
+    progress({ runtime: { ...original.runtime, background: { ...original.runtime.background, running: 0.5 } } }),
+    progress({ runtime: { ...original.runtime, bootStage: 'unknown' } }), progress({ runtimeObservedAtMs: 26 }),
+    progress({ runtime: null }), progress({ pid: 0 })]) {
+    assert.throws(() => parseRecoveryProgress(progressLine(value), token), error =>
+      !error.message.includes('private-account') && !error.message.includes('private-message'))
+  }
+  for (const next of [original, progress({ sequence: 2, pid: 42 }), progress({ sequence: 2, uptimeMs: 19 }),
+    progress({ sequence: 2, elapsedMs: 24 })])
+    assert.throws(() => parseRecoveryProgress(progressLine(original) + progressLine(next), token))
+  assert.throws(() => parseRecoveryProgress('INSTRUMENTATION_STATUS: progress=private-content\n', token),
+    { message: 'Recovery progress JSON is invalid' })
+})
+
+test('startup timeout keeps the precise native wait position without claiming service or task failure', async () => {
+  const last = progress({ stage: 'session-read', sequence: 2, elapsedMs: 90000, uptimeMs: 1000 })
+  last.runtime = { ...last.runtime, phase: 'ready', bootStage: 'ready', nodeStarted: true }
+  const io = fixture({ noReady: true, progress: [progress(), last] })
+  await assert.rejects(run(io), error => {
+    assert.equal(error.recovery.result, 'unknown')
+    assert.equal(error.recovery.phase, 'startup')
+    assert.equal(error.recovery.nativeStage, 'session-read')
+    assert.deepEqual(error.recovery.lastProgress, last)
+    assert.equal(error.retirement.confirmed, true)
+    return true
+  })
+  assert.ok(!io.events.some(event => event[0] === 'svc'))
+})
+
+test('normal native finish may retire the target PID after the final live-process check', async () => {
+  const io = fixture({ pidGoneAfterFinish: true })
+  const result = await run(io)
+  assert.equal(result.result, 'pass')
+  const finish = io.events.findIndex(event => event[1] === 'broadcast' && event.at(-1) === 'restored')
+  const pidChecks = io.events.flatMap((event, index) => event[0] === 'pidof' ? [index] : [])
+  assert.equal(pidChecks.length, 3)
+  assert.ok(pidChecks.every(index => index < finish), 'all process survival checks precede permission to finish')
+  assert.ok(io.events.slice(finish + 1).some(event => event[0] === 'ps'), 'actual retirement remains independently observed')
+})
+
+test('an Agent PID missing or changed before final completion cannot receive permission to finish', async () => {
+  for (const options of [{ pidMissingAt: 3 }, { pidChangedAt: 3 }]) {
+    const io = fixture(options)
+    await assert.rejects(run(io), error => error.recovery.result === 'unknown' && error.retirement.confirmed)
+    assert.ok(!io.events.some(event => event[1] === 'broadcast' && event.at(-1) === 'restored'))
+  }
+})
+
+test('a live PID before finish cannot replace the final native Session, generation and lock evidence', async () => {
+  for (const restored of [{ sessionId: 'foreign' }, { generation: 'replacement' },
+    { eventsSha256: 'c'.repeat(64) }, { eventCount: 2 }, { locked: false }, { interactive: true }]) {
+    const io = fixture({ restored, pidGoneAfterFinish: true })
+    await assert.rejects(run(io), error => error.recovery.result === 'unknown' && error.retirement.confirmed &&
+      error.recovery.processChecks.length === 3)
+  }
+})
+
+test('reported checkpoint spans are measured, with no invented minimum observation dwell', async () => {
+  const result = await run(fixture({ pidGoneAfterFinish: true }))
+  assert.deepEqual(result.processChecks.map(value => value.stage), ['ready', 'offline', 'restored-before-finish'])
+  assert.ok(result.processChecks.every(value => value.pid === '42'))
+  const { timing } = result, times = Object.values(timing.checkpoints)
+  assert.equal(timing.clock, 'host-monotonic')
+  assert.equal(timing.minimumDwellMs, 0)
+  assert.equal(timing.observationTimeoutMs, budgets.observation)
+  assert.ok(times.every((value, index) => value >= 0 && (index === 0 || value >= times[index - 1])))
+  assert.equal(timing.observedCheckpointSpanMs, timing.checkpoints.restored - timing.checkpoints.online)
+  assert.ok(timing.observedCheckpointSpanMs < timing.observationTimeoutMs)
+  assert.ok(result.processChecks.every(value => value.elapsedMs <= timing.checkpoints.finishRequested))
+  assert.ok(timing.checkpoints.nativeFinished >= timing.checkpoints.finishRequested)
+})
+
+test('invalid progress fails acceptance without preventing independent process cleanup', async () => {
+  const io = fixture({ noReady: true, progress: [progress({ token: 'b'.repeat(32) })] })
+  await assert.rejects(run(io), error => error.recovery.result === 'unknown' && error.retirement.confirmed &&
+    error.recovery.lastProgress === undefined && error.recovery.nativeFailure.progressFailure !== undefined)
+  assert.ok(io.events.some(event => event[1] === 'force-stop'))
+})
 
 test('keyguard parsing is scoped and rejects ambiguous or unknown lock state', () => {
   assert.equal(parseRecoveryKeyguard(policy), true)

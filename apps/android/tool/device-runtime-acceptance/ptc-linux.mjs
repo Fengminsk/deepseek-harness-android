@@ -9,6 +9,64 @@ export const PTC_LINUX_DEVICE_CHECK = 'reviewed-ptc-linux-import-analysis-export
 const names = ['linux_import', 'linux_exec', 'linux_export', 'linux_inspect']
 const sha256 = value => createHash('sha256').update(value).digest('hex')
 
+const diagnosticText = value => typeof value === 'string' ? value.slice(0, 96) : null
+const diagnosticError = value => typeof value === 'string' && /^[A-Za-z][A-Za-z0-9_.:/-]{0,63}$/u.test(value) ? value : 'unclassified'
+const diagnosticFacts = value => Object.fromEntries(['status', 'state', 'exitCode', 'guestUid',
+  'diskCommitted', 'filePublished', 'retirementConfirmed', 'blocked', 'needsReview'].flatMap(key => {
+  const fact = value?.[key]
+  return typeof fact === 'boolean' || Number.isSafeInteger(fact) || fact === null
+    || ['status', 'state'].includes(key) && typeof fact === 'string' ? [[key, typeof fact === 'string' ? fact.slice(0, 48) : fact]] : []
+}))
+
+/** Project only bounded identities and state; never copy commands, paths, messages or tool output. */
+export function ptcLinuxFailureDiagnostics({ phase, startedAt, requests, settlements, liveEvents,
+  durableEvents, durableRead }) {
+  const dispatches = events => events.filter(event => ['tool/ptc-dispatch-start', 'tool/ptc-dispatch'].includes(event.type))
+    .slice(-8).map(event => ({ seq: event.seq, type: event.type,
+      name: diagnosticText(event.data.name), subCallId: diagnosticText(event.data.subCallId),
+      ...(typeof event.data.isError === 'boolean' ? { isError: event.data.isError } : {}),
+      ...(event.data.error ? { errorCode: diagnosticError(event.data.error.code) } : {}) }))
+  return { version: 1, phase: diagnosticText(phase), elapsedMs: Date.now() - startedAt,
+    requests: requests.slice(-8).map(row => ({ method: diagnosticText(row.method),
+      id: diagnosticText(row.params.id), sessionId: diagnosticText(row.params.sessionId),
+      startedAtMs: row.startedAtMs, completedAtMs: row.completedAtMs ?? null,
+      observation: row.result !== null ? 'returned' : row.errorCode ? 'rejected' : 'pending',
+      ...(row.errorCode ? { errorCode: diagnosticError(row.errorCode) } : {}),
+      result: diagnosticFacts(row.result) })),
+    settlements: settlements.slice(-2).map(row => ({ runId: diagnosticText(row.runId), ...diagnosticFacts(row) })),
+    liveDispatch: dispatches(liveEvents), durableDispatch: dispatches(durableEvents), durableRead }
+}
+
+export class PtcLinuxAcceptanceFailure extends Error {
+  constructor(cause, diagnostics) {
+    super(String(cause?.message ?? cause).slice(0, 500), { cause })
+    this.diagnostics = diagnostics
+  }
+}
+
+// Diagnostic reads must not flush or wait indefinitely behind the failed call.
+// The original native/ToolRuntime owners still own cancellation and retirement.
+export async function readPtcLinuxFailureDispatch(ctx, session, offset) {
+  const controller = new AbortController(), { signal } = controller
+  let timer
+  const timeout = new Promise(resolve => { timer = setTimeout(() => {
+    controller.abort(new Error('Bounded diagnostic read expired'))
+    resolve({ events: [], state: 'timed-out' })
+  }, 2000) })
+  const read = (async () => {
+    let reader
+    try {
+      reader = await ctx.sessionPersistence.open(session.id, 'read', { signal })
+      const { events } = await reader.read(offset, 64, { signal })
+      return { events, state: 'read' }
+    } catch (error) { return { events: [], state: signal.aborted ? 'timed-out' : 'unavailable',
+      errorCode: diagnosticError(error?.code ?? error?.name) } }
+    finally { await reader?.close() }
+  })().catch(error => ({ events: [], state: 'unavailable', errorCode: diagnosticError(error?.code ?? error?.name) }))
+  try { return await Promise.race([read, timeout]) }
+  finally { clearTimeout(timer) }
+}
+
 /** Build the device program; only original reviewed tools cross the guest boundary. */
 export function ptcLinuxProgram({ source, destination, guestInput, guestOutput }) {
   const python = [
@@ -132,6 +190,8 @@ export function validatePtcLinuxEvidence({ result, settlement, requests, liveEve
 /** Use the installed native bridge; no simulated RPC, preboot or alternate file publication. */
 export async function runPtcLinuxAcceptance({ ctx, transport, agent, workspace, appWorkspaceRoot,
   nativeModule, invoke, settlements }) {
+  const startedAt = Date.now()
+  let phase = 'setup'
   assert.equal(typeof appWorkspaceRoot, 'string')
   appWorkspaceRoot = realpathSync(appWorkspaceRoot)
   workspace = realpathSync(workspace)
@@ -142,10 +202,13 @@ export async function runPtcLinuxAcceptance({ ctx, transport, agent, workspace, 
   ])
   const requests = []
   const owner = new NativeLinuxVm({ async request(method, params, signal) {
-    const row = { method, params, result: null }
+    const row = { method, params, result: null, startedAtMs: Date.now() - startedAt }
     requests.push(row)
-    row.result = await transport.request(method, params, signal)
-    return row.result
+    try {
+      row.result = await transport.request(method, params, signal)
+      return row.result
+    } catch (error) { row.errorCode = error?.code ?? error?.name ?? 'request-rejected'; throw error }
+    finally { row.completedAtMs = Date.now() - startedAt }
   } })
   const token = randomUUID(), source = `ptc-linux-input-${token}.json`, destination = `ptc-linux-output-${token}.json`
   const guestInput = `ptc-${token}/input.json`, guestOutput = `ptc-${token}/output.json`
@@ -154,7 +217,9 @@ export async function runPtcLinuxAcceptance({ ctx, transport, agent, workspace, 
   const expectedBytes = Buffer.from(`${JSON.stringify({ count: 4, sum: 22, sourceSha256: sha256(inputBytes), nonce: token })}\n`)
   const originalMode = ctx.sandboxPolicy.resolve({ session: agent.session }).mode
   const liveEvents = []
-  let fiber, stopObserving
+  let before = agent.session.seq
+  const priorSettlements = settlements.length
+  let fiber, stopObserving, failure
   try {
     // A disposable registration fiber keeps all mode's later Linux owner separate.
     fiber = await ctx.plugin({ name: 'ptc-device-linux-tools',
@@ -167,29 +232,50 @@ export async function runPtcLinuxAcceptance({ ctx, transport, agent, workspace, 
     } })
     setSandboxMode(agent.session, 'workspace-write')
     await writeFile(hostInput, inputBytes, { flag: 'wx' })
-    const before = agent.session.seq, priorSettlements = settlements.length
+    before = agent.session.seq
     stopObserving = ctx.on('session/event', (session, event) => {
       if (session === agent.session) liveEvents.push(event)
     })
+    phase = 'ptc-invoke'
     const result = await invoke(ptcLinuxProgram({ source, destination, guestInput, guestOutput }))
     assert.equal(result.isError, false, JSON.stringify(result.error))
     assert.equal(settlements.length, priorSettlements + 1)
+    phase = 'session-flush-after-result'
     assert.equal(await ctx.sessions.flush(agent.session), true)
+    phase = 'session-read-after-flush'
     const reader = await ctx.sessionPersistence.open(agent.session.id, 'read')
     let events
     try { ({ events } = await reader.read(before, 10000)) } finally { await reader.close() }
+    phase = 'evidence-validation'
     return validatePtcLinuxEvidence({ result, settlement: settlements.at(-1), requests,
       liveEvents, durableEvents: events,
       fileBytes: await readFile(hostOutput), inputBytes, expectedBytes,
       sessionId: String(agent.session.id), appUid: process.getuid(), hostInput, hostOutput, guestInput, guestOutput,
       nativeInput: relative(appWorkspaceRoot, hostInput).split(sep).join('/'),
       nativeOutput: relative(appWorkspaceRoot, hostOutput).split(sep).join('/') })
+  } catch (error) {
+    const { events, ...durableRead } = await readPtcLinuxFailureDispatch(ctx, agent.session, before)
+    failure = new PtcLinuxAcceptanceFailure(error, ptcLinuxFailureDiagnostics({ phase, startedAt,
+      requests, settlements: settlements.slice(priorSettlements), liveEvents, durableEvents: events, durableRead }))
+    throw failure
   } finally {
     stopObserving?.()
     setSandboxMode(agent.session, originalMode)
-    try { await owner.dispose() } finally { await fiber?.dispose() }
+    const cleanup = async (name, action) => {
+      try { await action(); if (failure) (failure.diagnostics.cleanup ??= {})[name] = { state: 'closed' } }
+      catch (error) {
+        failure ??= new PtcLinuxAcceptanceFailure(error, ptcLinuxFailureDiagnostics({ phase: 'cleanup', startedAt,
+          requests, settlements: settlements.slice(priorSettlements), liveEvents, durableEvents: [],
+          durableRead: { state: 'not-read' } }))
+        const states = failure.diagnostics.cleanup ??= {}
+        states[name] = { state: 'unconfirmed', errorCode: diagnosticError(error?.code ?? error?.name) }
+      }
+    }
+    await cleanup('linuxOwner', () => owner.dispose())
+    await cleanup('registrations', () => fiber?.dispose())
     for (const file of [hostInput, hostOutput]) {
       try { await unlink(file) } catch (error) { if (error?.code !== 'ENOENT') throw error }
     }
+    if (failure) throw failure
   }
 }
