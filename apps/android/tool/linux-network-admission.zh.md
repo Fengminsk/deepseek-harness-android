@@ -4,7 +4,7 @@
 
 ## 模型请求
 
-可选的 [Linux 准入服务](../runtime/linux-network-admission.mjs) 为 `linux_exec` 增加 `networkHosts` 与 `networkCallLimit`。两者必须同时提供：1–32 个不重复的小写 ASCII 公网 DNS 名，以及 1–64 次 HTTPS GET 请求。拒绝通配符、IP 字面量、URL、本地用途域名和尾随点。这些字段仅描述申请范围。省略时命令保持离线；`sandboxPolicy.networkAllow` 不代表用户批准。App 选择的持久化策略独立生效，只读会话仍丢弃磁盘改动。
+可选的 [Linux 准入服务](../runtime/linux-network-admission.mjs) 为 `linux_exec` 增加 `networkHosts` 与 `networkCallLimit`。正式注册的 `LINUX_VM_NETWORK_DEVICE_ACCEPTED=false` 使该所有者不被组合、这些参数不对模型暴露，与已开放的离线 Linux 工具独立。在显式准入的组合中，两者必须同时提供：1–32 个不重复的小写 ASCII 公网 DNS 名，以及 1–64 次 HTTPS GET 请求。拒绝通配符、IP 字面量、URL、本地用途域名和尾随点。这些字段仅描述申请范围。省略时命令保持离线；`sandboxPolicy.networkAllow` 不代表用户批准。App 选择的持久化策略独立生效，只读会话仍丢弃磁盘改动。
 
 该路径支持客体 `dsh-fetch` 客户端通过 App HTTPS 代理执行请求，不提供客体套接字、自定义请求头、上传、包管理器或通用 curl/Git 联网。响应正文上限为 64 KiB，重定向仍需匹配已批准的精确域名。产品注册还要求独立的原生／设备验收设置通过，并显式组合联网准入服务。源码测试不会开启该设置。
 

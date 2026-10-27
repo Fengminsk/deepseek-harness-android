@@ -4,6 +4,7 @@ import android.app.Activity
 import android.app.Instrumentation
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.RandomAccessFile
@@ -24,13 +25,24 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
     private var foregroundCarrier = "activity"
     private var ptcPhase: String? = null
     private var ptcCaseId: String? = null
+    private var workflowPhase: String? = null
+    private var workflowCaseId: String? = null
     private var processStopConfirmed = false
+    private var expectWorkflow = false
     override fun onCreate(arguments: Bundle?) {
         super.onCreate(arguments)
         suite = arguments?.getString("suite") ?: "workflow"
         foregroundCarrier = arguments?.getString("foregroundCarrier") ?: "activity"
         require(foregroundCarrier in setOf("activity", "service"))
-        require(suite in setOf("workflow", "ptc", "linux", "all", "ptc-process-death", "ptc-saf"))
+        require(suite in setOf("workflow", "ptc", "linux", "all", "ptc-process-death", "ptc-saf",
+            "workflow-deadline", "workflow-process-death", "production-profile", "model-transport-recovery"))
+        if (suite in setOf("workflow-deadline", "workflow-process-death", "production-profile", "model-transport-recovery"))
+            require(foregroundCarrier == "service")
+        val workflowExpectation = arguments?.getString("expectWorkflow")
+        if (workflowExpectation != null) {
+            require(suite == "production-profile" && workflowExpectation in setOf("true", "false"))
+            expectWorkflow = workflowExpectation == "true"
+        }
         if (suite == "ptc-process-death") {
             ptcPhase = arguments?.getString("phase")
             require(ptcPhase in setOf("prepare", "recover"))
@@ -39,11 +51,42 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
             processStopConfirmed = arguments?.getString("processStopConfirmed") == "true"
             require(processStopConfirmed == (ptcPhase == "recover"))
         }
+        if (suite == "workflow-process-death") {
+            workflowPhase = arguments?.getString("phase")
+            require(workflowPhase in setOf("prepare", "recover"))
+            workflowCaseId = requireNotNull(arguments?.getString("caseId"))
+            require(UUID.fromString(workflowCaseId).toString() == workflowCaseId && UUID.fromString(workflowCaseId).version() == 4)
+            processStopConfirmed = arguments?.getString("processStopConfirmed") == "true"
+            require(processStopConfirmed == (workflowPhase == "recover"))
+        }
         start()
     }
 
     override fun onStart() {
         val report = Bundle()
+        val workflowObservations = java.util.ArrayDeque<String>()
+        val workflowStages = setOf("wait-child", "wait-native", "native-returned",
+            "diagnostic-failed-before-cleanup", "cleanup-pending", "cleanup-complete")
+        fun recordWorkflowStage(frame: JSONObject, line: String) {
+            check(suite in setOf("workflow-deadline", "workflow-process-death"))
+            check(line.toByteArray(Charsets.UTF_8).size <= 12 * 1024)
+            val params = frame.getJSONObject("params")
+            val keys = params.keys().asSequence().toSet()
+            check(keys.containsAll(setOf("stage", "runId", "elapsedMs")) &&
+                keys.all { it in setOf("stage", "runId", "elapsedMs", "detail") })
+            check(params.getString("stage") in workflowStages)
+            if (!params.isNull("runId")) IsolatedScriptWire.requireUuid(params.getString("runId"))
+            val elapsed = params.get("elapsedMs")
+            check(elapsed is Number && elapsed.toDouble().isFinite() && elapsed.toDouble() >= 0)
+            if (params.has("detail")) check(params.get("detail") is JSONObject)
+            val text = params.toString()
+            synchronized(workflowObservations) {
+                if (workflowObservations.size == 16) workflowObservations.removeFirst()
+                workflowObservations.addLast(text)
+            }
+            // Diagnostic status only: does not settle done or extend any deadline.
+            sendStatus(1, Bundle().apply { putString("workflowLifecycle", text) })
+        }
         var passed = false
         val instrumentationThread = Thread.currentThread()
         val phase = AtomicReference("starting")
@@ -61,10 +104,14 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
             "linux" -> linuxBudgetSeconds
             "workflow" -> workflowBudgetSeconds
             "ptc" -> 360L
+            "production-profile" -> if (expectWorkflow) 480L else 360L
             "all" -> linuxBudgetSeconds + workflowBudgetSeconds + 360L
             else -> 240L
         }
-        val fixtureId = ptcCaseId ?: UUID.randomUUID().toString()
+        val fixtureId = ptcCaseId ?: workflowCaseId ?: UUID.randomUUID().toString()
+        val deathPhase = ptcPhase ?: workflowPhase
+        val deathKey = if (workflowCaseId != null) "workflowDeath" else "ptcDeath"
+        val deathMarker = if (workflowCaseId != null) "workflow-death-ready.json" else "ptc-death-ready.json"
         val home = File(app.noBackupFilesDir, "native-runtime-acceptance/$fixtureId")
         report.putString("home", home.absolutePath)
         val done = CompletableFuture<JSONObject>()
@@ -163,6 +210,8 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
         var linux: LinuxVmManager? = null
         var searches: DocumentSearchManager? = null
         var saf: PtcSafAcceptanceFixture? = null
+        var productionProfile: ProductionProfileAcceptanceScenario? = null
+        var transportRecovery: ModelTransportRecoveryScenario? = null
         val deathReady = AtomicBoolean(false)
         var socket: ParcelFileDescriptor? = null
         var readSocket: ParcelFileDescriptor? = null
@@ -175,14 +224,20 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
             else foreground.set(AcceptanceForegroundLease.open(this) { done.completeExceptionally(it) })
             startingStage("foreground-ready")
             report.putString("deviceStateReady", AcceptanceServiceLease.deviceState(app))
+            if (suite in setOf("workflow-deadline", "workflow-process-death", "production-profile", "model-transport-recovery")) {
+                val observed = JSONObject(AcceptanceServiceLease.deviceState(app))
+                check(!observed.getBoolean("interactive") && observed.getBoolean("keyguardLocked") &&
+                    observed.getBoolean("deviceLocked")) { "Background acceptance requires an already locked device" }
+            }
             startingStage("runtime-prepare-start")
             val runtime = RuntimeAssets.prepare(app)
             startingStage("runtime-prepared")
-            val recovering = ptcPhase == "recover"
-            if (recovering) check(home.isDirectory && File(home, "ptc-death-ready.json").isFile)
+            val recovering = deathPhase == "recover"
+            if (recovering) check(home.isDirectory && File(home, deathMarker).isFile)
             else check(File(home, "workspace").mkdirs())
             val appWorkspaceRoot = File(app.noBackupFilesDir, "dsh/workspace")
             val workspace = File(appWorkspaceRoot, if (ptcCaseId != null) ".ptc-death-$fixtureId"
+                else if (workflowCaseId != null) ".workflow-death-$fixtureId"
                 else ".device-acceptance-$fixtureId").apply { check(if (recovering) isDirectory else mkdirs()) }
             val preparedFixture = File(home, "fixture")
             if (recovering) {
@@ -193,14 +248,17 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
                     original.getString("workspace") == workspace.absolutePath &&
                     original.getString("appWorkspaceRoot") == appWorkspaceRoot.absolutePath &&
                     original.getString("runtime") == runtime.absolutePath)
-                val originalPhase = original.getJSONObject("ptcDeath")
+                val originalPhase = original.getJSONObject(deathKey)
                 check(originalPhase.getString("phase") == "prepare" &&
                     originalPhase.getString("caseId") == fixtureId && !originalPhase.getBoolean("processStopConfirmed"))
             }
             val fixture = File(home, if (recovering) "recovery-fixture" else "fixture").apply { check(mkdirs()) }
             for (name in listOf("bootstrap.mjs", "index.mjs", "report.mjs", "workflow.mjs", "ptc.mjs", "linux.mjs", "callback-routing.mjs",
                 "python-analysis.mjs", "python-analysis.py", "apk-fixture.json", "apk-overflow-fixture.json",
-                "ptc-process-death.mjs", "ptc-saf.mjs", "ptc-linux.mjs", "workflow-checks.mjs", "workflow-model-fixture.mjs")) {
+                "ptc-process-death.mjs", "ptc-saf.mjs", "ptc-linux.mjs", "workflow-checks.mjs", "workflow-model-fixture.mjs",
+                "workflow-lifecycle.mjs", "workflow-lifecycle-evidence.mjs",
+                "production-profile-bootstrap.mjs", "production-profile-model.mjs",
+                "model-transport-recovery-bootstrap.mjs", "model-transport-recovery-model.mjs", "model-transport-recovery-evidence.mjs")) {
                 val bytes = context.assets.open(name).use { it.readBytes() }
                 if (recovering) check(File(preparedFixture, name).readBytes().contentEquals(bytes)) {
                     "Recovery fixture differs from the prepared APK assets"
@@ -211,10 +269,23 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
             File(fixture, "configuration.json").writeText(JSONObject().put("runtime", runtime.absolutePath)
                 .put("workspace", workspace.absolutePath).put("appWorkspaceRoot", appWorkspaceRoot.absolutePath)
                 .put("suite", suite).apply {
+                    if (suite == "production-profile") put("expectWorkflow", expectWorkflow)
                     if (ptcCaseId != null) put("ptcDeath", JSONObject().put("phase", ptcPhase)
                         .put("caseId", ptcCaseId).put("processStopConfirmed", processStopConfirmed))
+                    if (workflowCaseId != null) put("workflowDeath", JSONObject().put("phase", workflowPhase)
+                        .put("caseId", workflowCaseId).put("processStopConfirmed", processStopConfirmed))
                     saf?.let { put("saf", JSONObject().put("root", it.root).put("caseId", it.caseId)) }
                 }.toString())
+            val productionScenario = if (suite == "production-profile")
+                ProductionProfileAcceptanceScenario(home, workspace, runtime, fixtureId, expectWorkflow).also {
+                    productionProfile = it
+                    File(fixture, "bootstrap.mjs").writeBytes(File(fixture, "production-profile-bootstrap.mjs").readBytes())
+                } else null
+            val transportScenario = if (suite == "model-transport-recovery")
+                ModelTransportRecoveryScenario(home, workspace, runtime, fixtureId).also {
+                    transportRecovery = it
+                    File(fixture, "bootstrap.mjs").writeBytes(File(fixture, "model-transport-recovery-bootstrap.mjs").readBytes())
+                } else null
             startingStage("fixture-home-ready")
             startingStage("socket-pair-start")
             val pair = NativeRuntime.socketPair()
@@ -240,6 +311,26 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
                     JSONObject().put("runId", runId).put("token", token), timeoutMillis).optBoolean("closed", false)
             })
             workflow = workflowOwner
+            val admittedWorkflowSessions = ConcurrentHashMap<String, String>()
+            fun workflowObservation(params: JSONObject): JSONObject {
+                check(suite in setOf("workflow-deadline", "workflow-process-death"))
+                check(params.keys().asSequence().toSet() == setOf("runId"))
+                val runId = params.getString("runId").also(IsolatedScriptWire::requireUuid)
+                if (workflowPhase == "recover") {
+                    val marker = JSONObject(File(home, deathMarker).readText())
+                    check(marker.getString("runId") == runId && marker.getString("sessionId") == "workflow-death-$fixtureId")
+                } else check(admittedWorkflowSessions.containsKey(runId)) { "Run was not admitted by this fixture" }
+                val entry = DurableWorkflowOwner(app.filesDir.toPath(),
+                    IsolatedScriptRunController::syncDirectory).read(runId)
+                val previousLease = checkNotNull(entry.processLeaseId())
+                val lease = WorkflowProcessLease.current(app.filesDir.toPath(), IsolatedScriptRunController::syncDirectory)
+                val script = IsolatedScriptRunController.readReceipt(app, runId)
+                return workflowOwner.inspect(params)
+                    .put("outputAbsent", entry.outputJson() == null && script.outputJson() == null)
+                    .put("processLeaseId", previousLease).put("currentLeaseId", lease.id())
+                    .put("leaseObservation", lease.observe(previousLease).name)
+                    .put("scriptState", script.state().name)
+            }
             startingStage("workflow-owner-ready")
             startingStage("isolated-owner-start")
             val isolatedOwner = IsolatedRunNativeBridge(app, toolTransport = object : IsolatedScriptToolBridge.Transport {
@@ -262,14 +353,22 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
                                 val id = frame.getString("id")
                                 try {
                                     val params = frame.optJSONObject("params") ?: JSONObject()
-                                    val value: Any? = when (val method = frame.getString("method")) {
-                                        "native.workflow.admit" -> workflowOwner.admit(params)
+                                    val method = frame.getString("method")
+                                    val value: Any? = if (productionScenario?.handlesNative(method) == true)
+                                        productionScenario.handleNative(method, params)
+                                    else if (transportScenario?.handlesNative(method) == true)
+                                        transportScenario.handleNative(method, params)
+                                    else when (method) {
+                                        "native.workflow.admit" -> workflowOwner.admit(params).also {
+                                            admittedWorkflowSessions[params.getString("runId")] = params.getString("sessionId")
+                                        }
                                         "native.workflow.bindCallbacks" -> workflowOwner.bindCallbacks(params)
                                         "native.workflow.execute" -> workflowOwner.execute(params)
                                         "native.workflow.cancel" -> workflowOwner.cancel(params)
                                         "native.workflow.settle" -> workflowOwner.settle(params)
                                         "native.workflow.inspect" -> workflowOwner.inspect(params)
                                         "native.workflow.release" -> workflowOwner.release(params)
+                                        "acceptance.workflow.observe" -> workflowObservation(params)
                                         "native.isolated.admit" -> isolatedOwner.admit(params)
                                         "native.isolated.bindTools" -> isolatedOwner.bindTools(params)
                                         "native.isolated.execute" -> isolatedOwner.execute(params)
@@ -306,8 +405,35 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
                             val waiter = pending[frame.getString("id")]
                             if (frame.has("error")) waiter?.completeExceptionally(IllegalStateException(frame.getJSONObject("error").toString()))
                             else waiter?.complete(frame.getJSONObject("result"))
-                        } else if (frame.optString("method") == "acceptance.result") {
+                        } else if (frame.optString("method") == "acceptance.workflowLifecycleStage") {
+                            recordWorkflowStage(frame, line)
+                        } else if (frame.optString("method") == "acceptance.result" && productionScenario == null && transportScenario == null) {
                             done.complete(frame.getJSONObject("params"))
+                        } else if (frame.optString("method") == "acceptance.workflowDeathReady") {
+                            check(workflowPhase == "prepare" && deathReady.compareAndSet(false, true))
+                            val marker = frame.getJSONObject("params")
+                            check(marker.toString().length < 16_384 && marker.getInt("schema") == 1 &&
+                                marker.getString("caseId") == fixtureId && marker.getInt("agentPid") == android.os.Process.myPid())
+                            val stored = File(home, deathMarker)
+                            check(stored.isFile && stored.length() in 1..16_384)
+                            val persisted = JSONObject(stored.readText())
+                            check(persisted.keys().asSequence().toSet() == marker.keys().asSequence().toSet() &&
+                                marker.keys().asSequence().all { persisted.get(it) == marker.get(it) })
+                            check(admittedWorkflowSessions[marker.getString("runId")] == "workflow-death-$fixtureId")
+                            val observed = workflowObservation(JSONObject().put("runId", marker.getString("runId")))
+                            check(observed.getString("state") == "ADMITTED" && observed.getBoolean("outputAbsent") &&
+                                observed.getString("processLeaseId") == marker.getString("processLeaseId") &&
+                                observed.getString("leaseObservation") == "LIVE")
+                            val child = observed.getJSONArray("children")
+                            check(child.length() == 1 && child.getJSONObject(0).getString("childId") == marker.getString("childId") &&
+                                child.getJSONObject(0).getString("state") == "LAUNCHING")
+                            sendStatus(1, Bundle().apply { putString("ready", marker.toString()) })
+                        } else if (productionScenario != null && frame.has("method")) {
+                            productionScenario.onNotification(frame.getString("method"),
+                                frame.optJSONObject("params") ?: JSONObject())
+                        } else if (transportScenario != null && frame.has("method")) {
+                            transportScenario.onNotification(frame.getString("method"),
+                                frame.optJSONObject("params") ?: JSONObject())
                         } else if (frame.optString("method") == "acceptance.ptcDeathReady") {
                             check(ptcPhase == "prepare" && deathReady.compareAndSet(false, true))
                             val marker = frame.getJSONObject("params")
@@ -338,6 +464,14 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
                     if (!done.isDone) done.completeExceptionally(IllegalStateException("Node exited before acceptance: $code"))
                 } catch (failure: Throwable) { done.completeExceptionally(failure) }
             }
+            if (productionScenario != null) workers.execute {
+                try { done.complete(productionScenario.run(::request)) }
+                catch (failure: Throwable) { done.completeExceptionally(failure) }
+            }
+            if (transportScenario != null) workers.execute {
+                try { done.complete(transportScenario.run(::request)) }
+                catch (failure: Throwable) { done.completeExceptionally(failure) }
+            }
             try {
                 startingStage("waiting-result")
                 val result = done.get(budgetSeconds, TimeUnit.SECONDS)
@@ -365,11 +499,29 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
             passed = false
             report.putString("failure", "${failure.javaClass.simpleName}: ${failure.message}")
             report.putString("failureStage", phase.get())
+            try { productionProfile?.let { report.putString("productionProfileFailureDiagnostics", it.failureDiagnostics(failure).toString()) } }
+            catch (diagnosticFailure: Throwable) { report.putString("productionProfileDiagnosticsFailure", diagnosticFailure.javaClass.simpleName) }
+            try { transportRecovery?.let { report.putString("transportRecoveryFailureDiagnostics", it.failureDiagnostics(failure).toString()) } }
+            catch (diagnosticFailure: Throwable) { report.putString("transportRecoveryDiagnosticsFailure", diagnosticFailure.javaClass.simpleName) }
         } finally {
             var nativeOwnersClosed = true
             startupSettled.compareAndSet(false, true)
             startupTimeout.cancel(false)
             startupWatchdog.shutdownNow()
+            stage("cleanup-production-profile")
+            try { productionProfile?.let { report.putString("productionProfileBeforeClose", it.diagnostics().toString()) } }
+            catch (diagnosticFailure: Throwable) { report.putString("productionProfileDiagnosticsFailure", diagnosticFailure.javaClass.simpleName) }
+            try { productionProfile?.close() }
+            catch (failure: Throwable) { passed = false; report.putString("productionProfileCloseFailure", failure.toString()) }
+            try { productionProfile?.let { report.putString("productionProfileAfterClose", it.diagnostics().toString()) } }
+            catch (diagnosticFailure: Throwable) { report.putString("productionProfileDiagnosticsFailure", diagnosticFailure.javaClass.simpleName) }
+            stage("cleanup-transport-recovery")
+            try { transportRecovery?.let { report.putString("transportRecoveryBeforeClose", it.diagnostics().toString()) } }
+            catch (diagnosticFailure: Throwable) { report.putString("transportRecoveryDiagnosticsFailure", diagnosticFailure.javaClass.simpleName) }
+            try { transportRecovery?.close() }
+            catch (failure: Throwable) { passed = false; report.putString("transportRecoveryCloseFailure", failure.toString()) }
+            try { transportRecovery?.let { report.putString("transportRecoveryAfterClose", it.diagnostics().toString()) } }
+            catch (diagnosticFailure: Throwable) { report.putString("transportRecoveryDiagnosticsFailure", diagnosticFailure.javaClass.simpleName) }
             stage("cleanup-workflow")
             try { workflow?.close() } catch (failure: Throwable) { nativeOwnersClosed = false; passed = false; report.putString("workflowCloseFailure", failure.toString()) }
             stage("cleanup-isolated")
@@ -394,6 +546,10 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
             report.putString("deviceStateAfter", AcceptanceServiceLease.deviceState(app))
         }
         report.putString("suite", suite)
+        synchronized(workflowObservations) {
+            if (workflowObservations.isNotEmpty()) report.putString("workflowLifecycleObservations",
+                JSONArray().apply { workflowObservations.forEach { put(JSONObject(it)) } }.toString())
+        }
         stage("finish")
         if (finished.compareAndSet(false, true)) finish(if (passed) Activity.RESULT_OK else Activity.RESULT_CANCELED, report)
     }

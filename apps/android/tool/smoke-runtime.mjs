@@ -10,10 +10,12 @@ import { startSmokeModel } from './smoke-model.mjs'
 const root = resolve(import.meta.dirname, '../../..')
 const home = await mkdtemp(join(root, '.cache/android/smoke-'))
 await mkdir(join(home, 'workspace'))
-const model = await startSmokeModel()
+const linuxAvailable = !process.argv.includes('--without-linux')
+const model = await startSmokeModel({ linuxAvailable })
 const child = spawn(process.execPath, ['--import', new URL('./web-smoke-loader.mjs', import.meta.url).href,
   join(root, '.cache/android/runtime-bundle/bootstrap.mjs')], {
-  cwd: join(home, 'workspace'), env: { ...process.env, DSH_HOME: home, DEEPSEEK_BASE_URL: model.url }, stdio: ['pipe', 'pipe', 'pipe'],
+  cwd: join(home, 'workspace'), env: { ...process.env, DSH_HOME: home, DEEPSEEK_BASE_URL: model.url,
+    DSH_ANDROID_LINUX_VM_ENABLED: linuxAvailable ? '1' : '0' }, stdio: ['pipe', 'pipe', 'pipe'],
 })
 const exited = once(child, 'exit')
 const records = new Map(), pending = new Map()
@@ -94,8 +96,8 @@ try {
       network: 'off',
       reason: 'isolated-executor-unwired',
       modelPtc: {
-        available: false,
-        reason: 'device-ptc-unverified',
+        available: true,
+        reason: null,
         language: 'typescript-function-body',
         reviewedTools: ['list_agents', 'read', 'glob', 'grep', 'web_search', 'web_fetch', 'android_files', 'android_attachments', 'write', 'edit',
           'linux_exec', 'linux_import', 'linux_export', 'linux_inspect'],
@@ -105,8 +107,8 @@ try {
         wallDeadlineMillis: 120000, executionThreadCpuMillis: 5000,
       },
       modelWorkflow: {
-        available: false, reason: 'device-lifecycle-unverified', maxTotalAgents: 8, maxConcurrentAgents: 2,
-        deadlineMillis: 120000, background: false, childTools: 'reviewed-parent-tools',
+        available: true, reason: null, maxTotalAgents: 8, maxConcurrentAgents: 2,
+        deadlineMillis: 120000, background: true, childTools: 'reviewed-parent-tools',
         reviewedChildTools: ['read', 'glob', 'grep', 'write', 'edit', 'web_search', 'web_fetch',
           'linux_exec', 'linux_import', 'linux_export', 'linux_inspect'],
         filesystem: 'activation-workspace-policy-intersection', network: 'reviewed-parent-web-tools',
@@ -202,6 +204,9 @@ try {
     console.log(JSON.stringify({ ready: true, sharedSessionGateway: true, webDefaultDisabled: true,
       missingLanWaits: true, portConflictReported: true, appSurvivesWebFailure: true,
       webAuthentication: true, webSocketClosed: true, oldTokenAndCookieRejected: true,
+      productionPtcVisible: true, productionWorkflowVisible: true,
+      linuxToolsVisible: linuxAvailable, linuxDeliveryGateVerified: true,
+      linuxNetworkSchemaAbsent: true,
       realAgentAdmission: true, adapterAndFileTool: true, turnContinuesAfterWebClose: true }))
   })(), bounded])
 } finally {

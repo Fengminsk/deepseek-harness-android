@@ -28,9 +28,9 @@ Java_com_minnnng_dsh_1android_NativeRuntime_socketPair(JNIEnv* env, jobject) {
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_com_minnnng_dsh_1android_NativeRuntime_start(
+Java_com_minnnng_dsh_1android_NativeRuntime_startNode(
     JNIEnv* env, jobject, jstring runtime, jstring home, jstring cache,
-    jstring libraries, jint descriptor) {
+    jstring libraries, jint descriptor, jboolean linux_vm_enabled) {
   if (started.exchange(true)) { close(descriptor); return 70; }
   const auto fail_start = [descriptor](int code) { close(descriptor); return code; };
   const std::string runtime_path = utf8(env, runtime);
@@ -41,6 +41,9 @@ Java_com_minnnng_dsh_1android_NativeRuntime_start(
   setenv("DSH_HOME", home_path.c_str(), 1);
   setenv("TMPDIR", cache_path.c_str(), 1);
   setenv("DSH_ANDROID_NATIVE_LIBRARY_DIR", libraries_path.c_str(), 1);
+  // Overwrite inherited environment: availability comes from this APK's build.
+  if (setenv("DSH_ANDROID_LINUX_VM_ENABLED", linux_vm_enabled == JNI_TRUE ? "1" : "0", 1) != 0)
+    return fail_start(72);
   setenv("NODE_COMPILE_CACHE", (cache_path + "/node-compile").c_str(), 1);
   setenv("NODE_COMPILE_CACHE_PORTABLE", "1", 1);
   const std::string workspace = home_path + "/workspace";

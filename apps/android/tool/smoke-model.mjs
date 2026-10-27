@@ -9,7 +9,7 @@ const textEvents = text => [
 ]
 
 /** Local Messages endpoint; a held second response proves Web shutdown leaves the turn alive. */
-export async function startSmokeModel() {
+export async function startSmokeModel({ linuxAvailable = true } = {}) {
   const held = Promise.withResolvers(), release = Promise.withResolvers()
   const failure = Promise.withResolvers()
   let calls = 0
@@ -20,6 +20,17 @@ export async function startSmokeModel() {
       let events = textEvents('smoke title'), stop = 'end_turn'
       if (agent) {
         assert.match(body.tools.find(tool => tool.name === 'android_attachments')?.description ?? '', /inspect_apk/)
+        assert.ok(body.tools.some(tool => tool.name === 'android_ptc'), 'Production Android profile omitted android_ptc')
+        assert.ok(body.tools.some(tool => tool.name === 'workflow'), 'Production Android profile omitted workflow')
+        for (const name of ['linux_exec', 'linux_import', 'linux_export', 'linux_inspect']) {
+          assert.equal(body.tools.some(tool => tool.name === name), linuxAvailable, `Wrong production delivery gate for ${name}`)
+        }
+        const linux = body.tools.find(tool => tool.name === 'linux_exec')
+        if (linuxAvailable) {
+          assert.match(linux.description, /Python 3|python3/)
+          assert.equal(Object.hasOwn(linux.input_schema.properties, 'networkHosts'), false)
+          assert.equal(Object.hasOwn(linux.input_schema.properties, 'networkCallLimit'), false)
+        }
         calls++
         if (calls === 1) {
           events = [

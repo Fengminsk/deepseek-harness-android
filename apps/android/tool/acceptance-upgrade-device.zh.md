@@ -2,6 +2,8 @@
 
 [English](acceptance-upgrade-device.md) | 中文
 
+本次记录的 Build 115→116 APK 对参见 [Build 116 升级验收记录](upgrade-116-acceptance.zh.md)，其中列出 Session／SAF 字节保持结果及合成凭据的证据边界。
+
 ## 范围与准备
 
 该测试通过 Android 系统包管理器把旧 App APK 升级到新版。[`UpgradePersistenceInstrumentation.kt`](../android/app/src/androidTest/kotlin/com/minnnng/dsh_android/UpgradePersistenceInstrumentation.kt) 会在目标 App 的 `noBackupFilesDir` 写入 64 字节随机文件，并用唯一的 `acceptance/upgrade/<token>` 引用在 `CredentialVault` 保存另一段随机合成值。新版 APK 必须读到完全相同的文件字节，并用原有 Android Keystore 密钥解密合成值。基本测试不会使用真实账号、会话或用户文档；可选 SAF 可读性模式会只读访问已有授权文件。

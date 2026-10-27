@@ -12,8 +12,11 @@ export const WORKFLOW_DEVICE_CHECKS = Object.freeze([
   'real-background-job-kill-and-child-retirement',
 ])
 
+export const WORKFLOW_DEADLINE_CHECK = 'native-workflow-deadline-and-nested-wait-retirement'
+export const WORKFLOW_DEATH_CHECK = 'workflow-binder-death-and-app-restart'
+
 export const WORKFLOW_UNVERIFIED_CHECKS = Object.freeze([
-  'native-workflow-deadline-and-nested-wait-retirement',
-  'workflow-binder-death-and-app-restart',
+  WORKFLOW_DEADLINE_CHECK,
+  WORKFLOW_DEATH_CHECK,
   'workflow-upgrade-record-retention',
 ])

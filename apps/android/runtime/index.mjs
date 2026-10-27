@@ -119,9 +119,14 @@ function remoteFailure(error) {
 // A source-controlled release gate, never a model argument, profile setting
 // or remote switch. Open only after the isolated UID, callback retirement and
 // process-death suites have passed on a non-rooted production-class device.
-const MODEL_PTC_DEVICE_ACCEPTED = false
-const MODEL_WORKFLOW_DEVICE_ACCEPTED = false
-const LINUX_VM_DEVICE_ACCEPTED = false
+const MODEL_PTC_DEVICE_ACCEPTED = true
+const MODEL_WORKFLOW_DEVICE_ACCEPTED = true
+const LINUX_VM_DEVICE_ACCEPTED = true
+// Guest networking has its own approval and routing acceptance boundary.
+const LINUX_VM_NETWORK_DEVICE_ACCEPTED = false
+// The native launcher overwrites this marker using the APK's BuildConfig.
+// An ordinary build without the verified guest must not advertise Linux tools.
+const LINUX_VM_AVAILABLE = LINUX_VM_DEVICE_ACCEPTED && process.env.DSH_ANDROID_LINUX_VM_ENABLED === '1'
 
 /** Android is an additional carrier over the same DSH services and session log. */
 export function apply(ctx, config) {
@@ -131,8 +136,8 @@ export function apply(ctx, config) {
   const nativeToolCallbacks = new NativeIsolatedToolCallbacks(transport,
     new IsolatedToolCallJournal(join(resolveDshHome(), 'isolated-tool-call-journal')))
   ctx.provide('nativeIsolatedToolCallbacks', nativeToolCallbacks)
-  // The model tool remains gated off. Capture the original scoped definition
-  // only when an actual Agent execution later needs a reviewed callback.
+  // Capture the original scoped definition only when an actual Agent execution
+  // needs a reviewed callback; the guest never receives native file/network grants.
   const modelPtcBridge = createNativeIsolatedExecutionBridge(transport)
   ctx.inject(['subagents', 'sandboxPolicy'], modelCtx => {
     const owner = createAppOwnedPtcOwner({
@@ -150,7 +155,7 @@ export function apply(ctx, config) {
   ctx.provide('nativeWorkflowGuestCallbacks', nativeWorkflowCallbacks)
   let privateWorkflowOwner
   // Only trusted App code can attach an already admitted run and live parent.
-  // The model-authored workflow modules remain protected and disabled.
+  // Model workflows use the isolated owner; Node-hosted workflow modules stay disabled.
   ctx.inject(['subagents', 'agentPresets', 'sessionQuery', 'jobs', 'systemPrompt'], workflowCtx => {
     const workflowOwner = createNativeWorkflowPrivateOwner(workflowCtx, nativeWorkflowCallbacks, transport)
     privateWorkflowOwner = workflowOwner
@@ -168,11 +173,12 @@ export function apply(ctx, config) {
   const nativeLinuxVm = new NativeLinuxVm(transport)
   ctx.provide('nativeLinuxVm', nativeLinuxVm)
   ctx.inject(['fs', 'sandboxPolicy', 'approval'], linuxCtx => {
-    const networkAdmission = createLinuxNetworkAdmission(linuxCtx, createNativeLinuxNetworkBridge(transport))
-    registerLinuxVmTool(linuxCtx, nativeLinuxVm, LINUX_VM_DEVICE_ACCEPTED, networkAdmission)
-    registerLinuxImportTool(linuxCtx, nativeLinuxVm, LINUX_VM_DEVICE_ACCEPTED, process.cwd())
-    registerLinuxExportTool(linuxCtx, nativeLinuxVm, LINUX_VM_DEVICE_ACCEPTED, process.cwd())
-    registerLinuxInspectTool(linuxCtx, nativeLinuxVm, LINUX_VM_DEVICE_ACCEPTED)
+    const networkAdmission = LINUX_VM_AVAILABLE && LINUX_VM_NETWORK_DEVICE_ACCEPTED
+      ? createLinuxNetworkAdmission(linuxCtx, createNativeLinuxNetworkBridge(transport)) : undefined
+    registerLinuxVmTool(linuxCtx, nativeLinuxVm, LINUX_VM_AVAILABLE, networkAdmission)
+    registerLinuxImportTool(linuxCtx, nativeLinuxVm, LINUX_VM_AVAILABLE, process.cwd())
+    registerLinuxExportTool(linuxCtx, nativeLinuxVm, LINUX_VM_AVAILABLE, process.cwd())
+    registerLinuxInspectTool(linuxCtx, nativeLinuxVm, LINUX_VM_AVAILABLE)
   })
   const credentials = new AndroidCredentials(ctx, transport)
   ctx.plugin(AndroidShell)

@@ -4,7 +4,7 @@
 
 ## 概述
 
-App 自有的[PTC 所有者](../runtime/model-ptc-reviewed-owner.mjs)通过隔离 V8 客体执行可擦除的 TypeScript 函数体。它是私有组合组件，不注册模型工具，也不启用已关闭的 Android PTC profile。它通过有效父执行的 ToolRuntime 处理文件、网页和 Linux 工具调用，不提供 Node、App UID Shell、直接网络访问或原生文件授权。
+App 自有的[PTC 所有者](../runtime/model-ptc-reviewed-owner.mjs)通过隔离 V8 客体执行可擦除的 TypeScript 函数体。Android 运行时通过受审查的 `android_ptc` 工具暴露此组件；原版 Node PTC profile 仍禁用。它通过有效父执行的 ToolRuntime 处理文件、网页和 Linux 工具调用，不提供 Node、App UID Shell、直接网络访问或原生文件授权。
 
 ## 目录
 
@@ -15,7 +15,7 @@ App 自有的[PTC 所有者](../runtime/model-ptc-reviewed-owner.mjs)通过隔�
 
 ## 经审查的调用
 
-Android 运行时在源码控制的设备验收开关后组合[模型工具工厂](../runtime/tool-model-ptc.mjs)。它只暴露 `code` 和 `description`，分别报告已审查回调子集与原生授权，并在启动前、发布结果前检查可用性。生产设备验收通过前，开关保持关闭。
+Android 运行时在源码控制的设备验收开关后组合[模型工具工厂](../runtime/tool-model-ptc.mjs)。它只暴露 `code` 和 `description`，分别报告已审查回调子集与原生授权，并在启动前、发布结果前检查可用性。源码中的 `MODEL_PTC_DEVICE_ACCEPTED=true` 开放此受审查入口。已安装 Build 115 的证据覆盖实际 AgentLoop／ToolRuntime 回调、CPU 超时和取消（r15）、进程死亡处理（r17）及 SAF 撤权（r21）。r26 [正式 profile 真机检查](production-profile-device.zh.md)另已通过所装 bootstrap／index 与脚本模型服务执行：PTC 先读取专用工作区文件，再由 Linux 执行 Python 分析。普通 Build 116 升级仍待验证；这些观察不代表真实模型供应商已验收或已实现不受限的 Node PTC 对齐。
 
 每次执行捕获有效 Agent、活动父执行令牌、作用域内的原始定义及注册身份。原始包工厂识别自己冻结的定义；复制定义或卸载插件后，身份校验失败。每次回调在进入原始 ToolRuntime 授权和执行流程前，重新核对身份、可见性、父执行生命周期和参数。
 

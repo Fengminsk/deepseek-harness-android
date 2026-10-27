@@ -12,7 +12,7 @@ node apps/android/tool/device-screen-protection.mjs --adb D:\Programs\adb\adb.ex
 
 ## 运行验收入口
 
-追加 `-- apps/android/tool/acceptance-<name>-device.mjs` 及该入口的参数。仅允许 `native-workflow`、`native-workflow-process-death`、`upgrade`、`ptc-process-death`、`ptc-callback`、`linux-vm-lifecycle` 和 `agent-service-recovery`；这些入口明确遵循 `--adb` 与 `--serial`。包装器在缺少参数时注入受保护的目标，拒绝重复或冲突值，并为后代进程设置 `ANDROID_SERIAL`。其他入口在接触手机前即被拒绝。只有所有面板都报告 `Off`，包装器才会使用当前 Node 程序启动普通入口。恢复入口则将网络恢复所有者保留在本进程内，取消后也继续等待，不经过可被直接杀死的子进程启动器；其独立报告与不可覆盖网络快照见[锁屏恢复验收](agent-service-recovery-driver.zh.md)。验收模式的 `--seconds` 仍表示包含保护初始化的完整截止时间，不额外增加预检查余量，最长一小时；较长套件须分别执行。各入口保留原有前提：即使面板电源被覆盖，基于 Activity 的入口仍要求 Android 会话已解锁且可交互；恢复入口要求已锁屏、不可交互，并且从不唤醒手机。
+追加 `-- apps/android/tool/acceptance-<name>-device.mjs` 及该入口的参数。仅允许 `workflow-lifecycle`、`native-workflow`、`native-workflow-process-death`、`upgrade`、`ptc-process-death`、`ptc-callback`、`linux-vm-lifecycle` 和 `agent-service-recovery`；这些入口明确遵循 `--adb` 与 `--serial`。包装器在缺少参数时注入受保护的目标，拒绝重复或冲突值，并为后代进程设置 `ANDROID_SERIAL`。其他入口在接触手机前即被拒绝。只有所有面板都报告 `Off`，包装器才会使用当前 Node 程序启动普通入口。恢复入口则将网络恢复所有者保留在本进程内，取消后也继续等待，不经过可被直接杀死的子进程启动器；其独立报告与不可覆盖网络快照见[锁屏恢复验收](agent-service-recovery-driver.zh.md)。验收模式的 `--seconds` 仍表示包含保护初始化的完整截止时间，不额外增加预检查余量，最长一小时；较长套件须分别执行。各入口保留原有前提：即使面板电源被覆盖，基于 Activity 的入口仍要求 Android 会话已解锁且可交互；恢复入口要求已锁屏、不可交互，并且从不唤醒手机。
 
 采样通常间隔两秒，另有受限的 ADB 命令耗时。USB 不可用、显示拓扑变化、收到可处理的 SIGINT/SIGTERM 或任何面板不为 `Off` 时，会立即开始重新关闭已知面板，再等待子进程退役。对于普通入口，包装器请求终止进程树，等待宿主子进程真正关闭，然后强停 App 及测试包，并通过完整的 `ps -A -w -o PID,ARGS` 名称检查 App、测试包及隔离服务进程是否仍然存活。子进程正常完成后也执行设备退役检查。仅有 force-stop 回执不能证明进程退役；整个过程不清除 App 数据。
 

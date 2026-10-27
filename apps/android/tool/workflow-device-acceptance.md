@@ -54,6 +54,8 @@ The [named check definitions](device-runtime-acceptance/workflow-checks.mjs) are
 
 The fixture always declares three separate evidence gaps: native deadline while waiting on nested work, workflow Binder death / App restart, and workflow-record retention across upgrade. Eleven passing checks therefore mean executed checks passed, while `complete` remains false. The [aggregator](device-runtime-acceptance/report.mjs) also retains these gaps if a producer omits them; numeric pass counters cannot replace named results.
 
+The separate [real Node lifecycle suites](workflow-lifecycle-device.md) exercise deadline and process death with the same production owners and real child Agents. Their explicit reports must accompany this baseline; they do not retroactively change its `unverified` fields or establish upgrade retention.
+
 These checks do not establish actual provider/network behavior, child file/web permission inheritance, Linux child execution, infinite-loop termination, or process-death recovery. The [runtime suite](device-runtime-acceptance.md), [child tool tests](workflow-child-tools.test.mjs) and [lifecycle reference](linux-vm-lifecycle-device.md) own their respective evidence. Process termination and APK installation can remove the black foreground Activity; they require a separate screen-preservation strategy and must not run under an unsupported all-black requirement.
 
 <a id="host-verification"></a>

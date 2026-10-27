@@ -35,7 +35,7 @@ DSH 已有[会话工作目录文件树](../../packages/client/ui-sidebar-files/R
 
 文件页区分目录返回和路由返回，避免递归拦截路由。文件阅读页返回前不重复打开同一入口。文件浏览器共用 App 的背景氛围，滚动时暂停背景动效。
 
-[Android 配置补丁](runtime/cordis.patch.yml)与[预设暂存](tool/stage-preset.mjs)仍缺少原版终端控制器、完整移动端 VT 渲染器、受进程隔离的 PTC 工作流，以及部分标准预设。原版 Agent 的 `glob`／`grep` 与网页搜索／抓取现已按标准设置组合，但 Android 进程执行与网络行为仍待真机验收。这些是迁移缺口，不能解释成 DSH 没有相应功能。Root、设备 ADB 控制、离线模型推理和开机自启动仍不属于已约定的本期范围；其他平台差异需要明确的适配与验收记录，不能静默删去原版行为。
+Android 源码现开放受审查的 [android_ptc 入口](tool/model-ptc-readonly.md)及四个[离线 Linux 工具](tool/linux-vm-runtime.md)。Linux 注册还要求原生构建能力与经过验证的 Alpine 候选；不含客体的普通安装包不暴露这些工具。已安装的 Build 116 另已开放独立的受审查模型 workflow 入口，依据是 r26 常规 workflow 检查（11／11）、120,256 毫秒时限检查与进程死亡恢复均通过真机验证。其 [r28 正式 profile](tool/production-profile-device.md#build-116-r28) 随后在 `expectWorkflow=true` 下通过 warm 运行；首次 runtime-ready 超时仍未解释。原版不受限 Node PTC／workflow 插件及客体联网审批仍禁用。此前 r25 workflow 挂起仍未解释；后续通过不能证明其原因。已安装 Build 115 r15／r17／r21 的证据覆盖各自记录的回调、恢复和取消用例；r26 另已在真机通过所装正式 profile：受审查的 PTC 读取专用工作区文件，Linux 执行 Python 标准库分析，全程锁屏息屏。这些限定范围的测试使用脚本模型服务。[115→116 升级](tool/upgrade-116-acceptance.md)保留了 Session 字节、SAF 观察结果及合成 Keystore 凭据；真实账号登录和会话恢复执行仍未验证。原版终端控制器、完整移动端 VT 渲染器及其他已记录迁移缺口尚未完成。Root、设备 ADB 控制、离线模型推理和开机自启动仍不属于约定的本期范围。
 
 Android 在模型工具分发边界守护 `read`、`read_image`、`write`、`glob`、`grep`、`edit`、`present`，以及动态加载的 `str_replace_editor`。会话工作目录和请求目标都必须实际解析到 App 自有工作区内。`read`、`read_image`、`write`、`edit` 和 `present` 可以使用相对工作区路径；`glob` 和 `grep` 也可以使用相对搜索路径或省略搜索路径。守卫为工具执行体固定会话目录并复查文件提供方的解析结果，避免稍后的会话目录变化重定向这些操作。原版 `str_replace_editor` 仍要求绝对文件路径；其目录查看暂不可用，因为原版两层遍历会跟随子级符号链接。新建目标只有在现存上级目录能够证明其仍在工作区内时才允许；无法确认的路径拒绝。这样可阻止模型通过普通文件工具读取工作区外的 App 私有账号和运行时文件，而可信 App 服务仍按各自权限访问。SAF 文档授权走 `android_files`，不能当作普通路径。`workspace-write` 本身只约束修改，不限制观察；此守卫是模型工具边界，并非对获批 Shell 或其他 App UID 代码的操作系统沙箱。主机夹具覆盖私有目录、符号链接和相似前缀拒绝，真机行为仍待验收。
 
@@ -87,7 +87,7 @@ App 重新连接时，一项独立状态读取失败不会阻断后续的会话�
 
 前台服务在独立的 Android 私有进程中持有一个 Node 实例。Flutter 经 Binder 和专用本地套接字上的 JSON-RPC 通信，不使用本机 HTTP 服务。标准输出与错误写入私有运行日志，与协议通道分离。较大的 Binder 响应通过只读共享内存传递。打包运行时由名为 `android` 的 dsh profile 启动，工作区和会话存放在应用私有目录。API 凭据使用 Android Keystore 支持的加密存储；授权文档目录使用 Storage Access Framework 的持久授权。
 
-“运行状态”页可发起一次原生隔离检查。Android `isolatedProcess` 服务只接收有限长度的只读文件描述符，并回报独立 UID、输入摘要及对另一应用私有标记文件的拒绝访问；服务连接变化后会清除旧结果。这只验证隔离基础，原版 PTC 和工作流执行器仍关闭，需完成授权文件与工具桥接、进程取消及真机验收后才能启用。
+“运行状态”页可发起一次原生隔离检查。Android `isolatedProcess` 服务只接收有限长度的只读文件描述符，并回报独立 UID、输入摘要及对另一应用私有标记文件的拒绝访问；服务连接变化后会清除旧结果。该诊断只验证隔离基础。原版 Node PTC／工作流执行器仍关闭；独立受审查的 Android PTC 工具有自己的定向真机证据与源码控制注册。
 
 同一次诊断还会启动另一个独立隔离 guest，发送固定、有长度限制的 `diagnostic.echo` 帧。App broker 只允许一次回显调用，并核对调用者 UID、请求标识和最终响应；取消、超时及 guest 死亡只产生一个终态。这是通信探针，不是脚本运行时或通用工作流绑定，详见[guest 诊断协议](tool/guest-echo-diagnostic.md)。
 
@@ -151,7 +151,7 @@ SAF 图片模型读取现在最多同时接纳两个提供方数据流。每个�
 
 **执行权限**设置页读取运行时实时提供的策略快照，区分原版文件工具沙箱模式与 Android Shell 的默认策略：隔离执行器就绪前不向模型注册命令工具。明确启用的内部迁移模式保留每次获批的 App UID Shell，并标明它不受隔离。运行时连接变化会使旧观察结果失效；页面可以进入待处理授权请求，但不会提供虚构的预设开关。Shell 命令实现独立约束前，原版权限预设服务继续禁用；该页面不证明设备 UID 行为，也不等于迁移了原版 `/permission` 指令。
 
-**沙箱与执行权限**页面显示面向模型的程序工具边界尚不可用：只读、没有可写路径、网络关闭。[Android 沙箱策略](tool/android-sandbox-policy-design.md)将文件授权、网络目标和审批分开。目前已有受限的文件与 HTTPS 能力代理、正式 Android DNS 解析器，以及只接受 Agent 进程调用、可按策略使用可选宿主调用的[内部隔离 JavaScript 执行器](tool/isolated-script-run.md)。它还没有模型可见的调用方。[Shell 隔离门禁](tool/shell-isolation-gate.md)现默认在审批和启动进程前拒绝调用，普通模型工具中不注册 `android_shell`；只有明确启用的内部迁移模式保留未受隔离的 App UID 执行器用于诊断。PTC 与工作流执行仍禁用，等待接线和设备验证。
+**沙箱与执行权限**页面区分尚不可用的通用程序执行环境与受审查的 `modelPtc` 能力。[Android PTC 工具](tool/model-ptc-readonly.md)已在源码中开放，限制为 120 秒总耗时、5 秒执行线程 CPU、经过审查的 ToolRuntime 回调，且没有直接的原生文件系统／网络授权。离线 Linux 工具还要求打包的原生能力；文件传输仍需显式授权。已安装的 Build 116 在限定范围的 r26 真机检查后，开放了独立的受审查模型 workflow 入口。包含 workflow 的正式 profile 已通过 warm 运行，但首次启动超时仍未解释；参见[保留的 r28 观察](tool/production-profile-device.md#build-116-r28)。Linux 联网审批仍禁用。[Shell 隔离门禁](tool/shell-isolation-gate.md)继续在普通模型工具中排除 `android_shell`，并在审批或进程启动前拒绝 App UID Shell 执行；内部诊断模式不向模型授予权限。
 
 **通用设置**将原版共享的 `ui-settings.enabled` 偏好显示为原生开关，而不是 JSON 字段。Host 配置经确认后才可操作，写入携带文档版本；回执确认前继续显示已接受的选择。重连或写入结果不确定时必须重新读取并由用户明确核对，不自动重发。已确认的值控制工作区改动、会话轨迹入口和内置未命名 PTC／极简预设的展示，不构成工具权限。如果关闭后默认值仍是未定制的内置 PTC／极简预设，App 会通过原版带版本检查的设置服务有条件地改选健康的标准预设。已定制、未知或已经变化的默认值留给用户人工核对。原版其他通用设置项及首次引导仍待迁移。
 

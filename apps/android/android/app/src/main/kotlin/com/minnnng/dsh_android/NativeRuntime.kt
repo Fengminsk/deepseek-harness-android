@@ -4,5 +4,9 @@ package com.minnnng.dsh_android
 object NativeRuntime {
     init { System.loadLibrary("dsh_runtime") }
     external fun socketPair(): IntArray
-    external fun start(runtime: String, home: String, cache: String, libraries: String, descriptor: Int): Int
+    fun start(runtime: String, home: String, cache: String, libraries: String, descriptor: Int): Int =
+        startNode(runtime, home, cache, libraries, descriptor, BuildConfig.LINUX_VM_ENABLED)
+
+    private external fun startNode(runtime: String, home: String, cache: String, libraries: String,
+        descriptor: Int, linuxVmEnabled: Boolean): Int
 }

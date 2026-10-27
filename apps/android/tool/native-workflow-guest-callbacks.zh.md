@@ -10,6 +10,8 @@
 
 试图扩宽父 Agent 模型路由的子任务请求会在激活前被拒绝。可信后端记录一份私有、单次消费的证明，绑定运行 ID 和 App 预留的子任务 ID。只有原始错误对象可以产生 `{runId, callId, denied: {code: 'MODEL_ROUTE_DENIED', childId}}`；相同错误文字或复制错误码均不能。原生中继核对全部字段后停止客体并关闭同级子任务。发布 `FAILED` 回执仍要求客体 Binder 死亡、回调工作线程退出、Node 成功关闭，以及每份预留记录均持久化为已退役。回包畸形、传输失败、缺少关闭确认或退役失败仍为未确认；单独一次成功关闭不能清除这些故障。此区别的 Android 验证由 `NativeWorkflowAcceptanceInstrumentation` 和真实 Node 工作流套件负责。
 
+控制器将客体结果状态传入回调校验。只有工作流 `DEADLINE_EXCEEDED` 可以在仍有待处理回调时进入退役流程；成功结果仍要求零待处理回调，身份、UID、持久化准入及期限校验保持不变。`WorkflowCallbackRetirement` 在中断工作线程前记录本所有者的停止请求，因此由此产生的 `InterruptedException` 或 `CancellationException` 即使没有用户取消也属于预期控制流。未经请求的中断、RPC 超时、回包畸形及其他故障继续保持未确认，后续成功关闭也不能清除。退役仍要求工作线程退出及 Node 关闭，再结合客体死亡和绑定清理证据；此次调整不会将到期伪装为成功或用户取消。普通文件与 PTC 回调校验不变。`node apps/android/tool/acceptance-workflow-callback-retirement.mjs` 使用真实 JVM 线程中断和负例检查生产状态所有者；它不执行 Android Binder，也不能替代真实 Node 期限套件。
+
 内部 `native.workflow.admit/bindCallbacks/execute/cancel/settle/release` 路由先预留脚本及工作流回执，才回复 App 生成的令牌；隔离脚本控制器完成执行后，只发布对应的持久终态。`AgentService` 通过 `native.workflowCallback` 与 `native.workflowCallback.cancel` 向 Node 发起反向请求。`NativeWorkflowPrivateOwner` 要求准备好的会话 ID 与在线父 Agent 的会话一致，在接纳后写入原版 `tool-workflow/run-start` 记录，并在确认进度回调前经 `SessionStore.flush` 落盘每个成员的开始和结束。只有子级回收、原生结算及释放均获确认，才写入并落盘 `tool-workflow/run-end`；存储未确认或收尾不确定时保留未结束的运行。Binder 中继在转发 `WORKFLOW_START_CHILD` 前持久预留子级 UUID 和 `LAUNCHING` 状态；Node 使用此 UUID 通过原版 `startActivation` 启动仅含模型能力的子级。`WORKFLOW_CHILD_RESULT` 返回有界内容；`WORKFLOW_DISPOSE_CHILD` 等原版 activation 完成回收后才将回执标为已退役。
 
 Agent Service 启动时先取得独占运行时进程锁，再对旧工作流回执对账并启动 Node。它通过 `runtime.status.workflowRecovery` 提供本次新中断运行和未退役子级的数量；这一启动快照不能替代逐会话的 `workflow.inspect` 来查看更早的待检查记录。回执不可读取只阻止新工作流准入，不中断无关的 App 工作。Node 尚未接纳就退出时清除进程标记，不误报已启动的 Node 崩溃。冷启动不会重放访客；若还有未回收的子任务 ID，在后端确认子级停止前拒绝新工作流准入。取消时经回调关闭确认后，仅预留而未启动的子级也能退役。

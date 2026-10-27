@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { runWorkflowAcceptance } from './device-runtime-acceptance/workflow.mjs'
+import { runWorkflowLifecycle, workflowLifecycleStage } from './device-runtime-acceptance/workflow-lifecycle.mjs'
+import { summarizeAcceptance } from './device-runtime-acceptance/report.mjs'
 
 // These are report failure-path checks, not simulated successful device acceptance.
 const runId = '00000000-0000-4000-8000-000000000101'
@@ -62,4 +64,45 @@ test('a nonsettling diagnostic read is bounded and leaves subsequent checks unve
   assert.equal(report.failed, 1)
   assert.match(report.checks[0].observedRuns[0].nativeInspection.unavailable, /inspection timed out/)
   assert.ok(report.checks.slice(1).every(row => row.status === 'unverified'))
+})
+
+test('deadline fixture reports an actual early failure instead of silently omitting its required check', async () => {
+  const events = [{ type: 'session/header', data: {} }]
+  const ctx = { on: () => () => {},
+    tools: { execute: async () => ({ isError: true, error: { message: 'fixture admission refused' } }) },
+    sessionPersistence: { open: async () => ({ read: async () => ({ events }), close: async () => {} }) },
+  }
+  const adapter = {}
+  const workflow = { receipts: new Map(), releases: new Set(), nativeFailures: [],
+    callbackStarts: [], callbackFailures: [], callbackClosures: [] }
+  const stages = []
+  const report = await runWorkflowLifecycle({ ctx, adapter, workflow,
+    agent: { session: { id: 'deadline-failure-fixture', seq: 0, snapshotEvents: () => events } },
+    transport: { request: async () => { throw Error('No native request is authorized before admission') },
+      notify: async (method, frame) => { assert.equal(method, 'acceptance.workflowLifecycleStage'); stages.push(frame.stage) } },
+    configuration: { suite: 'workflow-deadline' } })
+  assert.equal(report.failed, true)
+  assert.equal(report.checks.length, 1)
+  assert.equal(report.checks[0].status, 'failed')
+  assert.match(report.checks[0].error, /ended before its child model entered/)
+  assert.equal(report.checks[0].observed.native, null)
+  assert.equal(report.checks[0].observed.releaseAcknowledged, false)
+  assert.deepEqual(report.checks[0].observed.durable.events, [])
+  assert.equal(adapter.scriptedStream, null)
+  const summary = summarizeAcceptance('workflow-deadline', [report])
+  assert.equal(summary.passed, false); assert.equal(summary.complete, false)
+  assert.equal(summary.coverage.failed.length, 1)
+  assert.equal(summary.coverage.issues.includes('No checks executed'), false)
+  assert.deepEqual(stages, ['wait-child', 'diagnostic-failed-before-cleanup', 'cleanup-pending', 'cleanup-complete'])
+})
+
+test('lifecycle notifications bind fixed stages and stay below the whole-frame limit', () => {
+  const frame = workflowLifecycleStage('diagnostic-failed-before-cleanup', runId, 123,
+    { error: 'x'.repeat(50000), native: { state: 'INTERRUPTED_UNCONFIRMED' }, releaseAcknowledged: false })
+  assert.equal(frame.detail.truncated, true)
+  assert.equal(frame.detail.nativeState, 'INTERRUPTED_UNCONFIRMED')
+  assert.ok(Buffer.byteLength(JSON.stringify({ jsonrpc: '2.0', method: 'acceptance.workflowLifecycleStage', params: frame })) <= 12288)
+  assert.throws(() => workflowLifecycleStage('passed', runId, 1))
+  assert.throws(() => workflowLifecycleStage('wait-native', 'user-session', 1))
+  for (const elapsed of [-1, NaN, Infinity]) assert.throws(() => workflowLifecycleStage('wait-native', runId, elapsed))
 })

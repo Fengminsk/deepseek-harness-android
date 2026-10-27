@@ -10,6 +10,14 @@ const mapping = 'LogicalDisplayMapper:\n  Display 0:\n    mPrimaryDisplayDevice=
 const surface = 'Displays (2 entries)\nDisplay 4630946165954792596\n    connectionType=Internal\n    powerMode=Off\nDisplay 4630946317637160339\n    connectionType=Internal\n    powerMode=Off\nOther:\n'
 const panels = parseInternalDisplays(ids, mapping, surface)
 
+test('workflow lifecycle driver binds the protected ADB executable and serial', () => {
+  const entry = 'apps/android/tool/acceptance-workflow-lifecycle-device.mjs'
+  const target = { adb: resolve('adb.exe'), serial: 'locked-phone' }
+  assert.deepEqual(bindAcceptanceArguments([entry, '--foreground-carrier', 'service'], target),
+    [resolve(entry), '--foreground-carrier', 'service', '--adb', target.adb, '--serial', target.serial])
+  assert.throws(() => bindAcceptanceArguments([entry, '--serial', 'other-phone'], target))
+})
+
 test('foldable inventory keeps exact physical IDs and includes the disabled inner panel', () => {
   assert.deepEqual(panels, [
     { id: '0', physicalId: '4630946165954792596', powerMode: 'Off' },

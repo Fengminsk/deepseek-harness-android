@@ -4,7 +4,7 @@ English | [中文](model-ptc-readonly.zh.md)
 
 ## Summary
 
-The App-owned [PTC owner](../runtime/model-ptc-reviewed-owner.mjs) executes erasable TypeScript function bodies through an isolated V8 guest. It is a private composition component; it does not register a model tool or enable the disabled Android PTC profile. It supports file, webpage and Linux-tool processing through the live parent's ToolRuntime, without Node, App-UID shell, direct network access or native file grants.
+The App-owned [PTC owner](../runtime/model-ptc-reviewed-owner.mjs) executes erasable TypeScript function bodies through an isolated V8 guest. The Android runtime exposes it through the reviewed `android_ptc` tool; the original Node PTC profile remains disabled. It supports file, webpage and Linux-tool processing through the live parent's ToolRuntime, without Node, App-UID shell, direct network access or native file grants.
 
 ## Contents
 
@@ -15,7 +15,7 @@ The App-owned [PTC owner](../runtime/model-ptc-reviewed-owner.mjs) executes eras
 
 ## Reviewed calls
 
-The [model tool factory](../runtime/tool-model-ptc.mjs) is composed in the Android runtime behind the source-owned device acceptance switch. It exposes only `code` and `description`, reports the reviewed callback subset separately from native grants, and checks availability both before starting and before publishing a result. The switch remains closed until production device acceptance passes.
+The [model tool factory](../runtime/tool-model-ptc.mjs) is composed in the Android runtime behind the source-owned device acceptance switch. It exposes only `code` and `description`, reports the reviewed callback subset separately from native grants, and checks availability both before starting and before publishing a result. `MODEL_PTC_DEVICE_ACCEPTED=true` enables this reviewed entry in source. Installed Build 115 evidence covers actual AgentLoop/ToolRuntime callbacks, CPU timeout and cancellation (r15), process-death handling (r17), and SAF revocation (r21). The r26 [production-profile device check](production-profile-device.md) also passed through the shipped bootstrap/index with a scripted model server: PTC read the dedicated workspace file before Linux Python analysis. The ordinary Build 116 upgrade remains pending; these observations do not establish live-provider acceptance or unrestricted Node PTC parity.
 
 Each execution captures the live Agent, active parent token, exact scoped definition and registration identity. Original package factories identify their own frozen definitions; copying a definition or unloading its plugin fails identification. Every callback rechecks identity, visibility, parent lifetime and arguments before the original ToolRuntime authorization and execution pipeline runs.
 

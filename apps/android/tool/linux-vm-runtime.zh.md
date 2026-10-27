@@ -9,7 +9,7 @@ title: Android Linux 虚拟机执行
 
 ## 概要
 
-可选 Android 载体在隔离服务中嵌入 TinyEMU 的 RISC-V 解释器。它启动 Linux 内核并运行传入的 Shell 脚本，不以 App UID 执行该脚本。普通构建排除虚拟机原生执行器和客体镜像，也不要求准备 TinyEMU 源码；显式的 [Alpine 验收构建](tinyemu-build.zh.md#alpine-验收-apk)启用载体及经过验证的候选镜像，未包含的执行器对请求明确返回不可用。模型注册另由[运行时入口](../runtime/index.mjs)的 `LINUX_VM_DEVICE_ACCEPTED` 控制。关闭状态不能表述为模型已经能够使用此能力。
+可选 Android 载体在隔离服务中嵌入 TinyEMU 的 RISC-V 解释器。它启动 Linux 内核并运行传入的 Shell 脚本，不以 App UID 执行该脚本。普通构建排除虚拟机原生执行器和客体镜像，也不要求准备 TinyEMU 源码；显式的 [Alpine 验收构建](tinyemu-build.zh.md#alpine-验收-apk)启用载体及经过验证的候选镜像，未包含的执行器对请求明确返回不可用。模型注册另由[运行时入口](../runtime/index.mjs)的 `LINUX_VM_DEVICE_ACCEPTED` 控制。源码中的 `LINUX_VM_DEVICE_ACCEPTED=true` 仅在原生启动标记也确认 `BuildConfig.LINUX_VM_ENABLED` 时开放 `linux_exec`、`linux_import`、`linux_export` 与 `linux_inspect`；不含客体的普通安装包不暴露它们。`LINUX_VM_NETWORK_DEVICE_ACCEPTED=false` 仍关闭联网审批组合及模型网络参数。这不会改变普通构建：可用交付仍须包含经验证的 Alpine 镜像与执行器候选。
 
 ## 目录
 
@@ -24,6 +24,8 @@ title: Android Linux 虚拟机执行
 [原生执行器](../android/app/src/main/cpp/linux_vm_engine.c)仅接收 BIOS、内核和磁盘的内存映射。客体拥有 128 MiB 内存、VirtIO 控制台和块设备，不包含宿主文件系统、网络设备、SDL、KVM 或 Node API。服务启动客体前检查隔离 UID 无法读取 App 存储或创建网络套接字。
 
 `linux_exec` 接收 `command` 与 `timeoutMs`，由已注册的 Agent 提供会话身份。脚本上限为 32 KiB UTF-8 字节，从 `/workspace` 开始执行，启动及执行总时限最多 120 秒。控制台输出上限为 64 KiB，并明确报告截断。已结束的 Shell 可以返回非零退出码。原生结果分别记录超时、取消、执行器退出和磁盘发布状态。
+
+打包的 Alpine 客体提供 `python3` 及其标准库，可执行本地 JSON、ZIP、SQLite、哈希和子进程任务，并包含 BusyBox 工具。客体拥有 128 MiB 内存与独立的 128 MiB `/workspace` 磁盘。通过 `linux_import` 导入获授权的 Agent 工作区输入，在 `/workspace` 中运行分析，再用 `linux_export` 返回生成文件。不包含 NumPy、pandas、Pillow 等可选 Python 包；Python 可用不代表能够安装它们。[文件分析样例](device-runtime-acceptance/python-analysis.py) 覆盖交付的标准库。
 
 显式组合的[联网审批服务](linux-network-admission.zh.md) 可增加每条命令的 `networkHosts` 与 `networkCallLimit`，向原生 HTTPS 代理申请权限。未提供这些字段或缺少匹配的持久用户授权时，网络保持关闭；不会启用客体套接字。
 
@@ -69,6 +71,8 @@ Node owner 在每个 Session 首次执行前先占用执行槽位，再查询原
 
 [Node 持有者测试](native-linux-vm.test.mjs)、[真实 ToolRuntime 注册测试](tool-linux-vm.test.mjs)和[控制台帧测试](../android/app/src/test/java/com/minnnng/dsh_android/LinuxVmConsoleTest.java)分别覆盖自身的宿主路径。[设备测试入口](../android/app/src/androidTest/kotlin/com/minnnng/dsh_android/LinuxVmAcceptanceInstrumentation.kt)负责内核启动、实际命令执行、磁盘保持和中断证据。编译与宿主测试不能替代设备结果。
 
+已安装 Build 115 的证据包括离线六项检查与 Python 标准库分析（r14）、真实 PTC 导入／分析／导出链（r15）、导入期间进程死亡后的保守查询与禁止重放（r17），以及观察活动 worker CPU 后取消、确认退役且不提交磁盘（r21）。这些是保留的特定产物观察，不代表任意后续安装包已获验收。r26 [正式 profile 检查](production-profile-device.zh.md)另已通过所装 bootstrap／index 与脚本模型服务执行：PTC 读取专用工作区文件，Linux 随后执行 Python hashlib／sqlite3／zipfile 分析，耗时 15,933 毫秒；客体 UID 99460 与 App UID 10496 不同，退役已确认且持久 Session JSONL 一致。屏幕保护证据记录两个显示屏均为 Off，设备保持锁屏。报告保存在 `.cache/android/production-profile-r26-protected-20261028.json.result.json` 和 `.cache/android/production-profile-r26-protected-20261028.json`；App SHA-256 为 `0bbcc7b7116cb352065308a9e1701f7bcadc2ef06b8025b63f4a4c19446aed03`（与 r25 为同一 App），测试 APK SHA-256 为 `59a9b14a1e26aa24b07a1a758878f03cff42056ca3ed29919db6c1a445c8d23c`。这项限定范围的结果不代表真实模型供应商、workflow 或客体联网已验收。独立的 r26 workflow 真机检查已通过常规执行（11／11）、120,256 毫秒时限检查（一个持久 run-end 且子级退役）及进程死亡恢复。Build 116 源码候选现已开放受审查 workflow 入口；其 `expectWorkflow=true` 正式 profile 与普通 Build 116 升级仍待验证。此前 r25 workflow 尝试达到 390 秒仍无结果，原因仍未解释。有界客体 HTTPS 的审批与路由尚未验收，源码仍关闭其注册。
+
 ## 开发说明
 
-固定工具 `android_linux` 与此虚拟机具有独立实现，两者均不提供 Root 或 ADB 权限。客体仍不联网。Android 路径不会仅因出现在脚本中就成为客体挂载目录；`linux_import` 与 `linux_export` 是显式授权的复制操作。
+固定工具 `android_linux` 与此虚拟机具有独立实现，两者均不提供 Root 或 ADB 权限。除非显式接入独立准入的 HTTPS 代理并获批准，否则 Linux 命令保持离线；客体套接字始终不可用。Android 路径不会仅因出现在脚本中就成为客体挂载目录；`linux_import` 与 `linux_export` 是显式授权的复制操作。

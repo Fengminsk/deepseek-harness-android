@@ -12,6 +12,7 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
 const TOOL_ROOT = dirname(fileURLToPath(import.meta.url))
 const RECOVERY_ENTRY = resolve(TOOL_ROOT, 'acceptance-agent-service-recovery-device.mjs')
 const ENTRIES = new Set([
+  'acceptance-workflow-lifecycle-device.mjs',
   'acceptance-native-workflow-device.mjs', 'acceptance-native-workflow-process-death-device.mjs',
   'acceptance-upgrade-device.mjs', 'acceptance-ptc-process-death-device.mjs',
   'acceptance-ptc-callback-device.mjs', 'acceptance-linux-vm-lifecycle-device.mjs',

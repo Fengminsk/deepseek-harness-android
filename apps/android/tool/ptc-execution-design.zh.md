@@ -4,7 +4,7 @@
 
 ## 当前状态与决定
 
-Android 版本**尚不能**执行 `run_code` 或 `workflow` 脚本。本文是实施设计和验收约定，不代表原版 PTC 已可用。在以下门槛于普通非 Root 手机通过以前，Android profile 中的 `ptc-runtime`、`workflow-ptc`、`tool-workflow` 和 `preset-ptc` 继续禁用，打包及运行时的阻断也继续保留。
+Android 版本**不能**执行原版不受限 Node `run_code` 或 Node 托管的 workflow 提供方。独立的[受审查 android_ptc 入口](model-ptc-readonly.zh.md)及[隔离原生 workflow 入口](tool-native-workflow.zh.md)已在 Build 116 候选源码中开放，但不提供直接 Node API，也不代表原版 PTC 已对齐。限定范围的 r26 workflow 真机检查已通过，包含 workflow 的正式 profile 与普通 Build 116 升级仍待验证。本文保留原版不受限执行器的验收约定。在以下门槛于普通非 Root 手机通过以前，Android profile 中的 `ptc-runtime`、`workflow-ptc`、`tool-workflow` 和 `preset-ptc` 继续禁用，打包及运行时的阻断也继续保留。
 
 原版 [`PtcRuntime`](../../../packages/ptc-runtime/ptc-runtime/README.zh.md) 包括解析后的程序格式、超时、所有者生命周期、具名异步绑定、限额日志、无损 JSON 结果、结构化错误及独立的沙箱事实。已发布的 Node 提供方允许模型代码直接使用 Node 文件系统、网络和子进程 API；在 `workspace-write` 或 `read-only` 下，先经 `ctx.sandbox.confine()`，再启动受管 Node 进程。[`WorkflowExecution`](../../../packages/workflow/workflow-ptc/src/runtime.ts) 在同一个 PTC 进程里运行含 `agent`、`parallel`、`pipeline`、`phase`、`log` 和 JSON `args` 的 JavaScript 正文；工作流适配器负责子 Agent、取消和释放。只复刻工具名称而缺少这些行为，不算功能对齐。
 
@@ -14,9 +14,9 @@ Android 版本**尚不能**执行 `run_code` 或 `workflow` 脚本。本文是�
 | --- | --- | --- |
 | 已锁定 Android Node 24.22.0 和 `libnode.so`。 | [`runtime-lock.json`](runtime-lock.json)、[`CMakeLists.txt`](../android/app/src/main/cpp/CMakeLists.txt) | 具备 JavaScript 引擎不等于具备隔离。 |
 | `NativeRuntime.start()` 将 `HOME`、`DSH_HOME`、缓存和工作目录指向应用私有路径，在应用 UID 的 `:agent` 进程启动完整 DSH。 | [`runtime.cpp`](../android/app/src/main/cpp/runtime.cpp)、[`NativeRuntime.kt`](../android/app/src/main/kotlin/com/minnnng/dsh_android/NativeRuntime.kt) | 隔离 UID 无法读取这些路径；直接在 `:agent` 执行模型代码则会暴露凭据。 |
-| Manifest 声明了隔离 Service，其中内部 V8 JavaScript 求值器与诊断回显分开运行。 | [`AndroidManifest.xml`](../android/app/src/main/AndroidManifest.xml)、[`IsolatedScriptService.kt`](../android/app/src/main/kotlin/com/minnnng/dsh_android/IsolatedScriptService.kt)、[`PtcScriptEngine.java`](../android/app/src/main/java/com/minnnng/dsh_android/PtcScriptEngine.java) | 已有有界纯 JavaScript 求值器，但尚无面向模型的 PTC 提供方，也不具备原版 PTC 的完整语义。 |
+| Manifest 声明了隔离 Service，其中内部 V8 JavaScript 求值器与诊断回显分开运行。 | [`AndroidManifest.xml`](../android/app/src/main/AndroidManifest.xml)、[`IsolatedScriptService.kt`](../android/app/src/main/kotlin/com/minnnng/dsh_android/IsolatedScriptService.kt)、[`PtcScriptEngine.java`](../android/app/src/main/java/com/minnnng/dsh_android/PtcScriptEngine.java) | 受审查的 `android_ptc` 工具使用隔离求值器与原版 ToolRuntime 回调；仍不具备不受限 Node PTC 的语义。 |
 | 原版本地沙箱只为 Linux、macOS、Windows 选择执行器。 | [`sandbox-local/src/index.ts`](../../../packages/sandbox/sandbox-local/src/index.ts) | Android 的 `workspace-write` 必须拒绝；改用 `danger-full-access` 让它运行会降低策略。 |
-| Android profile 显式禁用 PTC 和工作流。 | [`cordis.patch.yml`](../runtime/cordis.patch.yml)、[`ptc-workflow-confinement.zh.md`](ptc-workflow-confinement.zh.md) | 今天没有面向模型的脚本执行能力。 |
+| Android profile 显式禁用 PTC 和工作流。 | [`cordis.patch.yml`](../runtime/cordis.patch.yml)、[`ptc-workflow-confinement.zh.md`](ptc-workflow-confinement.zh.md) | 原版 Node 执行器仍禁用；App 自有的受审查 PTC 及原生 workflow 工厂已独立在候选源码中开放。 |
 
 隔离 UID 是防止读取应用私有文件的重要边界，但**不自动实现**工作区文件策略。它不会把 SAF 文档变成可直接访问的文件路径，不会将所有全局可读路径限制到选定工作区，也不保证 Service 解绑后 Node 子进程都消失。JavaScript `vm` 上下文同样不是操作系统隔离边界。
 
@@ -38,7 +38,7 @@ Android 版本**尚不能**执行 `run_code` 或 `workflow` 脚本。本文是�
 3. **脚本引擎。** 已锁定的 `libnode` 包含 V8，但**不暴露 Node 全局对象**的嵌入式 V8 isolate 是另一种提供方：可实现仅通过 broker 调用的 TypeScript/JavaScript 子集和工作流钩子，却不等同原版可直接访问 `fs`、`net`、`child_process` 的契约。完整 Node 提供方必须先拥有经真机证明的内核级文件及进程隔离，并解决工作区路径模型。仅 V8 方案仍需原生执行桥、Promise 微任务循环、中断、堆上限、严格 JSON 转换和异步宿主调用。只有同步 `eval`、没有宿主绑定，不算实现了 `workflow`。
 4. **能力代理。** 应用保存 opaque grant ID 到用户授权工作区文件的映射。guest 只能发送 `{runId, callId, grantId, action, boundedArgs}`。应用检查租约、审批、操作类型、预期文件版本；返回有界读取、搜索或编辑结果；记录请求及其终态。不接受 guest 指定的应用私有路径或任意工具名。工作流 `agent()` 需要独立的子 Agent 能力，遵守所有者、上限和释放规则；文件授权不能隐含授权它。
 5. **资源与生命周期。** 分别限制脚本大小、帧大小、输出大小、堆、等待中的调用数和宿主队列。经过时间截止从绑定前开始，包括所有回调等待。同步死循环须通过 V8 中断或杀进程终止；guest 丢失只结算一个终态并撤销授权。取消先阻断后续回调，再释放已接受的子 Agent，并记录停止原因。成功后也退休 guest；在完成 state owner 释放与崩溃恢复之前，不宣称支持持久内存环境。
-6. **提供方接入。** 新 Android 提供方应报告真实的 `language`、执行模式与强制隔离事实。若不支持直接 Node API，必须给出不同的 `executionInstructions`，不能冒充现有 Node 提供方。原版 `workflow-ptc` 加载时拒绝非 TypeScript PTC 提供方，内部 VM 使用 `node:vm`；改造或替换这一层是实质性集成工作。只有完成并检查各工具所需契约后，才向模型暴露 `run_code`、`workflow`。
+6. **提供方接入。** 新 Android 提供方应报告真实的 `language`、执行模式与强制隔离事实。若不支持直接 Node API，必须给出不同的 `executionInstructions`，不能冒充现有 Node 提供方。原版 `workflow-ptc` 加载时拒绝非 TypeScript PTC 提供方，内部 VM 使用 `node:vm`；改造或替换这一层是实质性集成工作。只有完成并检查所需契约后，才向模型暴露原版不受限 `run_code` 与 Node 托管 workflow 路径；独立的受审查原生 workflow 入口遵循上述更窄的契约。
 
 拟议的应用回调边界为 `hostCall(runId, callId, grantId, action, boundedArgs) -> boundedResponse`。每个请求均可关联、最多受理一次，并在 guest 死亡时也有终态。该接口故意不包含文件路径、`process.env`、网络套接字或任意 Shell 请求。
 
@@ -46,7 +46,7 @@ Android 版本**尚不能**执行 `run_code` 或 `workflow` 脚本。本文是�
 
 遵循 [OpenAI Docs 的 Codex 沙箱说明](https://learn.chatgpt.com/docs/sandboxing)与[智能体审批说明](https://learn.chatgpt.com/docs/agent-approvals-security)中的边界：审批结果本身不会扩大沙箱。每次运行默认没有 guest 文件授权，也没有 guest 网络授权。应用可以显式准入 `workspace-write` 范围，仅包含用户选定的应用工作区可读、可写路径。文件操作边界必须拒绝范围外写入，包括工作区中的受保护元数据（`.git`、`.agents`、`.codex`、`.aws`）。网络默认拒绝；经审核的精确 HTTPS 域名只能通过应用网络代理授权给一次有界运行。子任务只能缩小父任务权限。guest 只拿到不透明句柄，不拿原始路径、凭据或环境网络套接字。所选 Android 执行器若无法强制执行该策略，就返回 `sandbox-unavailable`，不能退回应用 UID 执行。
 
-现有 `IsolatedExecutionPolicyOwner`、文件代理、网络代理和手动脚本审批，已覆盖应用私有工作区精确文件与精确域名选择的一部分契约。原有应用 UID Shell、Host 网络工具和第三方插件是不同执行面；它们不会继承隔离 guest 的授权，各自需要强制约束或明确的不可用状态。这是模型脚本与工作流的目标策略，并不表示今天已开放那些工具。
+现有 `IsolatedExecutionPolicyOwner`、文件代理、网络代理和手动脚本审批，已覆盖应用私有工作区精确文件与精确域名选择的一部分契约。原有应用 UID Shell、Host 网络工具和第三方插件是不同执行面；它们不会继承隔离 guest 的授权，各自需要强制约束或明确的不可用状态。这项策略描述原版通用执行契约的要求，不代表独立的受审查 Android 入口已实现其不受限 Node 行为。
 
 实现时应对传输帧进行版本化，在准入时冻结字段：
 

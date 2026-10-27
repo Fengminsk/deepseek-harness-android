@@ -51,7 +51,7 @@ internal class IsolatedWorkflowCallbackBridge(
     /** Node child call ID to the App's durable, single-use child identity. */
     private val childCalls = mutableMapOf<Int, String>()
     private var closed = false
-    private var uncertain = false
+    private val retirement = WorkflowCallbackRetirement()
     private var closeFuture: Future<Boolean>? = null
 
     override fun call(message: Message, guest: Messenger, reject: (String) -> Unit) {
@@ -151,12 +151,11 @@ internal class IsolatedWorkflowCallbackBridge(
                     }
                 } catch (failure: Exception) {
                     synchronized(gate) {
-                        // A requested cancel interrupts the callback worker. That is
-                        // expected control flow, not evidence of unjoined effects:
-                        // retire still requires both worker exit and Node close.
-                        if (!cancelled.asBoolean ||
-                            (failure !is InterruptedException && failure !is CancellationException))
-                            uncertain = true
+                        // Local deadline retirement also interrupts the worker;
+                        // it need not be an externally requested cancellation.
+                        // Only those interruption types are expected. Prior RPC
+                        // or protocol uncertainty remains sticky through close.
+                        retirement.recordFailure(failure, cancelled.asBoolean)
                     }
                     cancel()
                     reject("Workflow callback outcome needs inspection")
@@ -165,28 +164,32 @@ internal class IsolatedWorkflowCallbackBridge(
                 }
             }
         } catch (failure: Exception) {
-            synchronized(gate) { outstanding.remove(parsed.callId); uncertain = true }
+            synchronized(gate) { outstanding.remove(parsed.callId); retirement.markUncertain() }
             cancel()
             throw failure
         }
     }
 
-    override fun proposedResult(sender: Int, reported: Int) {
+    override fun proposedResult(sender: Int, reported: Int) =
+        proposedResult(sender, reported, PtcScriptEngine.Status.COMPLETED)
+
+    override fun proposedResult(sender: Int, reported: Int, status: PtcScriptEngine.Status) {
         synchronized(gate) {
-            check(!closed && !cancelled.asBoolean && withinDeadline() && outstanding.isEmpty() &&
+            check(!closed && !cancelled.asBoolean && withinDeadline() &&
                 workflowOwner.read(request.runId()).state() == DurableWorkflowOwner.State.ADMITTED)
             check(sender >= 0 && sender != Process.myUid() && sender == reported)
             check(attachedUid == -1 || attachedUid == sender)
+            retirement.requireResult(status, outstanding.size)
         }
     }
 
     override fun cancel() {
-        synchronized(gate) { closed = true; startClose() }
+        synchronized(gate) { closed = true; retirement.requestStop(); startClose() }
         worker.shutdownNow()
     }
 
     override fun retire(scriptCompleted: Boolean): IsolatedScriptHostBridge.Retirement {
-        synchronized(gate) { closed = true; startClose() }
+        synchronized(gate) { closed = true; retirement.requestStop(); startClose() }
         worker.shutdownNow()
         val quiet = try { worker.awaitTermination(remainingMillis(), TimeUnit.MILLISECONDS) }
         catch (_: InterruptedException) { Thread.currentThread().interrupt(); false }
@@ -194,7 +197,7 @@ internal class IsolatedWorkflowCallbackBridge(
         catch (_: Exception) { false }
         closer.shutdownNow()
         return when {
-            !quiet || !settled || uncertain -> IsolatedScriptHostBridge.Retirement.UNCONFIRMED
+            !retirement.confirmed(quiet, settled) -> IsolatedScriptHostBridge.Retirement.UNCONFIRMED
             scriptCompleted -> IsolatedScriptHostBridge.Retirement.COMPLETED
             else -> IsolatedScriptHostBridge.Retirement.FAILED
         }
@@ -222,9 +225,9 @@ internal class IsolatedWorkflowCallbackBridge(
     private fun remainingMillis(): Long = maxOf(1L,
         TimeUnit.NANOSECONDS.toMillis(deadlineNanos - System.nanoTime()))
 
-    /** Caller holds gate; only explicit cancellation uses this exception. */
+    /** Caller holds gate; local retirement and external cancellation both stop dispatch. */
     private fun requireActive() {
-        if (cancelled.asBoolean) throw CancellationException("Workflow callback cancelled")
+        retirement.requireActive(cancelled.asBoolean)
         check(!closed) { "Workflow callback is closed" }
     }
 

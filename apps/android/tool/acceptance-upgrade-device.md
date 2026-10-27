@@ -2,6 +2,8 @@
 
 English | [中文](acceptance-upgrade-device.zh.md)
 
+For the recorded Build 115→116 APK pair, see the [Build 116 upgrade acceptance record](upgrade-116-acceptance.md), including retained Session/SAF bytes and the synthetic-credential evidence boundary.
+
 ## Scope and prerequisites
 
 This test checks a real Android package-manager upgrade from an older App APK to a newer one. [`UpgradePersistenceInstrumentation.kt`](../android/app/src/androidTest/kotlin/com/minnnng/dsh_android/UpgradePersistenceInstrumentation.kt) writes a 64-byte random canary under the target App's `noBackupFilesDir` and a separately randomized synthetic value under a unique `acceptance/upgrade/<token>` `CredentialVault` reference. The newer APK must read the identical file bytes and decrypt the value with the existing Android Keystore key. The base test never uses a real account, session or user document. The optional SAF readability mode reads an existing user-granted document without changing it.

@@ -111,8 +111,16 @@ test('source review distinguishes alternative launchers from shared capabilities
   const linuxRemaining = result.capabilities.find(capability => capability.id === 'linux').remaining
   assert.match(linuxRemaining, /offline Alpine candidate/u)
   assert.match(linuxRemaining, /exact image\/build evidence/u)
-  assert.match(linuxRemaining, /LINUX_VM_DEVICE_ACCEPTED=false/u)
-  assert.match(linuxRemaining, /Production enablement and device acceptance remain/u)
+  assert.match(linuxRemaining, /LINUX_VM_DEVICE_ACCEPTED=true/u)
+  assert.match(linuxRemaining, /LINUX_VM_NETWORK_DEVICE_ACCEPTED=false/u)
+  assert.match(linuxRemaining, /r26 shipped production profile passed on-device with a scripted model server/u)
+  assert.match(linuxRemaining, /ordinary Build 116 upgrade remains pending/u)
+  const programmaticRemaining = result.capabilities.find(capability => capability.id === 'programmatic').remaining
+  assert.match(programmaticRemaining, /MODEL_PTC_DEVICE_ACCEPTED=true/u)
+  assert.match(programmaticRemaining, /MODEL_WORKFLOW_DEVICE_ACCEPTED=true/u)
+  assert.match(programmaticRemaining, /production profile with expectWorkflow=true and ordinary upgrade retention remain pending/u)
+  assert.match(programmaticRemaining, /earlier r25 390-second hang remains unexplained/u)
+  assert.match(programmaticRemaining, /Original Node PTC\/workflow plugins remain disabled/u)
 })
 
 test('excluding a declaration requires an explicit native-entrypoint reason', async () => {

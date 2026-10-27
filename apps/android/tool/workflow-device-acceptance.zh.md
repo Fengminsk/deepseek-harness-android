@@ -54,6 +54,8 @@ title: 工作流运行时真机验收
 
 载荷始终声明三项独立证据缺口：等待嵌套工作时的原生超时、工作流 Binder 死亡／App 重启，以及升级后工作流记录保留。十一项通过因此仅表示已执行检查通过，`complete` 仍为 false。[聚合器](device-runtime-acceptance/report.mjs) 即使面对漏报，也会保留这些缺口；数字通过计数不能替代具名结果。
 
+独立的[真实 Node 生命周期套件](workflow-lifecycle-device.zh.md)使用相同生产所有者和真实子 Agent 检查期限与进程死亡。它们的显式报告需随此基线一并保留；不会追改基线的 `unverified` 字段，也不能证明升级记录保留。
+
 这些检查不证明真实服务商／网络行为、子 Agent 文件／网页权限继承、Linux 子 Agent 执行、无限循环终止或进程死亡恢复。对应证据分别由[运行时套件](device-runtime-acceptance.zh.md)、[子工具测试](workflow-child-tools.test.mjs)和[生命周期参考](linux-vm-lifecycle-device.zh.md)负责。进程终止与 APK 安装可能移除全黑前台 Activity；此类操作需要独立的屏幕保护方案，在无法满足全程黑屏要求时不得运行。
 
 <a id="host-verification"></a>

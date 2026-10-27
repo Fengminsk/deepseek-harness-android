@@ -38,7 +38,7 @@ PROJECT_INPUTS = (
         'linux-vm-host/README.md', 'linux-vm-host/README.zh.md',
     )),
     *(f'apps/android/android/app/src/main/cpp/{name}' for name in (
-        'CMakeLists.txt', 'linux_vm_engine.c', 'linux_vm_files.c', 'linux_vm.cmake',
+        'CMakeLists.txt', 'linux_vm_engine.c', 'linux_vm_files.c', 'linux_vm.cmake', 'runtime.cpp',
     )),
     *(f'apps/android/android/app/src/main/java/com/minnnng/dsh_android/{name}.java' for name in (
         'LinuxVmConsole', 'LinuxVmBlockStore', 'LinuxVmRecoveryStore',
@@ -54,7 +54,7 @@ PROJECT_INPUTS = (
         'IsolatedLinuxVmService', 'LinuxVmEngine', 'LinuxVmRunner', 'LinuxVmManager',
         'LinuxVmImageStore', 'LinuxVmFileInput', 'LinuxVmFileOutput', 'LinuxVmFilePublisher',
         'LinuxVmNetworkBridge', 'NetworkProxyPreferences', 'LinuxVmNetworkApprovalCoordinator',
-        'IsolatedApprovalDialog', 'AgentService', 'MainActivity',
+        'IsolatedApprovalDialog', 'AgentService', 'MainActivity', 'NativeRuntime',
     )),
     'apps/android/android/app/build.gradle.kts',
     'apps/android/android/app/src/acceptance/AndroidManifest.xml',

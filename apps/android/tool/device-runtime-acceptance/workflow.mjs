@@ -3,6 +3,18 @@ import { createHash, randomUUID } from 'node:crypto'
 import { workflowModelScenario } from './workflow-model-fixture.mjs'
 import { WORKFLOW_DEVICE_CHECKS, WORKFLOW_UNVERIFIED_CHECKS } from './workflow-checks.mjs'
 
+function errorCauses(error, depth = 0, seen = new Set()) {
+  const detail = { name: String(error?.name ?? 'Error').slice(0, 80),
+    message: String(error?.message ?? error).slice(0, 512) }
+  if (typeof error?.code === 'string') detail.code = error.code.slice(0, 80)
+  if (depth === 2 || seen.has(error)) return detail
+  seen.add(error)
+  const causes = [...(error?.cause === undefined ? [] : [error.cause]),
+    ...(Array.isArray(error?.errors) ? error.errors.slice(0, 3) : [])]
+  if (causes.length) detail.causes = causes.slice(0, 3).map(value => errorCauses(value, depth + 1, seen))
+  return detail
+}
+
 /** Keep one callback/preset owner alive across the selected acceptance suites.
  * @param {object} options - Real host services, native transport and acceptance callback routing.
  * @returns {Promise<object>} Owner, acknowledged observations and a disposer that joins background work.
@@ -11,11 +23,19 @@ export async function createWorkflowAcceptance({ ctx, transport, agent, nativeMo
   const { NativeWorkflowGuestCallbacks } = await nativeModule('native-workflow-guest-callbacks.mjs')
   const { createNativeWorkflowPrivateOwner } = await nativeModule('native-workflow-private-owner.mjs')
   const { registerAndroidWorkflowTool } = await nativeModule('tool-native-workflow.mjs')
-  const progress = [], receipts = new Map(), releases = new Set(), callbackFailures = [], callbackClosures = []
+  const progress = [], receipts = new Map(), releases = new Set(), admissions = new Map()
+  const callbackFailures = [], callbackClosures = [], callbackStarts = [], nativeFailures = []
+  const callbackObservers = new Set()
   const observe = (rows, value) => { if (rows.length === 128) rows.shift(); rows.push(value) }
   // Observe actual responses. Never synthesize a native result, retirement or callback acknowledgement.
   const observedTransport = { async request(method, params, ...options) {
-    const result = await transport.request(method, params, ...options)
+    let result
+    try { result = await transport.request(method, params, ...options) }
+    catch (error) {
+      observe(nativeFailures, { runId: params.runId, method, error: errorCauses(error) })
+      throw error
+    }
+    if (method === 'native.workflow.admit') admissions.set(params.runId, structuredClone(params))
     if (method === 'native.workflow.settle') receipts.set(params.runId, structuredClone(result))
     if (method === 'native.workflow.release' && result === true) releases.add(params.runId)
     return result
@@ -23,6 +43,8 @@ export async function createWorkflowAcceptance({ ctx, transport, agent, nativeMo
   const callbacks = new NativeWorkflowGuestCallbacks(observedTransport)
   const unbind = callbackRouting.bind('workflow', {
     async call(params) {
+      observe(callbackStarts, { runId: params.runId, action: params.action })
+      for (const listener of callbackObservers) listener(params)
       try {
         const result = await callbacks.call(params)
         if (result.denied?.code === 'MODEL_ROUTE_DENIED') {
@@ -35,7 +57,8 @@ export async function createWorkflowAcceptance({ ctx, transport, agent, nativeMo
         }
         return result
       } catch (error) {
-        observe(callbackFailures, { runId: params.runId, action: params.action, message: String(error).slice(0, 512) })
+        observe(callbackFailures, { runId: params.runId, action: params.action,
+          message: String(error).slice(0, 512), error: errorCauses(error) })
         throw error
       }
     },
@@ -45,7 +68,8 @@ export async function createWorkflowAcceptance({ ctx, transport, agent, nativeMo
         observe(callbackClosures, { runId: params.runId, closed: result?.closed === true })
         return result
       } catch (error) {
-        observe(callbackClosures, { runId: params.runId, closed: false, message: String(error).slice(0, 512) })
+        observe(callbackClosures, { runId: params.runId, closed: false,
+          message: String(error).slice(0, 512), error: errorCauses(error) })
         throw error
       }
     },
@@ -55,7 +79,8 @@ export async function createWorkflowAcceptance({ ctx, transport, agent, nativeMo
     assert.equal(registerAndroidWorkflowTool(ctx, { owner }), false)
     assert.equal(ctx.tools.get('workflow', agent), undefined)
     assert.equal(registerAndroidWorkflowTool(ctx, { owner, available: () => true }), true)
-    return { owner, progress, receipts, releases, callbackFailures, callbackClosures,
+    return { owner, progress, receipts, releases, admissions, callbackStarts, callbackFailures, callbackClosures, nativeFailures,
+      observeCallbackStarts(listener) { callbackObservers.add(listener); return () => callbackObservers.delete(listener) },
       inspectNative: (runId, signal) => transport.request('native.workflow.inspect', { runId }, signal),
       async dispose() { try { await owner.dispose() } finally { unbind() } } }
   } catch (error) {
@@ -294,7 +319,7 @@ export async function runWorkflowAcceptance({ ctx, agent, adapter, workflow }) {
       try { checks.push({ name: WORKFLOW_DEVICE_CHECKS[index], status: 'passed', evidence: await check() }) }
       catch (error) {
         suiteAbort.abort(error)
-        await Promise.allSettled([...activeCalls])
+        await Promise.allSettled(activeCalls)
         // Diagnostic reads are bounded independently of the already cancelled run.
         // They cannot change the pass condition or infer retirement from an RPC error.
         const observedRuns = await Promise.all(starts().slice(before).slice(0, 8).map(async event => {

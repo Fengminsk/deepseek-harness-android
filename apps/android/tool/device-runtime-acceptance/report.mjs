@@ -1,6 +1,8 @@
-import { WORKFLOW_DEVICE_CHECKS, WORKFLOW_UNVERIFIED_CHECKS } from './workflow-checks.mjs'
+import { WORKFLOW_DEVICE_CHECKS, WORKFLOW_UNVERIFIED_CHECKS, WORKFLOW_DEADLINE_CHECK, WORKFLOW_DEATH_CHECK } from './workflow-checks.mjs'
 
 const requiredChecks = {
+  'workflow-deadline': [WORKFLOW_DEADLINE_CHECK],
+  'workflow-process-death': [WORKFLOW_DEATH_CHECK],
   'ptc-process-death': ['ptc-killed-dispatch-no-replay'],
   'ptc-saf': ['saf-revocation-and-search'],
   workflow: [...WORKFLOW_DEVICE_CHECKS, ...WORKFLOW_UNVERIFIED_CHECKS],

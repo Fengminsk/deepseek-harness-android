@@ -45,13 +45,13 @@ Linux 结果保留全部有界原生字段；48 KiB 客体限额不会静默丢�
 
 检查覆盖实时策略和定义变化、文件范围与禁止覆盖、两次刷盘屏障、取消前已发布、输出超限、原生恢复拒绝、原版单次联网准入，以及审批等待期间取消。它们不能认证原生 UI 手势、客体 Python 执行、Android UID／Binder 隔离、网络流量、共享总耗时终止或进程死亡恢复。
 
-`node apps/android/tool/acceptance-ptc-linux-tools.mjs` 使用 SDK JSON 编译并执行真实 Kotlin 请求解析器，验证四个 Linux 名称仅向经审查 PTC 开放，拒绝环境权限工具、未审查名称和畸形帧，并保留相互独立的回执事实。共享[主机编译器](kotlin-host-test.mjs)需要 JDK 17 或更新版本、缓存的 Kotlin 编译器依赖及 Android 36 SDK 源码，不会组装或安装 APK。改变可用性前，仍须在已安装产物上验收生产 PTC 到 Linux 的调用链及取消路径。
+`node apps/android/tool/acceptance-ptc-linux-tools.mjs` 使用 SDK JSON 编译并执行真实 Kotlin 请求解析器，验证四个 Linux 名称仅向经审查 PTC 开放，拒绝环境权限工具、未审查名称和畸形帧，并保留相互独立的回执事实。共享[主机编译器](kotlin-host-test.mjs)需要 JDK 17 或更新版本、缓存的 Kotlin 编译器依赖及 Android 36 SDK 源码，不会组装或安装 APK。已安装 Build 115 r15 已通过生产 PTC 到 Linux 的导入、Python 分析、导出与检查调用链。嵌套取消和共享时限到期仍是独立检查；直接 Linux 取消结果不能认证它们。
 
 `ptc` 设备套件在[夹具](device-runtime-acceptance/ptc-linux.mjs)中声明 `reviewed-ptc-linux-import-analysis-export`。它在现有真实 AgentLoop 轮次中调用生产 PTC 工具，由隔离 JavaScript 客体调用原版 Linux 导入、Python JSON 分析、导出及检查。新的验收 Session 首次检查必须为 absent；没有预热命令或替代原生实现。三次客体启动共享未变的 120 秒 PTC 总时限。承载器只增加等待本项检查的时间，不增加执行权限。缺少客体资产、执行过慢或退役未确认都记为失败。
 
 检查读取真实导出字节，独立核对 SHA-256、长度及计算结果、原生导入导出路径、原始 Linux 运行 ID、App／PTC／Linux UID 隔离、磁盘提交和文件发布事实。它刷盘父 Session 并重新打开持久化读取器，验证四组回调开始与结束记录、三份原始 Linux 回执及最后的检查上下文。注册位于可释放 fiber 中，使 `all` 后续可以挂载 Linux 套件自己的所有者。只移除以 UUID 命名的验收文件；Session 日志与原生执行记录保留为证据。
 
-`node --import tsx --test apps/android/tool/device-runtime-acceptance-ptc-linux.test.mjs apps/android/tool/device-runtime-acceptance-report.test.mjs` 检查夹具验证器在证据不全时拒绝通过、生成程序遇到不确定结果后停止、原版 Cordis 注册清理，以及报告必须包含准确名称。它还在真实主机临时文件上运行相同的内嵌 Python 程序。验证器的合成观察和主机 Python 执行都不是设备证据。在已安装的成对产物上执行前，新增设备调用链仍未验证；它也不认证 PTC 到 Linux 的取消、共享时限到期、联网审批或进程死亡恢复。这些边界独立于离线调用链成功。
+`node --import tsx --test apps/android/tool/device-runtime-acceptance-ptc-linux.test.mjs apps/android/tool/device-runtime-acceptance-report.test.mjs` 检查夹具验证器在证据不全时拒绝通过、生成程序遇到不确定结果后停止、原版 Cordis 注册清理，以及报告必须包含准确名称。它还在真实主机临时文件上运行相同的内嵌 Python 程序。验证器的合成观察和主机 Python 执行都不是设备证据。保留的 r15 真机报告记录离线调用链在 17,048 毫秒内通过，包含三份 Linux 回执和四组持久回调记录。更早的 r14 在 120,529 毫秒后未确认退役，其原因仍未解释；后续成功不是根因修复。该结果不认证 PTC 到 Linux 的取消、共享时限到期、联网审批或嵌套进程死亡恢复。独立的 r26 [正式 profile 真机检查](production-profile-device.zh.md)已通过所装 bootstrap／index、脚本模型服务、PTC 工作区读取及 Linux Python hashlib／sqlite3／zipfile 分析，耗时 15,933 毫秒。客体 UID 与 App UID 不同，退役结果与持久 Session JSONL 一致，设备全程锁屏息屏。这是限定范围的正式 profile 证据，不是重测所有 r15 传输或失败路径。普通 Build 116 升级仍待验证。
 
 <a id="dev-note"></a>
 ## 开发说明

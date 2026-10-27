@@ -67,10 +67,13 @@ export async function apply(ctx) {
         const adapter = new FixtureAdapter()
         ctx.llm.registerAdapter(['device-acceptance'], adapter)
         const ptcDeath = configuration.suite === 'ptc-process-death' ? configuration.ptcDeath : null
+        const workflowDeath = configuration.suite === 'workflow-process-death' ? configuration.workflowDeath : null
         const handle = ptcDeath?.phase === 'recover'
           ? await ctx.agents.resume({ resumeSessionId: SessionId(`ptc-death-${ptcDeath.caseId}`) })
           : await ctx.agents.create({ sessionId: SessionId(ptcDeath
-            ? `ptc-death-${ptcDeath.caseId}` : `android-acceptance-${randomUUID()}`),
+            ? `ptc-death-${ptcDeath.caseId}` : workflowDeath
+              ? `workflow-death-${workflowDeath.phase === 'recover' ? 'recovery-' : ''}${workflowDeath.caseId}`
+              : `android-acceptance-${randomUUID()}`),
           agentOptions: { provider: 'device-acceptance', model: 'fixture' },
           meta: { cwd: process.cwd() },
           setup: async agentCtx => { await ctx.agentPresets.mount(agentCtx, 'device-acceptance-parent') },
@@ -78,9 +81,13 @@ export async function apply(ctx) {
         const agent = handle.agent
         let workflow
         try {
-          if (['workflow', 'linux', 'all'].includes(configuration.suite)) {
+          if (['workflow', 'linux', 'all', 'workflow-deadline', 'workflow-process-death'].includes(configuration.suite)) {
             const { createWorkflowAcceptance } = await import('./workflow.mjs')
             workflow = await createWorkflowAcceptance({ ctx, transport, agent, nativeModule, callbackRouting })
+          }
+          if (['workflow-deadline', 'workflow-process-death'].includes(configuration.suite)) {
+            const { runWorkflowLifecycle } = await import('./workflow-lifecycle.mjs')
+            reports.push(await runWorkflowLifecycle({ ctx, transport, agent, adapter, workflow, configuration }))
           }
           if (configuration.suite === 'workflow' || configuration.suite === 'all') {
             const { runWorkflowAcceptance } = await import('./workflow.mjs')

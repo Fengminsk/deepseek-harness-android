@@ -2,9 +2,9 @@
 
 [English](tool-native-workflow.md) | 中文
 
-`registerAndroidWorkflowTool` 通过 `createWorkflowToolDefinition` 复用原版 `workflow` 的参数、结果和展示契约。执行器及构建持有的可用性函数由 App 提供，默认关闭。配置档字段、模型参数或用户凭据都不能开启此门槛。生产 `index.mjs` 保持 `MODEL_WORKFLOW_DEVICE_ACCEPTED=false`，仅导入此模块不会注册工具。系统提示只允许在用户明确要求工作流或多 Agent 编排时使用 workflow。
+`registerAndroidWorkflowTool` 通过 `createWorkflowToolDefinition` 复用原版 `workflow` 的参数、结果和展示契约。执行器及构建持有的可用性函数由 App 提供，默认关闭。配置档字段、模型参数或用户凭据都不能开启此门槛。Build 116 候选在限定范围的 r26 真机验收后，将 `index.mjs` 中的 `MODEL_WORKFLOW_DEVICE_ACCEPTED` 设为 `true`；仅导入此模块仍不会注册工具。包含 workflow 的正式 profile（`expectWorkflow=true`）与普通 Build 116 升级仍待验证。系统提示只允许在用户明确要求工作流或多 Agent 编排时使用 workflow。
 
-`modelWorkflowCapability` 将最大已审查子级工具集合报告为 `read`、`glob`、`grep`、`write`、`edit`、`web_search`、`web_fetch`、`linux_exec`、`linux_import`、`linux_export` 和 `linux_inspect`，对应 `childTools: 'reviewed-parent-tools'`。这不保证某个父级或子级一定具有其中任何工具，也不授权调用关闭中的生产入口。Linux 工具必须已在父级注册；`LINUX_VM_DEVICE_ACCEPTED=false` 使生产环境中仍没有这些工具。能力说明描述激活时工作区、父子策略交集、继承的网页提供方，以及子 Session 私有且离线的 Linux 磁盘。面向模型的工具描述与系统提示列明这些条件能力及限制。
+`modelWorkflowCapability` 将最大已审查子级工具集合报告为 `read`、`glob`、`grep`、`write`、`edit`、`web_search`、`web_fetch`、`linux_exec`、`linux_import`、`linux_export` 和 `linux_inspect`，对应 `childTools: 'reviewed-parent-tools'`。这不保证某个父级或子级一定具有其中任何工具，也不绕过实时准入。Linux 工具必须已在父级有效注册，这又要求已验证的客体构建与原生能力标记。候选源码已开放受审查 workflow 及离线 Linux 注册；模型参数不能开启缺失工具。能力说明描述激活时工作区、父子策略交集、继承的网页提供方，以及子 Session 私有且离线的 Linux 磁盘。面向模型的工具描述与系统提示列明这些条件能力及限制。
 
 每次调用捕获准确的当前 ToolRuntime 定义和注册身份，核验存活的父 Agent 与真实 Session ID，并只消费一次 App 持有的准入票据。App 发放无文件及网络授权的 DSL 作用域，限定 120 秒、最多八个子级且并发两个。原版 JavaScript DSL 经固定的隔离客体执行，不在 Node 宿主中运行。子级工具使用独立的宿主授权，不向 DSL 提供直接文件系统或网络访问。
 
@@ -20,4 +20,4 @@
 
 主机检查：`node --import tsx --test apps/android/tool/tool-native-workflow.test.mjs apps/android/tool/tool-workflow-preflight.test.mjs apps/android/tool/workflow-child-tools.test.mjs apps/android/tool/workflow-subagent-backend.test.mjs`。子级专项通过真实父级预设 Loader 加载原版工具，让真实子 Agent 与 ToolRuntime 操作临时文件，核对持久 JSONL 工具结果，并检查策略降级、注册身份、受保护元数据、目录变化、结构化结果、取消和冷恢复。模型回复和网页提供方使用样例。Linux 用例使用真实 NativeLinuxVm 宿主所有者与样例原生回执，并未启动 Android 客体。这些检查不构成公网或 Android Binder 执行证据。其余专项在替代原生边界的条件下使用真实 jobs 注册表。原版包回归为 `node node_modules/vitest/vitest.mjs run packages/workflow/tool-workflow/tests/tool-workflow.spec.ts`。
 
-剩余真机证据应在现有 App 进程内使用仅供测试的组合：脚本模型适配器与全新的 `android-…` Session，不修改用户账号配置。通过实际 ToolRuntime 执行前台纯运算、真实受限子级、后台任务及 `job_kill`，核对持久 Session 事件、原生回执身份和任务终态。验收时只允许此经核查的组合明确开启注册门槛。仅 Kotlin 传输样例或主机替身不能满足这项端到端证据要求。
+r26 真机证据已通过常规 workflow 套件（11／11）、120,256 毫秒时限检查（一个持久 run-end 且确认子级退役）及进程死亡恢复；参见[workflow 验收](workflow-device-acceptance.zh.md)与[生命周期证据](workflow-lifecycle-device.zh.md)。这些夹具通过脚本模型适配器执行实际 ToolRuntime、隔离原生所有者及 Session 记录，未修改用户账号设置。此前 r25 workflow 时限尝试达到 390 秒仍无结果，原因仍未解释。Build 116 候选已开放受审查入口，但所装 `expectWorkflow=true` 正式 profile 与普通升级的数据保持仍需端到端验证。主机或仅 Kotlin 的夹具不能替代这些证据。

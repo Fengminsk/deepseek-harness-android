@@ -2,10 +2,14 @@
 
 [English](tool-isolated-ptc.md) | 中文
 
-原版 DSH 的 `run_code` 是 PTC 模式的保留传输，包含生成的工具 SDK、日志、时间预算、沙箱审批和嵌套工具执行。Android 当前以原版 `ToolRuntime` 的 native 模式运行。拟提供的 `android_ptc` 是明确受限的产品路径，不等同于通用 `run_code`：模型只提供 `code` 和 `description`，App 将语言固定为 TypeScript 异步函数体，期限固定为五秒。客体没有文件或网络授权，只能通过 `tools.list_agents({ scope: 'children' })` 调用已审核的原版直接子任务查询。
+Android 的 `android_ptc` 工具运行一个受审查的 TypeScript 异步函数体，支持顶层 `await` 与 `return`。模型只提供 `code` 和 `description`。它独立于原版 DSH `run_code` 传输及不受限的 Node PTC 执行器：客体仍不能直接访问 Node API、导入模块、App UID Shell、文件系统或网络。
 
-Android 运行时启动时会用原生隔离执行桥、持久回调日志、原版 `ToolRuntime`、Agent 注册表和子任务服务创建 App 归属的 PTC owner，并将它交给 `registerAndroidPtcTool` 和源码控制的产品闸门。无 Root 真机的隔离、取消、回调退役和进程死亡验收尚未完成，闸门保持 `false`；因此当前构建不会注册或开放 `android_ptc` 模型工具。闸门不是模型参数、用户设置、profile 配置或远程开关。`runtime.permissions.programmaticTools.modelPtc` 如实报告不可用状态和零授权边界。原版 `ptc-runtime`、`workflow-ptc` 与 `tool-workflow` 模块继续受保护且禁用。
+运行时通过原生隔离执行桥、持久回调日志与原版 Agent／ToolRuntime 服务组合 [App 自有 PTC 所有者](model-ptc-readonly.zh.md)。源码中的 `MODEL_PTC_DEVICE_ACCEPTED=true` 开放其模型注册。该开关不是模型参数、profile 设置或远程值。原版 `ptc-runtime`、`workflow-ptc` 和 `tool-workflow` 插件仍受保护且禁用；独立的受审查原生 workflow 注册已在 Build 116 候选源码中开放，包含 workflow 的正式 profile 仍待端到端验证。
 
-条件注册的工具定义使用真实外层 `ToolRunContext`。Owner 用 `ToolRuntime.isActiveExecution` 拒绝伪造或已经结束的父调用，从父 Agent 导出会话，签发新的 App 零授权租约，校验并擦除有界代码的类型，然后准入一次原生隔离运行。它只发现仍为该 Agent 注册的原版第一方 `list_agents` 定义。每次嵌套回调都重新核对精确注册身份、当前 Agent、父令牌和参数策略；递归 `descendants`、额外字段、替换注册和环境工具会被拒绝。`IsolatedExecutionRun` 对原生持久回执只投影一次；成功值及有界 console 日志在不暴露内部运行 ID 的情况下呈现，取消、退役状态不明和失败回执不会发布结果。运行途中闸门关闭也会隐藏输出。Cordis 作用域销毁时会取消并等待活跃运行退役，然后释放原生传输。
+所有者捕获真实活动 ToolRunContext、Agent、Session 与精确的原厂工具注册。[受审查回调表](model-ptc-readonly.zh.md#经审查的调用)覆盖当前会话文件和附件、实时策略允许的工作区修改、已配置的网页提供方、直接子 Agent 查询，以及父级存在时的四个 Linux 工具。每次嵌套调用都经原版 ToolRuntime 复查注册和策略。客体没有直接的原生文件或网络授权。复制定义、失效父执行、递归委派与任意工具名均被拒绝。
 
-运行 `node --import tsx --test apps/android/tool/model-ptc-caller-binding.test.mjs apps/android/tool/tool-isolated-ptc.test.mjs` 可使用原版 AgentLoop、Agent、Session 和 ToolRuntime，配合模拟原生传输检验条件注册、真实父调用与第一方回调、伪造输入与 owner、注册替换、取消、闸门变化、owner 关闭和结果隐藏。这些宿主测试不能证明 Android Binder 或 UID 隔离。[PTC 回调验收](acceptance-ptc-callback-device.zh.md)及[工作流进程死亡验收](native-workflow-process-death-device-acceptance.zh.md)仍需在真实设备上运行。更广的文件／网络能力、原版 `run_code` 行为和异步工作流执行必须分别实现和验收，才能宣称通用 PTC 已完成。
+限制仍为 32 次回调、包含回调等待的 120 秒总时限，以及 5 秒执行线程 CPU。Linux 启动与执行等待会消耗共享墙钟时限，串行步骤必须在其中完成。取消与退役不确定会隐藏程序返回值，但持久回调与发布事实仍可核对。作用域释放会取消并等待活动运行结束。这些限制及被禁用的直接 Node 环境，不等同于完整原版 PTC 对齐。
+
+已安装 Build 115 r15 执行了真实 AgentLoop／ToolRuntime 调用、文件／网页／附件／APK 操作、CPU 超时、取消及 PTC 到 Linux 分析链。r17 进程死亡检查与 r21 SAF 撤权检查覆盖各自记录的用例。离线调用链成功不能证明嵌套 Linux 取消、共享时限到期或联网审批。r26 [所装正式 profile](production-profile-device.zh.md)另已通过脚本模型驱动的 PTC 工作区读取及后续离线 Linux Python 分析，客体与 App UID 不同，退役已确认且有持久 Session 证据，全程锁屏息屏。普通 Build 116 升级仍待验证。
+
+定向主机 ToolRuntime 与所有者测试使用模拟原生传输，不能认证 Binder UID 隔离或 Android 进程退役。[PTC 生命周期样例](ptc-lifecycle-device.zh.md)、[SAF 样例](device-runtime-acceptance.zh.md)及 [PTC 到 Linux 样例](model-ptc-linux.zh.md)分别拥有其设备观察。不能仅根据注册就推断缺失或不确定的证据已满足。

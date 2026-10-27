@@ -36,7 +36,7 @@
 
 声明摘要检测行内容变化。`reviewInputs` 另行固定 Android 启动引导、Host 保护、运行时注册、Android 补丁、预设暂存和 Web 补丁的 LF 规范化 SHA-256。这些文件发生变化后必须重新审查组合，包括原先仅靠声明清单未覆盖的启用、禁用和模型注册变化。审查后一起更新受影响的映射、说明和摘要；不能只为让审计通过而刷新摘要。
 
-当前组合把三种能力接在关闭的源码开关后：[已审核工具的 PTC](model-ptc-readonly.zh.md)、[带已审核子工具的工作流](tool-native-workflow.zh.md)和[支持工作区文件传输的 Linux 执行](linux-vm-runtime.zh.md)。PTC 可以串联父 Agent 已审核的文件、网页及 [Linux 工具](model-ptc-linux.zh.md)；工作流子 Agent 仅继承已审核的实时父工具。Linux 执行客体命令，文件需显式传输，有界 HTTPS 访问需单独批准。源码映射仍在清单中保留生产真机验收要求。宿主保护继续禁用普通 Node PTC 插件。
+Build 116 源码候选开放[已审核工具的 PTC](model-ptc-readonly.zh.md)、[支持工作区文件传输的离线 Linux 执行](linux-vm-runtime.zh.md)及[带已审核子工具的工作流](tool-native-workflow.zh.md)；Linux 联网准入仍关闭。PTC 可以串联父 Agent 已审核的文件、网页及 [Linux 工具](model-ptc-linux.zh.md)；工作流子 Agent 仅继承已审核的实时父工具。Linux 执行离线客体命令，文件需显式传输；可选的有界 HTTPS 实现未注册到正式模型工具。Build 115 r15／r17／r21 的观察覆盖文档列出的回调、恢复和取消用例。r26 所装正式 profile 另已在锁屏息屏设备上通过脚本模型驱动的 PTC 工作区读取及离线 Linux Python 分析，客体与 App UID 不同，退役结果与 Session 记录一致。r26 workflow 专项另已通过常规执行（11／11）、120,256 毫秒时限检查（一个持久 run-end 且子级退役）及进程死亡恢复。包含 workflow 的正式 profile（`expectWorkflow=true`）与普通 Build 116 升级仍待验证。r25 workflow 时限尝试曾挂起至 390 秒墙钟上限而无结果；虽然后续通过，其原因仍未解释。清单记录这项限定范围的结果，不将所有声明提升为已验证。宿主保护继续禁用普通 Node PTC 插件。
 
 ## 审查命令
 

@@ -23,7 +23,9 @@ import { createWorkflowSubagentBackend, installWorkflowSubagentPreset,
   consumeWorkflowModelRouteDenial } from '../runtime/workflow-subagent-backend.mjs'
 import { WorkflowGuestHostPort } from '../runtime/workflow-guest-host-port.mjs'
 import { NativeWorkflowGuestCallbacks } from '../runtime/native-workflow-guest-callbacks.mjs'
+import { createWorkflowSessionRecord } from '../runtime/workflow-session-record.mjs'
 import { FixtureAdapter, workflowModelScenario } from './device-runtime-acceptance/workflow-model-fixture.mjs'
+import { requireWorkflowDeadlineTerminal, summarizeWorkflowLifecycleEvents } from './device-runtime-acceptance/workflow-lifecycle.mjs'
 
 // This host test exercises real AgentLoop/ToolRuntime/Session child behavior.
 // It invokes the production child port directly and produces no native or device receipt.
@@ -67,11 +69,14 @@ async function fixture(t, options = {}) {
   const runId = randomUUID()
   backend = createWorkflowSubagentBackend({ ctx, parent, runId,
     authorize: async (_request, _signal, _parent, _runId, childId) => ({ runId, parentId: parent.id, childId }) })
-  const prepared = { kind: 'workflow', runId, program: 'return 1', args: {},
+  const prepared = { kind: 'workflow', runId, sessionId: parent.session.id, program: 'return 1', args: {},
     deadlineMillis: 10000, meta: { name: 'host-fixture-model', description: 'Validate scripted model behavior' },
     maxTotalAgents: 8, maxConcurrentAgents: 2 }
+  const record = options.recordLifecycle ? createWorkflowSessionRecord(ctx, prepared, parent) : null
+  await record?.start()
   port = new WorkflowGuestHostPort({ prepared,
-  authorizeChild: backend.authorizeChild, activateChild: backend.activateChild, onProgress: async () => {} })
+  authorizeChild: backend.authorizeChild, activateChild: backend.activateChild,
+  onProgress: async event => { await record?.progress(event) } })
   port.begin({})
   const children = new Map()
   ctx.on('subagent/start', info => { children.set(info.id, ctx.agents.get(info.id)) })
@@ -92,8 +97,55 @@ async function fixture(t, options = {}) {
     }
     assert.equal(scenario.active, 0)
   }
-  return { ctx, adapter, scenario, child, children, durableChildren, port, backend, prepared }
+  return { ctx, adapter, scenario, child, children, durableChildren, port, backend, prepared, parent, record }
 }
+
+test('native deadline event validation distinguishes missing, malformed, duplicate and wrong outcomes', () => {
+  const runId = randomUUID()
+  const end = { type: 'tool-workflow/run-end', data: { runId, stopReason: 'error' } }
+  assert.equal(requireWorkflowDeadlineTerminal([end], runId), 1)
+  assert.throws(() => requireWorkflowDeadlineTerminal([], runId), /exactly one durable workflow run-end/)
+  assert.throws(() => requireWorkflowDeadlineTerminal([{ ...end, data: { runId } }], runId), /missing data.stopReason/)
+  assert.throws(() => requireWorkflowDeadlineTerminal([end, end], runId), /exactly one durable workflow run-end/)
+  for (const stopReason of ['completed', 'cancelled', 'failed']) {
+    assert.throws(() => requireWorkflowDeadlineTerminal([{ ...end, data: { runId, stopReason } }], runId),
+      /Native expiry must record a failed workflow outcome/)
+  }
+  const rows = Array.from({ length: 40 }, (_, seq) => ({ seq, type: 'tool-workflow/agent-start',
+    data: { runId, seq, childId: 'child', prompt: 'private prompt', name: 'private name' } }))
+  const summary = summarizeWorkflowLifecycleEvents(rows, runId)
+  assert.equal(summary.truncated, true); assert.equal(summary.runEvents, 40)
+  assert.equal(summary.events.length, 32)
+  assert.equal(JSON.stringify(summary).includes('private prompt'), false)
+  assert.equal(JSON.stringify(summary).includes('private name'), false)
+})
+
+test('real child retirement records its cancelled member before one durable failed workflow end', { timeout: 20000 }, async t => {
+  const f = await fixture(t, { recordLifecycle: true })
+  const published = await f.port.startChild({ prompt: 'workflow-fixture:hold-lifecycle' }, randomUUID())
+  await f.port.progress([{ type: 'agent-start', info: { seq: 1, label: 'Held real child', childId: published.childId } }])
+  const pending = f.port.childResult({ callId: published.callId })
+  pending.catch(() => {})
+  await f.scenario.entered
+  await assert.rejects(f.record.finish('error'), /cannot settle before its members/)
+  assert.throws(() => requireWorkflowDeadlineTerminal(f.parent.session.snapshotEvents(), f.prepared.runId),
+    /exactly one durable workflow run-end/)
+  await f.port.close()
+  await pending.catch(() => {})
+  await f.record.finish('error')
+  assert.equal(await f.ctx.sessions.flush(f.parent.session), true)
+  const reader = await f.ctx.sessionPersistence.open(f.parent.session.id, 'read')
+  let events
+  try { ({ events } = await reader.read(0, 10000)) } finally { await reader.close() }
+  assert.equal(requireWorkflowDeadlineTerminal(events, f.prepared.runId), 1)
+  const rows = events.filter(row => row.data?.runId === f.prepared.runId)
+  assert.deepEqual(rows.map(row => row.type), ['tool-workflow/run-start', 'tool-workflow/agent-start',
+    'tool-workflow/agent-end', 'tool-workflow/run-end'])
+  assert.deepEqual(rows[2].data, { runId: f.prepared.runId, seq: 1, outcome: 'cancelled' })
+  assert.deepEqual(rows[3].data, { runId: f.prepared.runId, stopReason: 'error' })
+  assert.deepEqual(f.scenario.aborted, ['hold-lifecycle'])
+  await f.durableChildren(1)
+})
 
 test('fixture barrier observes two actual simultaneous model streams and preserves four retired Sessions', { timeout: 20000 }, async t => {
   const f = await fixture(t, { barrier: true })
@@ -102,6 +154,27 @@ test('fixture barrier observes two actual simultaneous model streams and preserv
   assert.deepEqual(results.map(row => row.output[0].text), ['answer:first', 'answer:second', 'answer:third', 'answer:fourth'])
   assert.equal(f.scenario.maxActive, 2)
   await f.durableChildren(4)
+})
+
+test('lifecycle fixture can persist a live held child before joining its cancellation', { timeout: 20000 }, async t => {
+  const f = await fixture(t)
+  const published = await f.port.startChild({ prompt: 'workflow-fixture:hold-lifecycle' }, randomUUID())
+  const pending = f.port.childResult({ callId: published.callId })
+  pending.catch(() => {})
+  await f.scenario.entered
+  assert.equal(f.scenario.active, 1)
+  const child = f.children.get(published.childId)
+  assert.ok(child && f.ctx.agents.get(child.id) === child)
+  assert.equal(await f.ctx.sessions.flush(child.session), true)
+  const reader = await f.ctx.sessionPersistence.open(child.session.id, 'read')
+  let events
+  try { ({ events } = await reader.read(0, 10000)) } finally { await reader.close() }
+  assert.ok(events.length > 0)
+  assert.equal(f.scenario.active, 1, 'Reading durable history must not settle the real model stream')
+  await f.port.close()
+  await pending.catch(() => {})
+  assert.deepEqual(f.scenario.aborted, ['hold-lifecycle'])
+  await f.durableChildren(1)
 })
 
 test('fixture model exception is an ordinary child failure and does not replace a successful sibling result', { timeout: 20000 }, async t => {

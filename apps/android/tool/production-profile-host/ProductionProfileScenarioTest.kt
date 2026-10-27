@@ -1,0 +1,89 @@
+package com.minnnng.dsh_android
+
+import org.json.JSONObject
+import java.io.File
+import java.util.Base64
+import java.util.UUID
+
+/** Exercises the actual AndroidTest scenario against the SDK's JSON implementation on a JVM. */
+fun main(args: Array<String>) {
+    val root = File(args.single())
+    val id = UUID.randomUUID().toString()
+    val home = File(root, "native-runtime-acceptance/$id").apply { mkdirs() }
+    val workspace = File(root, ".device-acceptance-$id").apply { mkdirs() }
+    val scenario = ProductionProfileAcceptanceScenario(home, workspace, File(root, "runtime"), id)
+    val authentication = JSONObject(File(home, "production-profile-auth.json").readText())
+    val modelKey = authentication.getString("modelKey")
+    var checks = 0
+    fun checkCase(action: () -> Unit) { action(); checks++ }
+    fun denied(action: () -> Unit): Throwable {
+        try { action() } catch (failure: Throwable) { return failure }
+        error("Expected rejection")
+    }
+    val browserName = "records/client-connection/browser-session"
+    val secret = Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(32) { (it + 1).toByte() })
+    val browserRecord = JSONObject().put("kind", "grant").put("payload", JSONObject().put("version", 1).put("secret", secret)).toString()
+    checkCase {
+        check(authentication.getString("caseId") == id)
+        check(modelKey.matches(Regex("[A-Za-z0-9_-]{43}")) && modelKey != id)
+        check(authentication.getString("closeToken").matches(Regex("[A-Za-z0-9_-]{43}")))
+        check(authentication.getString("closeToken") != modelKey)
+        check(!scenario.diagnostics().toString().contains(modelKey))
+        check(!scenario.diagnostics().toString().contains(authentication.getString("closeToken")))
+    }
+    checkCase {
+        check(scenario.handleNative("native.credentials.get", JSONObject().put("name", browserName)) == null)
+        check(scenario.handleNative("native.credentials.set", JSONObject().put("name", browserName).put("value", browserRecord)) == true)
+        check(scenario.handleNative("native.credentials.get", JSONObject().put("name", browserName)) == browserRecord)
+        check(!scenario.diagnostics().toString().contains(secret))
+    }
+    checkCase {
+        denied { scenario.handleNative("native.credentials.set", JSONObject().put("name", "records/deepseek-account-platform/default").put("value", browserRecord)) }
+        check(scenario.handleNative("native.credentials.get", JSONObject().put("name", "records/deepseek-account-platform/default")) == null)
+    }
+    checkCase {
+        for (value in listOf("{}", "{\"kind\":\"grant\",\"payload\":{\"version\":1,\"secret\":\"short\"}}",
+            "{\"kind\":\"grant\",\"payload\":{\"version\":2,\"secret\":\"$secret\"}}")) {
+            denied { scenario.handleNative("native.credentials.set", JSONObject().put("name", browserName).put("value", value)) }
+            check(scenario.handleNative("native.credentials.get", JSONObject().put("name", browserName)) == browserRecord)
+        }
+    }
+    checkCase {
+        denied { scenario.handleNative("native.credentials.set", JSONObject().put("name", "refs/DEEPSEEK_API_KEY").put("value", "another-key")) }
+        check(scenario.handleNative("native.credentials.get", JSONObject().put("name", "refs/DEEPSEEK_API_KEY")) == modelKey)
+    }
+    checkCase {
+        val sensitive = "never-print-credential"
+        val report = scenario.failureDiagnostics(IllegalStateException(sensitive))
+        check(!report.toString().contains(sensitive))
+        check(report.getJSONArray("causes").getJSONObject(0).getJSONArray("frames").length() <= 10)
+    }
+    checkCase {
+        val proof = File(home, "production-profile-proof.json")
+        proof.writeText(JSONObject().put("failure", JSONObject.NULL).put("unownedRequestCount", 2)
+            .put("lastUnownedRequest", JSONObject().put("method", "GET").put("path", "/probe"))
+            .put("lastAuthenticatedRequest", JSONObject().put("method", "POST").put("path", "/v1/messages"))
+            .put("failedRequest", JSONObject.NULL).put("requestHeaders", modelKey).toString())
+        try {
+            val model = scenario.diagnostics().getJSONObject("model")
+            check(model.getInt("unownedRequestCount") == 2)
+            check(model.getJSONObject("lastUnownedRequest").getString("path") == "/probe")
+            check(model.getJSONObject("lastAuthenticatedRequest").getString("method") == "POST")
+            check(model.isNull("failedRequest") && !model.getBoolean("failed"))
+            check(!model.toString().contains(modelKey) && !model.has("requestHeaders"))
+        } finally { check(proof.delete()) }
+    }
+    checkCase {
+        scenario.onNotification("runtime.status", JSONObject().put("phase", "failed").put("error", "secret=$secret EACCES"))
+        val failure = denied { scenario.run { _, _, _ -> error("No RPC may start after failed initialization") } }
+        check(failure.message!!.contains("runtime-ready-wait"))
+        check(failure.message!!.contains("EACCES") && !failure.message!!.contains(secret))
+        check(scenario.diagnostics().getString("runtimeStatusPhase") == "failed")
+    }
+    checkCase {
+        val failure = denied { scenario.close() }
+        check(failure.message!!.contains("proof absent"))
+        check(scenario.diagnostics().getString("stage") == "model-close")
+    }
+    println("Production profile scenario host checks passed: $checks")
+}

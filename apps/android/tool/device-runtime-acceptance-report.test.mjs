@@ -10,7 +10,9 @@ const workflow = () => ({ suite: 'workflow', passed: 11,
 test('disruptive lifecycle checks require explicit suites and cannot join all implicitly', () => {
   const all = summarizeAcceptance('all', [])
   assert.ok(all.coverage.required.every(check => !check.startsWith('ptc-process-death:') && !check.startsWith('ptc-saf:')))
-  for (const [suite, name] of [['ptc-process-death', 'ptc-killed-dispatch-no-replay'], ['ptc-saf', 'saf-revocation-and-search']]) {
+  for (const [suite, name] of [['ptc-process-death', 'ptc-killed-dispatch-no-replay'], ['ptc-saf', 'saf-revocation-and-search'],
+    ['workflow-deadline', 'native-workflow-deadline-and-nested-wait-retirement'],
+    ['workflow-process-death', 'workflow-binder-death-and-app-restart']]) {
     assert.equal(summarizeAcceptance(suite, []).complete, false)
     const result = summarizeAcceptance(suite, [{ suite, checks: [{ name, status: 'passed' }] }])
     assert.equal(result.complete, true)

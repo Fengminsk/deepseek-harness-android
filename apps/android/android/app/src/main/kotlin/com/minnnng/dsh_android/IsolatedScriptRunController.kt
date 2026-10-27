@@ -453,7 +453,7 @@ internal object IsolatedScriptRunController {
                         data.getString(IsolatedScriptWire.KEY_DETAIL),
                     )
                     check(proposal.runId() == request.runId() && proposal.nonce() == request.nonce())
-                    pending.host?.proposedResult(sender, claimed)
+                    pending.host?.proposedResult(sender, claimed, status)
                     pending.guestUid = sender
                     pending.proposal = proposal
                     sendControl(pending, IsolatedScriptWire.RETIRE)
