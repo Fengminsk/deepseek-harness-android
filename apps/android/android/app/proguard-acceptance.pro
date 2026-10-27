@@ -67,6 +67,7 @@
 -keep class com.minnnng.dsh_android.LinuxCommandManager$* { *; }
 -keep class com.minnnng.dsh_android.LinuxImageDescriptorBroker { *; }
 -keep class com.minnnng.dsh_android.LinuxImageDescriptorBroker$* { *; }
+-keep class com.minnnng.dsh_android.LinuxImageImmutableSnapshot { *; }
 -keep class com.minnnng.dsh_android.LinuxImageGuestBridge { *; }
 -keep class com.minnnng.dsh_android.LinuxImageGuestBridge$* { *; }
 -keep class com.minnnng.dsh_android.LinuxImageLeaseOwner { *; }
@@ -88,6 +89,8 @@
 
 # Kotlin public support code called directly by the test APK.
 -keep class kotlin.collections.** { *; }
+# Session inventory sortedBy uses comparison facades supplied by the target APK.
+-keep class kotlin.comparisons.** { *; }
 -keep class kotlin.text.** { *; }
 -keep class kotlin.sequences.** { *; }
 -keep class kotlin.ranges.** { *; }
@@ -95,6 +98,10 @@
 -keep class kotlin.jdk7.** { *; }
 -keep class kotlin.jvm.internal.** { *; }
 -keep class kotlin.jvm.functions.** { *; }
+# Instrumentation failure reports call stackTraceToString on this shared facade.
+-keep class kotlin.ExceptionsKt* { *; }
+# The runtime acceptance carrier creates its Linux owner only on first use.
+-keep class kotlin.LazyKt* { *; }
 -keep class kotlin.Result** { *; }
 -keep class kotlin.Unit { *; }
 -keep class kotlin.Pair { *; }

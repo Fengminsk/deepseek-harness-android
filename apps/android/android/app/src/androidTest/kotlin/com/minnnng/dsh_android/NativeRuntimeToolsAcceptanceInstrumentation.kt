@@ -45,7 +45,7 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
             val appWorkspaceRoot = File(app.noBackupFilesDir, "dsh/workspace")
             val workspace = File(appWorkspaceRoot, ".device-acceptance-$fixtureId").apply { check(mkdirs()) }
             val fixture = File(home, "fixture").apply { check(mkdirs()) }
-            for (name in listOf("bootstrap.mjs", "index.mjs", "workflow.mjs", "ptc.mjs", "linux.mjs",
+            for (name in listOf("bootstrap.mjs", "index.mjs", "report.mjs", "workflow.mjs", "ptc.mjs", "linux.mjs",
                 "apk-fixture.json", "apk-overflow-fixture.json")) {
                 context.assets.open(name).use { source -> File(fixture, name).outputStream().use { source.copyTo(it) } }
             }
@@ -138,7 +138,15 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
                 } catch (failure: Throwable) { done.completeExceptionally(failure) }
             }
             try {
-                val result = done.get(240, TimeUnit.SECONDS)
+                // Seven parent boots and three child boots each retain the
+                // production 120-second limit plus 30 seconds for retirement.
+                val linuxBudgetSeconds = 10L * (120L + 30L) + 120L
+                val budgetSeconds = when (suite) {
+                    "linux" -> linuxBudgetSeconds
+                    "all" -> linuxBudgetSeconds + 2L * 240L
+                    else -> 240L
+                }
+                val result = done.get(budgetSeconds, TimeUnit.SECONDS)
                 report.putString("result", result.toString())
                 passed = result.getBoolean("passed")
             } finally {

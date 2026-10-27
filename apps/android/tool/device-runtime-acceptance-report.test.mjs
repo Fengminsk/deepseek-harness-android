@@ -1,0 +1,158 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import { summarizeAcceptance } from './device-runtime-acceptance/report.mjs'
+
+const workflow = () => ({ suite: 'workflow', passed: 3, details: [
+  { case: 'real-tool-runtime-native-compute', runId: 'compute' },
+  { case: 'real-confined-child-and-durable-session', runId: 'child' },
+  { case: 'real-background-job-kill-and-child-retirement', runId: 'background', jobId: 'job' },
+] })
+const ptc = () => ({ kind: 'production-node-native-ptc', passed: 9, failed: 0, checks: [
+  'first-party-list-read-glob-roots-and-guard',
+  'authorized-saf-read-through-native-ptc-callback',
+  'current-session-attachment-read-and-archive-through-ptc',
+  'workspace-mutations-through-native-ptc-callback',
+  'current-session-apk-through-native-ptc-callback',
+  'apk-oversize-callback-can-retry-a-smaller-page',
+  'model-cancellation-joins-native-retirement',
+  'model-busy-loop-has-independent-cpu-limit',
+  'real-public-web-fetch',
+].map(name => ({ name, status: 'passed' })).concat({ name: 'saf-revocation-and-search', status: 'unverified' }) })
+const linux = () => ({ suite: 'linux', passed: 5, failed: 0, checks: [
+  'production-tool-shell-and-session-persistence',
+  'production-tool-import-hash-and-guest-readback',
+  'production-tool-export-hash-and-no-overwrite',
+  'production-read-only-policy-discards-disk-and-denies-import',
+  'workflow-child-linux-import-exec-export',
+].map(name => ({ name, status: 'passed' })),
+unverified: ['Python and analyst package availability', 'Guest networking', 'Process-death import recovery'] })
+
+test('a complete workflow retains the existing detail format and executed-check pass', () => {
+  const report = workflow(), original = structuredClone(report)
+  const result = summarizeAcceptance('workflow', [report])
+  assert.equal(result.passed, true)
+  assert.equal(result.complete, true)
+  assert.deepEqual(result.coverage.required, original.details.map(detail => `workflow:${detail.case}`))
+  assert.deepEqual(result.coverage.passed, result.coverage.required)
+  assert.deepEqual(result.coverage.failed, [])
+  assert.deepEqual(result.coverage.unverified, [])
+  assert.deepEqual(result.coverage.issues, [])
+  assert.deepEqual(report, original, 'aggregation does not change the retained raw report')
+})
+
+test('a numeric success count without named checks cannot claim execution or completion', () => {
+  const result = summarizeAcceptance('workflow', [{ suite: 'workflow', passed: 3, details: [] }])
+  assert.equal(result.passed, false)
+  assert.equal(result.complete, false)
+  assert.deepEqual(result.coverage.unverified, result.coverage.required)
+  assert.ok(result.coverage.issues.includes('No checks executed'))
+})
+
+test('a missing workflow check preserves an executed pass but blocks complete acceptance', () => {
+  const report = workflow()
+  report.details.pop()
+  const result = summarizeAcceptance('workflow', [report])
+  assert.equal(result.passed, true)
+  assert.equal(result.complete, false)
+  assert.deepEqual(result.coverage.unverified, ['workflow:real-background-job-kill-and-child-retirement'])
+})
+
+test('the existing PTC SAF gap remains visible despite nine passing checks', () => {
+  const result = summarizeAcceptance('ptc', [ptc()])
+  assert.equal(result.passed, true)
+  assert.equal(result.complete, false)
+  assert.equal(result.coverage.required.length, 10)
+  assert.equal(result.coverage.passed.length, 9)
+  assert.deepEqual(result.coverage.unverified, ['ptc:saf-revocation-and-search'])
+})
+
+test('omitting an unverified PTC declaration cannot erase its requirement', () => {
+  const report = ptc()
+  report.checks.pop()
+  const result = summarizeAcceptance('ptc', [report])
+  assert.equal(result.complete, false)
+  assert.deepEqual(result.coverage.unverified, ['ptc:saf-revocation-and-search'])
+  assert.ok(result.coverage.issues.includes('Missing required check: ptc:saf-revocation-and-search'))
+})
+
+test('Linux free-standing evidence gaps participate in completeness and cannot silently disappear', () => {
+  const report = linux()
+  for (const input of [report, { ...report, unverified: [] }]) {
+    const result = summarizeAcceptance('linux', [input])
+    assert.equal(result.passed, true)
+    assert.equal(result.complete, false)
+    assert.equal(result.coverage.passed.length, 5)
+    assert.deepEqual(result.coverage.unverified, report.unverified.map(name => `linux:${name}`))
+  }
+})
+
+test('the four parent Linux checks cannot certify a workflow child Linux execution', () => {
+  const report = linux()
+  report.checks.pop()
+  const result = summarizeAcceptance('linux', [report])
+  assert.equal(result.passed, true)
+  assert.equal(result.complete, false)
+  assert.ok(result.coverage.unverified.includes('linux:workflow-child-linux-import-exec-export'))
+  assert.ok(result.coverage.issues.includes('Missing required check: linux:workflow-child-linux-import-exec-export'))
+})
+
+test('all requires reports from every suite rather than only the reports returned', () => {
+  const result = summarizeAcceptance('all', [workflow()])
+  assert.equal(result.passed, true)
+  assert.equal(result.complete, false)
+  assert.equal(result.coverage.required.length, 21)
+  assert.equal(result.coverage.unverified.length, 18)
+})
+
+test('all can complete only when every declared gap becomes an executed passing check', () => {
+  const ptcReport = ptc(), linuxReport = linux()
+  ptcReport.checks.at(-1).status = 'passed'
+  linuxReport.checks.push(...linuxReport.unverified.map(name => ({ name, status: 'passed' })))
+  linuxReport.unverified = []
+  const result = summarizeAcceptance('all', [workflow(), ptcReport, linuxReport])
+  assert.equal(result.passed, true)
+  assert.equal(result.complete, true)
+  assert.equal(result.coverage.passed.length, 21)
+  assert.deepEqual(result.coverage.unverified, [])
+})
+
+test('a failed execution is not erased by passing counters or by another suite', () => {
+  const report = ptc()
+  report.checks[0].status = 'failed'
+  const result = summarizeAcceptance('all', [workflow(), report, linux()])
+  assert.equal(result.passed, false)
+  assert.equal(result.complete, false)
+  assert.deepEqual(result.coverage.failed, ['ptc:first-party-list-read-glob-roots-and-guard'])
+})
+
+test('unknown suites and empty reports cannot produce a successful acceptance', () => {
+  for (const suite of ['wrong', 'toString', '__proto__', 'workflow', 'all']) {
+    const result = summarizeAcceptance(suite, [])
+    assert.equal(result.passed, false, suite)
+    assert.equal(result.complete, false, suite)
+    assert.ok(result.coverage.issues.includes('No checks executed'), suite)
+  }
+})
+
+test('duplicate reports and duplicate check names block completion', () => {
+  const report = workflow()
+  for (const reports of [[report, workflow()], [{ ...report, details: [...report.details, report.details[0]] }]]) {
+    const result = summarizeAcceptance('workflow', reports)
+    assert.equal(result.complete, false)
+    assert.ok(result.coverage.unverified.includes('workflow:real-tool-runtime-native-compute'))
+    assert.ok(result.coverage.issues.includes('Duplicate check: workflow:real-tool-runtime-native-compute'))
+  }
+})
+
+test('unexpected suite reports, unknown check names and unknown statuses are not complete evidence', () => {
+  assert.equal(summarizeAcceptance('workflow', [workflow(), ptc()]).passed, false)
+  const report = workflow()
+  report.details.push({ case: 'renamed-without-updating-requirements' })
+  assert.equal(summarizeAcceptance('workflow', [report]).complete, false)
+  const ptcReport = ptc()
+  ptcReport.checks.at(-1).status = 'skipped'
+  const result = summarizeAcceptance('ptc', [ptcReport])
+  assert.equal(result.complete, false)
+  assert.ok(result.coverage.unverified.includes('ptc:saf-revocation-and-search'))
+  assert.ok(result.coverage.issues.includes('Unknown check status: ptc:saf-revocation-and-search'))
+})

@@ -1,20 +1,28 @@
 import assert from 'node:assert/strict'
 
-export async function runWorkflowAcceptance({ ctx, transport, agent, adapter, nativeModule }) {
+/** Keep one callback/preset owner alive across the selected acceptance suites. */
+export async function createWorkflowAcceptance({ ctx, transport, agent, nativeModule }) {
   const { NativeWorkflowGuestCallbacks } = await nativeModule('native-workflow-guest-callbacks.mjs')
   const { createNativeWorkflowPrivateOwner } = await nativeModule('native-workflow-private-owner.mjs')
   const { registerAndroidWorkflowTool } = await nativeModule('tool-native-workflow.mjs')
   const callbacks = new NativeWorkflowGuestCallbacks(transport)
   ctx.provide('nativeWorkflowGuestCallbacks', callbacks)
   const owner = createNativeWorkflowPrivateOwner(ctx, callbacks, transport)
+  try {
+    assert.equal(registerAndroidWorkflowTool(ctx, { owner }), false)
+    assert.equal(ctx.tools.get('workflow', agent), undefined)
+    assert.equal(registerAndroidWorkflowTool(ctx, { owner, available: () => true }), true)
+    return { owner, dispose: () => owner.dispose() }
+  } catch (error) { await owner.dispose(); throw error }
+}
+
+export async function runWorkflowAcceptance({ ctx, agent, adapter, workflow }) {
+  const { owner } = workflow
   const details = []
   const execute = (name, args, callId) => ctx.tools.execute({ name, arguments: args, callId,
     agent, signal: AbortSignal.timeout(120_000) })
   function success(result) { assert.equal(result.isError, false, JSON.stringify(result)); return result.value }
   try {
-    assert.equal(registerAndroidWorkflowTool(ctx, { owner }), false)
-    assert.equal(ctx.tools.get('workflow', agent), undefined)
-    assert.equal(registerAndroidWorkflowTool(ctx, { owner, available: () => true }), true)
     const compute = success(await execute('workflow', { script: 'return args.a + args.b',
       args: { a: 19, b: 23 }, meta: { name: 'device-compute', description: 'Compute a supplied sum' } }, 'acceptance-compute'))
     assert.equal(compute.result, 42)
@@ -48,5 +56,5 @@ export async function runWorkflowAcceptance({ ctx, transport, agent, adapter, na
     }
     details.push({ case: 'real-background-job-kill-and-child-retirement', runId: background.runId, jobId: background.jobId })
     return { suite: 'workflow', passed: 3, details }
-  } finally { await owner.dispose(); await callbacks.dispose() }
+  } finally { adapter.mode = 'answer'; adapter.entered = null }
 }

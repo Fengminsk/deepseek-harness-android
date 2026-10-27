@@ -18,6 +18,7 @@ import * as Spawn from '@deepseek-ai/dsh-subagent-spawn-in-process'
 import AgentPresets from '@deepseek-ai/dsh-agent-preset-registry'
 import Jobs from '@deepseek-ai/dsh-jobs-local'
 import * as JobTools from '@deepseek-ai/dsh-tool-jobs'
+import { summarizeAcceptance } from './report.mjs'
 
 export const name = 'device-runtime-acceptance'
 const configuration = JSON.parse(readFileSync(new URL('./configuration.json', import.meta.url), 'utf8'))
@@ -28,9 +29,11 @@ export class FixtureAdapter extends LlmAdapter {
   mode = 'answer'
   calls = 0
   entered = null
+  scriptedStream = null
   async resolveModel(provider, model) { return { provider, id: model, name: model } }
   async *stream(options) {
     this.calls++
+    if (this.scriptedStream) { yield* this.scriptedStream(options); return }
     if ((options.tools ?? []).length !== 0) throw new Error('Confined child received unexpected tools')
     this.entered?.()
     if (this.mode === 'hold') {
@@ -61,6 +64,7 @@ export async function apply(ctx) {
   })
   transport.start()
   const finish = result => transport.notify('acceptance.result', result)
+  const reports = []
   try {
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(SessionStore)
@@ -86,37 +90,44 @@ export async function apply(ctx) {
       'sessionPersistence', 'subagents', 'agentPresets', 'tools', 'workingDirectory', 'systemPrompt',
       'sessionProjections', 'fs', 'subprocess', 'loader', 'sandboxPolicy'], async ctx => {
       try {
-    await ctx.agentPresets.register({ id: 'device-acceptance-parent', plugins: [] })
-    const adapter = new FixtureAdapter()
-    ctx.llm.registerAdapter(['device-acceptance'], adapter)
-    const handle = await ctx.agents.create({ sessionId: SessionId(`android-acceptance-${randomUUID()}`),
-      agentOptions: { provider: 'device-acceptance', model: 'fixture' },
-      meta: { cwd: process.cwd() },
-      setup: async agentCtx => { await ctx.agentPresets.mount(agentCtx, 'device-acceptance-parent') },
-    })
-    const agent = handle.agent
-    const reports = []
-    if (configuration.suite === 'workflow' || configuration.suite === 'all') {
-      const { runWorkflowAcceptance } = await import('./workflow.mjs')
-      reports.push(await runWorkflowAcceptance({ ctx, transport, agent, adapter, nativeModule }))
-    }
-    if (configuration.suite === 'ptc' || configuration.suite === 'all') {
-      const { runPtcAcceptance } = await import('./ptc.mjs')
-      reports.push(await runPtcAcceptance({ ctx, transport, agent, workspace: process.cwd() }))
-    }
-    if (configuration.suite === 'linux' || configuration.suite === 'all') {
-      const { runLinuxAcceptance } = await import('./linux.mjs')
-      reports.push(await runLinuxAcceptance({ ctx, transport, agent, workspace: process.cwd(),
-        appWorkspaceRoot: configuration.appWorkspaceRoot, nativeModule }))
-    }
-    if (await ctx.sessions.flush(agent.session) !== true) throw new Error('Acceptance Session did not flush')
-    finish({ passed: reports.every(report => !(report.checks ?? []).some(check => check.status === 'failed')),
-      sessionId: agent.session.id, reports })
-      resolve()
+        await ctx.agentPresets.register({ id: 'device-acceptance-parent', plugins: [] })
+        const adapter = new FixtureAdapter()
+        ctx.llm.registerAdapter(['device-acceptance'], adapter)
+        const handle = await ctx.agents.create({ sessionId: SessionId(`android-acceptance-${randomUUID()}`),
+          agentOptions: { provider: 'device-acceptance', model: 'fixture' },
+          meta: { cwd: process.cwd() },
+          setup: async agentCtx => { await ctx.agentPresets.mount(agentCtx, 'device-acceptance-parent') },
+        })
+        const agent = handle.agent
+        let workflow
+        try {
+          if (['workflow', 'linux', 'all'].includes(configuration.suite)) {
+            const { createWorkflowAcceptance } = await import('./workflow.mjs')
+            workflow = await createWorkflowAcceptance({ ctx, transport, agent, nativeModule })
+          }
+          if (configuration.suite === 'workflow' || configuration.suite === 'all') {
+            const { runWorkflowAcceptance } = await import('./workflow.mjs')
+            reports.push(await runWorkflowAcceptance({ ctx, agent, adapter, workflow }))
+          }
+          if (configuration.suite === 'ptc' || configuration.suite === 'all') {
+            const { runPtcAcceptance } = await import('./ptc.mjs')
+            reports.push(await runPtcAcceptance({ ctx, transport, agent, workspace: process.cwd() }))
+          }
+          if (configuration.suite === 'linux' || configuration.suite === 'all') {
+            const { runLinuxAcceptance } = await import('./linux.mjs')
+            reports.push(await runLinuxAcceptance({ ctx, transport, agent, workspace: process.cwd(),
+              appWorkspaceRoot: configuration.appWorkspaceRoot, nativeModule, adapter, workflow }))
+          }
+          if (await ctx.sessions.flush(agent.session) !== true) throw new Error('Acceptance Session did not flush')
+        } finally { await workflow?.dispose() }
+        finish({ ...summarizeAcceptance(configuration.suite, reports),
+          sessionId: agent.session.id, reports })
+        resolve()
       } catch (error) { reject(error) }
     }))
   } catch (error) {
-    finish({ passed: false, failure: String(error?.stack ?? error).slice(0, 6000) })
+    finish({ ...summarizeAcceptance(configuration.suite, reports), passed: false, complete: false,
+      reports, failure: String(error?.stack ?? error).slice(0, 6000) })
   }
   ctx.effect(() => () => ipc.close())
 }
