@@ -79,6 +79,8 @@ kind: "package-reference"
 
 ### 失败与恢复
 
+提供方成功完成变更后，`write` 和 `edit` 会先附上一条 `file-mutation-receipt` 上下文，再发出 `fs/observed`。即使取消或后续观察失败使工具结果变成错误，该上下文仍保留完整规范路径和操作。此错误不代表回滚；重试前应重新读取文件。提供方拒绝的变更不会产生已完成变更回执。
+
 失败被规范化为 `Error: <message>`，并为调用方保留结构化错误码。稳定消息包括 `file_path must be a non-empty string`、`limit must be less than or equal to <max>`、`cannot read "<path>": not found`、`cannot read "<path>": not a regular file`，以及图像路由拒绝 `cannot read "<path>" as an image: model "<model>" does not declare image input; switch to an image-capable model to read images`。无论拒绝来自策略还是提供方，`FS_NOT_OBSERVED` 都规范化为 `cannot modify "<path>": file has not been read — read the file, then retry`；`FS_STALE_VERSION` 保留提供方原因并追加 `— re-read the file, then retry`。该次重新读取确认缺失后，`edit` 报告 `FS_NOT_FOUND` 而不会重复陈旧恢复指令，`write` 则使用防护创建。
 
 -----
@@ -111,7 +113,7 @@ kind: "package-reference"
 | [`src/read-render.ts`](src/read-render.ts) | 不依赖 Cordis 的窗口构建与信封格式化 |
 | [`src/sandbox.ts`](src/sandbox.ts) | `write`/`edit` 共享的升权 API：策略解析与拒绝标记映射 |
 | [`src/error.ts`](src/error.ts) | 防护变更失败的稳定模型侧诊断 |
-| [`src/mutation-result.ts`](src/mutation-result.ts) | 成功变更的观察记录与规范化结果路径 |
+| [`src/mutation-result.ts`](src/mutation-result.ts) | 已完成变更回执、观察记录与规范化结果路径 |
 
 ### 各工具流程
 
@@ -220,11 +222,11 @@ Read a file before editing it (the default fs-observation-policy requires it), u
 
 #### 模型看到的内容
 
-写入精确返回五行包络：`<path><resolvedPath></path>`、`<type>file</type>`、`<content>`、`Created file` 或 `Updated file`，以及 `</content>`。编辑精确返回 `The file <resolvedPath> has been updated successfully.`；对于 `replace_all`，精确返回 `The file <resolvedPath> has been updated. All occurrences were successfully replaced.`。完整写入或替换文本仍保留在 assistant 工具调用参数中。
+写入精确返回五行包络：`<path><resolvedPath></path>`、`<type>file</type>`、`<content>`、`Created file` 或 `Updated file`，以及 `</content>`。编辑精确返回 `The file <resolvedPath> has been updated successfully.`；对于 `replace_all`，精确返回 `The file <resolvedPath> has been updated. All occurrences were successfully replaced.`。完整写入或替换文本仍保留在 assistant 工具调用参数中。提供方完成变更后，还会在工具结果之后附上一条延迟上下文：`File mutation completed: <JSON>. Re-read before retrying.`。其中的 JSON 包含 `operation`（`write` 或 `edit`）和完整规范 `path`，不含文件内容。即使取消或后续观察失败替换了成功结果，同一上下文仍会保留。
 
 #### Token 影响
 
-成功文本很少，但大型变更参数和所有结果会反复发送，直到上下文压缩。
+成功文本和只含一个路径的回执相对文件内容较小；变更参数、结果和回执会反复发送，直到上下文压缩。回执大小取决于完整路径，不随文件大小增长；路径永不截短。
 
 #### KV Cache 影响
 

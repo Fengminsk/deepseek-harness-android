@@ -14,7 +14,7 @@ spec.loader.exec_module(candidate)
 sources = candidate.sources
 
 
-class CandidateTests(unittest.TestCase):
+class CandidateFixture(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix='dsh-linux-candidate-')
         self.addCleanup(self.temporary.cleanup)
@@ -104,6 +104,8 @@ class CandidateTests(unittest.TestCase):
     def stage(self):
         return Path(candidate.stage(self.report_path, self.source_manifest, self.root)['directory'])
 
+
+class CandidateTests(CandidateFixture):
     def test_stages_exact_image_sources_and_host_evidence_without_overwriting_fixture(self):
         before = self.identity(self.image)
         first = self.stage()

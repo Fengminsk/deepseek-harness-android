@@ -12,6 +12,10 @@ param(
     [string]$ExpectedPackageName = 'com.minnnng.dsh_android',
     [string]$ExpectedRuntimeSha256 = '',
     [string]$ExpectedPackagedLinuxUtilitySha256 = '',
+    [string]$ExpectedLinuxCandidate = '',
+    [string]$ExpectedLinuxCandidateSha256 = '',
+    [string]$ExpectedLinuxNativeLibrary = '',
+    [string]$PythonPath = 'python',
     [string]$Aapt2Path = ''
 )
 
@@ -33,6 +37,7 @@ $result = [ordered]@{
     abi = [ordered]@{ expected = @($ExpectedAbi); actual = @(); requiredLibraries = $requiredLibraries; libraries = @{} }
     runtime = $null
     linuxGuestPayload = [ordered]@{ present = $false; entries = @() }
+    linuxVmCandidate = $null
     aapt2 = $null
     errors = @()
 }
@@ -136,6 +141,13 @@ function Get-BoundedStreamSha256([IO.Stream]$Stream, [long]$ExpectedBytes) {
 }
 
 try {
+    if ($ExpectedLinuxCandidate) {
+        if ($ExpectedLinuxCandidateSha256 -cnotmatch '^[a-f0-9]{64}$' -or -not $ExpectedLinuxNativeLibrary) {
+            throw 'An Alpine candidate requires its selected SHA256 and the build stripped native library.'
+        }
+    } elseif ($ExpectedLinuxCandidateSha256 -or $ExpectedLinuxNativeLibrary) {
+        throw 'Linux candidate arguments must be supplied together.'
+    }
     if ($ExpectedVersionCode -lt 1) { throw 'ExpectedVersionCode must be positive.' }
     if ($ExpectedRuntimeSha256 -and $ExpectedRuntimeSha256 -cnotmatch '^[a-fA-F0-9]{64}$') {
         throw 'ExpectedRuntimeSha256 must be a 64-character hexadecimal SHA256 digest.'
@@ -183,6 +195,18 @@ try {
             $result.linuxGuestPayload = [ordered]@{ present = $guestEntries.Count -gt 0; entries = $guestEntries }
             foreach ($guestEntry in $guestEntries) {
                 $failures.Add("Linux guest payload is not approved for this APK: $guestEntry")
+            }
+            $vmEntries = @($zip.Entries | Where-Object {
+                $_.FullName -cmatch '^assets/linux-vm/' -or $_.FullName -cmatch '/libpocket_linux_vm\.so$'
+            })
+            if ($ExpectedLinuxCandidate) {
+                $audit = & $PythonPath (Join-Path $PSScriptRoot 'linux-vm-release.py') verify-apk `
+                    --candidate $ExpectedLinuxCandidate --candidate-sha256 $ExpectedLinuxCandidateSha256 `
+                    --apk $path --native-library $ExpectedLinuxNativeLibrary 2>&1
+                if ($LASTEXITCODE -ne 0) { throw "Alpine APK verification failed: $($audit -join [Environment]::NewLine)" }
+                $result.linuxVmCandidate = ($audit -join [Environment]::NewLine) | ConvertFrom-Json
+            } elseif ($vmEntries.Count -gt 0) {
+                $failures.Add('Linux VM assets or provider require an explicit verified Alpine candidate.')
             }
             if (-not $entries.ContainsKey('AndroidManifest.xml')) { $failures.Add('AndroidManifest.xml is missing.') }
             $nativeEntries = @($zip.Entries | Where-Object { $_.FullName -cmatch '^lib/[^/]+/' })

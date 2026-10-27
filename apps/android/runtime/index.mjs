@@ -12,8 +12,8 @@ import { registerAndroidAttachmentsTool } from './tool-android-attachments.mjs'
 import { NativeIsolatedToolCallbacks } from './native-isolated-tool-callbacks.mjs'
 import { IsolatedToolCallJournal } from './isolated-tool-call-journal.mjs'
 import { createNativeIsolatedExecutionBridge } from './native-isolated-execution-bridge.mjs'
-import { createAppOwnedReadOnlyPtcOwner } from './model-ptc-readonly-owner.mjs'
-import { modelReadOnlyPtcCapability, registerAndroidReadOnlyPtcTool } from './tool-readonly-ptc.mjs'
+import { createAppOwnedPtcOwner } from './model-ptc-reviewed-owner.mjs'
+import { modelPtcCapability, registerAndroidPtcTool } from './tool-model-ptc.mjs'
 import { NativeWorkflowGuestCallbacks } from './native-workflow-guest-callbacks.mjs'
 import { createNativeWorkflowPrivateOwner } from './native-workflow-private-owner.mjs'
 import { modelWorkflowCapability, registerAndroidWorkflowTool } from './tool-native-workflow.mjs'
@@ -132,14 +132,15 @@ export function apply(ctx, config) {
   // The model tool remains gated off. Capture the original scoped definition
   // only when an actual Agent execution later needs a reviewed callback.
   const modelPtcBridge = createNativeIsolatedExecutionBridge(transport)
-  ctx.inject(['subagents'], modelCtx => {
-    const owner = createAppOwnedReadOnlyPtcOwner({
+  ctx.inject(['subagents', 'sandboxPolicy'], modelCtx => {
+    const owner = createAppOwnedPtcOwner({
       bridge: modelPtcBridge, callbacks: nativeToolCallbacks, runtime: modelCtx.tools,
-      services: { subagents: modelCtx.subagents, agents: modelCtx.agents },
+      services: { subagents: modelCtx.subagents, agents: modelCtx.agents,
+        sessions: modelCtx.sessions, sandboxPolicy: modelCtx.sandboxPolicy },
     })
     modelCtx.provide('appModelPtcOwner', owner)
     modelCtx.effect(() => () => owner.close())
-    registerAndroidReadOnlyPtcTool(modelCtx, {
+    registerAndroidPtcTool(modelCtx, {
       owner, available: () => MODEL_PTC_DEVICE_ACCEPTED,
     })
   })
@@ -440,7 +441,7 @@ export function apply(ctx, config) {
           writableRoots: [],
           network: 'off',
           reason: 'isolated-executor-unwired',
-          modelPtc: modelReadOnlyPtcCapability(MODEL_PTC_DEVICE_ACCEPTED),
+          modelPtc: modelPtcCapability(MODEL_PTC_DEVICE_ACCEPTED),
           modelWorkflow: modelWorkflowCapability(MODEL_WORKFLOW_DEVICE_ACCEPTED),
         },
       }

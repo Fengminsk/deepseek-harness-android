@@ -118,6 +118,7 @@ async function setup(t, options = {}) {
   const draft = code => prepareModelIsolatedScript({ code, description: 'Review a read-only tool',
     language: 'typescript-function-body' }, {
     sessionId: agent.session.id, sandboxPolicy: policy, deadlineMillis: 5000,
+    ...(options.kind === undefined ? {} : { executionKind: options.kind }),
   })
   return { ctx, agent, calls, bridge, callbacks, defineTool, draft, journal }
 }
@@ -518,6 +519,64 @@ test('a reviewed list cannot label writes as safe or admit an unrestricted reade
         registrationIdentity: ctx.tools.registrationIdentity(name, agent), effect: 'pure' }] }),
     /reviewed tool definition and effect/)
   }
+})
+
+test('reviewed mutation entries cannot omit authorization or durability, widen effects, or downgrade writes', async t => {
+  const { ctx, agent, bridge, callbacks, defineTool } = await setup(t)
+  for (const name of ['write', 'edit', 'android_attachments', 'private_writer']) {
+    const definition = defineTool({ name, description: 'Review contract probe', parameters: {},
+      output: { schema: { type: 'json' }, render: () => [] }, async execute() { return {} } })
+    ctx.tools.register(definition)
+    const entry = { name, definition, registrationIdentity: ctx.tools.registrationIdentity(name, agent),
+      effect: 'workspace-write', authorizeArguments: async () => true, flushSession: async () => true }
+    const invalid = [
+      { ...entry, flushSession: undefined }, { ...entry, authorizeArguments: undefined },
+      ...(name === 'android_attachments' ? [] : [{ ...entry, effectForArguments: () => 'read-only' }]),
+      { ...entry, effect: 'read-only', effectForArguments: () => 'workspace-write' },
+      ...(name === 'private_writer' ? [entry] : []),
+    ]
+    for (const review of invalid) assert.throws(() => createAppOwnedModelPtcCaller({
+      bridge, callbacks, runtime: ctx.tools, reviewedTools: [review],
+    }), /reviewed tool definition and effect/u)
+  }
+})
+
+test('mixed attachment review selects effects per call and flushes only materialization', async t => {
+  const { ctx, agent, bridge, callbacks, defineTool, draft } = await setup(t, { kind: 'ptc' })
+  const performed = [], barriers = []
+  const definition = defineTool({ name: 'android_attachments', description: 'Reviewed action probe',
+    parameters: { action: { type: 'string', required: true } },
+    output: { schema: { type: 'json' }, render: () => [] },
+    async execute(args) { performed.push(args.action); return { action: args.action } },
+  })
+  ctx.tools.register(definition)
+  const caller = createAppOwnedModelPtcCaller({ bridge, callbacks, runtime: ctx.tools,
+    reviewedTools: [{ name: definition.name, definition,
+      registrationIdentity: ctx.tools.registrationIdentity(definition.name, agent),
+      effect: 'workspace-write', authorizeArguments: args => ['read', 'materialize', 'forged'].includes(args.action),
+      effectForArguments: args => args.action === 'materialize' ? 'workspace-write'
+        : args.action === 'forged' ? 'pure' : 'read-only',
+      async flushSession() { barriers.push(performed.length); return true },
+    }],
+  })
+  ctx.tools.register(defineTool({ name: 'app_ptc_probe', description: 'Trusted outer probe', parameters: {},
+    output: { schema: { type: 'json' }, render: () => [] },
+    async execute(_args, exec) {
+      return (await caller.start(draft(`
+        const read = await tools.android_attachments({ action: 'read' });
+        const write = await tools.android_attachments({ action: 'materialize' });
+        let denied;
+        try { await tools.android_attachments({ action: 'forged' }) } catch (error) { denied = error.code }
+        return { read, write, denied };
+      `), exec).result).value
+    },
+  }))
+  const result = await ctx.tools.execute({ callId: 'outer', name: 'app_ptc_probe', arguments: {},
+    agent, signal: new AbortController().signal })
+  assert.equal(result.isError, false, JSON.stringify(result.error))
+  assert.deepEqual(performed, ['read', 'materialize'])
+  assert.deepEqual(barriers, [1, 2])
+  assert.equal(result.value.denied, 'ANDROID_TOOL_NOT_GRANTED')
 })
 
 test('an unreviewed plugin is absent and an uncertain read approval stops the guest', async t => {

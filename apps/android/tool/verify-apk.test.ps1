@@ -83,6 +83,8 @@ function New-Fixture([string]$Name, [string]$Mutation = '') {
         if ($Mutation -eq 'guest-proot') { Write-ZipEntry $zip 'lib/arm64-v8a/libdsh_proot_candidate.so' ([byte[]]@(127, 69, 76, 70)) }
         if ($Mutation -eq 'guest-supervisor') { Write-ZipEntry $zip 'lib/arm64-v8a/libpocket_linux_guest_supervisor.so' ([byte[]]@(127, 69, 76, 70)) }
         if ($Mutation -eq 'guest-rootfs') { Write-ZipEntry $zip 'assets/guest/alpine-minirootfs-3.24.3-aarch64.tar.gz' ([byte[]]@(31, 139, 8, 0)) }
+        if ($Mutation -eq 'vm-provider') { Write-ZipEntry $zip 'lib/arm64-v8a/libpocket_linux_vm.so' ([byte[]]@(127, 69, 76, 70)) }
+        if ($Mutation -eq 'vm-assets') { Write-ZipEntry $zip 'assets/linux-vm/manifest.json' ([Text.Encoding]::UTF8.GetBytes('{}')) }
         if ($Mutation -eq 'guest-renamed-proot') { Write-ZipEntry $zip 'assets/guest/opaque.bin' $candidateProotBytes }
         if ($Mutation -eq 'guest-renamed-loader') { Write-ZipEntry $zip 'assets/guest/opaque-loader.bin' $candidateLoaderBytes }
         if ($Mutation -eq 'duplicate') { Write-ZipEntry $zip 'assets/runtime/runtime.sha256' ([Text.Encoding]::UTF8.GetBytes($runtimeHash)) }
@@ -166,6 +168,8 @@ try {
     Assert-Rejected 'unreviewed PRoot candidate' (Invoke-Verifier (New-Fixture 'guest-proot' 'guest-proot')) 'Linux guest payload is not approved'
     Assert-Rejected 'unreviewed guest supervisor' (Invoke-Verifier (New-Fixture 'guest-supervisor' 'guest-supervisor')) 'Linux guest payload is not approved'
     Assert-Rejected 'unreviewed Alpine rootfs' (Invoke-Verifier (New-Fixture 'guest-rootfs' 'guest-rootfs')) 'Linux guest payload is not approved'
+    Assert-Rejected 'VM provider without candidate selection' (Invoke-Verifier (New-Fixture 'vm-provider' 'vm-provider')) 'explicit verified Alpine candidate'
+    Assert-Rejected 'VM assets without candidate selection' (Invoke-Verifier (New-Fixture 'vm-assets' 'vm-assets')) 'explicit verified Alpine candidate'
     if ($CandidateDir) {
         Assert-Rejected 'renamed PRoot candidate' (Invoke-Verifier (New-Fixture 'guest-renamed-proot' 'guest-renamed-proot')) 'Linux guest payload is not approved'
         Assert-Rejected 'renamed PRoot loader' (Invoke-Verifier (New-Fixture 'guest-renamed-loader' 'guest-renamed-loader')) 'Linux guest payload is not approved'

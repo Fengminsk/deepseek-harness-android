@@ -16,6 +16,7 @@ title: Android Linux 客体构建输入
 - [解释器](#解释器)
 - [客体输入](#客体输入)
 - [对应源码](#对应源码)
+- [Alpine 验收 APK](#alpine-验收-apk)
 - [证据边界](#证据边界)
 
 ## 解释器
@@ -35,6 +36,18 @@ title: Android Linux 客体构建输入
 [源码打包器](package-linux-vm-sources.py)生成独立归档，包含 TinyEMU、固件与内核源码、对应补丁/配置/许可说明、Alpine 对应源码，以及 Android 嵌入源码快照。每项固定输入都会重新计算哈希。归档保留原始源码的完整许可证，清单索引成员及哈希。最终嵌入代码修改后需重新生成此产物，并随二进制发行一起提供。它不包含旧演示 rootfs，因为其中 BusyBox/glibc 的精确构建输入仍未经核验。
 
 版本 2 清单包含离线镜像构建器、客体构建／测试脚本、生产控制台初始化、原生嵌入、镜像存储、文件传输及主机验证工具。项目文件在 `project/` 下保留仓库相对布局；这不是完整的 Android App 源码树。校验将归档的每个成员与其哈希、固定上游源码集合及当前项目输入对照。[Alpine 候选装配](linux-vm-host/README.md#candidate-assembly)前会拒绝缺失或过期的构建文件。重新打包时，旧归档及其清单以旧归档摘要命名保留。
+
+## Alpine 验收 APK
+
+显式选择 Alpine 候选时，Android App 保持相同应用 ID、签名配置和版本。普通构建保持原状。先准备通常的 Flutter 运行时及 TinyEMU 源码，在嵌入代码修改结束后完成[候选装配](linux-vm-host/README.zh.md#候选装配)，再从 `apps/android/android` 运行：
+
+```powershell
+./gradlew.bat :app:assembleRelease -Ptarget-platform=android-arm64 -PdshAcceptanceBuildType=release "-PdshLinuxCandidate=<absolute candidate directory>"
+```
+
+所选目录必须是本检出 `.cache/android/linux-vm-candidates` 的直接 `alpine-*` 子目录。`dshLinuxPython` 可选指定 Python 可执行程序，默认 `python`。Debug 构建及同时指定 `dshLinuxGuestFixture=true` 会被拒绝。每次构建都会重新校验全部候选文件、完整源码归档与当前构建输入，以及成功的主机镜像测试。缺失、变化、未列出或链接文件会终止打包，不回退到演示镜像。生成资产使用所选候选记录的 SHA-256 作为目录名，保留旧候选和旧生成目录。中断或变化的生成目录会被拒绝，重试前须装配新候选。
+
+APK 包含准确的 BIOS、内核、Alpine 磁盘、许可说明、候选记录和对应源码清单，完整源码归档作为配套产物单独提供。`assembleRelease` 在打包后运行 [Linux 最终审计](linux-vm-release.py)，逐项核对客体资产，并将 ARM64 执行器与去除调试符号后的原生构建产物比较，写入 `apps/android/build/app/reports/linux-vm-release.json`；审计失败会使构建失败。通用 [APK 验证器](verify-apk.ps1)对此类包额外要求 `-ExpectedLinuxCandidate`、`-ExpectedLinuxCandidateSha256` 和 `-ExpectedLinuxNativeLibrary`，未提供时拒绝任何虚拟机资产或执行器。模型注册、Android 真机验收和客体网络访问仍保持关闭。
 
 ## 证据边界
 

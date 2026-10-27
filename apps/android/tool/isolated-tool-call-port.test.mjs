@@ -34,7 +34,7 @@ function deferred() {
 function setup(options = {}) {
   const events = []
   const inputs = []
-  const visible = new Set(['safe_echo', 'another_tool'])
+  const visible = new Set(options.names ?? ['safe_echo', 'another_tool'])
   const definitions = new Map([...visible].map(name => [name, { name }]))
   const parentController = new AbortController()
   const runtime = {
@@ -54,17 +54,19 @@ function setup(options = {}) {
       if (options.append) options.append(type, data)
       events.push({ type, data })
     } } },
+    deferContext(context) { contexts.push(context) },
   }
+  const contexts = []
   const port = new IsolatedToolCallPort({
-    prepared: prepared(),
+    prepared: { ...prepared(), kind: options.kind ?? 'script' },
     admission: { runId: RUN_ID, token: 'native-admission' },
-    runtime, parent, allowedToolNames: ['safe_echo', 'another_tool'],
+    runtime, parent, allowedToolNames: [...visible],
     authorizeTool: options.authorizeTool ?? (async input => ({
       effect: 'pure', definition: input.definition,
     })),
     journal: options.journal ?? journal(),
   })
-  return { port, events, inputs, visible, definitions, parentController, runtime, parent }
+  return { port, events, inputs, visible, definitions, parentController, runtime, parent, contexts }
 }
 
 function call(name = 'safe_echo', args = { text: 'hello' }, callId = 1) {
@@ -491,4 +493,121 @@ test('production ToolRuntime rejects a same-name swap during Android callback po
     await running.catch(() => {})
     await port.close()
   }
+})
+
+test('mutations require PTC, exact action classification and a durability barrier', async () => {
+  assert.throws(() => setup({ names: ['write'] }), { code: 'ANDROID_TOOL_HOST_INVALID' })
+  for (const [name, args, effect, flush] of [
+    ['write', {}, 'read-only', async () => true],
+    ['edit', {}, 'pure', async () => true],
+    ['android_attachments', { action: 'materialize' }, 'read-only', async () => true],
+    ['android_attachments', { action: 'read' }, 'workspace-write', async () => true],
+    ['write', {}, 'workspace-write', undefined],
+    ['safe_echo', {}, 'workspace-write', async () => true],
+  ]) {
+    const { port, inputs } = setup({ kind: 'ptc', names: [name],
+      authorizeTool: async input => ({ effect, definition: input.definition,
+        ...(flush ? { flushSession: flush } : {}) }) })
+    await assert.rejects(port.call(call(name, args)), { code: 'ANDROID_TOOL_NOT_GRANTED' })
+    assert.equal(inputs.length, 0)
+    await port.close()
+  }
+})
+
+test('both mutation audit barriers must reach a durable Session before confirmation', async () => {
+  for (const failAt of [1, 2]) {
+    for (const throws of [false, true]) {
+      const callJournal = journal()
+      let flushes = 0
+      const { port, inputs, events } = setup({ kind: 'ptc', names: ['write'], journal: callJournal,
+        authorizeTool: async input => ({ effect: 'workspace-write', definition: input.definition,
+          async flushSession() {
+            if (++flushes === failAt) {
+              if (throws) throw new Error('durability failure')
+              return false
+            }
+            return true
+          } }),
+        execute: async () => ({ isError: false, content: [], value: { path: '/workspace/created.txt' } }),
+      })
+      await assert.rejects(port.call(call('write', { file_path: 'created.txt' })),
+        { code: 'ANDROID_TOOL_SESSION_UNCONFIRMED' })
+      assert.equal(inputs.length, failAt - 1)
+      assert.equal(events.length, failAt)
+      assert.equal((await callJournal.inspect({ runId: RUN_ID, callId: 1 })).state,
+        failAt === 1 ? 'prepared' : 'result-unconfirmed')
+      await assert.rejects(port.close(), { code: 'ANDROID_TOOL_DISPATCH_UNCONFIRMED' })
+    }
+  }
+})
+
+test('projected mutation keeps host metadata and forwards deferred contexts unchanged', async () => {
+  const context = Object.freeze({ role: 'user', id: 'receipt', source: { kind: 'test-receipt' },
+    content: [{ type: 'text', text: 'Committed /workspace/created.txt' }] })
+  const meta = { path: '/workspace/created.txt', diff: '+hello' }
+  let flushes = 0
+  const { port, events, contexts } = setup({ kind: 'ptc', names: ['write'],
+    authorizeTool: async input => ({ effect: 'workspace-write', definition: input.definition,
+      projectResult: value => ({ path: value.path }), async flushSession() { flushes++; return true } }),
+    execute: async () => ({ isError: false, content: [], value: { path: meta.path, after: 'hello' },
+      meta, additionalContexts: [context] }),
+  })
+  assert.deepEqual(JSON.parse(JSON.stringify(await port.call(call('write', { file_path: 'created.txt' })))),
+    { path: meta.path })
+  assert.equal(flushes, 2)
+  assert.equal(contexts[0], context)
+  assert.deepEqual(JSON.parse(JSON.stringify(events[1].data.meta)), meta)
+  assert.equal(events[1].data.mutation.status, 'completed')
+  assert.equal(events[1].data.additionalContexts[0].id, context.id)
+  await port.close()
+})
+
+test('mutation errors and unsupported metadata retain paths and require verification before retry', async () => {
+  for (const toolError of [false, true]) {
+    const callJournal = journal()
+    const { port, events, contexts } = setup({ kind: 'ptc', names: ['edit'], journal: callJournal,
+      authorizeTool: async input => ({ effect: 'workspace-write', definition: input.definition,
+        projectResult: value => ({ path: value.path }), flushSession: async () => true }),
+      execute: async () => toolError
+        ? { isError: true, content: [], error: { message: 'observer failed', info: { code: 'OBSERVATION_FAILED' } } }
+        : { isError: false, content: [], value: { path: '/workspace/changed.txt' },
+          meta: { path: '/workspace/changed.txt', diff: 'x'.repeat(140 * 1024) } },
+    })
+    await assert.rejects(port.call(call('edit', { file_path: 'changed.txt' })), error =>
+      error.code === (toolError ? 'ANDROID_TOOL_DISPATCH_FAILED' : 'ANDROID_TOOL_RESULT_UNSUPPORTED')
+      && /may have changed.*Verify.*do not repeat/u.test(error.message))
+    assert.equal(events[1].data.mutation.requestedPath, 'changed.txt')
+    assert.equal(events[1].data.mutation.canonicalPath, toolError ? undefined : '/workspace/changed.txt')
+    assert.equal(events[1].data.mutation.status, 'verify-before-retry')
+    assert.ok(contexts.some(value => JSON.stringify(value).includes('verify-before-retry')))
+    assert.equal((await callJournal.inspect({ runId: RUN_ID, callId: 1 })).state, 'confirmed')
+    await port.close()
+  }
+})
+
+test('cancelled mutation preserves its returned receipt and durable terminal audit but is never replayable', async () => {
+  const started = deferred(), release = deferred(), callJournal = journal()
+  const context = { role: 'user', id: 'committed', source: { kind: 'test-receipt' },
+    content: [{ type: 'text', text: 'Committed /workspace/late.txt' }] }
+  let flushes = 0
+  const { port, events, contexts } = setup({ kind: 'ptc', names: ['write'], journal: callJournal,
+    authorizeTool: async input => ({ effect: 'workspace-write', definition: input.definition,
+      async flushSession() { flushes++; return true } }),
+    execute: async () => {
+      started.resolve(); await release.promise
+      return { isError: true, content: [], error: { message: 'aborted', info: { code: 'TOOL_ABORTED' } },
+        additionalContexts: [context] }
+    },
+  })
+  const running = port.call(call('write', { file_path: 'late.txt' }))
+  await started.promise
+  const closing = port.close('cancel requested')
+  release.resolve()
+  await assert.rejects(running, { code: 'ANDROID_TOOL_CALLBACK_CLOSED' })
+  await assert.rejects(closing, { code: 'ANDROID_TOOL_DISPATCH_UNCONFIRMED' })
+  assert.equal(flushes, 2)
+  assert.equal(contexts[0], context)
+  assert.equal(events[1].data.additionalContexts[0].id, 'committed')
+  assert.equal(events[1].data.mutation.status, 'verify-before-retry')
+  assert.equal((await callJournal.inspect({ runId: RUN_ID, callId: 1 })).state, 'result-unconfirmed')
 })

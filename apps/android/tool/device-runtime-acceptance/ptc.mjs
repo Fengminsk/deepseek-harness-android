@@ -10,11 +10,12 @@ import * as WebFetch from '@deepseek-ai/dsh-web-fetch-http'
 import * as WebTools from '@deepseek-ai/dsh-tool-web'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { setSandboxMode } from '@deepseek-ai/dsh-sandbox-policy'
 import { NativeIsolatedToolCallbacks } from '../../runtime/native-isolated-tool-callbacks.mjs'
 import { IsolatedToolCallJournal } from '../../runtime/isolated-tool-call-journal.mjs'
 import { createNativeIsolatedExecutionBridge } from '../../runtime/native-isolated-execution-bridge.mjs'
-import { createAppOwnedReadOnlyPtcOwner } from '../../runtime/model-ptc-readonly-owner.mjs'
-import { registerAndroidReadOnlyPtcTool } from '../../runtime/tool-readonly-ptc.mjs'
+import { createAppOwnedPtcOwner } from '../../runtime/model-ptc-reviewed-owner.mjs'
+import { registerAndroidPtcTool } from '../../runtime/tool-model-ptc.mjs'
 import { registerModelFileReadGuard } from '../../runtime/model-file-read-guard.mjs'
 import { registerAndroidFilesTool } from '../../runtime/tool-android-files.mjs'
 import { registerAndroidAttachmentsTool } from '../../runtime/tool-android-attachments.mjs'
@@ -40,18 +41,21 @@ export async function runPtcAcceptance({ ctx, transport, agent, workspace }) {
   const callbacks = new NativeIsolatedToolCallbacks(measuredTransport,
     new IsolatedToolCallJournal(join(resolveDshHome(), 'ptc-device-journal')))
   ctx.provide('nativeIsolatedToolCallbacks', callbacks)
-  const owner = createAppOwnedReadOnlyPtcOwner({ bridge: createNativeIsolatedExecutionBridge(measuredTransport),
-    callbacks, runtime: ctx.tools, services: { agents: ctx.agents, subagents: ctx.subagents } })
+  const owner = createAppOwnedPtcOwner({ bridge: createNativeIsolatedExecutionBridge(measuredTransport),
+    callbacks, runtime: ctx.tools, services: { agents: ctx.agents, subagents: ctx.subagents,
+      sessions: ctx.sessions, sandboxPolicy: ctx.sandboxPolicy } })
+  const originalMode = ctx.sandboxPolicy.resolve({ session: agent.session }).mode
   const check = async (name, action) => {
     const started = Date.now()
     try { checks.push({ name, status: 'passed', ...(await action()), elapsedMs: Date.now() - started }) }
     catch (error) { checks.push({ name, status: 'failed', error: String(error?.message ?? error).slice(0, 1000), elapsedMs: Date.now() - started }) }
   }
   const invoke = (code, signal = new AbortController().signal) => ctx.tools.execute({ name: 'android_ptc',
-    callId: `ptc-device-${randomUUID()}`, arguments: { code, description: 'Read-only PTC device acceptance' }, agent, signal })
+    callId: `ptc-device-${randomUUID()}`, arguments: { code, description: 'PTC device acceptance' }, agent, signal })
   try {
+    setSandboxMode(agent.session, 'read-only')
     registerModelFileReadGuard(ctx, workspace)
-    if (!ctx.tools.get('read', agent)) await ctx.plugin(FsTools, { readImage: false, write: false, edit: false })
+    if (!ctx.tools.get('read', agent)) await ctx.plugin(FsTools, { readImage: false })
     if (!ctx.tools.get('glob', agent)) await ctx.plugin(SearchTools, { sampleOverCapGlobResults: false })
     if (!ctx.tools.get('list_agents', agent)) await ctx.plugin(ListAgents)
     if (!ctx.tools.get('android_files', agent)) registerAndroidFilesTool(ctx, transport, {
@@ -59,7 +63,7 @@ export async function runPtcAcceptance({ ctx, transport, agent, workspace }) {
     })
     if (!ctx.get('attachments')) await ctx.plugin(AndroidAttachmentStore, { dshHome: resolveDshHome() })
     if (!ctx.tools.get('android_attachments', agent)) registerAndroidAttachmentsTool(ctx, workspace)
-    registerAndroidReadOnlyPtcTool(ctx, { owner, available: () => true })
+    registerAndroidPtcTool(ctx, { owner, available: () => true })
     await check('first-party-list-read-glob-roots-and-guard', async () => {
       const before = agent.session.seq
       const code = `const a=await tools.list_agents({scope:'children'});const r=await tools.read({file_path:${JSON.stringify(fileName)}});const g=await tools.glob({pattern:${JSON.stringify(fileName)}});const roots=await tools.android_files({action:'roots'});let refused=false;try{await tools.read({file_path:'../outside-acceptance.txt'})}catch(e){refused=e.code==='ANDROID_TOOL_DISPATCH_FAILED'}return {line:r.lines[0].text,files:g.paths,children:a,roots:Array.isArray(roots)?roots.length:(roots.items??roots.roots??[]).length,refused,process:typeof process,fetch:typeof fetch}`
@@ -99,6 +103,28 @@ export async function runPtcAcceptance({ ctx, transport, agent, workspace }) {
       assert.deepEqual(result.value.result, { listed: true, hex: '504b0304', verified: true,
         entryCount: 1, names: ['acceptance.txt'], refused: true })
       return { state: receipts.at(-1).state, attachmentBytes: ref.bytes, materializationRefused: true }
+    })
+    await check('workspace-mutations-through-native-ptc-callback', async () => {
+      const name = `ptc-write-${randomUUID()}.txt`
+      const ref = await ctx.get('attachments').saveFile({ name: `ptc-import-${randomUUID()}.txt`, data: Buffer.from('PTC attachment\n') })
+      agent.session.append('user/message', createUserMessage({ content: [{ type: 'file', attachment: ref }],
+        source: { kind: 'user' } }), { surfaceOp: 'append' })
+      const identity = JSON.stringify({ attachmentId: ref.attachmentId, name: ref.name })
+      const before = agent.session.seq
+      setSandboxMode(agent.session, 'workspace-write')
+      try {
+        const result = await invoke(`const p=${JSON.stringify(name)};await tools.write({file_path:p,content:'alpha\\n'});await tools.read({file_path:p});const edited=await tools.edit({file_path:p,old_string:'alpha',new_string:'beta'});const imported=await tools.android_attachments({...${identity},action:'materialize'});const text=await tools.read({file_path:imported.file_path});return {edited,imported,line:text.lines[0].text}`)
+        assert.equal(result.isError, false, JSON.stringify(result.error))
+        assert.equal(await readFile(join(workspace, name), 'utf8'), 'beta\n')
+        assert.equal(await readFile(result.value.result.imported.file_path, 'utf8'), 'PTC attachment\n')
+        assert.equal(result.value.result.line, 'PTC attachment')
+        assert.equal(result.additionalContexts.filter(value => value.source.kind === 'file-mutation-receipt').length, 3)
+        const events = agent.session.snapshotEvents(before).filter(event => event.type === 'tool/ptc-dispatch')
+        assert.equal(events[2].data.meta.path, join(workspace, name))
+        assert.equal(await ctx.sessions.flush(agent.session), true)
+        return { state: receipts.at(-1).state, callbackCount: events.length,
+          file: join(workspace, name), imported: result.value.result.imported.file_path }
+      } finally { setSandboxMode(agent.session, 'read-only') }
     })
     await check('current-session-apk-through-native-ptc-callback', async () => {
       const fixture = JSON.parse(await readFile(new URL('./apk-fixture.json', import.meta.url), 'utf8'))
@@ -184,10 +210,11 @@ export async function runPtcAcceptance({ ctx, transport, agent, workspace }) {
       return { state: receipts.at(-1).state }
     })
     checks.push({ name: 'saf-revocation-and-search', status: 'unverified', detail: 'SAF grant revocation and document search require their separate provider lifecycle acceptance.' })
-    return { kind: 'production-node-native-readonly-ptc', checks,
+    return { kind: 'production-node-native-ptc', checks,
       passed: checks.filter(value => value.status === 'passed').length,
       failed: checks.filter(value => value.status === 'failed').length }
   } finally {
+    setSandboxMode(agent.session, originalMode)
     await owner.close()
     await callbacks.dispose()
     await unlink(file)

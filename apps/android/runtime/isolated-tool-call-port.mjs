@@ -12,8 +12,10 @@ const encoder = new TextEncoder()
 const projectionErrors = new WeakMap()
 const AMBIENT_APP_TOOLS = new Set([
   'android_shell', 'android_linux', 'read_image',
-  'write', 'edit', 'str_replace_editor', 'workflow', 'android_ptc',
+  'str_replace_editor', 'workflow', 'android_ptc',
 ])
+const WRITE_TOOLS = new Set(['write', 'edit'])
+const VERIFY_BEFORE_RETRY = 'The workspace may have changed. Verify the affected files before any retry; do not repeat this mutation automatically.'
 
 function denied(code, message) {
   return new IsolatedExecutionContractError(code, message)
@@ -80,16 +82,53 @@ function callbackInput(value) {
 function classifiedFor(value, definition) {
   if (!plain(value)) return false
   const keys = Reflect.ownKeys(value)
-  if (keys.length < 2 || keys.length > 3
-    || keys.some(key => !['effect', 'definition', 'projectResult'].includes(key))) return false
+  if (keys.length < 2 || keys.length > 4
+    || keys.some(key => !['effect', 'definition', 'projectResult', 'flushSession'].includes(key))) return false
   const effect = Object.getOwnPropertyDescriptor(value, 'effect')
   const bound = Object.getOwnPropertyDescriptor(value, 'definition')
   const projection = Object.getOwnPropertyDescriptor(value, 'projectResult')
+  const flush = Object.getOwnPropertyDescriptor(value, 'flushSession')
   return effect && bound && Object.hasOwn(effect, 'value')
     && Object.hasOwn(bound, 'value')
-    && (effect.value === 'pure' || effect.value === 'read-only')
+    && ['pure', 'read-only', 'workspace-write'].includes(effect.value)
     && bound.value === definition
     && (projection === undefined || Object.hasOwn(projection, 'value') && typeof projection.value === 'function')
+    && (flush === undefined || Object.hasOwn(flush, 'value') && typeof flush.value === 'function')
+    && (effect.value !== 'workspace-write' || flush !== undefined)
+}
+
+function boundedPath(value) {
+  return typeof value === 'string' && encoder.encode(value).length <= 4096 ? value : undefined
+}
+
+function mutationReceipt(name, args, result, complete) {
+  const requestedPath = boundedPath(args?.file_path ?? args?.path)
+  const canonicalPath = boundedPath(result.value?.path ?? result.value?.file_path ?? result.meta?.path)
+  return {
+    tool: name, status: complete ? 'completed' : 'verify-before-retry',
+    ...(requestedPath === undefined ? {} : { requestedPath }),
+    ...(canonicalPath === undefined ? {} : { canonicalPath }),
+    ...(!complete ? { recovery: VERIFY_BEFORE_RETRY } : {}),
+  }
+}
+
+async function flushSession(authorized) {
+  let cause
+  try {
+    if (await authorized.flushSession() === true) return
+  } catch (error) {
+    // A durability error is not a guest-recoverable tool failure.
+    cause = error
+  }
+  const failure = denied('ANDROID_TOOL_SESSION_UNCONFIRMED', 'The mutation audit did not reach durable Session storage')
+  if (cause !== undefined) Object.defineProperty(failure, 'cause', { value: cause })
+  throw failure
+}
+
+async function deferMutationReceipt(parent, mutation) {
+  const { createUserMessage } = await import('@deepseek-ai/dsh-llm')
+  parent.deferContext(createUserMessage({ source: { kind: 'android-ptc-mutation' },
+    content: [{ type: 'text', text: JSON.stringify({ mutation }) }] }))
 }
 
 /**
@@ -97,12 +136,15 @@ function classifiedFor(value, definition) {
  * It does not authorize a guest or register a model tool. The native service
  * must bind its callback endpoint to the admission token before invoking it.
  * Only the trusted host supplies the parent ToolRunContext and allowlist.
- * `authorizeTool` returns `{ effect: 'pure' | 'read-only', definition }` for
- * the supplied bound definition, null for an ordinary denial, and must throw
- * only when policy settlement is uncertain. Every definition needs App review.
+ * `authorizeTool` returns a reviewed effect and exact definition; workspace
+ * mutations additionally supply a Session durability barrier. Only PTC may
+ * dispatch reviewed write/edit or attachment materialization callbacks. The
+ * policy returns null for ordinary denial and throws only when settlement is
+ * uncertain. Every definition needs App review.
  */
 export class IsolatedToolCallPort {
   #runId
+  #kind
   #runtime
   #parent
   #allowed
@@ -151,7 +193,8 @@ export class IsolatedToolCallPort {
       const definition = typeof name === 'string' && NAME.test(name)
         ? runtime.get(name, parent.agent) : undefined
       if (typeof name !== 'string' || !NAME.test(name) || name === 'run_code'
-        || AMBIENT_APP_TOOLS.has(name) || names.has(name)
+        || AMBIENT_APP_TOOLS.has(name) || WRITE_TOOLS.has(name) && prepared.kind !== 'ptc'
+        || names.has(name)
         || definition === undefined) {
         throw denied('ANDROID_TOOL_HOST_INVALID', 'Invalid or invisible tool in host allowlist')
       }
@@ -159,6 +202,7 @@ export class IsolatedToolCallPort {
       definitions.set(name, definition)
     }
     this.#runId = prepared.runId
+    this.#kind = prepared.kind
     this.#runtime = runtime
     this.#parent = parent
     this.#allowed = names
@@ -235,6 +279,13 @@ export class IsolatedToolCallPort {
     if (!classifiedFor(authorized, this.#boundDefinitions.get(name))) {
       throw recoverable('ANDROID_TOOL_NOT_GRANTED', 'Host policy did not authorize the tool')
     }
+    const mutating = authorized.effect === 'workspace-write'
+    const mutationName = WRITE_TOOLS.has(name)
+      || name === 'android_attachments' && args?.action === 'materialize'
+    if (mutating !== mutationName || mutating && (this.#kind !== 'ptc'
+      || typeof this.#parent.deferContext !== 'function')) {
+      throw recoverable('ANDROID_TOOL_NOT_GRANTED', 'Host policy did not authorize this mutation')
+    }
     // Re-check visibility at dispatch time. A policy or plugin may revoke a
     // tool while an earlier sub-call occupies the serial lane.
     if (this.#runtime.get(name, this.#parent.agent) !== this.#boundDefinitions.get(name)) {
@@ -249,6 +300,7 @@ export class IsolatedToolCallPort {
     await this.#journal.prepare({ runId: this.#runId, callId: number,
       parentCallId: this.#parent.callId, name, arguments: args })
     this.#parent.agent.session.append('tool/ptc-dispatch-start', audit)
+    if (mutating) await flushSession(authorized)
     if (this.#controller.signal.aborted) {
       throw denied('ANDROID_TOOL_CALLBACK_CLOSED', 'Tool callback ended before dispatch')
     }
@@ -269,10 +321,12 @@ export class IsolatedToolCallPort {
     } catch (error) {
       // ToolRuntime normally materializes failures; a thrown failure means
       // the pipeline or its audit is uncertain. Do not fabricate a settle.
+      if (mutating) await deferMutationReceipt(this.#parent, mutationReceipt(name, args, {}, false))
       throw denied('ANDROID_TOOL_DISPATCH_UNCONFIRMED', 'Tool dispatch did not settle')
     }
     if (!plain(result) || typeof result.isError !== 'boolean'
       || !Array.isArray(result.content)) {
+      if (mutating) await deferMutationReceipt(this.#parent, mutationReceipt(name, args, {}, false))
       throw denied('ANDROID_TOOL_DISPATCH_UNCONFIRMED', 'Tool runtime returned no materialized outcome')
     }
     let content
@@ -281,6 +335,14 @@ export class IsolatedToolCallPort {
     let auditOverflow = false
     let projectedValue
     let projectionFailure = null
+    // Host contexts never enter guest JSON. Preserve their original identity
+    // and semantics, including receipts retained by an aborted tool body.
+    const contexts = result.additionalContexts ?? []
+    if (!Array.isArray(contexts) || contexts.length && typeof this.#parent.deferContext !== 'function') {
+      throw denied('ANDROID_TOOL_DISPATCH_UNCONFIRMED', 'Tool contexts have no parent owner')
+    }
+    for (const context of contexts) this.#parent.deferContext(context)
+    let auditContexts
     if (!result.isError && authorized.projectResult !== undefined) {
       try {
         projectedValue = snapshotIsolatedJson(authorized.projectResult(result.value, args),
@@ -293,9 +355,11 @@ export class IsolatedToolCallPort {
       content = projectedValue === undefined
         ? snapshotIsolatedJson(result.content, 'isolated tool audit content', MAX_AUDIT_BYTES)
         : [{ type: 'text', text: JSON.stringify(projectedValue) }]
-      if (result.meta !== undefined && projectedValue === undefined) {
+      if (result.meta !== undefined) {
         meta = snapshotIsolatedJson(result.meta, 'isolated tool audit metadata', MAX_AUDIT_BYTES)
       }
+      if (contexts.length) auditContexts = snapshotIsolatedJson(contexts,
+        'isolated tool audit contexts', MAX_AUDIT_BYTES)
       if (result.error?.info !== undefined) {
         errorInfo = snapshotIsolatedJson(result.error.info, 'isolated tool audit error', MAX_ERROR_BYTES)
       }
@@ -317,7 +381,7 @@ export class IsolatedToolCallPort {
     }
     if (!unsupportedReason && !result.isError) {
       if (result.content.some(block => block?.type === 'image')
-        || result.additionalContexts?.length || result.concludesTurn) {
+        || result.concludesTurn) {
         unsupportedReason = 'Tool result needs host-only context handling'
       } else {
         try { guestValue = snapshotIsolatedJson(projectedValue === undefined ? result.value : projectedValue,
@@ -325,17 +389,32 @@ export class IsolatedToolCallPort {
         catch { unsupportedReason = 'Tool result is not bounded guest JSON' }
       }
     }
+    const mutation = mutating ? mutationReceipt(name, args, result,
+      !result.isError && !unsupportedReason && !this.#controller.signal.aborted) : undefined
+    if (mutating && (result.isError || unsupportedReason || this.#controller.signal.aborted)) {
+      await deferMutationReceipt(this.#parent, mutation)
+      if (unsupportedReason) unsupportedReason = `${unsupportedReason.slice(0, 500)} ${VERIFY_BEFORE_RETRY}`
+    }
     const terminalAudit = {
       ...audit,
       isError: result.isError || unsupportedReason !== null,
       content,
       ...(!auditOverflow && meta !== undefined ? { meta } : {}),
+      ...(auditContexts === undefined ? {} : { additionalContexts: auditContexts }),
+      ...(mutation === undefined ? {} : { mutation }),
       ...(unsupportedReason
         ? { error: { name: 'IsolatedToolResultError', code: 'ANDROID_TOOL_RESULT_UNSUPPORTED', reason: unsupportedReason } }
         : errorInfo === undefined ? {} : { error: errorInfo }),
     }
     await this.#journal.observe({ runId: this.#runId, callId: number, result: terminalAudit })
     this.#parent.agent.session.append('tool/ptc-dispatch', terminalAudit)
+    if (mutating) {
+      try { await flushSession(authorized) }
+      catch (error) {
+        await deferMutationReceipt(this.#parent, mutationReceipt(name, args, result, false))
+        throw error
+      }
+    }
     if (this.#controller.signal.aborted) {
       throw denied('ANDROID_TOOL_CALLBACK_CLOSED', 'Tool settled after guest cancellation')
     }
@@ -346,7 +425,8 @@ export class IsolatedToolCallPort {
       throw recoverable('ANDROID_TOOL_RESULT_UNSUPPORTED', unsupportedReason)
     }
     if (result.isError) {
-      const message = result.error?.message ?? 'Tool call failed'
+      const baseMessage = result.error?.message ?? 'Tool call failed'
+      const message = mutating ? `${baseMessage.slice(0, 500)} ${VERIFY_BEFORE_RETRY}` : baseMessage
       await this.#journal.confirm({ runId: this.#runId, callId: number,
         outcome: 'tool-error', result: terminalAudit })
       this.#unconfirmed = false

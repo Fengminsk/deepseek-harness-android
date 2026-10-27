@@ -119,6 +119,11 @@ def candidate_file(directory, name):
 
 def verify_candidate(directory, root=ROOT, record=None):
     directory = Path(directory)
+    expected_files = CANDIDATE_FILES | ({'candidate.json'} if record is None else set())
+    members = list(directory.rglob('*'))
+    if (any(path.is_symlink() for path in members)
+            or {path.relative_to(directory).as_posix() for path in members if path.is_file()} != expected_files):
+        raise ValueError('Candidate directory contains missing, extra or linked files')
     if record is None:
         record = read_json(directory / 'candidate.json')
     if (record.get('format') != 'linux-vm-candidate-v1' or record.get('androidDeviceVerified') is not False

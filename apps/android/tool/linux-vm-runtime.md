@@ -9,7 +9,7 @@ English | [中文](linux-vm-runtime.zh.md)
 
 ## Summary
 
-The optional Android carrier embeds TinyEMU's RISC-V interpreter in an isolated Android service. It boots a Linux kernel and runs a supplied shell script; it does not execute that script with the App UID. Ordinary builds exclude the VM native provider and guest images and do not require prepared TinyEMU sources. Explicit `-PdshAcceptanceBuildType=release -PdshLinuxGuestFixture=true` enables both; requests to an excluded provider report that it is unavailable. Model registration is separately controlled by `LINUX_VM_DEVICE_ACCEPTED` in [the runtime entry](../runtime/index.mjs). Its closed state must not be represented as an available model capability.
+The optional Android carrier embeds TinyEMU's RISC-V interpreter in an isolated Android service. It boots a Linux kernel and runs a supplied shell script; it does not execute that script with the App UID. Ordinary builds exclude the VM native provider and guest images and do not require prepared TinyEMU sources. An explicit [Alpine acceptance build](tinyemu-build.md#alpine-acceptance-apk) enables the carrier and a verified candidate image; requests to an excluded provider report that it is unavailable. Model registration is separately controlled by `LINUX_VM_DEVICE_ACCEPTED` in [the runtime entry](../runtime/index.mjs). Its closed state must not be represented as an available model capability.
 
 ## Contents
 
@@ -49,7 +49,7 @@ Linux tools attach a bounded `android-linux-receipt` context to the real ToolRun
 
 ## Build and evidence
 
-[The source builder](build-tinyemu.mjs) verifies the [pinned official inputs](tinyemu-source-lock.mjs), applies [the embedding patch](patch-tinyemu.mjs), and records compiler, source and output hashes. [CMake](../android/app/src/main/cpp/linux_vm.cmake) consumes that prepared source and rebuilds the JNI provider. [The staging command](stage-linux-vm-fixture.mjs) places boot fixtures in the cache; `-PdshLinuxGuestFixture=true` includes them only in an explicit acceptance release build. The fixture's distribution field remains restricted until corresponding-source and license records are complete.
+[The source builder](build-tinyemu.mjs) verifies the [pinned official inputs](tinyemu-source-lock.mjs), applies [the embedding patch](patch-tinyemu.mjs), and records compiler, source and output hashes. [CMake](../android/app/src/main/cpp/linux_vm.cmake) consumes that prepared source and rebuilds the JNI provider. [The Alpine release verifier](linux-vm-release.py) checks candidate freshness before merging assets and checks the final APK against its disk, source record and compiled provider. The separate legacy `-PdshLinuxGuestFixture=true` path retains the restricted boot fixtures for investigation; it cannot be combined with Alpine selection and is not an Alpine release.
 
 [Node owner tests](native-linux-vm.test.mjs), [real ToolRuntime registration tests](tool-linux-vm.test.mjs), and [console framing tests](../android/app/src/test/java/com/minnnng/dsh_android/LinuxVmConsoleTest.java) cover their own host paths. [Device instrumentation](../android/app/src/androidTest/kotlin/com/minnnng/dsh_android/LinuxVmAcceptanceInstrumentation.kt) owns kernel boot, actual command execution, disk retention and interruption evidence. Compilation and host tests do not substitute for its device results.
 

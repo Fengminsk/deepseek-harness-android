@@ -826,21 +826,21 @@ class IsolatedScriptAcceptanceInstrumentation : Instrumentation() {
             val handle = bridge.admit(params)
             check(runCatching { bridge.execute(handle) }.isFailure) { "Unbound PTC ran" }
             check(bridge.cancel(handle) && bridge.release(handle))
-            for (name in listOf("read", "glob", "grep", "web_search", "web_fetch", "list_agents")) {
+            for (name in listOf("read", "glob", "grep", "web_search", "web_fetch", "list_agents", "write", "edit")) {
                 IsolatedToolRequest.parse(JSONObject().put("action", "TOOL_CALL").put("callId", 1)
                     .put("name", name).put("arguments", JSONObject()).toString(), true)
             }
             for ((name, actions) in mapOf("android_files" to listOf("roots", "list", "read", "search"),
-                "android_attachments" to listOf("list", "read", "inspect_archive", "inspect_apk"))) {
+                "android_attachments" to listOf("list", "read", "materialize", "inspect_archive", "inspect_apk"))) {
                 for (action in actions) IsolatedToolRequest.parse(JSONObject().put("action", "TOOL_CALL")
                     .put("callId", 1).put("name", name)
                     .put("arguments", JSONObject().put("action", action)).toString(), true)
-                for (action in listOf("write", "materialize", "read_image")) check(runCatching {
+                for (action in listOf("write", "read_image", "delete") + if (name == "android_files") listOf("materialize") else emptyList()) check(runCatching {
                     IsolatedToolRequest.parse(JSONObject().put("action", "TOOL_CALL").put("callId", 1)
                         .put("name", name).put("arguments", JSONObject().put("action", action)).toString(), true)
                 }.isFailure)
             }
-            for (name in listOf("run_code", "workflow", "android_ptc", "write", "read_image", "android_linux", "echo_read_only")) {
+            for (name in listOf("run_code", "workflow", "android_ptc", "read_image", "android_linux", "echo_read_only")) {
                 check(runCatching { IsolatedToolRequest.parse(JSONObject().put("action", "TOOL_CALL")
                     .put("callId", 1).put("name", name).put("arguments", JSONObject()).toString(), true) }.isFailure)
             }

@@ -18,7 +18,7 @@ import SandboxPolicyService from '@deepseek-ai/dsh-sandbox-policy'
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { FsVersion } from '@deepseek-ai/dsh-fs'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
-import ToolRuntime, { TOOL_ABORTED_BEFORE_DISPATCH } from '@deepseek-ai/dsh-tools'
+import ToolRuntime, { TOOL_ABORTED, TOOL_ABORTED_BEFORE_DISPATCH } from '@deepseek-ai/dsh-tools'
 import { LocalFileSystem } from '@deepseek-ai/dsh-fs-local'
 import * as FsPolicy from '@deepseek-ai/dsh-fs-observation-policy'
 import * as ToolFs from '@deepseek-ai/dsh-tool-fs'
@@ -90,6 +90,9 @@ describe('default deployment (with dsh-fs-observation-policy)', () => {
       const result = await call('write', { file_path: 'new.txt', content: 'line one\nline two\n' })
       expect(result.isError).toBe(false)
       expect(await readFile(join(dir, 'new.txt'), 'utf8')).toBe('line one\nline two\n')
+      expect(result.additionalContexts).toHaveLength(1)
+      expect(result.additionalContexts?.[0]).toMatchObject({ role: 'user', source: { kind: 'file-mutation-receipt' },
+        content: [{ type: 'text', text: `File mutation completed: ${JSON.stringify({ operation: 'write', path: join(dir, 'new.txt') })}. Re-read before retrying.` }] })
     })
 
     it('rejects overwriting an existing file without reading it first', async () => {
@@ -98,6 +101,7 @@ describe('default deployment (with dsh-fs-observation-policy)', () => {
       expect(result.isError).toBe(true)
       expect(result.error).toMatchObject({ info: { code: 'FS_NOT_OBSERVED' } })
       expect(text(result)).toBe(notObservedDiagnostic(join(dir, 'a.txt')))
+      expect(result.additionalContexts).toBeUndefined()
       expect(await readFile(join(dir, 'a.txt'), 'utf8')).toBe('original')
     })
 
@@ -548,13 +552,40 @@ describe('signal, concurrency, and the fs/observed contract', () => {
     expect(await readFile(join(dir, 'a.txt'), 'utf8')).toBe('newer current content\n')
   })
 
-  it('a throwing fs/observed listener surfaces as isError, but the mutation already hit disk', async () => {
-    // fs/observed is a plain ctx.emit after the write succeeded; a throwing listener cannot
-    // roll the write back — it only turns the tool result into isError.
-    ctx.on('fs/observed', () => { throw new Error('recording bug') })
-    const result = await callOwned('write', { file_path: 'w.txt', content: 'durable' })
-    expect(result.isError).toBe(true)
-    expect(await readFile(join(dir, 'w.txt'), 'utf8')).toBe('durable')
+  it.each(['write', 'edit'] as const)('%s retains the committed file receipt when fs/observed throws', async (name) => {
+    await writeFile(join(dir, 'w.txt'), 'original')
+    expect((await callOwned('read', { file_path: 'w.txt' })).isError).toBe(false)
+    const dispose = ctx.on('fs/observed', () => { throw new Error('recording bug') })
+    try {
+      const args = name === 'write' ? { file_path: './w.txt', content: 'durable' }
+        : { file_path: './w.txt', old_string: 'original', new_string: 'durable' }
+      const result = await callOwned(name, args)
+      expect(result.isError).toBe(true)
+      expect(text(result)).toContain('recording bug')
+      expect(await readFile(join(dir, 'w.txt'), 'utf8')).toBe('durable')
+      expect(result.additionalContexts).toHaveLength(1)
+      expect(result.additionalContexts?.[0]).toMatchObject({ role: 'user', source: { kind: 'file-mutation-receipt' },
+        content: [{ type: 'text', text: `File mutation completed: ${JSON.stringify({ operation: name, path: join(dir, 'w.txt') })}. Re-read before retrying.` }] })
+    } finally { dispose() }
+  })
+
+  it.each(['write', 'edit'] as const)('%s retains the committed file receipt when cancellation follows the provider write', async (name) => {
+    await writeFile(join(dir, 'w.txt'), 'original')
+    expect((await callOwned('read', { file_path: 'w.txt' })).isError).toBe(false)
+    const controller = new AbortController()
+    // Observation starts only after the real provider has committed its mutation.
+    const dispose = ctx.on('fs/observed', () => { controller.abort('cancelled after mutation') })
+    try {
+      const args = name === 'write' ? { file_path: './w.txt', content: 'durable' }
+        : { file_path: './w.txt', old_string: 'original', new_string: 'durable' }
+      const result = await callSig(controller.signal, name, args)
+      expect(result.isError).toBe(true)
+      expect(result.error).toMatchObject({ info: { name: 'AbortError', code: TOOL_ABORTED } })
+      expect(await readFile(join(dir, 'w.txt'), 'utf8')).toBe('durable')
+      expect(result.additionalContexts).toHaveLength(1)
+      expect(result.additionalContexts?.[0]).toMatchObject({ role: 'user', source: { kind: 'file-mutation-receipt' },
+        content: [{ type: 'text', text: `File mutation completed: ${JSON.stringify({ operation: name, path: join(dir, 'w.txt') })}. Re-read before retrying.` }] })
+    } finally { dispose() }
   })
 })
 

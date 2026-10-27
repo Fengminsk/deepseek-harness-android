@@ -1,4 +1,5 @@
 import java.security.MessageDigest
+import java.io.File
 
 plugins {
     id("com.android.application")
@@ -15,6 +16,8 @@ val unreviewedLinuxGuestInputs = fileTree("src") {
     include("**/libpocket_linux_guest_supervisor.so")
     include("**/alpine-minirootfs*")
     include("**/rootfs.tar*")
+    include("**/linux-vm/**")
+    include("**/libpocket_linux_vm.so")
 }
 if (!unreviewedLinuxGuestInputs.isEmpty) {
     throw GradleException("Linux guest payload is not approved for APK packaging")
@@ -42,12 +45,65 @@ for (input in fileTree("src").files) {
 
 val acceptanceBuildType = providers.gradleProperty("dshAcceptanceBuildType").orElse("debug").get()
 val linuxGuestFixture = providers.gradleProperty("dshLinuxGuestFixture").orElse("false").get() == "true"
+val linuxCandidatePath = providers.gradleProperty("dshLinuxCandidate").orNull
+val linuxVmEnabled = linuxGuestFixture || linuxCandidatePath != null
 require(acceptanceBuildType in setOf("debug", "release")) {
     "dshAcceptanceBuildType must be debug or release"
+}
+require(!linuxGuestFixture || linuxCandidatePath == null) {
+    "Select either dshLinuxCandidate or dshLinuxGuestFixture, never both"
+}
+// Candidate selection supplies the native carrier for acceptance only. The
+// separate model registration/device gates are not changed by this property.
+val candidateAssets = linuxCandidatePath?.let { selected ->
+    require(acceptanceBuildType == "release") { "Alpine candidates require dshAcceptanceBuildType=release" }
+    val repository = rootProject.file("../../..").canonicalFile
+    val directory = file(selected)
+    val candidateRoot = repository.resolve(".cache/android/linux-vm-candidates").canonicalFile
+    require(File(selected).isAbsolute && directory.canonicalFile.parentFile == candidateRoot &&
+        directory.name.startsWith("alpine-") && directory.resolve("candidate.json").isFile) {
+        "dshLinuxCandidate must name an absolute staged Alpine directory in this repository cache"
+    }
+    val digest = MessageDigest.getInstance("SHA-256")
+        .digest(directory.resolve("candidate.json").readBytes()).joinToString("") { "%02x".format(it) }
+    val assets = repository.resolve(".cache/android/linux-vm-release-assets/${directory.name}/$digest/assets")
+    val python = providers.gradleProperty("dshLinuxPython").orElse("python").get()
+    val verifier = repository.resolve("apps/android/tool/linux-vm-release.py").absolutePath
+    val selection = listOf("--candidate", directory.absolutePath, "--candidate-sha256", digest)
+    val prepare = tasks.register<Exec>("prepareLinuxCandidateAssets") {
+        workingDir(repository)
+        commandLine(listOf(python, verifier, "prepare") + selection)
+        // Source closure and every cached input must be rechecked on each build.
+        outputs.upToDateWhen { false }
+    }
+    tasks.named("preBuild").configure { dependsOn(prepare) }
+    val audit = tasks.register<Exec>("verifyLinuxCandidateApk") {
+        dependsOn("packageRelease", "stripReleaseDebugSymbols")
+        workingDir(repository)
+        commandLine(listOf(python, verifier, "verify-apk") + selection + listOf(
+            "--apk", layout.buildDirectory.file("outputs/apk/release/app-release.apk").get().asFile.absolutePath,
+            "--native-library", layout.buildDirectory.file(
+                "intermediates/stripped_native_libs/release/stripReleaseDebugSymbols/out/lib/arm64-v8a/libpocket_linux_vm.so"
+            ).get().asFile.absolutePath,
+            "--report", layout.buildDirectory.file("reports/linux-vm-release.json").get().asFile.absolutePath,
+        ))
+        outputs.upToDateWhen { false }
+    }
+    tasks.matching { it.name == "assembleRelease" }.configureEach { dependsOn(audit) }
+    gradle.taskGraph.whenReady {
+        require(allTasks.none { it.project == project && it.name.contains("Debug") &&
+            !it.name.contains("Release") }) {
+            "Alpine candidates support release builds only"
+        }
+    }
+    assets
 }
 
 android {
     sourceSets.getByName("androidTest").assets.srcDir(rootProject.file("../tool/device-runtime-acceptance"))
+    if (candidateAssets != null) {
+        sourceSets.getByName("release").assets.srcDir(candidateAssets)
+    }
     if (linuxGuestFixture) {
         require(acceptanceBuildType == "release") { "Linux boot fixtures require the explicit acceptance release variant" }
         val fixtureAssets = rootProject.file("../../../.cache/android/linux-vm-assets")
@@ -77,14 +133,14 @@ android {
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = 28
         targetSdk = 36
-        buildConfigField("boolean", "LINUX_VM_ENABLED", linuxGuestFixture.toString())
+        buildConfigField("boolean", "LINUX_VM_ENABLED", linuxVmEnabled.toString())
         ndk { abiFilters += "arm64-v8a" }
         externalNativeBuild { cmake {
             cppFlags += "-std=c++20"
             arguments += "-DANDROID_STL=c++_shared"
             // Cache values from a manual NDK experiment must never leak into App builds.
             arguments += "-DDSH_BUILD_LINUX_GUEST_SUPERVISOR=OFF"
-            arguments += "-DDSH_BUILD_LINUX_VM=${if (linuxGuestFixture) "ON" else "OFF"}"
+            arguments += "-DDSH_BUILD_LINUX_VM=${if (linuxVmEnabled) "ON" else "OFF"}"
         } }
         // Uses the version code from pubspec.yaml. When using split APKs, 1000 * ABI_VERSION
         // is added automatically by Flutter. (https://developer.android.com/studio/build/configure-apk-splits#configure-APK-versions)

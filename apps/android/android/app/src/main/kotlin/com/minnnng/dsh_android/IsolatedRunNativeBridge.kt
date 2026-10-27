@@ -309,7 +309,7 @@ internal class IsolatedRunNativeBridge(
                 networkPolicy = run.networkPolicy,
                 toolTransport = if (run.toolBound) toolTransport else null,
                 toolToken = if (run.toolBound) run.token else null,
-                readOnlyPtc = run.kind == "ptc",
+                reviewedPtc = run.kind == "ptc",
                 reservation = run.reservation,
                 approvedReservation = run.approvedReservation)
         } catch (failure: Exception) {

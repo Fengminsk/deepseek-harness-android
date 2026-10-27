@@ -267,7 +267,7 @@ internal object IsolatedScriptRunController {
         workflowOwner: DurableWorkflowOwner? = null,
         reservation: Reservation? = null,
         approvedReservation: ApprovedReservation? = null,
-        readOnlyPtc: Boolean = false,
+        reviewedPtc: Boolean = false,
     ): Result {
         check(Looper.myLooper() != Looper.getMainLooper()) { "Script binding and audit must run off the main thread" }
         check(Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -277,17 +277,17 @@ internal object IsolatedScriptRunController {
         check(Application.getProcessName() == app.packageName + ":agent") {
             "Script runs and receipt recovery belong to the agent process"
         }
-        check(!readOnlyPtc || (toolTransport != null && toolToken != null &&
+        check(!reviewedPtc || (toolTransport != null && toolToken != null &&
             workflowTransport == null && workflowToken == null && workflowOwner == null &&
             hostPolicy == null && networkPolicy == null && policyOwner == null && approvedReservation == null)) {
-            "Read-only PTC requires only its reviewed ToolRuntime callbacks"
+            "Android PTC requires only its reviewed ToolRuntime callbacks"
         }
-        if (readOnlyPtc) PtcScriptEngine.validatePtc(program, inputJson, deadlineMillis)
+        if (reviewedPtc) PtcScriptEngine.validatePtc(program, inputJson, deadlineMillis)
         else if (workflowTransport != null) PtcScriptEngine.validateWorkflow(program, inputJson, deadlineMillis)
         else PtcScriptEngine.validate(program, inputJson, deadlineMillis)
         val request = IsolatedScriptWire.Request(
             runId, UUID.randomUUID().toString(), program, inputJson, deadlineMillis,
-            if (readOnlyPtc) IsolatedScriptWire.FUNCTION_BODY else IsolatedScriptWire.FUNCTION_EXPRESSION,
+            if (reviewedPtc) IsolatedScriptWire.FUNCTION_BODY else IsolatedScriptWire.FUNCTION_EXPRESSION,
         )
         check((hostPolicy != null || networkPolicy != null) == (policyOwner != null) &&
             (toolTransport == null) == (toolToken == null) &&
@@ -351,7 +351,7 @@ internal object IsolatedScriptRunController {
                         checkNotNull(workflowOwner), effectiveCancelled, workflowTransport)
                 else if (toolTransport != null)
                     IsolatedScriptToolBridge(request, checkNotNull(toolToken), effectiveCancelled,
-                        toolTransport, readOnlyPtc)
+                        toolTransport, reviewedPtc)
                 else if (hostPolicy != null || networkPolicy != null)
                     IsolatedScriptHostBridge(app, request, hostPolicy, networkPolicy,
                         checkNotNull(lease), effectiveCancelled)

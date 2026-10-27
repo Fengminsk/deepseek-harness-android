@@ -2364,16 +2364,19 @@
         "apps/android/android/app/src/main/java/com/minnnng/dsh_android/IsolatedScriptReceipt.java",
         "apps/android/tool/acceptance-ptc-script-engine.mjs",
         "apps/android/tool/acceptance-isolated-script-run.mjs",
-        "apps/android/runtime/model-ptc-readonly-owner.mjs",
+        "apps/android/runtime/model-ptc-reviewed-owner.mjs",
         "apps/android/runtime/model-ptc-readonly-review.mjs",
         "apps/android/runtime/model-ptc-readonly-projection.mjs",
-        "apps/android/runtime/tool-readonly-ptc.mjs",
+        "apps/android/runtime/tool-model-ptc.mjs",
         "apps/android/runtime/isolated-tool-call-port.mjs",
         "apps/android/tool/model-ptc-readonly.test.mjs",
         "apps/android/tool/device-runtime-acceptance/ptc.mjs",
         "apps/android/android/app/src/main/kotlin/com/minnnng/dsh_android/IsolatedRunNativeBridge.kt",
         "apps/android/android/app/src/main/kotlin/com/minnnng/dsh_android/IsolatedToolRequest.kt",
-        "apps/android/android/app/src/main/cpp/ptc_script_engine.cpp"
+        "apps/android/android/app/src/main/cpp/ptc_script_engine.cpp",
+        "apps/android/runtime/model-ptc-review.mjs",
+        "apps/android/tool/model-ptc-mutations.test.mjs",
+        "apps/android/tool/isolated-tool-mutations.test.mjs"
       ],
       "evidence": {
         "core": "unverified",
@@ -2381,7 +2384,7 @@
         "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Original Node PTC stays disabled. Android now has an App-owned read-only android_ptc registration behind MODEL_PTC_DEVICE_ACCEPTED=false. It uses live ToolRuntime authorization and exact first-party definitions for list_agents, read/glob/grep, web_search/web_fetch, android_files roots/list/read/search and android_attachments list/read/inspect_archive/inspect_apk. Native ptc runs have zero direct file/network grants, 120-second wall and independent 5-second execution-thread CPU limits. Bounded projected results and callbacks retain parent Session records. Oversized APK analysis returns an audited recovery hint instead of dropping declarations or changing cursors; smaller pages and sampleLimit allow retries. Writes, images, materialization, nested execution and general Node APIs are excluded. Focused host ToolRuntime/receipt tests pass; the production Node-to-native device suite must still establish usable registration and lifecycle behavior before the gate changes.",
+      "note": "Original Node PTC stays disabled. Android now has an App-owned reviewed android_ptc registration behind MODEL_PTC_DEVICE_ACCEPTED=false. It uses live ToolRuntime authorization and exact first-party definitions for list_agents, read/glob/grep, web_search/web_fetch, android_files roots/list/read/search and android_attachments list/read/materialize/inspect_archive/inspect_apk plus write/edit. Native ptc runs have zero direct file/network grants, 120-second wall and independent 5-second execution-thread CPU limits. Bounded projected results and callbacks retain parent Session records. Oversized APK analysis returns an audited recovery hint instead of dropping declarations or changing cursors; smaller pages and sampleLimit allow retries. Original write/edit and attachment materialize are reviewed under live sandbox policy, exact definitions and strict Session flush before dispatch and confirmation. Mutations retain metadata and actual-path receipts through cancellation or observation failure; post-policy blocking may withhold body receipts and never permits automatic replay. Images, nested execution and general Node APIs are excluded. Focused host ToolRuntime/receipt tests pass; the production Node-to-native device suite must still establish usable registration and lifecycle behavior before the gate changes.",
       "capability": "programmatic"
     },
     {
@@ -5961,13 +5964,16 @@
         "apps/android/runtime/model-workflow-admission.mjs",
         "apps/android/runtime/native-workflow-private-owner.mjs",
         "apps/android/lib/chat_workflow_runs.dart",
-        "apps/android/runtime/model-ptc-readonly-owner.mjs",
+        "apps/android/runtime/model-ptc-reviewed-owner.mjs",
         "apps/android/runtime/model-ptc-readonly-review.mjs",
         "apps/android/runtime/model-ptc-readonly-projection.mjs",
-        "apps/android/runtime/tool-readonly-ptc.mjs",
+        "apps/android/runtime/tool-model-ptc.mjs",
         "apps/android/runtime/isolated-tool-call-port.mjs",
         "apps/android/tool/model-ptc-readonly.test.mjs",
-        "apps/android/tool/device-runtime-acceptance/ptc.mjs"
+        "apps/android/tool/device-runtime-acceptance/ptc.mjs",
+        "apps/android/runtime/model-ptc-review.mjs",
+        "apps/android/tool/model-ptc-mutations.test.mjs",
+        "apps/android/tool/isolated-tool-mutations.test.mjs"
       ],
       "evidence": {
         "core": "unverified",
@@ -5975,7 +5981,7 @@
         "behavior": "unverified",
         "device": "unverified"
       },
-      "note": "The original Node PTC provider stays disabled and the host guard rejects re-enabling it. A distinct native read-only android_ptc implementation is wired behind a closed device gate; its reviewed tool subset is not general Node PTC equivalence. Source mapping does not certify device execution.",
+      "note": "The original Node PTC provider stays disabled and the host guard rejects re-enabling it. A distinct native reviewed android_ptc implementation is wired behind a closed device gate; its reviewed tool subset is not general Node PTC equivalence. Source mapping does not certify device execution.",
       "capability": "programmatic",
       "assessment": {
         "composition": "disabled",
@@ -8420,10 +8426,10 @@
         "apps/android/runtime/model-workflow-admission.mjs",
         "apps/android/runtime/native-workflow-private-owner.mjs",
         "apps/android/lib/chat_workflow_runs.dart",
-        "apps/android/runtime/model-ptc-readonly-owner.mjs",
+        "apps/android/runtime/model-ptc-reviewed-owner.mjs",
         "apps/android/runtime/model-ptc-readonly-review.mjs",
         "apps/android/runtime/model-ptc-readonly-projection.mjs",
-        "apps/android/runtime/tool-readonly-ptc.mjs",
+        "apps/android/runtime/tool-model-ptc.mjs",
         "apps/android/runtime/isolated-tool-call-port.mjs",
         "apps/android/tool/model-ptc-readonly.test.mjs",
         "apps/android/tool/device-runtime-acceptance/ptc.mjs",
@@ -8432,9 +8438,12 @@
         "apps/android/tool/device-runtime-acceptance/workflow.mjs",
         "apps/android/android/app/src/main/kotlin/com/minnnng/dsh_android/IsolatedRunNativeBridge.kt",
         "apps/android/android/app/src/main/kotlin/com/minnnng/dsh_android/IsolatedToolRequest.kt",
-        "apps/android/android/app/src/main/cpp/ptc_script_engine.cpp"
+        "apps/android/android/app/src/main/cpp/ptc_script_engine.cpp",
+        "apps/android/runtime/model-ptc-review.mjs",
+        "apps/android/tool/model-ptc-mutations.test.mjs",
+        "apps/android/tool/isolated-tool-mutations.test.mjs"
       ],
-      "remaining": "Read-only android_ptc and workflows with reviewed child file/web tools are implemented behind closed source gates. Workflow children receive only current parent first-party read/glob/grep/write/edit/web registrations, with live parent/child checks and workspace limits; cold resume cannot restore a tool grant. Accept the production Node-to-native ToolRuntime path, bounded results, real file/web callbacks, cancellation and CPU retirement, background child ownership and cold/process-death recovery before opening them. General Node APIs, PTC writes/images/materialization, child Shell/Linux/recursive delegation and arbitrary child tool definitions remain outside the reviewed subset; do not describe it as full upstream PTC parity."
+      "remaining": "Reviewed android_ptc and workflows with reviewed child file/web tools are implemented behind closed source gates. Workflow children receive only current parent first-party read/glob/grep/write/edit/web registrations, with live parent/child checks and workspace limits; cold resume cannot restore a tool grant. Accept the production Node-to-native ToolRuntime path, bounded results, real file/web callbacks, cancellation and CPU retirement, background child ownership and cold/process-death recovery before opening them. General Node APIs, PTC images, child Shell/Linux/recursive delegation and arbitrary child tool definitions remain outside the reviewed subset; do not describe it as full upstream PTC parity."
     },
     {
       "id": "linux",
@@ -8450,9 +8459,12 @@
         "apps/android/tool/stage-alpine-vm-candidate.py",
         "apps/android/tool/package-linux-vm-sources.py",
         "apps/android/tool/verify-tinyemu-host.mjs",
-        "apps/android/tool/device-runtime-acceptance/linux.mjs"
+        "apps/android/tool/device-runtime-acceptance/linux.mjs",
+        "apps/android/tool/linux-vm-release.py",
+        "apps/android/tool/test_linux_vm_release.py",
+        "apps/android/android/app/build.gradle.kts"
       ],
-      "remaining": "TinyEMU isolated-UID Linux execution and authorized 64 MiB workspace import/export are implemented behind LINUX_VM_DEVICE_ACCEPTED=false. ToolRuntime resolves live session policy: read-only execution discards disk changes and file transfer requires write permission. An offline Alpine candidate with Python, Git and curl has host execution and filesystem checks, exact image/build evidence and a verified corresponding-source archive. Production image integration and device acceptance remain: verify model calls, file-transfer hashes/readback and no-overwrite publication, writable persistence, read-only discard, cancellation and upgrade recovery on the installed APK. Guest networking is absent; having curl installed does not provide network access. Host checks do not discharge these device and image-delivery requirements."
+      "remaining": "TinyEMU isolated-UID Linux execution and authorized 64 MiB workspace import/export are implemented behind LINUX_VM_DEVICE_ACCEPTED=false. ToolRuntime resolves live session policy: read-only execution discards disk changes and file transfer requires write permission. An offline Alpine candidate with Python, Git and curl has host execution and filesystem checks, exact image/build evidence and a verified corresponding-source archive. Explicit Alpine release candidate packaging verifies exact assets, native provider and corresponding sources; switching back to the ordinary build is checked for residual guest assets. Production enablement and device acceptance remain: verify model calls, file-transfer hashes/readback and no-overwrite publication, writable persistence, read-only discard, cancellation and upgrade recovery on the installed APK. Guest networking is absent; having curl installed does not provide network access. Host checks do not discharge these device and image-delivery requirements."
     },
     {
       "id": "web-network",
@@ -8532,7 +8544,7 @@
     },
     {
       "path": "apps/android/runtime/index.mjs",
-      "sha256": "a60beab069d4cf1a8436d74d7472a56c8f5d02bf055917eb010577fc02ded903"
+      "sha256": "640ce27d83675798f62250ebf3c6c62dabb62a39b56b76ad6bb46ac740ea760a"
     },
     {
       "path": "apps/android/runtime/cordis.patch.yml",

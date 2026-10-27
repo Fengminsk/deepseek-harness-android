@@ -44,15 +44,16 @@ async function fixture(t) {
   const session = Session.create(SessionId('attachment-model-test'))
   const agent = { session, id: session.id }
   ctx.provide('agents', { get(id) { return id === agent.id ? agent : undefined } })
+  const receipts = []
   let callId = 0
-  const execution = (selectedAgent = agent, signal = new AbortController().signal) => ({ agent: selectedAgent, callId: `attachment-${++callId}`, signal })
+  const execution = (selectedAgent = agent, signal = new AbortController().signal) => ({ agent: selectedAgent, callId: `attachment-${++callId}`, signal, deferContext: message => receipts.push(message) })
   const call = (args, selectedAgent, signal) => owner.execute(args, execution(selectedAgent, signal))
   const upload = async (name, data) => {
     const ref = await store.saveFile({ name, data: Buffer.from(data) })
     session.append('user/message', llm.createUserMessage({ content: [{ type: 'file', attachment: ref }], source: { kind: 'user' } }), { surfaceOp: 'append' })
     return ref
   }
-  return { home, workspace, ctx, store, owner, session, agent, execution, call, upload }
+  return { home, workspace, ctx, store, owner, session, agent, execution, call, upload, receipts }
 }
 
 test('current-session projection authorizes exact references and original attachment reads', async t => {
@@ -85,6 +86,13 @@ test('binary pages and verified workspace materialization preserve bytes and cur
   assert.equal(hex.content, '89504e47'); assert.equal(hex.nextOffset, 4)
   const materialized = await f.call({ ...args, action: 'materialize' })
   assert.deepEqual(await readFile(materialized.file_path), data)
+  assert.equal(f.receipts.length, 1)
+  assert.equal(f.receipts[0].source.kind, 'file-mutation-receipt')
+  assert.deepEqual(JSON.parse(f.receipts[0].content[0].text), {
+    operation: 'android_attachments/materialize', file_path: materialized.file_path,
+    attachmentId: ref.attachmentId, bytes: ref.bytes, state: 'published',
+    recovery: 'The verified file was published. Later cancellation or cleanup may remove it; inspect this path before retrying.',
+  })
   assert.equal(modelFileObservationDenial(f.workspace, f.workspace, 'read_image', { file_path: materialized.file_path }), undefined)
   assert.match(materialized.file_path, /image\.png$/)
   f.session.append('sandbox/mode', { mode: 'read-only' })

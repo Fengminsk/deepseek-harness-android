@@ -20,13 +20,13 @@ import * as WebTools from '@deepseek-ai/dsh-tool-web'
 import { NativeIsolatedToolCallbacks } from '../runtime/native-isolated-tool-callbacks.mjs'
 import { IsolatedToolCallJournal } from '../runtime/isolated-tool-call-journal.mjs'
 import { createNativeIsolatedExecutionBridge } from '../runtime/native-isolated-execution-bridge.mjs'
-import { createAppOwnedReadOnlyPtcOwner } from '../runtime/model-ptc-readonly-owner.mjs'
+import { createAppOwnedPtcOwner } from '../runtime/model-ptc-reviewed-owner.mjs'
 import { allowsReadOnlyPtcArguments, reviewReadOnlyToolsForModelPtc } from '../runtime/model-ptc-readonly-review.mjs'
 import { projectReadOnlyPtcResult, READONLY_PTC_RESULT_BYTES } from '../runtime/model-ptc-readonly-projection.mjs'
 import { registerModelFileReadGuard } from '../runtime/model-file-read-guard.mjs'
 import { registerAndroidAttachmentsTool } from '../runtime/tool-android-attachments.mjs'
-import { createAndroidReadOnlyPtcToolDefinition, modelReadOnlyPtcCapability,
-  registerAndroidReadOnlyPtcTool } from '../runtime/tool-readonly-ptc.mjs'
+import { createAndroidPtcToolDefinition, modelPtcCapability,
+  registerAndroidPtcTool } from '../runtime/tool-model-ptc.mjs'
 
 const AsyncFunction = (async () => {}).constructor
 const size = value => Buffer.byteLength(JSON.stringify(value))
@@ -46,15 +46,15 @@ test('APK analysis is admitted read-only with exact bounded results and actionab
 
 test('read-only model entry rejects forged owners and reports its tool-mediated limits', () => {
   const options = { owner: { start() { throw new Error('forged owner ran') } }, available: () => true }
-  assert.throws(() => createAndroidReadOnlyPtcToolDefinition(options), /App-owned read-only PTC owner required/u)
-  assert.throws(() => registerAndroidReadOnlyPtcTool({ effect() { throw new Error('must not register') } }, options),
-    /App-owned read-only PTC owner required/u)
-  const capability = modelReadOnlyPtcCapability(false)
+  assert.throws(() => createAndroidPtcToolDefinition(options), /App-owned Android PTC owner required/u)
+  assert.throws(() => registerAndroidPtcTool({ effect() { throw new Error('must not register') } }, options),
+    /App-owned Android PTC owner required/u)
+  const capability = modelPtcCapability(false)
   assert.equal(capability.available, false)
   assert.equal(capability.nativeFilesystem, 'none')
   assert.equal(capability.nativeNetwork, 'off')
   assert.deepEqual(capability.reviewedTools, ['list_agents', 'read', 'glob', 'grep', 'web_search', 'web_fetch',
-    'android_files', 'android_attachments'])
+    'android_files', 'android_attachments', 'write', 'edit'])
   assert.equal(capability.wallDeadlineMillis, 120000)
   assert.equal(capability.executionThreadCpuMillis, 5000)
 })
@@ -183,16 +183,16 @@ test('real parent ToolRuntime dispatches file, search and webpage subcalls with 
     throw new Error(method)
   } }
   callbacks = new NativeIsolatedToolCallbacks(transport, new IsolatedToolCallJournal(join(root, 'journal')))
-  const owner = createAppOwnedReadOnlyPtcOwner({ bridge: createNativeIsolatedExecutionBridge(transport),
+  const owner = createAppOwnedPtcOwner({ bridge: createNativeIsolatedExecutionBridge(transport),
     callbacks, runtime: ctx.tools, services: { agents: ctx.agents } })
   t.after(async () => { await owner.close(); await callbacks.dispose() })
   const reviews = reviewReadOnlyToolsForModelPtc({ runtime: ctx.tools, agent, services: { agents: ctx.agents } })
   assert.deepEqual(reviews.map(row => row.name), ['read', 'glob', 'grep', 'web_search', 'web_fetch'])
   let available = false
-  assert.equal(registerAndroidReadOnlyPtcTool(ctx, { owner, available: () => available }), false)
+  assert.equal(registerAndroidPtcTool(ctx, { owner, available: () => available }), false)
   assert.equal(ctx.tools.get('android_ptc', agent), undefined)
   available = true
-  assert.equal(registerAndroidReadOnlyPtcTool(ctx, { owner, available: () => available }), true)
+  assert.equal(registerAndroidPtcTool(ctx, { owner, available: () => available }), true)
   const outcome = await ctx.tools.execute({ name: 'android_ptc', callId: 'readonly-parent',
     arguments: { description: 'Aggregate file and web data', code:
       'const r=await tools.read({file_path:"input.txt",limit:2}); const g=await tools.glob({pattern:"*.txt"}); const w=await tools.web_fetch({url:"https://example.test/page"}); return {line:r.lines[0].text,paths:g.paths,web:w.body.content.slice(0,9),truncated:w.truncated}' },

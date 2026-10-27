@@ -16,7 +16,7 @@ internal class IsolatedScriptToolBridge(
     private val token: String,
     private val cancelled: BooleanSupplier,
     private val transport: Transport,
-    private val readOnlyPtc: Boolean = false,
+    private val reviewedPtc: Boolean = false,
 ) : IsolatedScriptCallbacks {
     interface Transport {
         fun call(params: JSONObject, timeoutMillis: Long): JSONObject
@@ -57,7 +57,7 @@ internal class IsolatedScriptToolBridge(
             checkNotNull(data.getString(IsolatedScriptWire.KEY_HOST_REQUEST)),
         )
         require(envelope.runId() == request.runId() && envelope.nonce() == request.nonce())
-        val parsed = IsolatedToolRequest.parse(envelope.requestJson(), readOnlyPtc)
+        val parsed = IsolatedToolRequest.parse(envelope.requestJson(), reviewedPtc)
         synchronized(gate) {
             check(!closed && !cancelled.asBoolean)
             check(sender >= 0 && sender != Process.myUid() &&

@@ -30,8 +30,8 @@
   en: 53d4ac2db089ef39
   zh: 214ea051ed56f500
 /deepseek-ai-dsh-tool-fs/use-this-package/failures-and-recovery:
-  en: 962b09e21305a04b
-  zh: 382d2b8cce217569
+  en: eee20817346c9533
+  zh: b8629cf810b38011
 /deepseek-ai-dsh-tool-fs/understand-the-implementation:
   en: 48f08a7eba963a78
   zh: 9dfcf05702e497e9
@@ -39,8 +39,8 @@
   en: c5c69c759a4d0aea
   zh: a9b666716dcd6e0a
 /deepseek-ai-dsh-tool-fs/understand-the-implementation/source-map:
-  en: ec1517d657fbce14
-  zh: be0038b88f7b68fc
+  en: 111b4021f48d8439
+  zh: 5a219e34161ce92c
 /deepseek-ai-dsh-tool-fs/understand-the-implementation/per-tool-flow:
   en: d741e01be9fddb76
   zh: 7aa1d7ca719a4aac
@@ -114,11 +114,11 @@
   en: 1b3b6cfa3605d0b4
   zh: 78e37c2aa4f76d54
 /deepseek-ai-dsh-tool-fs/model-experience/write-and-edit-results/what-the-model-sees:
-  en: 816b07ebfddab5f8
-  zh: 0e80580a5902c7ed
+  en: 90532fadbf6b1422
+  zh: eb9faa833e3b9d92
 /deepseek-ai-dsh-tool-fs/model-experience/write-and-edit-results/token-effect:
-  en: fb4d0b17a99f49cf
-  zh: 17460a2a5d72f6cc
+  en: a285ba4884b598ac
+  zh: c6e9f16b5813a248
 /deepseek-ai-dsh-tool-fs/model-experience/write-and-edit-results/kv-cache-effect:
   en: f5d5f97a153f7c70
   zh: 3d6bc05b9eadfbc2

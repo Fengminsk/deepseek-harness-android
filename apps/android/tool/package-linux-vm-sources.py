@@ -23,6 +23,7 @@ PROJECT_INPUTS = (
         'collect-alpine-vm-packages.py', 'collect-alpine-vm-sources.py',
         'build-alpine-vm-image.py', 'build-alpine-vm-input.py', 'alpine-vm-smoke.sh',
         'package-linux-vm-sources.py', 'test_linux_vm_candidate.py', 'tinyemu-build.md', 'tinyemu-build.zh.md',
+        'linux-vm-release.py', 'test_linux_vm_release.py', 'verify-apk.ps1', 'verify-apk.test.ps1', 'runtime-lock.json',
         'linux-vm-runtime.md', 'linux-vm-runtime.zh.md',
         'linux-vm-host/LinuxVmHost.java', 'linux-vm-host/include/sys/select.h',
         'linux-vm-host/build-alpine.sh', 'linux-vm-host/probe-alpine.sh',

@@ -3,6 +3,7 @@ import { mkdtemp, open, realpath, rmdir, unlink } from 'node:fs/promises'
 import { realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { z } from 'zod'
 import { eventFileReferences, validFileReference } from './attachment-references.mjs'
 import { insideModelWorkspace } from './model-file-read-guard.mjs'
@@ -65,6 +66,9 @@ export class ModelAttachmentFiles {
       fail('invalid-arguments', 'action 必须是 list、read、materialize、inspect_archive 或 inspect_apk；不能指定会话或私有文件路径。')
     }
     if (args.action === 'inspect_apk') apkInspectionQuery(args)
+    if (args.action === 'materialize' && typeof execution.deferContext !== 'function') {
+      fail('receipt-required', '附件复制需要可保留写入回执的工具执行上下文。')
+    }
     if (args.action === 'inspect_apk' && [...this.active].some(owner => owner.apk)) {
       fail('busy', 'APK 分析正在进行，请等待当前分析结束。')
     }
@@ -72,12 +76,13 @@ export class ModelAttachmentFiles {
     const signal = AbortSignal.any([execution.signal, owner.abort.signal,
       ...(owner.apk ? [AbortSignal.timeout(60000)] : [])])
     this.active.add(owner)
-    owner.done = this.run(args, execution.agent, signal)
+    owner.done = this.run(args, execution, signal)
     try { return await owner.done }
     finally { this.active.delete(owner) }
   }
 
-  async run(args, agent, signal) {
+  async run(args, execution, signal) {
+    const { agent } = execution
     signal.throwIfAborted()
     const refs = this.ctx.sessionProjections.stateOf(agent.session, KEY)
     if (!Array.isArray(refs)) fail('unavailable', '会话附件索引尚未就绪。')
@@ -145,6 +150,10 @@ export class ModelAttachmentFiles {
         signal.throwIfAborted()
         await publishImmutableFile(partial, complete)
         completeOwned = true
+        execution.deferContext(createUserMessage({ source: { kind: 'file-mutation-receipt' },
+          content: [{ type: 'text', text: JSON.stringify({ operation: 'android_attachments/materialize',
+            file_path: complete, attachmentId: ref.attachmentId, bytes: ref.bytes, state: 'published',
+            recovery: 'The verified file was published. Later cancellation or cleanup may remove it; inspect this path before retrying.' }) }] }))
         await verifyDirectory()
         signal.throwIfAborted()
         await unlink(partial); partial = undefined; committed = true

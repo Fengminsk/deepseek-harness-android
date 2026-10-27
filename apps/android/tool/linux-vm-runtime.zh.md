@@ -9,7 +9,7 @@ title: Android Linux 虚拟机执行
 
 ## 概要
 
-可选 Android 载体在隔离服务中嵌入 TinyEMU 的 RISC-V 解释器。它启动 Linux 内核并运行传入的 Shell 脚本，不以 App UID 执行该脚本。普通构建排除虚拟机原生执行器和客体镜像，也不要求准备 TinyEMU 源码；仅显式 `-PdshAcceptanceBuildType=release -PdshLinuxGuestFixture=true` 同时启用它们，未包含的执行器对请求明确返回不可用。模型注册另由[运行时入口](../runtime/index.mjs)的 `LINUX_VM_DEVICE_ACCEPTED` 控制。关闭状态不能表述为模型已经能够使用此能力。
+可选 Android 载体在隔离服务中嵌入 TinyEMU 的 RISC-V 解释器。它启动 Linux 内核并运行传入的 Shell 脚本，不以 App UID 执行该脚本。普通构建排除虚拟机原生执行器和客体镜像，也不要求准备 TinyEMU 源码；显式的 [Alpine 验收构建](tinyemu-build.zh.md#alpine-验收-apk)启用载体及经过验证的候选镜像，未包含的执行器对请求明确返回不可用。模型注册另由[运行时入口](../runtime/index.mjs)的 `LINUX_VM_DEVICE_ACCEPTED` 控制。关闭状态不能表述为模型已经能够使用此能力。
 
 ## 目录
 
@@ -49,7 +49,7 @@ Linux 工具通过真实 ToolRuntime 结果附加有界的 `android-linux-receip
 
 ## 构建与证据
 
-[源码构建器](build-tinyemu.mjs)校验[固定的官方输入](tinyemu-source-lock.mjs)，应用[嵌入补丁](patch-tinyemu.mjs)，记录编译器、源码和产物哈希。[CMake](../android/app/src/main/cpp/linux_vm.cmake)使用准备好的源码重新编译 JNI 执行器。[镜像准备命令](stage-linux-vm-fixture.mjs)将启动测试镜像放入缓存；仅显式验收 release 构建的 `-PdshLinuxGuestFixture=true` 参数会包含它们。对应源码和许可记录完整前，测试镜像的 distribution 字段仍保持受限。
+[源码构建器](build-tinyemu.mjs)校验[固定的官方输入](tinyemu-source-lock.mjs)，应用[嵌入补丁](patch-tinyemu.mjs)，记录编译器、源码和产物哈希。[CMake](../android/app/src/main/cpp/linux_vm.cmake)使用准备好的源码重新编译 JNI 执行器。[Alpine 发行验证器](linux-vm-release.py)在合并资产前检查候选是否过期，并将最终 APK 与候选磁盘、源码记录及编译出的执行器对照。独立的旧 `-PdshLinuxGuestFixture=true` 路径保留受限启动样例供调查；它不能与 Alpine 选择同时使用，也不属于 Alpine 发行。
 
 [Node 持有者测试](native-linux-vm.test.mjs)、[真实 ToolRuntime 注册测试](tool-linux-vm.test.mjs)和[控制台帧测试](../android/app/src/test/java/com/minnnng/dsh_android/LinuxVmConsoleTest.java)分别覆盖自身的宿主路径。[设备测试入口](../android/app/src/androidTest/kotlin/com/minnnng/dsh_android/LinuxVmAcceptanceInstrumentation.kt)负责内核启动、实际命令执行、磁盘保持和中断证据。编译与宿主测试不能替代设备结果。
 

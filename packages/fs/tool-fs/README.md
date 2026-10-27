@@ -79,6 +79,8 @@ With the policy plugin mounted, `write` and `edit` obtain their guard from the `
 
 ### Failures and recovery
 
+After a successful provider mutation, `write` and `edit` attach one `file-mutation-receipt` context before emitting `fs/observed`. It preserves the complete canonical path and operation if cancellation or a later observation failure turns the tool result into an error. That error does not imply rollback; re-read the file before retrying. A rejected provider mutation produces no completed-mutation receipt.
+
 Failures are normalized as `Error: <message>` with a structured code preserved for callers. Stable messages include `file_path must be a non-empty string`, `limit must be less than or equal to <max>`, `cannot read "<path>": not found`, `cannot read "<path>": not a regular file`, and the image-route refusal `cannot read "<path>" as an image: model "<model>" does not declare image input; switch to an image-capable model to read images`. `FS_NOT_OBSERVED` is normalized to `cannot modify "<path>": file has not been read — read the file, then retry`, independent of whether the policy or provider rejected the operation; `FS_STALE_VERSION` retains the provider's reason and appends `— re-read the file, then retry`. After the reread confirms absence, `edit` reports `FS_NOT_FOUND` instead of repeating a stale remedy, while `write` uses guarded creation.
 
 -----
@@ -111,7 +113,7 @@ Host adapters can use `isFirstPartyReadDefinition`, `isFirstPartyWriteDefinition
 | [`src/read-render.ts`](src/read-render.ts) | Cordis-free windowing and envelope formatting |
 | [`src/sandbox.ts`](src/sandbox.ts) | Escalation API shared by `write`/`edit`: policy resolution and denial-marker mapping |
 | [`src/error.ts`](src/error.ts) | Stable model-facing diagnostics for guarded-mutation failures |
-| [`src/mutation-result.ts`](src/mutation-result.ts) | Successful mutation observation and canonical result paths |
+| [`src/mutation-result.ts`](src/mutation-result.ts) | Completed-mutation receipts, observation and canonical result paths |
 
 ### Per-tool flow
 
@@ -220,11 +222,11 @@ Append-only; newly visible content follows the reusable request prefix and does 
 
 #### What the model sees
 
-Write returns the exact five-line envelope `<path><resolvedPath></path>`, `<type>file</type>`, `<content>`, `Created file` or `Updated file`, then `</content>`. Edit returns exactly `The file <resolvedPath> has been updated successfully.` or, for `replace_all`, `The file <resolvedPath> has been updated. All occurrences were successfully replaced.` The full write or replacement text remains in the assistant tool-call arguments.
+Write returns the exact five-line envelope `<path><resolvedPath></path>`, `<type>file</type>`, `<content>`, `Created file` or `Updated file`, then `</content>`. Edit returns exactly `The file <resolvedPath> has been updated successfully.` or, for `replace_all`, `The file <resolvedPath> has been updated. All occurrences were successfully replaced.` The full write or replacement text remains in the assistant tool-call arguments. A completed provider mutation also adds one deferred context after the tool result: `File mutation completed: <JSON>. Re-read before retrying.` Its JSON contains `operation` (`write` or `edit`) and the complete canonical `path`, without file contents. The same context remains attached when cancellation or a later observation failure replaces the success result.
 
 #### Token effect
 
-Success text is small, but large mutation arguments and any result are resent until compaction.
+Success text and the one-path receipt are small relative to file content; mutation arguments, results and receipts are resent until compaction. Receipt size depends on the complete path, not the file size; paths are never truncated.
 
 #### KV Cache effect
 

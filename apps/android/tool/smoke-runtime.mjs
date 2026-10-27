@@ -95,10 +95,10 @@ try {
       reason: 'isolated-executor-unwired',
       modelPtc: {
         available: false,
-        reason: 'device-readonly-ptc-unverified',
+        reason: 'device-ptc-unverified',
         language: 'typescript-function-body',
-        reviewedTools: ['list_agents', 'read', 'glob', 'grep', 'web_search', 'web_fetch', 'android_files', 'android_attachments'],
-        filesystem: 'reviewed-read-only-tools', network: 'reviewed-web-tools',
+        reviewedTools: ['list_agents', 'read', 'glob', 'grep', 'web_search', 'web_fetch', 'android_files', 'android_attachments', 'write', 'edit'],
+        filesystem: 'reviewed-file-tools', network: 'reviewed-web-tools',
         nativeFilesystem: 'none', nativeNetwork: 'off',
         wallDeadlineMillis: 120000, executionThreadCpuMillis: 5000,
       },
