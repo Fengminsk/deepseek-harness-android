@@ -50,7 +50,9 @@ final class LinuxVmHttpsMailbox implements AutoCloseable {
         if (!UUID.fromString(runId).toString().equals(runId)
                 || callLimit < 1 || callLimit > IsolatedNetworkBroker.MAX_CALLS)
             throw new IllegalArgumentException("Invalid VM HTTPS admission");
-        this.disk = disk.duplicate().clear().order(ByteOrder.BIG_ENDIAN);
+        this.disk = disk.duplicate();
+        this.disk.clear();
+        this.disk.order(ByteOrder.BIG_ENDIAN);
         this.runId = runId;
         this.callLimit = callLimit;
         this.exchange = Objects.requireNonNull(exchange);
