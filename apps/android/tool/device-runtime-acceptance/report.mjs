@@ -1,11 +1,9 @@
+import { WORKFLOW_DEVICE_CHECKS, WORKFLOW_UNVERIFIED_CHECKS } from './workflow-checks.mjs'
+
 const requiredChecks = {
   'ptc-process-death': ['ptc-killed-dispatch-no-replay'],
   'ptc-saf': ['saf-revocation-and-search'],
-  workflow: [
-    'real-tool-runtime-native-compute',
-    'real-confined-child-and-durable-session',
-    'real-background-job-kill-and-child-retirement',
-  ],
+  workflow: [...WORKFLOW_DEVICE_CHECKS, ...WORKFLOW_UNVERIFIED_CHECKS],
   ptc: [
     'first-party-list-read-glob-roots-and-guard',
     'authorized-saf-read-through-native-ptc-callback',

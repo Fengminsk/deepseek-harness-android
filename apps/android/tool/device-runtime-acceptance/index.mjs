@@ -2,7 +2,7 @@ import { readFileSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { randomUUID } from 'node:crypto'
-import LlmRuntime, { LlmAdapter } from '@deepseek-ai/dsh-llm'
+import LlmRuntime from '@deepseek-ai/dsh-llm'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
@@ -20,37 +20,14 @@ import Jobs from '@deepseek-ai/dsh-jobs-local'
 import * as JobTools from '@deepseek-ai/dsh-tool-jobs'
 import { summarizeAcceptance } from './report.mjs'
 import { createAcceptanceCallbackRouting } from './callback-routing.mjs'
+import { FixtureAdapter } from './workflow-model-fixture.mjs'
+
+export { FixtureAdapter } from './workflow-model-fixture.mjs'
 
 export const name = 'device-runtime-acceptance'
 const configuration = JSON.parse(readFileSync(new URL('./configuration.json', import.meta.url), 'utf8'))
 const nativeModule = name => import(pathToFileURL(join(realpathSync(configuration.runtime),
   'node_modules/@minnnng/dsh-android-runtime', name)).href)
-
-export class FixtureAdapter extends LlmAdapter {
-  mode = 'answer'
-  calls = 0
-  entered = null
-  scriptedStream = null
-  async resolveModel(provider, model) { return { provider, id: model, name: model } }
-  async *stream(options) {
-    this.calls++
-    if (this.scriptedStream) { yield* this.scriptedStream(options); return }
-    if ((options.tools ?? []).length !== 0) throw new Error('Confined child received unexpected tools')
-    this.entered?.()
-    if (this.mode === 'hold') {
-      await new Promise((resolve, reject) => {
-        if (options.signal.aborted) reject(options.signal.reason)
-        else options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true })
-      })
-      return
-    }
-    const text = 'device child answer'
-    yield { type: 'block-start', index: 0, blockType: 'text' }
-    yield { type: 'text-delta', index: 0, text }
-    yield { type: 'block-end', index: 0, block: { type: 'text', text } }
-    yield { type: 'finish', reason: { kind: 'stop' } }
-  }
-}
 
 export async function apply(ctx) {
   const { createRuntimeTransport } = await nativeModule('transport.mjs')
@@ -107,7 +84,9 @@ export async function apply(ctx) {
           }
           if (configuration.suite === 'workflow' || configuration.suite === 'all') {
             const { runWorkflowAcceptance } = await import('./workflow.mjs')
-            reports.push(await runWorkflowAcceptance({ ctx, agent, adapter, workflow }))
+            const report = await runWorkflowAcceptance({ ctx, agent, adapter, workflow })
+            reports.push(report)
+            if (report.failed) throw new Error('Workflow acceptance failed; see its named checks and retirement evidence')
           }
           if (configuration.suite === 'ptc' || configuration.suite === 'all') {
             const { runPtcAcceptance } = await import('./ptc.mjs')

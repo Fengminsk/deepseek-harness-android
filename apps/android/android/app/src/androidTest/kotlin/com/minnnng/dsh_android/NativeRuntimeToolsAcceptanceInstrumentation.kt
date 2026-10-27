@@ -163,7 +163,7 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
             val fixture = File(home, if (recovering) "recovery-fixture" else "fixture").apply { check(mkdirs()) }
             for (name in listOf("bootstrap.mjs", "index.mjs", "report.mjs", "workflow.mjs", "ptc.mjs", "linux.mjs", "callback-routing.mjs",
                 "python-analysis.mjs", "python-analysis.py", "apk-fixture.json", "apk-overflow-fixture.json",
-                "ptc-process-death.mjs", "ptc-saf.mjs")) {
+                "ptc-process-death.mjs", "ptc-saf.mjs", "workflow-checks.mjs", "workflow-model-fixture.mjs")) {
                 val bytes = context.assets.open(name).use { it.readBytes() }
                 if (recovering) check(File(preparedFixture, name).readBytes().contentEquals(bytes)) {
                     "Recovery fixture differs from the prepared APK assets"
@@ -306,9 +306,11 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
                 // Eight parent boots and three child boots each retain the
                 // production 120-second limit plus 30 seconds for retirement.
                 val linuxBudgetSeconds = 11L * (120L + 30L) + 120L
+                val workflowBudgetSeconds = 14L * (120L + 30L) + 120L
                 val budgetSeconds = when (suite) {
                     "linux" -> linuxBudgetSeconds
-                    "all" -> linuxBudgetSeconds + 2L * 240L
+                    "workflow" -> workflowBudgetSeconds
+                    "all" -> linuxBudgetSeconds + workflowBudgetSeconds + 240L
                     else -> 240L
                 }
                 val result = done.get(budgetSeconds, TimeUnit.SECONDS)

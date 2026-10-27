@@ -1,12 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { summarizeAcceptance } from './device-runtime-acceptance/report.mjs'
+import { WORKFLOW_DEVICE_CHECKS, WORKFLOW_UNVERIFIED_CHECKS } from './device-runtime-acceptance/workflow-checks.mjs'
 
-const workflow = () => ({ suite: 'workflow', passed: 3, details: [
-  { case: 'real-tool-runtime-native-compute', runId: 'compute' },
-  { case: 'real-confined-child-and-durable-session', runId: 'child' },
-  { case: 'real-background-job-kill-and-child-retirement', runId: 'background', jobId: 'job' },
-] })
+const workflow = () => ({ suite: 'workflow', passed: 11,
+  details: WORKFLOW_DEVICE_CHECKS.map(name => ({ case: name, runId: name })),
+  unverified: [...WORKFLOW_UNVERIFIED_CHECKS] })
 
 test('disruptive lifecycle checks require explicit suites and cannot join all implicitly', () => {
   const all = summarizeAcceptance('all', [])
@@ -39,15 +38,16 @@ const linux = () => ({ suite: 'linux', passed: 6, failed: 0, checks: [
 ].map(name => ({ name, status: 'passed' })),
 unverified: ['Guest networking', 'Process-death import recovery'] })
 
-test('a complete workflow retains the existing detail format and executed-check pass', () => {
+test('workflow retains detail-format compatibility but names its unexecuted lifecycle boundaries', () => {
   const report = workflow(), original = structuredClone(report)
   const result = summarizeAcceptance('workflow', [report])
   assert.equal(result.passed, true)
-  assert.equal(result.complete, true)
-  assert.deepEqual(result.coverage.required, original.details.map(detail => `workflow:${detail.case}`))
-  assert.deepEqual(result.coverage.passed, result.coverage.required)
+  assert.equal(result.complete, false)
+  assert.deepEqual(result.coverage.required, [...original.details.map(detail => `workflow:${detail.case}`),
+    ...WORKFLOW_UNVERIFIED_CHECKS.map(name => `workflow:${name}`)])
+  assert.deepEqual(result.coverage.passed, original.details.map(detail => `workflow:${detail.case}`))
   assert.deepEqual(result.coverage.failed, [])
-  assert.deepEqual(result.coverage.unverified, [])
+  assert.deepEqual(result.coverage.unverified, WORKFLOW_UNVERIFIED_CHECKS.map(name => `workflow:${name}`))
   assert.deepEqual(result.coverage.issues, [])
   assert.deepEqual(report, original, 'aggregation does not change the retained raw report')
 })
@@ -60,13 +60,55 @@ test('a numeric success count without named checks cannot claim execution or com
   assert.ok(result.coverage.issues.includes('No checks executed'))
 })
 
+test('the historical three workflow cases cannot certify the expanded DSL and lifecycle requirements', () => {
+  const result = summarizeAcceptance('workflow', [{ suite: 'workflow', passed: 3, details: [
+    { case: 'real-tool-runtime-native-compute' },
+    { case: 'real-confined-child-and-durable-session' },
+    { case: 'real-background-job-kill-and-child-retirement' },
+  ] }])
+  assert.equal(result.passed, true)
+  assert.equal(result.complete, false)
+  assert.equal(result.coverage.passed.length, 3)
+  assert.equal(result.coverage.unverified.length, 11)
+  for (const name of ['real-dsl-parallel-pipeline-phase-log', 'real-structured-child-and-json-contract',
+    'real-child-and-item-limits', 'real-ordinary-child-failure-and-sibling-result',
+    'real-infrastructure-failure-and-child-retirement']) {
+    assert.ok(result.coverage.unverified.includes(`workflow:${name}`))
+  }
+})
+
+test('explicit workflow failure and stopped later checks override a passing numeric counter', () => {
+  const checks = WORKFLOW_DEVICE_CHECKS.map((name, index) => ({ name,
+    status: index < 2 ? 'passed' : index === 2 ? 'failed' : 'unverified' }))
+  const report = { suite: 'workflow', passed: 11, failed: 0, checks, unverified: [...WORKFLOW_UNVERIFIED_CHECKS] }
+  const result = summarizeAcceptance('workflow', [report])
+  assert.equal(result.passed, false)
+  assert.equal(result.complete, false)
+  assert.deepEqual(result.coverage.failed, ['workflow:real-dsl-parallel-pipeline-phase-log'])
+  assert.equal(result.coverage.passed.length, 2)
+  assert.equal(result.coverage.unverified.length, 11)
+  assert.deepEqual(result.coverage.issues, [])
+})
+
+test('omitting declared workflow lifecycle gaps does not make eleven execution checks complete', () => {
+  const result = summarizeAcceptance('workflow', [{ suite: 'workflow',
+    checks: WORKFLOW_DEVICE_CHECKS.map(name => ({ name, status: 'passed' })) }])
+  assert.equal(result.passed, true)
+  assert.equal(result.complete, false)
+  assert.deepEqual(result.coverage.unverified, WORKFLOW_UNVERIFIED_CHECKS.map(name => `workflow:${name}`))
+  for (const name of WORKFLOW_UNVERIFIED_CHECKS) {
+    assert.ok(result.coverage.issues.includes(`Missing required check: workflow:${name}`))
+  }
+})
+
 test('a missing workflow check preserves an executed pass but blocks complete acceptance', () => {
   const report = workflow()
   report.details.pop()
   const result = summarizeAcceptance('workflow', [report])
   assert.equal(result.passed, true)
   assert.equal(result.complete, false)
-  assert.deepEqual(result.coverage.unverified, ['workflow:real-background-job-kill-and-child-retirement'])
+  assert.ok(result.coverage.unverified.includes('workflow:real-background-job-kill-and-child-retirement'))
+  assert.equal(result.coverage.unverified.length, WORKFLOW_UNVERIFIED_CHECKS.length + 1)
 })
 
 test('the existing PTC SAF gap remains visible despite nine passing checks', () => {
@@ -127,19 +169,21 @@ test('all requires reports from every suite rather than only the reports returne
   const result = summarizeAcceptance('all', [workflow()])
   assert.equal(result.passed, true)
   assert.equal(result.complete, false)
-  assert.equal(result.coverage.required.length, 21)
-  assert.equal(result.coverage.unverified.length, 18)
+  assert.equal(result.coverage.required.length, 32)
+  assert.equal(result.coverage.unverified.length, 21)
 })
 
 test('all can complete only when every declared gap becomes an executed passing check', () => {
-  const ptcReport = ptc(), linuxReport = linux()
+  const workflowReport = workflow(), ptcReport = ptc(), linuxReport = linux()
+  workflowReport.details.push(...workflowReport.unverified.map(name => ({ case: name })))
+  workflowReport.unverified = []
   ptcReport.checks.at(-1).status = 'passed'
   linuxReport.checks.push(...linuxReport.unverified.map(name => ({ name, status: 'passed' })))
   linuxReport.unverified = []
-  const result = summarizeAcceptance('all', [workflow(), ptcReport, linuxReport])
+  const result = summarizeAcceptance('all', [workflowReport, ptcReport, linuxReport])
   assert.equal(result.passed, true)
   assert.equal(result.complete, true)
-  assert.equal(result.coverage.passed.length, 21)
+  assert.equal(result.coverage.passed.length, 32)
   assert.deepEqual(result.coverage.unverified, [])
 })
 
