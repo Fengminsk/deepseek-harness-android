@@ -41,8 +41,13 @@ const cancelled = { ...identity, phase: 'cancel', passed: true, liveGuestPid: 77
   inspection: inspection('completed', { records: [{ runId, operation: 'execute', state: 'completed',
     retirementConfirmed: true, diskCommitted: false }] }),
   receipt: { ...receipt(false), status: 'cancelled', cancelled: true, exitCode: null } }
-const result = value => `INSTRUMENTATION_RESULT: lifecycle=${JSON.stringify(value)}\nINSTRUMENTATION_CODE: -1\n`
-const readyOutput = value => `INSTRUMENTATION_STATUS: linuxDeathReady=${JSON.stringify(value)}\n` +
+const state = JSON.stringify({ interactive: false, keyguardLocked: true, deviceLocked: true, displays: [{ id: 0, state: 1 }] })
+const carrierOutput = (carrier, prefix) => Object.entries({ foregroundCarrier: carrier, foregroundConfirmed: 'true',
+  foregroundClosed: 'true', nativeOwnersClosed: 'true', deviceStateBefore: state, deviceStateReady: state, deviceStateAfter: state })
+  .map(([name, value]) => `INSTRUMENTATION_${prefix}: ${name}=${value}\n`).join('')
+const result = (value, carrier = 'activity') => carrierOutput(carrier, 'RESULT') +
+  `INSTRUMENTATION_RESULT: lifecycle=${JSON.stringify(value)}\nINSTRUMENTATION_CODE: -1\n`
+const readyOutput = (value, carrier = 'activity') => carrierOutput(carrier, 'STATUS') + `INSTRUMENTATION_STATUS: linuxDeathReady=${JSON.stringify(value)}\n` +
   'INSTRUMENTATION_STATUS_CODE: 1\nINSTRUMENTATION_RESULT: shortMsg=Process crashed.\nINSTRUMENTATION_CODE: 0\n'
 const clone = value => structuredClone(value)
 
@@ -132,6 +137,25 @@ test('host death plan observes actual old PID disappearance before requesting re
   live.isAgentPidLive = async () => true
   await assert.rejects(runLifecyclePlan(live, { mode: 'death', app, test: testApk, token }), /has not stopped/)
   assert.equal(live.calls.includes('instrument:death-recover'), false)
+})
+
+test('service death plan carries selection through both fresh processes and still rejects live old process', async () => {
+  const io = adapter({ 'death-prepare': readyOutput(ready, 'service'), 'death-recover': result(recovered, 'service') })
+  const original = io.instrument
+  const phases = []
+  io.instrument = async (phase, token, options) => { phases.push({ phase, ...options }); return original(phase, token, options) }
+  const report = await runLifecyclePlan(io, { mode: 'death', app, test: testApk, token, foregroundCarrier: 'service' })
+  assert.equal(report.foregroundCarrier, 'service')
+  assert.deepEqual(phases, [{ phase: 'death-prepare', expectProcessDeath: true, foregroundCarrier: 'service' },
+    { phase: 'death-recover', foregroundCarrier: 'service' }])
+  assert.equal(Object.hasOwn(report.evidence[0].carrier, 'foregroundClosed'), false)
+  assert.equal(report.evidence[1].carrier.foregroundClosed, true)
+  const oldCarrier = adapter({ 'death-prepare': readyOutput(ready) })
+  await assert.rejects(runLifecyclePlan(oldCarrier, { mode: 'death', app, test: testApk, token, foregroundCarrier: 'service' }), /carrier differs/)
+  assert.equal(oldCarrier.calls.includes('instrument:death-recover'), false)
+  const live = adapter({ 'death-prepare': readyOutput(ready, 'service') })
+  live.isAgentPidLive = async () => true
+  await assert.rejects(runLifecyclePlan(live, { mode: 'death', app, test: testApk, token, foregroundCarrier: 'service' }), /has not stopped/)
 })
 
 test('wrong installed version and downgrade request fail before any replacement or instrumentation', async () => {

@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { connectedDevice, parseBadging, parseCertificate, parseInstalledPath, sdkTools } from './acceptance-upgrade-device.mjs'
 import { parsePids, parseGuestProcesses, parseRunGuestPid } from './acceptance-native-workflow-process-death-device.mjs'
+import { acceptanceCarrier, carrierEvidence, requireNodeCarrierReady } from './acceptance-carrier.mjs'
 
 const exec = promisify(execFile)
 const PACKAGE = 'com.minnnng.dsh_android'
@@ -29,11 +30,14 @@ export function parsePtcDeathReady(output, caseId) {
 }
 
 /** Verify no replay and a read-only native receipt observation; this does not execute native recovery. */
-export function parsePtcDeathRecovery(output, ready) {
+export function parsePtcDeathRecovery(output, ready, foregroundCarrier) {
   const codes = [...output.matchAll(/^INSTRUMENTATION_CODE: (-?\d+)\s*$/gm)]
   const results = [...output.matchAll(/^INSTRUMENTATION_RESULT: result=(.*)\r?$/gm)]
   if (codes.length !== 1 || codes[0][1] !== '-1' || results.length !== 1) throw new Error('PTC recovery instrumentation failed')
   const result = JSON.parse(results[0][1])
+  const carrier = foregroundCarrier === undefined ? {} : carrierEvidence(output, foregroundCarrier)
+  if (foregroundCarrier !== undefined && result.foregroundCarrier !== foregroundCarrier)
+    throw new Error('PTC result names a different foreground carrier')
   const checks = result.reports?.flatMap(report => report.checks ?? [])
   if (result.passed !== true || result.complete !== true || checks?.length !== 1) throw new Error('PTC recovery is incomplete')
   const check = checks[0]
@@ -47,7 +51,7 @@ export function parsePtcDeathRecovery(output, ready) {
       check.journalState !== 'dispatch-unconfirmed' || check.nativeRebindRequests !== 0 || check.replayedExecutions !== 0) {
     throw new Error('PTC recovery evidence disagrees with the killed run')
   }
-  return { ...check, nativeReceiptState: result.nativeReceiptState, nativeOutputAbsent: true,
+  return { ...check, ...carrier, nativeReceiptState: result.nativeReceiptState, nativeOutputAbsent: true,
     nativeReceiptInspection: 'read-only-unconfirmed' }
 }
 
@@ -120,6 +124,7 @@ export function requirePtcDeathInstrumentation(output) {
 }
 
 async function main(args) {
+  const foregroundCarrier = acceptanceCarrier(args)
   const tools = await sdkTools()
   const inspect = async input => {
     const artifact = await fingerprint(input)
@@ -131,7 +136,7 @@ async function main(args) {
     throw new Error('APK package or signing identities do not match')
   requirePtcDeathInstrumentation(await run(tools.aapt2, ['dump', 'xmltree', '--file', 'AndroidManifest.xml', testApk.path], 30000))
   if (args.includes('--preflight-only')) {
-    process.stdout.write(JSON.stringify({ result: 'preflight-pass', app, testApk }, null, 2) + '\n'); return
+    process.stdout.write(JSON.stringify({ result: 'preflight-pass', foregroundCarrier, app, testApk }, null, 2) + '\n'); return
   }
   if (!args.includes('--accept-force-stop')) throw new Error('Explicit --accept-force-stop is required')
   const adb = args.includes('--adb') ? resolve(argument(args, '--adb')) : tools.adb
@@ -148,7 +153,7 @@ async function main(args) {
   const guestPids = async () => parseGuestProcesses(await device(['shell', 'ps', '-A', '-w', '-o', 'PID,ARGS'], 15000))
   const caseId = randomUUID()
   const instrument = phase => ['shell', 'am', 'instrument', '-w', '-r', '-e', 'suite', 'ptc-process-death',
-    '-e', 'phase', phase, '-e', 'caseId', caseId]
+    '-e', 'phase', phase, '-e', 'caseId', caseId, '-e', 'foregroundCarrier', foregroundCarrier]
   const child = spawn(adb, ['-s', serial, ...instrument('prepare'), RUNNER], { windowsHide: true })
   const preparation = ownPtcPreparationProcess(child)
   let stopIssued = false, completedReport, operationError
@@ -164,6 +169,7 @@ async function main(args) {
       await new Promise(resolve => setTimeout(resolve, 200))
     }
     if (!ready) throw new Error('PTC did not reach an unconfirmed real write')
+    requireNodeCarrierReady(preparation.status().output, foregroundCarrier)
     const [agents, guests, guest] = await Promise.all([agentPids(), guestPids(),
       device(['shell', 'dumpsys', 'activity', 'services', PACKAGE], 15000).then(text => parseRunGuestPid(text, ready.runId))])
     if (!agents.includes(ready.agentPid) || !guests.includes(guest)) throw new Error('Exact PTC Agent and isolated guest are not live')
@@ -176,8 +182,8 @@ async function main(args) {
     }
     if (!stopped) throw new Error('Both old PTC processes have not retired')
     const recovery = parsePtcDeathRecovery(await device([...instrument('recover'),
-      '-e', 'processStopConfirmed', 'true', RUNNER], 150000), ready)
-    completedReport = { result: 'pass', app, testApk, serial, agentBefore: agents,
+      '-e', 'processStopConfirmed', 'true', RUNNER], 150000), ready, foregroundCarrier)
+    completedReport = { result: 'pass', foregroundCarrier, app, testApk, serial, agentBefore: agents,
       guestBefore: guests, exactGuestPid: guest, bothOldProcessesStopped: true, recovery }
   } catch (error) {
     operationError = error

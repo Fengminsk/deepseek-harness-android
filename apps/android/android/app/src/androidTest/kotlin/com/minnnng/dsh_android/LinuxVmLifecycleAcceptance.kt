@@ -31,11 +31,11 @@ internal object LinuxVmLifecycleAcceptance {
             check(Application.getProcessName() == instrumentation.targetContext.packageName + ":agent")
             val hidden = AtomicBoolean()
             val activeProbe = AtomicReference<Probe?>()
-            AcceptanceForegroundLease.open(instrumentation) {
+            AcceptanceCarrierLease.open(instrumentation, arguments, report, 180_000) {
                 hidden.set(true)
                 activeProbe.get()?.cancelHiddenRun()
             }.use { foreground ->
-                val probe = Probe(instrumentation, token, hidden) { foreground.checkActive() }
+                val probe = Probe(instrumentation, token, hidden, report) { foreground.checkActive() }
                 activeProbe.set(probe)
                 val result = when (phase) {
                     "cancel" -> probe.cancel()
@@ -45,6 +45,8 @@ internal object LinuxVmLifecycleAcceptance {
                     "upgrade-verify" -> probe.verifyUpgrade()
                     else -> error("Unknown Linux lifecycle phase")
                 }
+                foreground.checkActive()
+                report.putString("nativeOwnersClosed", "true")
                 report.putString("lifecycle", result.put("schema", 1).put("phase", phase)
                     .put("token", token).put("sessionId", probe.session).put("pid", Process.myPid())
                     .put("appUid", Process.myUid()).put("versionCode", probe.version()).toString())
@@ -58,6 +60,7 @@ internal object LinuxVmLifecycleAcceptance {
 
     private class Probe(private val instrumentation: Instrumentation, private val token: String,
         private val hidden: AtomicBoolean,
+        private val carrierReport: Bundle,
         private val checkForeground: () -> Unit) {
         private val app = instrumentation.targetContext.applicationContext
         val session = "linux-lifecycle-$token"
@@ -88,7 +91,7 @@ internal object LinuxVmLifecycleAcceptance {
         private fun execute(owner: LinuxVmManager, params: JSONObject): JSONObject {
             checkForeground()
             synchronized(cancellationLock) {
-                check(!hidden.get()) { "The black acceptance window is no longer visible" }
+                check(!hidden.get()) { "The acceptance carrier is no longer active" }
                 check(activeCancellation == null)
                 activeCancellation = { owner.cancel(JSONObject().put("id", params.getString("id"))); Unit }
             }
@@ -257,7 +260,9 @@ internal object LinuxVmLifecycleAcceptance {
                         .put("guestUid", result.guestUid).put("retirementConfirmed", true).put("diskCommitted", false)
                     writeMarker(ready)
                     checkForeground()
-                    instrumentation.sendStatus(1, Bundle().apply { putString("linuxDeathReady", ready.toString()) })
+                    instrumentation.sendStatus(1, Bundle(carrierReport).apply {
+                        putString("linuxDeathReady", ready.toString())
+                    })
                     // Actual Android process death, before lease.finish captures or publishes disk blocks.
                     Process.killProcess(Process.myPid())
                     error("Android process termination returned")

@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { connectedDevice, parseBadging, parseCertificate, parseInstalledPath,
   parseInstalledVersion, sdkTools, validateArtifacts } from './acceptance-upgrade-device.mjs'
+import { acceptanceCarrier, carrierEvidence, requireAcceptanceCarrier } from './acceptance-carrier.mjs'
 
 const PACKAGE = 'com.minnnng.dsh_android'
 const RUNNER = `${PACKAGE}.test/${PACKAGE}.LinuxVmAcceptanceInstrumentation`
@@ -119,7 +120,8 @@ export function parseLinuxLifecycleResult(output, phase, token, before = null) {
 }
 
 /** The adapter owns actual ADB execution. No host fixture result is a device acceptance result. */
-export async function runLifecyclePlan(io, { mode, app, test, next, nextTest, token = randomUUID() }) {
+export async function runLifecyclePlan(io, { mode, app, test, next, nextTest, token = randomUUID(), foregroundCarrier = 'activity' }) {
+  requireAcceptanceCarrier(foregroundCarrier)
   assert(['cancel', 'death', 'upgrade'].includes(mode) && UUID.test(token), 'Invalid lifecycle mode or token')
   validateLifecycleArtifacts(app, test, next, nextTest)
   assert(mode !== 'upgrade' || (next && nextTest), 'Upgrade needs the next artifact pair')
@@ -129,8 +131,9 @@ export async function runLifecyclePlan(io, { mode, app, test, next, nextTest, to
   await io.install(test)
   const evidence = []
   const phase = async (name, previous) => {
-    const raw = await io.instrument(name, token)
+    const raw = await io.instrument(name, token, { foregroundCarrier })
     const value = parseLinuxLifecycleResult(raw, name, token, previous)
+    value.carrier = carrierEvidence(raw, foregroundCarrier)
     assert(value.versionCode === (name === 'upgrade-verify' ? next.versionCode : app.versionCode),
       'Instrumentation App version does not match the artifact')
     evidence.push(value)
@@ -138,8 +141,9 @@ export async function runLifecyclePlan(io, { mode, app, test, next, nextTest, to
   }
   if (mode === 'cancel') await phase('cancel')
   if (mode === 'death') {
-    const raw = await io.instrument('death-prepare', token, { expectProcessDeath: true })
+    const raw = await io.instrument('death-prepare', token, { expectProcessDeath: true, foregroundCarrier })
     const ready = parseLinuxDeathReady(raw, token)
+    ready.carrier = carrierEvidence(raw, foregroundCarrier, { prefix: 'STATUS', closed: false })
     assert(ready.versionCode === app.versionCode, 'Import preparation App version differs from the artifact')
     assert(!await io.isAgentPidLive(ready.pid), 'The original Android process has not stopped')
     evidence.push(ready)
@@ -154,7 +158,7 @@ export async function runLifecyclePlan(io, { mode, app, test, next, nextTest, to
     const verified = await phase('upgrade-verify', seed)
     assert(verified.versionCode === next.versionCode, 'Verified App version does not match the upgrade APK')
   }
-  return { schema: 1, result: 'device-pass', mode, token, evidence }
+  return { schema: 1, result: 'device-pass', mode, token, foregroundCarrier, evidence }
 }
 
 async function command(binary, args, timeout = 180_000, allowExit = false) {
@@ -183,6 +187,7 @@ async function artifact(path, tools) {
 }
 
 async function main(args) {
+  const foregroundCarrier = acceptanceCarrier(args)
   const mode = arg(args, '--mode')
   assert(['cancel', 'death', 'upgrade'].includes(mode), 'Choose cancel, death or upgrade')
   const tools = await sdkTools()
@@ -196,7 +201,7 @@ async function main(args) {
       ['dump', 'xmltree', '--file', 'AndroidManifest.xml', testApk.path], 30_000))
   }
   if (args.includes('--preflight-only')) {
-    process.stdout.write(JSON.stringify({ result: 'preflight-pass', mode, app, test, next, nextTest }, null, 2) + '\n')
+    process.stdout.write(JSON.stringify({ result: 'preflight-pass', foregroundCarrier, mode, app, test, next, nextTest }, null, 2) + '\n')
     return
   }
   assert(args.includes('--accept-agent-interruption'), 'Instrumentation replaces the Agent process; pass --accept-agent-interruption')
@@ -208,7 +213,7 @@ async function main(args) {
   const output = resolve(arg(args, '--output'))
   await mkdir(output, { recursive: false })
   const token = randomUUID()
-  const metadata = { mode, token, serial, app, test, next, nextTest }
+  const metadata = { mode, token, serial, app, test, next, nextTest, foregroundCarrier }
   await writeFile(resolve(output, 'artifacts.json'), JSON.stringify(metadata, null, 2) + '\n', { flag: 'wx' })
   const io = {
     installedVersion: async () => parseInstalledPath(await shell('pm', 'path', PACKAGE))
@@ -221,7 +226,8 @@ async function main(args) {
       let raw
       try {
         raw = await command(adb, ['-s', serial, 'shell', 'am', 'instrument', '-w', '-r',
-          '-e', 'suite', `lifecycle-${phase}`, '-e', 'token', runToken, RUNNER], 180_000, options.expectProcessDeath)
+          '-e', 'suite', `lifecycle-${phase}`, '-e', 'token', runToken,
+          '-e', 'foregroundCarrier', requireAcceptanceCarrier(options.foregroundCarrier), RUNNER], 180_000, options.expectProcessDeath)
         return raw
       } catch (failure) {
         raw = String(failure.stdout ?? '') + String(failure.stderr ?? '')

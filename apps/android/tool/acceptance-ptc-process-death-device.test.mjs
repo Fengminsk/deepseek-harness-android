@@ -56,6 +56,20 @@ test('PTC death runner requires the actual Node carrier in the Agent process', (
   assert.throws(() => requirePtcDeathInstrumentation(declaration.replace(':agent', ':main')))
 })
 
+test('PTC service recovery keeps receipt requirements and rejects missing carrier or cleanup evidence', () => {
+  const state = JSON.stringify({ interactive: false, keyguardLocked: true, deviceLocked: true, displays: [{ id: 0, state: 1 }] })
+  const fields = Object.entries({ foregroundCarrier: 'service', foregroundClosed: 'true', nativeOwnersClosed: 'true',
+    deviceStateBefore: state, deviceStateReady: state, deviceStateAfter: state })
+    .map(([name, value]) => `INSTRUMENTATION_RESULT: ${name}=${value}\n`).join('')
+  const value = result(check, { ...nativeObservation, foregroundCarrier: 'service' })
+  const parsed = parsePtcDeathRecovery(fields + value, ready, 'service')
+  assert.equal(parsed.nativeReceiptInspection, 'read-only-unconfirmed')
+  assert.equal(parsed.deviceStateReady.deviceLocked, true)
+  for (const invalid of [value, fields.replace('foregroundClosed=true', 'foregroundClosed=false') + value,
+    fields + value.replace('"ADMITTED"', '"COMPLETED"'), fields + value.replace('"foregroundCarrier":"service"', '"foregroundCarrier":"activity"')])
+    assert.throws(() => parsePtcDeathRecovery(invalid, ready, 'service'))
+})
+
 test('owned preparation cleanup waits for close, is idempotent and rejects a missing close', async () => {
   const child = new EventEmitter()
   child.pid = 1

@@ -135,6 +135,7 @@ class PtcSafAcceptanceControlReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val reply = intent.getParcelableExtra("reply", ResultReceiver::class.java) ?: return
         val pending = goAsync()
+        reply.send(2, Bundle())
         Thread({
             try {
                 val method = requireNotNull(intent.getStringExtra("method"))

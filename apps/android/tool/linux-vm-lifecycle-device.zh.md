@@ -21,13 +21,15 @@ title: Linux 客体设备生命周期验收
 <a id="prerequisites-and-entry-points"></a>
 ## 前提和入口
 
-使用包含 `LinuxVmLifecycleAcceptance` 的配套 [Alpine 验收 App 与 release AndroidTest 包](tinyemu-build.zh.md#alpine-acceptance-apk)，通过 `ANDROID_HOME` 或 `ANDROID_SDK_ROOT` 提供 Android SDK 工具。既有的 `LinuxVmAcceptanceInstrumentation` 分发 `lifecycle-cancel`、`lifecycle-death-prepare`、`lifecycle-death-recover`、`lifecycle-upgrade-seed` 和 `lifecycle-upgrade-verify`；每项接收规范 UUID 格式的 `token`。无需新增 manifest 注册。共享的 `AcceptanceForegroundLease` 要求手机已解锁、屏幕处于交互状态，且黑色前台窗口已绘制。它不会唤醒或解锁设备，也不会启动产品 MainActivity。
+使用包含 `LinuxVmLifecycleAcceptance` 的配套 [Alpine 验收 App 与 release AndroidTest 包](tinyemu-build.zh.md#alpine-acceptance-apk)，通过 `ANDROID_HOME` 或 `ANDROID_SDK_ROOT` 提供 Android SDK 工具。既有的 `LinuxVmAcceptanceInstrumentation` 分发 `lifecycle-cancel`、`lifecycle-death-prepare`、`lifecycle-death-recover`、`lifecycle-upgrade-seed` 和 `lifecycle-upgrade-verify`；每项接收规范 UUID 格式的 `token`。无需新增 manifest 注册。默认的 `AcceptanceForegroundLease` 要求手机已解锁、屏幕处于交互状态，且黑色前台窗口已绘制。显式传入 `-e foregroundCarrier service` 可选择既有的[仅验收服务](acceptance-foreground-service.zh.md)，允许在锁屏下无窗口运行。两种载体均不会唤醒、解锁设备或启动产品 MainActivity。
 
-主机 CLI（命令行界面）接收 `--mode cancel|death|upgrade`、`--apk`、`--test-apk`、`--output <new-directory>`，以及可选的 `--serial` / `--adb`。实际执行必须提供 `--accept-agent-interruption`；替换已安装 App 还须提供 `--allow-existing`。Instrumentation 会替换 `:agent` 进程，因此仅在用户任务空闲时运行。`death` 模式会主动终止该真实 Android 进程。它不会强行停止整个包，也不会用主机进程终止代替设备行为。
+主机 CLI（命令行界面）接收 `--mode cancel|death|upgrade`、`--apk`、`--test-apk`、`--output <new-directory>`，以及可选的 `--serial` / `--adb` / `--foreground-carrier activity|service`。载体默认为 `activity`，原样传递给每个阶段。实际执行必须提供 `--accept-agent-interruption`；替换已安装 App 还须提供 `--allow-existing`。Instrumentation 会替换 `:agent` 进程，因此仅在用户任务空闲时运行。`death` 模式会主动终止该真实 Android 进程。它不会强行停止整个包，也不会用主机进程终止代替设备行为。
 
 `upgrade` 还须提供 `--new-apk` 和 `--new-test-apk`。执行器在修改设备前验证包身份、签名证书一致以及 `new.versionCode > old.versionCode`，检查已安装的初始版本，在旧 App 播种，然后用 `adb install -r` 安装两个新 APK。它不会清除数据、卸载、降级或修改权限和网络设置。两组产物都必须包含此执行器；更早的包无法播种本测试。`--preflight-only` 仅在本机读取 APK manifest 和证书，不联系 ADB；它不验证包内测试实现，也不代表设备验收成功。
 
 `--output` 必须指定新目录。主机在 `artifacts.json` 中保留产物路径、SHA-256、签名和版本身份、token 及设备序列号，在各阶段 `.txt` 中保留已结束的 instrumentation 输出，最后生成 `report.json` 或 `failure.json`。每阶段的主机时限为 180 秒，包围生产环境 120 秒的客体时限。缺失或失败的结果不能算作通过。失败后应停止并检查保留的 token 记录；执行器没有清理、确认或解锁操作。
+
+服务租约每阶段上限为 180 秒。服务失效与黑窗失焦使用相同取消路径；探针等待真实原生退役及取消工作结束后再关闭载体。成功阶段要求原生所有者关闭及载体销毁回执。主动终止阶段的标记只要求就绪；被终止的进程不能提供正常关闭回执。报告保留载体身份及系统框架的锁屏和显示观察，这些观察不证明像素颜色或物理面板电源状态。要求持续熄屏保护时，外部物理电源守护须覆盖安装、终止和恢复切换。这项测试服务不证明生产 Agent 的后台存活能力。
 
 <a id="evidence-and-limits"></a>
 ## 证据和边界

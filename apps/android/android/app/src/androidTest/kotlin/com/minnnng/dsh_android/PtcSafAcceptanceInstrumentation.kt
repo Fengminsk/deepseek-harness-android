@@ -15,6 +15,8 @@ import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.atomic.AtomicReference
 
 /** Owns only the synthetic provider grant; the pre-existing grants are compared on release. */
 class PtcSafAcceptanceFixture private constructor(private val instrumentation: Instrumentation) : Closeable {
@@ -35,16 +37,19 @@ class PtcSafAcceptanceFixture private constructor(private val instrumentation: I
         val done = CountDownLatch(1)
         var resultCode = 0
         var result: Bundle? = null
+        val stage = AtomicReference("not-delivered")
         val reply = object : ResultReceiver(null) {
             override fun onReceiveResult(code: Int, data: Bundle?) {
+                if (code == 2) { stage.set("receiver-entered"); return }
                 resultCode = code; result = data; done.countDown()
             }
         }
         context.sendBroadcast(Intent().setComponent(ComponentName("${context.packageName}.test",
             PtcSafAcceptanceControlReceiver::class.java.name)).putExtra("method", method)
-            .putExtra("caseId", caseId).putExtra("reply", reply),
+            .putExtra("caseId", caseId).putExtra("reply", reply)
+            .addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES or Intent.FLAG_RECEIVER_FOREGROUND),
             "${context.packageName}.permission.RUNTIME_ACCEPTANCE")
-        check(done.await(10, TimeUnit.SECONDS)) { "Test provider control did not reply" }
+        check(done.await(10, TimeUnit.SECONDS)) { "Test provider control did not reply: $method (${stage.get()})" }
         check(resultCode == 1) { result?.getString("failure") ?: "Test provider control failed" }
         return requireNotNull(result)
     }
@@ -95,24 +100,44 @@ class PtcSafAcceptanceFixture private constructor(private val instrumentation: I
 
 /** Real persisted grant, bounded provider search and in-flight revocation, without user documents. */
 class PtcSafAcceptanceInstrumentation : Instrumentation() {
-    override fun onCreate(arguments: Bundle?) { super.onCreate(arguments); start() }
+    private var arguments = Bundle()
+    override fun onCreate(arguments: Bundle?) {
+        super.onCreate(arguments)
+        this.arguments = arguments?.let { Bundle(it) } ?: Bundle()
+        start()
+    }
     override fun onStart() {
         val output = Bundle()
         try {
             check(Application.getProcessName() == targetContext.packageName + ":agent")
-            AcceptanceForegroundLease.open(this).use {
+            val ownerLock = Any()
+            var activeSearches: DocumentSearchManager? = null
+            var cancellation: CompletableFuture<Void>? = null
+            AcceptanceCarrierLease.open(this, arguments, output, 90_000) {
+                synchronized(ownerLock) {
+                    val owner = activeSearches
+                    if (owner != null && cancellation == null)
+                        cancellation = CompletableFuture.runAsync { owner.close() }
+                }
+            }.use { foreground ->
                 PtcSafAcceptanceFixture.open(this).use { fixture ->
                     val searches = DocumentSearchManager(targetContext)
                     val worker = Executors.newSingleThreadExecutor()
                     try {
+                        synchronized(ownerLock) { activeSearches = searches }
+                        foreground.checkActive()
                         val baseline = search(searches, fixture.root)
                         check(baseline.getBoolean("complete") && baseline.getJSONArray("matches").length() == 1)
                         check(baseline.getJSONArray("matches").getJSONObject(0).getString("path") == "alpha.txt")
                         fixture.armBlockedRead()
+                        foreground.checkActive()
                         val running = worker.submit<JSONObject> { search(searches, fixture.root) }
                         val deadline = SystemClock.elapsedRealtime() + 10_000
-                        while (!fixture.readEntered() && !running.isDone && SystemClock.elapsedRealtime() < deadline)
+                        while (!fixture.readEntered() && !running.isDone && SystemClock.elapsedRealtime() < deadline) {
+                            foreground.checkActive()
                             Thread.sleep(20)
+                        }
+                        foreground.checkActive()
                         check(fixture.readEntered()) { "Search never entered the controlled provider" }
                         fixture.revoke(searches)
                         var rejected = false
@@ -132,12 +157,20 @@ class PtcSafAcceptanceInstrumentation : Instrumentation() {
                         try { DocumentAccess(targetContext).read(fixture.root, "alpha.txt", 0) }
                         catch (failure: SecurityException) { rejected = true }
                         check(rejected) { "Read reused a revoked persisted grant" }
+                        foreground.checkActive()
                         output.putString("root", fixture.root)
                     } finally {
-                        searches.close(); worker.shutdownNow()
-                        check(worker.awaitTermination(5, TimeUnit.SECONDS)) { "Search worker did not retire" }
+                        val pending = synchronized(ownerLock) { activeSearches = null; cancellation }
+                        try {
+                            if (pending == null) searches.close() else pending.get(10, TimeUnit.SECONDS)
+                        } finally {
+                            worker.shutdownNow()
+                            check(worker.awaitTermination(5, TimeUnit.SECONDS)) { "Search worker did not retire" }
+                        }
                     }
                 }
+                foreground.checkActive()
+                output.putString("nativeOwnersClosed", "true")
             }
             output.putString("passed", "controlled-saf-search-and-inflight-revocation")
             finish(-1, output)
