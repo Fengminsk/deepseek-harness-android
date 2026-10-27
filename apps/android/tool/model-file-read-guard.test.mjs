@@ -189,7 +189,11 @@ test('real ToolRuntime guards original file, search, delivery and editor tools a
   let swapViewBeforeBody = false
   ctx.provide('workingDirectory', { async ensure() { return cwd } })
   const spawns = []
-  ctx.provide('subprocess', { spawn(spec) {
+  // Production providers extend Service: each ctx.subprocess.spawn read is a
+  // new Cordis trace proxy. A plain provided object misses that boundary.
+  class SearchSubprocess extends cordis.Service {
+    constructor(context) { super(context, 'subprocess') }
+    spawn(spec) {
     spawns.push(spec)
     return {
       done: Promise.resolve({ exitCode: 1, signal: null }),
@@ -198,7 +202,10 @@ test('real ToolRuntime guards original file, search, delivery and editor tools a
         stderr: { readFrom: () => ({ text: '', lossy: false }) },
       },
     }
-  } })
+    }
+  }
+  await ctx.plugin(SearchSubprocess)
+  assert.notEqual(ctx.subprocess.spawn, ctx.subprocess.spawn)
   await ctx.plugin(prompt.default)
   await ctx.plugin(tools.default)
   await ctx.plugin(projections.default)

@@ -66,6 +66,26 @@ Json header(int seq, {String reason = 'initial', int step = 1}) =>
     });
 
 void main() {
+  test(
+    'Linux machine receipts do not add chat bubbles or hide human messages',
+    () {
+      final events = [
+        input(0, 'android-linux-receipt is part of my question'),
+        input(
+          1,
+          'durable machine receipt',
+          source: {'kind': 'android-linux-receipt'},
+        ),
+        assistant(2, 'The file is ready'),
+      ];
+      final projection = ChatProjection()..reconcile(events);
+      expect(projection.entries.map((entry) => entry.kind), [
+        ChatEntryKind.user,
+        ChatEntryKind.assistant,
+      ]);
+      expect(events, hasLength(3));
+    },
+  );
   test('human source owns the user bubble; runtime and unknown producers remain context', () {
     final projection = ChatProjection()
       ..reconcile([

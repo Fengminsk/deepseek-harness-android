@@ -114,7 +114,7 @@ export function prepareIsolatedTypeScriptRun(request, scope, parentScope) {
     }
     own[key] = descriptor.value
   }
-  if (own.kind !== 'script' || !['runId', 'sessionId', 'program', 'deadlineMillis']
+  if (!['script', 'ptc'].includes(own.kind) || !['runId', 'sessionId', 'program', 'deadlineMillis']
     .every(key => Object.hasOwn(own, key))) {
     invalid('Invalid TypeScript script identity or program')
   }

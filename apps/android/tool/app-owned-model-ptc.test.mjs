@@ -13,7 +13,7 @@ import { NativeIsolatedToolCallbacks } from '../runtime/native-isolated-tool-cal
 import { IsolatedToolCallJournal } from '../runtime/isolated-tool-call-journal.mjs'
 
 const AsyncFunction = (async () => {}).constructor
-const sessionId = 'b6350414-f332-43f3-ae59-70695b38b791'
+const sessionId = 'android-1793060921975320-627842147'
 const token = 'native-private-token'
 const tempRoots = []
 process.once('exit', () => { for (const root of tempRoots) rmSync(root, { recursive: true, force: true }) })
@@ -90,7 +90,7 @@ test('App-owned model draft runs through native admission, tool binding and dura
   const run = startAppOwnedModelIsolatedScript(prepared, owner.host(new AbortController().signal))
   const result = await run.result
   assert.deepEqual(JSON.parse(JSON.stringify(result)), {
-    runId: prepared.execution.runId, state: 'completed', value: { text: 'hello' }, guestUid: 99001,
+    runId: prepared.execution.runId, state: 'completed', value: { text: 'hello' }, logs: [], guestUid: 99001,
   })
   assert.deepEqual(owner.calls, ['native.isolated.admit', 'native.isolated.bindTools',
     'native.isolated.execute', 'native.isolated.settle', 'native.isolated.release'])
@@ -121,7 +121,7 @@ test('forged draft or bridge cannot reach native admission; published model tool
 
 test('nonempty App scope fails native admission before executing or binding tools', async () => {
   const policy = projectIsolatedSandboxPolicy({ approvedScope: {
-    ...scope(), workspaceId: sessionId, readablePaths: ['notes.txt'], fileCallLimit: 1,
+    ...scope(), workspaceId: 'b6350414-f332-43f3-ae59-70695b38b791', readablePaths: ['notes.txt'], fileCallLimit: 1,
   } })
   const prepared = draft(policy)
   const owner = setup()

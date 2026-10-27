@@ -1,23 +1,26 @@
 import Schema from '@deepseek-ai/schemastery'
-import { randomUUID } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
-import { defineTool } from '@deepseek-ai/dsh-tools'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { establishAttachmentHome } from '@deepseek-ai/dsh-attachment-local'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { AndroidCredentials } from './credentials.mjs'
 import { registerAndroidShell } from './tool-android-shell.mjs'
 import { registerModelFileReadGuard } from './model-file-read-guard.mjs'
+import { registerAndroidFilesTool } from './tool-android-files.mjs'
+import { registerAndroidAttachmentsTool } from './tool-android-attachments.mjs'
 import { NativeIsolatedToolCallbacks } from './native-isolated-tool-callbacks.mjs'
 import { IsolatedToolCallJournal } from './isolated-tool-call-journal.mjs'
 import { createNativeIsolatedExecutionBridge } from './native-isolated-execution-bridge.mjs'
-import { createAppOwnedListAgentsPtcOwner } from './model-ptc-owner.mjs'
-import { modelPtcCapability, registerAndroidPtcTool } from './tool-isolated-ptc.mjs'
+import { createAppOwnedReadOnlyPtcOwner } from './model-ptc-readonly-owner.mjs'
+import { modelReadOnlyPtcCapability, registerAndroidReadOnlyPtcTool } from './tool-readonly-ptc.mjs'
 import { NativeWorkflowGuestCallbacks } from './native-workflow-guest-callbacks.mjs'
 import { createNativeWorkflowPrivateOwner } from './native-workflow-private-owner.mjs'
+import { modelWorkflowCapability, registerAndroidWorkflowTool } from './tool-native-workflow.mjs'
 import { NativeLinuxCommands } from './native-linux-commands.mjs'
 import { registerIsolatedLinuxTool } from './tool-isolated-linux.mjs'
+import { NativeLinuxVm } from './native-linux-vm.mjs'
+import { registerLinuxVmTool, registerLinuxImportTool, registerLinuxExportTool } from './tool-linux-vm.mjs'
 import AndroidShell from './android-shell.mjs'
 import { WebAccess } from './web-access.mjs'
 import { AppSessions } from './sessions.mjs'
@@ -33,7 +36,6 @@ import { AppAttachments } from './attachments.mjs'
 import { createRuntimeTransport } from './transport.mjs'
 import { AppDocumentSearch } from './document-search.mjs'
 import { readAuthorizedDocument } from './document-read.mjs'
-import { readAuthorizedImage, renderAuthorizedImage } from './authorized-image.mjs'
 import { AppDocumentPreview, PRIVATE_WORKSPACE_SCOPE } from './document-preview.mjs'
 import { AppChatImages } from './chat-images.mjs'
 import { AppReferenceDiscovery } from './reference-discovery.mjs'
@@ -116,6 +118,8 @@ function remoteFailure(error) {
 // or remote switch. Open only after the isolated UID, callback retirement and
 // process-death suites have passed on a non-rooted production-class device.
 const MODEL_PTC_DEVICE_ACCEPTED = false
+const MODEL_WORKFLOW_DEVICE_ACCEPTED = false
+const LINUX_VM_DEVICE_ACCEPTED = false
 
 /** Android is an additional carrier over the same DSH services and session log. */
 export function apply(ctx, config) {
@@ -129,13 +133,13 @@ export function apply(ctx, config) {
   // only when an actual Agent execution later needs a reviewed callback.
   const modelPtcBridge = createNativeIsolatedExecutionBridge(transport)
   ctx.inject(['subagents'], modelCtx => {
-    const owner = createAppOwnedListAgentsPtcOwner({
+    const owner = createAppOwnedReadOnlyPtcOwner({
       bridge: modelPtcBridge, callbacks: nativeToolCallbacks, runtime: modelCtx.tools,
       services: { subagents: modelCtx.subagents, agents: modelCtx.agents },
     })
     modelCtx.provide('appModelPtcOwner', owner)
     modelCtx.effect(() => () => owner.close())
-    registerAndroidPtcTool(modelCtx, {
+    registerAndroidReadOnlyPtcTool(modelCtx, {
       owner, available: () => MODEL_PTC_DEVICE_ACCEPTED,
     })
   })
@@ -144,10 +148,12 @@ export function apply(ctx, config) {
   let privateWorkflowOwner
   // Only trusted App code can attach an already admitted run and live parent.
   // The model-authored workflow modules remain protected and disabled.
-  ctx.inject(['subagents', 'agentPresets', 'sessionQuery'], workflowCtx => {
+  ctx.inject(['subagents', 'agentPresets', 'sessionQuery', 'jobs', 'systemPrompt'], workflowCtx => {
     const workflowOwner = createNativeWorkflowPrivateOwner(workflowCtx, nativeWorkflowCallbacks, transport)
     privateWorkflowOwner = workflowOwner
     workflowCtx.provide('nativeWorkflowPrivateOwner', workflowOwner)
+    registerAndroidWorkflowTool(workflowCtx, { owner: workflowOwner,
+      available: () => MODEL_WORKFLOW_DEVICE_ACCEPTED })
     workflowCtx.effect(() => async () => {
       if (privateWorkflowOwner === workflowOwner) privateWorkflowOwner = undefined
       await workflowOwner.dispose()
@@ -156,6 +162,13 @@ export function apply(ctx, config) {
   const nativeLinuxCommands = new NativeLinuxCommands(transport)
   ctx.provide('nativeLinuxCommands', nativeLinuxCommands)
   registerIsolatedLinuxTool(ctx, nativeLinuxCommands)
+  const nativeLinuxVm = new NativeLinuxVm(transport)
+  ctx.provide('nativeLinuxVm', nativeLinuxVm)
+  ctx.inject(['fs', 'sandboxPolicy'], linuxCtx => {
+    registerLinuxVmTool(linuxCtx, nativeLinuxVm, LINUX_VM_DEVICE_ACCEPTED)
+    registerLinuxImportTool(linuxCtx, nativeLinuxVm, LINUX_VM_DEVICE_ACCEPTED, process.cwd())
+    registerLinuxExportTool(linuxCtx, nativeLinuxVm, LINUX_VM_DEVICE_ACCEPTED, process.cwd())
+  })
   const credentials = new AndroidCredentials(ctx, transport)
   ctx.plugin(AndroidShell)
   ctx.plugin(AndroidAccountCallback)
@@ -165,6 +178,7 @@ export function apply(ctx, config) {
       await nativeToolCallbacks.dispose()
       await nativeWorkflowCallbacks.dispose()
       await nativeLinuxCommands.dispose()
+      await nativeLinuxVm.dispose()
       ipc.close()
     }
   })
@@ -426,7 +440,8 @@ export function apply(ctx, config) {
           writableRoots: [],
           network: 'off',
           reason: 'isolated-executor-unwired',
-          modelPtc: modelPtcCapability(MODEL_PTC_DEVICE_ACCEPTED),
+          modelPtc: modelReadOnlyPtcCapability(MODEL_PTC_DEVICE_ACCEPTED),
+          modelWorkflow: modelWorkflowCapability(MODEL_WORKFLOW_DEVICE_ACCEPTED),
         },
       }
       case 'runtime.live': return live.snapshot()
@@ -554,29 +569,8 @@ export function apply(ctx, config) {
     if (change.domain === 'workspace') transport.notify('sessions.changed', {})
   })
   ctx.on('settings/document-updated', () => transport.notify('settings.changed'))
-  ctx.effect(() => ctx.tools.register(defineTool({
-    name: 'android_files', description: 'List authorized Android document roots, list a relative directory, read UTF-8 text in chunks, read_image as a PNG/JPEG/WebP/GIF model image, or search literal text below an authorized root. Pass the previous read version when continuing at a nonzero offset. Search is bounded and reports skipped files and incomplete results. content:// URIs are not shell paths.',
-    parameters: { action: { type: 'string', required: true }, root: { type: 'string' }, path: { type: 'string' }, offset: { type: 'integer' },
-      version: { type: 'string' }, query: { type: 'string' }, caseSensitive: { type: 'boolean' } },
-    output: { schema: { type: 'json' }, render: renderAuthorizedImage },
-    async execute(args, execution) {
-      if (args.action === 'roots') return transport.request('native.documents.roots', {})
-      if (args.action === 'search') {
-        if (!execution.agent) throw new Error('File search requires an Agent session')
-        return documentSearch.run({
-          requestId: randomUUID(), root: args.root, path: args.path ?? '', query: args.query,
-          caseSensitive: args.caseSensitive ?? false,
-        }, { owner: `tool:${execution.agent.session.id}:${execution.callId}`, signal: execution.signal })
-      }
-      if (args.action === 'read_image') return readAuthorizedImage(ctx, transport,
-        { root: args.root, path: args.path ?? '' }, execution)
-      if (args.action !== 'list' && args.action !== 'read') throw new Error('action must be roots, list, read, read_image or search')
-      requiredString(args.root, 'root')
-      if (args.action === 'read') return readAuthorizedDocument(
-        request => transport.request('native.documents.read', request), args, true)
-      return transport.request('native.documents.list', { root: args.root, path: args.path ?? '' })
-    },
-  })))
+  registerAndroidFilesTool(ctx, transport, documentSearch)
+  registerAndroidAttachmentsTool(ctx)
   ctx.effect(() => {
     const remove = ctx.appReady.onReady(() => {
       void transport.request('native.storage.root', {}).then(async root => {

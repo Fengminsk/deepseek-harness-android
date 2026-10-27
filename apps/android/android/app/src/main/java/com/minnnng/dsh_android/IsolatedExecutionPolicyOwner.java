@@ -50,7 +50,7 @@ public final class IsolatedExecutionPolicyOwner {
             if (ownerId == null || ownerId.isEmpty() || ownerId.length() > 128
                     || !ownerId.matches("[A-Za-z0-9._:-]+"))
                 throw new IllegalArgumentException("Invalid policy owner");
-            IsolatedScriptWire.requireUuid(sessionId);
+            IsolatedScriptWire.requireSessionId(sessionId);
             if (version < 1 || version == Long.MAX_VALUE) throw new IllegalArgumentException("Invalid policy version");
             Objects.requireNonNull(readablePaths);
             Objects.requireNonNull(writablePaths);

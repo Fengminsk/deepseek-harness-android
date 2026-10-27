@@ -84,6 +84,8 @@ schema 校验会在执行前拒绝缺失或非数组的 `queries` 字段、非�
 <a id="understand-the-implementation"></a>
 ## 理解实现
 
+`isFirstPartyWebSearchDefinition` 和 `isFirstPartyWebFetchDefinition` 校验调用方作用域中可见的原始有效注册，拒绝复制品和已卸载的定义。定义被冻结；调用方仍须以有效的父执行上下文调用 ToolRuntime，保留提供方选择、授权、取消和记录机制。身份校验本身不授予直接网络访问权限。
+
 <details>
 <summary>实现细节——点击展开</summary>
 

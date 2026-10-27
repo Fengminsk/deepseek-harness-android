@@ -44,7 +44,10 @@ export function prepareModelIsolatedScript(modelArguments, host) {
   const input = plainRecord(modelArguments, 'model script arguments',
     ['code', 'description', 'language'])
   const authority = plainRecord(host, 'trusted host context',
-    ['sessionId', 'sandboxPolicy', 'deadlineMillis'])
+    ['sessionId', 'sandboxPolicy', 'deadlineMillis',
+      ...(host && Object.hasOwn(host, 'executionKind') ? ['executionKind'] : [])])
+  const kind = Object.hasOwn(authority, 'executionKind') ? authority.executionKind : 'script'
+  if (!['script', 'ptc'].includes(kind)) invalid('App execution kind')
   if (input.language !== FORMAT) invalid('model script language')
   if (typeof input.description !== 'string' || input.description.trim().length === 0
     || encoder.encode(input.description).length > 256) invalid('model script description')
@@ -56,7 +59,7 @@ export function prepareModelIsolatedScript(modelArguments, host) {
   // Native admission remains responsible for checking the approval itself.
   const scope = requireIsolatedSandboxPolicy(authority.sandboxPolicy).scope
   const prepared = prepareIsolatedTypeScriptRun({
-    kind: 'script',
+    kind,
     runId: randomUUID(),
     sessionId: authority.sessionId,
     program: input.code,

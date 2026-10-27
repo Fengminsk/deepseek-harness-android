@@ -524,6 +524,8 @@ presentAs(mode: ToolPresentationMode): () => void
 /**
  * Register globally or in the calling agent scope. Scoped tools shadow
  * globals; duplicates within one layer and the reserved `run_code` name fail.
+ * Each registration has a distinct identity, including a re-registration of
+ * the same definition object after its disposer runs.
  * @param definition - tool schema, execution, and optional finalization/presentation callbacks.
  * @returns the exact disposer that unregisters the tool.
  */
@@ -562,6 +564,25 @@ guard(guard: ToolGuard): () => void
 get(name: string, scope?: ScopeKey): ToolDefinition | undefined
 
 /**
+ * Return an opaque identity for the registration visible in one scope.
+ * Re-registering even the same definition object yields a new identity;
+ * restriction, shadowing or disposal makes the former identity absent.
+ * This is a same-process comparison token, not authority to execute a tool.
+ * Callers must check it again at their dispatch boundary.
+ * @param name - the tool name as registered.
+ * @param scope - the viewing scope; omission selects the global view.
+ * @returns the identity of the visible registration, or undefined when none is visible.
+ */
+registrationIdentity(name: string, scope?: ScopeKey): object | undefined
+
+/**
+ * True only while this runtime is awaiting the body of this exact minted call.
+ * @param exec - the exact tool-run context minted by this runtime.
+ * @returns whether this runtime is currently awaiting that call's tool body.
+ */
+isActiveExecution(exec: ToolRunContext): boolean
+
+/**
  * Project visible definitions onto the allowlisted model-facing schema fields,
  * excluding execution and presentation callbacks.
  * @param scope - the viewing scope (the agent); omitted = the global view.
@@ -582,7 +603,9 @@ executionMode(exec: ToolExecutionInput): ToolExecutionMode
  * Execute through pre-policy, guards, around-dispatch, post-policy,
  * definition-owned content finalization, and final notification. Tool and
  * listener failures resolve as materialized error results; an invisible tool
- * reports `UNKNOWN_TOOL`. The returned outcome is the same lossless, frozen
+ * or a replaced registration reports `UNKNOWN_TOOL`. The definition selected
+ * before asynchronous policy must remain visible when its body dispatches.
+ * The returned outcome is the same lossless, frozen
  * snapshot final observers receive. Cancellation
  * arriving after entry and before final result materialization skips a
  * not-yet-started body with `ABORTED_BEFORE_DISPATCH` or replaces a

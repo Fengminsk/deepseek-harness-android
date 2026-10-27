@@ -61,6 +61,14 @@ export function parseReadyMarker(raw, runId) {
   return marker
 }
 
+export function parseReadyStatus(output, runId) {
+  const values = [...output.matchAll(/^INSTRUMENTATION_STATUS: ready=(.*)\r?\n/gm)]
+  if (!values.length) return null
+  if (values.length !== 1) throw new Error('Duplicate process-death ready status')
+  if (!/^INSTRUMENTATION_STATUS_CODE: 1\s*$/m.test(output.slice(values[0].index))) return null
+  return parseReadyMarker(values[0][1].trim(), runId)
+}
+
 export function parsePids(output) {
   const trimmed = output.trim()
   if (!trimmed) return []
@@ -68,6 +76,41 @@ export function parsePids(output) {
   if (values.some(value => !Number.isSafeInteger(value) || value <= 0) ||
       new Set(values).size !== values.length) throw new Error(`Invalid pidof result: ${output}`)
   return values
+}
+
+export function parseGuestProcesses(output) {
+  const prefix = `${GUEST}:${PACKAGE}.IsolatedScriptService:script_`
+  const lines = output.trim().split(/\r?\n/)
+  if (!/^\s*PID\s+(?:ARGS|CMD|COMMAND)\s*$/.test(lines.shift() ?? '')) {
+    throw new Error('Guest process listing is missing its full-arguments header')
+  }
+  const matches = []
+  for (const line of lines) {
+    const match = /^\s*([1-9][0-9]*)\s+(.*)$/.exec(line)
+    if (!match) throw new Error('Malformed guest process listing')
+    const name = match[2].trim()
+    if (!name.startsWith(prefix)) continue
+    // Android truncates argv[0] even with ps -w. ActivityManager's full
+    // service identity below binds an exact run to these independently live PIDs.
+    if (!/^[0-9a-f]{8,32}$/.test(name.slice(prefix.length))) {
+      throw new Error('Isolated script process identity is invalid')
+    }
+    matches.push(Number(match[1]))
+  }
+  return parsePids(matches.join(' '))
+}
+
+export function parseRunGuestPid(output, runId) {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(runId)) {
+    throw new Error('Guest service lookup requires a canonical run UUID')
+  }
+  const expected = `${GUEST}:${PACKAGE}.IsolatedScriptService:script_${runId.replaceAll('-', '')}`
+  const blocks = output.split(/^\s*\* ServiceRecord\{/m).slice(1)
+  const matching = blocks.filter(block => block.split(/\r?\n/).some(line => line.trim() === `processName=${expected}`))
+  if (matching.length !== 1) throw new Error('Missing or ambiguous exact workflow guest service')
+  const apps = [...matching[0].matchAll(/^\s*app=ProcessRecord\{[^\s]+ ([1-9][0-9]*):([^\s/]+)\/[^}]+\}\s*$/gm)]
+  if (apps.length !== 1 || apps[0][2] !== expected) throw new Error('Workflow guest service has no exact process owner')
+  return parsePids(apps[0][1])[0]
 }
 
 export function parseProcessDeathRecovery(output, runId, ready) {
@@ -86,6 +129,38 @@ export function parseProcessDeathRecovery(output, runId, ready) {
     throw new Error(`Workflow process-death recovery failed: ${output.slice(-4000)}`)
   }
   return { passed: field('passed'), oldAgentPid: oldPid, newAgentPid: newPid }
+}
+
+function exactResult(output, name) {
+  const codes = [...output.matchAll(/^INSTRUMENTATION_CODE: (-?\d+)\s*$/gm)]
+  const values = [...output.matchAll(new RegExp(`^INSTRUMENTATION_RESULT: ${name}=(.*)$`, 'gm'))]
+  if (codes.length !== 1 || codes[0][1] !== '-1' || values.length !== 1) {
+    throw new Error(`Unconfirmed legacy ${name}: ${output.slice(-2000)}`)
+  }
+  return values[0][1].trim()
+}
+
+export function parseLegacyInspection(output, runId) {
+  const entries = JSON.parse(exactResult(output, 'legacy'))
+  const agentPid = Number(exactResult(output, 'agentPid'))
+  if (!Array.isArray(entries) || !Number.isSafeInteger(agentPid) || agentPid <= 0) {
+    throw new Error('Invalid legacy inspection')
+  }
+  const matches = entries.filter(entry => entry.runId === runId)
+  if (matches.length !== 1 || !Array.isArray(matches[0].childIds) || !matches[0].childIds.length ||
+      matches[0].childIds.some(id => typeof id !== 'string' || !id) ||
+      new Set(matches[0].childIds).size !== matches[0].childIds.length) {
+    throw new Error('Exact legacy run is absent or has no unretired children')
+  }
+  return { agentPid, childIds: matches[0].childIds }
+}
+
+export function parseLegacyRetirement(output, runId, count) {
+  if (exactResult(output, 'passed') !== 'explicit-legacy-retirement' ||
+      exactResult(output, 'oldRunId') !== runId || Number(exactResult(output, 'retiredCount')) !== count) {
+    throw new Error('Legacy retirement did not confirm the exact pending children')
+  }
+  return { audit: exactResult(output, 'audit'), retiredCount: count }
 }
 
 function startPreparation(adb, serial, runId) {
@@ -139,16 +214,39 @@ async function main(args) {
     const result = await device(['install', '-r', artifact.path], 120_000)
     if (!/^Success\s*$/m.test(result)) throw new Error(`ADB install failed: ${result}`)
   }
-  await device(['shell', 'run-as', PACKAGE, 'id'], 15_000)
   const pids = async processName => {
+    if (processName === GUEST) {
+      return parseGuestProcesses(await device(['shell', 'ps', '-A', '-w', '-o', 'PID,ARGS'], 15_000))
+    }
     try { return parsePids(await device(['shell', 'pidof', processName], 15_000)) }
     catch (error) { if (Number(error.code) === 1) return []; throw error }
+  }
+  if (args.includes('--retire-legacy-run')) {
+    const runId = argument(args, '--retire-legacy-run')
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(runId)) {
+      throw new Error('Legacy retirement requires one canonical run UUID')
+    }
+    const inspected = parseLegacyInspection(await device(['shell', 'am', 'instrument', '-w', '-r',
+      '-e', 'phase', 'inspect-legacy', RUNNER], 30_000), runId)
+    const stoppedAgentPids = [...new Set([inspected.agentPid, ...await pids(AGENT)])]
+    const guestBefore = await pids(GUEST)
+    await device(['shell', 'am', 'force-stop', PACKAGE], 15_000)
+    if ((await pids(AGENT)).length || (await pids(GUEST)).length) {
+      throw new Error('Legacy owner process stop was not confirmed; nothing was retired')
+    }
+    const output = await device(['shell', 'am', 'instrument', '-w', '-r',
+      '-e', 'phase', 'retire-legacy', '-e', 'runId', runId,
+      '-e', 'processStopConfirmed', 'true', '-e', 'stoppedAgentPids', stoppedAgentPids.join(','), RUNNER], 30_000)
+    const retired = parseLegacyRetirement(output, runId, inspected.childIds.length)
+    process.stdout.write(JSON.stringify({ result: 'legacy-retired', serial, runId,
+      childIds: inspected.childIds, stoppedAgentPids, guestBefore, ...retired,
+      app: { ...app, ...appIdentity }, testApk: { ...testApk, ...testIdentity } }, null, 2) + '\n')
+    return
   }
   await device(['shell', 'am', 'force-stop', PACKAGE], 15_000)
   const runId = randomUUID()
   const preparation = startPreparation(adb, serial, runId)
   const deadline = Date.now() + 25_000
-  const markerPath = `files/workflow-process-death-probe/${runId}.json`
   let ready
   let stopIssued = false
   try {
@@ -156,19 +254,15 @@ async function main(args) {
       const status = preparation.status()
       if (status.error) throw status.error
       if (status.ended) throw new Error(`Workflow preparation ended before process stop: ${status.output}`)
-      try {
-        ready = parseReadyMarker(await device(['shell', 'run-as', PACKAGE,
-          'cat', markerPath], 10_000), runId)
-        break
-      } catch (error) {
-        if (error instanceof SyntaxError || /synced process-death marker/.test(error.message)) throw error
-        if (Number(error.code) !== 1) throw error
-      }
+      ready = parseReadyStatus(status.output, runId)
+      if (ready) break
       await new Promise(resolve => setTimeout(resolve, 200))
     }
     if (!ready) throw new Error('Workflow did not publish a durable pending-child marker')
-    const [agentBefore, guestBefore] = await Promise.all([pids(AGENT), pids(GUEST)])
-    if (!agentBefore.includes(ready.agentPid) || guestBefore.length === 0) {
+    const [agentBefore, guestBefore, guestPid] = await Promise.all([pids(AGENT), pids(GUEST),
+      device(['shell', 'dumpsys', 'activity', 'services', PACKAGE], 15_000)
+        .then(output => parseRunGuestPid(output, runId))])
+    if (!agentBefore.includes(ready.agentPid) || !guestBefore.includes(guestPid)) {
       throw new Error('The pending workflow was not live in both Agent and isolated guest processes')
     }
     await device(['shell', 'am', 'force-stop', PACKAGE], 15_000)

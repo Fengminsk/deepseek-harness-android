@@ -7,7 +7,9 @@ const MAX_TOOLS = 32
 const TOOL_NAME = /^[A-Za-z][A-Za-z0-9_]*$/
 const UNSAFE_NAMES = new Set(['__proto__', 'constructor', 'prototype', 'then'])
 const AMBIENT_TOOLS = new Set(['run_code', 'android_shell', 'android_linux',
-  'android_files', 'read', 'read_image', 'write', 'edit', 'workflow', 'android_ptc'])
+  'read_image', 'write', 'edit', 'str_replace_editor', 'workflow', 'android_ptc'])
+const READ_TOOLS = new Set(['read', 'glob', 'grep', 'web_search', 'web_fetch',
+  'android_files', 'android_attachments'])
 
 /**
  * Pin the App-reviewed tool definitions, rather than trusting a name, effect
@@ -33,7 +35,9 @@ export function createAppOwnedModelPtcCaller({ bridge, callbacks, runtime, revie
       || !entry.definition || entry.definition.name !== entry.name
       || !entry.registrationIdentity || typeof entry.registrationIdentity !== 'object'
       || !['pure', 'read-only'].includes(entry.effect)
+      || READ_TOOLS.has(entry.name) && entry.effect !== 'read-only'
       || entry.authorizeArguments !== undefined && typeof entry.authorizeArguments !== 'function'
+      || entry.projectResult !== undefined && typeof entry.projectResult !== 'function'
       || entry.effect === 'read-only' && typeof entry.authorizeArguments !== 'function'
       || reviewed.has(entry.name)) {
       throw new TypeError('Android PTC requires a unique reviewed tool definition and effect')
@@ -42,6 +46,7 @@ export function createAppOwnedModelPtcCaller({ bridge, callbacks, runtime, revie
       definition: entry.definition, registrationIdentity: entry.registrationIdentity,
       effect: entry.effect,
       authorizeArguments: entry.authorizeArguments,
+      projectResult: entry.projectResult,
     }))
   }
   const caller = Object.freeze({
@@ -89,7 +94,8 @@ export function createAppOwnedModelPtcCaller({ bridge, callbacks, runtime, revie
           })) !== true) return undefined
         // The callback port admits only a classification of the exact
         // definition it captured at binding, not a name-wide effect label.
-        return Object.freeze({ effect: review.effect, definition: review.definition })
+        return Object.freeze({ effect: review.effect, definition: review.definition,
+          ...(review.projectResult === undefined ? {} : { projectResult: review.projectResult }) })
       }
       return startAppOwnedModelIsolatedScript(draft, {
         bridge, callbacks, runtime: boundRuntime, parent, allowedToolNames,

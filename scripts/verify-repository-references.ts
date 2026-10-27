@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process'
 import { lstatSync, readFileSync, readlinkSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { parse as parseToml, TomlError } from 'smol-toml'
 import { canonicalReferenceText } from './verify-public-repository-links.ts'
 
 const root = resolve(import.meta.dirname, '..')
@@ -31,12 +32,40 @@ function isMaintained(file: string): boolean {
   return !excludedPrefixes.some(prefix => file.startsWith(prefix))
 }
 
+/** Locate literal decimal size values only in valid TOML metadata; never suppress a whole line. */
+function metadataSizeOffsets(file: string, source: string): ReadonlySet<number> {
+  const offsets = new Set<number>()
+  if (!file.endsWith('.toml') && !/(?:^|\/)uv\.lock$/.test(file)) return offsets
+  try { parseToml(source, { integersAsBigInt: true }) }
+  catch (error) {
+    if (error instanceof TomlError) return offsets
+    throw error
+  }
+  // Mask TOML strings and comments without changing source offsets. A literal
+  // quoted size key is retained; quoted values and multiline prose are not.
+  const metadata = source.replace(
+    /"""(?:\\[\s\S]|(?!""")[\s\S])*"{3,5}|'''[\s\S]*?'{3,5}|"(?:\\[^\r\n]|[^"\\\r\n])*"|'[^'\r\n]*'|#[^\r\n]*/g,
+    (token: string, offset: number) => {
+      if ((token === '"size"' || token === "'size'") && /^[ \t]*=/.test(source.slice(offset + token.length))) {
+        return ' size '
+      }
+      return token.replace(/[^\r\n]/g, ' ')
+    })
+  for (const match of metadata.matchAll(/(?:^|[,{.\n])[ \t]*size[ \t]*=[ \t]*(0|[1-9]\d*)(?=[ \t]*(?:[,}\]\r\n]|$))/g)) {
+    const digits = match[1]
+    // Full hashes and out-of-range integers remain candidates, including purely
+    // numeric hashes. This exception describes a count, not numeric SHA syntax.
+    if (digits !== undefined && Number.isSafeInteger(Number(digits))) offsets.add(match.index + match[0].length - digits.length)
+  }
+  return offsets
+}
+
 /**
  * Inspect a maintained source file against known commit identifiers.
  * @param file - Repository-relative path used in diagnostics and exclusions.
  * @param source - File text or a symlink's stored target.
  * @param commits - Lowercase, unambiguous full or abbreviated commit identifiers.
- * @returns One finding per line and reference kind; digests and other Git object types are accepted.
+ * @returns One finding per line and reference kind; TOML safe decimal size integers, digests and other Git object types are accepted.
  */
 export function findRepositoryReferences(
   file: string,
@@ -45,13 +74,17 @@ export function findRepositoryReferences(
 ): RepositoryReference[] {
   if (!isMaintained(file)) return []
   const references: RepositoryReference[] = []
+  const sizeOffsets = metadataSizeOffsets(file, source)
+  let lineOffset = 0
   for (const [index, line] of source.split('\n').entries()) {
     if (organizationUrl.test(canonicalReferenceText(line).replace(kitRepositoryUrl, ''))) {
       references.push({ file, line: index + 1, kind: 'organization-url' })
     }
-    if ([...line.matchAll(commitCandidate)].some(match => commits.has(match[0].toLowerCase()))) {
+    if ([...line.matchAll(commitCandidate)].some(match => commits.has(match[0].toLowerCase())
+      && !sizeOffsets.has(lineOffset + match.index))) {
       references.push({ file, line: index + 1, kind: 'commit-hash' })
     }
+    lineOffset += line.length + 1
   }
   return references
 }

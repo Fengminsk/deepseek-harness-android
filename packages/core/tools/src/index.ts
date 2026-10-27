@@ -1260,6 +1260,9 @@ export class ToolRuntime extends Service {
    * restriction, shadowing or disposal makes the former identity absent.
    * This is a same-process comparison token, not authority to execute a tool.
    * Callers must check it again at their dispatch boundary.
+   * @param name - the tool name as registered.
+   * @param scope - the viewing scope; omission selects the global view.
+   * @returns the identity of the visible registration, or undefined when none is visible.
    */
   registrationIdentity(name: string, scope?: ScopeKey): object | undefined {
     const registration = this.view(scope).visible.get(name)
@@ -1272,7 +1275,11 @@ export class ToolRuntime extends Service {
     return identity
   }
 
-  /** True only while this runtime is awaiting the body of this exact minted call. */
+  /**
+   * True only while this runtime is awaiting the body of this exact minted call.
+   * @param exec - the exact tool-run context minted by this runtime.
+   * @returns whether this runtime is currently awaiting that call's tool body.
+   */
   isActiveExecution(exec: ToolRunContext): boolean {
     return this.activeExecutions.has(exec)
   }

@@ -358,6 +358,9 @@ class ChatProjection {
           return;
         }
         final source = _record(data['source']);
+        // Durable machine receipts remain in the Session without adding a
+        // second message underneath every Linux tool invocation.
+        if (source?['kind'] == 'android-linux-receipt') return;
         final human = source?['kind'] == 'user';
         _put(
           ChatEntry(

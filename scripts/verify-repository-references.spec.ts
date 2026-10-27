@@ -72,6 +72,72 @@ describe('unique object-name prefix search', () => {
 })
 
 describe('maintained repository reference policy', () => {
+  const numericCommit = ['6344', '383'].join('')
+  const numericCommits = new Set([numericCommit])
+
+  it('accepts only decimal size values in valid TOML metadata, including uv inline records', () => {
+    for (const file of ['python/sdk/uv.lock', 'uv.lock', 'metadata.toml']) {
+      for (const source of [
+        `size = ${numericCommit}`,
+        `artifact = { url = "https://example.invalid/pkg.whl", hash = "sha256:${'a'.repeat(64)}", size = ${numericCommit} }`,
+        `[[wheels]]\nsize = ${numericCommit}\n`,
+        `"size" = ${numericCommit}\n`,
+        `'size' = ${numericCommit}\n`,
+        `artifact.size = ${numericCommit}\r\n`,
+      ]) expect(findRepositoryReferences(file, source, numericCommits)).toEqual([])
+    }
+  })
+
+  it('still rejects another numeric commit in a URL, hash, quoted value or comment on the size line', () => {
+    for (const source of [
+      `artifact = { size = ${numericCommit}, url = "https://example.invalid/commit/${numericCommit}" }`,
+      `artifact = { url = "https://example.invalid/commit/${numericCommit}", size = ${numericCommit} }`,
+      `artifact = { size = ${numericCommit}, hash = "${numericCommit}" }`,
+      `size = ${numericCommit} # commit ${numericCommit}`,
+      `size = "${numericCommit}"`,
+      `size = '${numericCommit}'`,
+      `size = ${numericCommit}\ncommit = "${numericCommit}"`,
+    ]) expect(findRepositoryReferences('uv.lock', source, numericCommits))
+      .toEqual([{ file: 'uv.lock', line: source.includes('\n') ? 2 : 1, kind: 'commit-hash' }])
+  })
+
+  it('does not mistake strings, multiline prose, comments or other fields for a size assignment', () => {
+    for (const source of [
+      `text = "size = ${numericCommit}"`,
+      `text = 'size = ${numericCommit}'`,
+      `text = """\nsize = ${numericCommit}\n"""`,
+      `text = '''\nsize = ${numericCommit}\n'''`,
+      `# size = ${numericCommit}`,
+      `artifact = { size = 1, commit = "${numericCommit}" }`,
+      `"not size" = ${numericCommit}`,
+      `resize = ${numericCommit}`,
+      `size = -${numericCommit}`,
+      `size = ${numericCommit}.0`,
+      `this is not TOML: size = ${numericCommit}`,
+    ]) expect(findRepositoryReferences('metadata.toml', source, numericCommits))
+      .toEqual([{ file: 'metadata.toml', line: source.includes('\n') ? 2 : 1, kind: 'commit-hash' }])
+  })
+
+  it('keeps numeric commits in ordinary documentation and unknown lock formats', () => {
+    for (const file of ['README.md', 'notes.txt', 'other.lock', 'source.ts']) {
+      expect(findRepositoryReferences(file, `size = ${numericCommit}`, numericCommits))
+        .toEqual([{ file, line: 1, kind: 'commit-hash' }])
+    }
+  })
+
+  it('retains full numeric hashes, other known hashes and organization URLs beside a metadata size', () => {
+    const fullNumeric = '1'.repeat(40), fullHex = 'ab'.repeat(20)
+    for (const full of [fullNumeric, fullHex]) {
+      const source = `artifact = { size = ${numericCommit}, hash = "${full}" }`
+      expect(findRepositoryReferences('uv.lock', source, new Set([numericCommit, full])))
+        .toEqual([{ file: 'uv.lock', line: 1, kind: 'commit-hash' }])
+    }
+    expect(findRepositoryReferences('uv.lock', `size = ${fullNumeric}`, new Set([fullNumeric])))
+      .toEqual([{ file: 'uv.lock', line: 1, kind: 'commit-hash' }])
+    expect(findRepositoryReferences('uv.lock', `size = ${numericCommit}\nurl = "${organizationUrl}"`, numericCommits))
+      .toEqual([{ file: 'uv.lock', line: 2, kind: 'organization-url' }])
+  })
+
   it('permits only the independent kit repository and its source URLs', () => {
     for (const suffix of ['', '.git', '/tree/main/packages/entry']) {
       expect(findRepositoryReferences('package.json', `${organizationUrl}/libreoffice-kit${suffix}`, new Set())).toEqual([])

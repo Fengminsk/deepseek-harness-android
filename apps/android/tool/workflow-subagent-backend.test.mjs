@@ -507,6 +507,7 @@ test('private DSL owner admits fixed guest source, binds original body and relea
     workspaceId: null, readablePaths: [], writablePaths: [], exactHosts: [],
     fileCallLimit: 0, networkCallLimit: 0 } }
   const calls = []
+  let nativeChildId
   let callbacks
   const transport = { async request(method, params) {
     calls.push(method)
@@ -521,12 +522,14 @@ test('private DSL owner admits fixed guest source, binds original body and relea
         action: 'WORKFLOW_BEGIN', value: {} })
       assert.equal(initialized.value.body, source.program)
       const childId = randomUUID()
+      nativeChildId = childId
       await callbacks.call({ ...params, callId: 2,
         action: 'WORKFLOW_START_CHILD', value: { prompt: 'Review a file' }, childId })
       await callbacks.call({ ...params, callId: 3, action: 'WORKFLOW_PROGRESS',
         value: [{ type: 'agent-start', info: { seq: 1, label: 'Review a file', childId } }] })
       assert.deepEqual(await owner.inspectRun({ sessionId: source.sessionId, runId: source.runId }),
-        { runId: source.runId, state: 'running', requiresReview: false })
+        { runId: source.runId, state: 'running', nativeState: 'ADMITTED',
+          pendingChildren: 1, requiresReview: false })
       const child = await callbacks.call({ ...params, callId: 4,
         action: 'WORKFLOW_CHILD_RESULT', value: { callId: 1 } })
       assert.equal(child.value.stopReason, 'completed')
@@ -537,6 +540,8 @@ test('private DSL owner admits fixed guest source, binds original body and relea
         action: 'WORKFLOW_DISPOSE_CHILD', value: { callId: 1 } })
       return true
     }
+    if (method === 'native.workflow.inspect') return { runId: source.runId, state: 'ADMITTED',
+      children: [{ childId: nativeChildId, state: 'LAUNCHING' }] }
     if (method === 'native.workflow.settle') return { runId: source.runId,
       sessionId: source.sessionId, state: 'COMPLETED',
       outputJson: '{"value":1,"stopReason":"completed","agentsStarted":1}', requiresReview: false }
@@ -550,7 +555,7 @@ test('private DSL owner admits fixed guest source, binds original body and relea
   assert.deepEqual(await owner.inspectRun({ sessionId: source.sessionId, runId: source.runId }),
     { runId: source.runId, state: 'completed', requiresReview: false })
   assert.deepEqual(calls, ['native.workflow.admit', 'native.workflow.bindCallbacks',
-    'native.workflow.execute', 'native.workflow.settle', 'native.workflow.release'])
+    'native.workflow.execute', 'native.workflow.inspect', 'native.workflow.settle', 'native.workflow.release'])
   const normalized = emitted.map(({ type, data }) => ({
     type, data: { ...data, ...(Object.hasOwn(data, 'childId') ? { childId: '[child]' } : {}) },
   }))
@@ -599,7 +604,7 @@ test('App-private background workflow is owned by the original jobs registry and
   assert.equal(started.runId, source.runId)
   assert.match(started.jobId, /^workflow-/)
   assert.equal(ctx.jobs.get(started.jobId, parent.id).status, 'running')
-  assert.throws(() => ctx.jobs.get(started.jobId, SessionId('foreign')), /not found|not owned|unknown|access/i)
+  assert.throws(() => ctx.jobs.get(started.jobId, SessionId('foreign')), /belongs to another session/i)
   while (!calls.includes('native.workflow.execute')) await new Promise(resolve => setTimeout(resolve, 1))
   assert.equal(ctx.jobs.get(started.jobId, parent.id).status, 'running')
   finishExecution(true)

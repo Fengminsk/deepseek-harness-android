@@ -20,8 +20,9 @@ export const name = 'tool-subagent-list-agents'
 export const inject = ['tools', 'subagents', 'agents']
 
 // A deployment may review this first-party read-only definition before
-// admitting it into a more restrictive execution carrier. Keep provenance
-// private to this module: a matching tool name or schema is not evidence.
+// admitting it into a more restrictive execution carrier. Keep the original
+// definition and captured registry private; matching a tool name or schema
+// does not establish that this module created the definition.
 // Cordis injects scope-local service proxies; a different Context's getters
 // cannot be compared by object identity even when they resolve the same owner.
 const firstPartyDefinitions = new WeakMap<ToolDefinition, {
@@ -29,7 +30,12 @@ const firstPartyDefinitions = new WeakMap<ToolDefinition, {
   readonly agents: Context['agents']
 }>()
 
-/** Attest the original definition and its captured live Agent registry. */
+/**
+ * Attest the original definition and its captured live Agent registry.
+ * @param definition - the candidate tool definition, compared by object identity.
+ * @param agent - the calling Agent instance to check against the captured registry.
+ * @returns whether this module created the exact definition and its captured registry still contains the same Agent instance.
+ */
 export function isFirstPartyListAgentsDefinition(
   definition: ToolDefinition,
   agent: Agent,

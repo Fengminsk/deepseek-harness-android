@@ -32,7 +32,8 @@ export function projectModelWorkflowForeground(receipt, ticket) {
  * start the native runner, while the model-facing path remains closed.
  */
 export function createAppOwnedModelWorkflowAdmission({
-  runtime, agents, agent, definition, registrationIdentity, issueHost, runPrepared,
+  runtime, agents, agent, definition, registrationIdentity, issueHost, runPrepared, startBackground,
+  modelAvailable,
   isAvailable = () => true,
 } = {}) {
   if (!runtime || typeof runtime.get !== 'function'
@@ -94,6 +95,7 @@ export function createAppOwnedModelWorkflowAdmission({
         deadlineMillis: host.deadlineMillis,
         maxTotalAgents: host.maxTotalAgents,
         maxConcurrentAgents: host.maxConcurrentAgents,
+        allowBackground: host.allowBackground === true,
       })
       if (!current(execution)) {
         throw new TypeError('Android workflow parent execution changed during draft preparation')
@@ -113,20 +115,27 @@ export function createAppOwnedModelWorkflowAdmission({
     /** Trusted App integration only. Consume before native admission; never replay. */
     executePrivate(ticket) {
       const owned = ownedDraft(ticket)
-      if (typeof runPrepared !== 'function') {
+      if (typeof (owned.draft.background ? startBackground : runPrepared) !== 'function') {
         throw new TypeError('Android workflow private runner is unavailable')
       }
       owned.used = true
       issuedDrafts.delete(ticket)
+      if (owned.draft.background) return startBackground({ prepared: owned.draft.execution,
+        parent: owned.execution.agent,
+        toolCall: { callId: owned.execution.callId, rootCallId: owned.execution.rootCallId } })
       return runPrepared({ prepared: owned.draft.execution,
         parent: owned.execution.agent, signal: owned.execution.signal })
     },
     /** Do not publish an executor until native/device acceptance opens it. */
     run(ticket) {
-      ownedDraft(ticket)
-      requireModelFacingIsolatedExecution()
+      const owned = ownedDraft(ticket)
+      if (modelAvailable === undefined) requireModelFacingIsolatedExecution()
+      else if (typeof modelAvailable !== 'function' || modelAvailable() !== true) {
+        throw Object.assign(new Error('Android workflow is unavailable until device acceptance'),
+          { code: 'ANDROID_WORKFLOW_UNAVAILABLE' })
+      }
       return Promise.resolve(admission.executePrivate(ticket))
-        .then(receipt => projectModelWorkflowForeground(receipt, ticket))
+        .then(receipt => owned.draft.background ? receipt : projectModelWorkflowForeground(receipt, ticket))
     },
   })
   issuedAdmissions.add(admission)

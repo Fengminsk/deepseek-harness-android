@@ -18,12 +18,12 @@ const launcherBytes = Buffer.from('fixture ARM64 launcher; intentionally not exe
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex')
 
 const manifest = {
-  format: 'pocket-linux-userland-v1',
+  format: 'pocket-linux-userland-v2',
   abi: 'arm64-v8a',
   architecture: 'aarch64',
   rootfs: { file: 'linux-rootfs.tar.gz', sha256: sha256(rootfsBytes), bytes: rootfsBytes.length },
   launcher: { file: 'libpocket_proot.so', sha256: sha256(launcherBytes), bytes: launcherBytes.length },
-  provenance: {
+  source: {
     sourceUrl: 'https://example.invalid/pinned-source',
     sourceRevision: 'a'.repeat(40),
     license: 'GPL-2.0-only',
@@ -49,9 +49,25 @@ test('accepts only matching pinned artifact bytes and identifies verification as
   assert.equal(result.rootfs.sha256, manifest.rootfs.sha256)
   assert.equal(result.launcher.sha256, manifest.launcher.sha256)
   assert.equal(result.executable, false)
+  assert.equal(result.format, 'pocket-linux-userland-v2')
+  assert.deepEqual(result.source, manifest.source)
+  assert.equal(Object.isFrozen(result.source), true)
   assert.equal(requireVerifiedLinuxUserlandImage(result), result)
   assert.throws(() => requireVerifiedLinuxUserlandImage({ ...result }),
     { code: 'LINUX_USERLAND_IMAGE_INVALID' })
+})
+
+test('rejects the old candidate format with regeneration guidance before file access', async () => {
+  const oldManifest = Object.freeze({ format: 'pocket-linux-userland-v1' })
+  await assert.rejects(verifyLinuxUserlandArtifacts({
+    manifest: oldManifest,
+    rootfsAssetDirectory: null,
+    nativeLibraryDirectory: null,
+  }), {
+    code: 'LINUX_USERLAND_IMAGE_INVALID',
+    message: 'Linux userland manifest v1 is unsupported; regenerate it as pocket-linux-userland-v2 with source URL, revision, and license',
+  })
+  assert.deepEqual(oldManifest, { format: 'pocket-linux-userland-v1' })
 })
 
 test('rejects path substitution, oversize, architecture and digest drift', async () => {
@@ -60,7 +76,7 @@ test('rejects path substitution, oversize, architecture and digest drift', async
     { ...manifest, rootfs: { ...manifest.rootfs, bytes: 97 * 1024 * 1024 } },
     { ...manifest, abi: 'x86_64' },
     { ...manifest, launcher: { ...manifest.launcher, sha256: '0'.repeat(64) } },
-    { ...manifest, provenance: { ...manifest.provenance, sourceRevision: 'latest' } },
+    { ...manifest, source: { ...manifest.source, sourceRevision: 'latest' } },
   ]) {
     await assert.rejects(
       verifyLinuxUserlandArtifacts({

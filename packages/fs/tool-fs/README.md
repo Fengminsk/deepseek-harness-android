@@ -86,6 +86,8 @@ Failures are normalized as `Error: <message>` with a structured code preserved f
 <a id="understand-the-implementation"></a>
 ## Understand the implementation
 
+`isFirstPartyReadDefinition` identifies the exact live `read` registration visible in the supplied caller scope. It rejects copied or retired definitions. The registered definition is frozen; consumers still dispatch through ToolRuntime so file policy, cancellation, and observation hooks apply. Identification grants no file access.
+
 <details>
 <summary>Implementation internals — click to expand</summary>
 

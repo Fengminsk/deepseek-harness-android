@@ -88,6 +88,17 @@ test('an unissued policy or nonempty file/network scope cannot become a workflow
   }), { code: 'ANDROID_WORKFLOW_SCOPE_UNAVAILABLE' })
 })
 
+test('only explicit App background policy permits an owned background draft', () => {
+  const draft = prepareModelWorkflow({ ...model(), run_in_background: true },
+    { ...host(), allowBackground: true })
+  assert.equal(draft.background, true)
+  assert.equal(draft.execution.sessionId, sessionId)
+  for (const run_in_background of ['true', 1, null]) {
+    assert.throws(() => prepareModelWorkflow({ ...model(), run_in_background },
+      { ...host(), allowBackground: true }), { code: 'ANDROID_WORKFLOW_MODEL_INVALID' })
+  }
+})
+
 test('execution gate stays closed and uncertain or failed output is withheld', () => {
   const draft = prepareModelWorkflow(model(), host())
   let called = false

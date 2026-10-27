@@ -1,0 +1,803 @@
+{
+  "schema": 1,
+  "architecture": "riscv64",
+  "index": {
+    "url": "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/APKINDEX.tar.gz",
+    "sha256": "64e046acf0a38d027c351301bfd1670fda7b951f5c234a3739018d3d7780eed9",
+    "signature": ".SIGN.RSA.alpine-devel@lists.alpinelinux.org-60ac2099.rsa.pub",
+    "keySha256": "db0b49163f07ffba64a5ca198bcf1688610b0bd1f0d8d5afeaf78559d73f2278",
+    "verified": true
+  },
+  "requested": [
+    "e2fsprogs",
+    "python3",
+    "git",
+    "curl",
+    "ca-certificates"
+  ],
+  "closures": {
+    "e2fsprogs": [
+      "e2fsprogs",
+      "e2fsprogs-libs",
+      "libblkid",
+      "libcom_err",
+      "libeconf",
+      "libuuid",
+      "musl"
+    ],
+    "python3": [
+      "gdbm",
+      "libbz2",
+      "libcrypto3",
+      "libexpat",
+      "libffi",
+      "libgcc",
+      "libncursesw",
+      "libpanelw",
+      "libssl3",
+      "libstdc++",
+      "mpdecimal",
+      "musl",
+      "ncurses-terminfo-base",
+      "python3",
+      "readline",
+      "sqlite-libs",
+      "xz-libs",
+      "zlib"
+    ],
+    "git": [
+      "brotli-libs",
+      "c-ares",
+      "ca-certificates-bundle",
+      "git",
+      "libcrypto3",
+      "libcurl",
+      "libexpat",
+      "libidn2",
+      "libpsl",
+      "libssl3",
+      "libunistring",
+      "musl",
+      "nghttp2-libs",
+      "pcre2",
+      "zlib",
+      "zstd-libs"
+    ],
+    "curl": [
+      "brotli-libs",
+      "c-ares",
+      "ca-certificates-bundle",
+      "curl",
+      "libcrypto3",
+      "libcurl",
+      "libidn2",
+      "libpsl",
+      "libssl3",
+      "libunistring",
+      "musl",
+      "nghttp2-libs",
+      "zlib",
+      "zstd-libs"
+    ],
+    "ca-certificates": [
+      "busybox",
+      "busybox-binsh",
+      "ca-certificates",
+      "libcrypto3",
+      "musl"
+    ]
+  },
+  "artifacts": [
+    {
+      "name": "brotli-libs",
+      "version": "1.1.1-r0",
+      "architecture": "riscv64",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/brotli-libs-1.1.1-r0.apk",
+      "sha256": "9242503378f28bcec2a4bb376eb4267936a8ca3d8fe7ef3e43b3d4a24352b102",
+      "apkChecksum": "Q1p08L1kNIj9PYH/H6LAom6pEyKNo=",
+      "installedBytes": 853480,
+      "license": "MIT",
+      "origin": "brotli",
+      "sourceRevision": "0b8db0af6fbe8b8bc7e50e5f64b2f88bc0d6aa16",
+      "dependencies": [
+        "so:libc.musl-riscv64.so.1"
+      ],
+      "payloadSha256": "bd6b21b26552afa05e6ccca6101112d5291bee0b18bb63dbf13f2f06bf3fca53",
+      "alreadyInMinirootfs": false
+    },
+    {
+      "name": "busybox",
+      "version": "1.37.0-r20",
+      "architecture": "riscv64",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/busybox-1.37.0-r20.apk",
+      "sha256": "467e8f01c30ff318e20e51c10dd93d1e170d39ceca95e89c8360984ef77ef0a2",
+      "apkChecksum": "Q1SGO8bTijoHaQgGFyXsq/sZxuPao=",
+      "installedBytes": 837836,
+      "license": "GPL-2.0-only",
+      "origin": "busybox",
+      "sourceRevision": "2e97d754a30d558f15524b8e422303c8a96832df",
+      "dependencies": [
+        "so:libc.musl-riscv64.so.1"
+      ],
+      "payloadSha256": "ae3c8a6f96743e5fb84af6235da837edab8d58cbb80250faced8c380e987fc63",
+      "alreadyInMinirootfs": true
+    },
+    {
+      "name": "busybox-binsh",
+      "version": "1.37.0-r20",
+      "architecture": "riscv64",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/busybox-binsh-1.37.0-r20.apk",
+      "sha256": "4e837680d62d645cf2b9a1781e5c07e364cf51b300ffb64df4b011c17f2d21c8",
+      "apkChecksum": "Q1rNSVswVIMaejMTeqWiumGToIotI=",
+      "installedBytes": 1,
+      "license": "GPL-2.0-only",
+      "origin": "busybox",
+      "sourceRevision": "2e97d754a30d558f15524b8e422303c8a96832df",
+      "dependencies": [
+        "busybox=1.37.0-r20"
+      ],
+      "payloadSha256": "a00c6b4bd5f9c98dd0c990b2cd01ed79beb449c16c10e4f3d4bb04ac9478e367",
+      "alreadyInMinirootfs": true
+    },
+    {
+      "name": "c-ares",
+      "version": "1.34.9-r0",
+      "architecture": "riscv64",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/c-ares-1.34.9-r0.apk",
+      "sha256": "62fbe53e5550c710ee2e497738308948f29846a6d1a1bacfb3f8c386d4950e9f",
+      "apkChecksum": "Q1FiBZN+HQmg53pkRtc7x39niLoDQ=",
+      "installedBytes": 231152,
+      "license": "MIT",
+      "origin": "c-ares",
+      "sourceRevision": "2abc7d1defd146f59390a22caf74efe85e5130d9",
+      "dependencies": [
+        "so:libc.musl-riscv64.so.1"
+      ],
+      "payloadSha256": "326e20e450c5fbae7532fa9a37a2be90ce24d6d6d1fb7f14f15c96cbcf59fa71",
+      "alreadyInMinirootfs": false
+    },
+    {
+      "name": "ca-certificates",
+      "version": "20261020-r0",
+      "architecture": "riscv64",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/ca-certificates-20261020-r0.apk",
+      "sha256": "a16d3bc210480634c9e3d2dac14ce70375c2016c26d7983acf64cd6d875704f5",
+      "apkChecksum": "Q1yjrMcKTjx0JKGpepGXaSdh+KpPo=",
+      "installedBytes": 207953,
+      "license": "MPL-2.0 AND MIT",
+      "origin": "ca-certificates",
+      "sourceRevision": "ce7bff87478cd936f5b7031ce822b02d4fdd313a",
+      "dependencies": [
+        "/bin/sh",
+        "so:libc.musl-riscv64.so.1",
+        "so:libcrypto.so.3"
+      ],
+      "payloadSha256": "11cb2790a6fea45e870676adc6bd5429d4f553bd422376a679016c948b7033e0",
+      "alreadyInMinirootfs": false
+    },
+    {
+      "name": "ca-certificates-bundle",
+      "version": "20261020-r0",
+      "architecture": "riscv64",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/ca-certificates-bundle-20261020-r0.apk",
+      "sha256": "2569e1165fba02f8b8d65575217f8bf2dfdcf4156e5001359329c9aca97509cd",
+      "apkChecksum": "Q1S0j4S2Jt6I+Ch50QIEvbuYBnpXs=",
+      "installedBytes": 178791,
+      "license": "MPL-2.0 AND MIT",
+      "origin": "ca-certificates",
+      "sourceRevision": "ce7bff87478cd936f5b7031ce822b02d4fdd313a",
+      "dependencies": [],
+      "payloadSha256": "d68acc8ea1db9889e80082373909fee7ecdde4ab704d1c825ecdda193bac8fac",
+      "alreadyInMinirootfs": true
+    },
+    {
+      "name": "curl",
+      "version": "8.14.1-r4",
+      "architecture": "riscv64",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/curl-8.14.1-r4.apk",
+      "sha256": "ec976154d708982e7b13d1672b657abd690c6346c1ee1d74f2e6c0fbdbd40c4e",
+      "apkChecksum": "Q1nckZoaZJAteuh5eduuIbRCUIKtk=",
+      "installedBytes": 287134,
+      "license": "curl",
+      "origin": "curl",
+      "sourceRevision": "d1a2a43ff0517fffb947e767cdaeee61e7376cf2",
+      "dependencies": [
+        "libcurl=8.14.1-r4",
+        "so:libc.musl-riscv64.so.1",
+        "so:libcurl.so.4",
+        "so:libz.so.1"
+      ],
+      "payloadSha256": "2e109ae2e5c006ea7001d665cbcdea0831542cae0ccb46803a59f420c4073ba3",
+      "alreadyInMinirootfs": false
+    },
+    {
+      "name": "e2fsprogs",
+      "version": "1.47.2-r2",
+      "architecture": "riscv64",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/e2fsprogs-1.47.2-r2.apk",
+      "sha256": "5071c3730534d6995095abdecd94b660803dc480007a86f7fe918046c7e54722",
+      "apkChecksum": "Q1R1BLfp8pMhAWJF/p9Rbytrg0Oc0=",
+      "installedBytes": 384586,
+      "license": "GPL-2.0-or-later AND LGPL-2.0-or-later AND BSD-3-Clause AND MIT",
+      "origin": "e2fsprogs",
+      "sourceRevision": "13f83cd1a99fa6ea58c6f8c3538971f2fb9ac634",
+      "dependencies": [
+        "so:libblkid.so.1",
+        "so:libc.musl-riscv64.so.1",
+        "so:libcom_err.so.2",
+        "so:libe2p.so.2",
+        "so:libext2fs.so.2",
+        "so:libuuid.so.1"
+      ],
+      "payloadSha256": "38ab0abb833ffff582d782c18813d4abb00877bd2957fd1382ac9531cfbb60f9",
+      "alreadyInMinirootfs": false
+    },
+    {
+      "name": "e2fsprogs-libs",
+      "version": "1.47.2-r2",
+      "architecture": "riscv64",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/e2fsprogs-libs-1.47.2-r2.apk",
+      "sha256": "7f834741ee734c457dadbe91bcde7c06590ca63e7730dfaef1adf0a4808f9f13",
+      "apkChecksum": "Q1uS0GaWBTqBibLGKQH55Ye12j4eY=",
+      "installedBytes": 422952,
+      "license": "GPL-2.0-or-later AND LGPL-2.0-or-later AND BSD-3-Clause AND MIT",
+      "origin": "e2fsprogs",
+      "sourceRevision": "13f83cd1a99fa6ea58c6f8c3538971f2fb9ac634",
+      "dependencies": [
+        "so:libc.musl-riscv64.so.1",
+        "so:libcom_err.so.2"
+      ],
+      "payloadSha256": "61969166805bdbab0963745b54e14f5c1aa41ced7a133d2d618433659e05b160",
+      "alreadyInMinirootfs": false
+    },
+    {
+      "name": "gdbm",
+      "version": "1.24-r0",
+      "architecture": "riscv64",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/gdbm-1.24-r0.apk",
+      "sha256": "70b33ed7a45c8efd4271b59b8a50f7de8988e826d2af56ca3ca417c0cc131e38",
+      "apkChecksum": "Q1AXHmlpm6/LksvbYWbZ4uRBVJ7y8=",
+      "installedBytes": 60872,
+      "license": "GPL-3.0-or-later",
+      "origin": "gdbm",
+      "sourceRevision": "cf76e1b436494c60e0c188400007dbf78bbff5f0",
+      "dependencies": [
+        "so:libc.musl-riscv64.so.1"
+      ],
+      "payloadSha256": "a1668694a877a82eeeecdbf4be7486b58efc9abd96ab332e6ed2d756500e4fa7",
+      "alreadyInMinirootfs": false
+    },
+    {
+      "name": "git",
+      "version": "2.49.1-r0",
+      "architecture": "riscv64",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/git-2.49.1-r0.apk",
+      "sha256": "435aab6e568dd0fc9d128214b91aae1582dfc6796ae70a2f6f90747cd18e48ef",
+      "apkChecksum": "Q1Myavd6IgyTFO3+MbNz3ai1+aDOQ=",
+      "installedBytes": 6145221,
+      "license": "GPL-2.0-only",
+      "origin": "git",
+      "sourceRevision": "d896b70b77339c50bea678a19895df6331872d82",
+      "dependencies": [
+        "so:libc.musl-riscv64.so.1",
+        "so:libcurl.so.4",
+        "so:libexpat.so.1",
+        "so:libpcre2-8.so.0",
+        "so:libz.so.1"
+      ],
+      "payloadSha256": "97f859f544dcd43d66e75b8d124228aadf61e07ad8b02775759ce350aeb23ecb",
+      "alreadyInMinirootfs": false
+    },
+    {
+      "name": "libblkid",
+      "version": "2.41.6-r1",
+      "architecture": "riscv64",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/libblkid-2.41.6-r1.apk",
+      "sha256": "4bb6905e9f395cf3eef1cfc26a300031cf645cf0a64201b9757361aa5cabbf60",
+      "apkChecksum": "Q10zSMofSnjKIuW/LnxUmBjr6ytHM=",
+      "installedBytes": 203520,
+      "license": "LGPL-2.1-or-later",
+      "origin": "util-linux",
+      "sourceRevision": "b91fb14e28957c6f5a13c02eb9ec136c82ebd50e",
+      "dependencies": [
+        "so:libc.musl-riscv64.so.1",
+        "so:libeconf.so.0"
+      ],
+      "payloadSha256": "cee62a5167ba9dfcbfea4c0e3eeec98e0792d0962e0948ee26e0505d98341188",
+      "alreadyInMinirootfs": false
+    },
+    {
+      "name": "libbz2",
+      "version": "1.0.8-r6",
+      "architecture": "riscv64",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/libbz2-1.0.8-r6.apk",
+      "sha256": "76767f573585693791cfd8117628579a8d01dc443ed5f5068196faca26992c5c",
+      "apkChecksum": "Q1ZTr1Udsm8feVS0iSFq92CE0P4I8=",
+      "installedBytes": 62168,
+      "license": "bzip2-1.0.6",
+      "origin": "bzip2",
+      "sourceRevision": "33283848034c9885d984c8e8697c645c57324938",
+      "dependencies": [
+        "so:libc.musl-riscv64.so.1"
+      ],
+      "payloadSha256": "af6b8eb04d343495344586b48a60a188e6f9d0de8d9ec6471a3bca3e74cc429e",
+      "alreadyInMinirootfs": false
+    },
+    {
+      "name": "libcom_err",
+      "version": "1.47.2-r2",
+      "architecture": "riscv64",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/libcom_err-1.47.2-r2.apk",
+      "sha256": "74ffaa9ab301cc9dde577ce97b218b710c85449dc06f5c9e3d5f77d509e6ab14",
+      "apkChecksum": "Q1v8T/niZIRQFQNsHnGnxM5I7e5zU=",
+      "installedBytes": 14040,
+      "license": "GPL-2.0-or-later AND LGPL-2.0-or-later AND BSD-3-Clause AND MIT",
+      "origin": "e2fsprogs",
+      "sourceRevision": "13f83cd1a99fa6ea58c6f8c3538971f2fb9ac634",
+      "dependencies": [
+        "so:libc.musl-riscv64.so.1"
+      ],
+      "payloadSha256": "2c0dcf961ed6ddb4a7bee9d7df88398637805b153381cf0a6aa3228fcc8609ea",
+      "alreadyInMinirootfs": false
+    },
+    {
+      "name": "libcrypto3",
+      "version": "3.5.9-r0",
+      "architecture": "riscv64",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/libcrypto3-3.5.9-r0.apk",
+      "sha256": "2bb9af0e10adf4620074c9315c0db57dcd8b1c0492172d6782f59bb20e122cd0",
+      "apkChecksum": "Q1yHuOHUQjXWKeIIMp2FWHv7U01kk=",
+      "installedBytes": 4101182,
+      "license": "Apache-2.0",
+      "origin": "openssl",
+      "sourceRevision": "b6d0d5c5639c0034e9073c39e9ff139e28e71818",
+      "dependencies": [
+        "so:libc.musl-riscv64.so.1"
+      ],
+      "payloadSha256": "4af273ac52e60935c2d11e291e073ad60d227c212e6b87c45c98ce1eecfce293",
+      "alreadyInMinirootfs": true
+    },
+    {
+      "name": "libcurl",
+      "version": "8.14.1-r4",
+      "architecture": "riscv64",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/libcurl-8.14.1-r4.apk",
+      "sha256": "aa18ec4b4134354f7238809b1675ce71f53c162eef0928581a448274e8768641",
+      "apkChecksum": "Q13qxYu93MnJFCjzBIyxSnerW7BhE=",
+      "installedBytes": 640267,
+      "license": "curl",
+      "origin": "curl",
+      "sourceRevision": "d1a2a43ff0517fffb947e767cdaeee61e7376cf2",
+      "dependencies": [
+        "ca-certificates-bundle",
+        "so:libbrotlidec.so.1",
+        "so:libc.musl-riscv64.so.1",
+        "so:libcares.so.2",
+        "so:libcrypto.so.3",
+        "so:libidn2.so.0",
+        "so:libnghttp2.so.14",
+        "so:libpsl.so.5",
+        "so:libssl.so.3",
+        "so:libz.so.1",
+        "so:libzstd.so.1"
+      ],
+      "payloadSha256": "a2cd6234a2d9d8986094e0b7fdae086eae00d639a517fdad2092719e69b36820",
+      "alreadyInMinirootfs": false
+    },
+    {
+      "name": "libeconf",
+      "version": "0.6.3-r0",
+      "architecture": "riscv64",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/libeconf-0.6.3-r0.apk",
+      "sha256": "7ae8936c81b2fc53f1ebc010693b88c9d2709cb6a3791041d16b1a66d2f2e458",
+      "apkChecksum": "Q1YJjwLl4BiOKsG5Sm/AAL+ir0Hw4=",
+      "installedBytes": 57288,
+      "license": "MIT",
+      "origin": "libeconf",
+      "sourceRevision": "1e0aa723fba50417893fe5f6cf72f76d044b8192",
+      "dependencies": [
+        "so:libc.musl-riscv64.so.1"
+      ],
+      "payloadSha256": "e9465ae54622d178a6f295dde82b7ad742a7dadbc6b7416dae3d032d583af345",
+      "alreadyInMinirootfs": false
+    },
+    {
+      "name": "libexpat",
+      "version": "2.9.0-r0",
+      "architecture": "riscv64",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/libexpat-2.9.0-r0.apk",
+      "sha256": "e81ccecbe5b7753bdefdee6f32324f9253879ba4cebe01dcf83ec22e186ee37c",
+      "apkChecksum": "Q1Betv/BSeK2KckOnbG3uAsJ2yNNI=",
+      "installedBytes": 132824,
+      "license": "MIT",
+      "origin": "expat",
+      "sourceRevision": "f71ec7147f3df6e984064717d4200875fc8834c4",
+      "dependencies": [
+        "so:libc.musl-riscv64.so.1"
+      ],
+      "payloadSha256": "91547fb090a67cbfed34494e804df5fb2df7f62bb74c57d3a385d1b68f005f4d",
+      "alreadyInMinirootfs": false
+    },
+    {
+      "name": "libffi",
+      "version": "3.4.8-r0",
+      "architecture": "riscv64",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/libffi-3.4.8-r0.apk",
+      "sha256": "b37f5365f3ec64ef9e10e8dc083bde800833e9612f958afb98123b597d169015",
+      "apkChecksum": "Q1V9O3Pdwjne3M70fbVGe7Gb7K/lc=",
+      "installedBytes": 26504,
+      "license": "MIT",
+      "origin": "libffi",
+      "sourceRevision": "be5e49159a2ccca93a3290af3d8ab25443523363",
+      "dependencies": [
+        "so:libc.musl-riscv64.so.1"
+      ],
+      "payloadSha256": "ee7e7dd10f1acc90ff2a72dba2bc4dd62914e155c4bc3b877e20e25403e7e244",
+      "alreadyInMinirootfs": false
+    },
+    {
+      "name": "libgcc",
+      "version": "14.2.0-r6",
+      "architecture": "riscv64",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/libgcc-14.2.0-r6.apk",
+      "sha256": "3962255abb95c10d1400883daf823cab3d04779ea8886a8e44d61c98caa8ee55",
+      "apkChecksum": "Q1vLPJu2CUoTKY17xcogDqvHNg+uk=",
+      "installedBytes": 112432,
+      "license": "GPL-2.0-or-later AND LGPL-2.1-or-later",
+      "origin": "gcc",
+      "sourceRevision": "fbf60319be3bbaf6dd32ef55cc6fb7189e05c266",
+      "dependencies": [
+        "so:libc.musl-riscv64.so.1"
+      ],
+      "payloadSha256": "7645ca5b3e301814d36bf3d2d8b0eedcd2aa096b79deb352287832f436be7ab9",
+      "alreadyInMinirootfs": false
+    },
+    {
+      "name": "libidn2",
+      "version": "2.3.7-r0",
+      "architecture": "riscv64",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/libidn2-2.3.7-r0.apk",
+      "sha256": "5a956535be25c226dfbde8dc51126944a41436ce888fa9d5ea130993969462e3",
+      "apkChecksum": "Q16aqfHbx1TxwpvGNi45Jo+1pyaN0=",
+      "installedBytes": 190416,
+      "license": "GPL-2.0-or-later OR LGPL-3.0-or-later",
+      "origin": "libidn2",
+      "sourceRevision": "1cdcdd0eccbee1f60078417a7aaf83f92f6e6754",
+      "dependencies": [
+        "so:libc.musl-riscv64.so.1",
+        "so:libunistring.so.5"
+      ],
+      "payloadSha256": "799a01438e45d570ddb0e9ed66b4959274ff333ccfb86087ee52a187bbe218ca",
+      "alreadyInMinirootfs": false
+    },
+    {
+      "name": "libncursesw",
+      "version": "6.5_p20250503-r0",
+      "architecture": "riscv64",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/libncursesw-6.5_p20250503-r0.apk",
+      "sha256": "7d88384bd34c276bafcaae52289e62b895bc5265f74369dc0ad523ef204d9607",
+      "apkChecksum": "Q13VNvtugzAucfI6EK1k5ka7T8M9U=",
+      "installedBytes": 355176,
+      "license": "X11",
+      "origin": "ncurses",
+      "sourceRevision": "3fefbe8dda8b3e85458edb190e2f3a69ad16035c",
+      "dependencies": [
+        "ncurses-terminfo-base=6.5_p20250503-r0",
+        "so:libc.musl-riscv64.so.1"
+      ],
+      "payloadSha256": "7d36ca5d53b2f6d31839f0911d5bf4590da29d3416005c03ef198bff420a5dc2",
+      "alreadyInMinirootfs": false
+    },
+    {
+      "name": "libpanelw",
+      "version": "6.5_p20250503-r0",
+      "architecture": "riscv64",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/libpanelw-6.5_p20250503-r0.apk",
+      "sha256": "eab3cd70fb3f849029d3abfc766a51f437454698aa7463e78b82106c5d0aaafb",
+      "apkChecksum": "Q1whf+ywt6PhAaeMEZXoqaGkCN+Eo=",
+      "installedBytes": 9792,
+      "license": "X11",
+      "origin": "ncurses",
+      "sourceRevision": "3fefbe8dda8b3e85458edb190e2f3a69ad16035c",
+      "dependencies": [
+        "ncurses-terminfo-base=6.5_p20250503-r0",
+        "so:libc.musl-riscv64.so.1",
+        "so:libncursesw.so.6"
+      ],
+      "payloadSha256": "d251e1cfee7e793a9a13df13949ae62b3c7a02f19ce9141cf6b974e93b872824",
+      "alreadyInMinirootfs": false
+    },
+    {
+      "name": "libpsl",
+      "version": "0.21.5-r3",
+      "architecture": "riscv64",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/libpsl-0.21.5-r3.apk",
+      "sha256": "82e4cfade01321a9746764c7999a3f2193b2defbed5defe9de30004fe5422c75",
+      "apkChecksum": "Q1zvgVjo5lWrmpQE4Cuonq3b2haik=",
+      "installedBytes": 67368,
+      "license": "MIT",
+      "origin": "libpsl",
+      "sourceRevision": "4cf07ce428e77d8bca8e45258ba1937db8b18661",
+      "dependencies": [
+        "so:libc.musl-riscv64.so.1",
+        "so:libidn2.so.0",
+        "so:libunistring.so.5"
+      ],
+      "payloadSha256": "a90c25c164d251223b34a5b2cd4f60cff93fc9b9b969e93e650293e10b6b5084",
+      "alreadyInMinirootfs": false
+    },
+    {
+      "name": "libssl3",
+      "version": "3.5.9-r0",
+      "architecture": "riscv64",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/libssl3-3.5.9-r0.apk",
+      "sha256": "528e80a3ef436e662adb66be1638454cc435c28cf4df678eb17332e99d0c2ec5",
+      "apkChecksum": "Q1/XK0YQUCk1dwxZc7wYGv3e0y/xE=",
+      "installedBytes": 806752,
+      "license": "Apache-2.0",
+      "origin": "openssl",
+      "sourceRevision": "b6d0d5c5639c0034e9073c39e9ff139e28e71818",
+      "dependencies": [
+        "libcrypto3=3.5.9-r0",
+        "so:libc.musl-riscv64.so.1",
+        "so:libcrypto.so.3"
+      ],
+      "payloadSha256": "2fd92736bff0676bd8f9238b9e89dfb47ff433efc6c881c635c2cd688522832b",
+      "alreadyInMinirootfs": true
+    },
+    {
+      "name": "libstdc++",
+      "version": "14.2.0-r6",
+      "architecture": "riscv64",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/libstdc++-14.2.0-r6.apk",
+      "sha256": "01f39aabb27a201645ac274c3e54019c6a5f1f8658d814edbaca79c6c96a595f",
+      "apkChecksum": "Q13Tkmu63VGL9jfyseC2NlkH1rzDI=",
+      "installedBytes": 2410904,
+      "license": "GPL-2.0-or-later AND LGPL-2.1-or-later",
+      "origin": "gcc",
+      "sourceRevision": "fbf60319be3bbaf6dd32ef55cc6fb7189e05c266",
+      "dependencies": [
+        "so:libc.musl-riscv64.so.1",
+        "so:libgcc_s.so.1"
+      ],
+      "payloadSha256": "4d44d5d88eb9d884a64890b0cc59ade22d86fca9c539527b9c7d6856c7bec949",
+      "alreadyInMinirootfs": false
+    },
+    {
+      "name": "libunistring",
+      "version": "1.3-r0",
+      "architecture": "riscv64",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/libunistring-1.3-r0.apk",
+      "sha256": "76ee5ab5fc880db1498ae2d8481981d323af67e04aa7591ca3fbda6a86587cb8",
+      "apkChecksum": "Q1NJzGSQYvvBUBHRfC4864301V4Lk=",
+      "installedBytes": 1881904,
+      "license": "GPL-2.0-or-later OR LGPL-3.0-or-later",
+      "origin": "libunistring",
+      "sourceRevision": "22200a467cea998010743cc288889dbde0496d4a",
+      "dependencies": [
+        "so:libc.musl-riscv64.so.1"
+      ],
+      "payloadSha256": "c8963145371b75306f69e11e4447e899369aaff6df4b8133eb9a7f842d7f72c1",
+      "alreadyInMinirootfs": false
+    },
+    {
+      "name": "libuuid",
+      "version": "2.41.6-r1",
+      "architecture": "riscv64",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/libuuid-2.41.6-r1.apk",
+      "sha256": "21535af628f24b0f3d3f1ce38850230878efe9375b86d012181cce9dcf058983",
+      "apkChecksum": "Q1C24AGTj20ssQ0HHFiIFj8cW5AO8=",
+      "installedBytes": 30648,
+      "license": "BSD-3-Clause",
+      "origin": "util-linux",
+      "sourceRevision": "b91fb14e28957c6f5a13c02eb9ec136c82ebd50e",
+      "dependencies": [
+        "so:libc.musl-riscv64.so.1"
+      ],
+      "payloadSha256": "4dad7ff85d1940c8a93f060add082360650926a1de8a8a794fb067593aec7077",
+      "alreadyInMinirootfs": false
+    },
+    {
+      "name": "mpdecimal",
+      "version": "4.0.1-r0",
+      "architecture": "riscv64",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/mpdecimal-4.0.1-r0.apk",
+      "sha256": "4a0637470927484154bf75fa1b2c6580068a19979bcbf9164539ba29e585cc01",
+      "apkChecksum": "Q1l0m4KKh5jx1y3MJlhc9DhoDY+iU=",
+      "installedBytes": 180272,
+      "license": "BSD-2-Clause",
+      "origin": "mpdecimal",
+      "sourceRevision": "c0519b85456e9b838e3142e1d233aab0b433b476",
+      "dependencies": [
+        "so:libc.musl-riscv64.so.1",
+        "so:libgcc_s.so.1",
+        "so:libstdc++.so.6"
+      ],
+      "payloadSha256": "d5b000d2a34b1244755965c32fbb42733b48df82a2a8b26e1b135fbb16a4bc86",
+      "alreadyInMinirootfs": false
+    },
+    {
+      "name": "musl",
+      "version": "1.2.5-r13",
+      "architecture": "riscv64",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/musl-1.2.5-r13.apk",
+      "sha256": "27760752b676b78f1edca22b7d933515ea9ed3596bb7378da8d2bb81c873a3e6",
+      "apkChecksum": "Q1Qfl40Ai04XGebM+nry3jh7OfTdQ=",
+      "installedBytes": 613008,
+      "license": "MIT",
+      "origin": "musl",
+      "sourceRevision": "ddaf59b84bc6983a37d6e24d2210c2c4791642bb",
+      "dependencies": [],
+      "payloadSha256": "c66ecf8db17a1368efdfb6beba0864cbb4a74a78d7010e8d1c9d81e24275c891",
+      "alreadyInMinirootfs": true
+    },
+    {
+      "name": "ncurses-terminfo-base",
+      "version": "6.5_p20250503-r0",
+      "architecture": "riscv64",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/ncurses-terminfo-base-6.5_p20250503-r0.apk",
+      "sha256": "8e523158d782d13d311fffde76d891812be9e4e0d5b4e30dd14ad1c21848243a",
+      "apkChecksum": "Q12acVAwaG6lfGTjpXX6eVNVl7e6s=",
+      "installedBytes": 101107,
+      "license": "X11",
+      "origin": "ncurses",
+      "sourceRevision": "3fefbe8dda8b3e85458edb190e2f3a69ad16035c",
+      "dependencies": [],
+      "payloadSha256": "4f087ed4d1bee890461f98eca44c61144278ca106eddc201873af4ca22909f79",
+      "alreadyInMinirootfs": false
+    },
+    {
+      "name": "nghttp2-libs",
+      "version": "1.69.0-r0",
+      "architecture": "riscv64",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/nghttp2-libs-1.69.0-r0.apk",
+      "sha256": "3d554fbada551f44c8e1dda4581cb531789e7ebd80a6f3aaf97e0e95280d993d",
+      "apkChecksum": "Q16F7RW5w2+Q5YBD/tXNEC6dD5YmU=",
+      "installedBytes": 128792,
+      "license": "MIT",
+      "origin": "nghttp2",
+      "sourceRevision": "87de39802b2c34c9a7c62a52b3e39e05af1c974e",
+      "dependencies": [
+        "so:libc.musl-riscv64.so.1"
+      ],
+      "payloadSha256": "7c947a730c2a1cd6af6fcac69e655bf740a1e02ed605d9cf5013cff25aea11c7",
+      "alreadyInMinirootfs": false
+    },
+    {
+      "name": "pcre2",
+      "version": "10.46-r1",
+      "architecture": "riscv64",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/pcre2-10.46-r1.apk",
+      "sha256": "f7663832d8a2661b17bbd6552d11ebd523c6049d121f8fe9826946aed9c72225",
+      "apkChecksum": "Q1+t1Fhi2CqhZf9Sva/oOK1cGTo7Y=",
+      "installedBytes": 659112,
+      "license": "BSD-3-Clause",
+      "origin": "pcre2",
+      "sourceRevision": "f5ca111ded52f3c1f4298b09e118af54fba80aa1",
+      "dependencies": [
+        "so:libc.musl-riscv64.so.1"
+      ],
+      "payloadSha256": "34523454d737860c174370925089948f004383f0e17996131eb7d225f2a09386",
+      "alreadyInMinirootfs": false
+    },
+    {
+      "name": "python3",
+      "version": "3.12.15-r0",
+      "architecture": "riscv64",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/python3-3.12.15-r0.apk",
+      "sha256": "46237d26a10495faf777e26032b381c88f83a131bf5b961e87da2c258b22d2c9",
+      "apkChecksum": "Q1+YLJXSDFdQet64uVNHUkBYm5BqQ=",
+      "installedBytes": 23841292,
+      "license": "PSF-2.0",
+      "origin": "python3",
+      "sourceRevision": "18ae07d47fb83eecf3343ba1d41fddb4b70b116d",
+      "dependencies": [
+        "libssl3>=3.3.0",
+        "libexpat>=2.8.0",
+        "so:libbz2.so.1",
+        "so:libc.musl-riscv64.so.1",
+        "so:libcrypto.so.3",
+        "so:libexpat.so.1",
+        "so:libffi.so.8",
+        "so:libgdbm_compat.so.4",
+        "so:liblzma.so.5",
+        "so:libmpdec.so.4",
+        "so:libncursesw.so.6",
+        "so:libpanelw.so.6",
+        "so:libreadline.so.8",
+        "so:libsqlite3.so.0",
+        "so:libssl.so.3",
+        "so:libz.so.1"
+      ],
+      "payloadSha256": "848013c544d11b0ef0406f2d3df20f70307211fff37ef7ded353c4a913d53e6a",
+      "alreadyInMinirootfs": false
+    },
+    {
+      "name": "readline",
+      "version": "8.2.13-r1",
+      "architecture": "riscv64",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/readline-8.2.13-r1.apk",
+      "sha256": "4b6c7e5fd085d21aa6c2f527aec4a782111dc462615213953d9c44753e7e05fa",
+      "apkChecksum": "Q1zZ+KM0bFusALJFCAH6L5Uwa0jpA=",
+      "installedBytes": 283012,
+      "license": "GPL-3.0-or-later",
+      "origin": "readline",
+      "sourceRevision": "be0833caee3020f089f02c5d7223e971a9a11ffb",
+      "dependencies": [
+        "so:libc.musl-riscv64.so.1",
+        "so:libncursesw.so.6"
+      ],
+      "payloadSha256": "a00cd48549c68bdc2074695e8640027edd40da2b976d2ff7a364e60714cd4961",
+      "alreadyInMinirootfs": false
+    },
+    {
+      "name": "sqlite-libs",
+      "version": "3.49.2-r1",
+      "architecture": "riscv64",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/sqlite-libs-3.49.2-r1.apk",
+      "sha256": "fe76441a09fee8f2926db452762b0186ffb30fd7f083d445f4da4c7a86da9560",
+      "apkChecksum": "Q1Gzpmwtp+UwMff1SN/6Hx6QD1iZE=",
+      "installedBytes": 1271696,
+      "license": "blessing",
+      "origin": "sqlite",
+      "sourceRevision": "dac9cea7503a4e9b84d647aab2492d733ac4ac8c",
+      "dependencies": [
+        "so:libc.musl-riscv64.so.1"
+      ],
+      "payloadSha256": "242321245d2ebcd04ab9910cc4f4a5d6844a02d539d590194c6d34a9a8f0ec3c",
+      "alreadyInMinirootfs": false
+    },
+    {
+      "name": "xz-libs",
+      "version": "5.8.4-r0",
+      "architecture": "riscv64",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/xz-libs-5.8.4-r0.apk",
+      "sha256": "9af5be2301d1742764e086f920d49abaebca0414fcd1ad18641eaa4d8502aebe",
+      "apkChecksum": "Q1QWc0jWfqTR7yY9Rq5Jw0zXVkHh0=",
+      "installedBytes": 190168,
+      "license": "GPL-2.0-or-later AND 0BSD AND Public-Domain AND LGPL-2.1-or-later",
+      "origin": "xz",
+      "sourceRevision": "4ad8da6dc8e2b7ed46653b9844835babc3a166ae",
+      "dependencies": [
+        "so:libc.musl-riscv64.so.1"
+      ],
+      "payloadSha256": "ba705b8bb42c7da1f65ec538be913266799228e7fa80c73c38d939aa576e6848",
+      "alreadyInMinirootfs": false
+    },
+    {
+      "name": "zlib",
+      "version": "1.3.2-r1",
+      "architecture": "riscv64",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/zlib-1.3.2-r1.apk",
+      "sha256": "9dfa50a52957f9d04b90b70c9fdfb08e1adca326fc57a3552d6e41047434e02c",
+      "apkChecksum": "Q1SJAONBMNuv6cMipwUJJ8lIkTI4w=",
+      "installedBytes": 83832,
+      "license": "Zlib",
+      "origin": "zlib",
+      "sourceRevision": "121fc97db0e7c59db704891b6d7ef83ae5df2cc2",
+      "dependencies": [
+        "so:libc.musl-riscv64.so.1"
+      ],
+      "payloadSha256": "a0ce81ec350a2eca810cd61913e2d18d8b029df77fc8e859150502d8548eb950",
+      "alreadyInMinirootfs": true
+    },
+    {
+      "name": "zstd-libs",
+      "version": "1.5.7-r0",
+      "architecture": "riscv64",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/zstd-libs-1.5.7-r0.apk",
+      "sha256": "28bb837f617870a996009130c938ad12075f942738cfcd1390251720c78f0b8d",
+      "apkChecksum": "Q1WJrhkryY5hHm3SKHUiyLrdbgjyQ=",
+      "installedBytes": 689976,
+      "license": "BSD-3-Clause OR GPL-2.0-or-later",
+      "origin": "zstd",
+      "sourceRevision": "fc7fd35c7bf99156ae31962877c074f679f45b73",
+      "dependencies": [
+        "so:libc.musl-riscv64.so.1"
+      ],
+      "payloadSha256": "ee1d0a9d034a6dbd6023683924b8da0a54699c85260132fdc806df03871c32c5",
+      "alreadyInMinirootfs": false
+    }
+  ],
+  "totalInstalledBytes": 48755430
+}

@@ -142,7 +142,7 @@ export function parseInstalledVersion(output, packageName = PACKAGE) {
 }
 
 export function parseInstrumentation(output, expectedPhase, token, expected = null,
-  { requireSafGrant = false, requireOffline = false, requireSafReadable = false } = {}) {
+  { requireSafGrant = false, requireOffline = false, requireSafReadable = false, requireSessionFiles = false } = {}) {
   if (!TOKEN.test(token)) throw new Error('Invalid upgrade test token')
   const values = new Map()
   for (const match of output.matchAll(/^INSTRUMENTATION_RESULT: ([A-Za-z][A-Za-z0-9]*)=(.*)$/gm)) {
@@ -160,6 +160,9 @@ export function parseInstrumentation(output, expectedPhase, token, expected = nu
   const safDocumentBytesText = values.get('safDocumentBytes')
   const safDocumentBytes = /^(0|[1-9]\d*)$/.test(safDocumentBytesText ?? '')
     ? Number(safDocumentBytesText) : NaN
+  const sessionFilesSha256 = values.get('sessionFilesSha256')
+  const sessionFileCount = Number(values.get('sessionFileCount'))
+  const sessionFileBytes = Number(values.get('sessionFileBytes'))
   const grantCountText = values.get('safGrantCount')
   const safGrantCount = /^(0|[1-9]\d*)$/.test(grantCountText ?? '') ? Number(grantCountText) : NaN
   const pidText = values.get('processPid')
@@ -177,6 +180,11 @@ export function parseInstrumentation(output, expectedPhase, token, expected = nu
       (requireOffline && internetNetworkCount !== 0) ||
       !DIGEST.test(canarySha256 ?? '') || !DIGEST.test(credentialSha256 ?? '') ||
       !DIGEST.test(safGrantSha256 ?? '') ||
+      (requireSessionFiles && (!DIGEST.test(sessionFilesSha256 ?? '') ||
+        !Number.isSafeInteger(sessionFileCount) || sessionFileCount < 1 || sessionFileCount > 20000 ||
+        !Number.isSafeInteger(sessionFileBytes) || sessionFileBytes < 1 || sessionFileBytes > 512 * 1024 * 1024 ||
+        (expected && (sessionFilesSha256 !== expected.sessionFilesSha256 ||
+          sessionFileCount !== expected.sessionFileCount || sessionFileBytes !== expected.sessionFileBytes)))) ||
       (requireSafReadable && (!DIGEST.test(safRootSha256 ?? '') ||
         !DIGEST.test(safDocumentIdSha256 ?? '') ||
         !DIGEST.test(safDocumentSha256 ?? '') ||
@@ -194,6 +202,7 @@ export function parseInstrumentation(output, expectedPhase, token, expected = nu
   }
   return { phase: expectedPhase, token, versionCode, processPid, canarySha256,
     credentialSha256, safGrantCount, safGrantSha256, internetNetworkCount,
+    ...(requireSessionFiles ? { sessionFilesSha256, sessionFileCount, sessionFileBytes } : {}),
     ...(requireSafReadable ? { safRootSha256, safDocumentIdSha256, safDocumentSha256,
       safDocumentBytes } : {}),
     ...(expectedPhase === 'cleanup' ? { cleaned: true } : {}) }
@@ -284,6 +293,8 @@ async function main(args) {
   const oldApk = await fingerprint(argument(args, '--old-apk'))
   const newApk = await fingerprint(argument(args, '--new-apk'))
   const testApk = await fingerprint(argument(args, '--test-apk'))
+  const oldTestApk = args.includes('--old-test-apk')
+    ? await fingerprint(argument(args, '--old-test-apk')) : testApk
   if (new Set([oldApk.path, newApk.path, testApk.path]).size !== 3) {
     throw new Error('Old, new and AndroidTest APKs must be distinct')
   }
@@ -297,6 +308,14 @@ async function main(args) {
   const identity = validateArtifacts(old, next, test)
   requireUpgradeInstrumentation(await run(tools.aapt2,
     ['dump', 'xmltree', '--file', 'AndroidManifest.xml', testApk.path], 30_000))
+  if (oldTestApk !== testApk) {
+    const oldTest = await inspect(oldTestApk)
+    if (oldTest.packageName !== `${PACKAGE}.test` || oldTest.certificate !== identity.certificate) {
+      throw new Error('Old instrumentation package or signer differs')
+    }
+    requireUpgradeInstrumentation(await run(tools.aapt2,
+      ['dump', 'xmltree', '--file', 'AndroidManifest.xml', oldTestApk.path], 30_000))
+  }
   const adb = args.includes('--adb') ? resolve(argument(args, '--adb')) : tools.adb
   const serial = connectedDevice(await run(adb, ['devices'], 15_000),
     args.includes('--serial') ? argument(args, '--serial') : undefined)
@@ -308,6 +327,10 @@ async function main(args) {
     args.includes('--allow-existing'))
   const requireSafGrant = args.includes('--require-saf-grant') || requireSafReadable
   const requireOffline = args.includes('--require-device-offline')
+  const requireSessionFiles = args.includes('--require-session-files')
+  if (requireSessionFiles && (!existed || !args.includes('--allow-existing'))) {
+    throw new Error('Session file verification requires the existing old App and --allow-existing')
+  }
   if (requireSafGrant && (!existed || !args.includes('--allow-existing'))) {
     throw new Error('SAF grant verification requires the existing old App and --allow-existing')
   }
@@ -325,7 +348,7 @@ async function main(args) {
     await device(['shell', 'dumpsys', 'package', PACKAGE], 15_000))
   await install(oldApk)
   if (await installedVersion() !== old.versionCode) throw new Error('Old APK installation version differs')
-  await install(testApk)
+  await install(oldTestApk)
   const token = randomBytes(16).toString('hex')
   const phaseExtras = (name, expected) => {
     const extras = ['-e', 'phase', name, '-e', 'token', token]
@@ -333,10 +356,13 @@ async function main(args) {
     if (requireSafReadable) extras.push('-e', 'safReadablePathBase64',
       encodeSafReadablePath(safReadablePath))
     if (requireOffline) extras.push('-e', 'requireOffline', 'true')
+    if (requireSessionFiles) extras.push('-e', 'requireSessionFiles', 'true')
     if (expected) extras.push('-e', 'canarySha256', expected.canarySha256,
       '-e', 'credentialSha256', expected.credentialSha256,
       '-e', 'safGrantCount', String(expected.safGrantCount),
       '-e', 'safGrantSha256', expected.safGrantSha256)
+    if (expected && requireSessionFiles) extras.push('-e', 'sessionFilesSha256', expected.sessionFilesSha256,
+      '-e', 'sessionFileCount', String(expected.sessionFileCount), '-e', 'sessionFileBytes', String(expected.sessionFileBytes))
     if (expected && requireSafReadable) extras.push('-e', 'safRootSha256', expected.safRootSha256,
       '-e', 'safDocumentIdSha256', expected.safDocumentIdSha256,
       '-e', 'safDocumentSha256', expected.safDocumentSha256,
@@ -346,7 +372,7 @@ async function main(args) {
   const phase = async (name, expected) => {
     return parseInstrumentation(await device(['shell', 'am', 'instrument', '-w', '-r',
       ...phaseExtras(name, expected), RUNNER], 120_000), name, token, expected,
-      { requireSafGrant, requireOffline, requireSafReadable })
+      { requireSafGrant, requireOffline, requireSafReadable, requireSessionFiles })
   }
   process.stderr.write(`Upgrade acceptance token=${token}; a failed run may retain its synthetic canary.\n`)
   const seeded = await phase('seed')
@@ -390,14 +416,16 @@ async function main(args) {
   }
   await install(newApk)
   if (await installedVersion() !== next.versionCode) throw new Error('New APK installation version differs')
+  if (oldTestApk !== testApk) await install(testApk)
   const verified = await phase('verify', seeded)
   if (verified.versionCode !== identity.newVersionCode) throw new Error('Verification ran under a different App version')
   const cleaned = await phase('cleanup', seeded)
   if (cleaned.versionCode !== identity.newVersionCode) throw new Error('Cleanup ran under a different App version')
-  process.stdout.write(`${JSON.stringify({ package: PACKAGE, serial, oldApk, newApk, testApk,
+  process.stdout.write(`${JSON.stringify({ package: PACKAGE, serial, oldApk, newApk, oldTestApk, testApk,
     certificateSha256: identity.certificate, seeded, verified, cleaned,
     androidPackageManagerUpgradeTested: true, keystoreTested: true,
     privateNoBackupDataTested: true, realSessionTested: false,
+    realSessionFilesRetained: requireSessionFiles,
     safGrantMetadataRetained: requireSafGrant, safDocumentReadableTested: requireSafReadable,
     androidProcessDeathTested: observedProcessDeath,
     noInternetCapableNetworkAtCheckpoints: requireOffline,

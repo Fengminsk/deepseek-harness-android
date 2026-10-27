@@ -98,6 +98,11 @@ class IsolatedScriptAcceptanceInstrumentation : Instrumentation() {
                         ptcBinderInvalidReply(app)
                     }
                 }
+                "ptc-readonly-budget" -> {
+                    test("ptc-admission-and-tool-action-limits", passed, failures) { ptcAdmissionLimits(app) }
+                    test("ptc-callback-wait-exceeds-script-budget", passed, failures) { ptcWaitBudget(app) }
+                    test("ptc-busy-loop-cpu-budget", passed, failures) { ptcCpuBudget(app) }
+                }
                 "kill-agent" -> admitAndKillAgent(app)
                 "kill-running-agent" -> killAgentAfterGuestCall(app)
                 "recover" -> test("process-death-recovery", passed, failures) { recoverAfterAgentDeath(app) }
@@ -802,6 +807,97 @@ class IsolatedScriptAcceptanceInstrumentation : Instrumentation() {
             check(receipts(app).read(runId).state() ==
                 IsolatedScriptReceipt.State.RETIRE_UNCONFIRMED)
             check(runCatching { bridge.settle(owner) }.isFailure)
+        } finally { bridge.close() }
+    }
+
+    private fun ptcAdmissionLimits(app: Context) {
+        val bridge = IsolatedRunNativeBridge(app)
+        try {
+            val runId = UUID.randomUUID().toString()
+            val params = nativeBridgeParams(runId, UUID.randomUUID().toString())
+                .put("kind", "ptc").put("deadlineMillis", 120000)
+            params.getJSONObject("scope").put("leaseMillis", 120000)
+            check(runCatching { bridge.admit(JSONObject(params.toString()).put("kind", "script")) }.isFailure)
+            check(runCatching { bridge.admit(JSONObject(params.toString()).put("deadlineMillis", 120001)) }.isFailure)
+            val granted = JSONObject(params.toString())
+            granted.getJSONObject("scope").put("exactHosts", org.json.JSONArray().put("example.com"))
+                .put("networkCallLimit", 1)
+            check(runCatching { bridge.admit(granted) }.isFailure)
+            val handle = bridge.admit(params)
+            check(runCatching { bridge.execute(handle) }.isFailure) { "Unbound PTC ran" }
+            check(bridge.cancel(handle) && bridge.release(handle))
+            for (name in listOf("read", "glob", "grep", "web_search", "web_fetch", "list_agents")) {
+                IsolatedToolRequest.parse(JSONObject().put("action", "TOOL_CALL").put("callId", 1)
+                    .put("name", name).put("arguments", JSONObject()).toString(), true)
+            }
+            for ((name, actions) in mapOf("android_files" to listOf("roots", "list", "read", "search"),
+                "android_attachments" to listOf("list", "read", "inspect_archive"))) {
+                for (action in actions) IsolatedToolRequest.parse(JSONObject().put("action", "TOOL_CALL")
+                    .put("callId", 1).put("name", name)
+                    .put("arguments", JSONObject().put("action", action)).toString(), true)
+                for (action in listOf("write", "materialize", "read_image")) check(runCatching {
+                    IsolatedToolRequest.parse(JSONObject().put("action", "TOOL_CALL").put("callId", 1)
+                        .put("name", name).put("arguments", JSONObject().put("action", action)).toString(), true)
+                }.isFailure)
+            }
+            for (name in listOf("run_code", "workflow", "android_ptc", "write", "read_image", "android_linux", "echo_read_only")) {
+                check(runCatching { IsolatedToolRequest.parse(JSONObject().put("action", "TOOL_CALL")
+                    .put("callId", 1).put("name", name).put("arguments", JSONObject()).toString(), true) }.isFailure)
+            }
+        } finally { bridge.close() }
+    }
+
+    /** Binder timing fixture only: this transport is not production ToolRuntime evidence. */
+    private fun ptcWaitBudget(app: Context) {
+        val calls = AtomicInteger()
+        val closes = AtomicInteger()
+        val bridge = IsolatedRunNativeBridge(app, object : IsolatedScriptToolBridge.Transport {
+            override fun call(params: JSONObject, timeoutMillis: Long): JSONObject {
+                check(params.getString("name") == "read" && timeoutMillis > 6000)
+                calls.incrementAndGet()
+                Thread.sleep(6100)
+                return JSONObject().put("runId", params.getString("runId")).put("callId", params.getInt("callId"))
+                    .put("value", JSONObject().put("waited", true))
+            }
+            override fun close(runId: String, token: String, timeoutMillis: Long): Boolean {
+                closes.incrementAndGet()
+                return true
+            }
+        })
+        val params = nativeBridgeParams(UUID.randomUUID().toString(), UUID.randomUUID().toString())
+            .put("kind", "ptc").put("deadlineMillis", 20000)
+            .put("program", "const r=await host.callAsync({action:'TOOL_CALL',callId:1,name:'read',arguments:{file_path:'fixture.txt'}}); return {waited:r.value.waited,process:typeof process,fetch:typeof fetch}")
+        params.getJSONObject("scope").put("leaseMillis", 20000)
+        try {
+            val handle = bridge.admit(params)
+            check(bridge.bindTools(handle) && bridge.execute(handle))
+            val result = bridge.settle(handle)
+            check(result.getString("state") == "COMPLETED") { result.toString() }
+            val value = JSONObject(result.getString("outputJson"))
+            check(value.getBoolean("waited") && value.getString("process") == "undefined" && value.getString("fetch") == "undefined")
+            check(result.getInt("guestUid") != Process.myUid() && calls.get() == 1 && closes.get() == 1)
+            check(bridge.release(handle))
+        } finally { bridge.close() }
+    }
+
+    private fun ptcCpuBudget(app: Context) {
+        val bridge = IsolatedRunNativeBridge(app, object : IsolatedScriptToolBridge.Transport {
+            override fun call(params: JSONObject, timeoutMillis: Long): JSONObject = error("Busy loop called host")
+            override fun close(runId: String, token: String, timeoutMillis: Long): Boolean = true
+        })
+        val params = nativeBridgeParams(UUID.randomUUID().toString(), UUID.randomUUID().toString())
+            .put("kind", "ptc").put("deadlineMillis", 120000).put("program", "while(true) {}")
+        params.getJSONObject("scope").put("leaseMillis", 120000)
+        try {
+            val handle = bridge.admit(params)
+            check(bridge.bindTools(handle))
+            val start = System.nanoTime()
+            check(bridge.execute(handle))
+            val elapsed = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start)
+            val result = bridge.settle(handle)
+            check(result.getString("state") == "TIMED_OUT" && result.isNull("outputJson")) { result.toString() }
+            check(elapsed < 30000) { "PTC busy loop consumed its 120-second wall allowance: $elapsed" }
+            check(bridge.release(handle))
         } finally { bridge.close() }
     }
 

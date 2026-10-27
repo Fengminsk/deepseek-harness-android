@@ -57,8 +57,9 @@ lines.on('line', line => {
   else if (frame.method === 'native.web.preferences') send({ id: frame.id, result: preferences })
   else if (frame.method === 'native.web.save') { preferences = frame.params; send({ id: frame.id, result: true }) }
   else if (frame.method === 'native.network.addresses') send({ id: frame.id, result: { addresses: [] } })
+  else if (frame.method === 'native.documents.roots') send({ id: frame.id, result: [{ id: 'b'.repeat(64), name: 'Smoke', available: true }] })
   else if (frame.method === 'native.documents.read') {
-    assert.equal(frame.params.root, 'smoke-root')
+    assert.equal(frame.params.root, 'b'.repeat(64))
     assert.equal(frame.params.path, 'test.txt')
     fileReads++
     send({ id: frame.id, result: { text: 'authorized fixture text', offset: 0, nextOffset: 23,
@@ -94,11 +95,17 @@ try {
       reason: 'isolated-executor-unwired',
       modelPtc: {
         available: false,
-        reason: 'device-isolation-unverified',
+        reason: 'device-readonly-ptc-unverified',
         language: 'typescript-function-body',
-        reviewedTools: ['list_agents'],
-        filesystem: 'none',
-        network: 'off',
+        reviewedTools: ['list_agents', 'read', 'glob', 'grep', 'web_search', 'web_fetch', 'android_files', 'android_attachments'],
+        filesystem: 'reviewed-read-only-tools', network: 'reviewed-web-tools',
+        nativeFilesystem: 'none', nativeNetwork: 'off',
+        wallDeadlineMillis: 120000, executionThreadCpuMillis: 5000,
+      },
+      modelWorkflow: {
+        available: false, reason: 'device-lifecycle-unverified', maxTotalAgents: 8, maxConcurrentAgents: 2,
+        deadlineMillis: 120000, background: false, childTools: 'structured-result-only',
+        filesystem: 'none', network: 'model-provider-only',
       },
     })
     assert.equal((await request('web.status')).enabled, false)

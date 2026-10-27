@@ -1,0 +1,26 @@
+{
+  "readOnlyExecution": {
+    "status": "completed",
+    "output": "Linux riscv64\n",
+    "exitCode": 0,
+    "diskCommitted": false
+  },
+  "export": {
+    "status": "completed",
+    "exitCode": 0,
+    "source": "report.txt",
+    "destination": "agent/reports/report.txt",
+    "bytes": 3,
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "diskCommitted": false,
+    "filePublished": true
+  },
+  "import": {
+    "status": "completed",
+    "source": "agent/app.apk",
+    "destination": "analysis/app.apk",
+    "bytes": 3,
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "diskCommitted": true
+  }
+}

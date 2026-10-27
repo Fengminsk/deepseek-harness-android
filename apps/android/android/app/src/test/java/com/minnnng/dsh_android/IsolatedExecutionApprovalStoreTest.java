@@ -31,12 +31,13 @@ public final class IsolatedExecutionApprovalStoreTest {
         Path directory = Files.createDirectory(privateRoot.resolve("policies"));
         Path workspace = Files.createDirectory(privateRoot.resolve("workspace"));
         String ownerId = "session.task";
-        String sessionId = id();
+        String sessionId = "android-1793060921975320-627842147";
         String approvalId = id();
         try {
             try (var store = new IsolatedExecutionApprovalStore(privateRoot, directory,
                     ownerId, sessionId, ignored -> {})) {
                 var owner = store.newOwner((runId, scope) -> {});
+                check(owner.current().sessionId().equals(sessionId), "Actual Android Session identity changed");
                 denied(owner.current());
                 check(owner.current().version() == 1, "Fresh version changed");
                 var grant = grant(ownerId, sessionId, 2, privateRoot, workspace);

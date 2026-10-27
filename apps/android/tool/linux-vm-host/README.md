@@ -1,0 +1,25 @@
+---
+kind: reference
+title: Windows Linux guest verification
+---
+
+# Windows Linux guest verification
+
+English | [中文](README.zh.md)
+
+This host-only probe compiles the prepared TinyEMU sources and the production `linux_vm_engine.c` for Windows x86_64. The JVM adapter reuses `LinuxVmConsole`, passes explicit direct-memory disks, and records bounded serial diagnostics. A Windows header maps the unused network callback types to Winsock declarations; no network device or host directory is supplied to the guest. It does not compile the Android file publisher or verify Binder isolation, service retirement, Android storage permissions or App startup.
+
+The [builder](../build-tinyemu-host.mjs) requires an existing verified TinyEMU preparation record, a local JDK and the pinned [LLVM-MinGW portable archive](https://github.com/mstorsjo/llvm-mingw/releases/tag/20260908). Put `llvm-mingw-20260908-ucrt-x86_64.zip` and its extracted directory under `.cache/android/windows-host-tools/`. Its SHA256 must be `1bcf74d06b724aeecaa6412ca85f5b26fb1da770e7cdcefa9263c9c5c3ad34b6`. No system installation or WSL is needed. The build record includes source, JNI, Java, compiler and library identities.
+
+Run from the repository root:
+
+```powershell
+node apps/android/tool/build-tinyemu-host.mjs '--jdk=C:\path\to\jdk'
+node apps/android/tool/verify-tinyemu-host.mjs smoke
+node apps/android/tool/verify-tinyemu-host.mjs alpine
+node apps/android/tool/verify-tinyemu-host.mjs lifecycle
+```
+
+The [runner](../verify-tinyemu-host.mjs) requires the staged development guest assets. `alpine` also requires the hash-checked image-build input. `smoke` verifies boot and workspace retention across two real guest runs. `alpine` creates an ext2 image inside the guest, installs the locked offline packages, boots that image, exercises Python/threads/randomness/SQLite/SSL/subprocesses/git/curl/file operations, then checks an independent unmounted read-only image with `e2fsck -fn`. `lifecycle` times out a running loop and cancels after confirmed guest output; neither publishes changed images. It verifies that the source image stays unchanged.
+
+Each invocation uses a new directory under `.cache/android/tinyemu-host/runs/`. Reports contain native status, guest exit code, hashes and explicit `androidDeviceVerified: false`. Images are written only after a completed guest command and native shutdown; failure diagnostics remain available. Passing host checks does not enable any product capability or certify phone execution. The ordinary Android build excludes this provider and its images as described by the [runtime reference](../linux-vm-runtime.md) ([中文](../linux-vm-runtime.zh.md)).

@@ -1,0 +1,11 @@
+{
+  "events": [
+    { "type": "tool/ptc-dispatch-start", "name": "read", "parentCallId": "readonly-parent", "arguments": { "file_path": "input.txt", "limit": 2 } },
+    { "type": "tool/ptc-dispatch", "name": "read", "parentCallId": "readonly-parent", "arguments": { "file_path": "input.txt", "limit": 2 }, "isError": false },
+    { "type": "tool/ptc-dispatch-start", "name": "glob", "parentCallId": "readonly-parent", "arguments": { "pattern": "*.txt" } },
+    { "type": "tool/ptc-dispatch", "name": "glob", "parentCallId": "readonly-parent", "arguments": { "pattern": "*.txt" }, "isError": false },
+    { "type": "tool/ptc-dispatch-start", "name": "web_fetch", "parentCallId": "readonly-parent", "arguments": { "url": "https://example.test/page" } },
+    { "type": "tool/ptc-dispatch", "name": "web_fetch", "parentCallId": "readonly-parent", "arguments": { "url": "https://example.test/page" }, "isError": false }
+  ],
+  "result": { "line": "alpha", "paths": ["input.txt"], "web": "page-data", "truncated": true }
+}

@@ -11,7 +11,7 @@ const scope = { workspaceId: null, readablePaths: [], writablePaths: [], exactHo
   fileCallLimit: 0, networkCallLimit: 0 }
 
 function prepared(body, limits = {}) {
-  return { kind: 'workflow', runId, sessionId: randomUUID(), program: body, args: { task: 'review' },
+  return { kind: 'workflow', runId, sessionId: 'android-1793060921975320-627842147', program: body, args: { task: 'review' },
     meta: { name: 'Review', description: 'Review task' }, deadlineMillis: 5000,
     maxTotalAgents: limits.total ?? 3, maxConcurrentAgents: limits.concurrent ?? 2, scope }
 }

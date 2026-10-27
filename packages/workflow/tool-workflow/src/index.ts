@@ -15,7 +15,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import type { ToolCallView, ToolResultView } from '@deepseek-ai/dsh-tools'
+import type { ToolCallView, ToolResultView, ToolExecution, ToolDefinition } from '@deepseek-ai/dsh-tools'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { JobId, JobOutcome, JobToolCall } from '@deepseek-ai/dsh-jobs'
@@ -328,7 +328,98 @@ export function apply(ctx: Context, config: Config): void {
     order: ctx.systemPrompt.getSectionOrder('TOOL_WORKFLOW'),
     text: `Use the ${toolName} tool ONLY when the user explicitly asks for a workflow or for large multi-agent orchestration: you write a JavaScript script (the tool description documents the exact format) that fans work out across many subagents with phases and structured results. For one or two delegations, prefer plain subagent calls.`,
   })
-  ctx.tools.register(defineTool({
+  ctx.tools.register(createWorkflowToolDefinition(config, async (args, exec) => {
+    const parent = exec.agent
+    if (!parent) {
+      // The loop sets `exec.agent` for every model-driven call; its absence
+      // means a non-agent caller invoked the tool directly, which has no
+      // parent to attribute the children to. Fail loud rather than guess.
+      throw new Error('workflow tool requires a calling agent (exec.agent was undefined)')
+    }
+    if (args.run_in_background === true) {
+      if (!enableRunInBackground) {
+        throw new Error('run_in_background is disabled for this tool')
+      }
+      // No pre-abort check here, unlike bash/pwsh: ToolRuntime re-reads the
+      // caller signal right before execute(), and this branch reaches
+      // jobs.start synchronously from there. The shell tools await a
+      // sandbox escalation approval before registering, which is the window
+      // their check covers.
+      return startBackgroundRun(ctx, args, parent, { callId: exec.callId, rootCallId: exec.rootCallId }, exec.parent === undefined, {
+        recorder,
+        mirror,
+        maxResultChars,
+      })
+    }
+
+    // Meta/body validation failures (META_INVALID/SCRIPT_PARSE) throw
+    // synchronously here and become isError results via the registry — the
+    // model sees the violation list and can correct the call.
+    const run = ctx.workflowEngine.start({
+      script: args.script,
+      meta: args.meta,
+      ...args.args !== undefined ? { args: args.args } : {},
+      parent,
+      signal: exec.signal,
+    })
+    const recordsRun = exec.parent === undefined
+    // The engine publishes member events after start() returns and this run record is active.
+    if (recordsRun) recorder.start(parent.session, run)
+
+    // Bridge the tool's abort signal to the run: if the parent step is aborted while the
+    // script is in flight, cancel the whole run. The signal also enters the engine directly, but
+    // this local bridge preserves the tool contract even if an implementation ignores it.
+    const onAbort = (): void => { run.cancel('parent step aborted') }
+    exec.signal.addEventListener('abort', onAbort, { once: true })
+
+    let result: WorkflowResult | undefined
+    try {
+      result = await run.result
+      const error = stopReasonError(result)
+      if (error !== undefined) {
+        // Map a non-clean finish to an isError result (the registry turns a
+        // throw into an isError). Report the reason, not partial output.
+        throw new Error(error)
+      }
+      return {
+        kind: 'foreground' as const,
+        runId: run.id,
+        agentsStarted: result.agentsStarted,
+        result: result.value as JsonValue,
+      }
+    } finally {
+      exec.signal.removeEventListener('abort', onAbort)
+      try {
+        // Keep member listeners alive through disposal: an engine may
+        // synthesize cancelled member endings while reaching quiescence.
+        await run.dispose()
+        if (recordsRun) {
+          /* v8 ignore next -- WorkflowRun.result never rejects by contract, so result is assigned before finally. */
+          if (result === undefined) throw new Error('workflow run settled without a result')
+          recorder.finish(run.id, result.stopReason)
+        }
+      } finally {
+        if (recordsRun) recorder.abandon(run.id)
+      }
+    }
+  }))
+}
+
+/** Result envelope shared by the original engine and confined native adapters. */
+type WorkflowCallResult =
+  | { kind: 'background'; jobId: JobId; runId: WorkflowRunId }
+  | { kind: 'foreground'; runId: WorkflowRunId; agentsStarted: number; result: JsonValue }
+
+/** Preserve the workflow schema and rendering while the App owns its execution adapter.
+ * @param config - Workflow tool name, output limits and background policy.
+ * @param execute - Host-owned adapter that executes the validated workflow call.
+ * @returns The registry-ready workflow tool definition.
+ */
+export function createWorkflowToolDefinition(config: Config,
+  execute: (args: WorkflowCallArgs, execution: ToolExecution) => Promise<WorkflowCallResult>,
+): ToolDefinition {
+  const { toolName, maxResultChars, enableRunInBackground } = config as ResolvedConfig
+  return defineTool({
     name: toolName,
     description: DESCRIPTION,
     parameters: {
@@ -406,82 +497,8 @@ export function apply(ctx: Context, config: Config): void {
           : renderResult(args.meta.name, value.agentsStarted, value.result, maxResultChars),
       }],
     },
-    async execute(args, exec) {
-      const parent = exec.agent
-      if (!parent) {
-        // The loop sets `exec.agent` for every model-driven call; its absence
-        // means a non-agent caller invoked the tool directly, which has no
-        // parent to attribute the children to. Fail loud rather than guess.
-        throw new Error('workflow tool requires a calling agent (exec.agent was undefined)')
-      }
-      if (args.run_in_background === true) {
-        if (!enableRunInBackground) {
-          throw new Error('run_in_background is disabled for this tool')
-        }
-        // No pre-abort check here, unlike bash/pwsh: ToolRuntime re-reads the
-        // caller signal right before execute(), and this branch reaches
-        // jobs.start synchronously from there. The shell tools await a
-        // sandbox escalation approval before registering, which is the window
-        // their check covers.
-        return startBackgroundRun(ctx, args, parent, { callId: exec.callId, rootCallId: exec.rootCallId }, exec.parent === undefined, {
-          recorder,
-          mirror,
-          maxResultChars,
-        })
-      }
-
-      // Meta/body validation failures (META_INVALID/SCRIPT_PARSE) throw
-      // synchronously here and become isError results via the registry — the
-      // model sees the violation list and can correct the call.
-      const run = ctx.workflowEngine.start({
-        script: args.script,
-        meta: args.meta,
-        ...args.args !== undefined ? { args: args.args } : {},
-        parent,
-        signal: exec.signal,
-      })
-      const recordsRun = exec.parent === undefined
-      // The engine publishes member events after start() returns and this run record is active.
-      if (recordsRun) recorder.start(parent.session, run)
-
-      // Bridge the tool's abort signal to the run: if the parent step is aborted while the
-      // script is in flight, cancel the whole run. The signal also enters the engine directly, but
-      // this local bridge preserves the tool contract even if an implementation ignores it.
-      const onAbort = (): void => { run.cancel('parent step aborted') }
-      exec.signal.addEventListener('abort', onAbort, { once: true })
-
-      let result: WorkflowResult | undefined
-      try {
-        result = await run.result
-        const error = stopReasonError(result)
-        if (error !== undefined) {
-          // Map a non-clean finish to an isError result (the registry turns a
-          // throw into an isError). Report the reason, not partial output.
-          throw new Error(error)
-        }
-        return {
-          kind: 'foreground' as const,
-          runId: run.id,
-          agentsStarted: result.agentsStarted,
-          result: result.value as JsonValue,
-        }
-      } finally {
-        exec.signal.removeEventListener('abort', onAbort)
-        try {
-          // Keep member listeners alive through disposal: an engine may
-          // synthesize cancelled member endings while reaching quiescence.
-          await run.dispose()
-          if (recordsRun) {
-            /* v8 ignore next -- WorkflowRun.result never rejects by contract, so result is assigned before finally. */
-            if (result === undefined) throw new Error('workflow run settled without a result')
-            recorder.finish(run.id, result.stopReason)
-          }
-        } finally {
-          if (recordsRun) recorder.abandon(run.id)
-        }
-      }
-    },
+    execute,
     presentCall: args => presentWorkflowCall(args),
     presentResult: (args, result) => presentWorkflowResult(args, result),
-  }))
+  })
 }

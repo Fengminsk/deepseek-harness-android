@@ -9,6 +9,21 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class DurableWorkflowOwnerTest {
     public static void main(String[] args) throws Exception {
+        if (args.length == 2 && args[0].equals("lease-child")) {
+            Path parent = Path.of(args[1]);
+            WorkflowProcessLease lease = WorkflowProcessLease.current(parent, ignored -> {});
+            DurableWorkflowOwner owner = new DurableWorkflowOwner(parent, ignored -> {});
+            owner.recoverInterrupted(lease);
+            String run = UUID.randomUUID().toString();
+            owner.admit(run, lease);
+            String child = owner.reserveChild(run);
+            owner.markLaunching(run, child);
+            System.out.println(run + "," + child + "," + lease.id());
+            System.out.flush();
+            // The parent kills this JVM. No graceful close may release the lease.
+            Thread.sleep(120_000);
+            throw new AssertionError("Lease process was not killed");
+        }
         if (args.length == 3 && args[0].equals("recover")) {
             DurableWorkflowOwner owner = new DurableWorkflowOwner(Path.of(args[1]), ignored -> {});
             List<DurableWorkflowOwner.Recovery> found = owner.recoverInterrupted();
@@ -17,6 +32,7 @@ public final class DurableWorkflowOwnerTest {
             return;
         }
         Path parent = Files.createTempDirectory("durable-workflow-owner-");
+        processLeaseRecovery(Files.createDirectory(parent.resolve("process-lease")));
         DurableWorkflowOwner owner = new DurableWorkflowOwner(parent, ignored -> {});
         IsolatedScriptReceipt scripts = new IsolatedScriptReceipt(parent, ignored -> {});
         refuses(() -> owner.admit(UUID.randomUUID().toString()));
@@ -77,7 +93,9 @@ public final class DurableWorkflowOwnerTest {
         scripts.admit(cancellation);
         String cancelledChild = owner.reserveChild(cancellation);
         owner.markLaunching(cancellation, cancelledChild);
-        if (!owner.requestCancel(cancellation).equals(List.of(cancelledChild))
+        AtomicBoolean signal = new AtomicBoolean();
+        if (!owner.requestCancel(cancellation, () -> signal.set(true)).equals(List.of(cancelledChild))
+                || !signal.get()
                 || !owner.requestCancel(cancellation).equals(List.of(cancelledChild)))
             throw new AssertionError("Cancellation lost owned child");
         refuses(() -> owner.reserveChild(cancellation));
@@ -188,6 +206,78 @@ public final class DurableWorkflowOwnerTest {
         if (resumed.read(consumed).state() != DurableWorkflowOwner.State.INTERRUPTED_UNCONFIRMED)
             throw new AssertionError("Uncertain admission was replayable");
         System.out.println("Durable workflow owner host checks passed.");
+    }
+
+    private static void processLeaseRecovery(Path parent) throws Exception {
+        WorkflowProcessLease lease = WorkflowProcessLease.current(parent, ignored -> {});
+        if (lease != WorkflowProcessLease.current(parent, ignored -> {}))
+            throw new AssertionError("Process lease identity changed within a live process");
+        if (lease.confirmsStopped(lease.id()) || lease.confirmsStopped(null)
+                || lease.confirmsStopped(UUID.randomUUID().toString()))
+            throw new AssertionError("Missing identity or live process was accepted as process death");
+        Process childProcess = new ProcessBuilder(
+                Path.of(System.getProperty("java.home"), "bin", isWindows() ? "java.exe" : "java").toString(),
+                "-cp", System.getProperty("java.class.path"), DurableWorkflowOwnerTest.class.getName(),
+                "lease-child", parent.toString()).redirectError(ProcessBuilder.Redirect.INHERIT).start();
+        try {
+            String line = new java.io.BufferedReader(new java.io.InputStreamReader(
+                    childProcess.getInputStream(), java.nio.charset.StandardCharsets.UTF_8)).readLine();
+            if (line == null) throw new AssertionError("Child did not publish its durable lease");
+            String[] ready = line.split(",");
+            if (ready.length != 3 || lease.confirmsStopped(ready[2]))
+                throw new AssertionError("A live child JVM lost its process lease");
+            DurableWorkflowOwner owner = new DurableWorkflowOwner(parent, ignored -> {});
+            List<DurableWorkflowOwner.Recovery> active = owner.recoverInterrupted(lease);
+            if (active.size() != 1 || !active.get(0).childIdsToCancel().equals(List.of(ready[1]))
+                    || owner.read(ready[0]).state() != DurableWorkflowOwner.State.ADMITTED
+                    || owner.read(ready[0]).children().get(0).state() == DurableWorkflowOwner.ChildState.RETIRED)
+                throw new AssertionError("Recovery silently retired a child of a live process");
+            childProcess.destroyForcibly();
+            if (!childProcess.waitFor(10, java.util.concurrent.TimeUnit.SECONDS))
+                throw new AssertionError("Child JVM termination was not observed");
+            if (!lease.confirmsStopped(ready[2])) throw new AssertionError("Stopped JVM still owns lease");
+            owner.recoverInterrupted(lease);
+            DurableWorkflowOwner.Entry recovered = owner.read(ready[0]);
+            if (recovered.state() != DurableWorkflowOwner.State.INTERRUPTED_UNCONFIRMED
+                    || recovered.outputJson() != null || !ready[2].equals(recovered.processLeaseId())
+                    || recovered.children().get(0).state() != DurableWorkflowOwner.ChildState.RETIRED
+                    || !owner.recoverInterrupted(lease).isEmpty())
+                throw new AssertionError("Stopped-process recovery fabricated success or lost retirement");
+            String legacy = UUID.randomUUID().toString();
+            owner.admit(legacy);
+            String legacyChild = owner.reserveChild(legacy);
+            owner.markLaunching(legacy, legacyChild);
+            // Encode the actual v1 wire layout to prove ordinary upgrade keeps
+            // legacy identities readable, without inventing process identity evidence.
+            writeLegacyReceipt(parent, legacy, legacyChild);
+            owner.recoverInterrupted(lease);
+            if (owner.read(legacy).processLeaseId() != null
+                    || owner.read(legacy).children().get(0).state() == DurableWorkflowOwner.ChildState.RETIRED)
+                throw new AssertionError("Recovery inferred termination for a legacy unowned child");
+            DurableWorkflowOwner foreign = new DurableWorkflowOwner(
+                    Files.createDirectory(parent.resolve("foreign")), ignored -> {});
+            refuses(() -> foreign.recoverInterrupted(lease));
+            foreign.recoverInterrupted();
+            refuses(() -> foreign.admit(UUID.randomUUID().toString(), lease));
+        } finally {
+            if (childProcess.isAlive()) { childProcess.destroyForcibly(); childProcess.waitFor(); }
+        }
+    }
+
+    private static void writeLegacyReceipt(Path parent, String runId, String childId) throws Exception {
+        java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+        try (java.io.DataOutputStream body = new java.io.DataOutputStream(bytes)) {
+            body.writeInt(0x44534857); body.writeInt(1); body.writeUTF(runId);
+            body.writeByte(DurableWorkflowOwner.State.ADMITTED.ordinal()); body.writeShort(1);
+            body.writeUTF(childId); body.writeByte(DurableWorkflowOwner.ChildState.LAUNCHING.ordinal());
+            body.writeBoolean(false);
+        }
+        byte[] content = bytes.toByteArray();
+        java.util.zip.CRC32 checksum = new java.util.zip.CRC32(); checksum.update(content);
+        try (java.io.DataOutputStream frame = new java.io.DataOutputStream(Files.newOutputStream(
+                parent.resolve("workflow-runs").resolve("run-" + runId + ".receipt")))) {
+            frame.writeInt(content.length); frame.write(content); frame.writeInt((int) checksum.getValue());
+        }
     }
 
     private static boolean isWindows() {

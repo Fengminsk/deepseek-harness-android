@@ -21,7 +21,7 @@ App 通过[沙箱策略投影](isolated-sandbox-policy.zh.md)签发一次运行�
 
 ## 运行契约
 
-准入前检查随包提供或下载的镜像的签名或固定摘要、ABI、清单版本、文件数、解包字节上限、路径穿越、链接目标与可执行文件来源。当前 App 以 API 36 为目标；对以 API 29 及以上版本为目标的 App，Android 禁止从可写 App home 中直接 `execve()` 解包后的 ELF。因此启动器和原生工具必须作为 APK 代码打包；下载的镜像只能提供经过核验的非可执行数据。参见 [Android 对可执行文件的限制](https://developer.android.com/about/versions/10/behavior-changes-10#execute-permission)。App 可以原子安装并核验惰性归档，但不能假定隔离 Service 可以在 App 私有目录解包、遍历：[Android 16 隔离进程策略](https://android.googlesource.com/platform/system/sepolicy/+/android16-release/private/isolated_app_all.te)禁止直接打开 App 数据文件。当前[暂存预检](linux-guest-staging-recovery.zh.md)会拒绝不可用的路径；Alpine 真正运行前还需解决[存储方案](linux-guest-storage-options.zh.md)。每次运行固定使用一个镜像版本。镜像核验确定代码身份，不证明客体被隔离。
+准入前检查随包提供或下载的镜像的签名或固定摘要、ABI、清单版本、文件数、解包字节上限、路径穿越、链接目标与每个可执行文件的安装包路径和摘要。当前 App 以 API 36 为目标；对以 API 29 及以上版本为目标的 App，Android 禁止从可写 App home 中直接 `execve()` 解包后的 ELF。因此启动器和原生工具必须作为 APK 代码打包；下载的镜像只能提供经过核验的非可执行数据。参见 [Android 对可执行文件的限制](https://developer.android.com/about/versions/10/behavior-changes-10#execute-permission)。App 可以原子安装并核验惰性归档，但不能假定隔离 Service 可以在 App 私有目录解包、遍历：[Android 16 隔离进程策略](https://android.googlesource.com/platform/system/sepolicy/+/android16-release/private/isolated_app_all.te)禁止直接打开 App 数据文件。当前[暂存预检](linux-guest-staging-recovery.zh.md)会拒绝不可用的路径；Alpine 真正运行前还需解决[存储方案](linux-guest-storage-options.zh.md)。每次运行固定使用一个镜像版本。镜像核验确定代码身份，不证明客体被隔离。
 
 App 在启动客体前记录 `runId`、父任务、镜像版本、已签发策略 ID、准确命令及参数、截止时间和输出限额。客体只收到这个不可变请求和明确的代理句柄。不得复制 App Node 进程的环境变量；`PATH`、区域设置、临时目录语义以及虚拟工作目录都要固定，且工作目录不能被误认为文件授权边界。输出应分帧、限量并关联运行 ID。只有客体退出、待处理代理调用、子进程和审计写入全部收尾后，才可持久记录成功。取消、超时、Binder 死亡、App 终止和软件包升级必须得到明确终态或 `outcome-uncertain`，不能凭空判定成功。
 

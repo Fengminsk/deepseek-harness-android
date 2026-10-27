@@ -21,6 +21,8 @@ public final class PtcScriptEngine implements AutoCloseable {
     public static final int MAX_OUTPUT_BYTES = 64 * 1024;
     public static final int MAX_LOG_BYTES = 16 * 1024;
     public static final int MAX_DEADLINE_MILLIS = 5000;
+    /** Reviewed tool callbacks may wait; native V8 execution still has a five-second CPU cap. */
+    public static final int MAX_PTC_DEADLINE_MILLIS = 120_000;
     /** Private workflow only; the App controller rejects this budget for ordinary scripts. */
     public static final int MAX_WORKFLOW_DEADLINE_MILLIS = 120_000;
     public static final int MAX_HOST_REQUEST_BYTES = 32 * 1024;
@@ -93,6 +95,11 @@ public final class PtcScriptEngine implements AutoCloseable {
         validateBounded(program, inputJson, deadlineMillis, MAX_WORKFLOW_DEADLINE_MILLIS);
     }
 
+    /** Tool-only PTC uses a separate App admission with no native capability grants. */
+    public static void validatePtc(String program, String inputJson, int deadlineMillis) {
+        validateBounded(program, inputJson, deadlineMillis, MAX_PTC_DEADLINE_MILLIS);
+    }
+
     private static void validateBounded(String program, String inputJson, int deadlineMillis,
                                         int maximumMillis) {
         Objects.requireNonNull(program, "program");
@@ -135,8 +142,8 @@ public final class PtcScriptEngine implements AutoCloseable {
 
     private Result runInternal(String program, String inputJson, int deadlineMillis,
                                HostCall hostCall, String grantsJson, boolean functionBody) {
-        // The App controller is the authority for choosing ordinary script or
-        // private workflow. This worker sees only its bounded Binder request.
+        // The App controller chooses ordinary script, reviewed tool-only PTC,
+        // or private workflow. This worker sees only its bounded Binder request.
         validateWorkflow(program, inputJson, deadlineMillis);
         if ((hostCall == null) != (grantsJson == null)
                 || (grantsJson != null && utf8Bytes(grantsJson) > MAX_GRANTS_BYTES)) {

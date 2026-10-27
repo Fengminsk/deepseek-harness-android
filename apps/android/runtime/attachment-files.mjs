@@ -2,6 +2,7 @@ import { constants } from 'node:fs'
 import { mkdir, open, realpath, stat, unlink } from 'node:fs/promises'
 import { basename, isAbsolute, join } from 'node:path'
 import { publishImmutableFile } from './immutable-file-publisher.mjs'
+import { attachmentContentsOf } from './attachment-references.mjs'
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 const digest = /^sha256:[a-f0-9]{64}$/
@@ -37,27 +38,8 @@ function publicFailure(error) {
   return new AttachmentFileError(...(details ?? ['unavailable', '附件读取未完成，请重新打开后重试。']))
 }
 
-/** Only declared first-party content carriers authorize a file, as in the DSH archive reader. */
-function contentsOf(event) {
-  const data = event?.data
-  if (!data || typeof data !== 'object') return []
-  switch (event.type) {
-    case 'user/message': case 'tool/ptc-dispatch': return [data.content]
-    case 'system/message': case 'developer/message': case 'tool/result': case 'team/message/queued':
-      return [data.message?.content]
-    case 'agent/inbox/spliced': return Array.isArray(data.inserted) ? data.inserted.map(message => message?.content) : []
-    case 'compaction/summary': return [data.summary, data.rawOutput]
-    case 'assistant/message': case 'assistant/attempt': return [
-      ...(event.type === 'assistant/message' ? [data.message?.content] : []),
-      ...(Array.isArray(data.stream) ? data.stream.filter(record => record.type === 'chunk'
-        && record.chunk?.type === 'block-end').map(record => [record.chunk.block]) : []),
-    ]
-    default: return []
-  }
-}
-
 function referencedFile(events, attachmentId, name) {
-  for (const event of events) for (const content of contentsOf(event)) {
+  for (const event of events) for (const content of attachmentContentsOf(event)) {
     if (!Array.isArray(content)) continue
     for (const part of content) {
       if (part?.type === 'file' && part.attachment?.attachmentId === attachmentId && part.attachment.name === name) {

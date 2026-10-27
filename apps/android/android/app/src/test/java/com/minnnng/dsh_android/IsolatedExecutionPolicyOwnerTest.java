@@ -48,7 +48,7 @@ public final class IsolatedExecutionPolicyOwnerTest {
 
     private static void revocationHooksAreSynchronous() throws Exception {
         String ownerId = "hook.task";
-        String sessionId = id();
+        String sessionId = "android-1793060921975320-627842147";
         var owner = new IsolatedExecutionPolicyOwner(ownerId, sessionId,
                 (runId, scope) -> {}, (before, after) -> {});
         var parent = owner.admit(id());

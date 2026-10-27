@@ -40,6 +40,19 @@ test('App policy alone owns run identity, session and default file/network scope
   assert.ok(Object.isFrozen(first.execution.scope))
 })
 
+test('only the App can select the longer tool-only PTC execution class', () => {
+  const policy = projectIsolatedSandboxPolicy({ approvedScope: { ...scope(), leaseMillis: 120_000 } })
+  const trusted = { ...host(), sandboxPolicy: policy, executionKind: 'ptc', deadlineMillis: 120_000 }
+  assert.equal(prepare(input(), trusted).execution.kind, 'ptc')
+  assert.equal(prepare().execution.kind, 'script')
+  assert.throws(() => prepare({ ...input(), executionKind: 'ptc' }, trusted),
+    { code: 'ANDROID_MODEL_SCRIPT_INVALID' })
+  assert.throws(() => prepare(input(), { ...trusted, executionKind: 'workflow' }),
+    { code: 'ANDROID_MODEL_SCRIPT_INVALID' })
+  assert.throws(() => prepare(input(), { ...trusted, executionKind: 'script' }),
+    { code: 'ANDROID_EXECUTION_INVALID' })
+})
+
 test('model cannot forge authority, session, run ID, paths or hosts', () => {
   for (const forged of [
     { runId: 'f7e2d201-613a-459a-962c-c62417b8d422' },

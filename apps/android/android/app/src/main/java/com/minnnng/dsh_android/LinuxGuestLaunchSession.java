@@ -88,7 +88,7 @@ final class LinuxGuestLaunchSession implements AutoCloseable {
                 || !policy.runId().equals(runId) || !imageDigest.equals(imageSha256)
                 || !launcherDigest.equals(launcherSha256)
                 || !loaderDigest.equals(loaderSha256))
-            return reject("Linux guest identity or executable provenance changed");
+            return reject("Linux guest identity or executable digest changed");
         guestUid = sendingUid;
         return true;
     }

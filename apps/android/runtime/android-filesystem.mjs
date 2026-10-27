@@ -75,6 +75,20 @@ export default class AndroidFileSystem extends SandboxedFileSystem {
     this.internals.linkFile = publishImmutableFile
   }
 
+  /** Binary attachment imports share the session's write policy with text tools. */
+  async authorizeModelAttachmentWrite(path, agent) {
+    const policy = this.ctx.sandboxPolicy.resolve({ session: agent.session })
+    if (!['workspace-write', 'danger-full-access'].includes(policy.mode)) {
+      throw new FsError('Attachment materialization is denied under read-only mode', 'FS_SANDBOX_DENIED')
+    }
+    const target = await mutationPolicy.run(policy, () => this.resolve(path))
+    if (policy.mode === 'workspace-write' && !insideModelWorkspace(await realpath(policy.workspaceRoot),
+      canonicalModelTarget(String(target.targetKey)))) {
+      throw new FsError('Attachment destination is outside the session workspace', 'FS_SANDBOX_DENIED')
+    }
+    return target
+  }
+
   // The parent sandbox calls this.resolve() immediately before delegating the
   // exact returned target to its atomic writer. Enforce here so aliases are
   // checked after canonicalization, rather than inspecting an earlier string.

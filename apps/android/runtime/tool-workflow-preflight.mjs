@@ -11,6 +11,7 @@ const AsyncFunction = (async () => {}).constructor
 const MODEL_FIELDS = new Set(['script', 'meta', 'args', 'run_in_background'])
 const HOST_FIELDS = new Set([
   'sessionId', 'sandboxPolicy', 'deadlineMillis', 'maxTotalAgents', 'maxConcurrentAgents',
+  'allowBackground',
 ])
 
 function invalid(name) {
@@ -50,8 +51,11 @@ export function prepareModelWorkflow(modelArguments, trustedHost) {
   const input = record(modelArguments, 'workflow arguments', MODEL_FIELDS)
   const host = record(trustedHost, 'trusted workflow host', HOST_FIELDS)
   if (!['script', 'meta'].every(key => Object.hasOwn(input, key))
-    || ![...HOST_FIELDS].every(key => Object.hasOwn(host, key))) invalid('workflow fields')
-  if (input.run_in_background !== undefined && input.run_in_background !== false) {
+    || ![...HOST_FIELDS].filter(key => key !== 'allowBackground')
+      .every(key => Object.hasOwn(host, key))) invalid('workflow fields')
+  if (host.allowBackground !== undefined && typeof host.allowBackground !== 'boolean') invalid('workflow background policy')
+  if (input.run_in_background !== undefined && typeof input.run_in_background !== 'boolean') invalid('workflow background option')
+  if (input.run_in_background === true && host.allowBackground !== true) {
     throw new IsolatedExecutionContractError('ANDROID_WORKFLOW_BACKGROUND_UNAVAILABLE',
       'A durable Android background workflow owner is not connected')
   }
@@ -76,7 +80,7 @@ export function prepareModelWorkflow(modelArguments, trustedHost) {
   } catch {
     invalid('workflow JavaScript body')
   }
-  return Object.freeze({ source: execution.program, execution, background: false })
+  return Object.freeze({ source: execution.program, execution, background: input.run_in_background === true })
 }
 
 /** Native workflow admission, callbacks and durable progress are not wired. */

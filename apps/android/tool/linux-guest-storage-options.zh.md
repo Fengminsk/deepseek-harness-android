@@ -16,4 +16,4 @@
 
 完整 Alpine Guest 需要单独审查并实现文件系统虚拟化，向 PRoot 提供路径、目录、元数据、加载器及执行操作，或找到在目标设备上证实可用的系统隔离存储机制。现有 PRoot 的 `--rootfs` 要求真实宿主路径，并用 `ptrace` 改写路径；它的绑定功能不等于宿主资源隔离。项目目前没有这种虚拟文件系统。[PRoot 手册](https://github.com/termux/proot/blob/master/doc/proot/manual.txt)。
 
-真机验收需观察 Guest UID、程序来源、App 私有文件与直接 socket 的拒绝、获准的接口调用、全部子进程取消、安装包升级和 Service 被强杀。[合成存储设备探针](acceptance-linux-guest-storage-device.zh.md)还会区分“使用传入的文件 FD”和“借助传入的目录 FD 打开子路径”，记录存储与执行结果，但不会声称 Linux 已运行。存储预检失败必须拒绝任务，不能退回 App UID 执行命令。
+真机验收需观察 Guest UID、程序的安装包路径与摘要、App 私有文件与直接 socket 的拒绝、获准的接口调用、全部子进程取消、安装包升级和 Service 被强杀。[合成存储设备探针](acceptance-linux-guest-storage-device.zh.md)还会区分“使用传入的文件 FD”和“借助传入的目录 FD 打开子路径”，记录存储与执行结果，但不会声称 Linux 已运行。存储预检失败必须拒绝任务，不能退回 App UID 执行命令。

@@ -7,7 +7,7 @@ const RESERVED = new Set(['__proto__', 'constructor', 'prototype', 'then'])
 // A fixed, App-authored prelude. Tool names are passed as JSON input data,
 // never interpolated into executable source. The native V8 host remains the
 // only way out of the guest; the callback port enforces the reviewed list.
-const SDK_PRELUDE = 'const tools=(()=>{const bound=Object.create(null);let next=0;for(const name of input.toolNames){Object.defineProperty(bound,name,{value:async args=>{const reply=await host.callAsync({callId:++next,name,arguments:args===undefined?{}:args});if(reply.error){const failure=new Error(reply.error.message);failure.code=reply.error.code;throw failure}return reply.value},enumerable:true})}return Object.freeze(bound)})();\n'
+const SDK_PRELUDE = 'const tools=(()=>{const bound=Object.create(null);let next=0;for(const name of input.toolNames){Object.defineProperty(bound,name,{value:async args=>{const reply=await host.callAsync({action:"TOOL_CALL",callId:++next,name,arguments:args===undefined?{}:args});if(reply.error){const failure=new Error(reply.error.message);failure.code=reply.error.code;throw failure}return reply.value},enumerable:true})}return Object.freeze(bound)})();\n'
 
 /** Build the original `await tools.name(args)` shape for reviewed names only. */
 export function prepareModelPtcGuestSdk(program, toolNames) {

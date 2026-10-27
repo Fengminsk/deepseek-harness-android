@@ -1,0 +1,6 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <instrumentation
+        android:name="com.minnnng.dsh_android.GuestStorageProbeInstrumentation"
+        android:targetPackage="com.minnnng.dsh_android"
+        android:targetProcesses="com.minnnng.dsh_android:agent" />
+</manifest>

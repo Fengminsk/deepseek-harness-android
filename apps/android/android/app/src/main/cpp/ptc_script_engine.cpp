@@ -1,4 +1,6 @@
 #include <jni.h>
+#include <pthread.h>
+#include <time.h>
 #include <libplatform/libplatform.h>
 #include <v8.h>
 
@@ -21,8 +23,9 @@ constexpr int kMaxOutputBytes = 64 * 1024;
 constexpr int kMaxLogBytes = 16 * 1024;
 constexpr int kMaxLogEntries = 128;
 // The App controller admits at most five seconds for ordinary scripts. The
-// isolated engine carries the private workflow's separate bounded lifetime.
+// isolated engine carries the reviewed PTC/workflow wait budget separately.
 constexpr int kMaxDeadlineMillis = 120000;
+constexpr int64_t kMaxCpuNanos = 5000000000LL;
 constexpr int kMaxHostRequestBytes = 32 * 1024;
 // Must match Java: 64 KiB of control characters may expand sixfold in JSON.
 constexpr int kMaxHostReplyBytes = 448 * 1024;
@@ -203,6 +206,14 @@ class LimitedArrayBufferAllocator final : public v8::ArrayBuffer::Allocator {
   std::atomic<size_t> used_{0};
 };
 
+bool cpuBudgetExceeded(clockid_t clock, const timespec& start) {
+  timespec current{};
+  if (clock_gettime(clock, &current) != 0) return true;
+  const int64_t elapsed = (int64_t(current.tv_sec) - int64_t(start.tv_sec)) *
+      1000000000LL + int64_t(current.tv_nsec) - int64_t(start.tv_nsec);
+  return elapsed < 0 || elapsed >= kMaxCpuNanos;
+}
+
 class Execution final {
  public:
   struct HostReply { int sequence; std::u16string value; };
@@ -256,9 +267,11 @@ class Execution final {
     finished_ = true;
     condition_.notify_all();
   }
-  Stop finishAt(std::chrono::steady_clock::time_point deadline) {
+  Stop finishAt(std::chrono::steady_clock::time_point deadline,
+                clockid_t cpu_clock, const timespec& cpu_start) {
     std::lock_guard lock(mutex_);
-    if (stop_ == Stop::kNone && std::chrono::steady_clock::now() >= deadline) {
+    if (stop_ == Stop::kNone && (std::chrono::steady_clock::now() >= deadline ||
+        cpuBudgetExceeded(cpu_clock, cpu_start))) {
       stop_ = Stop::kDeadline;
     }
     isolate_ = nullptr;
@@ -279,13 +292,24 @@ class Execution final {
     std::lock_guard lock(mutex_);
     return closed_ && (!started_ || finished_);
   }
-  void awaitDeadline(std::chrono::steady_clock::time_point deadline) {
+  void awaitDeadline(std::chrono::steady_clock::time_point deadline,
+                     clockid_t cpu_clock, const timespec& cpu_start) {
     std::unique_lock lock(mutex_);
-    if (condition_.wait_until(lock, deadline, [this] {
-          return finished_ || stop_ != Stop::kNone;
-        })) return;
-    stop_ = Stop::kDeadline;
-    if (isolate_ != nullptr) isolate_->TerminateExecution();
+    while (!finished_ && stop_ == Stop::kNone) {
+      const auto now = std::chrono::steady_clock::now();
+      if (now >= deadline || cpuBudgetExceeded(cpu_clock, cpu_start)) {
+        stop_ = Stop::kDeadline;
+        if (isolate_ != nullptr) isolate_->TerminateExecution();
+        condition_.notify_all();
+        return;
+      }
+      // Monitor the V8 thread's CPU clock: waiting for a ToolRuntime reply
+      // consumes wall time without consuming the script's compute allowance.
+      const auto poll = now + std::chrono::milliseconds(20);
+      condition_.wait_until(lock, poll < deadline ? poll : deadline, [this] {
+        return finished_ || stop_ != Stop::kNone;
+      });
+    }
   }
 
  private:
@@ -824,10 +848,17 @@ static jobjectArray runNative(
   }
   const auto deadline = std::chrono::steady_clock::now() +
       std::chrono::milliseconds(deadline_millis);
+  clockid_t cpu_clock;
+  timespec cpu_start{};
+  if (pthread_getcpuclockid(pthread_self(), &cpu_clock) != 0 ||
+      clock_gettime(cpu_clock, &cpu_start) != 0) {
+    execution->finish();
+    return toJava(env, {"ENGINE_UNAVAILABLE", {}});
+  }
   std::thread watchdog;
   try {
-    watchdog = std::thread([execution, deadline] {
-      execution->awaitDeadline(deadline);
+    watchdog = std::thread([execution, deadline, cpu_clock, cpu_start] {
+      execution->awaitDeadline(deadline, cpu_clock, cpu_start);
     });
   } catch (...) {
     execution->finish();
@@ -840,7 +871,7 @@ static jobjectArray runNative(
   } catch (...) {
     result = {"ENGINE_UNAVAILABLE", {}};
   }
-  const Stop reason = execution->finishAt(deadline);
+  const Stop reason = execution->finishAt(deadline, cpu_clock, cpu_start);
   watchdog.join();
   if (execution->canErase()) {
     std::lock_guard lock(registry_mutex);

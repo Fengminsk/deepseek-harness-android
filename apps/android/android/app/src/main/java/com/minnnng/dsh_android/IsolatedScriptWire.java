@@ -20,6 +20,9 @@ public final class IsolatedScriptWire {
     public static final String KEY_RUN = "runId";
     public static final String KEY_NONCE = "nonce";
     public static final String KEY_PROGRAM = "program";
+    public static final String KEY_PROGRAM_FORMAT = "programFormat";
+    public static final String FUNCTION_EXPRESSION = "function-expression";
+    public static final String FUNCTION_BODY = "function-body";
     public static final String KEY_INPUT = "inputJson";
     public static final String KEY_DEADLINE = "deadlineMillis";
     public static final String KEY_STATUS = "status";
@@ -35,10 +38,17 @@ public final class IsolatedScriptWire {
     public static final int MAX_HOST_CALLS = 128;
 
     public record Request(String runId, String nonce, String program, String inputJson,
-                          int deadlineMillis) {
+                          int deadlineMillis, String programFormat) {
+        public Request(String runId, String nonce, String program, String inputJson,
+                       int deadlineMillis) {
+            this(runId, nonce, program, inputJson, deadlineMillis, FUNCTION_EXPRESSION);
+        }
         public Request {
             requireUuid(runId);
             requireUuid(nonce);
+            if (!FUNCTION_EXPRESSION.equals(programFormat) && !FUNCTION_BODY.equals(programFormat)) {
+                throw new IllegalArgumentException("Unsupported isolated program format");
+            }
             // The App controller checks the execution class before constructing
             // this Binder value; the isolated process receives no authority to
             // upgrade an ordinary script into a workflow.
@@ -97,6 +107,12 @@ public final class IsolatedScriptWire {
     }
 
     private IsolatedScriptWire() {}
+
+    /** Preserve the actual Session ID; Android-created sessions are not UUIDs. */
+    public static void requireSessionId(String value) {
+        if (value == null || !value.matches("[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"))
+            throw new IllegalArgumentException("Invalid session identity");
+    }
 
     public static void requireUuid(String value) {
         if (value == null) throw new IllegalArgumentException("Missing run identity");

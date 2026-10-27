@@ -21,7 +21,7 @@ export function createNativeIsolatedExecutionBridge(transport) {
   if (!transport || typeof transport.request !== 'function') throw new TypeError('Native transport required')
   const bridge = Object.freeze({
     async admit(prepared) {
-      if (prepared.kind !== 'script') throw unavailable('Android workflow execution is unavailable')
+      if (!['script', 'ptc'].includes(prepared.kind)) throw unavailable('Android workflow execution is unavailable')
       if (prepared.scope.readablePaths.length || prepared.scope.writablePaths.length
         || prepared.scope.exactHosts.length || prepared.scope.fileCallLimit
         || prepared.scope.networkCallLimit || prepared.scope.workspaceId !== null) {
@@ -40,7 +40,7 @@ export function createNativeIsolatedExecutionBridge(transport) {
     async execute(admission, prepared) {
       if (admission.runId !== prepared.runId) throw new Error('Native run identity changed')
       await boundedRequest(transport, 'native.isolated.execute', admission,
-        Math.min(20_000, prepared.deadlineMillis + 10_000))
+        Math.min(130_000, prepared.deadlineMillis + 10_000))
     },
     async cancel(admission) {
       await boundedRequest(transport, 'native.isolated.cancel', admission, 12_000)

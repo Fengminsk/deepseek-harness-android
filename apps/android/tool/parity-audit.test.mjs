@@ -75,18 +75,85 @@ test('new or changed optional bundle declarations require a manual ledger review
     'Stale or unknown manifest entry: optionalBundle/sdk-minimal/insert/sdk-jsonrpc-server'))
 })
 
-test('unassessed optional rows cannot be promoted to partial without Android mapping', async () => {
-  const item = manifest().entries.find(row => row.key === 'optionalBundle/headless/insert/headless-runner')
-  assert.equal(item.status, 'unassessed')
-  assert.deepEqual(item.android, [])
+test('unassessed rows cannot be promoted to partial without Android mapping', async () => {
+  const key = 'optionalBundle/headless/insert/headless-runner'
   const ledger = manifest()
-  ledger.entries.find(row => row.key === item.key).status = 'partial'
+  ledger.entries.find(row => row.key === key).status = 'partial'
   const result = await check(ledger)
-  assert.ok(result.errors.includes(`${item.key}: partial mapping requires Android source references`))
+  assert.ok(result.errors.includes(`${key}: partial mapping requires Android source references`))
   const exaggerated = manifest()
-  exaggerated.entries.find(row => row.key === item.key).evidence.behavior = 'verified'
+  const entry = exaggerated.entries.find(row => row.key === key)
+  entry.status = 'unassessed'
+  entry.evidence.behavior = 'verified'
   const claim = await check(exaggerated)
-  assert.ok(claim.errors.includes(`${item.key}: unassessed rows cannot claim Android mapping or evidence`))
+  assert.ok(claim.errors.includes(`${key}: unassessed rows cannot claim Android mapping or evidence`))
+})
+
+test('source review distinguishes alternative launchers from shared capabilities without claiming execution evidence', async () => {
+  const optional = baseline.entries.filter(entry => entry.key.startsWith('optionalBundle/'))
+  assert.ok(optional.length > 0)
+  for (const entry of optional) {
+    assert.notEqual(entry.status, 'unassessed')
+    assert.deepEqual(Object.values(entry.evidence), ['unverified', 'unverified', 'unverified', 'unverified'])
+  }
+  const lookup = key => baseline.entries.find(entry => entry.key === key)
+  assert.equal(lookup('optionalBundle/headless/insert/headless-runner').status, 'not-applicable')
+  const alternateTool = lookup('optionalBundle/sdk-minimal/insert/tool-fs')
+  assert.equal(alternateTool.status, 'not-applicable')
+  assert.ok(alternateTool.assessment.relatedDeclarations.includes('optionalBundle/base/insert/tool-fs'))
+  assert.equal(alternateTool.capability, lookup('standardPreset/tool-fs').capability)
+  assert.equal(lookup('optionalBundle/base/insert/tool-fs').assessment.composition, 'preset')
+  assert.equal(lookup('optionalBundle/base/insert/ptc-runtime').status, 'not-migrated')
+  assert.equal(lookup('optionalBundle/sdk-app/insert/skill-office').status, 'not-migrated')
+  const result = await check(manifest())
+  assert.equal(result.migration.unassessed, 0)
+  assert.equal(result.capabilities.find(capability => capability.id === 'linux').declarations.length, 0)
+  assert.match(result.capabilities.find(capability => capability.id === 'linux').remaining, /guest image/u)
+})
+
+test('excluding a declaration requires an explicit native-entrypoint reason', async () => {
+  const ledger = manifest()
+  const entry = ledger.entries.find(row => row.key === 'optionalBundle/headless/insert/headless-runner')
+  delete entry.notApplicableReason
+  const result = await check(ledger)
+  assert.ok(result.errors.includes(`${entry.key}: not-applicable status needs a native-entrypoint exclusion reason`))
+})
+
+test('a reviewed optional declaration needs a valid composition and related source identity', async () => {
+  const ledger = manifest()
+  const entry = ledger.entries.find(row => row.key === 'optionalBundle/base/insert/llm')
+  entry.assessment = { composition: 'alternate-profile', entryPoint: 'available-because-imported',
+    relatedDeclarations: [entry.key, 'webUi/imaginary'] }
+  const result = await check(ledger)
+  assert.ok(result.errors.includes(`${entry.key}: composition must distinguish the selected base from alternative profiles`))
+  assert.ok(result.errors.includes(`${entry.key}: invalid Android entrypoint assessment`))
+  assert.equal(result.errors.filter(error => error.startsWith(`${entry.key}: invalid related declaration`)).length, 2)
+})
+
+test('capability groups keep every declaration assigned and require their own source and remaining work', async () => {
+  const ledger = manifest()
+  ledger.entries[0].capability = 'invented'
+  ledger.capabilities[0].sources = []
+  delete ledger.capabilities[0].remaining
+  ledger.capabilities.push(ledger.capabilities[1])
+  const result = await check(ledger)
+  assert.ok(result.errors.some(error => error.includes('unknown capability invented')))
+  assert.ok(result.errors.some(error => error.includes('capability sources must be a nonempty array')))
+  assert.ok(result.errors.some(error => error.includes('capability remaining is required')))
+  assert.ok(result.errors.some(error => error.startsWith('Duplicate capability:')))
+})
+
+test('changes to composition outside declaration rows invalidate the source review', async () => {
+  const ledger = manifest()
+  const input = ledger.reviewInputs.find(row => row.path === 'apps/android/tool/stage-preset.mjs')
+  input.sha256 = '0'.repeat(64)
+  ledger.reviewInputs = ledger.reviewInputs.filter(row => row.path !== 'apps/android/runtime/host-guard.mjs')
+  const result = await check(ledger)
+  assert.ok(result.errors.some(error => error.startsWith(`${input.path}: Android composition changed;`)))
+  assert.ok(result.errors.includes('Missing composition review input: apps/android/runtime/host-guard.mjs'))
+  const malformed = manifest()
+  malformed.reviewInputs = {}
+  assert.ok((await check(malformed)).errors.includes('Manifest reviewInputs must be an array'))
 })
 
 test('JavaScript in patch tags remains inert during inventory collection', () => {

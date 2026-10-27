@@ -63,11 +63,15 @@ class IsolatedScriptService : Service() {
     private fun accept(message: Message) {
         val reply = message.replyTo ?: return
         val data = message.data
-        val base = setOf(
+        var base = setOf(
             IsolatedScriptWire.KEY_VERSION, IsolatedScriptWire.KEY_RUN,
             IsolatedScriptWire.KEY_NONCE, IsolatedScriptWire.KEY_PROGRAM,
             IsolatedScriptWire.KEY_INPUT, IsolatedScriptWire.KEY_DEADLINE,
         )
+        val programFormat = if (data.containsKey(IsolatedScriptWire.KEY_PROGRAM_FORMAT)) {
+            base = base + IsolatedScriptWire.KEY_PROGRAM_FORMAT
+            checkNotNull(data.getString(IsolatedScriptWire.KEY_PROGRAM_FORMAT))
+        } else IsolatedScriptWire.FUNCTION_EXPRESSION
         val hostGrantsJson = if (data.containsKey(IsolatedScriptWire.KEY_HOST_GRANTS)) {
             require(data.keySet() == base + IsolatedScriptWire.KEY_HOST_GRANTS)
             checkNotNull(data.getString(IsolatedScriptWire.KEY_HOST_GRANTS)).also {
@@ -86,6 +90,7 @@ class IsolatedScriptService : Service() {
             checkNotNull(data.getString(IsolatedScriptWire.KEY_PROGRAM)),
             checkNotNull(data.getString(IsolatedScriptWire.KEY_INPUT)),
             data.getInt(IsolatedScriptWire.KEY_DEADLINE, -1),
+            programFormat,
         )
         val death = IBinder.DeathRecipient {
             active?.stop()
@@ -106,15 +111,15 @@ class IsolatedScriptService : Service() {
         val result = try {
             PtcScriptEngine().use { engine ->
                 run.engine = engine
-                if (run.hostGrantsJson == null) {
-                    engine.run(run.request.program(), run.request.inputJson(), run.request.deadlineMillis())
-                } else {
-                    engine.run(run.request.program(), run.request.inputJson(),
-                        run.request.deadlineMillis(), object : PtcScriptEngine.HostCall {
-                            override fun call(requestJson: String): String = requestHost(run, requestJson)
-                            override fun submit(requestJson: String): Int = submitHost(run, requestJson)
-                        }, run.hostGrantsJson)
+                val host = if (run.hostGrantsJson == null) null else object : PtcScriptEngine.HostCall {
+                    override fun call(requestJson: String): String = requestHost(run, requestJson)
+                    override fun submit(requestJson: String): Int = submitHost(run, requestJson)
                 }
+                if (run.request.programFormat() == IsolatedScriptWire.FUNCTION_BODY)
+                    engine.runFunctionBody(run.request.program(), run.request.inputJson(),
+                        run.request.deadlineMillis(), host, run.hostGrantsJson)
+                else engine.run(run.request.program(), run.request.inputJson(),
+                    run.request.deadlineMillis(), host, run.hostGrantsJson)
             }
         } catch (_: Exception) { null }
         catch (_: LinkageError) { null }

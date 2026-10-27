@@ -20,6 +20,36 @@ const workflow = () => ({ ...script(), kind: 'workflow',
   meta: { name: 'Review', description: 'Inspect files', phases: [{ title: 'Read' }] },
   maxTotalAgents: 3, maxConcurrentAgents: 2 })
 
+test('real App and child Session identities survive script and workflow admission unchanged', () => {
+  for (const id of ['android-1793060921975320-627842147',
+    'session-a015dce6eb0f4875a0fe4fdafeb6eb1b', sessionId, 'a'.repeat(128)]) {
+    const scope = { ...base(), sessionId: id }
+    for (const request of [script(), workflow()]) {
+      const admitted = prepareIsolatedExecution({ ...request, sessionId: id }, scope)
+      assert.equal(admitted.sessionId, id)
+      assert.equal(admitted.scope.sessionId, id)
+      if (id !== sessionId) {
+        assert.throws(() => prepareIsolatedExecution({ ...request, sessionId: id }, base()),
+          { code: 'ANDROID_EXECUTION_INVALID' })
+      }
+    }
+  }
+})
+
+test('Session identifiers reject paths, whitespace and oversized values while run IDs stay UUIDs', () => {
+  for (const id of ['', '.', '..', '../session', 'a/b', 'a\\b', 'a b', 'a\n', '\u0000',
+    '\u4f1a\u8bdd', 'a'.repeat(129)]) {
+    assert.throws(() => normalizeExecutionScope({ ...base(), sessionId: id }),
+      { code: 'ANDROID_EXECUTION_INVALID' })
+    assert.throws(() => prepareIsolatedExecution({ ...script(), sessionId: id }, base()),
+      { code: 'ANDROID_EXECUTION_INVALID' })
+  }
+  assert.throws(() => prepareIsolatedExecution({ ...script(), runId: 'android-123' }, base()),
+    { code: 'ANDROID_EXECUTION_INVALID' })
+  assert.throws(() => normalizeExecutionScope({ ...base(), workspaceId: 'android-123' }),
+    { code: 'ANDROID_EXECUTION_INVALID' })
+})
+
 test('script admission copies and freezes App scope and JSON without claiming execution', () => {
   const selected = base()
   const request = script()
@@ -55,6 +85,19 @@ test('private workflow has a bounded longer lifetime while ordinary scripts stay
   assert.throws(() => prepareIsolatedExecution({ ...script(), deadlineMillis: 5_001 }, scope),
     { code: 'ANDROID_EXECUTION_INVALID' })
   assert.throws(() => prepareIsolatedExecution({ ...workflow(), deadlineMillis: 120_000 }, base()),
+    { code: 'ANDROID_EXECUTION_INVALID' })
+})
+
+test('tool-only PTC has a separate bounded host-wait budget without native capability grants', () => {
+  const scope = { ...base(), workspaceId: null, readablePaths: [], writablePaths: [],
+    exactHosts: [], fileCallLimit: 0, networkCallLimit: 0, leaseMillis: 120_000 }
+  const request = { ...script(), kind: 'ptc', deadlineMillis: 120_000 }
+  assert.equal(prepareIsolatedExecution(request, scope).kind, 'ptc')
+  assert.throws(() => prepareIsolatedExecution({ ...request, deadlineMillis: 120_001 }, scope),
+    { code: 'ANDROID_EXECUTION_INVALID' })
+  assert.throws(() => prepareIsolatedExecution(request, { ...base(), leaseMillis: 120_000 }),
+    { code: 'ANDROID_EXECUTION_INVALID' })
+  assert.throws(() => prepareIsolatedExecution({ ...request, meta: { name: 'forged' } }, scope),
     { code: 'ANDROID_EXECUTION_INVALID' })
 })
 

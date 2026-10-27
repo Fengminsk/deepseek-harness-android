@@ -19,7 +19,12 @@ const paths = {
 const kinds = ['webUi', 'webService', 'standardPreset', 'standardNested', 'standardDelegation', 'androidDisabled', 'optionalBundle']
 const levels = ['core', 'ui', 'behavior', 'device']
 const states = new Set(['unverified', 'partial', 'verified', 'not-applicable'])
-const statuses = new Set(['unassessed', 'not-migrated', 'partial', 'adapted', 'upstream-disabled'])
+const statuses = new Set(['unassessed', 'not-migrated', 'partial', 'adapted', 'upstream-disabled', 'not-applicable'])
+const compositions = new Set(['inherited', 'reconfigured', 'preset', 'replaced', 'disabled', 'alternate-profile'])
+const entryPoints = new Set(['shared-service', 'model-tool', 'none', 'alternate-entrypoint'])
+const reviewInputs = ['apps/android/runtime/bootstrap.mjs', 'apps/android/runtime/host-guard.mjs',
+  'apps/android/runtime/index.mjs', 'apps/android/runtime/cordis.patch.yml',
+  'apps/android/tool/stage-preset.mjs', 'packages/bundle/web-app/cordis.patch.yml']
 const manifestPath = 'apps/android/tool/parity-manifest.json'
 
 // Configuration expressions are retained as data. Auditing must never evaluate them.
@@ -154,7 +159,7 @@ function relativeFile(path) {
  */
 export async function validateParityManifest(root, manifest, inventory) {
   const errors = []
-  if (manifest?.version !== 1) errors.push('Unsupported parity manifest version')
+  if (manifest?.version !== 2) errors.push('Unsupported parity manifest version')
   if (!Array.isArray(manifest?.entries)) {
     return { ok: false, errors: [...errors, 'Manifest entries must be an array'], counts: {} }
   }
@@ -162,6 +167,8 @@ export async function validateParityManifest(root, manifest, inventory) {
   const seen = new Set()
   const refs = new Map()
   const counts = Object.fromEntries(kinds.map(kind => [kind, 0]))
+  const migration = Object.fromEntries([...statuses].map(status => [status, 0]))
+  const capabilities = new Map()
   const evidence = Object.fromEntries(levels.map(level => [level,
     Object.fromEntries([...states].map(state => [state, 0]))]))
   const register = (path, owner) => {
@@ -172,6 +179,40 @@ export async function validateParityManifest(root, manifest, inventory) {
       owners.push(owner)
       refs.set(path, owners)
     }
+  }
+  if (!Array.isArray(manifest.capabilities) || manifest.capabilities.length === 0) {
+    errors.push('Manifest capabilities must be a nonempty array')
+  } else for (const capability of manifest.capabilities) {
+    const id = capability?.id
+    if (typeof id !== 'string' || !/^[a-z][a-z0-9-]*$/u.test(id)) {
+      errors.push('Capability is missing a stable id')
+      continue
+    }
+    if (capabilities.has(id)) errors.push(`Duplicate capability: ${id}`)
+    capabilities.set(id, { ...capability, declarations: [], migration: {} })
+    for (const field of ['title', 'remaining']) {
+      if (typeof capability[field] !== 'string' || !capability[field].trim()) {
+        errors.push(`${id}: capability ${field} is required`)
+      }
+    }
+    if (!Array.isArray(capability.sources) || capability.sources.length === 0) {
+      errors.push(`${id}: capability sources must be a nonempty array`)
+    } else for (const path of capability.sources) register(path, `capability.${id}`)
+  }
+  if (!Array.isArray(manifest.reviewInputs)) errors.push('Manifest reviewInputs must be an array')
+  const reviewed = new Set()
+  const inputs = Array.isArray(manifest.reviewInputs) ? manifest.reviewInputs : []
+  for (const input of inputs) {
+    const path = input?.path
+    register(path, 'reviewInputs')
+    if (reviewed.has(path)) errors.push(`Duplicate review input: ${path}`)
+    reviewed.add(path)
+    if (typeof input?.sha256 !== 'string' || !/^[a-f0-9]{64}$/u.test(input.sha256)) {
+      errors.push(`${path}: review input needs a SHA-256`)
+    }
+  }
+  for (const path of reviewInputs) {
+    if (!reviewed.has(path)) errors.push(`Missing composition review input: ${path}`)
   }
   for (const entry of manifest.entries) {
     if (!entry || typeof entry.key !== 'string') {
@@ -194,6 +235,31 @@ export async function validateParityManifest(root, manifest, inventory) {
       }
     }
     if (!statuses.has(entry.status)) errors.push(`${key}: invalid migration status ${entry.status}`)
+    else migration[entry.status]++
+    const capability = capabilities.get(entry.capability)
+    if (!capability) errors.push(`${key}: unknown capability ${entry.capability}`)
+    else {
+      capability.declarations.push(key)
+      capability.migration[entry.status] = (capability.migration[entry.status] ?? 0) + 1
+    }
+    if (entry.status === 'not-applicable' && (typeof entry.notApplicableReason !== 'string'
+      || !entry.notApplicableReason.trim())) {
+      errors.push(`${key}: not-applicable status needs a native-entrypoint exclusion reason`)
+    }
+    if (source?.kind === 'optionalBundle' && entry.status !== 'unassessed') {
+      const assessment = entry.assessment
+      if (!compositions.has(assessment?.composition)) errors.push(`${key}: invalid Android composition assessment`)
+      if (!entryPoints.has(assessment?.entryPoint)) errors.push(`${key}: invalid Android entrypoint assessment`)
+      const alternate = !key.startsWith('optionalBundle/base/')
+      if (alternate !== (assessment?.composition === 'alternate-profile')) {
+        errors.push(`${key}: composition must distinguish the selected base from alternative profiles`)
+      }
+      if (!Array.isArray(assessment?.relatedDeclarations)) {
+        errors.push(`${key}: relatedDeclarations must be an array`)
+      } else for (const related of assessment.relatedDeclarations) {
+        if (related === key || !expected.has(related)) errors.push(`${key}: invalid related declaration ${related}`)
+      }
+    }
     if (typeof entry.note !== 'string' || entry.note.trim().length === 0) errors.push(`${key}: explanatory note is required`)
     for (const field of ['sources', 'android']) {
       if (!Array.isArray(entry[field]) || (field === 'sources' && entry[field].length === 0)) {
@@ -245,12 +311,18 @@ export async function validateParityManifest(root, manifest, inventory) {
       if (distance === '..' || distance.startsWith(`..${sep}`) || isAbsolute(distance)
         || !(await stat(actual)).isFile()) {
         errors.push(`${owners[0]}: reference is not a file inside the repository: ${path}`)
+        continue
+      }
+      const input = inputs.find(item => item?.path === path)
+      if (input && createHash('sha256').update((await readFile(actual, 'utf8')).replace(/\r\n/gu, '\n'))
+        .digest('hex') !== input.sha256) {
+        errors.push(`${path}: Android composition changed; review mappings and reviewInputs before recording its SHA-256`)
       }
     } catch (error) {
       errors.push(`${owners[0]}: reference unavailable: ${path} (${error.code ?? error.message})`)
     }
   }
-  return { ok: errors.length === 0, errors, counts, evidence }
+  return { ok: errors.length === 0, errors, counts, evidence, migration, capabilities: [...capabilities.values()] }
 }
 
 /**
@@ -273,7 +345,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       process.exitCode = 1
     } else {
       console.log(`Parity ledger covers ${Object.values(result.counts).reduce((sum, count) => sum + count, 0)} declarations.`)
-      console.log(JSON.stringify({ counts: result.counts, evidence: result.evidence }))
+      console.log(JSON.stringify({ counts: result.counts, migration: result.migration, evidence: result.evidence }))
+      if (process.argv.includes('--capabilities')) {
+        for (const capability of result.capabilities) {
+          console.log(`${capability.id}: ${capability.title} (${capability.declarations.length} declarations; not a feature count)`)
+          console.log(`  Open: ${capability.remaining}`)
+        }
+      }
       console.log(`Scope: ${result.scope}`)
       console.log('Coverage is not completion. Unverified and partial migration claims remain open.')
     }

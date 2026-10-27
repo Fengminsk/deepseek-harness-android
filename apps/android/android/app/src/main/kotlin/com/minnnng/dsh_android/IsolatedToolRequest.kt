@@ -16,7 +16,7 @@ internal data class IsolatedToolRequest(
         private val guestErrors = setOf("ANDROID_TOOL_NOT_GRANTED",
             "ANDROID_TOOL_DISPATCH_FAILED", "ANDROID_TOOL_RESULT_UNSUPPORTED")
 
-        fun parse(requestJson: String): IsolatedToolRequest {
+        fun parse(requestJson: String, readOnlyPtc: Boolean = false): IsolatedToolRequest {
             require(IsolatedScriptWire.utf8Bytes(requestJson) <= PtcScriptEngine.MAX_HOST_REQUEST_BYTES)
             val value = JSONObject(requestJson)
             require(value.keys().asSequence().toSet() == setOf("action", "callId", "name", "arguments"))
@@ -24,11 +24,18 @@ internal data class IsolatedToolRequest(
             val id = value.get("callId")
             require(id is Int && id in 1..MAX_CALLS)
             val name = value.get("name")
-            require(name is String && toolName.matches(name) && name != "run_code" &&
-                name !in setOf("android_shell", "android_linux", "android_files",
-                    "read", "read_image", "write", "edit", "workflow", "android_ptc"))
+            require(name is String && toolName.matches(name))
             val arguments = value.get("arguments")
             require(arguments is JSONObject)
+            if (readOnlyPtc) {
+                require(name in setOf("list_agents", "read", "glob", "grep", "web_search",
+                    "web_fetch", "android_files", "android_attachments"))
+                if (name == "android_files") require(arguments.opt("action") in
+                    setOf("roots", "list", "read", "search"))
+                if (name == "android_attachments") require(arguments.opt("action") in
+                    setOf("list", "read", "inspect_archive"))
+            } else require(name !in setOf("run_code", "android_shell", "android_linux", "android_files",
+                "android_attachments", "read", "read_image", "write", "edit", "str_replace_editor", "workflow", "android_ptc"))
             return IsolatedToolRequest(id, name, arguments)
         }
 

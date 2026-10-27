@@ -77,23 +77,26 @@ export async function verifyLinuxUserlandArtifacts({
   rootfsAssetDirectory,
   nativeLibraryDirectory,
 }) {
+  if (manifest?.format === 'pocket-linux-userland-v1') {
+    throw invalid('Linux userland manifest v1 is unsupported; regenerate it as pocket-linux-userland-v2 with source URL, revision, and license')
+  }
   if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest) ||
-      manifest.format !== 'pocket-linux-userland-v1' ||
+      manifest.format !== 'pocket-linux-userland-v2' ||
       manifest.abi !== 'arm64-v8a' ||
       manifest.architecture !== 'aarch64' ||
-      !manifest.provenance || typeof manifest.provenance !== 'object' ||
-      !/^https:\/\//.test(manifest.provenance.sourceUrl) ||
-      !/^[0-9a-f]{40,64}$/.test(manifest.provenance.sourceRevision) ||
-      typeof manifest.provenance.license !== 'string' ||
-      manifest.provenance.license.length < 3) {
-    throw invalid('Invalid Linux userland manifest or source provenance')
+      !manifest.source || typeof manifest.source !== 'object' ||
+      !/^https:\/\//.test(manifest.source.sourceUrl) ||
+      !/^[0-9a-f]{40,64}$/.test(manifest.source.sourceRevision) ||
+      typeof manifest.source.license !== 'string' ||
+      manifest.source.license.length < 3) {
+    throw invalid('Invalid Linux userland manifest or source URL, revision, or license')
   }
   const rootfs = requireArtifact(manifest.rootfs, 'rootfs', 'linux-rootfs.tar.gz', MAX_ROOTFS_BYTES)
   const launcher = requireArtifact(manifest.launcher, 'launcher', 'libpocket_proot.so', MAX_LAUNCHER_BYTES)
-  const provenance = Object.freeze({
-    sourceUrl: manifest.provenance.sourceUrl,
-    sourceRevision: manifest.provenance.sourceRevision,
-    license: manifest.provenance.license,
+  const source = Object.freeze({
+    sourceUrl: manifest.source.sourceUrl,
+    sourceRevision: manifest.source.sourceRevision,
+    license: manifest.source.license,
   })
   const assetDir = requireDirectory(rootfsAssetDirectory, 'Rootfs asset')
   const libraryDir = requireDirectory(nativeLibraryDirectory, 'Native library')
@@ -104,7 +107,7 @@ export async function verifyLinuxUserlandArtifacts({
     abi: manifest.abi,
     rootfs: verifiedRootfs,
     launcher: verifiedLauncher,
-    provenance,
+    source,
     executable: false,
   })
   issuedImages.add(image)

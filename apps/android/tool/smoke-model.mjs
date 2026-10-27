@@ -19,13 +19,14 @@ export async function startSmokeModel() {
       const agent = body.tools?.some(tool => tool.name === 'android_files')
       let events = textEvents('smoke title'), stop = 'end_turn'
       if (agent) {
+        assert.match(body.tools.find(tool => tool.name === 'android_attachments')?.description ?? '', /inspect_apk/)
         calls++
         if (calls === 1) {
           events = [
             { type: 'content_block_start', index: 0,
               content_block: { type: 'tool_use', id: 'smoke-tool', name: 'android_files', input: {} } },
             { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta',
-              partial_json: JSON.stringify({ action: 'read', root: 'smoke-root', path: 'test.txt' }) } },
+              partial_json: JSON.stringify({ action: 'read', root: 'b'.repeat(64), path: 'test.txt' }) } },
             { type: 'content_block_stop', index: 0 },
           ]
           stop = 'tool_use'

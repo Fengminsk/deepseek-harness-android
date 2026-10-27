@@ -16,6 +16,8 @@
 
 ## 候选版本安装约束
 
+仅供开发的打包清单使用 `format: "pocket-linux-userland-v2"`，并通过 `source` 对象提供 `sourceUrl`、`sourceRevision` 和 `license`。应根据已审核的来源锁重新生成旧候选清单；预检会在读取产物文件前明确拒绝 v1，不改写已有清单。该输入不是 Session 格式、原生安装收据或 TinyEMU 镜像清单。验证结果仅在进程内使用，不授予执行能力。
+
 [`verifyLinuxUserlandArtifacts`](../runtime/linux-userland-image.mjs)根据受信任清单检查 ARM64 ABI、文件大小和 SHA-256，并签发进程内不可伪造的验证结果。[`publishRootfsCandidate`](linux-userland-rootfs.mjs)只接收该结果，重新复制并校验归档、完整扫描 tar 流，对压缩大小、条目数、解压总量、单文件大小和路径深度设置上限，再解包到新建的版本化暂存目录。它拒绝路径穿越、Windows 路径别名、重复或大小写冲突的名称、设备/FIFO 条目、符号链接父目录、越界链接以及指向非先前普通文件的硬链接。镜像中的绝对符号链接被改写成候选目录内的相对链接。普通文件完成解包后才创建硬链接与符号链接，避免 tar 通过归档控制的链接写入其他位置。解包后还要按归档内容计算的 SHA-256 核对普通文件、硬链接身份及完整文件树。成功后原子重命名为 `versions/<sha256>` 并写入收据；失败时只清除安装器自己的未完成暂存目录。这保证并发读取时只能看到完整候选版本，但尚未建立目录 `fsync` 协议，不能保证突然断电后的持久性。[`verifyPublishedRootfsCandidate`](linux-userland-rootfs.mjs)允许重启后的进程根据独立重新验证的源镜像、完整归档、收据和解包文件树复核候选版本。可写收据和候选版本都不构成运行授权。该模块不会启用版本、清理旧版本或运行来宾。正式启用与回滚还需要持久任务引用和明确的版本指针。
 
 ## Android 执行阻碍

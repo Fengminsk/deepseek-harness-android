@@ -12,6 +12,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 /** App-owned lifecycle gate for internal isolated command requests. */
 final class LinuxCommandAdmission implements AutoCloseable {
+    static final class CancelledBeforeAdmission extends IllegalStateException {
+        CancelledBeforeAdmission() { super("Linux command cancelled before admission"); }
+    }
     static final int MAX_ACTIVE = 2;
     private static final int MAX_PENDING_CANCELLATIONS = 256;
     private static final int MAX_SETTLED_IDS = 512;
@@ -53,7 +56,7 @@ final class LinuxCommandAdmission implements AutoCloseable {
         if (!validId(id)) throw new IllegalArgumentException("Invalid Linux command run ID");
         if (cancelledBeforeAdmission.remove(id)) {
             rememberSettled(id, true);
-            throw new IllegalStateException("Linux command cancelled before admission");
+            throw new CancelledBeforeAdmission();
         }
         if (settledIds.containsKey(id)) throw new IllegalArgumentException("Linux command run ID already settled");
         if (active.containsKey(id)) throw new IllegalArgumentException("Linux command run already exists");

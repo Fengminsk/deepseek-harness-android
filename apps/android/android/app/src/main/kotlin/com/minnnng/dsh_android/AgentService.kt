@@ -62,6 +62,8 @@ class AgentService : Service() {
     private val workflowRuns get() = workflowRunsDelegate.value
     private val linuxCommandsDelegate = lazy { LinuxCommandManager(this) }
     private val linuxCommands get() = linuxCommandsDelegate.value
+    private val linuxVmDelegate = lazy { LinuxVmManager(this) }
+    private val linuxVm get() = linuxVmDelegate.value
     private val documentImagesDelegate = lazy { DocumentImageReads(this) }
     private val documentImages get() = documentImagesDelegate.value
     private data class ManualRun(
@@ -602,6 +604,10 @@ class AgentService : Service() {
                         "native.storage.root" -> File(applicationInfo.dataDir).canonicalPath
                         "native.linuxCommand.execute" -> linuxCommands.execute(params)
                         "native.linuxCommand.cancel" -> linuxCommands.cancel(params)
+                        "native.linuxVm.execute" -> linuxVm.execute(params)
+                        "native.linuxVm.importFile" -> linuxVm.importFile(params)
+                        "native.linuxVm.exportFile" -> linuxVm.exportFile(params)
+                        "native.linuxVm.cancel" -> linuxVm.cancel(params)
                         "native.isolated.admit" -> isolatedRuns.admit(params)
                         "native.isolated.bindTools" -> isolatedRuns.bindTools(params)
                         "native.isolated.execute" -> isolatedRuns.execute(params)
@@ -1269,6 +1275,7 @@ class AgentService : Service() {
         isolatedApprovals.close()
         isolatedApprovalExpiry.shutdownNow()
         if (linuxCommandsDelegate.isInitialized()) linuxCommands.close()
+        if (linuxVmDelegate.isInitialized()) linuxVm.close()
         taskCompletion.close()
         broadcast(status())
     }
@@ -1323,6 +1330,7 @@ class AgentService : Service() {
                 }
                 if (unexpectedNodeStop) persistInterruption(RuntimeInterruptionRecord.RUNTIME_LOST)
                 if (linuxCommandsDelegate.isInitialized()) linuxCommands.close()
+                if (linuxVmDelegate.isInitialized()) linuxVm.close()
                 closeDocumentImages()
             }
             finally {
@@ -1339,6 +1347,7 @@ class AgentService : Service() {
         }
         try {
             if (linuxCommandsDelegate.isInitialized()) linuxCommands.close()
+            if (linuxVmDelegate.isInitialized()) linuxVm.close()
             closeDocumentImages()
             transitions.close()
             main.removeCallbacks(summaryPoll)

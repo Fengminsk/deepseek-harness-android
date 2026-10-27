@@ -51,7 +51,7 @@ class NativeWorkflowAcceptanceInstrumentation : Instrumentation() {
 
     private fun request(runId: String, program: String) = JSONObject()
         .put("kind", "workflow").put("runId", runId)
-        .put("sessionId", UUID.randomUUID().toString())
+        .put("sessionId", "android-1793060921975320-627842147")
         .put("program", program).put("inputJson", "{}")
         .put("deadlineMillis", 5_000)
 
@@ -96,6 +96,7 @@ class NativeWorkflowAcceptanceInstrumentation : Instrumentation() {
             check(bridge.execute(token))
             val settled = bridge.settle(token)
             check(settled.getString("state") == "COMPLETED") { settled.toString() }
+            check(settled.getString("sessionId") == "android-1793060921975320-627842147")
             val output = JSONObject(settled.getString("outputJson"))
             check(output.getJSONObject("value").getBoolean("begin") &&
                 output.getJSONObject("value").getBoolean("progress"))
@@ -356,16 +357,15 @@ class NativeWorkflowAcceptanceInstrumentation : Instrumentation() {
             val executionOutcome = runCatching { execution.get(12, TimeUnit.SECONDS) }
             val settled = bridge.settle(token)
             val state = settled.getString("state")
-            check(state == "CANCELLED" || state == "INTERRUPTED_UNCONFIRMED") {
+            check(state == "CANCELLED") {
                 settled.toString()
             }
             check(settled.isNull("outputJson") && resultCalls.get() == 1 && closes.get() == 1)
-            check(executionOutcome.isSuccess || state == "INTERRUPTED_UNCONFIRMED")
+            check(executionOutcome.isSuccess)
             val child = durable.read(runId).children().single()
             check(child.id() == childId.get() &&
                 child.state() == DurableWorkflowOwner.ChildState.RETIRED)
-            if (state == "CANCELLED") check(bridge.release(token))
-            else check(runCatching { bridge.release(token) }.isFailure)
+            check(bridge.release(token))
             val observedCalls = resultCalls.get()
             // Reconstructing the App owner reads the old receipt; it must not
             // restart the script or the retired child after a cold owner start.

@@ -57,7 +57,7 @@ async function setup(t, options = {}) {
   for (const plugin of [LlmRuntime, SessionStore, SessionProjections, SystemPrompt,
     ToolRuntime, AgentRegistry]) await ctx.plugin(plugin)
   await ctx.plugin(AgentLoop, { agents: [] })
-  const agent = await ctx.agentLoop.create(SessionId(randomUUID()))
+  const agent = await ctx.agentLoop.create(SessionId(`android-${randomUUID()}`))
   const calls = []
   let callbacks
   let program
@@ -79,7 +79,9 @@ async function setup(t, options = {}) {
       await options.beforeExecute?.()
       const body = new AsyncFunction('input', 'host', program)
       const value = await body(JSON.parse(inputJson), { callAsync: async input => {
-        const result = await callbacks.call({ ...input, runId: params.runId,
+        assert.equal(input.action, 'TOOL_CALL')
+        const { action, ...forwarded } = input
+        const result = await callbacks.call({ ...forwarded, runId: params.runId,
           token: 'native-private-token' })
         const { runId: _runId, callId: _callId, ...reply } = result
         return reply
@@ -590,7 +592,7 @@ test('reviewed registration identity and owner scope deny same-object re-registr
       const value = (await caller.start(valid, execution).result).value
       // The replacement is absent from the reviewed allowlist at binding.
       try {
-        const attempted = draft('return await host.callAsync({ callId: 1, name: "safe_echo", arguments: {} })')
+        const attempted = draft('return await host.callAsync({ action: "TOOL_CALL", callId: 1, name: "safe_echo", arguments: {} })')
         denied = (await caller.start(attempted, execution).result).value.error.code
       } catch (error) { denied = error.code }
       return value

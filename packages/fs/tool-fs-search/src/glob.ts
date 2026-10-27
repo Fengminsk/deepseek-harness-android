@@ -11,12 +11,45 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import { sep } from 'node:path'
-import { defineTool } from '@deepseek-ai/dsh-tools'
+import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
 import type { GenericCallView, SearchResultView, ToolResult } from '@deepseek-ai/dsh-tools'
 import type { SpillRef } from '@deepseek-ai/dsh-spill'
 import { runRipgrep, toWorkdirRelative, trySaveFormattedResult } from './search-core.ts'
 import { globSearchMeta, searchViewFromMeta } from './presentation.ts'
 import { acceptedDirectCallValue } from './direct-call.ts'
+
+const definitionKey = Symbol('glob definition owner')
+
+/** One registration owns its attestation and retires with its plugin. */
+class GlobDefinitionOwner {
+  readonly #runtime: Context['tools']
+  #active = true
+
+  constructor(key: symbol, runtime: Context['tools']) {
+    if (key !== definitionKey) throw new TypeError('Only the original glob factory can issue its definition')
+    this.#runtime = runtime
+  }
+
+  static owns(definition: ToolDefinition, scope: Parameters<Context['tools']['get']>[1]): boolean {
+    return #runtime in definition && definition.#active
+      && definition.#runtime.get('glob', scope) === definition
+  }
+
+  retire(): void { this.#active = false }
+}
+
+/**
+ * Identify this package's live, unmodified glob registration in a caller scope.
+ * A name, schema, copied object or retired registration cannot establish identity.
+ * @param definition - exact definition selected by the caller's ToolRuntime.
+ * @param scope - caller scope used for visibility; undefined selects the global view.
+ * @returns whether this factory owns the visible live definition.
+ */
+export function isFirstPartyGlobDefinition(
+  definition: ToolDefinition, scope: Parameters<Context['tools']['get']>[1],
+): boolean {
+  return GlobDefinitionOwner.owns(definition, scope)
+}
 
 /**
  * Default cap on paths retained inline by one `glob` call (the `globMaxResults`
@@ -350,11 +383,14 @@ export function applyGlobTool(ctx: Context, caps: GlobToolCaps): void {
     presentCall: presentGlobCall,
     presentResult: presentGlobResult,
   })
-  ctx.tools.register(tool)
+  const owner = new GlobDefinitionOwner(definitionKey, ctx.tools)
+  const owned = Object.freeze(Object.assign(owner, tool))
+  ctx.tools.register(owned)
+  ctx.effect(() => () => owner.retire())
 
   ctx.on('tools/post-execute', async (exec, result, next) => {
     const decision = await next()
-    const value = acceptedDirectCallValue(ctx, tool, exec, result, decision) as { root: string; paths: string[] } | undefined
+    const value = acceptedDirectCallValue(ctx, owned, exec, result, decision) as { root: string; paths: string[] } | undefined
     if (value === undefined) return decision
     const paths = value.paths
     if (paths.length <= caps.maxResults) return decision

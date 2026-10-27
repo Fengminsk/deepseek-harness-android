@@ -6,7 +6,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 // App RPCs for SAF grants are deliberately separate and never turn a content URI
 // into a path accepted here.
 const FILE_TOOLS = new Set(['read', 'read_image', 'glob', 'grep', 'write', 'edit', 'str_replace_editor', 'present'])
-const DENIAL = 'Android file tools require a path inside the App workspace. Use android_files for user-authorized documents.'
+const DENIAL = 'Android file tools require a path inside the App workspace. For uploaded files use android_attachments to read or materialize a current-session attachment; use android_files for user-authorized document roots.'
 export const modelFileExecutionScope = new AsyncLocalStorage()
 
 export function insideModelWorkspace(root, target) {
@@ -111,6 +111,7 @@ export function registerModelFileReadGuard(ctx, workspaceRoot = process.cwd()) {
   const prepared = new Map()
   const directory = ctx.workingDirectory
   const originalEnsure = directory.ensure
+  const originalEnsureDescriptor = Object.getOwnPropertyDescriptor(directory, 'ensure')
   const scopedEnsure = function (agent, signal) {
     const scope = modelFileExecutionScope.getStore()
     if (scope && scope.agent === agent) {
@@ -119,14 +120,18 @@ export function registerModelFileReadGuard(ctx, workspaceRoot = process.cwd()) {
     }
     return originalEnsure.call(this, agent, signal)
   }
-  directory.ensure = scopedEnsure
-  let guardedSubprocess, originalSpawn, scopedSpawn
+  Object.defineProperty(directory, 'ensure', { configurable: true, writable: true, value: scopedEnsure })
+  let guardedSubprocess, originalSpawn, scopedSpawn, originalSpawnDescriptor
   function ensureSearchBoundary() {
     const service = ctx.get?.('subprocess') ?? ctx.subprocess
     if (!service || typeof service.spawn !== 'function') return false
-    if (service === guardedSubprocess && service.spawn === scopedSpawn) return true
+    // Cordis traces each service/method access with a new proxy. Comparing
+    // service.spawn to the installed function rejects every real Service,
+    // although plain ctx.provide() test doubles happen to retain identity.
+    if (Object.getOwnPropertyDescriptor(service, 'spawn')?.value === scopedSpawn && scopedSpawn) return true
     if (guardedSubprocess) return false
     originalSpawn = service.spawn
+    originalSpawnDescriptor = Object.getOwnPropertyDescriptor(service, 'spawn')
     scopedSpawn = function (spec) {
       const scope = modelFileExecutionScope.getStore()
       if (scope && (scope.name === 'glob' || scope.name === 'grep')) {
@@ -134,9 +139,9 @@ export function registerModelFileReadGuard(ctx, workspaceRoot = process.cwd()) {
       }
       return originalSpawn.call(this, spec)
     }
-    service.spawn = scopedSpawn
+    Object.defineProperty(service, 'spawn', { configurable: true, writable: true, value: scopedSpawn })
     guardedSubprocess = service
-    return service.spawn === scopedSpawn
+    return Object.getOwnPropertyDescriptor(service, 'spawn')?.value === scopedSpawn
   }
   ctx.on('tools/pre-execute', async (execution, next) => {
     const decision = await next()
@@ -163,8 +168,14 @@ export function registerModelFileReadGuard(ctx, workspaceRoot = process.cwd()) {
   ctx.on('tools/result', execution => { prepared.delete(execution.token) })
   ctx.effect(() => () => {
     prepared.clear()
-    if (directory.ensure === scopedEnsure) directory.ensure = originalEnsure
-    if (guardedSubprocess?.spawn === scopedSpawn) guardedSubprocess.spawn = originalSpawn
+    if (Object.getOwnPropertyDescriptor(directory, 'ensure')?.value === scopedEnsure) {
+      if (originalEnsureDescriptor) Object.defineProperty(directory, 'ensure', originalEnsureDescriptor)
+      else Reflect.deleteProperty(directory, 'ensure')
+    }
+    if (guardedSubprocess && Object.getOwnPropertyDescriptor(guardedSubprocess, 'spawn')?.value === scopedSpawn) {
+      if (originalSpawnDescriptor) Object.defineProperty(guardedSubprocess, 'spawn', originalSpawnDescriptor)
+      else Reflect.deleteProperty(guardedSubprocess, 'spawn')
+    }
   })
   ctx.effect(() => ctx.tools.guard(execution => {
     if (!FILE_TOOLS.has(execution.name)) return undefined

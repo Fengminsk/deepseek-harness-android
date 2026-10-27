@@ -73,7 +73,7 @@ def installed_origins(rootfs: Path) -> tuple[list[dict], dict[str, dict]]:
         if "P" not in fields:
             continue
         if not all(key in fields for key in ("V", "o", "c", "L")):
-            raise ValueError("Alpine package provenance incomplete")
+            raise ValueError("Alpine package version, origin, source commit, or license missing")
         origin, commit = fields["o"], fields["c"]
         if not re.fullmatch(r"[a-z0-9-]+", origin) or not re.fullmatch(r"[0-9a-f]{40}", commit):
             raise ValueError("Alpine package origin or commit invalid")

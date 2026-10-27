@@ -40,10 +40,29 @@ for (input in fileTree("src").files) {
     }
 }
 
+val acceptanceBuildType = providers.gradleProperty("dshAcceptanceBuildType").orElse("debug").get()
+val linuxGuestFixture = providers.gradleProperty("dshLinuxGuestFixture").orElse("false").get() == "true"
+require(acceptanceBuildType in setOf("debug", "release")) {
+    "dshAcceptanceBuildType must be debug or release"
+}
+
 android {
+    sourceSets.getByName("androidTest").assets.srcDir(rootProject.file("../tool/device-runtime-acceptance"))
+    if (linuxGuestFixture) {
+        require(acceptanceBuildType == "release") { "Linux boot fixtures require the explicit acceptance release variant" }
+        val fixtureAssets = rootProject.file("../../../.cache/android/linux-vm-assets")
+        require(fixtureAssets.resolve("linux-vm/manifest.json").isFile) {
+            "Run node apps/android/tool/stage-linux-vm-fixture.mjs before Linux device acceptance"
+        }
+        sourceSets.getByName("main").assets.srcDir(fixtureAssets)
+        sourceSets.getByName("androidTest").assets.srcDir(rootProject.file("../../../.cache/android/linux-image-build-assets"))
+    }
+    // Instrumentation must use the same variant and R8 mapping as the installed App.
+    testBuildType = acceptanceBuildType
     namespace = "com.minnnng.dsh_android"
     compileSdk = 36
     ndkVersion = "28.2.13676358"
+    buildFeatures { buildConfig = true }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -58,12 +77,14 @@ android {
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = 28
         targetSdk = 36
+        buildConfigField("boolean", "LINUX_VM_ENABLED", linuxGuestFixture.toString())
         ndk { abiFilters += "arm64-v8a" }
         externalNativeBuild { cmake {
             cppFlags += "-std=c++20"
             arguments += "-DANDROID_STL=c++_shared"
             // Cache values from a manual NDK experiment must never leak into App builds.
             arguments += "-DDSH_BUILD_LINUX_GUEST_SUPERVISOR=OFF"
+            arguments += "-DDSH_BUILD_LINUX_VM=${if (linuxGuestFixture) "ON" else "OFF"}"
         } }
         // Uses the version code from pubspec.yaml. When using split APKs, 1000 * ABI_VERSION
         // is added automatically by Flutter. (https://developer.android.com/studio/build/configure-apk-splits#configure-APK-versions)
@@ -87,6 +108,12 @@ android {
 
     buildTypes {
         release {
+            proguardFile("linux-vm-rules.pro")
+            if (acceptanceBuildType == "release") {
+                // Preserve only APIs directly exercised by the separately compiled probe.
+                // Ordinary release builds keep their normal R8 shrinking configuration.
+                proguardFile("proguard-acceptance.pro")
+            }
             // TODO: Add your own signing config for the release build.
             // Signing with the debug keys for now, so `flutter run --release` works.
             signingConfig = signingConfigs.getByName("debug")

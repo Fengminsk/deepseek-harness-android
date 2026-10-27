@@ -3,14 +3,14 @@ import test from 'node:test'
 import { createWorkflowSessionRecord } from '../runtime/workflow-session-record.mjs'
 
 const prepared = () => ({
-  kind: 'workflow', runId: 'run-1', sessionId: 'parent-1',
+  kind: 'workflow', runId: 'run-1', sessionId: 'android-1793060921975320-627842147',
   meta: { name: 'Review' },
 })
 
 function harness(flush) {
   const events = []
   const session = {
-    id: 'parent-1',
+    id: 'android-1793060921975320-627842147',
     append(type, data) { events.push({ type, data }) },
   }
   return {

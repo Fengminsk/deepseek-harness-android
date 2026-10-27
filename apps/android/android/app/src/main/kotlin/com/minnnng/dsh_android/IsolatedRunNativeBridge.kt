@@ -51,7 +51,7 @@ internal class IsolatedRunNativeBridge(
         program: String, inputJson: String, deadlineMillis: Int,
     ) {
         IsolatedScriptWire.requireUuid(runId)
-        IsolatedScriptWire.requireUuid(sessionId)
+        IsolatedScriptWire.requireSessionId(sessionId)
         check(scope === handle.approvedScopeForRun(runId) && scope.sessionId() == sessionId)
         check(scope.readablePaths().isNotEmpty() || scope.exactHosts().isNotEmpty())
         // Directory grants remain scoped to the approved slash-suffixed root.
@@ -80,7 +80,7 @@ internal class IsolatedRunNativeBridge(
 
     private enum class Phase { RESERVED, RUNNING, TERMINAL }
     private class Run(
-        val token: String, val runId: String,
+        val token: String, val runId: String, val kind: String,
         val reservation: IsolatedScriptRunController.Reservation?,
         val approvedReservation: IsolatedScriptRunController.ApprovedReservation?,
         val approvedPlan: ApprovedPlan?,
@@ -120,11 +120,12 @@ internal class IsolatedRunNativeBridge(
         require(params.get("kind") is String && params.get("runId") is String &&
             params.get("sessionId") is String && params.get("program") is String &&
             params.get("inputJson") is String && params.get("deadlineMillis") is Number)
-        require(params.getString("kind") == "script") { "Workflow execution is unavailable" }
+        val kind = params.getString("kind")
+        require(kind in setOf("script", "ptc")) { "Execution requires a script or reviewed PTC admission" }
         val runId = params.getString("runId")
         val sessionId = params.getString("sessionId")
         IsolatedScriptWire.requireUuid(runId)
-        IsolatedScriptWire.requireUuid(sessionId)
+        IsolatedScriptWire.requireSessionId(sessionId)
         val scope = params.getJSONObject("scope")
         require(scope.keys().asSequence().toSet() == setOf(
             "ownerId", "sessionId", "version", "workspaceId", "readablePaths",
@@ -138,9 +139,12 @@ internal class IsolatedRunNativeBridge(
         val program = params.getString("program")
         val inputJson = params.getString("inputJson")
         val deadline = whole(params.get("deadlineMillis"))
-        require(deadline in 1..PtcScriptEngine.MAX_DEADLINE_MILLIS.toLong())
+        val maximumDeadline = if (kind == "ptc") PtcScriptEngine.MAX_PTC_DEADLINE_MILLIS
+            else PtcScriptEngine.MAX_DEADLINE_MILLIS
+        require(deadline in 1..maximumDeadline.toLong())
         val deadlineMillis = deadline.toInt()
-        PtcScriptEngine.validate(program, inputJson, deadlineMillis)
+        if (kind == "ptc") PtcScriptEngine.validatePtc(program, inputJson, deadlineMillis)
+        else PtcScriptEngine.validate(program, inputJson, deadlineMillis)
         require(whole(scope.get("leaseMillis")) in deadlineMillis.toLong()..300_000L)
         return synchronized(admissions) {
             require(runs.size < IsolatedExecutionPolicyOwner.MAX_ACTIVE_LEASES) { "Too many isolated runs" }
@@ -149,6 +153,7 @@ internal class IsolatedRunNativeBridge(
                 scope.getJSONArray("writablePaths").length() == 0 &&
                 scope.getJSONArray("exactHosts").length() == 0 &&
                 whole(scope.get("fileCallLimit")) == 0L && whole(scope.get("networkCallLimit")) == 0L
+            require(kind != "ptc" || denied) { "PTC accepts no native file or network grants" }
             check(!denied || !approved.containsKey(runId)) {
                 "This run already belongs to an App-approved capability plan"
             }
@@ -219,7 +224,7 @@ internal class IsolatedRunNativeBridge(
                 throw failure
             }
             val token = UUID.randomUUID().toString()
-            val run = Run(token, runId, reservation, approvedReservation, plan,
+            val run = Run(token, runId, kind, reservation, approvedReservation, plan,
                 filePolicy, networkPolicy, program, inputJson, deadlineMillis)
             runs[token] = run
             try { run.expiry = abandonedAdmissions.schedule({
@@ -292,6 +297,7 @@ internal class IsolatedRunNativeBridge(
         synchronized(run.monitor) {
             if (run.phase == Phase.TERMINAL) return true
             check(run.phase == Phase.RESERVED) { "Run was already started" }
+            check(run.kind != "ptc" || run.toolBound) { "PTC requires a reviewed ToolRuntime callback port" }
             run.phase = Phase.RUNNING
             run.expiry?.cancel(false)
         }
@@ -303,6 +309,7 @@ internal class IsolatedRunNativeBridge(
                 networkPolicy = run.networkPolicy,
                 toolTransport = if (run.toolBound) toolTransport else null,
                 toolToken = if (run.toolBound) run.token else null,
+                readOnlyPtc = run.kind == "ptc",
                 reservation = run.reservation,
                 approvedReservation = run.approvedReservation)
         } catch (failure: Exception) {

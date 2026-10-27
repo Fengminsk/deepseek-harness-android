@@ -4,6 +4,18 @@
         android:targetPackage="com.minnnng.dsh_android"
         android:targetProcesses="com.minnnng.dsh_android:agent" />
     <instrumentation
+        android:name="com.minnnng.dsh_android.LinuxVmAcceptanceInstrumentation"
+        android:targetPackage="com.minnnng.dsh_android"
+        android:targetProcesses="com.minnnng.dsh_android:agent" />
+    <instrumentation
+        android:name="com.minnnng.dsh_android.NativeRuntimeToolsAcceptanceInstrumentation"
+        android:targetPackage="com.minnnng.dsh_android"
+        android:targetProcesses="com.minnnng.dsh_android:agent" />
+    <instrumentation
+        android:name="com.minnnng.dsh_android.AgentServiceRecoveryInstrumentation"
+        android:targetPackage="com.minnnng.dsh_android"
+        android:targetProcesses="com.minnnng.dsh_android" />
+    <instrumentation
         android:name="com.minnnng.dsh_android.PtcFunctionBodyInstrumentation"
         android:targetPackage="com.minnnng.dsh_android"
         android:targetProcesses="com.minnnng.dsh_android:agent" />
@@ -53,10 +65,6 @@
         android:targetProcesses="com.minnnng.dsh_android:agent" />
     <instrumentation
         android:name="com.minnnng.dsh_android.LinuxImageInstallationInstrumentation"
-        android:targetPackage="com.minnnng.dsh_android"
-        android:targetProcesses="com.minnnng.dsh_android:agent" />
-    <instrumentation
-        android:name="com.minnnng.dsh_android.GuestStorageProbeInstrumentation"
         android:targetPackage="com.minnnng.dsh_android"
         android:targetProcesses="com.minnnng.dsh_android:agent" />
     <instrumentation

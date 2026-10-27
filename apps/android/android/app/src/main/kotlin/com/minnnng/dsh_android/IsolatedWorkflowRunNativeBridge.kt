@@ -25,9 +25,11 @@ internal class IsolatedWorkflowRunNativeBridge(
     private val runs = ConcurrentHashMap<String, Run>()
     private val owner = DurableWorkflowOwner(app.filesDir.toPath(),
         IsolatedScriptRunController::syncDirectory)
+    private val processLease = WorkflowProcessLease.current(app.filesDir.toPath(),
+        IsolatedScriptRunController::syncDirectory)
     // Reconcile before Node starts, including when one stranded child blocks
     // future workflow admission. The bridge itself remains available for audit.
-    private val coldRecovery = owner.recoverInterrupted()
+    private val coldRecovery = owner.recoverInterrupted(processLease)
     data class StartupRecovery(val newlyInterruptedRuns: Int, val unretiredChildren: Int)
     fun startupRecovery() = StartupRecovery(coldRecovery.size,
         coldRecovery.sumOf { it.childIdsToCancel().size })
@@ -52,7 +54,7 @@ internal class IsolatedWorkflowRunNativeBridge(
             .all { params.get(it) is String } && params.get("deadlineMillis") is Int)
         require(params.getString("kind") == "workflow")
         val runId = params.getString("runId").also(IsolatedScriptWire::requireUuid)
-        val sessionId = params.getString("sessionId").also(IsolatedScriptWire::requireUuid)
+        val sessionId = params.getString("sessionId").also(IsolatedScriptWire::requireSessionId)
         val program = params.getString("program")
         val inputJson = params.getString("inputJson")
         val deadline = params.getInt("deadlineMillis")
@@ -61,13 +63,15 @@ internal class IsolatedWorkflowRunNativeBridge(
         synchronized(lock) {
             check(!closing) { "Workflow bridge is closing" }
             check(coldRecovery.all { recovered ->
-                owner.read(recovered.runId()).children().all {
+                val old = owner.read(recovered.runId())
+                old.state() != DurableWorkflowOwner.State.ADMITTED &&
+                    old.state() != DurableWorkflowOwner.State.CANCEL_REQUESTED && old.children().all {
                     it.state() == DurableWorkflowOwner.ChildState.RETIRED
                 }
             }) { "Workflow children require confirmed cold-start retirement" }
             check(runs.size < 4) { "Workflow admission capacity reached" }
             val script = IsolatedScriptRunController.reserve(app, runId)
-            try { owner.admit(runId) }
+            try { owner.admit(runId, processLease) }
             catch (failure: Exception) {
                 try { script.cancelBeforeExecution(app) }
                 catch (cleanup: Exception) { failure.addSuppressed(cleanup) }
@@ -122,8 +126,7 @@ internal class IsolatedWorkflowRunNativeBridge(
         val run = owned(params)
         synchronized(run.monitor) {
             if (run.phase == Phase.TERMINAL) return true
-            owner.requestCancel(run.runId)
-            run.cancelled.set(true)
+            owner.requestCancel(run.runId) { run.cancelled.set(true) }
             if (run.phase == Phase.ADMITTED) {
                 try {
                     if (run.bound) check(transport.close(run.runId, run.token, 3000L)) {

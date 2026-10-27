@@ -2,7 +2,7 @@
 
 English | [中文](isolated-tool-call-port.zh.md)
 
-`apps/android/runtime/isolated-tool-call-port.mjs` is a host-side boundary for callbacks from **one already admitted** script or workflow guest. It does not register `run_code`, start a guest, or authorize a file/network scope. Android PTC and workflow remain disabled in `cordis.patch.yml`.
+`apps/android/runtime/isolated-tool-call-port.mjs` is a host-side boundary for callbacks from **one already admitted** script, reviewed PTC or workflow guest. The [read-only PTC owner](model-ptc-readonly.md) supplies exact first-party definition reviews and bounded result projections. It does not register `run_code`, start a guest, or authorize a file/network scope. Android PTC and workflow remain disabled in `cordis.patch.yml`.
 
 The original DSH `run_code` accepts a TypeScript async function body and binds the calling agent's visible tools. Its inner calls pass through `ToolRuntime` with a parent execution token, root and sub-call IDs, policy stages, cancellation, and paired session audit. Android's isolated V8 guest accepts a JavaScript function body; the trusted host can now erase erasable TypeScript into that format. The native Binder route can deliver named asynchronous tool callbacks, but no production model-facing caller binds the original `tools.*` set. This port implements one host-owned segment of the original contract, not full language or workflow parity.
 

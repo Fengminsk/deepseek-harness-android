@@ -29,8 +29,12 @@ public final class DurableWorkflowOwner {
     public enum State { ADMITTED, CANCEL_REQUESTED, COMPLETED, CANCELLED, INTERRUPTED_UNCONFIRMED, FAILED }
     public enum ChildState { RESERVED, LAUNCHING, RETIRED, INTERRUPTED_UNCONFIRMED }
     public record Child(String id, ChildState state) {}
-    public record Entry(String runId, State state, List<Child> children, String outputJson) {
+    public record Entry(String runId, State state, List<Child> children, String outputJson,
+                        String processLeaseId) {
         public Entry { children = AndroidJava28.copyList(children); }
+        public Entry(String runId, State state, List<Child> children, String outputJson) {
+            this(runId, state, children, outputJson, null);
+        }
     }
     public record Recovery(String runId, List<String> childIdsToCancel) {
         public Recovery { childIdsToCancel = AndroidJava28.copyList(childIdsToCancel); }
@@ -38,7 +42,7 @@ public final class DurableWorkflowOwner {
     public interface DirectorySync { void sync(Path directory) throws IOException; }
 
     private static final int MAGIC = 0x44534857;
-    private static final int VERSION = 1;
+    private static final int VERSION = 2;
     private static final int MAX_CHILDREN = 128;
     private static final int MAX_RUNS = 4096;
     private static final int MAX_FRAME = 128 * 1024;
@@ -79,7 +83,13 @@ public final class DurableWorkflowOwner {
 
     /** Reserves a never-reusable run ID before any guest or child starts. */
     public void admit(String runId) throws IOException {
+        admit(runId, null);
+    }
+
+    /** Only the confined, in-process child backend may bind a process-lifetime lease. */
+    public void admit(String runId, WorkflowProcessLease processLease) throws IOException {
         validRunId(runId);
+        String leaseId = processLease == null ? null : processLease.idFor(root.getParent());
         withLock(() -> {
             requireReconciled();
             Path target = file(runId);
@@ -94,7 +104,8 @@ public final class DurableWorkflowOwner {
                 try (FileChannel channel = FileChannel.open(target, StandardOpenOption.CREATE_NEW,
                         StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS)) {
                     created = true;
-                    writeAll(channel, encode(new Entry(runId, State.ADMITTED, AndroidJava28.listOf(), null)));
+                    writeAll(channel, encode(new Entry(runId, State.ADMITTED,
+                            AndroidJava28.listOf(), null, leaseId)));
                     channel.force(true);
                 }
                 sync.sync(root);
@@ -119,7 +130,7 @@ public final class DurableWorkflowOwner {
             String id = UUID.randomUUID().toString();
             List<Child> children = new ArrayList<>(entry.children());
             children.add(new Child(id, ChildState.RESERVED));
-            replace(new Entry(runId, entry.state(), children, null));
+            replace(new Entry(runId, entry.state(), children, null, entry.processLeaseId()));
             return id;
         });
     }
@@ -149,7 +160,7 @@ public final class DurableWorkflowOwner {
             if (index < 0) throw new IOException("Child is not owned by workflow");
             if (children.get(index).state() != ChildState.RETIRED) {
                 children.set(index, new Child(childId, ChildState.RETIRED));
-                replace(new Entry(runId, entry.state(), children, null));
+                replace(new Entry(runId, entry.state(), children, null, entry.processLeaseId()));
             }
             return null;
         });
@@ -157,12 +168,22 @@ public final class DurableWorkflowOwner {
 
     /** Record cancellation before signalling guest and children; returned IDs remain owned by this run. */
     public List<String> requestCancel(String runId) throws IOException {
+        return requestCancel(runId, () -> {});
+    }
+
+    /** Publish the in-process cancel signal before another reader can observe CANCEL_REQUESTED. */
+    public List<String> requestCancel(String runId, Runnable afterPersist) throws IOException {
+        Objects.requireNonNull(afterPersist);
         return withLock(() -> {
             requireReconciled();
             Entry entry = readInternal(runId);
-            if (entry.state() == State.CANCEL_REQUESTED) return pendingIds(entry);
+            if (entry.state() == State.CANCEL_REQUESTED) {
+                afterPersist.run();
+                return pendingIds(entry);
+            }
             requireState(entry, State.ADMITTED);
-            replace(new Entry(runId, State.CANCEL_REQUESTED, entry.children(), null));
+            replace(new Entry(runId, State.CANCEL_REQUESTED, entry.children(), null, entry.processLeaseId()));
+            afterPersist.run();
             return pendingIds(entry);
         });
     }
@@ -180,7 +201,8 @@ public final class DurableWorkflowOwner {
                 throw new IOException("Guest completion is not confirmed");
             if (IsolatedScriptWire.utf8Bytes(script.outputJson()) > MAX_OUTPUT)
                 throw new IOException("Workflow output is too large");
-            Entry terminal = new Entry(runId, State.COMPLETED, entry.children(), script.outputJson());
+            Entry terminal = new Entry(runId, State.COMPLETED, entry.children(),
+                    script.outputJson(), entry.processLeaseId());
             replace(terminal);
             return terminal;
         });
@@ -196,7 +218,7 @@ public final class DurableWorkflowOwner {
             requireRetired(entry);
             if (scripts.read(runId).state() != IsolatedScriptReceipt.State.CANCELLED)
                 throw new IOException("Guest cancellation is not confirmed");
-            Entry terminal = new Entry(runId, State.CANCELLED, entry.children(), null);
+            Entry terminal = new Entry(runId, State.CANCELLED, entry.children(), null, entry.processLeaseId());
             replace(terminal);
             return terminal;
         });
@@ -216,7 +238,7 @@ public final class DurableWorkflowOwner {
                     && guest != IsolatedScriptReceipt.State.TIMED_OUT
                     && guest != IsolatedScriptReceipt.State.WORKER_DIED)
                 throw new IOException("Guest failure is not confirmed");
-            Entry terminal = new Entry(runId, State.FAILED, entry.children(), null);
+            Entry terminal = new Entry(runId, State.FAILED, entry.children(), null, entry.processLeaseId());
             replace(terminal);
             return terminal;
         });
@@ -234,7 +256,7 @@ public final class DurableWorkflowOwner {
             IsolatedScriptReceipt.Entry script = scripts.read(runId);
             if (script.state() != IsolatedScriptReceipt.State.COMPLETED || script.outputJson() == null)
                 throw new IOException("Guest-reported failure lacks a completed script receipt");
-            Entry terminal = new Entry(runId, State.FAILED, entry.children(), null);
+            Entry terminal = new Entry(runId, State.FAILED, entry.children(), null, entry.processLeaseId());
             replace(terminal);
             return terminal;
         });
@@ -250,7 +272,8 @@ public final class DurableWorkflowOwner {
             for (Child child : entry.children()) children.add(new Child(child.id(),
                     child.state() == ChildState.RETIRED ? ChildState.RETIRED
                             : ChildState.INTERRUPTED_UNCONFIRMED));
-            Entry uncertain = new Entry(runId, State.INTERRUPTED_UNCONFIRMED, children, null);
+            Entry uncertain = new Entry(runId, State.INTERRUPTED_UNCONFIRMED, children, null,
+                    entry.processLeaseId());
             replace(uncertain);
             return uncertain;
         });
@@ -258,6 +281,12 @@ public final class DurableWorkflowOwner {
 
     /** Startup reconciliation never replays an admitted run or child. */
     public List<Recovery> recoverInterrupted() throws IOException {
+        return recoverInterrupted(null);
+    }
+
+    /** A dead process lease retires only its confined children, never the interrupted run's effects. */
+    public List<Recovery> recoverInterrupted(WorkflowProcessLease processLease) throws IOException {
+        if (processLease != null) processLease.idFor(root.getParent());
         return withLock(() -> {
             reconciled = false;
             List<Recovery> recovered = new ArrayList<>();
@@ -268,19 +297,27 @@ public final class DurableWorkflowOwner {
                     String name = path.getFileName().toString();
                     String runId = name.substring(4, name.length() - ".receipt".length());
                     Entry entry = readInternal(runId);
-                    if (terminal(entry.state())) {
-                        if (entry.state() == State.INTERRUPTED_UNCONFIRMED
-                                && !pendingIds(entry).isEmpty())
-                            recovered.add(new Recovery(runId, pendingIds(entry)));
+                    if (terminal(entry.state()) && entry.state() != State.INTERRUPTED_UNCONFIRMED) continue;
+                    List<String> pending = pendingIds(entry);
+                    WorkflowProcessLease.Observation process = processLease == null
+                            ? WorkflowProcessLease.Observation.UNKNOWN
+                            : processLease.observe(entry.processLeaseId());
+                    if (process == WorkflowProcessLease.Observation.LIVE && !terminal(entry.state())) {
+                        // A second bridge in the same process is not a cold start. Preserve
+                        // the live owner's state; its cleanup must finish before new admission.
+                        recovered.add(new Recovery(runId, pending));
                         continue;
                     }
-                    List<String> pending = pendingIds(entry);
+                    boolean stopped = !pending.isEmpty() && process == WorkflowProcessLease.Observation.STOPPED;
                     List<Child> children = new ArrayList<>();
                     for (Child child : entry.children()) children.add(new Child(child.id(),
-                            child.state() == ChildState.RETIRED ? ChildState.RETIRED
+                            stopped || child.state() == ChildState.RETIRED ? ChildState.RETIRED
                                     : ChildState.INTERRUPTED_UNCONFIRMED));
-                    replace(new Entry(runId, State.INTERRUPTED_UNCONFIRMED, children, null));
-                    recovered.add(new Recovery(runId, pending));
+                    if (entry.state() != State.INTERRUPTED_UNCONFIRMED || stopped)
+                        replace(new Entry(runId, State.INTERRUPTED_UNCONFIRMED, children, null,
+                                entry.processLeaseId()));
+                    if (entry.state() != State.INTERRUPTED_UNCONFIRMED || !pending.isEmpty())
+                        recovered.add(new Recovery(runId, stopped ? AndroidJava28.listOf() : pending));
                 }
             }
             reconciled = true;
@@ -307,7 +344,7 @@ public final class DurableWorkflowOwner {
             if (index < 0 || children.get(index).state() != before)
                 throw new IOException("Child is not owned in the expected state");
             children.set(index, new Child(childId, after));
-            replace(new Entry(runId, entry.state(), children, null));
+            replace(new Entry(runId, entry.state(), children, null, entry.processLeaseId()));
             return null;
         });
     }
@@ -375,6 +412,8 @@ public final class DurableWorkflowOwner {
             out.writeInt(MAGIC);
             out.writeInt(VERSION);
             out.writeUTF(entry.runId());
+            out.writeBoolean(entry.processLeaseId() != null);
+            if (entry.processLeaseId() != null) out.writeUTF(entry.processLeaseId());
             out.writeByte(entry.state().ordinal());
             out.writeShort(entry.children().size());
             for (Child child : entry.children()) {
@@ -412,10 +451,14 @@ public final class DurableWorkflowOwner {
             crc.update(content);
             if ((int) crc.getValue() != in.readInt()) throw new IOException("Workflow frame checksum mismatch");
             try (DataInputStream data = new DataInputStream(new ByteArrayInputStream(content))) {
-                if (data.readInt() != MAGIC || data.readInt() != VERSION)
+                if (data.readInt() != MAGIC)
                     throw new IOException("Workflow frame version mismatch");
+                int version = data.readInt();
+                if (version != 1 && version != VERSION) throw new IOException("Workflow frame version mismatch");
                 String stored = data.readUTF();
                 if (!stored.equals(requested)) throw new IOException("Workflow run ID mismatch");
+                String leaseId = version >= 2 && data.readBoolean() ? data.readUTF() : null;
+                if (leaseId != null && !canonicalUuid(leaseId)) throw new IOException("Workflow lease invalid");
                 int stateIndex = data.readUnsignedByte();
                 if (stateIndex >= State.values().length) throw new IOException("Workflow state invalid");
                 State state = State.values()[stateIndex];
@@ -447,7 +490,7 @@ public final class DurableWorkflowOwner {
                 }
                 if (data.available() != 0 || (state == State.COMPLETED) != (output != null))
                     throw new IOException("Workflow terminal output invalid");
-                return new Entry(requested, state, children, output);
+                return new Entry(requested, state, children, output, leaseId);
             }
         } catch (IllegalArgumentException malformed) {
             throw new IOException("Workflow receipt malformed", malformed);

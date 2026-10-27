@@ -10,8 +10,8 @@ const MAX_ERROR_BYTES = 4 * 1024
 const NAME = /^[A-Za-z][A-Za-z0-9_./:-]{0,127}$/
 const encoder = new TextEncoder()
 const AMBIENT_APP_TOOLS = new Set([
-  'android_shell', 'android_linux', 'android_files', 'read', 'read_image',
-  'write', 'edit', 'workflow', 'android_ptc',
+  'android_shell', 'android_linux', 'read_image',
+  'write', 'edit', 'str_replace_editor', 'workflow', 'android_ptc',
 ])
 
 function denied(code, message) {
@@ -62,13 +62,18 @@ function callbackInput(value) {
 }
 
 function classifiedFor(value, definition) {
-  if (!plain(value) || Reflect.ownKeys(value).length !== 2) return false
+  if (!plain(value)) return false
+  const keys = Reflect.ownKeys(value)
+  if (keys.length < 2 || keys.length > 3
+    || keys.some(key => !['effect', 'definition', 'projectResult'].includes(key))) return false
   const effect = Object.getOwnPropertyDescriptor(value, 'effect')
   const bound = Object.getOwnPropertyDescriptor(value, 'definition')
+  const projection = Object.getOwnPropertyDescriptor(value, 'projectResult')
   return effect && bound && Object.hasOwn(effect, 'value')
     && Object.hasOwn(bound, 'value')
     && (effect.value === 'pure' || effect.value === 'read-only')
     && bound.value === definition
+    && (projection === undefined || Object.hasOwn(projection, 'value') && typeof projection.value === 'function')
 }
 
 /**
@@ -99,7 +104,7 @@ export class IsolatedToolCallPort {
   #onParentAbort
 
   constructor({ prepared, admission, runtime, parent, allowedToolNames, authorizeTool, journal } = {}) {
-    if (!plain(prepared) || !['script', 'workflow'].includes(prepared.kind)
+    if (!plain(prepared) || !['script', 'ptc', 'workflow'].includes(prepared.kind)
       || typeof prepared.runId !== 'string' || !plain(admission)
       || admission.runId !== prepared.runId || typeof admission.token !== 'string'
       || admission.token.length === 0) {
@@ -258,9 +263,19 @@ export class IsolatedToolCallPort {
     let meta
     let errorInfo
     let auditOverflow = false
+    let projectedValue
+    let projectionFailed = false
+    if (!result.isError && authorized.projectResult !== undefined) {
+      try {
+        projectedValue = snapshotIsolatedJson(authorized.projectResult(result.value, args),
+          'isolated reviewed tool projection', MAX_RESULT_BYTES - 1024)
+      } catch { projectionFailed = true }
+    }
     try {
-      content = snapshotIsolatedJson(result.content, 'isolated tool audit content', MAX_AUDIT_BYTES)
-      if (result.meta !== undefined) {
+      content = projectedValue === undefined
+        ? snapshotIsolatedJson(result.content, 'isolated tool audit content', MAX_AUDIT_BYTES)
+        : [{ type: 'text', text: JSON.stringify(projectedValue) }]
+      if (result.meta !== undefined && projectedValue === undefined) {
         meta = snapshotIsolatedJson(result.meta, 'isolated tool audit metadata', MAX_AUDIT_BYTES)
       }
       if (result.error?.info !== undefined) {
@@ -274,7 +289,8 @@ export class IsolatedToolCallPort {
     // outcome. A completed tool with a non-JSON or oversized value is a
     // settled unsupported reply, not an uncertain tool dispatch.
     let guestValue
-    let unsupportedReason = auditOverflow ? 'Tool result exceeded the guest audit limit' : null
+    let unsupportedReason = projectionFailed ? 'Reviewed tool result could not be projected'
+      : auditOverflow ? 'Tool result exceeded the guest audit limit' : null
     if (!unsupportedReason && result.isError) {
       const message = result.error?.message ?? 'Tool call failed'
       if (typeof message !== 'string' || encoder.encode(message).length > MAX_ERROR_BYTES) {
@@ -286,7 +302,8 @@ export class IsolatedToolCallPort {
         || result.additionalContexts?.length || result.concludesTurn) {
         unsupportedReason = 'Tool result needs host-only context handling'
       } else {
-        try { guestValue = snapshotIsolatedJson(result.value, 'isolated tool result', MAX_RESULT_BYTES) }
+        try { guestValue = snapshotIsolatedJson(projectedValue === undefined ? result.value : projectedValue,
+          'isolated tool result', MAX_RESULT_BYTES - 1024) }
         catch { unsupportedReason = 'Tool result is not bounded guest JSON' }
       }
     }

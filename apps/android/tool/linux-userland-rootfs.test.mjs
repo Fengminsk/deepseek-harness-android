@@ -41,12 +41,12 @@ async function pinnedArchive(bytes) {
   ])
   return verifyLinuxUserlandArtifacts({
     manifest: {
-      format: 'pocket-linux-userland-v1',
+      format: 'pocket-linux-userland-v2',
       abi: 'arm64-v8a',
       architecture: 'aarch64',
       rootfs: { file: 'linux-rootfs.tar.gz', bytes: bytes.length, sha256: digest(bytes) },
       launcher: { file: 'libpocket_proot.so', bytes: launcher.length, sha256: digest(launcher) },
-      provenance: {
+      source: {
         sourceUrl: 'https://example.invalid/only-a-test',
         sourceRevision: 'a'.repeat(40),
         license: 'GPL-2.0-only',

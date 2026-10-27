@@ -6,6 +6,7 @@ import android.os.Messenger
 import android.os.Process
 import org.json.JSONObject
 import java.util.concurrent.Executors
+import java.util.concurrent.CancellationException
 import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 import java.util.function.BooleanSupplier
@@ -86,7 +87,8 @@ internal class IsolatedWorkflowCallbackBridge(
             worker.execute {
                 try {
                     val childId = synchronized(gate) {
-                        check(!closed && !cancelled.asBoolean && withinDeadline())
+                        requireActive()
+                        check(withinDeadline())
                         if (parsed.action == "WORKFLOW_START_CHILD") {
                             workflowOwner.reserveChild(request.runId()).also {
                                 workflowOwner.markLaunching(request.runId(), it)
@@ -124,9 +126,9 @@ internal class IsolatedWorkflowCallbackBridge(
                     }
                     val encoded = IsolatedWorkflowRequest.response(reply, request.runId(), parsed.callId)
                     synchronized(gate) {
-                        check(!closed && !cancelled.asBoolean && withinDeadline() &&
-                            workflowOwner.read(request.runId()).state() == DurableWorkflowOwner.State.ADMITTED &&
-                            outstanding.remove(parsed.callId))
+                        requireActive()
+                        requireDurableAdmission()
+                        check(withinDeadline() && outstanding.remove(parsed.callId))
                         guest.send(Message.obtain(null, IsolatedScriptWire.HOST_RESULT).apply {
                             this.data = Bundle().apply {
                                 putInt(IsolatedScriptWire.KEY_VERSION, IsolatedScriptWire.VERSION)
@@ -137,8 +139,15 @@ internal class IsolatedWorkflowCallbackBridge(
                             }
                         })
                     }
-                } catch (_: Exception) {
-                    synchronized(gate) { uncertain = true }
+                } catch (failure: Exception) {
+                    synchronized(gate) {
+                        // A requested cancel interrupts the callback worker. That is
+                        // expected control flow, not evidence of unjoined effects:
+                        // retire still requires both worker exit and Node close.
+                        if (!cancelled.asBoolean ||
+                            (failure !is InterruptedException && failure !is CancellationException))
+                            uncertain = true
+                    }
                     cancel()
                     reject("Workflow callback outcome needs inspection")
                 } finally {
@@ -202,6 +211,19 @@ internal class IsolatedWorkflowCallbackBridge(
 
     private fun remainingMillis(): Long = maxOf(1L,
         TimeUnit.NANOSECONDS.toMillis(deadlineNanos - System.nanoTime()))
+
+    /** Caller holds gate; only explicit cancellation uses this exception. */
+    private fun requireActive() {
+        if (cancelled.asBoolean) throw CancellationException("Workflow callback cancelled")
+        check(!closed) { "Workflow callback is closed" }
+    }
+
+    private fun requireDurableAdmission() {
+        val state = workflowOwner.read(request.runId()).state()
+        if (state == DurableWorkflowOwner.State.CANCEL_REQUESTED)
+            throw CancellationException("Workflow callback cancelled durably")
+        check(state == DurableWorkflowOwner.State.ADMITTED)
+    }
 
     private fun withinDeadline(): Boolean = System.nanoTime() - deadlineNanos < 0L
 }

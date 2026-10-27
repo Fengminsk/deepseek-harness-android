@@ -83,6 +83,8 @@ Node 部署在受支持的 macOS、Linux 与 Windows 目标上获得 `@vscode/ri
 <a id="understand-the-implementation"></a>
 ## 理解实现
 
+`isFirstPartyGlobDefinition` 和 `isFirstPartyGrepDefinition` 校验调用方作用域中可见的原始有效注册，拒绝复制品和已卸载的定义。定义被冻结；执行仍经过 ToolRuntime 及已配置的文件系统、子进程和观察策略。身份校验本身不授予目录或进程访问权限。
+
 <details>
 <summary>实现细节——点击展开</summary>
 

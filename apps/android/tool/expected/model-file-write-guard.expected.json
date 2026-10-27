@@ -9,11 +9,11 @@
   },
   {
     "isError": true,
-    "content": "Error: Android file tools require a path inside the App workspace. Use android_files for user-authorized documents."
+    "content": "Error: Android file tools require a path inside the App workspace. For uploaded files use android_attachments to read or materialize a current-session attachment; use android_files for user-authorized document roots."
   },
   {
     "isError": true,
-    "content": "Error: Android file tools require a path inside the App workspace. Use android_files for user-authorized documents."
+    "content": "Error: Android file tools require a path inside the App workspace. For uploaded files use android_attachments to read or materialize a current-session attachment; use android_files for user-authorized document roots."
   },
   {
     "isError": true,

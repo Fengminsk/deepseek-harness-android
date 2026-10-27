@@ -39,12 +39,14 @@ export function createNativeWorkflowPrivateOwner(ctx, callbacks, transport) {
   }
   return Object.freeze({
     /** Capture a reviewed original definition for this live parent. No model tool is published. */
-    modelAdmission({ agent, definition, registrationIdentity, issueHost }) {
+    modelAdmission({ agent, definition, registrationIdentity, issueHost, modelAvailable }) {
       if (closed) throw new Error('Private workflow owner has closed')
       return createAppOwnedModelWorkflowAdmission({
         runtime: ctx.tools, agents: ctx.agents,
         agent, definition, registrationIdentity, issueHost,
         runPrepared: request => this.runDsl(request),
+        startBackground: request => this.startBackgroundDsl(request),
+        modelAvailable,
         isAvailable: () => !closed,
       })
     },

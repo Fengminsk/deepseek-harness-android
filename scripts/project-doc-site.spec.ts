@@ -157,10 +157,17 @@ describe('publishableImage', () => {
     const outside = mkdtempSync(join(tmpdir(), 'dsh-doc-site-outside-'))
     roots.push(outside)
     writeFileSync(join(outside, 'secret.png'), 'not really a png\n')
-    symlinkSync(join(outside, 'secret.png'), join(root, 'packages/linked.png'))
-
-    expect(publishableImage(join(root, 'packages/linked.png'), realpathSync(root))).toBeUndefined()
-    expect(publishableImage(join(outside, 'secret.png'), realpathSync(root))).toBeUndefined()
+    // Windows junctions exercise the same real-path escape without requiring
+    // the OS privilege needed to create file symbolic links.
+    const linked = join(root, 'packages/linked')
+    const throughLink = process.platform === 'win32' ? join(linked, 'secret.png') : linked
+    symlinkSync(process.platform === 'win32' ? outside : join(outside, 'secret.png'),
+      linked, process.platform === 'win32' ? 'junction' : 'file')
+    try {
+      expect(realpathSync(throughLink)).toBe(realpathSync(join(outside, 'secret.png')))
+      expect(publishableImage(throughLink, realpathSync(root))).toBeUndefined()
+      expect(publishableImage(join(outside, 'secret.png'), realpathSync(root))).toBeUndefined()
+    } finally { unlinkSync(linked) }
   })
 
   it('refuses a directory', () => {

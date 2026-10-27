@@ -16,6 +16,6 @@ node apps/android/tool/acceptance-native-workflow-device.mjs --apk <app.apk> --t
 node apps/android/tool/acceptance-native-workflow-device.mjs --apk <app.apk> --test-apk <androidTest.apk> [--serial <adb-serial>] [--allow-existing]
 ```
 
-脚本安装前核验 APK 包名、相同签名证书及 AndroidTest 精确清单声明，再以保留 App 数据的 `adb install -r` 安装。未授权或不唯一的设备会被拒绝；若 App 已安装，须明确传入 `--allow-existing` 才会使用该安装。七项 instrumentation 断言必须各通过一次。宿主解析测试：`node --test apps/android/tool/acceptance-native-workflow-device.test.mjs`。
+脚本安装前核验 APK 包名、相同签名证书及 AndroidTest 精确清单声明，再以保留 App 数据的 `adb install -r` 安装。测试必须针对与 App 相同的 release/debug 构建及代码压缩配置。未授权或不唯一的设备会被拒绝；若 App 已安装，须明确传入 `--allow-existing` 才会使用该安装。七项 instrumentation 断言必须各通过一次。执行中取消用例现要求确认的 `CANCELLED` 回执、回调线程与子级退出且没有迟到输出，不再把未确认结果计为通过。工作流样例使用真实格式的 `android-…` Session ID，并验证结算原样保留它。宿主解析测试：`node --test apps/android/tool/acceptance-native-workflow-device.test.mjs`。
 
 探针编译通过不等于真机证据。重建 App owner 的断言发生在同一个仍在运行的 App 进程内；单独的[进程终止验收](native-workflow-process-death-device-acceptance.zh.md)测试真实的应用停止。即使此处真机通过，也不证明原版 DSH 工作流函数体语义、安全子智能体启动、进程终止恢复或任意文件及网络访问。面向模型的工作流入口继续关闭。

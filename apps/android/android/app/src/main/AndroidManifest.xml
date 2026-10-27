@@ -37,6 +37,8 @@
             android:isolatedProcess="true" android:process=":shell_probe" />
         <service android:name=".IsolatedLinuxCommandService" android:exported="false"
             android:isolatedProcess="true" android:process=":linux_command" />
+        <service android:name=".IsolatedLinuxVmService" android:exported="false"
+            android:isolatedProcess="true" android:process=":linux_vm" />
         <service android:name=".IsolatedLinuxGuestBinderService" android:exported="false"
             android:isolatedProcess="true" android:process=":linux_guest_binder" />
         <receiver android:name=".ApprovalActionReceiver" android:exported="false"

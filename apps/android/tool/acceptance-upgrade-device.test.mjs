@@ -139,6 +139,20 @@ test('upgrade phases require the same nonce and hashes, terminal result, and exp
     `INSTRUMENTATION_RESULT: canarySha256=${canarySha256}\n`, 'seed', token), /Duplicate/)
 })
 
+test('existing Session retention requires the same nonempty bounded file inventory and digest', () => {
+  const fields = 'INSTRUMENTATION_RESULT: sessionFilesSha256=' + '9'.repeat(64) + '\n' +
+    'INSTRUMENTATION_RESULT: sessionFileCount=12\nINSTRUMENTATION_RESULT: sessionFileBytes=4096\n'
+  const options = { requireSessionFiles: true }
+  const seed = parseInstrumentation(result('seed') + fields, 'seed', token, null, options)
+  assert.equal(seed.sessionFileCount, 12)
+  assert.equal(parseInstrumentation(result('verify') + fields, 'verify', token, seed, options).sessionFileBytes, 4096)
+  for (const invalid of [fields.replace('9'.repeat(64), '8'.repeat(64)),
+    fields.replace('sessionFileCount=12', 'sessionFileCount=0'),
+    fields.replace('sessionFileBytes=4096', 'sessionFileBytes=4097'), '']) {
+    assert.throws(() => parseInstrumentation(result('verify') + invalid, 'verify', token, seed, options), /failed/)
+  }
+})
+
 test('SAF file mode requires an existing app, a bounded relative path and matching read proof after upgrade', () => {
   assert.equal(validateSafReadableOption(undefined, false, false), false)
   assert.equal(validateSafReadableOption('acceptance/probe.txt', true, true), true)

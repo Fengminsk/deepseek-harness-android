@@ -81,7 +81,7 @@ def rootfs_packages(path: Path) -> list[dict[str, str]]:
                   if len(line) >= 2 and line[1] == ":"}
         if "P" in fields:
             if not all(key in fields for key in ("V", "L", "o")):
-                raise ValueError(f"package provenance incomplete: {fields['P']}")
+                raise ValueError(f"package version, license, or origin missing: {fields['P']}")
             packages.append({"name": fields["P"], "version": fields["V"],
                              "license": fields["L"], "origin": fields["o"]})
     if len(packages) != 16:

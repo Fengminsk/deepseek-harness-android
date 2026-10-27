@@ -6,7 +6,21 @@ public final class IsolatedScriptWireTest {
     public static void main(String[] args) {
         String run = UUID.randomUUID().toString();
         String nonce = UUID.randomUUID().toString();
-        new IsolatedScriptWire.Request(run, nonce, "(x) => x", "{}", 1000);
+        for (String session : new String[] { run, "android-1793060921975320-627842147",
+                "session-1", "safe.id:part_2", "a".repeat(128) }) IsolatedScriptWire.requireSessionId(session);
+        for (String session : new String[] { "", "../escape", "a/b", "a\\b", "a b", "a\n",
+                ".hidden", "用户", "a".repeat(129) }) rejects(() -> IsolatedScriptWire.requireSessionId(session));
+        rejects(() -> IsolatedScriptWire.requireSessionId(null));
+        rejects(() -> IsolatedScriptWire.requireUuid("android-1793060921975320-627842147"));
+        if (!new IsolatedScriptWire.Request(run, nonce, "(x) => x", "{}", 1000)
+                .programFormat().equals(IsolatedScriptWire.FUNCTION_EXPRESSION)) {
+            throw new AssertionError("Ordinary script format changed");
+        }
+        if (!new IsolatedScriptWire.Request(run, nonce, "return await Promise.resolve(42)", "{}", 120000,
+                IsolatedScriptWire.FUNCTION_BODY).programFormat().equals(IsolatedScriptWire.FUNCTION_BODY)) {
+            throw new AssertionError("PTC function body format was lost");
+        }
+        rejects(() -> new IsolatedScriptWire.Request(run, nonce, "return 1", "{}", 1000, "auto"));
         // The App controller, rather than this transport value, chooses the
         // execution class. Binder must carry its bounded workflow deadline.
         new IsolatedScriptWire.Request(run, nonce, "(x) => x", "{}",

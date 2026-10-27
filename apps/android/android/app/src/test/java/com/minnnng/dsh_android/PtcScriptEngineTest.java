@@ -15,6 +15,9 @@ public final class PtcScriptEngineTest {
                 PtcScriptEngine.MAX_WORKFLOW_DEADLINE_MILLIS);
         rejects(() -> PtcScriptEngine.validateWorkflow("(x) => x", "{}",
                 PtcScriptEngine.MAX_WORKFLOW_DEADLINE_MILLIS + 1));
+        PtcScriptEngine.validatePtc("(x) => x", "{}", 120_000);
+        rejects(() -> PtcScriptEngine.validatePtc("(x) => x", "{}", 120_001));
+        rejects(() -> PtcScriptEngine.validatePtc("(x) => x", "{}", 0));
         rejects(() -> PtcScriptEngine.validate("  ", "{}", 1000));
         if (PtcScriptEngine.MAX_PENDING_HOST_CALLS != 8 || PtcScriptEngine.MAX_HOST_CALLS != 128) {
             throw new AssertionError("Host queue bounds changed without protocol review");

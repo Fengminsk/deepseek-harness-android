@@ -1,0 +1,10 @@
+# Bilingual-pair consistency record for README.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write apps/android/tool/linux-vm-host/README.md
+/:
+  en: 965bddb2f7b7335c
+  zh: d31348f8fc496a1e
+/windows-linux-guest-verification:
+  en: 414ded574278dd9d
+  zh: d91e6677d272e1fc

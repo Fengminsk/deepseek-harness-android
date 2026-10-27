@@ -7,11 +7,13 @@
 
 const encoder = new TextEncoder()
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}(?![\s\S])/
 const OWNER = /^[A-Za-z0-9._:-]{1,128}$/
 const MAX_PROGRAM_BYTES = 64 * 1024
 const MAX_INPUT_BYTES = 64 * 1024
 const MAX_LOG_BYTES = 16 * 1024
 const MAX_DEADLINE_MS = 5000
+const MAX_PTC_DEADLINE_MS = 120_000
 const MAX_WORKFLOW_DEADLINE_MS = 120_000
 const MAX_FILE_CALLS = 128
 const MAX_NETWORK_CALLS = 64
@@ -56,6 +58,13 @@ function integer(value, name, min, max) {
 
 function uuid(value, name) {
   if (typeof value !== 'string' || !UUID.test(value)) invalid(name)
+  return value
+}
+
+function sessionIdentity(value, name) {
+  // App conversations and subagent Sessions use stable android-/session- IDs.
+  // Preserve that identity across policy, dispatch and durable receipts.
+  if (typeof value !== 'string' || !SESSION_ID.test(value)) invalid(name)
   return value
 }
 
@@ -145,7 +154,7 @@ export function normalizeExecutionScope(value, parent) {
     'exactHosts', 'fileCallLimit', 'networkCallLimit', 'leaseMillis',
   ])
   if (typeof scope.ownerId !== 'string' || !OWNER.test(scope.ownerId)) invalid('scope owner')
-  const sessionId = uuid(scope.sessionId, 'scope session')
+  const sessionId = sessionIdentity(scope.sessionId, 'scope session')
   const version = integer(scope.version, 'scope version', 1, Number.MAX_SAFE_INTEGER - 1)
   const workspaceId = scope.workspaceId === null ? null : uuid(scope.workspaceId, 'workspace identity')
   const readablePaths = uniqueList(scope.readablePaths, 'readable paths', 32, path)
@@ -208,17 +217,21 @@ export function prepareIsolatedExecution(request, scope, parentScope) {
     'kind', 'runId', 'sessionId', 'program', 'args', 'deadlineMillis', 'meta',
     'maxTotalAgents', 'maxConcurrentAgents',
   ])
-  if (data.kind !== 'script' && data.kind !== 'workflow') invalid('execution kind')
+  if (!['script', 'ptc', 'workflow'].includes(data.kind)) invalid('execution kind')
   const runId = uuid(data.runId, 'run identity')
-  const sessionId = uuid(data.sessionId, 'session identity')
+  const sessionId = sessionIdentity(data.sessionId, 'session identity')
   const program = text(data.program, 'program', MAX_PROGRAM_BYTES)
   const deadlineMillis = integer(data.deadlineMillis, 'deadline', 1,
-    data.kind === 'workflow' ? MAX_WORKFLOW_DEADLINE_MS : MAX_DEADLINE_MS)
+    data.kind === 'workflow' ? MAX_WORKFLOW_DEADLINE_MS
+      : data.kind === 'ptc' ? MAX_PTC_DEADLINE_MS : MAX_DEADLINE_MS)
   const authority = normalizeExecutionScope(scope, parentScope)
   if (authority.sessionId !== sessionId || authority.leaseMillis < deadlineMillis) invalid('scope/session deadline')
   const args = data.args === undefined ? null : jsonCopy(data.args, 'JSON args')
   if (encoder.encode(JSON.stringify(args)).length > MAX_INPUT_BYTES) invalid('JSON args size')
   const prepared = { kind: data.kind, runId, sessionId, program, args, deadlineMillis, scope: authority }
+  if (data.kind === 'ptc' && (authority.workspaceId !== null || authority.readablePaths.length
+    || authority.writablePaths.length || authority.exactHosts.length || authority.fileCallLimit
+    || authority.networkCallLimit)) invalid('PTC native grants')
   if (data.kind === 'workflow') {
     prepared.meta = workflowMeta(data.meta)
     prepared.maxTotalAgents = integer(data.maxTotalAgents, 'total child budget', 1, 128)

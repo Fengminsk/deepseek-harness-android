@@ -25,7 +25,7 @@ public final class LinuxGuestInstalledElfVerifierTest {
     private static void denied(Checked action) throws Exception {
         try { action.run(); }
         catch (IOException | IllegalArgumentException expected) { return; }
-        throw new AssertionError("Unsafe ELF provenance was admitted");
+        throw new AssertionError("Unsafe ELF path or bytes were admitted");
     }
 
     private interface Checked { void run() throws Exception; }

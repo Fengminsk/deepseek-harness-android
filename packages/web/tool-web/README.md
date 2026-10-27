@@ -84,6 +84,8 @@ Schema validation rejects an absent or non-array `queries` field, non-string arr
 <a id="understand-the-implementation"></a>
 ## Understand the implementation
 
+`isFirstPartyWebSearchDefinition` and `isFirstPartyWebFetchDefinition` identify the exact live registrations visible in a caller scope. Copied or retired definitions fail identification. Definitions are frozen; consumers still invoke ToolRuntime with the live parent execution, preserving provider selection, authorization, cancellation, and logging. Identification grants no direct network access.
+
 <details>
 <summary>Implementation internals — click to expand</summary>
 

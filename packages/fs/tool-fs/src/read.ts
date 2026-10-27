@@ -5,11 +5,44 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import { defineTool } from '@deepseek-ai/dsh-tools'
+import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
 import type { GenericCallView, ReadResultView, ToolResult } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-fs'
 import { buildWindow, formatReadOutput, langFromPath, readMetaFromMeta } from './read-render.ts'
 import { resolveRegularReadTarget } from './read-target.ts'
+
+const definitionKey = Symbol('read definition owner')
+
+/** One registration owns its attestation and retires with its plugin. */
+class ReadDefinitionOwner {
+  readonly #runtime: Context['tools']
+  #active = true
+
+  constructor(key: symbol, runtime: Context['tools']) {
+    if (key !== definitionKey) throw new TypeError('Only the original read factory can issue its definition')
+    this.#runtime = runtime
+  }
+
+  static owns(definition: ToolDefinition, scope: Parameters<Context['tools']['get']>[1]): boolean {
+    return #runtime in definition && definition.#active
+      && definition.#runtime.get('read', scope) === definition
+  }
+
+  retire(): void { this.#active = false }
+}
+
+/**
+ * Identify this package's live, unmodified read registration in a caller scope.
+ * A name, schema, copied object or retired registration cannot establish identity.
+ * @param definition - exact definition selected by the caller's ToolRuntime.
+ * @param scope - caller scope used for visibility; undefined selects the global view.
+ * @returns whether this factory owns the visible live definition.
+ */
+export function isFirstPartyReadDefinition(
+  definition: ToolDefinition, scope: Parameters<Context['tools']['get']>[1],
+): boolean {
+  return ReadDefinitionOwner.owns(definition, scope)
+}
 
 /** Default and maximum number of lines returned by one `read` call (the `readLimit` config). */
 export const READ_LIMIT = 2000
@@ -74,7 +107,7 @@ export function applyReadTool(ctx: Context, caps: ReadToolCaps): void {
       : 'Use the read tool — not shell commands like cat — to inspect text files. Use offset and limit to continue reading large files.',
   })
 
-  ctx.tools.register(defineTool({
+  const definition = defineTool({
     name: 'read',
     description: 'Read a UTF-8 text file and return line-numbered content.',
     parameters: {
@@ -206,5 +239,9 @@ export function applyReadTool(ctx: Context, caps: ReadToolCaps): void {
         locations: [{ path: args.file_path, line: offset ?? 1 }],
       }
     },
-  }))
+  })
+  const owner = new ReadDefinitionOwner(definitionKey, ctx.tools)
+  const owned = Object.freeze(Object.assign(owner, definition))
+  ctx.tools.register(owned)
+  ctx.effect(() => () => owner.retire())
 }

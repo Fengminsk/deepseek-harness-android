@@ -25,6 +25,8 @@ class ToolActivityPresentation {
         activity.phase == ToolActivityPhase.interrupted ||
         fields['超时'] == '是' ||
         fields['取消'] == '是' ||
+        fields['执行状态'] == '失败' ||
+        fields['执行状态'] == '未确认' ||
         (fields['终止信号']?.isNotEmpty ?? false) ||
         (exitCode != null && exitCode != 0);
   }
@@ -65,6 +67,7 @@ class ToolActivityPresentation {
     final fields = <String, String>{};
     final name = activity.name;
     if (name == 'android_shell' ||
+        name == 'linux_exec' ||
         name == 'bash' ||
         name == 'pwsh' ||
         name == 'terminal_send') {
@@ -76,7 +79,25 @@ class ToolActivityPresentation {
       if (activity.meta is Json && (activity.meta as Json)['cwd'] is String) {
         fields['工作目录（记录值）'] = (activity.meta as Json)['cwd'] as String;
       }
-      if (name == 'android_shell' && result is Json) {
+      if ((name == 'android_shell' || name == 'linux_exec') && result is Json) {
+        if (name == 'linux_exec') {
+          if (result['output'] is String) {
+            fields['输出'] = result['output'] as String;
+          }
+          fields['工作目录'] = '/workspace';
+          fields['执行状态'] = switch (result['status']) {
+            'completed' => '已结束',
+            'timed_out' => '已超时',
+            'cancelled' => '已取消',
+            'failed' => '失败',
+            _ => '未确认',
+          };
+          fields['磁盘保存'] = switch (result['diskCommitted']) {
+            true => '已保存',
+            false => '本次改动未保存',
+            _ => '未确认',
+          };
+        }
         if (result['stdout'] is String) {
           fields['stdout'] = result['stdout'] as String;
         }
@@ -112,6 +133,32 @@ class ToolActivityPresentation {
         if (signal != null) fields['终止信号'] = signal.group(1)!;
       }
       return ToolActivityPresentation('shell', fields);
+    }
+    if (name == 'linux_import' || name == 'linux_export') {
+      if (args?['source'] is String) fields['源文件'] = args!['source'] as String;
+      if (args?['destination'] is String) {
+        fields['路径'] = args!['destination'] as String;
+      }
+      if (result is Json) {
+        fields['执行状态'] = switch (result['status']) {
+          'completed' => '已结束',
+          'timed_out' => '已超时',
+          'cancelled' => '已取消',
+          'failed' => '失败',
+          _ => '未确认',
+        };
+        if (result['bytes'] is num) fields['字节数'] = '${result['bytes']}';
+        if (result['sha256'] is String) {
+          fields['SHA-256'] = result['sha256'] as String;
+        }
+        if (result['exitCode'] is num) fields['退出码'] = '${result['exitCode']}';
+        if (result['timedOut'] == true) fields['超时'] = '是';
+        if (result['cancelled'] == true) fields['取消'] = '是';
+        if (result['detail'] is String) {
+          fields['详情'] = result['detail'] as String;
+        }
+      }
+      return ToolActivityPresentation('file', fields);
     }
     if (name == 'android_files') {
       if (args?['action'] is String) fields['文件操作'] = args!['action'] as String;
@@ -207,15 +254,22 @@ class ToolActivityPresentation {
 /// Group summaries inspect explicit failure markers without rendering/parsing
 /// file result lines or search result lists for every collapsed invocation.
 bool toolActivityNeedsAttention(ToolActivity activity) {
+  if (activity.name == 'linux_import' || activity.name == 'linux_export') {
+    return ToolActivityPresentation.from(activity).needsAttention(activity);
+  }
   if (activity.phase == ToolActivityPhase.failed ||
       activity.phase == ToolActivityPhase.interrupted) {
     return true;
   }
   if (toolActivityFamily(activity) == 'shell') {
     final result = activity.resultValue;
-    if (activity.name == 'android_shell' && result is Json) {
+    if ((activity.name == 'android_shell' || activity.name == 'linux_exec') &&
+        result is Json) {
       if (result['timedOut'] == true ||
           result['cancelled'] == true ||
+          (activity.name == 'linux_exec' &&
+              (result['status'] != 'completed' ||
+                  result['retirementConfirmed'] != true)) ||
           (result['exitCode'] is num && result['exitCode'] != 0)) {
         return true;
       }
@@ -233,6 +287,9 @@ bool toolActivityNeedsAttention(ToolActivity activity) {
 }
 
 String toolActivityName(ToolActivity activity) => switch (activity.name) {
+  'linux_exec' => '执行 Linux 命令',
+  'linux_import' => '导入 Linux 文件',
+  'linux_export' => '取回 Linux 文件',
   'android_shell' || 'bash' || 'pwsh' || 'terminal_send' => '执行命令',
   'android_files' => switch (activity.args?['action']) {
     'roots' => '查看授权目录',
@@ -262,8 +319,11 @@ String toolActivityName(ToolActivity activity) => switch (activity.name) {
 /// live status cannot disagree about Android-specific file actions.
 String toolActivityProgressLabel(ToolActivity activity) =>
     switch (activity.name) {
+      'linux_import' => '正在导入文件',
+      'linux_export' => '正在取回文件',
       'web_search' || 'web_fetch' || 'search' || 'fetch' => '正在搜索',
       'android_shell' ||
+      'linux_exec' ||
       'shell' ||
       'bash' ||
       'pwsh' ||
@@ -286,7 +346,11 @@ String toolActivityProgressLabel(ToolActivity activity) =>
 /// Group only calls of the same user-facing family. Unknown plugin tools keep
 /// their exact identity instead of being merged into one generic tools group.
 String toolActivityFamily(ToolActivity activity) => switch (activity.name) {
-  'android_shell' || 'bash' || 'pwsh' || 'terminal_send' => 'shell',
+  'android_shell' ||
+  'linux_exec' ||
+  'bash' ||
+  'pwsh' ||
+  'terminal_send' => 'shell',
   'android_files' => 'android-files:${activity.args?['action'] ?? 'unknown'}',
   'grep' || 'glob' => 'file-search',
   _ => activity.name,

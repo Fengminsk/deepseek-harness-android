@@ -65,7 +65,7 @@ public final class IsolatedExecutionApprovalStore
                                           DirectorySync sync) throws IOException {
         this.ownerId = Objects.requireNonNull(ownerId);
         this.sessionId = Objects.requireNonNull(sessionId);
-        IsolatedScriptWire.requireUuid(sessionId);
+        IsolatedScriptWire.requireSessionId(sessionId);
         this.sync = Objects.requireNonNull(sync);
         Path privateRoot = appPrivateRoot.toRealPath();
         this.root = directory.toRealPath();

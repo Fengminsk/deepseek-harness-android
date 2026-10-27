@@ -12,7 +12,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import { defineTool } from '@deepseek-ai/dsh-tools'
+import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
 import type { GenericCallView, SearchResultView, ToolResult } from '@deepseek-ai/dsh-tools'
 import type { RetainedItems } from '@deepseek-ai/dsh-output-retention'
 import type { SpillRef } from '@deepseek-ai/dsh-spill'
@@ -20,6 +20,39 @@ import type { GrepMatch } from './search-core.ts'
 import { SearchError, previewLine, retainGrepMatches, runRipgrep, toWorkdirRelative, trySaveFormattedResult } from './search-core.ts'
 import { grepSearchMeta, searchViewFromMeta } from './presentation.ts'
 import { acceptedDirectCallValue } from './direct-call.ts'
+
+const definitionKey = Symbol('grep definition owner')
+
+/** One registration owns its attestation and retires with its plugin. */
+class GrepDefinitionOwner {
+  readonly #runtime: Context['tools']
+  #active = true
+
+  constructor(key: symbol, runtime: Context['tools']) {
+    if (key !== definitionKey) throw new TypeError('Only the original grep factory can issue its definition')
+    this.#runtime = runtime
+  }
+
+  static owns(definition: ToolDefinition, scope: Parameters<Context['tools']['get']>[1]): boolean {
+    return #runtime in definition && definition.#active
+      && definition.#runtime.get('grep', scope) === definition
+  }
+
+  retire(): void { this.#active = false }
+}
+
+/**
+ * Identify this package's live, unmodified grep registration in a caller scope.
+ * A name, schema, copied object or retired registration cannot establish identity.
+ * @param definition - exact definition selected by the caller's ToolRuntime.
+ * @param scope - caller scope used for visibility; undefined selects the global view.
+ * @returns whether this factory owns the visible live definition.
+ */
+export function isFirstPartyGrepDefinition(
+  definition: ToolDefinition, scope: Parameters<Context['tools']['get']>[1],
+): boolean {
+  return GrepDefinitionOwner.owns(definition, scope)
+}
 
 /**
  * Default cap on flat matches retained inline by one `grep` call (the
@@ -337,11 +370,14 @@ export function applyGrepTool(ctx: Context, caps: GrepToolCaps): void {
     presentCall: presentGrepCall,
     presentResult: presentGrepResult,
   })
-  ctx.tools.register(tool)
+  const owner = new GrepDefinitionOwner(definitionKey, ctx.tools)
+  const owned = Object.freeze(Object.assign(owner, tool))
+  ctx.tools.register(owned)
+  ctx.effect(() => () => owner.retire())
 
   ctx.on('tools/post-execute', async (exec, result, next) => {
     const decision = await next()
-    const value = acceptedDirectCallValue(ctx, tool, exec, result, decision) as { matches: GrepMatch[] } | undefined
+    const value = acceptedDirectCallValue(ctx, owned, exec, result, decision) as { matches: GrepMatch[] } | undefined
     if (value === undefined) return decision
     const matches = value.matches
     if (matches.length <= caps.maxMatches) return decision

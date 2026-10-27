@@ -83,6 +83,8 @@ Search failures carry the package-owned codes `SEARCH_INVALID_PATTERN` (ripgrep 
 <a id="understand-the-implementation"></a>
 ## Understand the implementation
 
+`isFirstPartyGlobDefinition` and `isFirstPartyGrepDefinition` identify the exact live registrations visible in a caller scope. Copied or retired definitions fail identification. Definitions are frozen; dispatch still goes through ToolRuntime and the configured filesystem, subprocess, and observation policies. Identification grants no directory or process access.
+
 <details>
 <summary>Implementation internals — click to expand</summary>
 

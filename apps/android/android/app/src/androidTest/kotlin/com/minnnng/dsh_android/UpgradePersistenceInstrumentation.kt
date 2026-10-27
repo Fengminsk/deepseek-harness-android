@@ -52,6 +52,42 @@ class UpgradePersistenceInstrumentation : Instrumentation() {
                 .map { "${it.uri}|read|write=${it.isWritePermission}" }
                 .sorted()
             val grantDigest = sha256(grants.joinToString("\n").toByteArray(Charsets.UTF_8))
+            if (options.getString("requireSessionFiles") == "true") {
+                val sessionRoot = File(app.noBackupFilesDir, "dsh/sessions")
+                check(sessionRoot.isDirectory && !Files.isSymbolicLink(sessionRoot.toPath())) { "Existing Session storage is absent" }
+                val files = sessionRoot.walkTopDown().onEnter { directory ->
+                    check(!Files.isSymbolicLink(directory.toPath())) { "Session storage contains a symbolic link" }
+                    true
+                }.filter { it.isFile }.toList().sortedBy { it.relativeTo(sessionRoot).invariantSeparatorsPath }
+                check(files.isNotEmpty() && files.size <= 20000) { "Session file inventory is absent or exceeds the acceptance limit" }
+                var bytes = 0L
+                val digest = MessageDigest.getInstance("SHA-256")
+                for (file in files) {
+                    check(!Files.isSymbolicLink(file.toPath())) { "Session file is a symbolic link" }
+                    val name = file.relativeTo(sessionRoot).invariantSeparatorsPath.toByteArray(Charsets.UTF_8)
+                    digest.update(name); digest.update(0.toByte())
+                    file.inputStream().use { input ->
+                        val buffer = ByteArray(65536)
+                        while (true) {
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            bytes += count
+                            check(bytes <= 512L * 1024 * 1024) { "Session bytes exceed the acceptance limit" }
+                            digest.update(buffer, 0, count)
+                        }
+                    }
+                    digest.update(0.toByte())
+                }
+                val hash = digest.digest().joinToString("") { "%02x".format(it) }
+                if (phase != "seed") {
+                    check(hash == expectedDigest("sessionFilesSha256") &&
+                        files.size == options.getString("sessionFileCount")?.toIntOrNull() &&
+                        bytes == options.getString("sessionFileBytes")?.toLongOrNull()) { "Existing Session file bytes changed across upgrade" }
+                }
+                result.putString("sessionFilesSha256", hash)
+                result.putInt("sessionFileCount", files.size)
+                result.putLong("sessionFileBytes", bytes)
+            }
             val requireSafGrant = options.getString("requireSafGrant") == "true"
             if (requireSafGrant) check(grants.isNotEmpty()) { "No persisted SAF read grant exists" }
             val safPath = options.getString("safReadablePathBase64")?.let { encoded ->

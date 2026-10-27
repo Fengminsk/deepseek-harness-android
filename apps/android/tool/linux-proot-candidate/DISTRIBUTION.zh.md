@@ -21,7 +21,7 @@ python -m unittest discover -s apps/android/tool/linux-proot-candidate -p 'test_
 | --- | --- | --- |
 | Termux PRoot 5.1.107.96 | `COPYING` 为 GPLv2；部分核心与 loader 源码头部写明 GPL-2.0-or-later。`src/extension/sysvipc/sysvipc_sys.h` 声明定义取自 glibc，采用 LGPL-2.1-or-later。候选 CMake 选中的 66 个 C 文件中有 31 个在前 2 KiB 没有单独的 GPL 声明。 | 逐个核对参与编译的单元和复制的头文件定义的来源及授权，再决定组合程序的许可版本；保留声明、准确源码、构建方法与修改。 |
 | Samba talloc 2.4.3 | `talloc.c`、`talloc.h` 为 LGPL-3.0-or-later，`LICENSE` 为 LGPLv3；候选程序**静态链接** `talloc.c`。 | 核对 GPLv2-or-later 与 LGPLv3 的组合、保留两方声明，并按所选条款提供对应源码和修改／重新链接途径。当前构建不属于已审核的分发物。 |
-| Termux libandroid-shmem 0.7 | `LICENSE` 的形式接近 BSD-3-Clause，并列出两位版权人，但第三项条件仍有原样 `{organization}` 占位符。 | 应向版权人或可靠来源核实占位符的含义，不能擅改许可文本并直接认定精确的许可类型。当前候选静态链接了补丁后的源码；若分发，须保留实际声明和准确改动。带键共享模式默认关闭。 |
+| Termux libandroid-shmem 0.7 | `LICENSE` 的形式接近 BSD-3-Clause，并列出两位版权人，但第三项条件仍有原样 `{organization}` 占位符。 | 应向版权人或可靠的上游许可记录核实占位符的含义，不能擅改许可文本并直接认定精确的许可类型。当前候选静态链接了补丁后的源码；若分发，须保留实际声明和准确改动。带键共享模式默认关闭。 |
 | Alpine 3.24.3 aarch64 minirootfs | `./lib/apk/db/installed` 列出来自十个源码 origin 的 16 个包，许可各异。 | 归档是多个二进制软件包的集合。纳入 APK 前须逐一核对对应源码、打包配方／补丁、版权和许可证声明及具体版本。 |
 
 Alpine 已安装数据库记载：

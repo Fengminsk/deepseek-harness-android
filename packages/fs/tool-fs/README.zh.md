@@ -86,6 +86,8 @@ kind: "package-reference"
 <a id="understand-the-implementation"></a>
 ## 理解实现
 
+`isFirstPartyReadDefinition` 校验调用方作用域中可见的、仍在注册的原始 `read` 定义，拒绝复制品和已卸载的定义。注册定义被冻结；调用方仍须通过 ToolRuntime 执行，以应用文件策略、取消和观察钩子。身份校验本身不授予文件访问权限。
+
 <details>
 <summary>实现细节——点击展开</summary>
 
