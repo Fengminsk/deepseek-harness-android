@@ -4,18 +4,26 @@ import android.app.Application
 import android.app.Instrumentation
 import android.content.Intent
 import android.content.ComponentName
+import android.content.Context
+import android.content.ServiceConnection
 import android.net.Uri
 import android.os.Bundle
 import android.os.SystemClock
-import android.os.ResultReceiver
+import android.os.Handler
+import android.os.IBinder
+import android.os.Looper
+import android.os.Message
+import android.os.Messenger
+import android.os.Process
 import org.json.JSONObject
 import java.io.Closeable
 import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.CountDownLatch
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 /** Owns only the synthetic provider grant; the pre-existing grants are compared on release. */
@@ -28,34 +36,107 @@ class PtcSafAcceptanceFixture private constructor(private val instrumentation: I
     lateinit var root: String
         private set
     private var removed = false
+    private var created = false
+    private val bound = AtomicBoolean()
+    private val closed = AtomicBoolean()
+    private val failure = AtomicReference<Throwable?>()
+    private val connected = CompletableFuture<Messenger>()
+    private val nextRequest = AtomicInteger()
+    private data class Request(val id: Int, val method: String, val result: CompletableFuture<Bundle>)
+    private val pending = AtomicReference<Request?>()
+    private val component = ComponentName("${context.packageName}.test", PtcSafAcceptanceControlService::class.java.name)
+    private val expectedUid = instrumentation.context.applicationInfo.uid
+    var controlUid = -1
+        private set
+    var controlPid = -1
+        private set
+    private fun fail(error: Throwable) {
+        failure.compareAndSet(null, error)
+        connected.completeExceptionally(error)
+        pending.get()?.result?.completeExceptionally(error)
+    }
+    private val connection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName, binder: IBinder) {
+            if (name != component) { fail(IllegalStateException("Unexpected SAF control component")); return }
+            if (!closed.get()) connected.complete(Messenger(binder))
+        }
+        override fun onServiceDisconnected(name: ComponentName) { fail(IllegalStateException("SAF control service disconnected")) }
+        override fun onBindingDied(name: ComponentName) { fail(IllegalStateException("SAF control binding died")) }
+        override fun onNullBinding(name: ComponentName) { fail(IllegalStateException("SAF control binding rejected")) }
+    }
+    private val replies = Messenger(Handler(Looper.getMainLooper()) { message ->
+        val request = pending.get()
+        if (request != null && message.arg1 == request.id) {
+            try {
+                val value = message.data
+                check(message.sendingUid == expectedUid && expectedUid != Process.myUid()) { "SAF control reply is not from the test UID" }
+                check(value.getInt("schema") == 1 && value.getString("caseId") == caseId &&
+                    value.getString("method") == request.method && value.getInt("controlUid") == expectedUid &&
+                    value.getInt("controlPid") > 0) { "SAF control reply identity mismatch" }
+                check(controlPid == -1 || controlPid == value.getInt("controlPid")) { "SAF control process changed" }
+                controlUid = expectedUid
+                controlPid = value.getInt("controlPid")
+                check(message.what == 1) { value.getString("failure") ?: "Test provider control failed" }
+                request.result.complete(checkNotNull(value.getBundle("result")))
+            } catch (error: Throwable) { fail(error) }
+        }
+        true
+    })
+
+    private fun bind() {
+        check(Looper.myLooper() != Looper.getMainLooper())
+        check(instrumentation.context.packageName == component.packageName) { "Unexpected instrumentation package" }
+        check(expectedUid != Process.myUid()) { "SAF acceptance requires a separate test APK UID" }
+        val accepted = context.bindService(Intent().setComponent(component)
+            .setAction(PtcSafAcceptanceControlService.ACTION_PREFIX + caseId).putExtra("caseId", caseId),
+            connection, Context.BIND_AUTO_CREATE)
+        bound.set(accepted)
+        check(accepted) { "SAF control service binding was refused" }
+        try { connected.get(10, TimeUnit.SECONDS) }
+        catch (error: Throwable) { throw IllegalStateException("SAF control service did not connect", error) }
+    }
 
     private fun permissions() = resolver.persistedUriPermissions.map {
         "${it.uri}|${it.isReadPermission}|${it.isWritePermission}"
     }.sorted()
 
     private fun control(method: String): Bundle {
-        val done = CountDownLatch(1)
-        var resultCode = 0
-        var result: Bundle? = null
-        val stage = AtomicReference("not-delivered")
-        val reply = object : ResultReceiver(null) {
-            override fun onReceiveResult(code: Int, data: Bundle?) {
-                if (code == 2) { stage.set("receiver-entered"); return }
-                resultCode = code; result = data; done.countDown()
-            }
-        }
-        context.sendBroadcast(Intent().setComponent(ComponentName("${context.packageName}.test",
-            PtcSafAcceptanceControlReceiver::class.java.name)).putExtra("method", method)
-            .putExtra("caseId", caseId).putExtra("reply", reply)
-            .addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES or Intent.FLAG_RECEIVER_FOREGROUND),
-            "${context.packageName}.permission.RUNTIME_ACCEPTANCE")
-        check(done.await(10, TimeUnit.SECONDS)) { "Test provider control did not reply: $method (${stage.get()})" }
-        check(resultCode == 1) { result?.getString("failure") ?: "Test provider control failed" }
-        return requireNotNull(result)
+        check(!closed.get()) { "SAF control fixture is closed" }
+        failure.get()?.let { throw it }
+        val request = Request(nextRequest.incrementAndGet(), method, CompletableFuture())
+        check(pending.compareAndSet(null, request)) { "Overlapping SAF control requests" }
+        try {
+            connected.get(10, TimeUnit.SECONDS).send(Message.obtain().apply {
+                what = 1
+                arg1 = request.id
+                replyTo = replies
+                data = Bundle().apply { putString("method", method); putString("caseId", caseId) }
+            })
+            return request.result.get(10, TimeUnit.SECONDS)
+        } catch (error: Throwable) {
+            val described = IllegalStateException("SAF bound control failed: $method", error)
+            fail(described)
+            throw described
+        } finally { pending.compareAndSet(request, null) }
+    }
+
+    private fun unbind() {
+        closed.set(true)
+        if (bound.compareAndSet(true, false)) context.unbindService(connection)
+        pending.get()?.result?.completeExceptionally(IllegalStateException("SAF control fixture closed"))
+    }
+
+    private fun reportControl() {
+        instrumentation.sendStatus(1, Bundle().apply {
+            putString("safControl", JSONObject().put("schema", 1).put("caseId", caseId)
+                .put("transport", "bound-service").put("appUid", Process.myUid())
+                .put("controlUid", controlUid).put("controlPid", controlPid).toString())
+        })
     }
 
     fun armBlockedRead() { control("ptc.arm") }
     fun readEntered(): Boolean = control("ptc.state").getBoolean("entered")
+    fun readSignalPresent(): Boolean = control("ptc.state").getBoolean("signalPresent")
 
     fun revoke(searches: DocumentSearchManager): JSONObject {
         val result = DocumentAccess(context).revoke(root)
@@ -66,22 +147,27 @@ class PtcSafAcceptanceFixture private constructor(private val instrumentation: I
     }
 
     override fun close() {
-        if (removed) return
+        if (closed.get()) { failure.get()?.let { throw it }; return }
         try {
-            if (::uri.isInitialized && resolver.persistedUriPermissions.any { it.uri == uri })
-                resolver.releasePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        } finally {
-            control("ptc.remove")
-            removed = true
-            check(permissions() == before) { "SAF acceptance changed a pre-existing grant" }
-        }
+            try {
+                if (::uri.isInitialized && resolver.persistedUriPermissions.any { it.uri == uri })
+                    resolver.releasePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            } finally {
+                if (created && !removed) { control("ptc.remove"); removed = true }
+                check(permissions() == before) { "SAF acceptance changed a pre-existing grant" }
+            }
+        } catch (error: Throwable) { fail(error); throw error }
+        finally { unbind() }
     }
 
     companion object {
         fun open(instrumentation: Instrumentation): PtcSafAcceptanceFixture {
             val fixture = PtcSafAcceptanceFixture(instrumentation)
-            val created = fixture.control("ptc.create")
             try {
+                fixture.bind()
+                val created = fixture.control("ptc.create")
+                fixture.created = true
+                fixture.reportControl()
                 fixture.uri = Uri.parse(requireNotNull(created.getString("uri")))
                 check(fixture.uri == android.provider.DocumentsContract.buildTreeDocumentUri(
                     PtcSafAcceptanceProvider.AUTHORITY, fixture.caseId))
@@ -123,6 +209,7 @@ class PtcSafAcceptanceInstrumentation : Instrumentation() {
                 PtcSafAcceptanceFixture.open(this).use { fixture ->
                     val searches = DocumentSearchManager(targetContext)
                     val worker = Executors.newSingleThreadExecutor()
+                    var primaryFailure: Throwable? = null
                     try {
                         synchronized(ownerLock) { activeSearches = searches }
                         foreground.checkActive()
@@ -139,6 +226,7 @@ class PtcSafAcceptanceInstrumentation : Instrumentation() {
                         }
                         foreground.checkActive()
                         check(fixture.readEntered()) { "Search never entered the controlled provider" }
+                        output.putString("openDocumentSignalPresent", fixture.readSignalPresent().toString())
                         fixture.revoke(searches)
                         var rejected = false
                         try { running.get(5, TimeUnit.SECONDS) }
@@ -150,6 +238,7 @@ class PtcSafAcceptanceInstrumentation : Instrumentation() {
                             rejected = true
                         }
                         check(rejected) { "Revoked in-flight search returned content" }
+                        check(output.getString("openDocumentSignalPresent") == "true") { "Provider received no search cancellation signal" }
                         rejected = false
                         try { search(searches, fixture.root) } catch (failure: SecurityException) { rejected = true }
                         check(rejected) { "Search reused a revoked persisted grant" }
@@ -159,14 +248,24 @@ class PtcSafAcceptanceInstrumentation : Instrumentation() {
                         check(rejected) { "Read reused a revoked persisted grant" }
                         foreground.checkActive()
                         output.putString("root", fixture.root)
+                        output.putString("safControlUid", fixture.controlUid.toString())
+                        output.putString("safControlPid", fixture.controlPid.toString())
+                    } catch (failure: Throwable) {
+                        primaryFailure = failure
+                        throw failure
                     } finally {
                         val pending = synchronized(ownerLock) { activeSearches = null; cancellation }
+                        var cleanupFailure: Throwable? = null
                         try {
                             if (pending == null) searches.close() else pending.get(10, TimeUnit.SECONDS)
-                        } finally {
+                        } catch (failure: Throwable) { cleanupFailure = failure }
+                        try {
                             worker.shutdownNow()
                             check(worker.awaitTermination(5, TimeUnit.SECONDS)) { "Search worker did not retire" }
+                        } catch (failure: Throwable) {
+                            if (cleanupFailure == null) cleanupFailure = failure else cleanupFailure.addSuppressed(failure)
                         }
+                        cleanupFailure?.let { if (primaryFailure == null) throw it else primaryFailure.addSuppressed(it) }
                     }
                 }
                 foreground.checkActive()
@@ -176,6 +275,7 @@ class PtcSafAcceptanceInstrumentation : Instrumentation() {
             finish(-1, output)
         } catch (failure: Throwable) {
             output.putString("failure", (failure.javaClass.name + ": " + failure.message).take(2000))
+            output.putString("failureDetails", failure.stackTraceToString().take(6000))
             finish(0, output)
         }
     }
@@ -183,11 +283,18 @@ class PtcSafAcceptanceInstrumentation : Instrumentation() {
     private fun search(searches: DocumentSearchManager, root: String): JSONObject {
         val id = UUID.randomUUID().toString()
         searches.prepare(id)
+        var primaryFailure: Throwable? = null
         try {
             return searches.run(JSONObject().put("id", id).put("root", root).put("path", "")
                 .put("query", "needle").put("caseSensitive", true).put("limits", JSONObject()
                     .put("fileBytes", 4096).put("totalBytes", 8192).put("maxEntries", 8).put("maxFiles", 4)
                     .put("maxDepth", 4).put("maxMatches", 8).put("previewChars", 512).put("maxDurationMs", 15000)))
-        } finally { check(searches.cancel(id).getBoolean("cancelled")) }
+        } catch (failure: Throwable) {
+            primaryFailure = failure
+            throw failure
+        } finally {
+            try { check(searches.cancel(id).getBoolean("cancelled")) { "Search cancellation did not complete" } }
+            catch (cleanup: Throwable) { if (primaryFailure == null) throw cleanup else primaryFailure.addSuppressed(cleanup) }
+        }
     }
 }

@@ -233,9 +233,9 @@ class DocumentAccess(private val context: Context) {
                 cancellation.throwIfCanceled()
                 if (!hasGrant(root)) throw SecurityException("文件授权已撤销，请重新授权")
             }
-            override fun open(): java.io.InputStream? {
+            override fun open(): java.io.InputStream {
                 checkStable()
-                return resolver.openAssetFileDescriptor(uri, "r", cancellation)?.createInputStream()
+                return DocumentProviderRead.open(resolver, uri, cancellation)
             }
         }
         checkStable()

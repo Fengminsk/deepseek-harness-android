@@ -208,11 +208,8 @@ class DocumentSearchManager(private val context: Context) {
                     try {
                         val before = info(entry.uri, entry.path, entry.depth)
                         if (!entry.same(before)) { skip(entry, "changed"); continue }
-                        val descriptor = resolver.openAssetFileDescriptor(entry.uri, "r", job.signal)
-                            ?: throw IOException("File provider unavailable")
-                        val result = descriptor.use {
-                            val stream = it.createInputStream()
-                            try {
+                        val result = try {
+                            DocumentProviderRead.withStream(resolver, entry.uri, job.signal) { stream ->
                                 job.lifecycle.attach(stream)
                                 DocumentTextSearch.scan(stream, query, sensitive, allowance,
                                     limits.maxMatches - matches.length(), limits.previewChars,
@@ -221,10 +218,8 @@ class DocumentSearchManager(private val context: Context) {
                                         override fun beforeRead() = checkAccess()
                                         override fun read(bytes: Int) { bytesRead += bytes }
                                     })
-                            } finally {
-                                try { stream.close() } finally { job.lifecycle.detach() }
                             }
-                        }
+                        } finally { job.lifecycle.detach() }
                         if (!before.same(info(entry.uri, entry.path, entry.depth))) { skip(entry, "changed"); continue }
                         if (result.matches.isNotEmpty()) {
                             // Some providers retain a document URI after moving the file. Re-resolve

@@ -1,5 +1,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="com.minnnng.dsh_android.permission.RUNTIME_ACCEPTANCE" />
+    <queries>
+        <package android:name="com.minnnng.dsh_android" />
+    </queries>
     <application>
         <provider
             android:name="com.minnnng.dsh_android.PtcSafAcceptanceProvider"
@@ -7,15 +10,20 @@
             android:exported="true"
             android:grantUriPermissions="true"
             android:permission="android.permission.MANAGE_DOCUMENTS" />
-        <receiver
-            android:name="com.minnnng.dsh_android.PtcSafAcceptanceControlReceiver"
+        <service
+            android:name="com.minnnng.dsh_android.PtcSafAcceptanceControlService"
             android:exported="true"
             android:permission="com.minnnng.dsh_android.permission.RUNTIME_ACCEPTANCE" />
     </application>
+    <!-- AGP injects testInstrumentationRunner and targetPackage into the first instrumentation. -->
     <instrumentation
         android:name="com.minnnng.dsh_android.IsolatedScriptAcceptanceInstrumentation"
         android:targetPackage="com.minnnng.dsh_android"
         android:targetProcesses="com.minnnng.dsh_android:agent" />
+    <instrumentation
+        android:name="com.minnnng.dsh_android.PtcSafBootstrapInstrumentation"
+        android:targetPackage="com.minnnng.dsh_android.test"
+        android:targetProcesses="com.minnnng.dsh_android.test" />
     <instrumentation
         android:name="com.minnnng.dsh_android.PtcSafAcceptanceInstrumentation"
         android:targetPackage="com.minnnng.dsh_android"
