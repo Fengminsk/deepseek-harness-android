@@ -54,7 +54,7 @@ test('read-only model entry rejects forged owners and reports its tool-mediated 
   assert.equal(capability.nativeFilesystem, 'none')
   assert.equal(capability.nativeNetwork, 'off')
   assert.deepEqual(capability.reviewedTools, ['list_agents', 'read', 'glob', 'grep', 'web_search', 'web_fetch',
-    'android_files', 'android_attachments', 'write', 'edit'])
+    'android_files', 'android_attachments', 'write', 'edit', 'linux_exec', 'linux_import', 'linux_export', 'linux_inspect'])
   assert.equal(capability.wallDeadlineMillis, 120000)
   assert.equal(capability.executionThreadCpuMillis, 5000)
 })

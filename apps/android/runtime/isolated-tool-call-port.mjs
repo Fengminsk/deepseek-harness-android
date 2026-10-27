@@ -15,7 +15,9 @@ const AMBIENT_APP_TOOLS = new Set([
   'str_replace_editor', 'workflow', 'android_ptc',
 ])
 const WRITE_TOOLS = new Set(['write', 'edit'])
+const ISOLATED_TOOLS = new Set(['linux_exec', 'linux_import', 'linux_export'])
 const VERIFY_BEFORE_RETRY = 'The workspace may have changed. Verify the affected files before any retry; do not repeat this mutation automatically.'
+const VERIFY_LINUX_BEFORE_RETRY = 'The Linux task may have executed or published data. Inspect linux_inspect and the recorded Linux receipt before retrying; cancellation does not imply rollback. Do not repeat this operation automatically.'
 
 function denied(code, message) {
   return new IsolatedExecutionContractError(code, message)
@@ -90,11 +92,11 @@ function classifiedFor(value, definition) {
   const flush = Object.getOwnPropertyDescriptor(value, 'flushSession')
   return effect && bound && Object.hasOwn(effect, 'value')
     && Object.hasOwn(bound, 'value')
-    && ['pure', 'read-only', 'workspace-write'].includes(effect.value)
+    && ['pure', 'read-only', 'workspace-write', 'isolated-execution'].includes(effect.value)
     && bound.value === definition
     && (projection === undefined || Object.hasOwn(projection, 'value') && typeof projection.value === 'function')
     && (flush === undefined || Object.hasOwn(flush, 'value') && typeof flush.value === 'function')
-    && (effect.value !== 'workspace-write' || flush !== undefined)
+    && (!['workspace-write', 'isolated-execution'].includes(effect.value) || flush !== undefined)
 }
 
 function boundedPath(value) {
@@ -108,7 +110,7 @@ function mutationReceipt(name, args, result, complete) {
     tool: name, status: complete ? 'completed' : 'verify-before-retry',
     ...(requestedPath === undefined ? {} : { requestedPath }),
     ...(canonicalPath === undefined ? {} : { canonicalPath }),
-    ...(!complete ? { recovery: VERIFY_BEFORE_RETRY } : {}),
+    ...(!complete ? { recovery: ISOLATED_TOOLS.has(name) ? VERIFY_LINUX_BEFORE_RETRY : VERIFY_BEFORE_RETRY } : {}),
   }
 }
 
@@ -137,8 +139,8 @@ async function deferMutationReceipt(parent, mutation) {
  * must bind its callback endpoint to the admission token before invoking it.
  * Only the trusted host supplies the parent ToolRunContext and allowlist.
  * `authorizeTool` returns a reviewed effect and exact definition; workspace
- * mutations additionally supply a Session durability barrier. Only PTC may
- * dispatch reviewed write/edit or attachment materialization callbacks. The
+ * mutations and isolated Linux operations additionally supply a Session
+ * durability barrier. Only PTC may dispatch those reviewed effects. The
  * policy returns null for ordinary denial and throws only when settlement is
  * uncertain. Every definition needs App review.
  */
@@ -193,7 +195,8 @@ export class IsolatedToolCallPort {
       const definition = typeof name === 'string' && NAME.test(name)
         ? runtime.get(name, parent.agent) : undefined
       if (typeof name !== 'string' || !NAME.test(name) || name === 'run_code'
-        || AMBIENT_APP_TOOLS.has(name) || WRITE_TOOLS.has(name) && prepared.kind !== 'ptc'
+        || AMBIENT_APP_TOOLS.has(name)
+        || (WRITE_TOOLS.has(name) || ISOLATED_TOOLS.has(name) || name === 'linux_inspect') && prepared.kind !== 'ptc'
         || names.has(name)
         || definition === undefined) {
         throw denied('ANDROID_TOOL_HOST_INVALID', 'Invalid or invisible tool in host allowlist')
@@ -279,10 +282,15 @@ export class IsolatedToolCallPort {
     if (!classifiedFor(authorized, this.#boundDefinitions.get(name))) {
       throw recoverable('ANDROID_TOOL_NOT_GRANTED', 'Host policy did not authorize the tool')
     }
-    const mutating = authorized.effect === 'workspace-write'
+    const workspaceWrite = authorized.effect === 'workspace-write'
+    const isolatedOperation = authorized.effect === 'isolated-execution'
+    const mutating = workspaceWrite || isolatedOperation
+    const verifyBeforeRetry = isolatedOperation ? VERIFY_LINUX_BEFORE_RETRY : VERIFY_BEFORE_RETRY
     const mutationName = WRITE_TOOLS.has(name)
       || name === 'android_attachments' && args?.action === 'materialize'
-    if (mutating !== mutationName || mutating && (this.#kind !== 'ptc'
+    if (workspaceWrite !== mutationName || isolatedOperation !== ISOLATED_TOOLS.has(name)
+      || name === 'linux_inspect' && authorized.effect !== 'read-only'
+      || mutating && (this.#kind !== 'ptc'
       || typeof this.#parent.deferContext !== 'function')) {
       throw recoverable('ANDROID_TOOL_NOT_GRANTED', 'Host policy did not authorize this mutation')
     }
@@ -393,7 +401,7 @@ export class IsolatedToolCallPort {
       !result.isError && !unsupportedReason && !this.#controller.signal.aborted) : undefined
     if (mutating && (result.isError || unsupportedReason || this.#controller.signal.aborted)) {
       await deferMutationReceipt(this.#parent, mutation)
-      if (unsupportedReason) unsupportedReason = `${unsupportedReason.slice(0, 500)} ${VERIFY_BEFORE_RETRY}`
+      if (unsupportedReason) unsupportedReason = `${unsupportedReason.slice(0, 500)} ${verifyBeforeRetry}`
     }
     const terminalAudit = {
       ...audit,
@@ -426,7 +434,7 @@ export class IsolatedToolCallPort {
     }
     if (result.isError) {
       const baseMessage = result.error?.message ?? 'Tool call failed'
-      const message = mutating ? `${baseMessage.slice(0, 500)} ${VERIFY_BEFORE_RETRY}` : baseMessage
+      const message = mutating ? `${baseMessage.slice(0, 500)} ${verifyBeforeRetry}` : baseMessage
       await this.#journal.confirm({ runId: this.#runId, callId: number,
         outcome: 'tool-error', result: terminalAudit })
       this.#unconfirmed = false

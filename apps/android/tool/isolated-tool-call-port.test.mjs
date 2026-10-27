@@ -497,6 +497,9 @@ test('production ToolRuntime rejects a same-name swap during Android callback po
 
 test('mutations require PTC, exact action classification and a durability barrier', async () => {
   assert.throws(() => setup({ names: ['write'] }), { code: 'ANDROID_TOOL_HOST_INVALID' })
+  for (const name of ['linux_exec', 'linux_import', 'linux_export', 'linux_inspect']) {
+    for (const kind of ['script', 'workflow']) assert.throws(() => setup({ names: [name], kind }), { code: 'ANDROID_TOOL_HOST_INVALID' })
+  }
   for (const [name, args, effect, flush] of [
     ['write', {}, 'read-only', async () => true],
     ['edit', {}, 'pure', async () => true],
@@ -504,6 +507,12 @@ test('mutations require PTC, exact action classification and a durability barrie
     ['android_attachments', { action: 'read' }, 'workspace-write', async () => true],
     ['write', {}, 'workspace-write', undefined],
     ['safe_echo', {}, 'workspace-write', async () => true],
+    ['linux_exec', {}, 'read-only', async () => true],
+    ['linux_import', {}, 'pure', async () => true],
+    ['linux_export', {}, 'workspace-write', async () => true],
+    ['linux_exec', {}, 'isolated-execution', undefined],
+    ['linux_inspect', {}, 'isolated-execution', async () => true],
+    ['safe_echo', {}, 'isolated-execution', async () => true],
   ]) {
     const { port, inputs } = setup({ kind: 'ptc', names: [name],
       authorizeTool: async input => ({ effect, definition: input.definition,

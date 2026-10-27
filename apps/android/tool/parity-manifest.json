@@ -2378,7 +2378,9 @@
         "apps/android/tool/model-ptc-mutations.test.mjs",
         "apps/android/tool/isolated-tool-mutations.test.mjs",
         "apps/android/runtime/workflow-child-tools.mjs",
-        "apps/android/tool/workflow-child-tools.test.mjs"
+        "apps/android/tool/workflow-child-tools.test.mjs",
+        "apps/android/runtime/model-ptc-linux-review.mjs",
+        "apps/android/tool/model-ptc-linux.test.mjs"
       ],
       "evidence": {
         "core": "unverified",
@@ -2386,7 +2388,7 @@
         "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Original Node PTC stays disabled. Android now has an App-owned reviewed android_ptc registration behind MODEL_PTC_DEVICE_ACCEPTED=false. It uses live ToolRuntime authorization and exact first-party definitions for list_agents, read/glob/grep, web_search/web_fetch, android_files roots/list/read/search and android_attachments list/read/materialize/inspect_archive/inspect_apk plus write/edit. Native ptc runs have zero direct file/network grants, 120-second wall and independent 5-second execution-thread CPU limits. Bounded projected results and callbacks retain parent Session records. Oversized APK analysis returns an audited recovery hint instead of dropping declarations or changing cursors; smaller pages and sampleLimit allow retries. Original write/edit and attachment materialize are reviewed under live sandbox policy, exact definitions and strict Session flush before dispatch and confirmation. Mutations retain metadata and actual-path receipts through cancellation or observation failure; post-policy blocking may withhold body receipts and never permits automatic replay. Images, nested execution and general Node APIs are excluded. Focused host ToolRuntime/receipt tests pass; the production Node-to-native device suite must still establish usable registration and lifecycle behavior before the gate changes.",
+      "note": "Original Node PTC stays disabled. Android now has an App-owned reviewed android_ptc registration behind MODEL_PTC_DEVICE_ACCEPTED=false. It uses live ToolRuntime authorization and exact first-party definitions for list_agents, read/glob/grep, web_search/web_fetch, android_files roots/list/read/search and android_attachments list/read/materialize/inspect_archive/inspect_apk plus write/edit and the parent's original linux_exec/linux_import/linux_export/linux_inspect tools. Linux callbacks retain live policy, explicit workspace transfers, native one-time network approval and Session durability barriers; cancellation preserves actual execution/publication receipts. Native ptc runs have zero direct file/network grants, 120-second wall and independent 5-second execution-thread CPU limits. Bounded projected results and callbacks retain parent Session records. Oversized APK analysis returns an audited recovery hint instead of dropping declarations or changing cursors; smaller pages and sampleLimit allow retries. Original write/edit and attachment materialize are reviewed under live sandbox policy, exact definitions and strict Session flush before dispatch and confirmation. Mutations retain metadata and actual-path receipts through cancellation or observation failure; post-policy blocking may withhold body receipts and never permits automatic replay. Images, nested execution and general Node APIs are excluded. Focused host ToolRuntime/receipt tests pass; the production Node-to-native device suite must still establish usable registration and lifecycle behavior before the gate changes.",
       "capability": "programmatic"
     },
     {
@@ -8443,9 +8445,11 @@
         "apps/android/android/app/src/main/cpp/ptc_script_engine.cpp",
         "apps/android/runtime/model-ptc-review.mjs",
         "apps/android/tool/model-ptc-mutations.test.mjs",
-        "apps/android/tool/isolated-tool-mutations.test.mjs"
+        "apps/android/tool/isolated-tool-mutations.test.mjs",
+        "apps/android/runtime/model-ptc-linux-review.mjs",
+        "apps/android/tool/model-ptc-linux.test.mjs"
       ],
-      "remaining": "Reviewed android_ptc and workflows with reviewed child file/web/Linux tools are implemented behind closed source gates. Workflow children receive only current parent first-party read/glob/grep/write/edit/web_search/web_fetch/linux_exec/linux_import/linux_export/linux_inspect registrations, with live identity, parent/child policy and activation-workspace checks. Linux tools require existing parent registration and use a child-Session-private offline disk; persistence intersects activation and current policies, transfers require writable activation and current parent/child permissions, and one App-wide slot requires serial Linux steps. Cold resume restores no grant. Accept the production Node-to-native ToolRuntime path, bounded results, real file/web/Linux callbacks, cancellation and retirement, background child ownership and cold/process-death recovery before opening them. General Node APIs, PTC images or Linux calls, child App-UID Shell/recursive delegation and arbitrary child tool definitions remain outside the reviewed subset; do not describe it as full upstream PTC parity."
+      "remaining": "Reviewed android_ptc and workflows with reviewed child file/web/Linux tools are implemented behind closed source gates. Workflow children receive only current parent first-party read/glob/grep/write/edit/web_search/web_fetch/linux_exec/linux_import/linux_export/linux_inspect registrations, with live identity, parent/child policy and activation-workspace checks. Linux tools require existing parent registration and use a child-Session-private offline disk; persistence intersects activation and current policies, transfers require writable activation and current parent/child permissions, and one App-wide slot requires serial Linux steps. Cold resume restores no grant. Accept the production Node-to-native ToolRuntime path, bounded results, real file/web/Linux callbacks, cancellation and retirement, background child ownership and cold/process-death recovery before opening them. General Node APIs, PTC images, child App-UID Shell/recursive delegation and arbitrary child tool definitions remain outside the reviewed subset; do not describe it as full upstream PTC parity. Reviewed PTC can call the parent's original four Linux tools with live policy and durable receipts; the actual device import/execute/export chain remains unaccepted."
     },
     {
       "id": "linux",
@@ -8468,9 +8472,13 @@
         "apps/android/runtime/workflow-child-tools.mjs",
         "apps/android/tool/workflow-child-tools.test.mjs",
         "apps/android/runtime/native-linux-vm-inspection.mjs",
-        "apps/android/android/app/src/main/java/com/minnnng/dsh_android/LinuxVmRecoveryStore.java"
+        "apps/android/android/app/src/main/java/com/minnnng/dsh_android/LinuxVmRecoveryStore.java",
+        "apps/android/runtime/native-linux-network.mjs",
+        "apps/android/runtime/linux-network-admission.mjs",
+        "apps/android/android/app/src/main/kotlin/com/minnnng/dsh_android/LinuxVmNetworkApprovalCoordinator.kt",
+        "apps/android/tool/acceptance-linux-network-approval.mjs"
       ],
-      "remaining": "TinyEMU isolated-UID Linux execution and authorized 64 MiB workspace import/export are implemented behind LINUX_VM_DEVICE_ACCEPTED=false. ToolRuntime resolves live session policy: read-only execution discards disk changes and file transfer requires write permission. A workflow child may inherit the original Linux tools only from live parent registrations; its disk remains private to its Session, permissions intersect the activation grant and current parent/child policies, and cold resume restores no grant. The App has one Linux execution slot, so workflow Linux steps must be serialized. An offline Alpine candidate with Python, Git and curl has host execution and filesystem checks, exact image/build evidence and a verified corresponding-source archive. Explicit Alpine release candidate packaging verifies exact assets, native provider and corresponding sources; switching back to the ordinary build is checked for residual guest assets. Production enablement and device acceptance remain: verify model calls, file-transfer hashes/readback and no-overwrite publication, writable persistence, read-only discard, cancellation and upgrade recovery on the installed APK. Read-only linux_inspect and first-execution recovery checks report durable publication facts and block unresolved or review-required Sessions without replay. There is no acknowledgement/unlock API, and retirement after owner-process death remains unverified. Python standard-library analysis is covered by a device fixture but is not yet device-certified. Guest networking is absent; having curl installed does not provide network access. Host checks do not discharge these device and image-delivery requirements."
+      "remaining": "TinyEMU isolated-UID Linux execution and authorized 64 MiB workspace import/export are implemented behind LINUX_VM_DEVICE_ACCEPTED=false. ToolRuntime resolves live session policy: read-only execution discards disk changes and file transfer requires write permission. A workflow child may inherit the original Linux tools only from live parent registrations; its disk remains private to its Session, permissions intersect the activation grant and current parent/child policies, and cold resume restores no grant. The App has one Linux execution slot, so workflow Linux steps must be serialized. An offline Alpine candidate with Python, Git and curl has host execution and filesystem checks, exact image/build evidence and a verified corresponding-source archive. Explicit Alpine release candidate packaging verifies exact assets, native provider and corresponding sources; switching back to the ordinary build is checked for residual guest assets. Production enablement and device acceptance remain: verify model calls, file-transfer hashes/readback and no-overwrite publication, writable persistence, read-only discard, cancellation and upgrade recovery on the installed APK. Read-only linux_inspect and first-execution recovery checks report durable publication facts and block unresolved or review-required Sessions without replay. There is no acknowledgement/unlock API, and retirement after owner-process death remains unverified. Python standard-library analysis is covered by a device fixture but is not yet device-certified. Bounded guest HTTPS GET uses dsh-fetch with exact-host and native one-time approval; its production approval, cancellation and real device network path remain unaccepted. General guest networking is absent; installed curl and Git do not receive raw network access. Host checks do not discharge these device and image-delivery requirements."
     },
     {
       "id": "web-network",
@@ -8550,7 +8558,7 @@
     },
     {
       "path": "apps/android/runtime/index.mjs",
-      "sha256": "daf95b3f3bf0ba58eb9d06f6fcaca153f81a41ab910ff23d207997eea020a46a"
+      "sha256": "e353da1a29d96af4d9333be4889e1fa390445c88dd975461a38866b048d563e8"
     },
     {
       "path": "apps/android/runtime/cordis.patch.yml",

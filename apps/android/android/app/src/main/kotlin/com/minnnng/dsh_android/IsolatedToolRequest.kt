@@ -29,13 +29,15 @@ internal data class IsolatedToolRequest(
             require(arguments is JSONObject)
             if (reviewedPtc) {
                 require(name in setOf("list_agents", "read", "glob", "grep", "web_search",
-                    "web_fetch", "android_files", "android_attachments", "write", "edit"))
+                    "web_fetch", "android_files", "android_attachments", "write", "edit",
+                    "linux_exec", "linux_import", "linux_export", "linux_inspect"))
                 if (name == "android_files") require(arguments.opt("action") in
                     setOf("roots", "list", "read", "search"))
                 if (name == "android_attachments") require(arguments.opt("action") in
                     setOf("list", "read", "materialize", "inspect_archive", "inspect_apk"))
             } else require(name !in setOf("run_code", "android_shell", "android_linux", "android_files",
-                "android_attachments", "read", "read_image", "write", "edit", "str_replace_editor", "workflow", "android_ptc"))
+                "android_attachments", "read", "read_image", "write", "edit", "str_replace_editor", "workflow", "android_ptc",
+                "linux_exec", "linux_import", "linux_export", "linux_inspect"))
             return IsolatedToolRequest(id, name, arguments)
         }
 

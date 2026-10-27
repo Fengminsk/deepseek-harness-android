@@ -5,11 +5,12 @@ import { READONLY_PTC_TOOLS, allowsReadOnlyPtcArguments,
 import { projectReadOnlyPtcResult, READONLY_PTC_RESULT_BYTES } from './model-ptc-readonly-projection.mjs'
 import { createAppOwnedModelPtcCallerForExecution } from './model-ptc-caller-binding.mjs'
 import { reviewedToolProjectionError } from './isolated-tool-call-port.mjs'
+import { LINUX_PTC_TOOLS, reviewLinuxToolsForModelPtc } from './model-ptc-linux-review.mjs'
 
 const WRITABLE = new Set(['workspace-write', 'danger-full-access'])
 const mutations = { write: isFirstPartyWriteDefinition, edit: isFirstPartyEditDefinition,
   android_attachments: isFirstPartyAndroidAttachmentsDefinition }
-export const PTC_TOOLS = Object.freeze([...READONLY_PTC_TOOLS, 'write', 'edit'])
+export const PTC_TOOLS = Object.freeze([...READONLY_PTC_TOOLS, 'write', 'edit', ...LINUX_PTC_TOOLS])
 
 /** Mutations keep their complete bounded receipt; a lost result never authorizes replay. */
 function projectMutation(value) {
@@ -26,7 +27,8 @@ function projectMutation(value) {
  * and ToolRuntime enforce paths, observation, schema and cancellation.
  */
 export function reviewToolsForModelPtc({ runtime, agent, services } = {}) {
-  const result = [...reviewReadOnlyToolsForModelPtc({ runtime, agent, services })]
+  const result = [...reviewReadOnlyToolsForModelPtc({ runtime, agent, services }),
+    ...reviewLinuxToolsForModelPtc({ runtime, agent, services })]
   const policy = services?.sandboxPolicy
   const sessions = services?.sessions
   if (!policy || typeof sessions?.flush !== 'function') return Object.freeze(result)

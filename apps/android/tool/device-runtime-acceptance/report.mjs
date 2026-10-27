@@ -14,6 +14,7 @@ const requiredChecks = {
     'model-cancellation-joins-native-retirement',
     'model-busy-loop-has-independent-cpu-limit',
     'real-public-web-fetch',
+    'reviewed-ptc-linux-import-analysis-export',
     'saf-revocation-and-search',
   ],
   linux: [

@@ -507,7 +507,8 @@ test('a reviewed list cannot label writes as safe or admit an unrestricted reade
       runtime: ctx.tools, reviewedTools: [entry] }),
     /reviewed tool definition and effect/)
   }
-  for (const name of ['read', 'write', 'edit', 'android_files', 'android_shell', 'workflow']) {
+  for (const name of ['read', 'write', 'edit', 'android_files', 'android_shell', 'workflow',
+    'linux_exec', 'linux_import', 'linux_export', 'linux_inspect']) {
     const ambient = defineTool({ name, description: 'Host authority', parameters: {},
       output: { schema: { type: 'string' },
         render: (_args, value) => [{ type: 'text', text: value }] },
@@ -518,6 +519,24 @@ test('a reviewed list cannot label writes as safe or admit an unrestricted reade
       runtime: ctx.tools, reviewedTools: [{ name, definition: ambient,
         registrationIdentity: ctx.tools.registrationIdentity(name, agent), effect: 'pure' }] }),
     /reviewed tool definition and effect/)
+  }
+})
+
+test('Linux execution reviews require exact effect and durable ownership without per-call downgrades', async t => {
+  const { ctx, agent, bridge, callbacks, defineTool } = await setup(t)
+  for (const name of ['linux_exec', 'linux_import', 'linux_export']) {
+    const definition = defineTool({ name, description: 'Linux review probe', parameters: {},
+      output: { schema: { type: 'json' }, render: () => [] }, async execute() { return {} } })
+    ctx.tools.register(definition)
+    const entry = { name, definition, registrationIdentity: ctx.tools.registrationIdentity(name, agent),
+      effect: 'isolated-execution', authorizeArguments: async () => true, flushSession: async () => true }
+    for (const review of [
+      { ...entry, effect: 'read-only' }, { ...entry, effect: 'workspace-write' },
+      { ...entry, authorizeArguments: undefined }, { ...entry, flushSession: undefined },
+      { ...entry, effectForArguments: () => 'read-only' },
+    ]) assert.throws(() => createAppOwnedModelPtcCaller({
+      bridge, callbacks, runtime: ctx.tools, reviewedTools: [review],
+    }), /reviewed tool definition and effect/u)
   }
 })
 

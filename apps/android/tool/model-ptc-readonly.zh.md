@@ -4,7 +4,7 @@
 
 ## 概述
 
-App 自有的[PTC 所有者](../runtime/model-ptc-reviewed-owner.mjs)通过隔离 V8 客体执行可擦除的 TypeScript 函数体。它是私有组合组件，不注册模型工具，也不启用已关闭的 Android PTC profile。它通过有效父执行的 ToolRuntime 处理文件和网页，不提供 Node、Shell、直接网络访问或原生文件授权。
+App 自有的[PTC 所有者](../runtime/model-ptc-reviewed-owner.mjs)通过隔离 V8 客体执行可擦除的 TypeScript 函数体。它是私有组合组件，不注册模型工具，也不启用已关闭的 Android PTC profile。它通过有效父执行的 ToolRuntime 处理文件、网页和 Linux 工具调用，不提供 Node、App UID Shell、直接网络访问或原生文件授权。
 
 ## 目录
 
@@ -27,8 +27,9 @@ Android 运行时在源码控制的设备验收开关后组合[模型工具工�
 | `web_search`、`web_fetch` | 配置的网页提供方及其既有策略、取消机制 |
 | `android_files` | 用户授权文档根上的 `roots`、`list`、`read`、`search` |
 | `android_attachments` | 当前会话引用的 `list`、`read`、`materialize`、`inspect_archive`、`inspect_apk` |
+| `linux_exec`、`linux_import`、`linux_export`、`linux_inspect` | 父作用域已可用的[原版 Linux 工具](model-ptc-linux.zh.md) |
 
-不允许图片、Shell 命令、Linux 执行或嵌套 PTC/工作流调用。文件写入、编辑及附件落地需要当前可写沙箱策略和参与刷盘的 Session 持久化所有者；拒绝模型请求提权。有效父执行作用域内不存在的工具不会暴露。包身份校验本身不授予访问权限，宿主工具策略仍然有效。客体不能自行指定执行类别或预算。
+不允许图片、App UID Shell 命令或嵌套 PTC/工作流调用。经审查的 Linux 调用保留原始 Session、文件策略、恢复检查及独立的一次性联网审批；PTC 客体自身不会获得 Linux 或网络权限。文件写入、编辑及附件落地需要当前可写沙箱策略和参与刷盘的 Session 持久化所有者；拒绝模型请求提权。有效父执行作用域内不存在的工具不会暴露。包身份校验本身不授予访问权限，宿主工具策略仍然有效。客体不能自行指定执行类别或预算。
 
 ## 结果与记录
 

@@ -1,0 +1,6 @@
+[
+  { "name": "linux_import", "isError": false, "status": "completed", "diskCommitted": true },
+  { "name": "linux_exec", "isError": false, "status": "completed", "diskCommitted": true },
+  { "name": "linux_export", "isError": false, "status": "completed", "diskCommitted": false, "filePublished": true },
+  { "name": "linux_inspect", "isError": false, "status": "absent" }
+]

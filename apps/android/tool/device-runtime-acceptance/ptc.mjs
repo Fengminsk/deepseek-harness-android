@@ -21,6 +21,7 @@ import { registerModelFileReadGuard } from '../../runtime/model-file-read-guard.
 import { registerAndroidFilesTool } from '../../runtime/tool-android-files.mjs'
 import { registerAndroidAttachmentsTool } from '../../runtime/tool-android-attachments.mjs'
 import AndroidAttachmentStore from '../../runtime/android-attachment-store.mjs'
+import { PTC_LINUX_DEVICE_CHECK, runPtcLinuxAcceptance } from './ptc-linux.mjs'
 
 // A stored, single-file ZIP containing only "readonly archive device fixture\n".
 const archiveFixture = 'UEsDBBQAAAAAAChsW12obBxMIAAAACAAAAAOAAAAYWNjZXB0YW5jZS50eHRyZWFkb25seSBhcmNoaXZlIGRldmljZSBmaXh0dXJlClBLAQIUABQAAAAAAChsW12obBxMIAAAACAAAAAOAAAAAAAAAAAAAAAAAAAAAABhY2NlcHRhbmNlLnR4dFBLBQYAAAAAAQABADwAAABMAAAAAAA='
@@ -64,7 +65,7 @@ export function runPtcAcceptance(input) {
   return inPtcAcceptanceTurn(input.ctx, input.agent, () => runPtcChecks(input))
 }
 
-async function runPtcChecks({ ctx, transport, agent, workspace, callbackRouting }) {
+async function runPtcChecks({ ctx, transport, agent, workspace, callbackRouting, appWorkspaceRoot, nativeModule }) {
   assert.equal(typeof workspace, 'string')
   assert.equal(ctx.agents.get(agent.id), agent)
   const home = resolveDshHome()
@@ -269,6 +270,8 @@ async function runPtcChecks({ ctx, transport, agent, workspace, callbackRouting 
       assert.equal(result.value.result.status, 200); assert.equal(result.value.result.hasBody, true)
       return { state: receipts.at(-1).state }
     })
+    await check(PTC_LINUX_DEVICE_CHECK, () => runPtcLinuxAcceptance({ ctx, transport, agent, workspace,
+      appWorkspaceRoot, nativeModule, invoke, settlements: receipts }))
     checks.push({ name: 'saf-revocation-and-search', status: 'unverified', detail: 'SAF grant revocation and document search require their separate provider lifecycle acceptance.' })
     return { kind: 'production-node-native-ptc', checks,
       passed: checks.filter(value => value.status === 'passed').length,

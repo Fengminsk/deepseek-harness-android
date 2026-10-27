@@ -4,7 +4,7 @@ English | [中文](model-ptc-readonly.zh.md)
 
 ## Summary
 
-The App-owned [PTC owner](../runtime/model-ptc-reviewed-owner.mjs) executes erasable TypeScript function bodies through an isolated V8 guest. It is a private composition component; it does not register a model tool or enable the disabled Android PTC profile. It supports file and webpage processing through the live parent's ToolRuntime, without Node, shell, direct network access or native file grants.
+The App-owned [PTC owner](../runtime/model-ptc-reviewed-owner.mjs) executes erasable TypeScript function bodies through an isolated V8 guest. It is a private composition component; it does not register a model tool or enable the disabled Android PTC profile. It supports file, webpage and Linux-tool processing through the live parent's ToolRuntime, without Node, App-UID shell, direct network access or native file grants.
 
 ## Contents
 
@@ -27,8 +27,9 @@ Each execution captures the live Agent, active parent token, exact scoped defini
 | `web_search`, `web_fetch` | Configured web providers with their existing policies and cancellation |
 | `android_files` | `roots`, `list`, `read`, `search` on user-authorized document roots |
 | `android_attachments` | `list`, `read`, `materialize`, `inspect_archive`, `inspect_apk` for current-session references |
+| `linux_exec`, `linux_import`, `linux_export`, `linux_inspect` | [Original Linux tools](model-ptc-linux.md) already available in the parent scope |
 
-Images, shell commands, Linux execution and nested PTC/workflow calls are excluded. File writes, edits and attachment materialization require the live writable sandbox policy and a participating Session persistence owner; model-requested escalation is refused. A tool absent from the live parent's scope is not exposed. Package identification grants no access by itself; host tool policy remains authoritative. The guest cannot supply the execution kind or its budget.
+Images, App-UID shell commands and nested PTC/workflow calls are excluded. Reviewed Linux calls retain the original Session, file policy, recovery checks and separate one-time network approval; the PTC guest itself receives no Linux or network authority. File writes, edits and attachment materialization require the live writable sandbox policy and a participating Session persistence owner; model-requested escalation is refused. A tool absent from the live parent's scope is not exposed. Package identification grants no access by itself; host tool policy remains authoritative. The guest cannot supply the execution kind or its budget.
 
 ## Results and records
 

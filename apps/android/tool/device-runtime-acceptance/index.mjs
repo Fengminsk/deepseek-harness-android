@@ -90,7 +90,8 @@ export async function apply(ctx) {
           }
           if (configuration.suite === 'ptc' || configuration.suite === 'all') {
             const { runPtcAcceptance } = await import('./ptc.mjs')
-            reports.push(await runPtcAcceptance({ ctx, transport, agent, workspace: process.cwd(), callbackRouting }))
+            reports.push(await runPtcAcceptance({ ctx, transport, agent, workspace: process.cwd(), callbackRouting,
+              appWorkspaceRoot: configuration.appWorkspaceRoot, nativeModule }))
           }
           if (configuration.suite === 'linux' || configuration.suite === 'all') {
             const { runLinuxAcceptance } = await import('./linux.mjs')

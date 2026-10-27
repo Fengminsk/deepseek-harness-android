@@ -6,7 +6,7 @@ const LEASE_MILLIS = 120_000
 const owners = new WeakSet()
 
 /**
- * Trusted host owner for bounded file/web PTC. The guest receives no direct
+ * Trusted host owner for bounded file/web/Linux PTC. The guest receives no direct
  * filesystem, network, shell or Node authority; reviewed ToolRuntime calls
  * retain their live Agent policy and durable child-call record.
  */

@@ -9,8 +9,9 @@ const UNSAFE_NAMES = new Set(['__proto__', 'constructor', 'prototype', 'then'])
 const AMBIENT_TOOLS = new Set(['run_code', 'android_shell', 'android_linux',
   'read_image', 'str_replace_editor', 'workflow', 'android_ptc'])
 const WRITE_TOOLS = new Set(['write', 'edit', 'android_attachments'])
+const ISOLATED_TOOLS = new Set(['linux_exec', 'linux_import', 'linux_export'])
 const READ_TOOLS = new Set(['read', 'glob', 'grep', 'web_search', 'web_fetch',
-  'android_files', 'android_attachments'])
+  'android_files', 'android_attachments', 'linux_inspect'])
 
 /**
  * Pin the App-reviewed tool definitions, rather than trusting a name, effect
@@ -35,12 +36,14 @@ export function createAppOwnedModelPtcCaller({ bridge, callbacks, runtime, revie
       || UNSAFE_NAMES.has(entry.name)
       || !entry.definition || entry.definition.name !== entry.name
       || !entry.registrationIdentity || typeof entry.registrationIdentity !== 'object'
-      || !['pure', 'read-only', 'workspace-write'].includes(entry.effect)
+      || !['pure', 'read-only', 'workspace-write', 'isolated-execution'].includes(entry.effect)
       || READ_TOOLS.has(entry.name) && entry.effect !== 'read-only'
         && !(entry.name === 'android_attachments' && entry.effect === 'workspace-write')
       || ['write', 'edit'].includes(entry.name) && entry.effect !== 'workspace-write'
       || entry.effect === 'workspace-write' && (!WRITE_TOOLS.has(entry.name)
         || typeof entry.flushSession !== 'function')
+      || ISOLATED_TOOLS.has(entry.name) !== (entry.effect === 'isolated-execution')
+      || entry.effect === 'isolated-execution' && typeof entry.flushSession !== 'function'
       || entry.effectForArguments !== undefined && (entry.effect !== 'workspace-write'
         || entry.name !== 'android_attachments' || typeof entry.effectForArguments !== 'function')
       || entry.flushSession !== undefined && typeof entry.flushSession !== 'function'
@@ -109,7 +112,7 @@ export function createAppOwnedModelPtcCaller({ bridge, callbacks, runtime, revie
         // The callback port admits only a classification of the exact
         // definition it captured at binding, not a name-wide effect label.
         return Object.freeze({ effect, definition: review.definition,
-          ...(effect !== 'workspace-write' ? {} : { flushSession: review.flushSession }),
+          ...(!['workspace-write', 'isolated-execution'].includes(effect) ? {} : { flushSession: review.flushSession }),
           ...(review.projectResult === undefined ? {} : { projectResult: review.projectResult }) })
       }
       return startAppOwnedModelIsolatedScript(draft, {
