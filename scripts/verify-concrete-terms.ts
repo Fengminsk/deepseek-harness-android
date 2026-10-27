@@ -50,7 +50,8 @@ export function findConcreteTermViolations(file: string, source: string): Concre
 }
 
 function trackedFiles(repoRoot: string): string[] {
-  const files = execFileSync('git', ['ls-files', '-z'], { cwd: repoRoot, encoding: 'utf8' })
+  // Whole-repository index listings can exceed Node's default 1 MiB command buffer.
+  const files = execFileSync('git', ['ls-files', '-z'], { cwd: repoRoot, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
     .split('\0')
     .filter(file => file !== '')
   if (!files.includes('AGENTS.md')
