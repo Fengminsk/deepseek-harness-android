@@ -34,6 +34,7 @@ class NativeWorkflowAcceptanceInstrumentation : Instrumentation() {
             test("isolated-guest-reported-error-is-durable-failure") { reportedFailureWorkflow(app) }
             test("isolated-malformed-dsl-outcome-needs-review") { malformedOutcomeWorkflow(app) }
             test("isolated-child-reservation-result-and-retirement") { childWorkflow(app) }
+            test("isolated-route-denial-requires-confirmed-retirement") { routeDenialWorkflow(app) }
             test("admitted-workflow-pre-execution-cancel") { cancelledWorkflow(app) }
             test("bounded-extended-workflow-and-upper-limit") { extendedWorkflow(app) }
             test("in-flight-child-cancel-retirement-and-cold-owner") {
@@ -285,6 +286,83 @@ class NativeWorkflowAcceptanceInstrumentation : Instrumentation() {
             check(child.id() == reserved && child.state() == DurableWorkflowOwner.ChildState.RETIRED)
             check(bridge.release(token))
         } finally { bridge.close() }
+    }
+
+    private fun routeDenialWorkflow(app: android.content.Context) {
+        val probeRun = UUID.randomUUID().toString()
+        val probeChild = UUID.randomUUID().toString()
+        fun denial(run: String, call: Int, child: String) = JSONObject().put("runId", run)
+            .put("callId", call).put("denied", JSONObject()
+                .put("code", "MODEL_ROUTE_DENIED").put("childId", child))
+        check(IsolatedWorkflowRequest.isPreActivationRouteDenial(denial(probeRun, 2, probeChild),
+            probeRun, 2, probeChild))
+        for (invalid in listOf(
+            denial(UUID.randomUUID().toString(), 2, probeChild),
+            denial(probeRun, 3, probeChild),
+            denial(probeRun, 2, UUID.randomUUID().toString()),
+            denial(probeRun, 2, probeChild).put("value", JSONObject.NULL),
+            denial(probeRun, 2, probeChild).put("denied", JSONObject()
+                .put("code", "OTHER_DENIAL").put("childId", probeChild)),
+            denial(probeRun, 2, probeChild).put("denied", JSONObject()
+                .put("code", "MODEL_ROUTE_DENIED").put("childId", probeChild).put("extra", true)),
+        )) check(runCatching {
+            IsolatedWorkflowRequest.isPreActivationRouteDenial(invalid, probeRun, 2, probeChild)
+        }.isFailure)
+        check(runCatching {
+            IsolatedWorkflowRequest.isPreActivationRouteDenial(denial(probeRun, 2, probeChild), probeRun, 2, null)
+        }.isFailure)
+
+        for (mode in listOf("denied", "bad-reservation", "rpc-failure", "close-failure")) {
+            val runId = UUID.randomUUID().toString()
+            val closes = AtomicInteger()
+            val calls = AtomicInteger()
+            val transport = object : IsolatedWorkflowCallbackBridge.Transport {
+                override fun call(params: JSONObject, timeoutMillis: Long): JSONObject {
+                    check(params.getString("action") == "WORKFLOW_START_CHILD" && timeoutMillis > 0)
+                    val number = calls.incrementAndGet()
+                    check(number <= 2)
+                    val childId = params.getString("childId")
+                    if (number == 1) return JSONObject().put("runId", runId)
+                        .put("callId", params.getInt("callId"))
+                        .put("value", JSONObject().put("callId", 1).put("childId", childId))
+                    if (mode == "rpc-failure") error("Unconfirmed callback transport failure")
+                    return denial(runId, params.getInt("callId"),
+                        if (mode == "bad-reservation") UUID.randomUUID().toString() else childId)
+                }
+                override fun close(runId: String, token: String, timeoutMillis: Long): Boolean {
+                    check(runId.isNotBlank() && token.isNotBlank() && timeoutMillis > 0)
+                    closes.incrementAndGet()
+                    return mode != "close-failure"
+                }
+            }
+            val bridge = IsolatedWorkflowRunNativeBridge(app, transport)
+            val program = """async (input,host) => {
+                await host.callAsync({action:'WORKFLOW_START_CHILD',callId:1,value:{prompt:'first'}});
+                await host.callAsync({action:'WORKFLOW_START_CHILD',callId:2,value:{prompt:'denied'}});
+                return {value:'must-not-publish',stopReason:'completed',agentsStarted:2};
+            }""".trimIndent()
+            val token = owned(runId, bridge.admit(request(runId, program)))
+            try {
+                check(bridge.bindCallbacks(token) && bridge.execute(token))
+                val settled = bridge.settle(token)
+                val expected = if (mode == "denied") "FAILED" else "INTERRUPTED_UNCONFIRMED"
+                check(settled.getString("state") == expected) { "$mode: $settled" }
+                check(settled.getBoolean("requiresReview") == (mode != "denied") && settled.isNull("outputJson"))
+                check(calls.get() == 2 && closes.get() == 1)
+                val owner = DurableWorkflowOwner(app.filesDir.toPath(), IsolatedScriptRunController::syncDirectory)
+                val children = owner.read(runId).children()
+                check(children.size == 2)
+                if (mode != "close-failure") check(children.all { it.state() == DurableWorkflowOwner.ChildState.RETIRED })
+                else check(children.none { it.state() == DurableWorkflowOwner.ChildState.RETIRED })
+                if (mode == "denied") check(bridge.release(token))
+                else check(runCatching { bridge.release(token) }.isFailure)
+                if (mode == "close-failure") {
+                    // This transport never launches a Node child. Release only its
+                    // synthetic reservations after asserting that production refused them.
+                    children.forEach { owner.confirmStoppedChild(runId, it.id()) }
+                }
+            } finally { bridge.close() }
+        }
     }
 
     /** A live child result must not turn cancellation into success or replay on owner recovery. */

@@ -6,7 +6,9 @@
 
 最多同时绑定 4 个运行；每个运行最多接受 128 次回调，同时等待分发的回调最多 8 个。宿主在预留调用序号之前，会将 JSON 请求按 64 KiB 上限复制成不可变快照；已接受的请求再按调用序号串行执行。每个回包在交付原生端之前还要经过 64 KiB 上限校验。过大或队列已满而被拒绝的请求不会消耗下一序号。关闭会取消并回收子任务端口，随后等已接受的回调退出；子任务回收失败仍是关闭失败。
 
-`IsolatedWorkflowRequest` 和 `IsolatedWorkflowCallbackBridge` 是 Android App 侧的对应协议片段。构造中继时必须提供 `DurableWorkflowOwner`，且每次回调与回包发布前都复核运行仍处于 `ADMITTED`。Binder 中继还核对发送者 UID、运行 ID、nonce、严格字段集、序号、请求大小和回包身份；回调异常会取消运行，并把结果标为需要检查。隔离进程仍只拥有现有 `host.callAsync` JSON 通道，不会得到 App 文件路径、Node 对象或通用工具 API。
+`IsolatedWorkflowRequest` 和 `IsolatedWorkflowCallbackBridge` 是 Android App 侧的对应协议片段。构造中继时必须提供 `DurableWorkflowOwner`，且每次回调与回包发布前都复核运行仍处于 `ADMITTED`。Binder 中继还核对发送者 UID、运行 ID、nonce、严格字段集、序号、请求大小和回包身份；未经可信证明的回调异常会取消运行，并把结果标为需要检查。隔离进程仍只拥有现有 `host.callAsync` JSON 通道，不会得到 App 文件路径、Node 对象或通用工具 API。
+
+试图扩宽父 Agent 模型路由的子任务请求会在激活前被拒绝。可信后端记录一份私有、单次消费的证明，绑定运行 ID 和 App 预留的子任务 ID。只有原始错误对象可以产生 `{runId, callId, denied: {code: 'MODEL_ROUTE_DENIED', childId}}`；相同错误文字或复制错误码均不能。原生中继核对全部字段后停止客体并关闭同级子任务。发布 `FAILED` 回执仍要求客体 Binder 死亡、回调工作线程退出、Node 成功关闭，以及每份预留记录均持久化为已退役。回包畸形、传输失败、缺少关闭确认或退役失败仍为未确认；单独一次成功关闭不能清除这些故障。此区别的 Android 验证由 `NativeWorkflowAcceptanceInstrumentation` 和真实 Node 工作流套件负责。
 
 内部 `native.workflow.admit/bindCallbacks/execute/cancel/settle/release` 路由先预留脚本及工作流回执，才回复 App 生成的令牌；隔离脚本控制器完成执行后，只发布对应的持久终态。`AgentService` 通过 `native.workflowCallback` 与 `native.workflowCallback.cancel` 向 Node 发起反向请求。`NativeWorkflowPrivateOwner` 要求准备好的会话 ID 与在线父 Agent 的会话一致，在接纳后写入原版 `tool-workflow/run-start` 记录，并在确认进度回调前经 `SessionStore.flush` 落盘每个成员的开始和结束。只有子级回收、原生结算及释放均获确认，才写入并落盘 `tool-workflow/run-end`；存储未确认或收尾不确定时保留未结束的运行。Binder 中继在转发 `WORKFLOW_START_CHILD` 前持久预留子级 UUID 和 `LAUNCHING` 状态；Node 使用此 UUID 通过原版 `startActivation` 启动仅含模型能力的子级。`WORKFLOW_CHILD_RESULT` 返回有界内容；`WORKFLOW_DISPOSE_CHILD` 等原版 activation 完成回收后才将回执标为已退役。
 

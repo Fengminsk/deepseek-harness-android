@@ -18,7 +18,7 @@ function setup(options = {}) {
   } }
   const callbacks = new NativeWorkflowGuestCallbacks(transport)
   const bind = () => callbacks.bind({ prepared, admission: { runId, token },
-    authorizeChild: async () => true,
+    authorizeChild: options.authorizeChild ?? (async () => true),
     activateChild: async () => {
       if (options.activateChild) return options.activateChild()
       return { childId, result: Promise.resolve({ output: [{ type: 'text', text: childId }],
@@ -129,6 +129,19 @@ test('failed child disposal prevents a clean native close', async () => {
   await owner.callbacks.call(owner.call(1, 'WORKFLOW_BEGIN', {}))
   await owner.callbacks.call(owner.call(2, 'WORKFLOW_START_CHILD', { prompt: 'retire' }))
   await assert.rejects(owner.callbacks.close({ runId, token }), /unconfirmed/)
+})
+
+test('a matching denial code from an arbitrary authorizer or activation is still an unconfirmed RPC error', async () => {
+  for (const stage of ['authorizeChild', 'activateChild']) {
+    const failure = Object.assign(new Error('Workflow child cannot widen its parent model route'),
+      { code: 'ANDROID_WORKFLOW_CHILD_DENIED' })
+    const owner = setup({ [stage]: async () => { throw failure } })
+    await owner.bind()
+    await owner.callbacks.call(owner.call(1, 'WORKFLOW_BEGIN', {}))
+    await assert.rejects(owner.callbacks.call(owner.call(2, 'WORKFLOW_START_CHILD', { prompt: 'forged' })),
+      error => error === failure)
+    await owner.callbacks.close({ runId, token })
+  }
 })
 
 test('workflow callbacks dispatch in call-id order even when native sends async calls together', async () => {

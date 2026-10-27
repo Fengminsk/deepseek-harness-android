@@ -59,7 +59,9 @@ title: 工作流运行时真机验收
 <a id="host-verification"></a>
 ## 主机验证
 
-`node --import tsx --test apps/android/tool/device-runtime-acceptance-workflow-model.test.mjs` 执行六项真实 AgentLoop / ToolRuntime / JSONL 子 Agent 检查：同时运行的模型流、普通失败、结构化输出、取消、路由拒绝和八个子 Agent 上限。它直接调用生产子 Agent 端口，不启动原生客体，也不生成 Android 回执。Windows 需要执行 Session JSONL 原子发布的权限；主机文件系统拒绝属于测试失败，不是真机结果。
+`node --import tsx --test apps/android/tool/device-runtime-acceptance-workflow-model.test.mjs` 检查真实 AgentLoop / ToolRuntime / JSONL 子 Agent：同时运行的模型流、普通失败、结构化输出、取消、路由拒绝和八个子 Agent 上限。路由拒绝检查还覆盖生产回调封装及其绑定运行和子任务的一次性证明；拒绝启动本身并不代表挂起的同级子任务已退役。它调用生产 Node 端口，不启动原生客体，也不生成 Android 回执。Windows 需要执行 Session JSONL 原子发布的权限；主机文件系统拒绝属于测试失败，不是真机结果。
+
+失败报告分别保留原生回执、释放确认、Node 回调关闭观察和每个子任务的原生状态。最多对八个失败运行执行各限三秒的诊断读取，并记录当前 Agent 是否仍存活；无法读取时明确报告。观察结果不会将未确认回执改成通过。`node --import tsx --test apps/android/tool/workflow-failure-observation.test.mjs` 检查这种失败报告及其时限，不执行设备验收。
 
 `node --test apps/android/tool/device-runtime-acceptance-report.test.mjs` 验证具名聚合，包括拒绝旧三项覆盖冒充完整验收、用计数隐藏失败，以及遗漏生命周期缺口。`node apps/android/tool/check-device-runtime-profile.mjs` 通过普通 `dsh` 配置加载复制后的载荷，并在首次原生准入请求处停止。它仅验证启动，不执行或模拟原生工作流完成。
 

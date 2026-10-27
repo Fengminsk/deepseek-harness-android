@@ -1958,7 +1958,15 @@
         "apps/android/runtime/model-workflow-admission.mjs",
         "apps/android/runtime/native-workflow-private-owner.mjs",
         "apps/android/tool/tool-native-workflow.test.mjs",
-        "apps/android/tool/device-runtime-acceptance/workflow.mjs"
+        "apps/android/tool/device-runtime-acceptance/workflow.mjs",
+        "apps/android/runtime/workflow-subagent-backend.mjs",
+        "apps/android/runtime/native-workflow-guest-callbacks.mjs",
+        "apps/android/android/app/src/main/kotlin/com/minnnng/dsh_android/IsolatedWorkflowRequest.kt",
+        "apps/android/android/app/src/main/kotlin/com/minnnng/dsh_android/IsolatedWorkflowCallbackBridge.kt",
+        "apps/android/android/app/src/androidTest/kotlin/com/minnnng/dsh_android/NativeWorkflowAcceptanceInstrumentation.kt",
+        "apps/android/tool/native-workflow-guest-callbacks.md",
+        "apps/android/tool/device-runtime-acceptance-workflow-model.test.mjs",
+        "apps/android/tool/workflow-failure-observation.test.mjs"
       ],
       "evidence": {
         "core": "unverified",
@@ -1966,7 +1974,7 @@
         "behavior": "unverified",
         "device": "unverified"
       },
-      "note": "Original host workflow plugins remain disabled and are omitted from the Android preset. A distinct native V8 workflow entry reuses the original workflow tool definition, single-use admission, live parent ToolRuntime identity and original jobs registry behind MODEL_WORKFLOW_DEVICE_ACCEPTED=false. Newly activated children inherit only the live parent's reviewed first-party read/glob/grep/write/edit/web_search/web_fetch/linux_exec/linux_import/linux_export/linux_inspect registrations. App files stay inside activation-pinned scope and current parent/child permission roots; original observation and web-provider checks remain. Linux requires existing parent registration and remains absent under the closed production Linux gate. Its disk belongs to the child Session, with no guest network or App-UID Shell; persistence intersects activation permission and current parent/child policies, while transfers require all three to permit writing. One App-wide Linux execution slot requires serial Linux steps; busy means no native dispatch, not automatic replay. Limits remain 8 total and 2 concurrent children over 120 seconds with the parent model route. No PTC, recursive delegation or cross-Session SAF/attachment grants are delegated; cold resume alone restores no file/web/Linux grants. Host child, ToolRuntime, receipt and durable Session tests do not establish production availability or device lifecycle acceptance.",
+      "note": "Original host workflow plugins remain disabled and are omitted from the Android preset. A distinct native V8 workflow entry reuses the original workflow tool definition, single-use admission, live parent ToolRuntime identity and original jobs registry behind MODEL_WORKFLOW_DEVICE_ACCEPTED=false. Newly activated children inherit only the live parent's reviewed first-party read/glob/grep/write/edit/web_search/web_fetch/linux_exec/linux_import/linux_export/linux_inspect registrations. App files stay inside activation-pinned scope and current parent/child permission roots; original observation and web-provider checks remain. Linux requires existing parent registration and remains absent under the closed production Linux gate. Its disk belongs to the child Session, with no guest network or App-UID Shell; persistence intersects activation permission and current parent/child policies, while transfers require all three to permit writing. One App-wide Linux execution slot requires serial Linux steps; busy means no native dispatch, not automatic replay. Limits remain 8 total and 2 concurrent children over 120 seconds with the parent model route. No PTC, recursive delegation or cross-Session SAF/attachment grants are delegated; cold resume alone restores no file/web/Linux grants. Host child, ToolRuntime, receipt and durable Session tests do not establish production availability or device lifecycle acceptance. A trusted pre-activation model-route denial has a single-use attestation bound to the exact run and App-reserved child; copied error codes cannot create it. The native rejection path still requires guest Binder death, callback-worker exit, Node close and durable retirement of all reservations. Malformed replies, transport errors and failed cleanup remain unconfirmed even if another close succeeds. Host tests cover the real held child and denial callback; native regression execution and the full device workflow suite remain required. Bounded failure diagnostics retain receipt, release, child liveness and callback-close observations separately without promoting unknown outcomes.",
       "capability": "programmatic"
     },
     {
@@ -1983,7 +1991,15 @@
         "apps/android/runtime/model-workflow-admission.mjs",
         "apps/android/runtime/native-workflow-private-owner.mjs",
         "apps/android/tool/tool-native-workflow.test.mjs",
-        "apps/android/tool/device-runtime-acceptance/workflow.mjs"
+        "apps/android/tool/device-runtime-acceptance/workflow.mjs",
+        "apps/android/runtime/workflow-subagent-backend.mjs",
+        "apps/android/runtime/native-workflow-guest-callbacks.mjs",
+        "apps/android/android/app/src/main/kotlin/com/minnnng/dsh_android/IsolatedWorkflowRequest.kt",
+        "apps/android/android/app/src/main/kotlin/com/minnnng/dsh_android/IsolatedWorkflowCallbackBridge.kt",
+        "apps/android/android/app/src/androidTest/kotlin/com/minnnng/dsh_android/NativeWorkflowAcceptanceInstrumentation.kt",
+        "apps/android/tool/native-workflow-guest-callbacks.md",
+        "apps/android/tool/device-runtime-acceptance-workflow-model.test.mjs",
+        "apps/android/tool/workflow-failure-observation.test.mjs"
       ],
       "evidence": {
         "core": "unverified",
@@ -1991,7 +2007,7 @@
         "behavior": "unverified",
         "device": "unverified"
       },
-      "note": "Original host workflow plugins remain disabled and are omitted from the Android preset. A distinct native V8 workflow entry reuses the original workflow tool definition, single-use admission, live parent ToolRuntime identity and original jobs registry behind MODEL_WORKFLOW_DEVICE_ACCEPTED=false. Newly activated children inherit only the live parent's reviewed first-party read/glob/grep/write/edit/web_search/web_fetch/linux_exec/linux_import/linux_export/linux_inspect registrations. App files stay inside activation-pinned scope and current parent/child permission roots; original observation and web-provider checks remain. Linux requires existing parent registration and remains absent under the closed production Linux gate. Its disk belongs to the child Session, with no guest network or App-UID Shell; persistence intersects activation permission and current parent/child policies, while transfers require all three to permit writing. One App-wide Linux execution slot requires serial Linux steps; busy means no native dispatch, not automatic replay. Limits remain 8 total and 2 concurrent children over 120 seconds with the parent model route. No PTC, recursive delegation or cross-Session SAF/attachment grants are delegated; cold resume alone restores no file/web/Linux grants. Host child, ToolRuntime, receipt and durable Session tests do not establish production availability or device lifecycle acceptance.",
+      "note": "Original host workflow plugins remain disabled and are omitted from the Android preset. A distinct native V8 workflow entry reuses the original workflow tool definition, single-use admission, live parent ToolRuntime identity and original jobs registry behind MODEL_WORKFLOW_DEVICE_ACCEPTED=false. Newly activated children inherit only the live parent's reviewed first-party read/glob/grep/write/edit/web_search/web_fetch/linux_exec/linux_import/linux_export/linux_inspect registrations. App files stay inside activation-pinned scope and current parent/child permission roots; original observation and web-provider checks remain. Linux requires existing parent registration and remains absent under the closed production Linux gate. Its disk belongs to the child Session, with no guest network or App-UID Shell; persistence intersects activation permission and current parent/child policies, while transfers require all three to permit writing. One App-wide Linux execution slot requires serial Linux steps; busy means no native dispatch, not automatic replay. Limits remain 8 total and 2 concurrent children over 120 seconds with the parent model route. No PTC, recursive delegation or cross-Session SAF/attachment grants are delegated; cold resume alone restores no file/web/Linux grants. Host child, ToolRuntime, receipt and durable Session tests do not establish production availability or device lifecycle acceptance. A trusted pre-activation model-route denial has a single-use attestation bound to the exact run and App-reserved child; copied error codes cannot create it. The native rejection path still requires guest Binder death, callback-worker exit, Node close and durable retirement of all reservations. Malformed replies, transport errors and failed cleanup remain unconfirmed even if another close succeeds. Host tests cover the real held child and denial callback; native regression execution and the full device workflow suite remain required. Bounded failure diagnostics retain receipt, release, child liveness and callback-close observations separately without promoting unknown outcomes.",
       "capability": "programmatic"
     },
     {
@@ -2410,7 +2426,14 @@
         "apps/android/runtime/workflow-subagent-backend.mjs",
         "apps/android/tool/workflow-child-tools.test.mjs",
         "apps/android/tool/tool-native-workflow.test.mjs",
-        "apps/android/tool/device-runtime-acceptance/workflow.mjs"
+        "apps/android/tool/device-runtime-acceptance/workflow.mjs",
+        "apps/android/runtime/native-workflow-guest-callbacks.mjs",
+        "apps/android/android/app/src/main/kotlin/com/minnnng/dsh_android/IsolatedWorkflowRequest.kt",
+        "apps/android/android/app/src/main/kotlin/com/minnnng/dsh_android/IsolatedWorkflowCallbackBridge.kt",
+        "apps/android/android/app/src/androidTest/kotlin/com/minnnng/dsh_android/NativeWorkflowAcceptanceInstrumentation.kt",
+        "apps/android/tool/native-workflow-guest-callbacks.md",
+        "apps/android/tool/device-runtime-acceptance-workflow-model.test.mjs",
+        "apps/android/tool/workflow-failure-observation.test.mjs"
       ],
       "evidence": {
         "core": "unverified",
@@ -2418,7 +2441,7 @@
         "behavior": "unverified",
         "device": "unverified"
       },
-      "note": "Original host workflow plugins remain disabled and are omitted from the Android preset. A distinct native V8 workflow entry reuses the original workflow tool definition, single-use admission, live parent ToolRuntime identity and original jobs registry behind MODEL_WORKFLOW_DEVICE_ACCEPTED=false. Newly activated children inherit only the live parent's reviewed first-party read/glob/grep/write/edit/web_search/web_fetch/linux_exec/linux_import/linux_export/linux_inspect registrations. App files stay inside activation-pinned scope and current parent/child permission roots; original observation and web-provider checks remain. Linux requires existing parent registration and remains absent under the closed production Linux gate. Its disk belongs to the child Session, with no guest network or App-UID Shell; persistence intersects activation permission and current parent/child policies, while transfers require all three to permit writing. One App-wide Linux execution slot requires serial Linux steps; busy means no native dispatch, not automatic replay. Limits remain 8 total and 2 concurrent children over 120 seconds with the parent model route. No PTC, recursive delegation or cross-Session SAF/attachment grants are delegated; cold resume alone restores no file/web/Linux grants. Host child, ToolRuntime, receipt and durable Session tests do not establish production availability or device lifecycle acceptance.",
+      "note": "Original host workflow plugins remain disabled and are omitted from the Android preset. A distinct native V8 workflow entry reuses the original workflow tool definition, single-use admission, live parent ToolRuntime identity and original jobs registry behind MODEL_WORKFLOW_DEVICE_ACCEPTED=false. Newly activated children inherit only the live parent's reviewed first-party read/glob/grep/write/edit/web_search/web_fetch/linux_exec/linux_import/linux_export/linux_inspect registrations. App files stay inside activation-pinned scope and current parent/child permission roots; original observation and web-provider checks remain. Linux requires existing parent registration and remains absent under the closed production Linux gate. Its disk belongs to the child Session, with no guest network or App-UID Shell; persistence intersects activation permission and current parent/child policies, while transfers require all three to permit writing. One App-wide Linux execution slot requires serial Linux steps; busy means no native dispatch, not automatic replay. Limits remain 8 total and 2 concurrent children over 120 seconds with the parent model route. No PTC, recursive delegation or cross-Session SAF/attachment grants are delegated; cold resume alone restores no file/web/Linux grants. Host child, ToolRuntime, receipt and durable Session tests do not establish production availability or device lifecycle acceptance. A trusted pre-activation model-route denial has a single-use attestation bound to the exact run and App-reserved child; copied error codes cannot create it. The native rejection path still requires guest Binder death, callback-worker exit, Node close and durable retirement of all reservations. Malformed replies, transport errors and failed cleanup remain unconfirmed even if another close succeeds. Host tests cover the real held child and denial callback; native regression execution and the full device workflow suite remain required. Bounded failure diagnostics retain receipt, release, child liveness and callback-close observations separately without promoting unknown outcomes.",
       "capability": "programmatic"
     },
     {
@@ -2440,7 +2463,15 @@
         "apps/android/tool/model-workflow-admission.test.mjs",
         "apps/android/runtime/tool-native-workflow.mjs",
         "apps/android/tool/tool-native-workflow.test.mjs",
-        "apps/android/tool/device-runtime-acceptance/workflow.mjs"
+        "apps/android/tool/device-runtime-acceptance/workflow.mjs",
+        "apps/android/runtime/workflow-subagent-backend.mjs",
+        "apps/android/runtime/native-workflow-guest-callbacks.mjs",
+        "apps/android/android/app/src/main/kotlin/com/minnnng/dsh_android/IsolatedWorkflowRequest.kt",
+        "apps/android/android/app/src/main/kotlin/com/minnnng/dsh_android/IsolatedWorkflowCallbackBridge.kt",
+        "apps/android/android/app/src/androidTest/kotlin/com/minnnng/dsh_android/NativeWorkflowAcceptanceInstrumentation.kt",
+        "apps/android/tool/native-workflow-guest-callbacks.md",
+        "apps/android/tool/device-runtime-acceptance-workflow-model.test.mjs",
+        "apps/android/tool/workflow-failure-observation.test.mjs"
       ],
       "evidence": {
         "core": "unverified",
@@ -2448,7 +2479,7 @@
         "behavior": "unverified",
         "device": "unverified"
       },
-      "note": "Original host workflow plugins remain disabled and are omitted from the Android preset. A distinct native V8 workflow entry reuses the original workflow tool definition, single-use admission, live parent ToolRuntime identity and original jobs registry behind MODEL_WORKFLOW_DEVICE_ACCEPTED=false. Newly activated children inherit only the live parent's reviewed first-party read/glob/grep/write/edit/web_search/web_fetch/linux_exec/linux_import/linux_export/linux_inspect registrations. App files stay inside activation-pinned scope and current parent/child permission roots; original observation and web-provider checks remain. Linux requires existing parent registration and remains absent under the closed production Linux gate. Its disk belongs to the child Session, with no guest network or App-UID Shell; persistence intersects activation permission and current parent/child policies, while transfers require all three to permit writing. One App-wide Linux execution slot requires serial Linux steps; busy means no native dispatch, not automatic replay. Limits remain 8 total and 2 concurrent children over 120 seconds with the parent model route. No PTC, recursive delegation or cross-Session SAF/attachment grants are delegated; cold resume alone restores no file/web/Linux grants. Host child, ToolRuntime, receipt and durable Session tests do not establish production availability or device lifecycle acceptance.",
+      "note": "Original host workflow plugins remain disabled and are omitted from the Android preset. A distinct native V8 workflow entry reuses the original workflow tool definition, single-use admission, live parent ToolRuntime identity and original jobs registry behind MODEL_WORKFLOW_DEVICE_ACCEPTED=false. Newly activated children inherit only the live parent's reviewed first-party read/glob/grep/write/edit/web_search/web_fetch/linux_exec/linux_import/linux_export/linux_inspect registrations. App files stay inside activation-pinned scope and current parent/child permission roots; original observation and web-provider checks remain. Linux requires existing parent registration and remains absent under the closed production Linux gate. Its disk belongs to the child Session, with no guest network or App-UID Shell; persistence intersects activation permission and current parent/child policies, while transfers require all three to permit writing. One App-wide Linux execution slot requires serial Linux steps; busy means no native dispatch, not automatic replay. Limits remain 8 total and 2 concurrent children over 120 seconds with the parent model route. No PTC, recursive delegation or cross-Session SAF/attachment grants are delegated; cold resume alone restores no file/web/Linux grants. Host child, ToolRuntime, receipt and durable Session tests do not establish production availability or device lifecycle acceptance. A trusted pre-activation model-route denial has a single-use attestation bound to the exact run and App-reserved child; copied error codes cannot create it. The native rejection path still requires guest Binder death, callback-worker exit, Node close and durable retirement of all reservations. Malformed replies, transport errors and failed cleanup remain unconfirmed even if another close succeeds. Host tests cover the real held child and denial callback; native regression execution and the full device workflow suite remain required. Bounded failure diagnostics retain receipt, release, child liveness and callback-close observations separately without promoting unknown outcomes.",
       "capability": "programmatic"
     },
     {
@@ -6015,7 +6046,15 @@
         "apps/android/lib/chat_workflow_runs.dart",
         "apps/android/runtime/tool-native-workflow.mjs",
         "apps/android/tool/tool-native-workflow.test.mjs",
-        "apps/android/tool/device-runtime-acceptance/workflow.mjs"
+        "apps/android/tool/device-runtime-acceptance/workflow.mjs",
+        "apps/android/runtime/workflow-subagent-backend.mjs",
+        "apps/android/runtime/native-workflow-guest-callbacks.mjs",
+        "apps/android/android/app/src/main/kotlin/com/minnnng/dsh_android/IsolatedWorkflowRequest.kt",
+        "apps/android/android/app/src/main/kotlin/com/minnnng/dsh_android/IsolatedWorkflowCallbackBridge.kt",
+        "apps/android/android/app/src/androidTest/kotlin/com/minnnng/dsh_android/NativeWorkflowAcceptanceInstrumentation.kt",
+        "apps/android/tool/native-workflow-guest-callbacks.md",
+        "apps/android/tool/device-runtime-acceptance-workflow-model.test.mjs",
+        "apps/android/tool/workflow-failure-observation.test.mjs"
       ],
       "evidence": {
         "core": "unverified",
@@ -6023,7 +6062,7 @@
         "behavior": "unverified",
         "device": "unverified"
       },
-      "note": "Original host workflow plugins remain disabled and are omitted from the Android preset. A distinct native V8 workflow entry reuses the original workflow tool definition, single-use admission, live parent ToolRuntime identity and original jobs registry behind MODEL_WORKFLOW_DEVICE_ACCEPTED=false. Newly activated children inherit only the live parent's reviewed first-party read/glob/grep/write/edit/web_search/web_fetch/linux_exec/linux_import/linux_export/linux_inspect registrations. App files stay inside activation-pinned scope and current parent/child permission roots; original observation and web-provider checks remain. Linux requires existing parent registration and remains absent under the closed production Linux gate. Its disk belongs to the child Session, with no guest network or App-UID Shell; persistence intersects activation permission and current parent/child policies, while transfers require all three to permit writing. One App-wide Linux execution slot requires serial Linux steps; busy means no native dispatch, not automatic replay. Limits remain 8 total and 2 concurrent children over 120 seconds with the parent model route. No PTC, recursive delegation or cross-Session SAF/attachment grants are delegated; cold resume alone restores no file/web/Linux grants. Host child, ToolRuntime, receipt and durable Session tests do not establish production availability or device lifecycle acceptance.",
+      "note": "Original host workflow plugins remain disabled and are omitted from the Android preset. A distinct native V8 workflow entry reuses the original workflow tool definition, single-use admission, live parent ToolRuntime identity and original jobs registry behind MODEL_WORKFLOW_DEVICE_ACCEPTED=false. Newly activated children inherit only the live parent's reviewed first-party read/glob/grep/write/edit/web_search/web_fetch/linux_exec/linux_import/linux_export/linux_inspect registrations. App files stay inside activation-pinned scope and current parent/child permission roots; original observation and web-provider checks remain. Linux requires existing parent registration and remains absent under the closed production Linux gate. Its disk belongs to the child Session, with no guest network or App-UID Shell; persistence intersects activation permission and current parent/child policies, while transfers require all three to permit writing. One App-wide Linux execution slot requires serial Linux steps; busy means no native dispatch, not automatic replay. Limits remain 8 total and 2 concurrent children over 120 seconds with the parent model route. No PTC, recursive delegation or cross-Session SAF/attachment grants are delegated; cold resume alone restores no file/web/Linux grants. Host child, ToolRuntime, receipt and durable Session tests do not establish production availability or device lifecycle acceptance. A trusted pre-activation model-route denial has a single-use attestation bound to the exact run and App-reserved child; copied error codes cannot create it. The native rejection path still requires guest Binder death, callback-worker exit, Node close and durable retirement of all reservations. Malformed replies, transport errors and failed cleanup remain unconfirmed even if another close succeeds. Host tests cover the real held child and denial callback; native regression execution and the full device workflow suite remain required. Bounded failure diagnostics retain receipt, release, child liveness and callback-close observations separately without promoting unknown outcomes.",
       "capability": "programmatic",
       "assessment": {
         "composition": "disabled",
@@ -6054,7 +6093,15 @@
         "apps/android/lib/chat_workflow_runs.dart",
         "apps/android/runtime/tool-native-workflow.mjs",
         "apps/android/tool/tool-native-workflow.test.mjs",
-        "apps/android/tool/device-runtime-acceptance/workflow.mjs"
+        "apps/android/tool/device-runtime-acceptance/workflow.mjs",
+        "apps/android/runtime/workflow-subagent-backend.mjs",
+        "apps/android/runtime/native-workflow-guest-callbacks.mjs",
+        "apps/android/android/app/src/main/kotlin/com/minnnng/dsh_android/IsolatedWorkflowRequest.kt",
+        "apps/android/android/app/src/main/kotlin/com/minnnng/dsh_android/IsolatedWorkflowCallbackBridge.kt",
+        "apps/android/android/app/src/androidTest/kotlin/com/minnnng/dsh_android/NativeWorkflowAcceptanceInstrumentation.kt",
+        "apps/android/tool/native-workflow-guest-callbacks.md",
+        "apps/android/tool/device-runtime-acceptance-workflow-model.test.mjs",
+        "apps/android/tool/workflow-failure-observation.test.mjs"
       ],
       "evidence": {
         "core": "unverified",
@@ -6062,7 +6109,7 @@
         "behavior": "unverified",
         "device": "unverified"
       },
-      "note": "Original host workflow plugins remain disabled and are omitted from the Android preset. A distinct native V8 workflow entry reuses the original workflow tool definition, single-use admission, live parent ToolRuntime identity and original jobs registry behind MODEL_WORKFLOW_DEVICE_ACCEPTED=false. Newly activated children inherit only the live parent's reviewed first-party read/glob/grep/write/edit/web_search/web_fetch/linux_exec/linux_import/linux_export/linux_inspect registrations. App files stay inside activation-pinned scope and current parent/child permission roots; original observation and web-provider checks remain. Linux requires existing parent registration and remains absent under the closed production Linux gate. Its disk belongs to the child Session, with no guest network or App-UID Shell; persistence intersects activation permission and current parent/child policies, while transfers require all three to permit writing. One App-wide Linux execution slot requires serial Linux steps; busy means no native dispatch, not automatic replay. Limits remain 8 total and 2 concurrent children over 120 seconds with the parent model route. No PTC, recursive delegation or cross-Session SAF/attachment grants are delegated; cold resume alone restores no file/web/Linux grants. Host child, ToolRuntime, receipt and durable Session tests do not establish production availability or device lifecycle acceptance.",
+      "note": "Original host workflow plugins remain disabled and are omitted from the Android preset. A distinct native V8 workflow entry reuses the original workflow tool definition, single-use admission, live parent ToolRuntime identity and original jobs registry behind MODEL_WORKFLOW_DEVICE_ACCEPTED=false. Newly activated children inherit only the live parent's reviewed first-party read/glob/grep/write/edit/web_search/web_fetch/linux_exec/linux_import/linux_export/linux_inspect registrations. App files stay inside activation-pinned scope and current parent/child permission roots; original observation and web-provider checks remain. Linux requires existing parent registration and remains absent under the closed production Linux gate. Its disk belongs to the child Session, with no guest network or App-UID Shell; persistence intersects activation permission and current parent/child policies, while transfers require all three to permit writing. One App-wide Linux execution slot requires serial Linux steps; busy means no native dispatch, not automatic replay. Limits remain 8 total and 2 concurrent children over 120 seconds with the parent model route. No PTC, recursive delegation or cross-Session SAF/attachment grants are delegated; cold resume alone restores no file/web/Linux grants. Host child, ToolRuntime, receipt and durable Session tests do not establish production availability or device lifecycle acceptance. A trusted pre-activation model-route denial has a single-use attestation bound to the exact run and App-reserved child; copied error codes cannot create it. The native rejection path still requires guest Binder death, callback-worker exit, Node close and durable retirement of all reservations. Malformed replies, transport errors and failed cleanup remain unconfirmed even if another close succeeds. Host tests cover the real held child and denial callback; native regression execution and the full device workflow suite remain required. Bounded failure diagnostics retain receipt, release, child liveness and callback-close observations separately without promoting unknown outcomes.",
       "capability": "programmatic",
       "assessment": {
         "composition": "disabled",
@@ -8447,9 +8494,17 @@
         "apps/android/tool/model-ptc-mutations.test.mjs",
         "apps/android/tool/isolated-tool-mutations.test.mjs",
         "apps/android/runtime/model-ptc-linux-review.mjs",
-        "apps/android/tool/model-ptc-linux.test.mjs"
+        "apps/android/tool/model-ptc-linux.test.mjs",
+        "apps/android/runtime/workflow-subagent-backend.mjs",
+        "apps/android/runtime/native-workflow-guest-callbacks.mjs",
+        "apps/android/android/app/src/main/kotlin/com/minnnng/dsh_android/IsolatedWorkflowRequest.kt",
+        "apps/android/android/app/src/main/kotlin/com/minnnng/dsh_android/IsolatedWorkflowCallbackBridge.kt",
+        "apps/android/android/app/src/androidTest/kotlin/com/minnnng/dsh_android/NativeWorkflowAcceptanceInstrumentation.kt",
+        "apps/android/tool/native-workflow-guest-callbacks.md",
+        "apps/android/tool/device-runtime-acceptance-workflow-model.test.mjs",
+        "apps/android/tool/workflow-failure-observation.test.mjs"
       ],
-      "remaining": "Reviewed android_ptc and workflows with reviewed child file/web/Linux tools are implemented behind closed source gates. Workflow children receive only current parent first-party read/glob/grep/write/edit/web_search/web_fetch/linux_exec/linux_import/linux_export/linux_inspect registrations, with live identity, parent/child policy and activation-workspace checks. Linux tools require existing parent registration and use a child-Session-private offline disk; persistence intersects activation and current policies, transfers require writable activation and current parent/child permissions, and one App-wide slot requires serial Linux steps. Cold resume restores no grant. Accept the production Node-to-native ToolRuntime path, bounded results, real file/web/Linux callbacks, cancellation and retirement, background child ownership and cold/process-death recovery before opening them. General Node APIs, PTC images, child App-UID Shell/recursive delegation and arbitrary child tool definitions remain outside the reviewed subset; do not describe it as full upstream PTC parity. Reviewed PTC can call the parent's original four Linux tools with live policy and durable receipts; the actual device import/execute/export chain remains unaccepted."
+      "remaining": "Reviewed android_ptc and workflows with reviewed child file/web/Linux tools are implemented behind closed source gates. Workflow children receive only current parent first-party read/glob/grep/write/edit/web_search/web_fetch/linux_exec/linux_import/linux_export/linux_inspect registrations, with live identity, parent/child policy and activation-workspace checks. Linux tools require existing parent registration and use a child-Session-private offline disk; persistence intersects activation and current policies, transfers require writable activation and current parent/child permissions, and one App-wide slot requires serial Linux steps. Cold resume restores no grant. Accept the production Node-to-native ToolRuntime path, bounded results, real file/web/Linux callbacks, cancellation and retirement, background child ownership and cold/process-death recovery before opening them. General Node APIs, PTC images, child App-UID Shell/recursive delegation and arbitrary child tool definitions remain outside the reviewed subset; do not describe it as full upstream PTC parity. Reviewed PTC can call the parent's original four Linux tools with live policy and durable receipts; the actual device import/execute/export chain remains unaccepted. Pre-activation route-denial attestation and held-sibling cleanup have host coverage; the native ordinary-failure versus unconfirmed-retirement distinction and complete workflow lifecycle still need device acceptance. A Node close acknowledgement alone cannot clear transport, protocol or durable-retirement uncertainty."
     },
     {
       "id": "linux",

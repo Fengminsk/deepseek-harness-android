@@ -12,9 +12,24 @@ const STRUCTURED_PRESET_ID = 'android-workflow-structured-child'
 const SANDBOX_MODULE = new URL('./workflow-child-sandbox.mjs', import.meta.url).href
 const STRUCTURED_SANDBOX_MODULE = new URL('./workflow-child-structured-sandbox.mjs', import.meta.url).href
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+const modelRouteDenials = new WeakMap()
 
 function denied(message) {
   return Object.assign(new Error(message), { code: 'ANDROID_WORKFLOW_CHILD_DENIED' })
+}
+
+/**
+ * Consume one exact backend denial issued before child activation; codes or copies are not proof.
+ * @param {unknown} error - Original error from this backend's route authorization.
+ * @param {string} runId - Admitted workflow owning the callback.
+ * @param {string} childId - App reservation for the rejected child start.
+ * @returns {boolean} Whether the matching single-use attestation was consumed.
+ */
+export function consumeWorkflowModelRouteDenial(error, runId, childId) {
+  const denial = modelRouteDenials.get(error)
+  if (!denial || denial.runId !== runId || denial.childId !== childId) return false
+  modelRouteDenials.delete(error)
+  return true
 }
 
 function requireServices(ctx) {
@@ -121,7 +136,9 @@ export function createWorkflowSubagentBackend({ ctx, parent, runId, authorize })
       }
       if (request.provider !== undefined && request.provider !== route.provider
         || request.model !== undefined && request.model !== route.model) {
-        throw denied('Workflow child cannot widen its parent model route')
+        const error = denied('Workflow child cannot widen its parent model route')
+        modelRouteDenials.set(error, { runId, childId: reservedChildId })
+        throw error
       }
       approved.set(request, { childId: grant.childId, route })
       return true

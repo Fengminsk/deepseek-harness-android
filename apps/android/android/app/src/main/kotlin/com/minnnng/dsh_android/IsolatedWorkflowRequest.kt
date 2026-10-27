@@ -31,5 +31,18 @@ internal data class IsolatedWorkflowRequest(val callId: Int, val action: String,
                     IsolatedScriptWire.utf8Bytes(it) <= PtcScriptEngine.MAX_HOST_REPLY_BYTES)
             }
         }
+
+        /** Only the bound Node backend can attest a route denial before activation. */
+        fun isPreActivationRouteDenial(frame: JSONObject, runId: String, callId: Int,
+                                      reservedChildId: String?): Boolean {
+            if (!frame.has("denied")) return false
+            require(reservedChildId != null)
+            require(frame.keys().asSequence().toSet() == setOf("runId", "callId", "denied"))
+            require(frame.get("runId") == runId && frame.get("callId") == callId)
+            val denied = frame.getJSONObject("denied")
+            require(denied.keys().asSequence().toSet() == setOf("code", "childId"))
+            require(denied.get("code") == "MODEL_ROUTE_DENIED" && denied.get("childId") == reservedChildId)
+            return true
+        }
     }
 }

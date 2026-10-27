@@ -61,6 +61,8 @@
 -keep class com.minnnng.dsh_android.IsolatedWorkerWriteback$* { *; }
 -keep class com.minnnng.dsh_android.IsolatedWorkflowCallbackBridge { *; }
 -keep class com.minnnng.dsh_android.IsolatedWorkflowCallbackBridge$* { *; }
+-keep class com.minnnng.dsh_android.IsolatedWorkflowRequest { *; }
+-keep class com.minnnng.dsh_android.IsolatedWorkflowRequest$* { *; }
 -keep class com.minnnng.dsh_android.IsolatedWorkflowRunNativeBridge { *; }
 -keep class com.minnnng.dsh_android.IsolatedWorkflowRunNativeBridge$* { *; }
 -keep class com.minnnng.dsh_android.LinuxCommandManager { *; }

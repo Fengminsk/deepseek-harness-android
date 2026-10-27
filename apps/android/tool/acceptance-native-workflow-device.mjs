@@ -15,6 +15,7 @@ const REQUIRED = [
   'isolated-guest-reported-error-is-durable-failure',
   'isolated-malformed-dsl-outcome-needs-review',
   'isolated-child-reservation-result-and-retirement',
+  'isolated-route-denial-requires-confirmed-retirement',
   'admitted-workflow-pre-execution-cancel',
   'bounded-extended-workflow-and-upper-limit',
   'in-flight-child-cancel-retirement-and-cold-owner',

@@ -19,8 +19,10 @@ import WorkingDirectory from '@deepseek-ai/dsh-working-directory'
 import Subprocess from '@deepseek-ai/dsh-subprocess-local'
 import { TestSessionQuery } from '../../../packages/subagent/subagent/tests/test-session-query.ts'
 import AndroidFileSystem from '../runtime/android-filesystem.mjs'
-import { createWorkflowSubagentBackend, installWorkflowSubagentPreset } from '../runtime/workflow-subagent-backend.mjs'
+import { createWorkflowSubagentBackend, installWorkflowSubagentPreset,
+  consumeWorkflowModelRouteDenial } from '../runtime/workflow-subagent-backend.mjs'
 import { WorkflowGuestHostPort } from '../runtime/workflow-guest-host-port.mjs'
+import { NativeWorkflowGuestCallbacks } from '../runtime/native-workflow-guest-callbacks.mjs'
 import { FixtureAdapter, workflowModelScenario } from './device-runtime-acceptance/workflow-model-fixture.mjs'
 
 // This host test exercises real AgentLoop/ToolRuntime/Session child behavior.
@@ -65,9 +67,10 @@ async function fixture(t, options = {}) {
   const runId = randomUUID()
   backend = createWorkflowSubagentBackend({ ctx, parent, runId,
     authorize: async (_request, _signal, _parent, _runId, childId) => ({ runId, parentId: parent.id, childId }) })
-  port = new WorkflowGuestHostPort({ prepared: { kind: 'workflow', runId, program: 'return 1', args: {},
+  const prepared = { kind: 'workflow', runId, program: 'return 1', args: {},
     deadlineMillis: 10000, meta: { name: 'host-fixture-model', description: 'Validate scripted model behavior' },
-    maxTotalAgents: 8, maxConcurrentAgents: 2 },
+    maxTotalAgents: 8, maxConcurrentAgents: 2 }
+  port = new WorkflowGuestHostPort({ prepared,
   authorizeChild: backend.authorizeChild, activateChild: backend.activateChild, onProgress: async () => {} })
   port.begin({})
   const children = new Map()
@@ -89,7 +92,7 @@ async function fixture(t, options = {}) {
     }
     assert.equal(scenario.active, 0)
   }
-  return { ctx, adapter, scenario, child, children, durableChildren, port }
+  return { ctx, adapter, scenario, child, children, durableChildren, port, backend, prepared }
 }
 
 test('fixture barrier observes two actual simultaneous model streams and preserves four retired Sessions', { timeout: 20000 }, async t => {
@@ -151,6 +154,47 @@ test('real child authorization rejects a model-route widening before another mod
   await rejected
   assert.deepEqual(f.scenario.prompts, ['hold-host'])
   await f.durableChildren(1)
+})
+
+test('an attested route rejection crosses the real callback port while its held sibling still needs close', { timeout: 20000 }, async t => {
+  const f = await fixture(t)
+  const { runId } = f.prepared
+  const token = 'host-owned-test-token'
+  const callbacks = new NativeWorkflowGuestCallbacks({ request: async () => true })
+  const bound = await callbacks.bind({ prepared: f.prepared, admission: { runId, token },
+    authorizeChild: f.backend.authorizeChild, activateChild: f.backend.activateChild, onProgress: async () => {} })
+  const frame = (callId, action, value, childId) => ({ runId, token, callId, action, value,
+    ...(childId === undefined ? {} : { childId }) })
+  try {
+    await callbacks.call(frame(1, 'WORKFLOW_BEGIN', {}))
+    const heldId = randomUUID(), deniedId = randomUUID()
+    await callbacks.call(frame(2, 'WORKFLOW_START_CHILD', { prompt: 'workflow-fixture:hold-denial' }, heldId))
+    await f.scenario.entered
+    const denied = await callbacks.call(frame(3, 'WORKFLOW_START_CHILD',
+      { prompt: 'workflow-fixture:denied', provider: 'not-the-parent-provider' }, deniedId))
+    assert.deepEqual(denied, { runId, callId: 3, denied: { code: 'MODEL_ROUTE_DENIED', childId: deniedId } })
+    assert.equal(f.ctx.agents.get(deniedId), undefined)
+    assert.equal(f.scenario.active, 1, 'A denial envelope alone cannot attest sibling retirement')
+    assert.deepEqual(await callbacks.close({ runId, token }), { closed: true })
+    assert.deepEqual(f.scenario.prompts, ['hold-denial'])
+    assert.deepEqual(f.scenario.aborted, ['hold-denial'])
+    await f.durableChildren(1)
+  } finally { await bound.close(); await callbacks.dispose() }
+})
+
+test('pre-activation route attestation is exact, not cloneable and single use', { timeout: 20000 }, async t => {
+  const f = await fixture(t)
+  const runId = f.prepared.runId, childId = randomUUID()
+  let denial
+  await assert.rejects(f.backend.authorizeChild({ prompt: 'denied', model: 'another-model' },
+    new AbortController().signal, childId), error => { denial = error; return /model route/.test(error.message) })
+  assert.equal(consumeWorkflowModelRouteDenial({ ...denial }, runId, childId), false)
+  assert.equal(consumeWorkflowModelRouteDenial(denial, randomUUID(), childId), false)
+  assert.equal(consumeWorkflowModelRouteDenial(denial, runId, randomUUID()), false)
+  assert.equal(consumeWorkflowModelRouteDenial(denial, runId, childId), true)
+  assert.equal(consumeWorkflowModelRouteDenial(denial, runId, childId), false)
+  assert.deepEqual(f.scenario.prompts, [])
+  await f.durableChildren(0)
 })
 
 test('eight real child activations complete but a ninth cannot create a model call or Session', { timeout: 20000 }, async t => {

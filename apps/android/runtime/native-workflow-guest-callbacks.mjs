@@ -1,5 +1,6 @@
 import { WorkflowGuestHostPort } from './workflow-guest-host-port.mjs'
 import { snapshotIsolatedJson } from './isolated-execution-contract.mjs'
+import { consumeWorkflowModelRouteDenial } from './workflow-subagent-backend.mjs'
 
 const MAX_BOUND_RUNS = 4
 const MAX_PENDING_CALLS = 8
@@ -107,8 +108,20 @@ export class NativeWorkflowGuestCallbacks {
     const method = ACTIONS.get(frame.action)
     const dispatch = entry.tail.then(async () => {
       if (entry.state !== 'active') throw new Error('Workflow callback closed before dispatch')
-      const result = await entry.port[method](request,
-        frame.action === 'WORKFLOW_START_CHILD' ? frame.childId : undefined)
+      let result
+      try {
+        result = await entry.port[method](request,
+          frame.action === 'WORKFLOW_START_CHILD' ? frame.childId : undefined)
+      } catch (error) {
+        if (entry.state === 'active' && frame.action === 'WORKFLOW_START_CHILD'
+          && consumeWorkflowModelRouteDenial(error, runId, frame.childId)) {
+          // The App must still stop the guest and join every sibling before a
+          // terminal failure. This envelope only proves this child did not activate.
+          return { runId, callId: frame.callId,
+            denied: { code: 'MODEL_ROUTE_DENIED', childId: frame.childId } }
+        }
+        throw error
+      }
       if (entry.state !== 'active') throw new Error('Workflow callback closed during dispatch')
       const boundedReply = snapshotIsolatedJson(result ?? null, 'workflow callback reply', MAX_REPLY_BYTES)
       return { runId, callId: frame.callId,

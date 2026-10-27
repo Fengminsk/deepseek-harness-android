@@ -11,7 +11,8 @@ export async function createWorkflowAcceptance({ ctx, transport, agent, nativeMo
   const { NativeWorkflowGuestCallbacks } = await nativeModule('native-workflow-guest-callbacks.mjs')
   const { createNativeWorkflowPrivateOwner } = await nativeModule('native-workflow-private-owner.mjs')
   const { registerAndroidWorkflowTool } = await nativeModule('tool-native-workflow.mjs')
-  const progress = [], receipts = new Map(), releases = new Set(), callbackFailures = []
+  const progress = [], receipts = new Map(), releases = new Set(), callbackFailures = [], callbackClosures = []
+  const observe = (rows, value) => { if (rows.length === 128) rows.shift(); rows.push(value) }
   // Observe actual responses. Never synthesize a native result, retirement or callback acknowledgement.
   const observedTransport = { async request(method, params, ...options) {
     const result = await transport.request(method, params, ...options)
@@ -24,25 +25,38 @@ export async function createWorkflowAcceptance({ ctx, transport, agent, nativeMo
     async call(params) {
       try {
         const result = await callbacks.call(params)
+        if (result.denied?.code === 'MODEL_ROUTE_DENIED') {
+          observe(callbackFailures, { runId: params.runId, action: params.action,
+            code: result.denied.code, message: 'Workflow child cannot widen its parent model route' })
+        }
         if (params.action === 'WORKFLOW_PROGRESS') {
           assert.ok(progress.length < 4096, 'Acceptance progress observation is bounded')
           progress.push({ runId: params.runId, events: structuredClone(params.value) })
         }
         return result
       } catch (error) {
-        callbackFailures.push({ runId: params.runId, action: params.action, message: String(error).slice(0, 512) })
+        observe(callbackFailures, { runId: params.runId, action: params.action, message: String(error).slice(0, 512) })
         throw error
       }
     },
-    close: params => callbacks.close(params),
+    async close(params) {
+      try {
+        const result = await callbacks.close(params)
+        observe(callbackClosures, { runId: params.runId, closed: result?.closed === true })
+        return result
+      } catch (error) {
+        observe(callbackClosures, { runId: params.runId, closed: false, message: String(error).slice(0, 512) })
+        throw error
+      }
+    },
   })
   const owner = createNativeWorkflowPrivateOwner(ctx, callbacks, observedTransport)
   try {
     assert.equal(registerAndroidWorkflowTool(ctx, { owner }), false)
     assert.equal(ctx.tools.get('workflow', agent), undefined)
     assert.equal(registerAndroidWorkflowTool(ctx, { owner, available: () => true }), true)
-    return { owner, progress, receipts, releases, callbackFailures,
-      inspectNative: runId => transport.request('native.workflow.inspect', { runId }),
+    return { owner, progress, receipts, releases, callbackFailures, callbackClosures,
+      inspectNative: (runId, signal) => transport.request('native.workflow.inspect', { runId }, signal),
       async dispose() { try { await owner.dispose() } finally { unbind() } } }
   } catch (error) {
     try { await owner.dispose() } finally { unbind() }
@@ -142,6 +156,10 @@ export async function runWorkflowAcceptance({ ctx, agent, adapter, workflow }) {
       const value = await body(scenario)
       assert.equal(scenario.active, 0, 'A settled workflow cannot retain an active model stream')
       return value
+    } catch (error) {
+      error.modelObservation = { active: scenario.active, prompts: scenario.prompts.slice(0, 128),
+        aborted: scenario.aborted.slice(0, 128), finished: scenario.finished.slice(0, 128) }
+      throw error
     } finally { adapter.scriptedStream = null }
   }
 
@@ -277,12 +295,32 @@ export async function runWorkflowAcceptance({ ctx, agent, adapter, workflow }) {
       catch (error) {
         suiteAbort.abort(error)
         await Promise.allSettled([...activeCalls])
-        const observedRuns = starts().slice(before).map(event => {
+        // Diagnostic reads are bounded independently of the already cancelled run.
+        // They cannot change the pass condition or infer retirement from an RPC error.
+        const observedRuns = await Promise.all(starts().slice(before).slice(0, 8).map(async event => {
           const runId = event.data.runId, receipt = workflow.receipts.get(runId)
+          let nativeInspection
+          try {
+            const native = await bounded(workflow.inspectNative(runId, AbortSignal.timeout(3000)), 3000,
+              'Native workflow failure inspection timed out')
+            nativeInspection = { state: native.state, children: native.children.slice(0, 128).map(child => ({
+              childId: child.childId, state: child.state, liveAgent: ctx.agents.get(child.childId) !== undefined,
+              activated: children.has(child.childId),
+            })) }
+          } catch (failure) { nativeInspection = { unavailable: String(failure).slice(0, 512) } }
+          const runEvents = events().filter(row => row.data?.runId === runId)
           return { runId, nativeReceipt: receipt ? { state: receipt.state, requiresReview: receipt.requiresReview } : null,
-            releaseAcknowledged: workflow.releases.has(runId) }
-        })
+            releaseAcknowledged: workflow.releases.has(runId), nativeInspection,
+            callbackFailures: workflow.callbackFailures.filter(row => row.runId === runId),
+            callbackClosures: workflow.callbackClosures.filter(row => row.runId === runId),
+            sessionTerminal: runEvents.filter(row => row.type === 'tool-workflow/run-end')
+              .slice(0, 2).map(row => ({ stopReason: row.data.stopReason })),
+            memberEnds: runEvents.filter(row => row.type === 'tool-workflow/agent-end').slice(0, 128)
+              .map(row => ({ seq: row.data.seq, childId: row.data.childId, outcome: row.data.outcome })),
+          }
+        }))
         checks.push({ name: WORKFLOW_DEVICE_CHECKS[index], status: 'failed', observedRuns,
+          ...(error.modelObservation ? { modelObservation: error.modelObservation } : {}),
           error: String(error?.stack ?? error).slice(0, 4000) })
         for (const name of WORKFLOW_DEVICE_CHECKS.slice(index + 1)) checks.push({ name, status: 'unverified' })
         break

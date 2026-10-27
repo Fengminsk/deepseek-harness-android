@@ -8,13 +8,14 @@ const names = [
   'isolated-guest-reported-error-is-durable-failure',
   'isolated-malformed-dsl-outcome-needs-review',
   'isolated-child-reservation-result-and-retirement',
+  'isolated-route-denial-requires-confirmed-retirement',
   'admitted-workflow-pre-execution-cancel',
   'bounded-extended-workflow-and-upper-limit',
   'in-flight-child-cancel-retirement-and-cold-owner',
 ].join(',')
 const passed = `INSTRUMENTATION_RESULT: passed=${names}\n` +
   'INSTRUMENTATION_RESULT: failed=\n' +
-  'INSTRUMENTATION_RESULT: passedCount=7\n' +
+  'INSTRUMENTATION_RESULT: passedCount=8\n' +
   'INSTRUMENTATION_RESULT: failedCount=0\n' +
   'INSTRUMENTATION_CODE: -1\n'
 
@@ -36,9 +37,10 @@ test('requires every private workflow device assertion exactly once', () => {
   assert.throws(() => parseWorkflowResult(passed.replace('bounded-extended-workflow-and-upper-limit', 'other')), /failed/)
   assert.throws(() => parseWorkflowResult(passed.replace('in-flight-child-cancel-retirement-and-cold-owner', 'other')), /failed/)
   assert.throws(() => parseWorkflowResult(passed + 'INSTRUMENTATION_CODE: -1\n'), /failed/)
-  assert.throws(() => parseWorkflowResult(passed.replace('passedCount=7', 'passedCount=1')), /failed/)
+  assert.throws(() => parseWorkflowResult(passed.replace('passedCount=8', 'passedCount=1')), /failed/)
+  assert.throws(() => parseWorkflowResult(passed.replace('isolated-route-denial-requires-confirmed-retirement', 'other')), /failed/)
   assert.throws(() => parseWorkflowResult(passed.replace('in-flight-child-cancel-retirement-and-cold-owner',
     'bounded-extended-workflow-and-upper-limit')), /failed/)
-  assert.throws(() => parseWorkflowResult(passed.replace('passedCount=7', 'passedCount=8')
+  assert.throws(() => parseWorkflowResult(passed.replace('passedCount=8', 'passedCount=9')
     .replace(`passed=${names}`, `passed=${names},extra`)), /failed/)
 })

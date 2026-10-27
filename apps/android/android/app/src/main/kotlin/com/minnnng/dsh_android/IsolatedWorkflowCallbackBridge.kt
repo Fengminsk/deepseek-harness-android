@@ -111,6 +111,16 @@ internal class IsolatedWorkflowCallbackBridge(
                     if (childId != null) params.put("childId", childId)
                     val reply = transport.call(params, remainingMillis())
                     check(withinDeadline()) { "Workflow callback exceeded its deadline" }
+                    if (IsolatedWorkflowRequest.isPreActivationRouteDenial(
+                            reply, request.runId(), parsed.callId, childId)) {
+                        // No child handle was published for this exact reservation.
+                        // Failed retirement, malformed replies and RPC failures still
+                        // remain uncertain; close must join all siblings and persist
+                        // their retirement before a known failure can be published.
+                        cancel()
+                        reject("Workflow child model route was denied before activation")
+                        return@execute
+                    }
                     if (childId != null) {
                         val published = reply.getJSONObject("value")
                         val call = published.getInt("callId")
