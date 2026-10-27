@@ -45,6 +45,7 @@ internal object IsolatedApprovalDialog {
         val secondary = if (dark) 0xFFBABCC0.toInt() else 0xFF555B60.toInt()
         val card = if (dark) 0xEE2B2C30.toInt() else 0xF5F8F9FA.toInt()
         val edge = if (dark) 0x66FFFFFF else 0x665F676D
+        val linux = review.optString("kind") == "linux-network"
 
         fun label(text: String, size: Float, bold: Boolean, color: Int) = TextView(activity).apply {
             this.text = text
@@ -65,8 +66,9 @@ internal object IsolatedApprovalDialog {
             setPadding(activity.dp(22), activity.dp(20), activity.dp(22), activity.dp(20))
             background = surface(card, edge, activity.dp(28).toFloat())
         }
-        root.addView(label("允许隔离脚本访问？", 19f, true, titleColor))
-        root.addView(label("仅限运行 ${review.getString("runId").take(8)} · ${review.getLong("leaseMillis") / 1000} 秒",
+        root.addView(label(if (linux) "允许此 Linux 任务联网？" else "允许隔离脚本访问？", 19f, true, titleColor))
+        val duration = if (linux) review.getLong("timeoutMs") else review.getLong("leaseMillis")
+        root.addView(label("仅限运行 ${review.getString("runId").take(8)} · ${duration / 1000} 秒",
             13f, false, secondary), LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
         ).apply { topMargin = activity.dp(8) })
@@ -87,15 +89,21 @@ internal object IsolatedApprovalDialog {
         }
         val workspace = review.optString("workspacePath")
             .takeUnless { it.isBlank() || it == "null" }
-        section("工作区", listOfNotNull(workspace))
-        section("可读取", paths("readablePaths"))
-        section("可写入", paths("writablePaths"))
+        if (linux) {
+            section("连接方式", listOf(review.getString("route")))
+            section("工作区改动", listOf(if (review.getBoolean("persistChanges")) "保存本次 Linux 工作区改动" else "执行结束后丢弃改动"))
+        } else {
+            section("工作区", listOfNotNull(workspace))
+            section("可读取", paths("readablePaths"))
+            section("可写入", paths("writablePaths"))
+        }
         section("允许联网的域名", paths("exactHosts"))
         section("调用额度", listOf(
-            "文件 ${review.getInt("fileCallLimit")} 次 · 网络 ${review.getInt("networkCallLimit")} 次",
+            if (linux) "最多 ${review.getInt("networkCallLimit")} 次 HTTPS 请求"
+            else "文件 ${review.getInt("fileCallLimit")} 次 · 网络 ${review.getInt("networkCallLimit")} 次",
         ))
-        section("程序 SHA-256", listOf(review.getString("programSha256")))
-        val codeHeading = label("执行代码（只读）", 13f, true, secondary)
+        if (!linux) section("程序 SHA-256", listOf(review.getString("programSha256")))
+        val codeHeading = label(if (linux) "执行命令" else "执行代码（只读）", 13f, true, secondary)
         details.addView(codeHeading, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
         ).apply { topMargin = activity.dp(15) })
@@ -116,7 +124,8 @@ internal object IsolatedApprovalDialog {
             minOf(activity.dp(400), (activity.resources.displayMetrics.heightPixels * 0.48f).toInt()),
         ).apply { topMargin = activity.dp(8) })
 
-        root.addView(label("仅授权上述隔离脚本；Shell 命令仍需逐条确认。", 12f,
+        root.addView(label(if (linux) "只允许本次任务访问上述域名。连接方式变化后授权失效。"
+            else "仅授权上述隔离脚本；Shell 命令仍需逐条确认。", 12f,
             false, secondary), LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
         ).apply { topMargin = activity.dp(10) })

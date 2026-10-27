@@ -31,8 +31,11 @@ internal object LinuxVmRunner {
     fun run(context: Context, id: String, command: String, timeoutMs: Long,
         images: LinuxVmImageStore.Lease, cancelled: BooleanSupplier,
         input: SharedMemory? = null, buildOutput: SharedMemory? = null,
-        rootDisk: SharedMemory = images.disk, workspaceFresh: Boolean = images.workspaceFresh): Result {
+        rootDisk: SharedMemory = images.disk, workspaceFresh: Boolean = images.workspaceFresh,
+        network: LinuxVmNetworkHostBridge? = null): Result {
         check(Looper.myLooper() != Looper.getMainLooper()) { "Linux VM cannot block the main thread" }
+        require(network == null || (network.id == id && input == null && buildOutput == null))
+        fun stopped() = cancelled.asBoolean || (network != null && !network.active())
         val outcome = AtomicReference<Result?>()
         val worker = AtomicReference<Messenger?>()
         val guestUid = AtomicInteger(-1)
@@ -42,12 +45,13 @@ internal object LinuxVmRunner {
         var deathLink: Pair<IBinder, IBinder.DeathRecipient>? = null
         fun finish(result: Result) { if (outcome.compareAndSet(null, result)) finished.countDown() }
         fun stop(remote: Messenger) {
+            network?.invalidate()
             remote.send(Message.obtain(null, IsolatedLinuxVmService.CANCEL).apply {
                 data = Bundle().apply { putString("id", id) }
             })
         }
         fun died() = finish(Result("worker_died", guestUid = guestUid.get().takeIf { it >= 0 },
-            cancelled = cancelled.asBoolean, retirementConfirmed = true,
+            cancelled = stopped(), retirementConfirmed = true,
             detail = "Linux VM process exited; this invocation's disk changes were not committed"))
         val replies = Messenger(Handler(Looper.getMainLooper()) { message ->
             if (!accepting.get() || outcome.get() != null) return@Handler true
@@ -65,7 +69,13 @@ internal object LinuxVmRunner {
                     return@Handler true
                 }
                 if (message.what == IsolatedLinuxVmService.STARTED) guestUid.compareAndSet(-1, sender)
-                else if (message.what == IsolatedLinuxVmService.COMPLETE) {
+                else if (message.what == IsolatedLinuxVmService.NETWORK_CALL) {
+                    require(guestUid.get() == sender)
+                    val capability = requireNotNull(network)
+                    capability.dispatch(message, checkNotNull(worker.get()), BooleanSupplier { stopped() }) {
+                        capability.invalidate()
+                    }
+                } else if (message.what == IsolatedLinuxVmService.COMPLETE) {
                     val status = data.getString("status")
                     val output = data.getString("output") ?: ""
                     val exit = data.getInt("exitCode", -1)
@@ -73,7 +83,8 @@ internal object LinuxVmRunner {
                     require(output.toByteArray(Charsets.UTF_8).size <= LinuxVmConsole.MAX_OUTPUT_BYTES)
                     require(exit in -1..255)
                     require(status != "completed" || (guestUid.get() == sender && exit >= 0))
-                    val stopped = cancelled.asBoolean
+                    require(status != "completed" || network?.idle() != false) { "Linux guest completed with an outstanding network call" }
+                    val stopped = stopped()
                     finish(Result(if (stopped) "cancelled" else status!!, output,
                         if (exit < 0) null else exit, sender,
                         data.getBoolean("timedOut"), stopped || data.getBoolean("cancelled"),
@@ -91,7 +102,7 @@ internal object LinuxVmRunner {
                         val death = IBinder.DeathRecipient { died() }
                         binder.linkToDeath(death, 0)
                         deathLink = binder to death
-                        if (cancelled.asBoolean) {
+                        if (stopped()) {
                             finish(Result("cancelled", cancelled = true, retirementConfirmed = true)); return
                         }
                         val remote = Messenger(binder)
@@ -105,6 +116,9 @@ internal object LinuxVmRunner {
                                 putParcelable("workspace", images.workspace); putBoolean("workspaceFresh", workspaceFresh)
                                 if (input != null) putParcelable("input", input)
                                 if (buildOutput != null) putParcelable("buildOutput", buildOutput)
+                                if (network != null) {
+                                    putString("networkNonce", network.nonce); putInt("networkCallLimit", network.callLimit)
+                                }
                             }
                         })
                     } catch (_: Exception) { finish(Result("failed", detail = "Linux VM dispatch failed")) }
@@ -124,7 +138,7 @@ internal object LinuxVmRunner {
         }
         var bound = false
         try {
-            if (cancelled.asBoolean) return Result("cancelled", cancelled = true, retirementConfirmed = true)
+            if (stopped()) return Result("cancelled", cancelled = true, retirementConfirmed = true)
             // This durable boundary precedes binding, so no Binder START can outrun admission.
             images.markDispatched()
             val intent = Intent(context, IsolatedLinuxVmService::class.java)
@@ -135,7 +149,7 @@ internal object LinuxVmRunner {
             val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs + 15_000)
             var stopSent = false
             while (outcome.get() == null) {
-                if (cancelled.asBoolean && !stopSent) {
+                if (stopped() && !stopSent) {
                     synchronized(sendLock) {
                         val remote = worker.get()
                         if (remote == null) finish(Result("cancelled", cancelled = true, retirementConfirmed = true))
@@ -146,7 +160,7 @@ internal object LinuxVmRunner {
                 val remaining = deadline - System.nanoTime()
                 if (remaining <= 0) {
                     finish(Result("failed", guestUid = guestUid.get().takeIf { it >= 0 }, timedOut = true,
-                        cancelled = cancelled.asBoolean, detail = "Linux VM retirement was not confirmed"))
+                        cancelled = stopped(), detail = "Linux VM retirement was not confirmed"))
                     break
                 }
                 finished.await(minOf(remaining, TimeUnit.MILLISECONDS.toNanos(50)), TimeUnit.NANOSECONDS)

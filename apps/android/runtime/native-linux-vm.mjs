@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { HarnessError } from '@deepseek-ai/dsh-llm'
 import { prepareLinuxVmInspection, parseLinuxVmInspection } from './native-linux-vm-inspection.mjs'
+import { consumeLinuxNetworkGrant, discardLinuxNetworkGrant, linuxNetworkGrantIdentity } from './native-linux-network.mjs'
 export { prepareLinuxVmInspection } from './native-linux-vm-inspection.mjs'
 
 const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}(?![\s\S])/
@@ -116,6 +117,11 @@ function receipt(value, request, method) {
     || !['completed', 'outcome_uncertain'].includes(value.status) && value.filePublished)) {
     throw new Error('Linux VM returned an invalid export publication receipt')
   }
+  if (method === 'native.linuxVm.executeNetwork' &&
+    (typeof value.approvalCleanupConfirmed !== 'boolean'
+      || !value.approvalCleanupConfirmed && value.approvalCleanupError !== 'durable-revocation-unconfirmed')) {
+    throw new Error('Linux VM returned an incomplete network approval cleanup receipt')
+  }
   if (!value.retirementConfirmed || value.status === 'outcome_uncertain') {
     throw new LinuxVmOutcomeUncertainError(request.id, undefined, {
       nativeStatus: value.status, diskCommitted: value.diskCommitted,
@@ -198,6 +204,22 @@ export class NativeLinuxVm {
   }
 
   /**
+   * Execute one exact command after native UI approval and a flushed DSH decision.
+   * @param sessionId - Current registered Agent's Session.
+   * @param args - The unchanged approved command and timeout.
+   * @param signal - Caller cancellation; settlement still joins the native receipt.
+   * @param policy - Current host persistence policy.
+   * @param grant - Private single-use native approval, never model JSON.
+   * @returns Confirmed native execution receipt, with the same uncertainty rules as offline commands.
+   */
+  async executeApprovedNetwork(sessionId, args, signal, policy, grant) {
+    try {
+      return await this.#run(sessionId, { ...prepareLinuxVmCommand(args), persistChanges: hostPolicy(policy) },
+        signal, 'native.linuxVm.executeNetwork', grant)
+    } finally { await discardLinuxNetworkGrant(grant) }
+  }
+
+  /**
    * @param sessionId - Current registered Agent's session identity.
    * @param args - Authorized App-relative source and guest-relative destination.
    * @param signal - Tool execution cancellation signal.
@@ -221,13 +243,15 @@ export class NativeLinuxVm {
     return this.#run(sessionId, prepareLinuxVmImport(args), signal, 'native.linuxVm.exportFile')
   }
 
-  async #run(sessionId, prepared, signal, method) {
+  async #run(sessionId, prepared, signal, method, networkGrant) {
     if (this.#closed) throw new Error('Linux VM owner is closed')
     if (typeof sessionId !== 'string' || !SESSION_ID.test(sessionId)) throw new TypeError('Invalid Agent session ID')
     if (!(signal instanceof AbortSignal)) throw new TypeError('An execution signal is required')
     signal.throwIfAborted()
     if (this.#runs.size !== 0) throw new Error('Linux 客体正在执行其他命令，请等待该命令结束。')
-    const request = { id: randomUUID(), sessionId, ...prepared }
+    const identity = networkGrant === undefined ? { id: randomUUID(), sessionId } : linuxNetworkGrantIdentity(networkGrant)
+    if (identity.sessionId !== sessionId) throw new TypeError('Linux approval belongs to another Session')
+    const request = { ...identity, ...prepared }
     const deadline = AbortSignal.timeout(request.timeoutMs + 30_000)
     const run = { dispatched: false, cancellation: null, done: null, cancelRequested: false }
     const cancel = () => {
@@ -253,9 +277,16 @@ export class NativeLinuxVm {
         signal.throwIfAborted()
         deadline.throwIfAborted()
         if (this.#closed || this.#disposed) throw new Error('Linux VM owner is closed')
+        if (networkGrant !== undefined) Object.assign(request, consumeLinuxNetworkGrant(networkGrant, request))
         run.dispatched = true
         const result = await boundedRequest(this.#transport, method, request, deadline)
-        return Object.freeze({ ...receipt(result, request, method), cancelRequested: run.cancelRequested })
+        const settled = receipt(result, request, method)
+        if (settled.approvalCleanupConfirmed === false) {
+          this.#closed = true
+          return Object.freeze({ ...settled, cancelRequested: run.cancelRequested, needsReview: true,
+            approvalCleanupMessage: 'Linux 命令结果已保留，但网络授权收尾未确认，已停止后续命令。请查看任务记录，勿自动重试。' })
+        }
+        return Object.freeze({ ...settled, cancelRequested: run.cancelRequested })
       } catch (error) {
         if (!run.dispatched) throw error
         await cancel()

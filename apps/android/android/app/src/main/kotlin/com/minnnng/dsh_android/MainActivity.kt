@@ -59,6 +59,7 @@ class MainActivity : FlutterActivity() {
     private var foreground = false
     private var isolatedReviewDialog: android.app.AlertDialog? = null
     private var isolatedReviewPreparing = false
+    private var linuxReviewRequestId: String? = null
     private var notificationSessionId: String? = null
     private var runtimeRequested = false
     private var notificationPermission: MethodChannel.Result? = null
@@ -143,6 +144,10 @@ class MainActivity : FlutterActivity() {
                 }
                 else result.success((frame.opt("result") ?: JSONObject.NULL).toString())
             }
+        } else if (frame.optString("method") == "runtime.linuxNetworkReview.available") {
+            offerLinuxNetworkReview(frame.getJSONObject("params"))
+        } else if (frame.optString("method") == "runtime.linuxNetworkReview.closed") {
+            if (frame.getJSONObject("params").optString("requestId") == linuxReviewRequestId) isolatedReviewDialog?.dismiss()
         } else if (frame.optString("method") == "runtime.transition") {
             transitionAccepted(frame.getJSONObject("params"))
         } else {
@@ -589,6 +594,33 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    private fun offerLinuxNetworkReview(params: JSONObject) {
+        val requestId = params.getString("requestId")
+        if (linuxReviewRequestId == requestId) return
+        if (!foreground || isolatedReviewPreparing || isolatedReviewDialog != null) {
+            declineUnavailableLinuxReview(requestId)
+            return
+        }
+        linuxReviewRequestId = requestId
+        reviewIsolatedApproval(requestId, params.getString("snapshotSha256"), object : MethodChannel.Result {
+            override fun success(result: Any?) { if (linuxReviewRequestId == requestId) linuxReviewRequestId = null }
+            override fun error(code: String, message: String?, details: Any?) {
+                if (linuxReviewRequestId == requestId) linuxReviewRequestId = null
+                declineUnavailableLinuxReview(requestId)
+            }
+            override fun notImplemented() { error("unavailable", null, null) }
+        })
+    }
+
+    private fun declineUnavailableLinuxReview(requestId: String) {
+        sendCall(JSONObject().put("method", "runtime.linuxNetworkReview.unavailable")
+            .put("params", JSONObject().put("requestId", requestId)), object : MethodChannel.Result {
+            override fun success(result: Any?) {}
+            override fun error(code: String, message: String?, details: Any?) { /* Service expiry also invalidates the request. */ }
+            override fun notImplemented() {}
+        })
+    }
+
     private fun showIsolatedApproval(review: JSONObject, result: MethodChannel.Result) {
         var decided = false
         val dialog = IsolatedApprovalDialog.create(this, review,
@@ -599,7 +631,17 @@ class MainActivity : FlutterActivity() {
                     review.getString("challenge"), review.getString("snapshotSha256"), result)
             }, onDismiss = {
                 isolatedReviewDialog = null
-                if (!decided) result.success(false)
+                if (!decided) {
+                    if (review.optString("kind") == "linux-network") {
+                        sendCall(JSONObject().put("method", "runtime.isolatedApprovals.deny").put("params", JSONObject()
+                            .put("requestId", review.getString("requestId")).put("challenge", review.getString("challenge"))),
+                            object : MethodChannel.Result {
+                                override fun success(value: Any?) { result.success(false) }
+                                override fun error(code: String, message: String?, details: Any?) { result.error(code, message, details) }
+                                override fun notImplemented() { result.notImplemented() }
+                            })
+                    } else result.success(false)
+                }
             })
         isolatedReviewDialog = dialog
         try { dialog.show() }

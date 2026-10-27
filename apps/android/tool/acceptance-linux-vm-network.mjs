@@ -44,7 +44,7 @@ const mainNames = [...new Set(classNames.map(name => name.split('$')[0].replace(
 const sourceNames = [...sources, ...mainNames
   .filter(name => !['LinuxVmEngine', 'LinuxVmNetworkHost', 'LinuxVmNetworkHostTest'].includes(name))
   .map(name => `apps/android/android/app/src/main/java/com/minnnng/dsh_android/${name}.java`),
-'apps/android/tool/acceptance-linux-vm-network.mjs', 'apps/android/tool/linux-vm-host/dsh-fetch.py']
+'apps/android/tool/acceptance-linux-vm-network.mjs', 'apps/android/android/app/src/main/assets/linux-vm-network/dsh-fetch.py']
 report.sourceInputs = await Promise.all(sourceNames.sort().map(async path => ({ path,
   sha256: hash(await readFile(join(root, path))) })))
 report.compiledClasses = await Promise.all(classNames.map(async name => ({ name,
@@ -72,12 +72,12 @@ if (args.candidate) {
   }
   const mode = args.mode ?? 'live'
   const guestOutput = run('LinuxVmNetworkHost', [host.library, ...['bios', 'kernel', 'disk'].map(part => join(assets, `${part}.bin`)),
-    join(root, 'apps/android/tool/linux-vm-host/dsh-fetch.py'), join(output, 'guest'), args.proxyPort, mode], host)
+    join(root, 'apps/android/android/app/src/main/assets/linux-vm-network/dsh-fetch.py'), join(output, 'guest'), args.proxyPort, mode], host)
   report.guest = JSON.parse(guestOutput.trim())
   report.images = images
   report.librarySha256 = host.librarySha256
   report.proxy = `http://127.0.0.1:${report.guest.proxyPort}`
-  report.guestScriptSha256 = hash(await readFile(join(root, 'apps/android/tool/linux-vm-host/dsh-fetch.py')))
+  report.guestScriptSha256 = hash(await readFile(join(root, 'apps/android/android/app/src/main/assets/linux-vm-network/dsh-fetch.py')))
   console.log(guestOutput.trim())
 }
 await writeFile(join(output, 'report.json'), `${JSON.stringify(report, null, 2)}\n`)

@@ -31,6 +31,7 @@ class AgentService : Service() {
     private val clients = mutableSetOf<Messenger>()
     private data class AppClient(val owner: String, val death: IBinder.DeathRecipient)
     private val appClients = mutableMapOf<Messenger, AppClient>()
+    private val foregroundAppClients = mutableSetOf<Messenger>()
     private val pending = ConcurrentHashMap<String, Messenger>()
     private val isolationProbeBusy = AtomicBoolean(false)
     private val isolatedApprovals = IsolatedExecutionApprovalInbox()
@@ -64,6 +65,19 @@ class AgentService : Service() {
     private val linuxCommands get() = linuxCommandsDelegate.value
     private val linuxVmDelegate = lazy { LinuxVmManager(this) }
     private val linuxVm get() = linuxVmDelegate.value
+    private val linuxNetworkApprovalsDelegate = lazy { LinuxVmNetworkApprovalCoordinator(
+        File(applicationInfo.dataDir).canonicalFile.toPath(),
+        File(filesDir, "linux-network-approvals").canonicalFile.toPath(), isolatedApprovals,
+        currentRoute = { NetworkProxyPreferences(this).route() },
+        observeRoute = { route, changed -> NetworkProxyPreferences(this).observeRoute(route, changed) },
+        execute = { params, lease, route -> linuxVm.executeApprovedNetwork(params, lease, route) },
+        cancelExecution = { id -> if (linuxVmDelegate.isInitialized()) { linuxVm.cancel(JSONObject().put("id", id)); } },
+        offer = ::offerLinuxNetworkReview,
+        dismiss = { requestId -> main.post { broadcast(JSONObject().put("method", "runtime.linuxNetworkReview.closed")
+            .put("params", JSONObject().put("requestId", requestId))) } },
+        sync = IsolatedScriptRunController::syncDirectory,
+    ) }
+    private val linuxNetworkApprovals get() = linuxNetworkApprovalsDelegate.value
     private val documentImagesDelegate = lazy { DocumentImageReads(this) }
     private val documentImages get() = documentImagesDelegate.value
     private data class ManualRun(
@@ -218,6 +232,16 @@ class AgentService : Service() {
                         main.post { send(client, error(id, "隔离执行审计已变化或暂时无法读取，请刷新后核对")) }
                     }
                 }
+            } else if (frame.getString("method") == "runtime.linuxNetworkReview.unavailable") {
+                if (!appClients.containsKey(client)) send(client, error(id, "App approval viewer is disconnected"))
+                else workers.execute {
+                    try {
+                        val params = frame.getJSONObject("params")
+                        require(params.length() == 1 && params.opt("requestId") is String)
+                        if (linuxNetworkApprovalsDelegate.isInitialized()) linuxNetworkApprovals.unavailable(params.getString("requestId"))
+                        main.post { send(client, JSONObject().put("id", id).put("result", true)) }
+                    } catch (_: Exception) { main.post { send(client, error(id, "联网授权已失效")) } }
+                }
             } else if (frame.getString("method") == "runtime.isolatedApprovals.list") {
                 if (!appClients.containsKey(client)) send(client, error(id, "App approval viewer is disconnected"))
                 else workers.execute {
@@ -371,6 +395,12 @@ class AgentService : Service() {
         else if (message.what == TaskCompletionNotifications.MESSAGE_VIEWING) {
             appClients[client]?.let { record ->
                 taskCompletion.viewing(record.owner, message.data.getString("sessionId"), message.data.getBoolean("foreground"))
+                if (message.data.getBoolean("foreground")) {
+                    foregroundAppClients.add(client)
+                    if (linuxNetworkApprovalsDelegate.isInitialized()) linuxNetworkApprovals.pending().firstOrNull()?.let {
+                        send(client, linuxNetworkReviewOffer(it))
+                    }
+                } else foregroundAppClients.remove(client)
             }
         }
         else if (message.what == ApprovalNotifications.MESSAGE_RESPOND) {
@@ -609,6 +639,9 @@ class AgentService : Service() {
                         "native.linuxVm.importFile" -> linuxVm.importFile(params)
                         "native.linuxVm.exportFile" -> linuxVm.exportFile(params)
                         "native.linuxVm.cancel" -> linuxVm.cancel(params)
+                        "native.linuxVm.network.review" -> linuxNetworkApprovals.review(params)
+                        "native.linuxVm.network.cancelReview" -> linuxNetworkApprovals.cancelReview(params)
+                        "native.linuxVm.executeNetwork" -> linuxNetworkApprovals.executeNetwork(params)
                         "native.isolated.admit" -> isolatedRuns.admit(params)
                         "native.isolated.bindTools" -> isolatedRuns.bindTools(params)
                         "native.isolated.execute" -> isolatedRuns.execute(params)
@@ -1258,6 +1291,30 @@ class AgentService : Service() {
         .put("fileCallLimit", review.fileCallLimit())
         .put("networkCallLimit", review.networkCallLimit())
         .put("leaseMillis", review.leaseMillis())
+        .apply { if (linuxNetworkApprovalsDelegate.isInitialized()) linuxNetworkApprovals.decorate(review, this) }
+
+    private fun linuxNetworkReviewOffer(review: IsolatedExecutionApprovalInbox.Review) = JSONObject()
+        .put("method", "runtime.linuxNetworkReview.available").put("params", JSONObject()
+            .put("requestId", review.id()).put("snapshotSha256", review.snapshotSha256()))
+
+    private fun offerLinuxNetworkReview(review: IsolatedExecutionApprovalInbox.Review): Boolean {
+        val offered = CompletableFuture<Boolean>()
+        main.post {
+            val client = foregroundAppClients.firstOrNull { appClients.containsKey(it) && it.binder.isBinderAlive }
+            if (client == null || phase != "ready" || !lifecycle.acceptsFrames()) offered.complete(false)
+            else { send(client, linuxNetworkReviewOffer(review)); offered.complete(true) }
+        }
+        return try { offered.get(2, TimeUnit.SECONDS) } catch (_: Exception) { false }
+    }
+
+    private fun closeLinuxNetworkApprovals() {
+        if (!linuxNetworkApprovalsDelegate.isInitialized()) return
+        linuxNetworkApprovals.stopAccepting()
+        Thread({
+            try { linuxNetworkApprovals.close() }
+            catch (_: Exception) { android.util.Log.e("DSH", "Linux network approval cleanup remains unconfirmed") }
+        }, "linux-network-approval-close").start()
+    }
 
     private fun reportFailure(message: String) {
         phase = "failed"; failure = message
@@ -1273,6 +1330,7 @@ class AgentService : Service() {
         callbacks.forEach { it(Result.failure(IllegalStateException(message))) }
         transitions.unavailable()
         approvals.close()
+        closeLinuxNetworkApprovals()
         isolatedApprovals.close()
         isolatedApprovalExpiry.shutdownNow()
         if (linuxCommandsDelegate.isInitialized()) linuxCommands.close()
@@ -1291,6 +1349,7 @@ class AgentService : Service() {
     }
     private fun removeClient(client: Messenger) {
         clients.remove(client)
+        foregroundAppClients.remove(client)
         val record = appClients.remove(client) ?: return
         taskCompletion.disconnected(record.owner)
         client.binder.unlinkToDeath(record.death, 0)
@@ -1319,6 +1378,7 @@ class AgentService : Service() {
         Thread({ documentImages.close() }, "document-image-close").start()
     }
     override fun onDestroy() {
+        closeLinuxNetworkApprovals()
         val plannedProcessExit = lifecycle.processExitRequired()
         val unexpectedNodeStop = synchronized(nodeStartLock) {
             !plannedProcessExit && lifecycle.closeUnexpected() && nodeStarted

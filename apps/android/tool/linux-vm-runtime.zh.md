@@ -25,6 +25,8 @@ title: Android Linux 虚拟机执行
 
 `linux_exec` 接收 `command` 与 `timeoutMs`，由已注册的 Agent 提供会话身份。脚本上限为 32 KiB UTF-8 字节，从 `/workspace` 开始执行，启动及执行总时限最多 120 秒。控制台输出上限为 64 KiB，并明确报告截断。已结束的 Shell 可以返回非零退出码。原生结果分别记录超时、取消、执行器退出和磁盘发布状态。
 
+显式组合的[联网审批服务](linux-network-admission.zh.md) 可增加每条命令的 `networkHosts` 与 `networkCallLimit`，向原生 HTTPS 代理申请权限。未提供这些字段或缺少匹配的持久用户授权时，网络保持关闭；不会启用客体套接字。
+
 当前 ToolRuntime 执行读取 Agent 的实时 `sandboxPolicy`。缺少策略或 Agent 未注册时拒绝执行。宿主独立提供 `persistChanges`，模型参数不能设置它：只读会话丢弃客体磁盘改动；可写会话可在命令完成后提交。若已完成回执中的 `diskCommitted` 与该策略不符，Node 持有者会拒绝回执。
 
 每次执行前，可信宿主采样当前 UTC 时间戳，由[控制台启动程序](../android/app/src/main/java/com/minnnng/dsh_android/LinuxVmConsole.java)使用仅含十进制数字的 `busybox date` 参数设置客体时钟。TinyEMU 的 RISC-V 计时器只提供经过时长，不提供实际日期。校时先于工作区格式化和模型代码；校时失败返回退出码 125，跳过这两步。该过程只修改客体时钟，不接受模型提供的时间，也不使用网络校时服务。采样时间可能落后一个有上限的启动时长，并不构成对手机时钟准确性的独立验证。启动程序还导出固定的客体 `PATH=/bin:/usr/bin:/sbin:/usr/sbin`，让 Python 等程序启动的子进程可以解析可执行文件路径。

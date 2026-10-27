@@ -59,6 +59,18 @@ public final class LinuxVmConsoleTest {
         check(binary.output().getBytes(StandardCharsets.UTF_8).length <= LinuxVmConsole.MAX_OUTPUT_BYTES);
         check(binary.output().codePointCount(0, binary.output().length()) == LinuxVmConsole.MAX_OUTPUT_BYTES / 3);
         check(binary.truncated() && binary.exitCode() == 0);
+        LinuxVmConsole network = new LinuxVmConsole("true");
+        var polls = new java.util.concurrent.atomic.AtomicInteger();
+        long interpreter = Thread.currentThread().getId();
+        network.attachInterpreterPoll(() -> {
+            check(Thread.currentThread().getId() == interpreter);
+            polls.incrementAndGet();
+        });
+        input(network);
+        int exhausted = polls.get();
+        check(exhausted > 1 && network.read(new byte[1], 1) == 0 && polls.get() == exhausted + 1);
+        try { network.attachInterpreterPoll(() -> { }); throw new AssertionError(); }
+        catch (IllegalStateException expected) { }
         System.out.println("Linux VM console framing: PASS");
     }
     private static String input(LinuxVmConsole console) {

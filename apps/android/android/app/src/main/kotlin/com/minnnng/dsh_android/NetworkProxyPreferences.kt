@@ -45,6 +45,21 @@ class NetworkProxyPreferences(private val context: Context) {
     fun read(): JSONObject = resolve(configuration()).put("tools", tools())
     fun route(): JSONObject = resolve(configuration()).getJSONObject("route")
 
+    /** A running isolated capability retains one route; a changed route revokes it. */
+    internal fun observeRoute(expected: JSONObject, changed: () -> Unit): AutoCloseable {
+        val identity = expected.toString()
+        val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == "value") {
+                val same = try { route().toString() == identity } catch (_: Exception) { false }
+                if (!same) changed()
+            }
+        }
+        preferences.registerOnSharedPreferenceChangeListener(listener)
+        val same = try { route().toString() == identity } catch (_: Exception) { false }
+        if (!same) changed()
+        return AutoCloseable { preferences.unregisterOnSharedPreferenceChangeListener(listener) }
+    }
+
     fun save(value: JSONObject): JSONObject {
         val config = checked(value)
         check(preferences.edit().putString("value", config.toString()).commit()) { "代理配置未保存" }

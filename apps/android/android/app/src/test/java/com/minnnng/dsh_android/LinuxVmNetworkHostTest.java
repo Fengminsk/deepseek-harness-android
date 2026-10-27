@@ -121,18 +121,20 @@ public final class LinuxVmNetworkHostTest {
         final AtomicBoolean cancelled = new AtomicBoolean();
         final AtomicInteger fetched = new AtomicInteger();
         final LinuxVmHttpsMailbox mailbox;
+        final LinuxVmHttpsBrokerExchange exchange;
         Fixture(boolean revokeDuringFetch) throws Exception {
             owner = new IsolatedExecutionPolicyOwner("host-test", run, (id, policy) -> { }, (before, after) -> { });
             owner.replace(IsolatedExecutionPolicyOwner.Scope.granted("host-test", run, 2, root,
                     Files.createDirectory(root.resolve("workspace")), Set.of(), Set.of(), Set.of("example.com"), 0, 2, 30_000));
             journal = new IsolatedNetworkJournal(root, directory -> { });
-            mailbox = new LinuxVmHttpsMailbox(disk, owner.admit(run), journal,
+            exchange = new LinuxVmHttpsBrokerExchange(owner.admit(run), journal,
                     (host, deadline, stop) -> new IsolatedNetworkBroker.Resolution(new InetAddress[] {PUBLIC}, Socket::new),
                     (uri, ip, route, deadline, stop) -> {
                         fetched.incrementAndGet();
                         if (revokeDuringFetch) owner.revoke(run);
                         return new IsolatedNetworkBroker.Hop(200, null, "text/plain", "body".getBytes(StandardCharsets.UTF_8));
-                    }, cancelled);
+                    });
+            mailbox = new LinuxVmHttpsMailbox(disk, run, 2, exchange, cancelled);
         }
         void request(int sequence, String call, String requestRun, String url) {
             byte[] payload = (requestRun + call + url).getBytes(StandardCharsets.US_ASCII);
@@ -142,6 +144,97 @@ public final class LinuxVmNetworkHostTest {
             disk.putInt(12, payload.length); disk.putInt(8, sequence);
         }
         public void close() { mailbox.close(); owner.close(); }
+    }
+
+    private static void appExchangeChecks() throws Exception {
+        for (String mode : new String[] {"wrong-run", "sequence", "replayed-call", "revoked"}) {
+            try (Fixture f = new Fixture(false)) {
+                String call = UUID.randomUUID().toString();
+                if (mode.equals("revoked")) f.owner.revoke(f.run);
+                if (mode.equals("replayed-call")) f.exchange.request(1, f.run, call, "https://example.com/");
+                try {
+                    f.exchange.request(mode.equals("sequence") || mode.equals("replayed-call") ? 2 : 1,
+                            mode.equals("wrong-run") ? UUID.randomUUID().toString() : f.run,
+                            call, "https://example.com/");
+                    throw new AssertionError("App accepted invalid network admission");
+                } catch (IOException expected) {
+                    check(!f.exchange.active() && f.fetched.get() == (mode.equals("replayed-call") ? 1 : 0));
+                }
+            }
+            tests++;
+        }
+    }
+
+    private static void replyChecks() throws Exception {
+        String run = UUID.randomUUID().toString(), call = UUID.randomUUID().toString();
+        var result = new IsolatedNetworkBroker.Result(IsolatedNetworkBroker.Status.OK, 200,
+                "https://example.com/", "text/plain", "body".getBytes(StandardCharsets.UTF_8), 0, call);
+        byte[] good = LinuxVmHttpsMailbox.encode(run, call, result);
+        LinuxVmHttpsMailbox.validateReply(good, run, call);
+        for (String mode : new String[] {"run", "call", "audit", "body", "length", "url", "http"}) {
+            byte[] bad = good.clone();
+            switch (mode) {
+                case "run" -> bad[0] ^= 1;
+                case "call" -> bad[36] ^= 1;
+                case "audit" -> bad[72] = 9;
+                case "body" -> ByteBuffer.wrap(bad).putInt(79, 65537);
+                case "length" -> bad = java.util.Arrays.copyOf(bad, bad.length - 1);
+                case "url" -> bad[83] = 0;
+                case "http" -> ByteBuffer.wrap(bad).putShort(73, (short) 0);
+                default -> throw new AssertionError();
+            }
+            try { LinuxVmHttpsMailbox.validateReply(bad, run, call); throw new AssertionError(mode); }
+            catch (IOException expected) { tests++; }
+        }
+        AtomicBoolean closed = new AtomicBoolean(), cancelled = new AtomicBoolean();
+        ByteBuffer disk = ByteBuffer.allocateDirect(LinuxVmHttpsMailbox.DISK_BYTES);
+        var exchange = new LinuxVmHttpsExchange() {
+            public byte[] request(int sequence, String runId, String callId, String url) { return new byte[83]; }
+            public boolean active() { return !closed.get(); }
+            public void close() { closed.set(true); }
+        };
+        try (var mailbox = new LinuxVmHttpsMailbox(disk, run, 1, exchange, cancelled)) {
+            byte[] payload = (run + call + "https://example.com/").getBytes(StandardCharsets.US_ASCII);
+            disk.position(512); disk.put(payload); disk.position(16); disk.put(LinuxVmHttpsMailbox.sha256(payload));
+            disk.putInt(0, LinuxVmHttpsMailbox.MAGIC); disk.putInt(4, 1); disk.putInt(12, payload.length); disk.putInt(8, 1);
+            mailbox.poll();
+            check(cancelled.get() && closed.get() && disk.getInt(4104) == 0);
+        }
+        tests++;
+    }
+
+    private static void closingInFlightExchange() throws Exception {
+        Path root = Files.createTempDirectory(Path.of(System.getProperty("dsh.test.cache")), "exchange-");
+        String run = UUID.randomUUID().toString(), call = UUID.randomUUID().toString();
+        CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
+        AtomicBoolean rejected = new AtomicBoolean();
+        AtomicInteger requests = new AtomicInteger();
+        var owner = new IsolatedExecutionPolicyOwner("host-test", run, (id, scope) -> { }, (before, after) -> { });
+        owner.replace(IsolatedExecutionPolicyOwner.Scope.granted("host-test", run, 2, null, null,
+                Set.of(), Set.of(), Set.of("example.com"), 0, 2, 30_000));
+        var exchange = new LinuxVmHttpsBrokerExchange(owner.admit(run), new IsolatedNetworkJournal(root, directory -> { }),
+                (host, deadline, stop) -> new IsolatedNetworkBroker.Resolution(new InetAddress[] {PUBLIC}, Socket::new),
+                (uri, ip, route, deadline, stop) -> {
+                    requests.incrementAndGet(); entered.countDown();
+                    try { if (!release.await(3, TimeUnit.SECONDS)) throw new IOException("test barrier expired"); }
+                    catch (InterruptedException error) { Thread.currentThread().interrupt(); throw new IOException(error); }
+                    return new IsolatedNetworkBroker.Hop(200, null, "text/plain", new byte[0]);
+                });
+        Thread thread = new Thread(() -> {
+            try { exchange.request(1, run, call, "https://example.com/"); }
+            catch (IOException expected) { rejected.set(true); }
+        }, "test-linux-https-in-flight");
+        try {
+            thread.start(); check(entered.await(3, TimeUnit.SECONDS));
+            try { exchange.request(2, run, UUID.randomUUID().toString(), "https://example.com/"); throw new AssertionError(); }
+            catch (IOException expected) { check(!exchange.active()); }
+            release.countDown(); thread.join(3500);
+            check(!thread.isAlive() && rejected.get() && requests.get() == 1);
+        } finally {
+            exchange.close(); owner.close(); release.countDown(); thread.join(3500);
+            check(!thread.isAlive());
+        }
+        tests++;
     }
 
     private static void mailboxCases() throws Exception {
@@ -175,6 +268,7 @@ public final class LinuxVmNetworkHostTest {
 
     public static void main(String[] args) throws Exception {
         tunnel(); rejectedProxyReplies(); proxyDeadlineAndRevoke(); mailboxCases();
+        appExchangeChecks(); replyChecks(); closingInFlightExchange();
         System.out.println("LinuxVmNetworkHostTest passed: " + tests + " cases");
     }
 }

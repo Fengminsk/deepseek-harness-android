@@ -25,7 +25,14 @@ internal class LinuxVmManager(private val context: Context) : AutoCloseable {
         return images.inspect(params.getString("sessionId"), if (params.has("id")) params.getString("id") else null)
     }
 
-    fun execute(params: JSONObject): JSONObject {
+    fun execute(params: JSONObject): JSONObject = executeCommand(params, null, null)
+
+    /** Only the App approval coordinator supplies this exact admitted lease and reviewed route. */
+    fun executeApprovedNetwork(params: JSONObject, lease: IsolatedExecutionPolicyOwner.Lease,
+        approvedRoute: JSONObject): JSONObject = executeCommand(params, lease, approvedRoute)
+
+    private fun executeCommand(params: JSONObject, lease: IsolatedExecutionPolicyOwner.Lease?,
+        approvedRoute: JSONObject?): JSONObject {
         val fields = setOf("id", "sessionId", "command", "timeoutMs", "persistChanges")
         require(params.keys().asSequence().toSet() == fields) { "Invalid Linux VM request fields" }
         require(listOf("id", "sessionId", "command").all { params.opt(it) is String }) {
@@ -40,7 +47,32 @@ internal class LinuxVmManager(private val context: Context) : AutoCloseable {
             "Linux VM command exceeds its limit"
         }
         require(params.opt("persistChanges") is Boolean) { "Linux VM persistence policy is required" }
-        return run(id, sessionId, command, timeout(params), params.getBoolean("persistChanges"))
+        val timeoutMs = timeout(params)
+        if (lease == null) return run(id, sessionId, command, timeoutMs, params.getBoolean("persistChanges"))
+        val network = LinuxVmNetworkHostBridge(context, id, sessionId, lease, requireNotNull(approvedRoute))
+        var receipt: JSONObject? = null
+        try {
+            val client = context.assets.open("linux-vm-network/dsh-fetch.py").use {
+                val bytes = it.readBytes()
+                require(bytes.size in 1..12 * 1024) { "Linux HTTPS client is invalid" }
+                java.util.Base64.getEncoder().encodeToString(bytes)
+            }
+            val networkCommand = "printf '%s' '$client' | base64 -d > /tmp/dsh-fetch\n" +
+                "chmod 700 /tmp/dsh-fetch\nexport PATH=/tmp:\$PATH DSH_HTTPS_RUN_ID='$id' DSH_HTTPS_DEVICE=/dev/vdd\n" + command
+            require(networkCommand.toByteArray(Charsets.UTF_8).size <= LinuxVmConsole.MAX_COMMAND_BYTES) {
+                "Linux command plus HTTPS client exceeds its limit"
+            }
+            receipt = run(id, sessionId, networkCommand, timeoutMs, params.getBoolean("persistChanges"), network = network)
+        } finally {
+            try { network.close() }
+            catch (cleanup: Exception) {
+                admission.close()
+                if (receipt == null) throw cleanup
+                receipt.put("status", "outcome_uncertain")
+                    .put("detail", "Linux HTTPS worker retirement is unconfirmed; no command may be replayed")
+            }
+        }
+        return checkNotNull(receipt)
     }
 
     fun importFile(params: JSONObject): JSONObject {
@@ -73,7 +105,8 @@ internal class LinuxVmManager(private val context: Context) : AutoCloseable {
     }
 
     private fun run(id: String, sessionId: String, command: String, timeoutMs: Long,
-        persistChanges: Boolean, source: String? = null, destination: String? = null, export: Boolean = false): JSONObject {
+        persistChanges: Boolean, source: String? = null, destination: String? = null, export: Boolean = false,
+        network: LinuxVmNetworkHostBridge? = null): JSONObject {
         val ticket = try { admission.admit(id) }
         catch (_: LinuxCommandAdmission.CancelledBeforeAdmission) {
             return result(id, sessionId, LinuxVmRunner.Result("cancelled", cancelled = true, retirementConfirmed = true), false)
@@ -86,10 +119,11 @@ internal class LinuxVmManager(private val context: Context) : AutoCloseable {
         var output: LinuxVmFileOutput? = null
         var exportPublished: Boolean? = false
         var openingImages = false
+        fun cancelled() = ticket.isCancelled || (network != null && !network.authorized())
         try {
             ownsCapacity = busy.compareAndSet(false, true)
             check(ownsCapacity) { "Linux VM is already executing a command" }
-            if (ticket.isCancelled) return result(id, sessionId, LinuxVmRunner.Result("cancelled",
+            if (cancelled()) return result(id, sessionId, LinuxVmRunner.Result("cancelled",
                 cancelled = true, retirementConfirmed = true), false).apply { if (export) put("filePublished", false) }
             if (source != null) {
                 if (export) output = LinuxVmFileOutput(context, source, requireNotNull(destination))
@@ -100,22 +134,25 @@ internal class LinuxVmManager(private val context: Context) : AutoCloseable {
             return images.open(sessionId, id, if (export) "export" else if (source != null) "import" else "execute").use { lease ->
                 retired = false
                 val execution = LinuxVmRunner.run(context, id, input?.command() ?: output?.command() ?: command,
-                    timeoutMs, lease, BooleanSupplier { ticket.isCancelled }, input?.memory ?: output?.input, output?.memory)
+                    timeoutMs, lease, BooleanSupplier { cancelled() }, input?.memory ?: output?.input, output?.memory,
+                    network = network)
                 executed = execution
                 retired = execution.retirementConfirmed
                 if (retired) lease.markRetired(execution.status, execution.exitCode)
-                val commit = persistChanges && retired && execution.status == "completed" && !ticket.isCancelled
+                // Quiesce the App network worker before publishing disks or releasing capacity.
+                network?.close()
+                val commit = persistChanges && retired && execution.status == "completed" && !cancelled()
                     && (input == null || execution.exitCode == 0)
                 // An aborted waiter cannot commit a disk even if shutdown won
                 // the race in the isolated process.
-                val committed = lease.finish(execution.status, commit, BooleanSupplier { ticket.isCancelled }) { publish ->
+                val committed = lease.finish(execution.status, commit, BooleanSupplier { cancelled() }) { publish ->
                     synchronized(publication) {
-                        if (ticket.isCancelled) false else { publish(); true }
+                        if (cancelled()) false else { publish(); true }
                     }
                 }
                 var settled = if (!retired) execution.copy(status = "outcome_uncertain",
                     detail = "Linux worker retirement is unconfirmed; inspect this run before continuing")
-                else if (!committed && ticket.isCancelled)
+                else if (!committed && cancelled())
                     execution.copy(status = "cancelled", cancelled = true) else execution
                 val exportFields = JSONObject().put("filePublished", false)
                 output?.let { snapshot ->
@@ -187,7 +224,7 @@ internal class LinuxVmManager(private val context: Context) : AutoCloseable {
                         detail = "Linux recovery requires inspection; no command is replayed and this owner is closed"), knownDisk)
                     .apply { if (export) put("filePublished", knownFile ?: JSONObject.NULL) }
             }
-            if (execution == null && ticket.isCancelled) {
+            if (execution == null && cancelled()) {
                 return result(id, sessionId, LinuxVmRunner.Result("cancelled", cancelled = true,
                     retirementConfirmed = retired), false).apply { if (export) put("filePublished", false) }
             }

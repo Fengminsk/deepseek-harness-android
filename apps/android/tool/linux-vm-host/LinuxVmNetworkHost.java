@@ -72,7 +72,9 @@ public final class LinuxVmNetworkHost {
         String script = Files.readString(Path.of(args[4]), StandardCharsets.UTF_8);
         String encoded = Base64.getEncoder().encodeToString(script.getBytes(StandardCharsets.UTF_8));
         String command = "set -eu\nprintf '%s' '" + encoded + "' | base64 -d > /tmp/dsh-fetch.py\n"
-                + "python3 /tmp/dsh-fetch.py /dev/vdd " + run + " https://example.com/\n";
+                + "export DSH_HTTPS_DEVICE=/dev/vdd DSH_HTTPS_RUN_ID=" + run + "\n"
+                + "python3 /tmp/dsh-fetch.py https://example.com/ > /tmp/dsh-https-body\n"
+                + "grep -q 'Example Domain' /tmp/dsh-https-body\necho DSH_GUEST_HTTPS_OK\n";
         System.load(Path.of(args[0]).toAbsolutePath().toString());
         ByteBuffer bios = load(Path.of(args[1]), true), kernel = load(Path.of(args[2]), true);
         ByteBuffer root = load(Path.of(args[3]), false);

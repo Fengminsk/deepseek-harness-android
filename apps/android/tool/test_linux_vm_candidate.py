@@ -166,6 +166,13 @@ class CandidateTests(CandidateFixture):
                 'apps/android/android/app/src/main/java/com/minnnng/dsh_android/LinuxVmHttpsMailbox.java',
                 'apps/android/android/app/src/main/java/com/minnnng/dsh_android/LocalHttpConnectTunnel.java',
                 'apps/android/android/app/src/main/java/com/minnnng/dsh_android/IsolatedExecutionPolicyOwner.java',
+                'apps/android/android/app/src/main/java/com/minnnng/dsh_android/LinuxVmHttpsBrokerExchange.java',
+                'apps/android/android/app/src/main/java/com/minnnng/dsh_android/LinuxVmHttpsExchange.java',
+                'apps/android/android/app/src/main/kotlin/com/minnnng/dsh_android/LinuxVmNetworkBridge.kt',
+                'apps/android/android/app/src/main/kotlin/com/minnnng/dsh_android/LinuxVmNetworkApprovalCoordinator.kt',
+                'apps/android/android/app/src/main/assets/linux-vm-network/dsh-fetch.py',
+                'apps/android/runtime/native-linux-network.mjs',
+                'apps/android/runtime/linux-network-admission.mjs',
                 'apps/android/tool/linux-vm-host/dsh-fetch.py']:
             with self.subTest(name=name):
                 self.bundle('project/' + name)

@@ -21,6 +21,10 @@
         android:targetPackage="com.minnnng.dsh_android"
         android:targetProcesses="com.minnnng.dsh_android:agent" />
     <instrumentation
+        android:name="com.minnnng.dsh_android.LinuxVmNetworkAcceptanceInstrumentation"
+        android:targetPackage="com.minnnng.dsh_android"
+        android:targetProcesses="com.minnnng.dsh_android:agent" />
+    <instrumentation
         android:name="com.minnnng.dsh_android.BlackScreenAcceptanceInstrumentation"
         android:targetPackage="com.minnnng.dsh_android"
         android:targetProcesses="com.minnnng.dsh_android:agent" />

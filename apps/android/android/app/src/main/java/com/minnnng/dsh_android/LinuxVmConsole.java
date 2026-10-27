@@ -18,6 +18,13 @@ final class LinuxVmConsole {
     private boolean started;
     private boolean truncated;
     private Integer exitCode;
+    private Runnable interpreterPoll;
+
+    /** Set once before native entry; runs on the interpreter thread before consuming console input. */
+    void attachInterpreterPoll(Runnable poll) {
+        if (interpreterPoll != null || inputOffset != 0) throw new IllegalStateException("Linux console already started");
+        interpreterPoll = java.util.Objects.requireNonNull(poll);
+    }
 
     LinuxVmConsole(String command) {
         this(command, false, false);
@@ -73,6 +80,7 @@ final class LinuxVmConsole {
 
     /** The emulator calls this only after VirtIO console reports input capacity. */
     synchronized int read(byte[] buffer, int capacity) {
+        if (interpreterPoll != null) interpreterPoll.run();
         int length = Math.min(Math.min(buffer.length, capacity), input.length - inputOffset);
         if (length < 0) throw new IllegalArgumentException("Negative console capacity");
         System.arraycopy(input, inputOffset, buffer, 0, length);

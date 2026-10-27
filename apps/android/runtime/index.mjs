@@ -20,6 +20,8 @@ import { modelWorkflowCapability, registerAndroidWorkflowTool } from './tool-nat
 import { NativeLinuxCommands } from './native-linux-commands.mjs'
 import { registerIsolatedLinuxTool } from './tool-isolated-linux.mjs'
 import { NativeLinuxVm } from './native-linux-vm.mjs'
+import { createNativeLinuxNetworkBridge } from './native-linux-network.mjs'
+import { createLinuxNetworkAdmission } from './linux-network-admission.mjs'
 import { registerLinuxVmTool, registerLinuxImportTool, registerLinuxExportTool, registerLinuxInspectTool } from './tool-linux-vm.mjs'
 import AndroidShell from './android-shell.mjs'
 import { WebAccess } from './web-access.mjs'
@@ -165,8 +167,9 @@ export function apply(ctx, config) {
   registerIsolatedLinuxTool(ctx, nativeLinuxCommands)
   const nativeLinuxVm = new NativeLinuxVm(transport)
   ctx.provide('nativeLinuxVm', nativeLinuxVm)
-  ctx.inject(['fs', 'sandboxPolicy'], linuxCtx => {
-    registerLinuxVmTool(linuxCtx, nativeLinuxVm, LINUX_VM_DEVICE_ACCEPTED)
+  ctx.inject(['fs', 'sandboxPolicy', 'approval'], linuxCtx => {
+    const networkAdmission = createLinuxNetworkAdmission(linuxCtx, createNativeLinuxNetworkBridge(transport))
+    registerLinuxVmTool(linuxCtx, nativeLinuxVm, LINUX_VM_DEVICE_ACCEPTED, networkAdmission)
     registerLinuxImportTool(linuxCtx, nativeLinuxVm, LINUX_VM_DEVICE_ACCEPTED, process.cwd())
     registerLinuxExportTool(linuxCtx, nativeLinuxVm, LINUX_VM_DEVICE_ACCEPTED, process.cwd())
     registerLinuxInspectTool(linuxCtx, nativeLinuxVm, LINUX_VM_DEVICE_ACCEPTED)

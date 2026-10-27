@@ -25,17 +25,26 @@ class IsolatedLinuxVmService : Service() {
         const val CANCEL = 2
         const val COMPLETE = 3
         const val STARTED = 4
+        const val NETWORK_CALL = 5
+        const val NETWORK_RESULT = 6
     }
     private class Run(val id: String, val reply: Messenger, val cancelled: AtomicBoolean = AtomicBoolean()) {
         @Volatile var thread: Thread? = null
+        @Volatile var network: LinuxVmNetworkGuest? = null
+        var networkCallLimit = 0
     }
     private val owned = AtomicReference<Run?>()
     private val messenger = Messenger(Handler(Looper.getMainLooper()) { message ->
         if (message.sendingUid != applicationInfo.uid || !Process.isIsolated()) return@Handler true
+        if (message.what == NETWORK_RESULT) {
+            owned.get()?.network?.receive(message.data)
+            return@Handler true
+        }
         if (message.what == CANCEL) {
             owned.get()?.let { run ->
                 if (run.id == message.data.getString("id")) {
                     run.cancelled.set(true)
+                    run.network?.close()
                     Handler(Looper.getMainLooper()).postDelayed({
                         if (owned.get() === run) Process.killProcess(Process.myPid())
                     }, 2000)
@@ -73,10 +82,19 @@ class IsolatedLinuxVmService : Service() {
                 && images[1].size in 1..32 * 1024 * 1024
                 && images[2].size in 512..256 * 1024 * 1024 && images[2].size % 512 == 0)
             val run = Run(id, reply)
+            val networkNonce = data.getString("networkNonce")
+            if (networkNonce != null) {
+                require(UUID.fromString(networkNonce).toString() == networkNonce && input == null && buildOutput == null)
+                run.networkCallLimit = data.getInt("networkCallLimit", 0)
+                require(run.networkCallLimit in 1..IsolatedNetworkBroker.MAX_CALLS)
+                run.network = LinuxVmNetworkGuest(id, networkNonce, reply, run.cancelled,
+                    System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(timeoutMs))
+            } else require(!data.containsKey("networkCallLimit"))
             check(owned.compareAndSet(null, run)) { "Linux VM worker already owns a run" }
             Handler(Looper.getMainLooper()).postDelayed({
                 if (owned.get() === run) {
                     run.cancelled.set(true)
+                    run.network?.close()
                     // All virtual CPUs are in this process; there are no host
                     // subprocesses. Binder death then confirms their retirement.
                     Handler(Looper.getMainLooper()).postDelayed({
@@ -101,6 +119,7 @@ class IsolatedLinuxVmService : Service() {
         var timedOut = false
         var retired = true
         var isolated = false
+        var cancelledAtRetirement = false
         try {
             check(Process.isIsolated()) { "Linux VM requires an isolated UID" }
             check(File(applicationInfo.dataDir).list() == null) { "Linux VM can read App private storage" }
@@ -123,6 +142,16 @@ class IsolatedLinuxVmService : Service() {
                         extra.add(images[3].mapReadWrite())
                         if (images.size >= 5) extra.add(images[4].mapReadOnly())
                         if (images.size == 6) extra.add(images[5].mapReadWrite())
+                        val network = run.network
+                        if (network != null) {
+                            // These two buffers are owned only by this interpreter. The App exchanges
+                            // bounded Binder byte arrays; it never races a guest block write.
+                            val mailboxDisk = java.nio.ByteBuffer.allocateDirect(LinuxVmHttpsMailbox.DISK_BYTES)
+                            val mailbox = LinuxVmHttpsMailbox(mailboxDisk, run.id, run.networkCallLimit, network, run.cancelled)
+                            console.attachInterpreterPoll { mailbox.poll() }
+                            extra.add(java.nio.ByteBuffer.allocateDirect(512).asReadOnlyBuffer())
+                            extra.add(mailboxDisk)
+                        }
                         run.reply.send(Message.obtain(null, STARTED).apply {
                             data = Bundle().apply {
                                 putString("id", run.id); putInt("uid", Process.myUid())
@@ -143,12 +172,21 @@ class IsolatedLinuxVmService : Service() {
                             else -> "failed"
                         }
                         if (status == "failed") detail = "Linux guest stopped without a command completion record"
-                    } finally { extra.forEach { SharedMemory.unmap(it) }; SharedMemory.unmap(disk) }
+                    } finally {
+                        // Only the initial entries came from SharedMemory. The optional mailbox
+                        // and vdc placeholder are ordinary direct buffers, retired with this call.
+                        extra.take(images.size - 3).forEach { SharedMemory.unmap(it) }
+                        SharedMemory.unmap(disk)
+                    }
                 } finally { SharedMemory.unmap(kernel) }
             } finally { SharedMemory.unmap(bios) }
         } catch (failure: Exception) { detail = failure.message?.take(512) ?: "Linux VM execution failed" }
         catch (failure: LinkageError) { detail = "Linux VM native provider is unavailable: ${failure.javaClass.simpleName}" }
-        finally { images.forEach { it.close() } }
+        finally {
+            cancelledAtRetirement = run.cancelled.get()
+            run.network?.close()
+            images.forEach { it.close() }
+        }
         // API 28 may reuse this bound service. The old VM has retired and its
         // mappings are closed before the caller can dispatch a successor.
         owned.compareAndSet(run, null)
@@ -159,7 +197,7 @@ class IsolatedLinuxVmService : Service() {
                     putBoolean("isolated", isolated); putString("status", status)
                     putString("output", console.output()); putBoolean("truncated", console.truncated())
                     putInt("exitCode", console.exitCode() ?: -1)
-                    putBoolean("timedOut", timedOut); putBoolean("cancelled", run.cancelled.get() || status == "cancelled")
+                    putBoolean("timedOut", timedOut); putBoolean("cancelled", cancelledAtRetirement || status == "cancelled")
                     putBoolean("retirementConfirmed", retired); putString("detail", detail)
                 }
             })
@@ -170,6 +208,7 @@ class IsolatedLinuxVmService : Service() {
     override fun onDestroy() {
         owned.get()?.let { run ->
             run.cancelled.set(true)
+            run.network?.close()
             try { run.thread?.join(400) }
             catch (_: InterruptedException) { Thread.currentThread().interrupt() }
         }

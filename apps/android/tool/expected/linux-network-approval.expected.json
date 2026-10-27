@@ -1,0 +1,36 @@
+{
+  "asked": {
+    "id": "<approval-audit>",
+    "toolName": "linux_exec",
+    "callId": "network-once",
+    "reason": "Linux HTTPS GET: example.com; calls=2; timeoutMs=10000; persistChanges=true; commandSha256=bdb03c5a667d9c449638a740d5e8d55f5137072fb972089cc4e61f0fc4b00903"
+  },
+  "decided": { "id": "<approval-audit>", "outcome": "allowed-once" },
+  "receipt": {
+    "id": "<run>",
+    "sessionId": "<session>",
+    "status": "completed",
+    "output": "Example Domain",
+    "exitCode": 0,
+    "guestUid": 99001,
+    "timedOut": false,
+    "cancelled": false,
+    "truncated": false,
+    "diskCommitted": true,
+    "retirementConfirmed": true,
+    "detail": null,
+    "approvalCleanupConfirmed": true,
+    "cancelRequested": false
+  },
+  "modelContext": {
+    "runId": "<run>",
+    "approvalId": "<native-approval>",
+    "approvalAuditId": "<approval-audit>",
+    "route": "系统网络 / VPN",
+    "exactHosts": ["example.com"],
+    "networkCallLimit": 2,
+    "commandSha256": "bdb03c5a667d9c449638a740d5e8d55f5137072fb972089cc4e61f0fc4b00903",
+    "timeoutMs": 10000,
+    "persistChanges": true
+  }
+}

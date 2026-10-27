@@ -16,7 +16,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * Optional bounded HTTPS mailbox for a dedicated VM block mapping. No socket or App file
  * handle is given to the guest. The trusted caller supplies the mapping bound to this lease.
  * poll() must run between interpreter steps on that interpreter's thread, never concurrently
- * with native block writes. Android isolated-Service/Binder admission is not implemented here.
+ * with native block writes. The exchange can be an App-owned broker or an identity-bound IPC peer.
  * Run cancellation must call close() (or revoke its lease) to close an in-flight socket;
  * setting the VM's cancellation flag alone is observed on the next interpreter callback.
  */
@@ -28,9 +28,9 @@ final class LinuxVmHttpsMailbox implements AutoCloseable {
     static final int MAX_BODY_BYTES = 65536;
     static final int MAGIC = 0x4453484d; // DSHM
     private final ByteBuffer disk;
-    private final IsolatedExecutionPolicyOwner.Lease lease;
-    private final IsolatedNetworkJournal journal;
-    private final IsolatedNetworkBroker broker;
+    private final String runId;
+    private final int callLimit;
+    private final LinuxVmHttpsExchange exchange;
     private final AtomicBoolean vmCancelled;
     private final AtomicBoolean closed = new AtomicBoolean();
     private long pollThread;
@@ -40,30 +40,40 @@ final class LinuxVmHttpsMailbox implements AutoCloseable {
                         IsolatedNetworkJournal journal,
                         IsolatedNetworkBroker.DeadlineResolver resolver,
                         IsolatedNetworkBroker.PinnedTransport transport, AtomicBoolean vmCancelled) {
+        this(checkedDisk(disk), lease.runId(), lease.policy().networkCallLimit(),
+                new LinuxVmHttpsBrokerExchange(lease, journal, resolver, transport), vmCancelled);
+    }
+
+    LinuxVmHttpsMailbox(ByteBuffer disk, String runId, int callLimit,
+                       LinuxVmHttpsExchange exchange, AtomicBoolean vmCancelled) {
+        checkedDisk(disk);
+        if (!UUID.fromString(runId).toString().equals(runId)
+                || callLimit < 1 || callLimit > IsolatedNetworkBroker.MAX_CALLS)
+            throw new IllegalArgumentException("Invalid VM HTTPS admission");
+        this.disk = disk.duplicate().clear().order(ByteOrder.BIG_ENDIAN);
+        this.runId = runId;
+        this.callLimit = callLimit;
+        this.exchange = Objects.requireNonNull(exchange);
+        this.vmCancelled = Objects.requireNonNull(vmCancelled);
+        if (!exchange.active()) { exchange.close(); throw new IllegalArgumentException("VM HTTPS exchange is inactive"); }
+    }
+
+    private static ByteBuffer checkedDisk(ByteBuffer disk) {
         if (!disk.isDirect() || disk.isReadOnly() || disk.capacity() != DISK_BYTES)
             throw new IllegalArgumentException("Invalid VM HTTPS mailbox mapping");
-        this.disk = disk.duplicate().order(ByteOrder.BIG_ENDIAN);
-        this.lease = Objects.requireNonNull(lease);
-        this.journal = Objects.requireNonNull(journal);
-        this.vmCancelled = Objects.requireNonNull(vmCancelled);
-        if (!lease.active(lease.policy().version()) || lease.policy().networkCallLimit() < 1)
-            throw new IllegalArgumentException("VM HTTPS requires an active network lease");
-        broker = new IsolatedNetworkBroker(new IsolatedNetworkBroker.Policy(lease.policy().exactHosts()),
-                resolver, transport, journal, IsolatedNetworkBroker.MAX_DURATION_MILLIS,
-                MAX_BODY_BYTES, lease.deadlineNanos());
-        lease.onRevoked(this::close);
+        return disk;
     }
 
     /** One complete request per sequence; an invalid or replayed frame retires the capability. */
     void poll() {
         long thread = Thread.currentThread().getId();
         if (pollThread == 0) pollThread = thread;
-        if (pollThread != thread) throw new IllegalStateException("VM mailbox polled on another thread");
+        if (pollThread != thread) { close(); throw new IllegalStateException("VM mailbox polled on another thread"); }
         if (!active()) { close(); return; }
         int next = disk.getInt(8);
         if (next == sequence) return;
         try {
-            if (next != sequence + 1 || next > lease.policy().networkCallLimit()
+            if (next != sequence + 1 || next > callLimit
                     || next > IsolatedNetworkBroker.MAX_CALLS || disk.getInt(0) != MAGIC
                     || disk.getInt(4) != 1) throw new IOException("Invalid VM HTTPS sequence");
             int size = disk.getInt(12);
@@ -72,21 +82,13 @@ final class LinuxVmHttpsMailbox implements AutoCloseable {
             byte[] expected = read(16, 32), payload = read(SECTOR_BYTES, size);
             if (!MessageDigest.isEqual(expected, sha256(payload))) throw new IOException("Invalid mailbox digest");
             String run = ascii(payload, 0, 36), call = ascii(payload, 36, 36);
-            if (!lease.runId().equals(run) || !UUID.fromString(call).toString().equals(call))
+            if (!runId.equals(run) || !UUID.fromString(call).toString().equals(call))
                 throw new IOException("VM HTTPS run or call changed");
             String url = ascii(payload, 72, size - 72);
             sequence = next;
-            IsolatedNetworkBroker.Result result = broker.get(call, url);
+            byte[] reply = exchange.request(next, run, call, url);
             if (!active()) { close(); return; }
-            IsolatedNetworkJournal.Entry entry = journal.read(call);
-            if (entry == null || entry.state() != IsolatedNetworkJournal.State.TERMINAL
-                    || entry.status() != result.status()
-                    || result.status() == IsolatedNetworkBroker.Status.REPLAY_DENIED
-                    || result.status() == IsolatedNetworkBroker.Status.AUDIT_UNAVAILABLE
-                    || result.status() == IsolatedNetworkBroker.Status.AUDIT_FULL
-                    || result.status() == IsolatedNetworkBroker.Status.AUDIT_UNCERTAIN)
-                throw new IOException("VM HTTPS result has no committed audit");
-            byte[] reply = encode(run, call, result);
+            validateReply(reply, run, call);
             if (!active()) { close(); return; }
             put(REQUEST_BYTES + SECTOR_BYTES, reply);
             put(REQUEST_BYTES + 16, sha256(reply));
@@ -101,13 +103,13 @@ final class LinuxVmHttpsMailbox implements AutoCloseable {
     }
 
     private boolean active() {
-        return !closed.get() && !vmCancelled.get() && lease.active(lease.policy().version());
+        return !closed.get() && !vmCancelled.get() && exchange.active();
     }
 
     @Override public void close() {
         if (closed.compareAndSet(false, true)) {
             vmCancelled.set(true);
-            broker.revoke();
+            exchange.close();
         }
     }
 
@@ -133,7 +135,7 @@ final class LinuxVmHttpsMailbox implements AutoCloseable {
         catch (NoSuchAlgorithmException error) { throw new IllegalStateException(error); }
     }
 
-    private static byte[] encode(String run, String call, IsolatedNetworkBroker.Result result)
+    static byte[] encode(String run, String call, IsolatedNetworkBroker.Result result)
             throws IOException {
         byte[] url = (result.finalUrl() == null ? "" : result.finalUrl()).getBytes(StandardCharsets.US_ASCII);
         byte[] type = (result.contentType() == null ? "" : result.contentType()).getBytes(StandardCharsets.UTF_8);
@@ -147,5 +149,24 @@ final class LinuxVmHttpsMailbox implements AutoCloseable {
         out.writeShort(url.length); out.writeShort(type.length); out.writeInt(body.length);
         out.write(url); out.write(type); out.write(body);
         return bytes.toByteArray();
+    }
+
+    /** Reject corrupt, cross-run or unbounded IPC replies before publishing to the virtual disk. */
+    static void validateReply(byte[] reply, String run, String call) throws IOException {
+        if (reply == null || reply.length < 83 || reply.length > RESPONSE_BYTES - SECTOR_BYTES)
+            throw new IOException("Invalid VM HTTPS response size");
+        ByteBuffer view = ByteBuffer.wrap(reply).order(ByteOrder.BIG_ENDIAN);
+        int status = Byte.toUnsignedInt(reply[72]);
+        int http = Short.toUnsignedInt(view.getShort(73));
+        int url = Short.toUnsignedInt(view.getShort(75));
+        int type = Short.toUnsignedInt(view.getShort(77));
+        int body = view.getInt(79);
+        if (!ascii(reply, 0, 36).equals(run) || !ascii(reply, 36, 36).equals(call)
+                || status >= IsolatedNetworkBroker.Status.AUDIT_UNAVAILABLE.ordinal()
+                || url > IsolatedNetworkBroker.MAX_URL_BYTES || type > 1024 || body < 0 || body > MAX_BODY_BYTES
+                || 83L + url + type + body != reply.length
+                || (status == 0 ? http < 100 || http > 599 : http != 0 || body != 0))
+            throw new IOException("Invalid VM HTTPS response fields");
+        ascii(reply, 83, url);
     }
 }

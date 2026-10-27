@@ -6,6 +6,7 @@ import { isAbsolute, relative, resolve, sep } from 'node:path'
 import { LINUX_VM_IMPORT_BYTES, LinuxVmOutcomeUncertainError, LinuxVmRecoveryRequiredError, prepareLinuxVmCommand, prepareLinuxVmImport,
   prepareLinuxVmInspection } from './native-linux-vm.mjs'
 import { canonicalModelTarget, insideModelWorkspace, modelFileObservationDenial } from './model-file-read-guard.mjs'
+import { prepareLinuxModelCommand, requireLinuxNetworkAdmission } from './linux-network-admission.mjs'
 
 const definitionKey = Symbol('Android Linux definition owner')
 
@@ -73,9 +74,11 @@ function deferReceipt(execution, result) {
     sessionId: String(execution.agent.session.id), runId: result.runId ?? result.id,
     status: result.status, diskCommitted: result.diskCommitted ?? null,
     cancelRequested: result.cancelRequested === true }
-  for (const key of ['filePublished', 'retirementConfirmed']) {
+  for (const key of ['filePublished', 'retirementConfirmed', 'approvalCleanupConfirmed', 'needsReview']) {
     if (result[key] === null || typeof result[key] === 'boolean') facts[key] = result[key]
   }
+  if (result.approvalCleanupConfirmed === false)
+    facts.approvalCleanupError = 'durable-revocation-unconfirmed'
   if (typeof result.nativeStatus === 'string' && result.nativeStatus.length <= 32) facts.nativeStatus = result.nativeStatus
   if (result.exitCode === null || Number.isInteger(result.exitCode) && result.exitCode >= 0 && result.exitCode <= 255) facts.exitCode = result.exitCode
   if (Number.isSafeInteger(result.bytes) && result.bytes >= 0 && result.bytes <= LINUX_VM_IMPORT_BYTES) facts.bytes = result.bytes
@@ -168,23 +171,37 @@ export function registerLinuxExportTool(ctx, owner, available, workspaceRoot = p
 }
 
 /** Register real guest shell execution only after its packaged provider has passed device acceptance. */
-export function registerLinuxVmTool(ctx, owner, available) {
+export function registerLinuxVmTool(ctx, owner, available, networkAdmission) {
   if (!available) return
+  if (networkAdmission !== undefined) requireLinuxNetworkAdmission(networkAdmission)
   registerDefinition(ctx, {
     name: 'linux_exec',
-    description: 'Execute a shell script in the local Linux VM. The guest has BusyBox shell and utilities, its own Linux kernel and a disk per conversation. Commands start in /workspace. The guest cannot access Android app data or phone files directly and has no network. Use linux_import for workspace files. timeoutMs includes boot and execution (1000–120000 ms). With read-only session policy all disk changes are discarded; writable policy persists changes only after successful guest shutdown. A confirmed cancelled or timed-out run discards changes; a cancellation request arriving after publication cannot undo it. Inspect exitCode, status, diskCommitted and cancelRequested before claiming success or retrying.',
+    description: 'Execute a shell script in the local Linux VM. The guest has BusyBox shell and utilities, its own Linux kernel and a disk per conversation. Commands start in /workspace. The guest cannot access Android app data or phone files directly. Use linux_import for workspace files. timeoutMs includes boot and execution (1000–120000 ms). With read-only session policy all disk changes are discarded; writable policy persists changes only after successful guest shutdown. A confirmed cancelled or timed-out run discards changes; a cancellation request arriving after publication cannot undo it. Inspect exitCode, status, diskCommitted and cancelRequested before claiming success or retrying.'
+      + (networkAdmission === undefined ? ' The guest has no network.'
+        : ' Networking is off by default. To request HTTPS GET through dsh-fetch, supply networkHosts (1–32 exact lowercase public DNS hosts) and networkCallLimit (1–64 requests). This asks the user to approve this exact command, hosts, budgets and App-selected route once; it is not an automatic grant. No raw sockets, arbitrary headers, uploads or general curl/git network access. Redirects must remain within approved hosts; each body is limited to 64 KiB. approvalCleanupConfirmed:false preserves the command result but blocks further commands; report the unresolved approval cleanup and never retry it. Never auto-retry a denied, cancelled or uncertain request.'),
     parameters: {
       command: { type: 'string', required: true },
       timeoutMs: { type: 'integer' },
+      ...(networkAdmission === undefined ? {} : {
+        networkHosts: { type: 'array', items: { type: 'string' } },
+        networkCallLimit: { type: 'integer' },
+      }),
     },
     output: {
       schema: { type: 'json' },
       render: (_args, result) => [{ type: 'text', text: JSON.stringify(result) }],
     },
     async execute(args, execution) {
-      const { agent, persistChanges } = sessionPolicy(ctx, execution)
-      return retainReceipt(execution, () => owner.execute(String(agent.session.id),
-        prepareLinuxVmCommand(args), execution.signal, { persistChanges }))
+      const initial = sessionPolicy(ctx, execution)
+      const { agent, persistChanges } = initial
+      const prepared = networkAdmission === undefined ? { command: prepareLinuxVmCommand(args), network: null }
+        : prepareLinuxModelCommand(args)
+      if (!prepared.network) return retainReceipt(execution, () => owner.execute(String(agent.session.id),
+        prepared.command, execution.signal, { persistChanges }))
+      const grant = await networkAdmission.request(execution, prepared.command, prepared.network, persistChanges,
+        () => sessionPolicy(ctx, execution, initial.checkDelegation).persistChanges)
+      return retainReceipt(execution, () => owner.executeApprovedNetwork(String(agent.session.id),
+        prepared.command, execution.signal, { persistChanges }, grant))
     },
   })
 }
