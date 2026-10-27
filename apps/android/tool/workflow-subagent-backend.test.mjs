@@ -508,6 +508,7 @@ test('private DSL owner admits fixed guest source, binds original body and relea
     calls.push(method)
     if (method === 'native.workflow.admit') {
       assert.equal(params.inputJson, '{}')
+      assert.equal(params.workflowBody, source.program)
       assert.doesNotMatch(params.program, /return 1/)
       return { runId: source.runId, token: 'private-token' }
     }
@@ -515,7 +516,7 @@ test('private DSL owner admits fixed guest source, binds original body and relea
     if (method === 'native.workflow.execute') {
       const initialized = await callbacks.call({ ...params, callId: 1,
         action: 'WORKFLOW_BEGIN', value: {} })
-      assert.equal(initialized.value.body, source.program)
+      assert.equal(Object.hasOwn(initialized.value, 'body'), false)
       const childId = randomUUID()
       nativeChildId = childId
       await callbacks.call({ ...params, callId: 2,

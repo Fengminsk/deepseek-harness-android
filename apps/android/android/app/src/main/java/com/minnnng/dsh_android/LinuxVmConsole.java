@@ -24,14 +24,29 @@ final class LinuxVmConsole {
     }
 
     LinuxVmConsole(String command, boolean workspace, boolean workspaceFresh) {
+        this(command, workspace, workspaceFresh, System.currentTimeMillis() / 1000L);
+    }
+
+    /** Host-only clock seam; Android always samples its own wall clock above. */
+    LinuxVmConsole(String command, boolean workspace, boolean workspaceFresh, long epochSeconds) {
+        if (epochSeconds < 0) throw new IllegalArgumentException("Invalid Linux VM startup time");
         byte[] bytes = command.getBytes(StandardCharsets.UTF_8);
         if (bytes.length == 0 || bytes.length > MAX_COMMAND_BYTES || command.indexOf('\0') >= 0)
             throw new IllegalArgumentException("Invalid Linux VM command");
         String encoded = Base64.getEncoder().encodeToString(bytes);
         String delimiter = "DSH_SCRIPT_" + UUID.randomUUID().toString().replace("-", "");
         StringBuilder script = new StringBuilder("stty -echo; exec /bin/sh /dev/hvc0\n");
-        script.append("mount -t proc proc /proc 2>/dev/null\n")
+        // The init shell has a local default PATH, but child programs otherwise
+        // inherit no PATH (Python cannot then resolve its own executable).
+        script.append("export PATH=/bin:/usr/bin:/sbin:/usr/sbin\n")
+            .append("mount -t proc proc /proc 2>/dev/null\n")
             .append("mount -t sysfs sysfs /sys 2>/dev/null\n")
+            .append("printf '\\n").append(marker).append(":BEGIN\\n'\n")
+            .append("dsh_setup=0\n")
+            // TinyEMU's RISC-V timer counts monotonic time since boot, not UTC.
+            // Set only the guest clock, before formatting or running model code.
+            .append("/bin/busybox date -u -s @").append(epochSeconds)
+            .append(" >/dev/null 2>&1 || { printf 'Linux guest clock initialization failed\\n'; dsh_setup=125; }\n")
             .append("mkdir -p /workspace\n")
             .append("cat > /tmp/dsh-command.b64 <<'").append(delimiter).append("'\n");
         // Linux canonical TTY input has a per-line bound. A large command is
@@ -39,11 +54,9 @@ final class LinuxVmConsole {
         for (int offset = 0; offset < encoded.length(); offset += 512)
             script.append(encoded, offset, Math.min(offset + 512, encoded.length())).append('\n');
         script.append(delimiter).append('\n')
-            .append("base64 -d /tmp/dsh-command.b64 > /tmp/dsh-command.sh\n")
-            .append("printf '\\n").append(marker).append(":BEGIN\\n'\n")
-            .append("dsh_setup=0\n");
+            .append("base64 -d /tmp/dsh-command.b64 > /tmp/dsh-command.sh\n");
         if (workspace) {
-            if (workspaceFresh) script.append("mkfs.ext2 -F /dev/vdb >/tmp/dsh-workspace-format.log 2>&1 || { cat /tmp/dsh-workspace-format.log; dsh_setup=125; }\n");
+            if (workspaceFresh) script.append("if [ \"$dsh_setup\" -eq 0 ]; then mkfs.ext2 -F /dev/vdb >/tmp/dsh-workspace-format.log 2>&1 || { cat /tmp/dsh-workspace-format.log; dsh_setup=125; }; fi\n");
             script.append("if [ \"$dsh_setup\" -eq 0 ]; then mount -t ext2 /dev/vdb /workspace || dsh_setup=125; fi\n");
         }
         script.append("if [ \"$dsh_setup\" -eq 0 ]; then\n")

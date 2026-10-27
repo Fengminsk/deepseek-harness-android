@@ -30,7 +30,7 @@ test('guest host exposes copied initialization and paired ordered progress', asy
   const events = []
   const { host, released } = port({ onProgress: async event => { events.push(event) } })
   assert.deepEqual(JSON.parse(JSON.stringify(host.begin({}))), {
-    meta: { name: 'review', description: 'Review files' }, body: 'return 1', args: { input: 1 },
+    meta: { name: 'review', description: 'Review files' }, args: { input: 1 },
     limits: { maxTotalAgents: 3, maxConcurrentAgents: 2, maxItemsPerCall: 32, syncTimeoutMs: 5000 },
   })
   await assert.rejects(Promise.resolve().then(() => host.begin({})),

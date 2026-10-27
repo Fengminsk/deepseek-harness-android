@@ -8550,7 +8550,7 @@
     },
     {
       "path": "apps/android/runtime/index.mjs",
-      "sha256": "ac2e2ef2aafbbcfc92b9f3475af7580dc12d1d690c66ed66fde00e272fb383fe"
+      "sha256": "daf95b3f3bf0ba58eb9d06f6fcaca153f81a41ab910ff23d207997eea020a46a"
     },
     {
       "path": "apps/android/runtime/cordis.patch.yml",

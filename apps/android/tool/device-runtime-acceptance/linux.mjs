@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readFile, writeFile, unlink } from 'node:fs/promises'
+import { realpathSync } from 'node:fs'
 import { join, relative, isAbsolute, sep } from 'node:path'
 import SandboxPolicy, { setSandboxMode } from '@deepseek-ai/dsh-sandbox-policy'
 import { preparePythonAnalysis, validatePythonAnalysis } from './python-analysis.mjs'
@@ -10,6 +11,9 @@ export async function runLinuxAcceptance({ ctx, transport, agent, workspace, app
   adapter, workflow }) {
   assert.equal(ctx.agents.get(agent.id), agent)
   assert.equal(typeof appWorkspaceRoot, 'string', 'Acceptance requires the explicit production App workspace root')
+  // Android exposes the same App directory through /data/user/0 and /data/data.
+  appWorkspaceRoot = realpathSync(appWorkspaceRoot)
+  workspace = realpathSync(workspace)
   const scope = relative(appWorkspaceRoot, workspace)
   assert.ok(scope && !isAbsolute(scope) && scope !== '..' && !scope.startsWith(`..${sep}`))
   const [{ NativeLinuxVm }, { registerLinuxVmTool, registerLinuxImportTool, registerLinuxExportTool,

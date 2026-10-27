@@ -98,7 +98,6 @@ export class WorkflowGuestHostPort {
     this.#begun = true
     return snapshotIsolatedJson({
       meta: this.#prepared.meta,
-      body: this.#prepared.program,
       args: this.#prepared.args,
       limits: {
         maxTotalAgents: this.#prepared.maxTotalAgents,

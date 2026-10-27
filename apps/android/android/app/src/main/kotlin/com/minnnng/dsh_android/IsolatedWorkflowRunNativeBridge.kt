@@ -38,6 +38,7 @@ internal class IsolatedWorkflowRunNativeBridge(
     private class Run(
         val runId: String, val token: String, val sessionId: String,
         val program: String, val inputJson: String, val deadlineMillis: Int,
+        val workflowBody: String?,
         val reservation: IsolatedScriptRunController.Reservation,
     ) {
         val monitor = java.lang.Object()
@@ -48,8 +49,9 @@ internal class IsolatedWorkflowRunNativeBridge(
     }
 
     fun admit(params: JSONObject): JSONObject {
+        val workflowKeys = if (params.has("workflowBody")) setOf("workflowBody") else emptySet()
         require(params.keys().asSequence().toSet() == setOf(
-            "kind", "runId", "sessionId", "program", "inputJson", "deadlineMillis"))
+            "kind", "runId", "sessionId", "program", "inputJson", "deadlineMillis") + workflowKeys)
         require(listOf("kind", "runId", "sessionId", "program", "inputJson")
             .all { params.get(it) is String } && params.get("deadlineMillis") is Int)
         require(params.getString("kind") == "workflow")
@@ -58,6 +60,13 @@ internal class IsolatedWorkflowRunNativeBridge(
         val program = params.getString("program")
         val inputJson = params.getString("inputJson")
         val deadline = params.getInt("deadlineMillis")
+        val workflowBody = if (params.has("workflowBody")) {
+            require(params.get("workflowBody") is String)
+            params.getString("workflowBody").also {
+                PtcScriptEngine.validateWorkflow(it, "{}", deadline)
+                IsolatedScriptWire.utf8Bytes(it)
+            }
+        } else null
         require(deadline in 1..PtcScriptEngine.MAX_WORKFLOW_DEADLINE_MILLIS)
         PtcScriptEngine.validateWorkflow(program, inputJson, deadline)
         synchronized(lock) {
@@ -78,7 +87,7 @@ internal class IsolatedWorkflowRunNativeBridge(
                 throw failure
             }
             val token = UUID.randomUUID().toString()
-            runs[token] = Run(runId, token, sessionId, program, inputJson, deadline, script)
+            runs[token] = Run(runId, token, sessionId, program, inputJson, deadline, workflowBody, script)
             return JSONObject().put("runId", runId).put("token", token)
         }
     }
@@ -104,7 +113,7 @@ internal class IsolatedWorkflowRunNativeBridge(
             run.result = IsolatedScriptRunController.run(app, run.runId, run.program,
                 run.inputJson, run.deadlineMillis, BooleanSupplier { run.cancelled.get() },
                 workflowTransport = transport, workflowToken = run.token,
-                workflowOwner = owner, reservation = run.reservation)
+                workflowOwner = owner, reservation = run.reservation, workflowBody = run.workflowBody)
             settleOwner(run)
         } catch (failure: Exception) {
             run.cancelled.set(true)

@@ -14,6 +14,9 @@ registerHooks({ resolve(specifier, context, nextResolve) {
   if (specifier === 'node-addon-require-builtin' && process.platform === 'android') {
     return { url: new URL('node_modules/@minnnng/dsh-android-runtime/require-builtin.cjs', runtime).href, shortCircuit: true }
   }
+  if (specifier === '@vscode/ripgrep' && process.platform === 'android') {
+    return { url: new URL('node_modules/@minnnng/dsh-android-runtime/android-ripgrep.mjs', runtime).href, shortCircuit: true }
+  }
   if (specifier === '@deepseek-ai/node-addon-system/flock' && process.platform === 'android') {
     return { url: new URL('android/flock.mjs', runtime).href, shortCircuit: true }
   }

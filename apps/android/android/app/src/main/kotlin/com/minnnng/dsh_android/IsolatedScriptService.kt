@@ -72,6 +72,10 @@ class IsolatedScriptService : Service() {
             base = base + IsolatedScriptWire.KEY_PROGRAM_FORMAT
             checkNotNull(data.getString(IsolatedScriptWire.KEY_PROGRAM_FORMAT))
         } else IsolatedScriptWire.FUNCTION_EXPRESSION
+        val workflowBody = if (programFormat == IsolatedScriptWire.WORKFLOW_DRIVER) {
+            base = base + IsolatedScriptWire.KEY_WORKFLOW_BODY
+            checkNotNull(data.getString(IsolatedScriptWire.KEY_WORKFLOW_BODY))
+        } else null
         val hostGrantsJson = if (data.containsKey(IsolatedScriptWire.KEY_HOST_GRANTS)) {
             require(data.keySet() == base + IsolatedScriptWire.KEY_HOST_GRANTS)
             checkNotNull(data.getString(IsolatedScriptWire.KEY_HOST_GRANTS)).also {
@@ -91,6 +95,7 @@ class IsolatedScriptService : Service() {
             checkNotNull(data.getString(IsolatedScriptWire.KEY_INPUT)),
             data.getInt(IsolatedScriptWire.KEY_DEADLINE, -1),
             programFormat,
+            workflowBody,
         )
         val death = IBinder.DeathRecipient {
             active?.stop()
@@ -115,7 +120,10 @@ class IsolatedScriptService : Service() {
                     override fun call(requestJson: String): String = requestHost(run, requestJson)
                     override fun submit(requestJson: String): Int = submitHost(run, requestJson)
                 }
-                if (run.request.programFormat() == IsolatedScriptWire.FUNCTION_BODY)
+                if (run.request.programFormat() == IsolatedScriptWire.WORKFLOW_DRIVER)
+                    engine.runWorkflow(run.request.program(), run.request.workflowBody(),
+                        run.request.inputJson(), run.request.deadlineMillis(), host, run.hostGrantsJson)
+                else if (run.request.programFormat() == IsolatedScriptWire.FUNCTION_BODY)
                     engine.runFunctionBody(run.request.program(), run.request.inputJson(),
                         run.request.deadlineMillis(), host, run.hostGrantsJson)
                 else engine.run(run.request.program(), run.request.inputJson(),

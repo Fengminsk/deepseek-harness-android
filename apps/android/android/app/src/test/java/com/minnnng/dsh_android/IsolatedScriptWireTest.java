@@ -21,6 +21,23 @@ public final class IsolatedScriptWireTest {
             throw new AssertionError("PTC function body format was lost");
         }
         rejects(() -> new IsolatedScriptWire.Request(run, nonce, "return 1", "{}", 1000, "auto"));
+        IsolatedScriptWire.Request workflow = new IsolatedScriptWire.Request(run, nonce,
+                "(input,host,script) => script()", "{}", 120000,
+                IsolatedScriptWire.WORKFLOW_DRIVER, "return 42");
+        if (!workflow.workflowBody().equals("return 42")) {
+            throw new AssertionError("Workflow body was not preserved separately");
+        }
+        rejects(() -> new IsolatedScriptWire.Request(run, nonce, "x=>x", "{}", 1000,
+                IsolatedScriptWire.WORKFLOW_DRIVER));
+        for (String format : new String[] {IsolatedScriptWire.FUNCTION_EXPRESSION,
+                IsolatedScriptWire.FUNCTION_BODY}) {
+            rejects(() -> new IsolatedScriptWire.Request(run, nonce, "x=>x", "{}", 1000,
+                    format, "return 1"));
+        }
+        for (String body : new String[] {"", "  ", "\ud800", "中".repeat(21846)}) {
+            rejects(() -> new IsolatedScriptWire.Request(run, nonce, "x=>x", "{}", 1000,
+                    IsolatedScriptWire.WORKFLOW_DRIVER, body));
+        }
         // The App controller, rather than this transport value, chooses the
         // execution class. Binder must carry its bounded workflow deadline.
         new IsolatedScriptWire.Request(run, nonce, "(x) => x", "{}",

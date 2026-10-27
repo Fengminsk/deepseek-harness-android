@@ -6,6 +6,10 @@
 
 使用 `-PdshAcceptanceBuildType=release -Ptarget-platform=android-arm64` 同时构建 App 和 AndroidTest，分别通过 `adb install -r` 安装；每次运行仪器测试前停止 App，保证嵌入式 Node 在新进程中启动。执行 `adb shell am instrument -w -r -e suite workflow com.minnnng.dsh_android.test/com.minnnng.dsh_android.NativeRuntimeToolsAcceptanceInstrumentation`；也可选择 `ptc`、`linux` 或 `all`。`INSTRUMENTATION_CODE: -1` 与 `passed: true` 表示至少执行了一项具名检查且没有失败，不表示完整验收通过。保留的样例 home 只包含验收数据及运行时诊断。
 
+整个样例执行期间，保持验收页面位于前台。仅 release 验收构建包含 `RuntimeAcceptanceActivity`：它位于 `:agent`，不对外导出，也没有桌面入口。仪器测试打开页面并等待其恢复前台的确认后，才准备运行时。页面只绘制纯黑色，隐藏系统栏，并将窗口亮度降至最低，不改变系统亮度设置。它可以覆盖锁屏但不会解锁设备；可见时保持亮屏，不启动 Flutter、`AgentService` 或产品 Node profile。系统返回操作可关闭页面并使样例失败；承载清理时会请求关闭页面。此前台条件避免依赖缓存后台进程获得调度。这些检查通过不代表后台 Agent 执行、锁屏存活或任务进行中进程死亡后的恢复已验收。
+
+启动 watchdog 的期限为 120 秒，到样例 Node 派发时结束。超时后先发布 `startup-timeout` 及当前启动阶段，再让独立守护线程读取调用栈；承载最多等待两秒获取调用栈，随后报告失败且不确认清理完成。超时会阻止排队中的 worker 稍后派发 Node。整个进程被冻结时，watchdog 自身也无法执行，因此没有超时输出不代表启动仍有进展。这些启动诊断与下文的套件执行期限分开计算。
+
 结果另行提供 `complete` 及 `coverage.required`、`coverage.passed`、`coverage.failed`、`coverage.unverified`、`coverage.issues`。检查名称均包含套件前缀。[报告汇总器](device-runtime-acceptance/report.mjs) 定义必需名称；即使套件省略某项，该项仍会列为未验证。只有所选套件的全部检查（`all` 则为全部套件）通过，且不存在未解决缺口、缺失证据、重复结果或未知名称／状态时，`complete` 才为 `true`。未知套件或零项已执行检查会同时返回 `passed: false` 与 `complete: false`。各套件原始报告仍保留。这一完整性仅针对样例声明的检查，不代表生产服务生命周期或整个 Android 交付完成。`node --test apps/android/tool/device-runtime-acceptance-report.test.mjs` 无需设备即可验证汇总逻辑。
 
 工作流验收让模型形状的请求经过真实 ToolRuntime，验证原生计算及子 Agent 输出，通过 `job_kill` 取消已经进入模型执行的真实子任务，并将持久化 Session 的工作流开始／结束事件与原生恢复观察对应。这三项特意使用没有工具的子 Agent；实际工作的子 Agent 由 Linux 套件检查。脚本模型不使用凭据、不发外部模型请求。PTC 验收通过生产已审查 SDK 验证本地读取、受保护的写入／编辑及附件落地，以及隔离 UID、回调、取消和 CPU 限制；公开网页抓取属于真实网络测试。SAF 用例要求保留验收目录的持久授权，并保持 `dsh-saf-acceptance.txt` 与记录的哈希一致。附件用例在专用 Session 中创建自己的文件，不查看用户文档或既有会话附件。

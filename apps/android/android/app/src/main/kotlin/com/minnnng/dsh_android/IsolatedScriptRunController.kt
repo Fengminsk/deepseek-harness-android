@@ -268,6 +268,7 @@ internal object IsolatedScriptRunController {
         reservation: Reservation? = null,
         approvedReservation: ApprovedReservation? = null,
         reviewedPtc: Boolean = false,
+        workflowBody: String? = null,
     ): Result {
         check(Looper.myLooper() != Looper.getMainLooper()) { "Script binding and audit must run off the main thread" }
         check(Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -282,12 +283,17 @@ internal object IsolatedScriptRunController {
             hostPolicy == null && networkPolicy == null && policyOwner == null && approvedReservation == null)) {
             "Android PTC requires only its reviewed ToolRuntime callbacks"
         }
+        check(workflowBody == null || workflowTransport != null) {
+            "A separate workflow body requires its App-owned callback owner"
+        }
         if (reviewedPtc) PtcScriptEngine.validatePtc(program, inputJson, deadlineMillis)
         else if (workflowTransport != null) PtcScriptEngine.validateWorkflow(program, inputJson, deadlineMillis)
         else PtcScriptEngine.validate(program, inputJson, deadlineMillis)
         val request = IsolatedScriptWire.Request(
             runId, UUID.randomUUID().toString(), program, inputJson, deadlineMillis,
-            if (reviewedPtc) IsolatedScriptWire.FUNCTION_BODY else IsolatedScriptWire.FUNCTION_EXPRESSION,
+            if (workflowBody != null) IsolatedScriptWire.WORKFLOW_DRIVER
+            else if (reviewedPtc) IsolatedScriptWire.FUNCTION_BODY else IsolatedScriptWire.FUNCTION_EXPRESSION,
+            workflowBody,
         )
         check((hostPolicy != null || networkPolicy != null) == (policyOwner != null) &&
             (toolTransport == null) == (toolToken == null) &&
@@ -489,6 +495,9 @@ internal object IsolatedScriptRunController {
                                     putString(IsolatedScriptWire.KEY_NONCE, request.nonce())
                                     putString(IsolatedScriptWire.KEY_PROGRAM, request.program())
                                     putString(IsolatedScriptWire.KEY_PROGRAM_FORMAT, request.programFormat())
+                                    request.workflowBody()?.let {
+                                        putString(IsolatedScriptWire.KEY_WORKFLOW_BODY, it)
+                                    }
                                     putString(IsolatedScriptWire.KEY_INPUT, request.inputJson())
                                     putInt(IsolatedScriptWire.KEY_DEADLINE, request.deadlineMillis())
                                     pending.host?.let {

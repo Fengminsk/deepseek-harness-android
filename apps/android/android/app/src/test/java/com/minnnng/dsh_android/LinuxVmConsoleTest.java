@@ -8,8 +8,26 @@ import java.util.regex.Pattern;
 /** Host JVM framing tests; Linux boot and execution are separately verified on-device. */
 public final class LinuxVmConsoleTest {
     public static void main(String[] args) {
+        long before = System.currentTimeMillis() / 1000L;
         LinuxVmConsole console = new LinuxVmConsole("echo hello\nexit 7");
         String script = input(console);
+        long after = System.currentTimeMillis() / 1000L;
+        check(script.contains("export PATH=/bin:/usr/bin:/sbin:/usr/sbin\n"));
+        check(script.indexOf("export PATH=") < script.indexOf("/bin/sh /tmp/dsh-command.sh"));
+        Matcher clock = Pattern.compile("/bin/busybox date -u -s @([0-9]+) >/dev/null 2>&1").matcher(script);
+        check(clock.find());
+        long captured = Long.parseLong(clock.group(1));
+        check(captured >= before && captured <= after);
+        String fixedClock = input(new LinuxVmConsole("echo guest-command", true, true, 1793060921L));
+        check(fixedClock.contains("/bin/busybox date -u -s @1793060921 "));
+        check(fixedClock.indexOf("date -u -s @") < fixedClock.indexOf("mkfs.ext2"));
+        check(fixedClock.indexOf("date -u -s @") < fixedClock.indexOf("/bin/sh /tmp/dsh-command.sh"));
+        check(fixedClock.contains("clock initialization failed\\n'; dsh_setup=125; }"));
+        check(fixedClock.contains("if [ \"$dsh_setup\" -eq 0 ]; then mkfs.ext2"));
+        check(fixedClock.contains("if [ \"$dsh_setup\" -eq 0 ]; then\nmkdir -p /workspace/.home"));
+        check(fixedClock.contains("else dsh_status=$dsh_setup; fi"));
+        try { new LinuxVmConsole("echo forbidden", true, true, -1); throw new AssertionError(); }
+        catch (IllegalArgumentException expected) { }
         Matcher marker = Pattern.compile("DSH-[a-f0-9-]+:BEGIN").matcher(script);
         check(marker.find());
         String prefix = marker.group().replace(":BEGIN", "");

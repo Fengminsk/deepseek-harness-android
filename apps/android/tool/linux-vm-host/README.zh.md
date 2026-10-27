@@ -20,9 +20,13 @@ node apps/android/tool/verify-tinyemu-host.mjs alpine
 node apps/android/tool/verify-tinyemu-host.mjs lifecycle
 ```
 
+验证独立的新宿主构建时，可在运行器命令末尾添加 `--build-record=<build.json路径>`，无需更改默认构建记录。运行器仍核对完整构建记录与源码哈希，并创建新的证据目录。
+
 [运行器](../verify-tinyemu-host.mjs)需要已准备的开发客体资产，`alpine` 还要求校验过的镜像构建输入。`smoke` 验证真实客体启动及两次运行之间的工作区保持；`alpine` 在客体内创建 ext2 镜像，安装锁定的离线软件包，启动该镜像，实际执行 Python、线程、随机数、SQLite、SSL、子进程、git、curl 和文件操作，再使用 `e2fsck -fn` 检查独立、未挂载的只读镜像。`lifecycle` 让已进入的循环超时，并在确认客体输出后取消执行；两者均不发布改动后的镜像，同时核对源镜像保持不变。
 
 每次运行在 `.cache/android/tinyemu-host/runs/` 内使用新目录。报告包含原生状态、客体退出码、哈希和明确的 `androidDeviceVerified: false`。只有客体命令完成且原生执行器关闭后才写出镜像，失败诊断会保留。宿主检查通过不启用产品能力，也不代表手机执行已验收。[运行时说明](../linux-vm-runtime.md)（[中文](../linux-vm-runtime.zh.md)）定义普通 Android 构建排除此执行器和镜像的行为。
+
+`LinuxVmHost` 还可接受第十三个位置参数 `startupEpochSeconds`，仅用于宿主校时失败测试。省略时，生产控制台在启动前采样宿主 UTC 时钟；Android 工具和 Binder 请求不能提供该参数。无法表示的时间必须让客体校时以 125 退出，并且不格式化工作区、不执行任务脚本。`freshWorkspaceUnchanged` 表示初始为空的工作区是否仍全为零；失败运行仍不发布任何镜像。正常时钟验证必须使用默认宿主采样，检查客体时间、新文件时间戳及普通 Python ZIP 创建，不能关闭时间戳校验。
 
 ## 候选装配
 

@@ -23,6 +23,8 @@ public final class IsolatedScriptWire {
     public static final String KEY_PROGRAM_FORMAT = "programFormat";
     public static final String FUNCTION_EXPRESSION = "function-expression";
     public static final String FUNCTION_BODY = "function-body";
+    public static final String WORKFLOW_DRIVER = "workflow-driver";
+    public static final String KEY_WORKFLOW_BODY = "workflowBody";
     public static final String KEY_INPUT = "inputJson";
     public static final String KEY_DEADLINE = "deadlineMillis";
     public static final String KEY_STATUS = "status";
@@ -38,16 +40,28 @@ public final class IsolatedScriptWire {
     public static final int MAX_HOST_CALLS = 128;
 
     public record Request(String runId, String nonce, String program, String inputJson,
-                          int deadlineMillis, String programFormat) {
+                          int deadlineMillis, String programFormat, String workflowBody) {
         public Request(String runId, String nonce, String program, String inputJson,
                        int deadlineMillis) {
-            this(runId, nonce, program, inputJson, deadlineMillis, FUNCTION_EXPRESSION);
+            this(runId, nonce, program, inputJson, deadlineMillis, FUNCTION_EXPRESSION, null);
+        }
+        public Request(String runId, String nonce, String program, String inputJson,
+                       int deadlineMillis, String programFormat) {
+            this(runId, nonce, program, inputJson, deadlineMillis, programFormat, null);
         }
         public Request {
             requireUuid(runId);
             requireUuid(nonce);
-            if (!FUNCTION_EXPRESSION.equals(programFormat) && !FUNCTION_BODY.equals(programFormat)) {
+            if (!FUNCTION_EXPRESSION.equals(programFormat) && !FUNCTION_BODY.equals(programFormat)
+                    && !WORKFLOW_DRIVER.equals(programFormat)) {
                 throw new IllegalArgumentException("Unsupported isolated program format");
+            }
+            if (WORKFLOW_DRIVER.equals(programFormat) != (workflowBody != null)) {
+                throw new IllegalArgumentException("Workflow driver requires a separate function body");
+            }
+            if (workflowBody != null) {
+                PtcScriptEngine.validateWorkflow(workflowBody, "{}", deadlineMillis);
+                utf8Bytes(workflowBody);
             }
             // The App controller checks the execution class before constructing
             // this Binder value; the isolated process receives no authority to

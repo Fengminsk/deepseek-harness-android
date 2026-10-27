@@ -41,7 +41,7 @@ test('native workflow callback frames invoke the bounded host and child ports', 
   assert.deepEqual(owner.methods[0].params, { runId, token })
   assert.ok(owner.methods[0].signal instanceof AbortSignal)
   const init = await owner.callbacks.call(owner.call(1, 'WORKFLOW_BEGIN', {}))
-  assert.equal(init.value.body, 'return 1')
+  assert.equal(Object.hasOwn(init.value, 'body'), false)
   const start = await owner.callbacks.call(owner.call(2, 'WORKFLOW_START_CHILD', { prompt: 'Inspect' }))
   assert.deepEqual(start, { runId, callId: 2, value: { callId: 1, childId } })
   const result = await owner.callbacks.call(owner.call(3, 'WORKFLOW_CHILD_RESULT', { callId: 1 }))

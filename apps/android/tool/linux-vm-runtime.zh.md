@@ -27,6 +27,8 @@ title: Android Linux 虚拟机执行
 
 当前 ToolRuntime 执行读取 Agent 的实时 `sandboxPolicy`。缺少策略或 Agent 未注册时拒绝执行。宿主独立提供 `persistChanges`，模型参数不能设置它：只读会话丢弃客体磁盘改动；可写会话可在命令完成后提交。若已完成回执中的 `diskCommitted` 与该策略不符，Node 持有者会拒绝回执。
 
+每次执行前，可信宿主采样当前 UTC 时间戳，由[控制台启动程序](../android/app/src/main/java/com/minnnng/dsh_android/LinuxVmConsole.java)使用仅含十进制数字的 `busybox date` 参数设置客体时钟。TinyEMU 的 RISC-V 计时器只提供经过时长，不提供实际日期。校时先于工作区格式化和模型代码；校时失败返回退出码 125，跳过这两步。该过程只修改客体时钟，不接受模型提供的时间，也不使用网络校时服务。采样时间可能落后一个有上限的启动时长，并不构成对手机时钟准确性的独立验证。启动程序还导出固定的客体 `PATH=/bin:/usr/bin:/sbin:/usr/sbin`，让 Python 等程序启动的子进程可以解析可执行文件路径。
+
 ## 工作区文件导入
 
 `linux_import` 接收 `source`、`destination` 和可选的 `timeoutMs`。源文件相对于当前 Agent 工作目录，目标相对于客体 `/workspace`。拒绝绝对路径、父目录穿越、URI，以及模型指定的会话或持久化参数。仅接受同时位于 App 工作区及当前会话工作区内、不超过 64 MiB 的普通文件。附件需先通过独立授权的物化步骤写入工作区，再执行导入。

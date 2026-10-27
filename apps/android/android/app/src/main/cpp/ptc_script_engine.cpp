@@ -117,7 +117,7 @@ constexpr char kSnapshotSource[] = R"PTC_JSON(
 )PTC_JSON";
 
 enum class Stop { kNone, kCancelled, kDeadline };
-enum class ProgramFormat { kFunctionExpression, kAsyncFunctionBody };
+enum class ProgramFormat { kFunctionExpression, kAsyncFunctionBody, kWorkflowDriver };
 
 struct Result {
   const char* status;
@@ -492,12 +492,47 @@ void hostCallAsync(const v8::FunctionCallbackInfo<v8::Value>& args) {
   args.GetReturnValue().Set(resolver.ToLocalChecked()->GetPromise());
 }
 
+// Called only before any guest function runs. The constructor receives the body
+// as one string argument, so it cannot escape into a driver or host closure.
+v8::MaybeLocal<v8::Function> compileAsyncBody(
+    v8::Local<v8::Context> context, const std::u16string& body, bool workflow) {
+  auto isolate = context->GetIsolate();
+  auto ctor_source = v8::String::NewFromUtf8Literal(
+      isolate, "(async function(){}).constructor");
+  v8::Local<v8::Script> ctor_script;
+  v8::Local<v8::Value> ctor_value;
+  if (!v8::Script::Compile(context, ctor_source).ToLocal(&ctor_script) ||
+      !ctor_script->Run(context).ToLocal(&ctor_value) || !ctor_value->IsFunction()) {
+    return {};
+  }
+  auto body_source = v8String(isolate, std::u16string(u"'use strict';\n") + body);
+  if (body_source.IsEmpty()) return {};
+  v8::Local<v8::Value> ctor_args[7];
+  int count = 0;
+  if (workflow) {
+    for (const char* name : {"agent", "parallel", "pipeline", "phase", "log", "args"}) {
+      ctor_args[count++] = v8::String::NewFromUtf8(isolate, name).ToLocalChecked();
+    }
+  } else {
+    ctor_args[count++] = v8::String::NewFromUtf8Literal(isolate, "input");
+    ctor_args[count++] = v8::String::NewFromUtf8Literal(isolate, "host");
+  }
+  ctor_args[count++] = body_source.ToLocalChecked();
+  v8::Local<v8::Object> constructed;
+  context->AllowCodeGenerationFromStrings(true);
+  bool created = ctor_value.As<v8::Function>()
+      ->NewInstance(context, count, ctor_args).ToLocal(&constructed);
+  context->AllowCodeGenerationFromStrings(false);
+  if (!created || !constructed->IsFunction()) return {};
+  return constructed.As<v8::Function>();
+}
+
 Result execute(const std::shared_ptr<Execution>& execution,
                const std::u16string& program, const std::u16string& input,
                JNIEnv* env, jobject host_callback,
                const std::u16string& grants,
                std::chrono::steady_clock::time_point deadline,
-               ProgramFormat format) {
+               ProgramFormat format, const std::u16string& workflow_body) {
   std::call_once(initialize_once, [] {
     platform = v8::platform::NewDefaultPlatform(1);
     v8::V8::InitializePlatform(platform.get());
@@ -608,40 +643,14 @@ Result execute(const std::shared_ptr<Execution>& execution,
           return {"ENGINE_UNAVAILABLE", {}};
         }
         v8::Local<v8::Function> function;
+        v8::Local<v8::Function> workflow_function;
+        if (format == ProgramFormat::kWorkflowDriver &&
+            !compileAsyncBody(context, workflow_body, true).ToLocal(&workflow_function)) {
+          return {"INVALID_PROGRAM", {}};
+        }
         if (format == ProgramFormat::kAsyncFunctionBody) {
-          // Only this trusted constructor invocation may generate code from a
-          // string. The untrusted body is a separate argument, not interpolated
-          // into an enclosing source expression. Disable code generation again
-          // before calling any user code or passing the App-issued host object.
-          auto ctor_source = v8::String::NewFromUtf8Literal(
-              isolate, "(async function(){}).constructor");
-          v8::Local<v8::Script> ctor_script;
-          v8::Local<v8::Value> ctor_value;
-          if (!v8::Script::Compile(context, ctor_source).ToLocal(&ctor_script) ||
-              !ctor_script->Run(context).ToLocal(&ctor_value) ||
-              !ctor_value->IsFunction()) {
-            result.status = "ENGINE_UNAVAILABLE";
-          } else {
-            std::u16string strict_body = u"'use strict';\n";
-            strict_body += program;
-            auto body_source = v8String(isolate, strict_body);
-            if (body_source.IsEmpty()) {
-              result.status = "INVALID_PROGRAM";
-            } else {
-              v8::Local<v8::Value> ctor_args[] = {
-                  v8::String::NewFromUtf8Literal(isolate, "input"),
-                  v8::String::NewFromUtf8Literal(isolate, "host"),
-                  body_source.ToLocalChecked()};
-              v8::Local<v8::Object> constructed;
-              context->AllowCodeGenerationFromStrings(true);
-              bool created = ctor_value.As<v8::Function>()
-                  ->NewInstance(context, 3, ctor_args).ToLocal(&constructed);
-              context->AllowCodeGenerationFromStrings(false);
-              if (!created || !constructed->IsFunction()) {
-                result.status = "INVALID_PROGRAM";
-              } else function = constructed.As<v8::Function>();
-            }
-          }
+          if (!compileAsyncBody(context, program, false).ToLocal(&function))
+            result.status = "INVALID_PROGRAM";
         } else {
           std::u16string expression = u"(";
           expression += program;
@@ -661,9 +670,12 @@ Result execute(const std::shared_ptr<Execution>& execution,
           // The script parser rejected the program, or the trusted constructor
           // could not be initialized. No user function has been invoked.
         } else {
-          v8::Local<v8::Value> arguments[] = {parsed_input, host_value};
+          v8::Local<v8::Value> arguments[] = {parsed_input, host_value,
+              format == ProgramFormat::kWorkflowDriver
+                  ? workflow_function.As<v8::Value>() : v8::Undefined(isolate).As<v8::Value>()};
           v8::Local<v8::Value> value;
-          if (function->Call(context, context->Global(), 2, arguments)
+          if (function->Call(context, context->Global(),
+                  format == ProgramFormat::kWorkflowDriver ? 3 : 2, arguments)
                   .ToLocal(&value)) {
             isolate->PerformMicrotaskCheckpoint();
             bool serializable = true;
@@ -815,12 +827,15 @@ Java_com_minnnng_dsh_1android_PtcScriptEngine_nativeClose(
 static jobjectArray runNative(
     JNIEnv* env, jlong id, jstring program_text, jstring input_text,
     jint deadline_millis, jobject host_callback, jstring grants_text,
-    ProgramFormat format) {
+    ProgramFormat format, jstring workflow_body_text = nullptr) {
   auto execution = lookup(id);
   if (execution == nullptr || !execution->begin()) {
     return toJava(env, {"INVALID_EXECUTION", {}});
   }
   if (program_text == nullptr || input_text == nullptr ||
+      (format == ProgramFormat::kWorkflowDriver) != (workflow_body_text != nullptr) ||
+      (workflow_body_text != nullptr &&
+          env->GetStringLength(workflow_body_text) > kMaxProgramBytes) ||
       (host_callback == nullptr) != (grants_text == nullptr) ||
       env->GetStringLength(program_text) > kMaxProgramBytes ||
       env->GetStringLength(input_text) > kMaxInputBytes ||
@@ -832,15 +847,19 @@ static jobjectArray runNative(
   std::u16string program;
   std::u16string input;
   std::u16string grants;
+  std::u16string workflow_body;
   try {
     program = fromJava(env, program_text);
     input = fromJava(env, input_text);
     if (grants_text != nullptr) grants = fromJava(env, grants_text);
+    if (workflow_body_text != nullptr) workflow_body = fromJava(env, workflow_body_text);
   } catch (...) {
     execution->finish();
     return toJava(env, {"ENGINE_UNAVAILABLE", {}});
   }
   if (utf8Bytes(program) > kMaxProgramBytes ||
+      (workflow_body_text != nullptr && (workflow_body.empty() ||
+          utf8Bytes(workflow_body) > kMaxProgramBytes)) ||
       utf8Bytes(input) > kMaxInputBytes ||
       (grants_text != nullptr && utf8Bytes(grants) > kMaxGrantsBytes)) {
     execution->finish();
@@ -867,7 +886,7 @@ static jobjectArray runNative(
   Result result{"ENGINE_UNAVAILABLE", {}};
   try {
     result = execute(execution, program, input, env, host_callback, grants,
-                     deadline, format);
+                     deadline, format, workflow_body);
   } catch (...) {
     result = {"ENGINE_UNAVAILABLE", {}};
   }
@@ -897,4 +916,12 @@ Java_com_minnnng_dsh_1android_PtcScriptEngine_nativeRunFunctionBody(
     jint deadline_millis, jobject host_callback, jstring grants_text) {
   return runNative(env, id, body_text, input_text, deadline_millis,
                    host_callback, grants_text, ProgramFormat::kAsyncFunctionBody);
+}
+
+extern "C" JNIEXPORT jobjectArray JNICALL
+Java_com_minnnng_dsh_1android_PtcScriptEngine_nativeRunWorkflow(
+    JNIEnv* env, jclass, jlong id, jstring program_text, jstring body_text,
+    jstring input_text, jint deadline_millis, jobject host_callback, jstring grants_text) {
+  return runNative(env, id, program_text, input_text, deadline_millis,
+                   host_callback, grants_text, ProgramFormat::kWorkflowDriver, body_text);
 }

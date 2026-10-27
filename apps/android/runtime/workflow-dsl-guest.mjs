@@ -1,16 +1,15 @@
 /**
  * App-private adapter for the original workflow JavaScript DSL. The exported
- * program is trusted source; the model body arrives only through WORKFLOW_BEGIN
- * inside the isolated V8 worker. Neither this module nor its caller evaluates
- * that body in the App/Node process.
+ * program is trusted source; native code compiles the separate model body before
+ * invoking this driver with string-code generation disabled. Neither this module
+ * nor its caller evaluates that body in the App/Node process.
  */
 
-function workflowDslGuest(input, host) {
+function workflowDslGuest(input, host, script) {
   return (async () => {
     const MAX_CALLS = 128
     const MAX_ITEMS = 32
     const MAX_NODES = 8192
-    const AsyncFunction = (async () => {}).constructor
     class WorkflowFault extends Error {
       constructor(code, message) { super(message); this.code = code }
     }
@@ -70,7 +69,7 @@ function workflowDslGuest(input, host) {
     }
     const initialization = await callback('WORKFLOW_BEGIN', {})
     if (!plain(input) || Reflect.ownKeys(input).length !== 0 || !plain(initialization)
-      || typeof initialization.body !== 'string' || !plain(initialization.limits)) {
+      || typeof script !== 'function' || !plain(initialization.limits)) {
       fail('BAD_BEGIN', 'Workflow initialization is invalid')
     }
     const limits = initialization.limits
@@ -203,8 +202,6 @@ function workflowDslGuest(input, host) {
       event({ type: 'log', message })
     }
     try {
-      const script = new AsyncFunction('agent', 'parallel', 'pipeline', 'phase', 'log', 'args',
-        `"use strict";\n${initialization.body}`)
       const raw = await script(agent, parallel, pipeline, phase, log, args)
       await Promise.allSettled([...pendingProgress])
       if (pendingWork.size) fail('UNJOINED_WORK', 'Workflow returned while asynchronous hooks were still running')
@@ -224,7 +221,7 @@ function workflowDslGuest(input, host) {
   })()
 }
 
-/** Function expression accepted by PtcScriptEngine.run; fixed for every model body. */
+/** Fixed driver; PtcScriptEngine.runWorkflow supplies the separately compiled body. */
 export const WORKFLOW_DSL_GUEST_PROGRAM = workflowDslGuest.toString()
 
 /** Only an App-admitted, ungranted workflow may use this private program. */
@@ -243,5 +240,6 @@ export function workflowDslNativeProgram(prepared) {
   }
   return Object.freeze({ kind: 'workflow', runId: prepared.runId,
     sessionId: prepared.sessionId, program: WORKFLOW_DSL_GUEST_PROGRAM,
+    workflowBody: prepared.program,
     inputJson: '{}', deadlineMillis: prepared.deadlineMillis })
 }

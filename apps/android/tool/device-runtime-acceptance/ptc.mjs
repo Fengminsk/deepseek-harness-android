@@ -9,6 +9,7 @@ import Web from '@deepseek-ai/dsh-web'
 import * as WebFetch from '@deepseek-ai/dsh-web-fetch-http'
 import * as WebTools from '@deepseek-ai/dsh-tool-web'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
+import { establishAttachmentHome } from '@deepseek-ai/dsh-attachment-local'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { setSandboxMode } from '@deepseek-ai/dsh-sandbox-policy'
 import { NativeIsolatedToolCallbacks } from '../../runtime/native-isolated-tool-callbacks.mjs'
@@ -24,10 +25,52 @@ import AndroidAttachmentStore from '../../runtime/android-attachment-store.mjs'
 // A stored, single-file ZIP containing only "readonly archive device fixture\n".
 const archiveFixture = 'UEsDBBQAAAAAAChsW12obBxMIAAAACAAAAAOAAAAYWNjZXB0YW5jZS50eHRyZWFkb25seSBhcmNoaXZlIGRldmljZSBmaXh0dXJlClBLAQIUABQAAAAAAChsW12obBxMIAAAACAAAAAOAAAAAAAAAAAAAAAAAAAAAABhY2NlcHRhbmNlLnR4dFBLBQYAAAAAAQABADwAAABMAAAAAAA='
 
+/**
+ * Keep direct acceptance tool calls inside a real AgentLoop turn, without a model request.
+ * @param {object} ctx - Acceptance services including the live Agent and Session owners.
+ * @param {object} agent - Idle acceptance Agent whose log will later seed a child.
+ * @param {Function} action - Checks and joined callback retirement owned by this turn.
+ * @returns {Promise<object>} The checks' original result after turn closure and durable flush.
+ */
+export async function inPtcAcceptanceTurn(ctx, agent, action) {
+  assert.equal(agent.status, 'idle')
+  assert.equal(ctx.sessionProjections.stateOf(agent.session, 'turnBoundary').openTurnStartSeq, null)
+  let entered = false, failed = false, failure, result
+  const stop = ctx.on('agent/pre-step', async (event, next) => {
+    if (event.agent !== agent) return next()
+    try {
+      const decision = await next()
+      assert.equal(decision.kind, 'enter', 'PTC acceptance turn was rejected')
+      assert.equal(entered, false, 'PTC acceptance checks must run once')
+      entered = true
+      result = await action()
+      return { ...decision, messages: [] }
+    } catch (error) { failed = true; failure = error; throw error }
+  })
+  try {
+    agent.send(createUserMessage({ source: { kind: 'user' },
+      content: [{ type: 'text', text: 'Run the local PTC acceptance checks.' }] }), 'next-turn', true)
+    await agent.whenIdle()
+  } finally { stop() }
+  assert.equal(ctx.sessionProjections.stateOf(agent.session, 'turnBoundary').openTurnStartSeq, null)
+  assert.equal(await ctx.sessions.flush(agent.session), true, 'PTC acceptance turn did not flush')
+  if (failed) throw failure
+  assert.equal(entered, true, 'PTC acceptance turn did not start')
+  return result
+}
+
 /** Runs only in the isolated acceptance profile/home, using the production native RPC transport. */
-export async function runPtcAcceptance({ ctx, transport, agent, workspace }) {
+export function runPtcAcceptance(input) {
+  return inPtcAcceptanceTurn(input.ctx, input.agent, () => runPtcChecks(input))
+}
+
+async function runPtcChecks({ ctx, transport, agent, workspace, callbackRouting }) {
   assert.equal(typeof workspace, 'string')
   assert.equal(ctx.agents.get(agent.id), agent)
+  const home = resolveDshHome()
+  const privateRoot = await transport.request('native.storage.root', {})
+  assert.equal(typeof privateRoot, 'string')
+  await establishAttachmentHome(home, privateRoot)
   await mkdir(workspace, { recursive: true })
   const fileName = `ptc-acceptance-${randomUUID()}.txt`
   const file = join(workspace, fileName)
@@ -39,8 +82,8 @@ export async function runPtcAcceptance({ ctx, transport, agent, workspace }) {
     return result
   } }
   const callbacks = new NativeIsolatedToolCallbacks(measuredTransport,
-    new IsolatedToolCallJournal(join(resolveDshHome(), 'ptc-device-journal')))
-  ctx.provide('nativeIsolatedToolCallbacks', callbacks)
+    new IsolatedToolCallJournal(join(home, 'ptc-device-journal')))
+  const unbind = callbackRouting.bind('tool', callbacks)
   const owner = createAppOwnedPtcOwner({ bridge: createNativeIsolatedExecutionBridge(measuredTransport),
     callbacks, runtime: ctx.tools, services: { agents: ctx.agents, subagents: ctx.subagents,
       sessions: ctx.sessions, sandboxPolicy: ctx.sandboxPolicy } })
@@ -61,20 +104,37 @@ export async function runPtcAcceptance({ ctx, transport, agent, workspace }) {
     if (!ctx.tools.get('android_files', agent)) registerAndroidFilesTool(ctx, transport, {
       run() { throw new Error('SAF search is outside this acceptance profile') },
     })
-    if (!ctx.get('attachments')) await ctx.plugin(AndroidAttachmentStore, { dshHome: resolveDshHome() })
+    if (!ctx.get('attachments')) await ctx.plugin(AndroidAttachmentStore, { dshHome: home })
     if (!ctx.tools.get('android_attachments', agent)) registerAndroidAttachmentsTool(ctx, workspace)
     registerAndroidPtcTool(ctx, { owner, available: () => true })
     await check('first-party-list-read-glob-roots-and-guard', async () => {
       const before = agent.session.seq
-      const code = `const a=await tools.list_agents({scope:'children'});const r=await tools.read({file_path:${JSON.stringify(fileName)}});const g=await tools.glob({pattern:${JSON.stringify(fileName)}});const roots=await tools.android_files({action:'roots'});let refused=false;try{await tools.read({file_path:'../outside-acceptance.txt'})}catch(e){refused=e.code==='ANDROID_TOOL_DISPATCH_FAILED'}return {line:r.lines[0].text,files:g.paths,children:a,roots:Array.isArray(roots)?roots.length:(roots.items??roots.roots??[]).length,refused,process:typeof process,fetch:typeof fetch}`
+      const code = `let step='list_agents';try {
+        const a=await tools.list_agents({scope:'children'});
+        step='read';const r=await tools.read({file_path:${JSON.stringify(fileName)}});
+        step='glob';const g=await tools.glob({pattern:${JSON.stringify(fileName)}});
+        step='roots';const roots=await tools.android_files({action:'roots'});
+        step='outside-workspace-guard';let refused=false;
+        try{await tools.read({file_path:'../outside-acceptance.txt'})}
+        catch(e){if(e.code!=='ANDROID_TOOL_DISPATCH_FAILED')throw e;refused=true}
+        step='result';return {line:r.lines[0].text,files:g.paths,children:a,
+          roots:Array.isArray(roots)?roots.length:(roots.items??roots.roots??[]).length,
+          refused,process:typeof process,fetch:typeof fetch};
+      }catch(e){return {failure:{step,name:String(e.name),code:String(e.code),message:String(e.message).slice(0,400)}}}`
       const result = await invoke(code)
-      assert.equal(result.isError, false, JSON.stringify(result.error))
+      const events = agent.session.snapshotEvents(before).filter(event => event.type === 'tool/ptc-dispatch')
+      const diagnostics = () => JSON.stringify({ error: result.error, failure: result.value?.result?.failure,
+        callbacks: events.map(event => ({ name: event.data.name, isError: event.data.isError,
+          error: event.data.error, message: event.data.isError
+            ? event.data.content?.find(block => block.type === 'text')?.text?.slice(0, 240) : undefined })),
+        state: receipts.at(-1)?.state })
+      assert.equal(result.isError, false, diagnostics())
       const value = result.value.result
+      assert.equal(value.failure, undefined, diagnostics())
       assert.equal(value.line, 'readonly-ptc-device')
       assert.deepEqual([...value.files], [fileName])
       assert.equal(value.refused, true)
       assert.equal(value.process, 'undefined'); assert.equal(value.fetch, 'undefined')
-      const events = agent.session.snapshotEvents(before).filter(event => event.type === 'tool/ptc-dispatch')
       assert.deepEqual(events.map(event => event.data.name), ['list_agents', 'read', 'glob', 'android_files', 'read'])
       assert.equal(events.at(-1).data.isError, true)
       const receipt = receipts.at(-1)
@@ -215,8 +275,10 @@ export async function runPtcAcceptance({ ctx, transport, agent, workspace }) {
       failed: checks.filter(value => value.status === 'failed').length }
   } finally {
     setSandboxMode(agent.session, originalMode)
-    await owner.close()
-    await callbacks.dispose()
+    try {
+      await owner.close()
+      await callbacks.dispose()
+    } finally { unbind() }
     await unlink(file)
   }
 }

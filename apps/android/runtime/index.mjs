@@ -578,7 +578,7 @@ export function apply(ctx, config) {
       void transport.request('native.storage.root', {}).then(async root => {
         const privateRoot = requiredString(root, 'native storage root')
         await interactionReceipts.initialize(privateRoot)
-        establishAttachmentHome(resolveDshHome(), privateRoot)
+        await establishAttachmentHome(resolveDshHome(), privateRoot)
       }).then(() => library.initialize()).then(() => interactions.start()).then(() => {
         transport.notify('runtime.ready', { node: process.version })
         tasks.publish()

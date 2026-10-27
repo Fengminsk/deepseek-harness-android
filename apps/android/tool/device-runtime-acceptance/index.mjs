@@ -19,6 +19,7 @@ import AgentPresets from '@deepseek-ai/dsh-agent-preset-registry'
 import Jobs from '@deepseek-ai/dsh-jobs-local'
 import * as JobTools from '@deepseek-ai/dsh-tool-jobs'
 import { summarizeAcceptance } from './report.mjs'
+import { createAcceptanceCallbackRouting } from './callback-routing.mjs'
 
 export const name = 'device-runtime-acceptance'
 const configuration = JSON.parse(readFileSync(new URL('./configuration.json', import.meta.url), 'utf8'))
@@ -55,13 +56,8 @@ export async function apply(ctx) {
   const { createRuntimeTransport } = await nativeModule('transport.mjs')
   const ipc = createRuntimeTransport()
   const { transport } = ipc
-  transport.onRequest(async (method, params) => {
-    if (method === 'native.workflowCallback') return ctx.get('nativeWorkflowGuestCallbacks').call(params)
-    if (method === 'native.workflowCallback.cancel') return ctx.get('nativeWorkflowGuestCallbacks').close(params)
-    if (method === 'native.toolCallback') return ctx.get('nativeIsolatedToolCallbacks').call(params)
-    if (method === 'native.toolCallback.cancel') return ctx.get('nativeIsolatedToolCallbacks').close(params)
-    throw new Error(`Unexpected acceptance callback: ${method}`)
-  })
+  const callbackRouting = createAcceptanceCallbackRouting()
+  transport.onRequest((method, params) => callbackRouting.dispatch(method, params))
   transport.start()
   const finish = result => transport.notify('acceptance.result', result)
   const reports = []
@@ -103,7 +99,7 @@ export async function apply(ctx) {
         try {
           if (['workflow', 'linux', 'all'].includes(configuration.suite)) {
             const { createWorkflowAcceptance } = await import('./workflow.mjs')
-            workflow = await createWorkflowAcceptance({ ctx, transport, agent, nativeModule })
+            workflow = await createWorkflowAcceptance({ ctx, transport, agent, nativeModule, callbackRouting })
           }
           if (configuration.suite === 'workflow' || configuration.suite === 'all') {
             const { runWorkflowAcceptance } = await import('./workflow.mjs')
@@ -111,7 +107,7 @@ export async function apply(ctx) {
           }
           if (configuration.suite === 'ptc' || configuration.suite === 'all') {
             const { runPtcAcceptance } = await import('./ptc.mjs')
-            reports.push(await runPtcAcceptance({ ctx, transport, agent, workspace: process.cwd() }))
+            reports.push(await runPtcAcceptance({ ctx, transport, agent, workspace: process.cwd(), callbackRouting }))
           }
           if (configuration.suite === 'linux' || configuration.suite === 'all') {
             const { runLinuxAcceptance } = await import('./linux.mjs')

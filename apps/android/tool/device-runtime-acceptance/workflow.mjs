@@ -1,19 +1,24 @@
 import assert from 'node:assert/strict'
 
 /** Keep one callback/preset owner alive across the selected acceptance suites. */
-export async function createWorkflowAcceptance({ ctx, transport, agent, nativeModule }) {
+export async function createWorkflowAcceptance({ ctx, transport, agent, nativeModule, callbackRouting }) {
   const { NativeWorkflowGuestCallbacks } = await nativeModule('native-workflow-guest-callbacks.mjs')
   const { createNativeWorkflowPrivateOwner } = await nativeModule('native-workflow-private-owner.mjs')
   const { registerAndroidWorkflowTool } = await nativeModule('tool-native-workflow.mjs')
   const callbacks = new NativeWorkflowGuestCallbacks(transport)
-  ctx.provide('nativeWorkflowGuestCallbacks', callbacks)
+  const unbind = callbackRouting.bind('workflow', callbacks)
   const owner = createNativeWorkflowPrivateOwner(ctx, callbacks, transport)
   try {
     assert.equal(registerAndroidWorkflowTool(ctx, { owner }), false)
     assert.equal(ctx.tools.get('workflow', agent), undefined)
     assert.equal(registerAndroidWorkflowTool(ctx, { owner, available: () => true }), true)
-    return { owner, dispose: () => owner.dispose() }
-  } catch (error) { await owner.dispose(); throw error }
+    return { owner, async dispose() {
+      try { await owner.dispose() } finally { unbind() }
+    } }
+  } catch (error) {
+    try { await owner.dispose() } finally { unbind() }
+    throw error
+  }
 }
 
 export async function runWorkflowAcceptance({ ctx, agent, adapter, workflow }) {

@@ -101,6 +101,10 @@ val candidateAssets = linuxCandidatePath?.let { selected ->
 
 android {
     sourceSets.getByName("androidTest").assets.srcDir(rootProject.file("../tool/device-runtime-acceptance"))
+    if (acceptanceBuildType == "release") {
+        sourceSets.getByName("release").java.srcDir("src/acceptance/kotlin")
+        sourceSets.getByName("release").manifest.srcFile("src/acceptance/AndroidManifest.xml")
+    }
     if (candidateAssets != null) {
         sourceSets.getByName("release").assets.srcDir(candidateAssets)
     }

@@ -9,6 +9,16 @@ const runId = '00000000-0000-4000-8000-000000000001'
 const token = 'app-owned-token'
 const scope = { workspaceId: null, readablePaths: [], writablePaths: [], exactHosts: [],
   fileCallLimit: 0, networkCallLimit: 0 }
+const parameters = ['agent', 'parallel', 'pipeline', 'phase', 'log', 'args']
+const AsyncFunction = (async () => {}).constructor
+
+// Native compiles a standalone AsyncFunction before guest execution. Validate
+// that exact body grammar before using vm.Script's trusted compilation API;
+// the resulting function belongs only to the restricted V8 context.
+function compileWorkflowBody(body, realm) {
+  new AsyncFunction(...parameters, `'use strict';\n${body}`)
+  return vm.runInContext(`(async function(${parameters.join(',')}) {\n'use strict';\n${body}\n})`, realm)
+}
 
 function prepared(body, limits = {}) {
   return { kind: 'workflow', runId, sessionId: 'android-1793060921975320-627842147', program: body, args: { task: 'review' },
@@ -43,7 +53,7 @@ async function run(body, options = {}) {
       events.push(event)
       if (options.abortOnStart && event.type === 'agent-start') controller.abort()
     }, signal: controller.signal })
-  const realm = vm.createContext({})
+  const realm = vm.createContext({}, { codeGeneration: { strings: false, wasm: false } })
   const parse = vm.runInContext('JSON.parse', realm)
   const guest = vm.runInContext(`(${WORKFLOW_DSL_GUEST_PROGRAM})`, realm)
   const host = { callAsync: async frame => {
@@ -56,7 +66,8 @@ async function run(body, options = {}) {
     return parse(JSON.stringify(reply))
   } }
   try {
-    const result = JSON.parse(JSON.stringify(await guest(parse('{}'), host)))
+    const script = compileWorkflowBody(body, realm)
+    const result = JSON.parse(JSON.stringify(await guest(parse('{}'), host, script)))
     await bound.close()
     return { result, events, disposed, activated, callbackCount }
   } finally {
@@ -64,10 +75,11 @@ async function run(body, options = {}) {
   }
 }
 
-test('native admission receives a fixed guest function and no model source in input', () => {
+test('native admission receives the fixed driver and a separate bounded function body', () => {
   const admission = workflowDslNativeProgram(prepared('return args.task'))
   assert.equal(admission.program, WORKFLOW_DSL_GUEST_PROGRAM)
   assert.equal(admission.inputJson, '{}')
+  assert.equal(admission.workflowBody, 'return args.task')
   assert.doesNotMatch(admission.program, /return args\.task/)
   assert.ok(Buffer.byteLength(admission.program) < 64 * 1024)
   assert.equal(workflowDslNativeProgram({ ...prepared('return 1'), deadlineMillis: 120_000 })
@@ -164,10 +176,35 @@ test('shared plain values materialize in each result branch while cycles still f
 test('model body cannot access Node or the private host callback', async () => {
   const { result } = await run(`return {
     process: typeof process, require: typeof require, host: typeof host,
-    callAsync: typeof globalThis.callAsync, args: args.task
+    callAsync: typeof globalThis.callAsync, callback: typeof callback,
+    initialization: typeof initialization, script: typeof script, args: args.task
   };`)
   assert.deepEqual(result.value, { process: 'undefined', require: 'undefined',
-    host: 'undefined', callAsync: 'undefined', args: 'review' })
+    host: 'undefined', callAsync: 'undefined', callback: 'undefined',
+    initialization: 'undefined', script: 'undefined', args: 'review' })
+})
+
+test('precompiled workflow returns while eval, Function and hook constructors stay disabled', async () => {
+  const { result } = await run(`
+    const denied = [];
+    for (const operation of [() => eval('42'), () => Function('return 42')(),
+      () => (async () => {}).constructor('return 42')(),
+      () => agent.constructor('return typeof host')()]) {
+      try { await operation(); denied.push(false); }
+      catch (error) { denied.push(error instanceof EvalError); }
+    }
+    return {answer: await Promise.resolve(42), denied};
+  `)
+  assert.deepEqual(result.value, { answer: 42, denied: [true, true, true, true] })
+})
+
+test('function body cannot close a wrapper and execute during trusted compilation', () => {
+  const realm = vm.createContext({}, { codeGeneration: { strings: false, wasm: false } })
+  for (const source of ['}; globalThis.escaped = true; async function other(){',
+    '}, (()=>{globalThis.escaped=true})(), async()=>{']) {
+    assert.throws(() => compileWorkflowBody(source, realm), SyntaxError)
+  }
+  assert.equal(vm.runInContext('typeof escaped', realm), 'undefined')
 })
 
 test('callback limit and unsupported TypeScript syntax produce errors without extra host calls', async () => {
@@ -175,10 +212,7 @@ test('callback limit and unsupported TypeScript syntax produce errors without ex
   assert.equal(many.result.stopReason, 'error')
   assert.equal(many.result.error.code, 'CALL_CAP')
   assert.equal(many.callbackCount, 128)
-  const ts = await run(`const value: number = 1; return value;`)
-  assert.equal(ts.result.stopReason, 'error')
-  assert.equal(ts.result.error.code, 'SCRIPT_ERROR')
-  assert.equal(ts.activated.length, 0)
+  await assert.rejects(run(`const value: number = 1; return value;`), SyntaxError)
 })
 
 test('cancellation retires the active child and does not publish a completed result', async () => {

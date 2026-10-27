@@ -47,6 +47,8 @@ PROJECT_INPUTS = (
         'LinuxVmImageStore', 'LinuxVmFileInput', 'LinuxVmFileOutput', 'LinuxVmFilePublisher',
     )),
     'apps/android/android/app/build.gradle.kts',
+    'apps/android/android/app/src/acceptance/AndroidManifest.xml',
+    'apps/android/android/app/src/acceptance/kotlin/com/minnnng/dsh_android/RuntimeAcceptanceActivity.kt',
     'apps/android/android/app/linux-vm-rules.pro',
     'apps/android/android/app/src/test/java/com/minnnng/dsh_android/LinuxVmNetworkHostTest.java',
     'apps/android/android/app/src/test/java/com/minnnng/dsh_android/LinuxVmRecoveryStoreTest.java',

@@ -8,8 +8,13 @@ import { fileURLToPath } from 'node:url'
 const root = fileURLToPath(new URL('../../../', import.meta.url))
 const suite = process.argv[2] ?? 'smoke'
 if (!['smoke', 'alpine', 'lifecycle'].includes(suite)) throw new Error('Use smoke, alpine or lifecycle')
+const buildArgument = process.argv[3]
+if (process.argv.length > 4 || buildArgument !== undefined && !buildArgument.startsWith('--build-record=')) {
+  throw new Error('Optional argument: --build-record=PATH')
+}
 const sha = bytes => createHash('sha256').update(bytes).digest('hex')
-const record = JSON.parse(await readFile(join(root, '.cache/android/tinyemu-host/latest.json'), 'utf8'))
+const record = JSON.parse(await readFile(buildArgument === undefined
+  ? join(root, '.cache/android/tinyemu-host/latest.json') : buildArgument.slice('--build-record='.length), 'utf8'))
 assert.equal(record.librarySha256, sha(await readFile(record.library)))
 const buildRecordFile = join(dirname(record.library), 'build.json')
 const buildRecord = await readFile(buildRecordFile)

@@ -71,6 +71,9 @@ public final class PtcScriptEngine implements AutoCloseable {
     private static native String[] nativeRunFunctionBody(long id, String body, String inputJson,
                                                          int deadlineMillis, HostCall hostCall,
                                                          String grantsJson);
+    private static native String[] nativeRunWorkflow(long id, String program, String body,
+                                                     String inputJson, int deadlineMillis,
+                                                     HostCall hostCall, String grantsJson);
     private static native void nativeCancel(long id);
     private static native boolean nativeDeliverReply(long id, int sequence, String replyJson);
     private static native void nativeClose(long id);
@@ -121,7 +124,7 @@ public final class PtcScriptEngine implements AutoCloseable {
     /** The optional host callback exposes only App-selected grant handles, never paths. */
     public Result run(String program, String inputJson, int deadlineMillis,
                       HostCall hostCall, String grantsJson) {
-        return runInternal(program, inputJson, deadlineMillis, hostCall, grantsJson, false);
+        return runInternal(program, inputJson, deadlineMillis, hostCall, grantsJson, false, null);
     }
 
     /**
@@ -137,11 +140,19 @@ public final class PtcScriptEngine implements AutoCloseable {
     /** A host callback is available only when the App supplies a matching grant list. */
     public Result runFunctionBody(String body, String inputJson, int deadlineMillis,
                                   HostCall hostCall, String grantsJson) {
-        return runInternal(body, inputJson, deadlineMillis, hostCall, grantsJson, true);
+        return runInternal(body, inputJson, deadlineMillis, hostCall, grantsJson, true, null);
+    }
+
+    /** Compile a separate body before invoking the fixed driver with code generation disabled. */
+    public Result runWorkflow(String program, String body, String inputJson, int deadlineMillis,
+                              HostCall hostCall, String grantsJson) {
+        validateWorkflow(body, "{}", deadlineMillis);
+        return runInternal(program, inputJson, deadlineMillis, hostCall, grantsJson, false, body);
     }
 
     private Result runInternal(String program, String inputJson, int deadlineMillis,
-                               HostCall hostCall, String grantsJson, boolean functionBody) {
+                               HostCall hostCall, String grantsJson, boolean functionBody,
+                               String workflowBody) {
         // The App controller chooses ordinary script, reviewed tool-only PTC,
         // or private workflow. This worker sees only its bounded Binder request.
         validateWorkflow(program, inputJson, deadlineMillis);
@@ -152,7 +163,9 @@ public final class PtcScriptEngine implements AutoCloseable {
         if (closed.get() || !started.compareAndSet(false, true)) {
             throw new IllegalStateException("Script execution is closed or already started");
         }
-        String[] nativeResult = functionBody
+        String[] nativeResult = workflowBody != null
+                ? nativeRunWorkflow(id, program, workflowBody, inputJson, deadlineMillis, hostCall, grantsJson)
+                : functionBody
                 ? nativeRunFunctionBody(id, program, inputJson, deadlineMillis, hostCall, grantsJson)
                 : nativeRun(id, program, inputJson, deadlineMillis, hostCall, grantsJson);
         if (nativeResult == null || nativeResult.length != 3) {

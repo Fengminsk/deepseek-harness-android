@@ -20,9 +20,13 @@ node apps/android/tool/verify-tinyemu-host.mjs alpine
 node apps/android/tool/verify-tinyemu-host.mjs lifecycle
 ```
 
+To verify a new independent host build without changing the default build record, append `--build-record=<path-to-build.json>` to any runner command. The runner still verifies the full build record and source hashes and creates a new evidence directory.
+
 The [runner](../verify-tinyemu-host.mjs) requires the staged development guest assets. `alpine` also requires the hash-checked image-build input. `smoke` verifies boot and workspace retention across two real guest runs. `alpine` creates an ext2 image inside the guest, installs the locked offline packages, boots that image, exercises Python/threads/randomness/SQLite/SSL/subprocesses/git/curl/file operations, then checks an independent unmounted read-only image with `e2fsck -fn`. `lifecycle` times out a running loop and cancels after confirmed guest output; neither publishes changed images. It verifies that the source image stays unchanged.
 
 Each invocation uses a new directory under `.cache/android/tinyemu-host/runs/`. Reports contain native status, guest exit code, hashes and explicit `androidDeviceVerified: false`. Images are written only after a completed guest command and native shutdown; failure diagnostics remain available. Passing host checks does not enable any product capability or certify phone execution. The ordinary Android build excludes this provider and its images as described by the [runtime reference](../linux-vm-runtime.md) ([中文](../linux-vm-runtime.zh.md)).
+
+`LinuxVmHost` also accepts an optional thirteenth positional argument, `startupEpochSeconds`, only for host clock-failure tests. Without it, the production console samples the host UTC clock before boot. The argument cannot be supplied through an Android tool or Binder request. An unrepresentable value must make guest clock initialization return 125 before formatting or running the payload. `freshWorkspaceUnchanged` reports whether an initially empty workspace remains entirely zeroed; failed runs still publish no images. Normal clock verification must use the default host sample and check guest time, new file timestamps and ordinary Python ZIP creation without disabling timestamp validation.
 
 ## Candidate assembly
 

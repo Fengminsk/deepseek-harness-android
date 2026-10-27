@@ -74,12 +74,15 @@ try {
   assert.match(nativeSource, /consoleCall\(/)
   assert.match(nativeSource, /kMaxLogBytes = 16 \* 1024/)
   const constructorBranch = nativeSource.slice(nativeSource.indexOf(
-    'format == ProgramFormat::kAsyncFunctionBody'))
+    'v8::MaybeLocal<v8::Function> compileAsyncBody('))
   const enableAt = constructorBranch.indexOf('AllowCodeGenerationFromStrings(true)')
   const disableAt = constructorBranch.indexOf('AllowCodeGenerationFromStrings(false)', enableAt)
   const guestCallAt = constructorBranch.indexOf('function->Call(', disableAt)
   assert.ok(enableAt >= 0 && disableAt > enableAt && guestCallAt > disableAt,
     'guest call reached V8 before string code generation was disabled')
+  assert.equal(nativeSource.match(/AllowCodeGenerationFromStrings\(true\)/g)?.length, 1)
+  assert.match(nativeSource, /compileAsyncBody\(context, workflow_body, true\)/)
+  assert.match(nativeSource, /nativeRunWorkflow\(/)
   process.stdout.write('PTC native snapshot semantics and Java request bounds passed; JNI execution requires Android device evidence.\n')
 } finally {
   const target = realpathSync(output)

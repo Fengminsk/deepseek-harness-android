@@ -19,7 +19,11 @@ public final class LinuxVmHost {
         private final boolean cancelOnReady;
         private boolean entered;
         Console(String command, boolean fresh, AtomicBoolean cancelled, boolean cancelOnReady) {
-            framed = new LinuxVmConsole(command, true, fresh);
+            this(command, fresh, cancelled, cancelOnReady, null);
+        }
+        Console(String command, boolean fresh, AtomicBoolean cancelled, boolean cancelOnReady, Long startupEpochSeconds) {
+            framed = startupEpochSeconds == null ? new LinuxVmConsole(command, true, fresh)
+                : new LinuxVmConsole(command, true, fresh, startupEpochSeconds);
             this.cancelled = cancelled; this.cancelOnReady = cancelOnReady;
         }
         synchronized int read(byte[] bytes, int capacity) { return framed.read(bytes, capacity); }
@@ -57,7 +61,7 @@ public final class LinuxVmHost {
     }
 
     public static void main(String[] args) throws Exception {
-        if (args.length != 12) throw new IllegalArgumentException("Expected library, bios, kernel, root, workspace, input, output, command, directory, fresh, timeout, cancelOnReady");
+        if (args.length != 12 && args.length != 13) throw new IllegalArgumentException("Expected library, bios, kernel, root, workspace, input, output, command, directory, fresh, timeout, cancelOnReady, optional startupEpochSeconds");
         System.load(Path.of(args[0]).toAbsolutePath().toString());
         ByteBuffer bios = load(args[1], 0, true), kernel = load(args[2], 0, true);
         ByteBuffer root = load(args[3], 0, false), workspace = load(args[4], 128 * 1024 * 1024, false);
@@ -71,7 +75,8 @@ public final class LinuxVmHost {
         if (timeout < 1000 || timeout > 120000 || (!args[11].equals("true") && !args[11].equals("false"))) {
             throw new IllegalArgumentException("Invalid host lifecycle options");
         }
-        Console console = new Console(Files.readString(Path.of(args[7]), StandardCharsets.UTF_8), Boolean.parseBoolean(args[9]), cancelled, Boolean.parseBoolean(args[11]));
+        Long startupEpochSeconds = args.length == 13 ? Long.valueOf(args[12]) : null;
+        Console console = new Console(Files.readString(Path.of(args[7]), StandardCharsets.UTF_8), Boolean.parseBoolean(args[9]), cancelled, Boolean.parseBoolean(args[11]), startupEpochSeconds);
         Path directory = Path.of(args[8]); Files.createDirectory(directory);
         long begin = System.nanoTime();
         int status = new LinuxVmEngine().run(bios, kernel, disks, console, cancelled, timeout);
@@ -79,6 +84,11 @@ public final class LinuxVmHost {
         Files.write(directory.resolve("serial.log"), console.raw.toByteArray(), StandardOpenOption.CREATE_NEW);
         Integer exit = console.framed.exitCode();
         boolean completed = status == 0 && exit != null && exit == 0;
+        boolean workspaceUnchanged = true;
+        if (args[4].equals("-")) {
+            ByteBuffer check = workspace.duplicate(); check.clear();
+            while (check.hasRemaining()) if (check.get() != 0) { workspaceUnchanged = false; break; }
+        } else workspaceUnchanged = false;
         if (completed) {
             save(directory.resolve("root.bin"), root);
             save(directory.resolve("workspace.bin"), workspace);
@@ -86,6 +96,7 @@ public final class LinuxVmHost {
         }
         String report = "{\"nativeStatus\":" + status + ",\"exitCode\":" + exit + ",\"elapsedMs\":" + elapsed +
             ",\"truncated\":" + console.framed.truncated() + ",\"imagesWritten\":" + completed + ",\"cancelAfterGuestEntry\":" + console.entered +
+            ",\"freshWorkspaceUnchanged\":" + workspaceUnchanged +
             ",\"outputBase64\":\"" + Base64.getEncoder().encodeToString(console.framed.output().getBytes(StandardCharsets.UTF_8)) + "\"}";
         Files.writeString(directory.resolve("result.json"), report + "\n", StandardOpenOption.CREATE_NEW);
         System.out.println(report);
