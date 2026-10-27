@@ -6,15 +6,19 @@ import { isFirstPartyReadDefinition, isFirstPartyWriteDefinition,
 import { isFirstPartyGlobDefinition, isFirstPartyGrepDefinition } from '@deepseek-ai/dsh-tool-fs-search'
 import { isFirstPartyWebSearchDefinition, isFirstPartyWebFetchDefinition } from '@deepseek-ai/dsh-tool-web'
 import { modelFileObservationDenial } from './model-file-read-guard.mjs'
+import { isFirstPartyLinuxDefinition } from './tool-linux-vm.mjs'
 
 const REVIEWED = new Map([
   ['read', isFirstPartyReadDefinition], ['glob', isFirstPartyGlobDefinition],
   ['grep', isFirstPartyGrepDefinition], ['write', isFirstPartyWriteDefinition],
   ['edit', isFirstPartyEditDefinition], ['web_search', isFirstPartyWebSearchDefinition],
   ['web_fetch', isFirstPartyWebFetchDefinition],
+  ['linux_exec', isFirstPartyLinuxDefinition], ['linux_import', isFirstPartyLinuxDefinition],
+  ['linux_export', isFirstPartyLinuxDefinition],
 ])
-const FILES = new Set(['read', 'glob', 'grep', 'write', 'edit'])
-const WRITES = new Set(['write', 'edit'])
+const LINUX = new Set(['linux_exec', 'linux_import', 'linux_export'])
+const FILES = new Set(['read', 'glob', 'grep', 'write', 'edit', 'linux_import', 'linux_export'])
+const WRITES = new Set(['write', 'edit', 'linux_import', 'linux_export'])
 const WRITABLE = new Set(['workspace-write', 'danger-full-access'])
 const DENIED = 'Workflow child tool is not authorized by its current parent and child policies'
 
@@ -27,6 +31,7 @@ export class WorkflowChildTools extends Service {
   static inject = ['agents', 'tools']
   #grants = new Map()
   #structured = new WeakMap()
+  #children = new WeakSet()
 
   constructor(ctx) {
     super(ctx, 'androidWorkflowChildTools')
@@ -38,27 +43,30 @@ export class WorkflowChildTools extends Service {
     if (this.#grants.has(childId)) throw new Error('Workflow child already has a tool reservation')
     const definitions = new Map()
     const policy = this.ctx.get('sandboxPolicy')
+    const writable = policy && WRITABLE.has(policy.resolve({ session: parent.session }).mode)
     let root
     for (const [name, owns] of REVIEWED) {
       const definition = this.ctx.tools.get(name, parent)
       const registration = this.ctx.tools.registrationIdentity(name, parent)
       if (!definition || !registration || !owns(definition, parent)) continue
+      if (LINUX.has(name) && !policy) continue
       if (FILES.has(name)) {
         if (!policy || !this.ctx.get('workingDirectory')) continue
         if (root === undefined) root = realpathSync(await this.ctx.get('workingDirectory').ensure(parent, signal))
-        if (WRITES.has(name) && !WRITABLE.has(policy.resolve({ session: parent.session }).mode)) continue
+        if (WRITES.has(name) && !writable) continue
       }
       definitions.set(name, { definition, registration, owns })
     }
     signal.throwIfAborted()
     if (this.ctx.agents.get(parent.id) !== parent) throw new Error('Workflow parent has retired')
     if (this.#grants.has(childId)) throw new Error('Workflow child already has a tool reservation')
-    const grant = { parent, childId, signal, definitions, root, child: undefined }
+    const grant = { parent, childId, signal, definitions, root, writable, child: undefined }
     this.#grants.set(childId, grant)
     return () => { if (this.#grants.get(childId) === grant) this.#grants.delete(childId) }
   }
 
   attach = (child, structured) => {
+    this.#children.add(child)
     const grant = this.#grants.get(child.id)
     if (structured) {
       // The original manager attaches this child-local result tool during
@@ -107,7 +115,22 @@ export class WorkflowChildTools extends Service {
     return undefined
   }
 
-  denial = (exec) => {
+  // Original Linux tools repeat this check after asynchronous file validation.
+  // A read-only activation may execute in a disposable guest overlay, but it
+  // cannot acquire disk persistence through later parent/child policy upgrades.
+  linuxExecutionPolicy = (exec, target) => {
+    if (!this.#children.has(exec.agent)) return undefined
+    const denial = this.denial(exec, target)
+    if (denial) return { denial }
+    const grant = this.#grants.get(exec.agent.id)
+    const policy = this.ctx.get('sandboxPolicy')
+    if (!policy || !LINUX.has(exec.name)) return { denial: DENIED }
+    return { persistChanges: grant.writable
+      && WRITABLE.has(policy.resolve({ session: grant.parent.session }).mode)
+      && WRITABLE.has(policy.resolve({ session: exec.agent.session }).mode) }
+  }
+
+  denial = (exec, target) => {
     const child = exec.agent
     const grant = child && this.#grants.get(child.id)
     const entry = grant?.definitions.get(exec.name)
@@ -127,14 +150,18 @@ export class WorkflowChildTools extends Service {
     const childPolicy = policy.resolve({ session: child.session })
     if (WRITES.has(exec.name) && (!WRITABLE.has(parentPolicy.mode) || !WRITABLE.has(childPolicy.mode))) return DENIED
     const childDirectory = directory.get(child.session)
+    const fileName = exec.name === 'linux_import' ? 'read' : exec.name === 'linux_export' ? 'write' : exec.name
+    const fileArgs = LINUX.has(exec.name) && target !== undefined ? { file_path: target }
+      : exec.name === 'linux_import' ? { file_path: exec.arguments?.source }
+      : exec.name === 'linux_export' ? { file_path: exec.arguments?.destination } : exec.arguments
     // A parent may cd outside its immutable permission root. Spawning there
     // must not turn the child's newly selected directory into a wider grant.
     if (WRITES.has(exec.name) && [parentPolicy, childPolicy].some(current => current.mode === 'workspace-write'
-      && modelFileObservationDenial(current.workspaceRoot, childDirectory, exec.name, exec.arguments))) return DENIED
+      && modelFileObservationDenial(current.workspaceRoot, childDirectory, fileName, fileArgs))) return DENIED
     // Both working directories stay inside the activation-pinned parent root;
     // danger-full-access cannot widen this delegated file boundary.
-    if (modelFileObservationDenial(grant.root, directory.get(grant.parent.session), exec.name, exec.arguments)
-      || modelFileObservationDenial(grant.root, childDirectory, exec.name, exec.arguments)) return DENIED
+    if (modelFileObservationDenial(grant.root, directory.get(grant.parent.session), fileName, fileArgs)
+      || modelFileObservationDenial(grant.root, childDirectory, fileName, fileArgs)) return DENIED
     return undefined
   }
 }

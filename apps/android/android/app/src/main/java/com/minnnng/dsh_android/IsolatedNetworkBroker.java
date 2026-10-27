@@ -370,20 +370,32 @@ public final class IsolatedNetworkBroker {
                 && !address.isMulticastAddress();
     }
 
-    /** Network-bound pinned TCP/TLS, no ProxySelector or second DNS lookup, HTTP/1.1 only. */
+    /** Pinned TCP/TLS through the DNS route or an explicit local proxy; no second DNS lookup. */
     public static final class PinnedTlsTransport implements PinnedTransport {
         private static final ScheduledThreadPoolExecutor DEADLINE_CLOSER = deadlineCloser();
         private static final ThreadPoolExecutor ROUTE_OPENER = routeOpener();
         private static final ConcurrentHashMap<AtomicBoolean, Socket> ACTIVE = new ConcurrentHashMap<>();
         private final int maxBodyBytes;
+        private final int localProxyPort;
 
         public PinnedTlsTransport() { this(MAX_RESPONSE_BYTES); }
 
         /** Stop reading at the guest's response ceiling rather than buffering the broker maximum. */
         public PinnedTlsTransport(int maxBodyBytes) {
+            this(maxBodyBytes, 0);
+        }
+
+        /** Trusted App configuration only. Failure never falls back to a direct route. */
+        public static PinnedTlsTransport throughLocalHttpProxy(int maxBodyBytes, int port) {
+            if (port < 1 || port > 65535) throw new IllegalArgumentException("Invalid local proxy port");
+            return new PinnedTlsTransport(maxBodyBytes, port);
+        }
+
+        private PinnedTlsTransport(int maxBodyBytes, int localProxyPort) {
             if (maxBodyBytes < 1 || maxBodyBytes > MAX_RESPONSE_BYTES)
                 throw new IllegalArgumentException("Invalid transport response ceiling");
             this.maxBodyBytes = maxBodyBytes;
+            this.localProxyPort = localProxyPort;
         }
 
         private static void closeActive(AtomicBoolean cancellation) {
@@ -531,12 +543,19 @@ public final class IsolatedNetworkBroker {
             if (!isPublicIpv4(address) || route == null || cancelled.get())
                 throw new IOException("Denied connection");
             positiveIoTimeout(deadlineNanos);
-            try (Socket tcp = openRouteSocket(route, deadlineNanos, cancelled)) {
+            // A selected proxy is loopback only. Android Network-bound sockets are for
+            // direct Internet routes, not for reaching another App's loopback listener.
+            try (Socket tcp = openRouteSocket(localProxyPort == 0 ? route : () -> new Socket(java.net.Proxy.NO_PROXY),
+                    deadlineNanos, cancelled)) {
                 register(cancelled, tcp);
                 try (DeadlineSocketCloser deadlineCloser =
                              new DeadlineSocketCloser(tcp, deadlineNanos)) {
                 if (cancelled.get()) throw new IOException("Cancelled before connect");
-                tcp.connect(new InetSocketAddress(address, 443), positiveIoTimeout(deadlineNanos));
+                if (localProxyPort == 0) {
+                    tcp.connect(new InetSocketAddress(address, 443), positiveIoTimeout(deadlineNanos));
+                } else {
+                    LocalHttpConnectTunnel.open(tcp, localProxyPort, address, deadlineNanos, cancelled);
+                }
                 tcp.setSoTimeout(positiveIoTimeout(deadlineNanos));
                 SSLContext context;
                 try {

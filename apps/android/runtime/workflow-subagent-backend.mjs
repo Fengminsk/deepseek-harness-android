@@ -1,7 +1,7 @@
 /**
  * A trusted Android workflow adapter for the original in-process `spawn`
  * activation manager. The child joins a dedicated tool-restricted preset, never the
- * Android parent preset that offers App-UID Shell. Reviewed file and web tools
+ * Android parent preset that offers App-UID Shell. Reviewed file, web and Linux tools
  * are inherited through a per-child Host grant. This adapter
  * does not admit a workflow or expose it to a model.
  */

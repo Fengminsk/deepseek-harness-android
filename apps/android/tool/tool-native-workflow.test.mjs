@@ -58,6 +58,60 @@ test('the production gate is closed by default and creates no model tool', async
   assert.deepEqual(starts, [])
 })
 
+test('capability reports the reviewed maximum without opening the production gate', () => {
+  const closed = modelWorkflowCapability()
+  assert.deepEqual(closed, {
+    available: false, reason: 'device-lifecycle-unverified',
+    maxTotalAgents: 8, maxConcurrentAgents: 2, deadlineMillis: 120000, background: false,
+    childTools: 'reviewed-parent-tools',
+    reviewedChildTools: ['read', 'glob', 'grep', 'write', 'edit', 'web_search', 'web_fetch',
+      'linux_exec', 'linux_import', 'linux_export'],
+    filesystem: 'activation-workspace-policy-intersection', network: 'reviewed-parent-web-tools',
+    linuxDisk: 'child-session-private', linuxNetwork: 'off',
+  })
+  const admitted = modelWorkflowCapability(true)
+  assert.deepEqual(admitted, { ...closed, available: true, reason: null, background: true })
+  assert.throws(() => closed.reviewedChildTools.push('android_shell'), TypeError)
+})
+
+test('model-facing schema and assembled prompt describe actual inherited tools and restrictions', async t => {
+  const { ctx, agent, owner } = await setup(t)
+  registerAndroidWorkflowTool(ctx, { owner, available: () => true })
+  const definition = ctx.tools.get('workflow', agent)
+  const prompt = (await ctx.systemPrompt.assemble()).sections.find(section => section.name === 'tool:workflow')
+  assert.ok(prompt)
+  const description = definition.description
+  const instruction = JSON.stringify(prompt)
+  for (const name of modelWorkflowCapability().reviewedChildTools) {
+    assert.ok(description.includes(name), `Description must expose ${name}`)
+    assert.ok(instruction.includes(name), `Prompt must expose ${name}`)
+  }
+  assert.match(description, /maximum reviewed set, not a guarantee/u)
+  assert.match(description, /both current parent and child sandbox policies and permission roots/u)
+  assert.match(description, /original file observation checks/u)
+  assert.match(description, /Web tools retain their inherited providers and checks/u)
+  assert.match(description, /authorized tools before submitting structured_output/u)
+  assert.match(description, /Linux tools appear only when already registered on the parent/u)
+  assert.match(description, /child Session's private disk with no guest networking or App-UID Shell/u)
+  assert.match(description, /otherwise command changes are discarded/u)
+  assert.match(description, /later policy upgrades cannot widen the activation permission/u)
+  assert.match(description, /linux_export publishes a new App file/u)
+  assert.match(description, /Both transfers require activation-time and current parent\/child write permission/u)
+  assert.match(description, /Linux execution capacity is one App-wide; serialize Linux steps across children/u)
+  assert.match(description, /busy refusal means no native dispatch/u)
+  assert.match(description, /do not treat it as completed or automatically replay it/u)
+  for (const text of [description, instruction]) {
+    assert.match(text, /parent.*model/u)
+    assert.match(text, /Cold resume alone/u)
+    assert.match(text, /no App-UID Shell, PTC, recursive delegation or cross-Session SAF\/attachment grants/u)
+    assert.match(text, /no guest networking/u)
+    assert.match(text, /both permission roots/u)
+    assert.match(text, /Cold resume alone restores no file, web or Linux/u)
+    assert.doesNotMatch(text, /model-only subagents|cannot read files|no file, browser or shell tools/u)
+  }
+  assert.match(instruction, /only when the user explicitly asks for workflows or multi-agent orchestration/u)
+})
+
 test('native registration reuses original parameters and real ToolRuntime identity with bounded App policy', async t => {
   const { ctx, agent, owner, starts, execute } = await setup(t)
   assert.equal(registerAndroidWorkflowTool(ctx, { owner, available: () => true }), true)

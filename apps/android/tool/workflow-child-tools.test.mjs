@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, mkdir, writeFile, readFile, rm, glob } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, readFile, rm, glob, rename, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -25,11 +25,14 @@ import AndroidFileSystem from '../runtime/android-filesystem.mjs'
 import { registerModelFileReadGuard } from '../runtime/model-file-read-guard.mjs'
 import { createWorkflowSubagentBackend, installWorkflowSubagentPreset } from '../runtime/workflow-subagent-backend.mjs'
 import { WorkflowGuestHostPort } from '../runtime/workflow-guest-host-port.mjs'
+import { registerLinuxVmTool, registerLinuxImportTool, registerLinuxExportTool,
+  isFirstPartyLinuxDefinition } from '../runtime/tool-linux-vm.mjs'
+import { NativeLinuxVm } from '../runtime/native-linux-vm.mjs'
 
 const NAMES = ['edit', 'glob', 'grep', 'read', 'web_fetch', 'web_search', 'write']
 const schemaNames = request => (request.tools ?? []).map(tool => tool.name).sort()
 
-async function fixture(t, script, { mode = 'workspace-write', web = true, fetch, projectDirectory = '.' } = {}) {
+async function fixture(t, script, { mode = 'workspace-write', web = true, fetch, projectDirectory = '.', linux } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'workflow-working-child-'))
   const workspace = join(root, 'workspace')
   const sessions = join(root, 'sessions')
@@ -64,10 +67,18 @@ async function fixture(t, script, { mode = 'workspace-write', web = true, fetch,
   await ctx.plugin(AgentPresets, { default: 'parent' })
   // The real Loader mounts these original tools in a parent-only preset. The
   // child must receive exact definitions through its grant, not global access.
+  if (linux) ctx.loader.builtins['workflow-test-linux'] = {
+    inject: ['fs', 'workingDirectory', 'tools', 'agents'], apply(linuxCtx) {
+      registerLinuxVmTool(linuxCtx, linux, true)
+      registerLinuxImportTool(linuxCtx, linux, true, workspace)
+      registerLinuxExportTool(linuxCtx, linux, true, workspace)
+    },
+  }
   const unregisterParent = await ctx.agentPresets.register({ id: 'parent', plugins: [
     { name: '@deepseek-ai/dsh-tool-fs', config: { readImage: false } },
     { name: '@deepseek-ai/dsh-tool-fs-search', config: { sampleOverCapGlobResults: false } },
     ...(web ? [{ name: '@deepseek-ai/dsh-tool-web' }] : []),
+    ...(linux ? [{ name: 'cordis:workflow-test-linux' }] : []),
   ] })
   // Observation state belongs to each Session, including delegated children.
   const ObservationPolicy = await import('@deepseek-ai/dsh-fs-observation-policy')
@@ -78,7 +89,7 @@ async function fixture(t, script, { mode = 'workspace-write', web = true, fetch,
   const handle = await ctx.agents.create({
     sessionId: SessionId(`parent-${randomUUID()}`), meta: { cwd: project },
     agentOptions: { provider: 'mock', model: 'mock' },
-    setup: async childCtx => void await ctx.agentPresets.mount(childCtx, 'parent'),
+    setup: async parentCtx => void await ctx.agentPresets.mount(parentCtx, 'parent'),
   })
   const parent = handle.agent
   const uninstall = await installWorkflowSubagentPreset(ctx)
@@ -95,7 +106,7 @@ async function fixture(t, script, { mode = 'workspace-write', web = true, fetch,
   let child
   ctx.on('subagent/start', info => { child = ctx.agents.get(info.id) })
   return { ctx, root, workspace, sessions, parent, adapter, webCalls, guest, backend,
-    unregisterParent, handle, get child() { return child },
+    unregisterParent, uninstall, handle, get child() { return child },
     async start(request = {}) {
       const published = await guest.startChild({ prompt: 'Complete the requested work', ...request }, randomUUID())
       return { published, child, result: () => guest.childResult({ callId: published.callId }) }
@@ -327,4 +338,275 @@ test('structured output rejects a later same-name registration before its execut
   assert.equal(executed, false)
   assert.match(JSON.stringify(result), /not authorized/)
   await f.guest.disposeChild({ callId: run.published.callId })
+})
+
+// The native transport is a bounded receipt fixture, not evidence of a guest
+// kernel or Android Binder run. AgentLoop, original tools, NativeLinuxVm,
+// workflow ownership and Session persistence run their production paths.
+function linuxFixture(t, dispatch) {
+  const calls = []
+  const owner = new NativeLinuxVm({ request: async (method, params, signal) => {
+    calls.push({ method, params, signal })
+    if (dispatch) await dispatch(method, params, signal)
+    if (method.endsWith('.cancel')) return { cancelRequested: true, settled: true }
+    const exporting = method.endsWith('.exportFile')
+    const transferring = exporting || method.endsWith('.importFile')
+    return { id: params.id, sessionId: params.sessionId, status: 'completed', output: 'fixture output',
+      exitCode: 0, guestUid: 99001, timedOut: false, cancelled: false, truncated: false,
+      diskCommitted: exporting ? false : transferring ? true : params.persistChanges,
+      retirementConfirmed: true, detail: null,
+      ...transferring ? { source: params.source, destination: params.destination, bytes: 3, sha256: 'a'.repeat(64) } : {},
+      ...exporting ? { filePublished: true } : {} }
+  } })
+  t.after(() => owner.dispose())
+  return { owner, calls }
+}
+
+test('real workflow child calls original Linux tools in its own session and retains receipts in JSONL', async t => {
+  let f
+  const native = linuxFixture(t, async (method, params) => {
+    if (method.endsWith('.exportFile')) await writeFile(join(f.workspace, params.destination), 'out')
+  })
+  f = await fixture(t, [
+    toolCallResponse('import', 'linux_import', { source: 'input.txt', destination: 'input.txt' }),
+    toolCallResponse('exec', 'linux_exec', { command: 'wc -c input.txt > result.txt' }),
+    toolCallResponse('export', 'linux_export', { source: 'result.txt', destination: 'result.txt' }),
+    textResponse('completed'),
+  ], { linux: native.owner, projectDirectory: 'project' })
+  const run = await f.start()
+  assert.equal((await run.result()).stopReason, 'completed')
+  assert.deepEqual(schemaNames(f.adapter.requests[0]), [...NAMES, 'linux_exec', 'linux_import', 'linux_export'].sort())
+  const rows = toolRows(run.child)
+  assert.equal(rows.length, 3)
+  for (const row of rows) assert.equal(row.data.message.isError, false, resultText(row))
+  assert.deepEqual(native.calls.map(call => call.method),
+    ['native.linuxVm.importFile', 'native.linuxVm.execute', 'native.linuxVm.exportFile'])
+  for (const call of native.calls) {
+    assert.equal(call.params.sessionId, String(run.child.session.id))
+    assert.notEqual(call.params.sessionId, String(f.parent.session.id))
+  }
+  assert.equal(native.calls[0].params.source, 'project/input.txt')
+  assert.equal(native.calls[1].params.persistChanges, true)
+  assert.equal(native.calls[2].params.destination, 'project/result.txt')
+  assert.equal(await readFile(join(f.workspace, 'project', 'result.txt'), 'utf8'), 'out')
+  assert.match(resultText(rows[2]), /file_path/)
+  assert.match(JSON.stringify(f.adapter.requests.at(-1)), /android-linux-receipt/)
+  await f.guest.disposeChild({ callId: run.published.callId })
+  const paths = await Array.fromAsync(glob('**/*.jsonl', { cwd: f.sessions }))
+  const records = await Promise.all(paths.map(path => readFile(join(f.sessions, path), 'utf8')))
+  const saved = records.find(text => text.split('\n').some(line => line && JSON.parse(line).id === run.child.id))
+  assert.ok(saved)
+  const receipts = saved.split('\n').filter(Boolean).map(line => JSON.parse(line))
+    .flatMap(event => event.type === 'agent/inbox/spliced' ? event.data.inserted : [])
+    .filter(message => message.source.kind === 'android-linux-receipt')
+  assert.equal(receipts.length, 3)
+})
+
+test('read-only workflow activation stays disposable after policy upgrades and cannot gain imports or exports', async t => {
+  const native = linuxFixture(t)
+  let f
+  f = await fixture(t, [
+    toolCallResponse('first', 'linux_exec', { command: 'echo temporary > state' }),
+    () => { setSandboxMode(f.parent.session, 'workspace-write'); setSandboxMode(f.child.session, 'workspace-write')
+      return toolCallResponse('second', 'linux_exec', { command: 'echo still-temporary > state' }) },
+    toolCallResponse('import', 'linux_import', { source: 'input.txt', destination: 'input.txt' }),
+    toolCallResponse('export', 'linux_export', { source: 'state', destination: 'state' }), textResponse('done'),
+  ], { linux: native.owner, mode: 'read-only', web: false })
+  const run = await f.start()
+  await run.result()
+  assert.deepEqual(schemaNames(f.adapter.requests[0]), ['glob', 'grep', 'linux_exec', 'read'])
+  assert.deepEqual(native.calls.map(call => call.params.persistChanges), [false, false])
+  assert.equal(toolRows(run.child)[2].data.message.isError, true)
+  assert.equal(toolRows(run.child)[3].data.message.isError, true)
+})
+
+test('live parent or child policy downgrades make Linux execution disposable and deny transfers', async t => {
+  for (const actor of ['parent', 'child']) {
+    const native = linuxFixture(t)
+    let f
+    f = await fixture(t, [
+      () => { setSandboxMode(f[actor].session, 'read-only')
+        return toolCallResponse('exec', 'linux_exec', { command: 'echo temporary' }) },
+      toolCallResponse('import', 'linux_import', { source: 'input.txt', destination: 'input.txt' }),
+      toolCallResponse('export', 'linux_export', { source: 'state', destination: 'state' }), textResponse('done'),
+    ], { linux: native.owner })
+    const run = await f.start()
+    await run.result()
+    assert.equal(toolRows(run.child)[0].data.message.isError, false)
+    assert.equal(toolRows(run.child)[1].data.message.isError, true)
+    assert.equal(toolRows(run.child)[2].data.message.isError, true)
+    assert.equal(native.calls.length, 1)
+    assert.equal(native.calls[0].params.persistChanges, false)
+  }
+})
+
+test('delegated Linux transfers repeat parent authorization after asynchronous file preparation', async t => {
+  const native = linuxFixture(t)
+  const f = await fixture(t, ['hang'], { linux: native.owner })
+  const run = await f.start()
+  const fs = f.ctx.fs
+  const stat = fs.stat
+  const descriptor = Object.getOwnPropertyDescriptor(fs, 'stat')
+  Object.defineProperty(fs, 'stat', { configurable: true, writable: true, value: async function (...args) {
+    const result = await stat.apply(this, args)
+    setSandboxMode(f.parent.session, 'read-only')
+    return result
+  } })
+  try {
+    const result = await f.ctx.tools.execute({ agent: run.child, name: 'linux_import', callId: 'late-revoke',
+      arguments: { source: 'input.txt', destination: 'input.txt' }, signal: new AbortController().signal })
+    assert.equal(result.isError, true)
+    assert.match(JSON.stringify(result), /not authorized/)
+    assert.equal(native.calls.length, 0)
+  } finally {
+    if (descriptor) Object.defineProperty(fs, 'stat', descriptor)
+    else delete fs.stat
+  }
+})
+
+test('Linux factory identity, activation directory and reservation remain live and confined', async t => {
+  const native = linuxFixture(t)
+  const f = await fixture(t, ['hang'], { linux: native.owner, projectDirectory: 'project' })
+  const run = await f.start()
+  const execute = (name, args) => f.ctx.tools.execute({ agent: run.child, name, arguments: args,
+    callId: randomUUID(), signal: new AbortController().signal })
+  const original = f.ctx.tools.get('linux_exec', f.parent)
+  assert.equal(isFirstPartyLinuxDefinition(original, run.child), true)
+  assert.equal(isFirstPartyLinuxDefinition({ ...original }, run.child), false)
+  assert.throws(() => { original.execute = async () => ({}) }, TypeError)
+  const unregister = f.parent.ctx.tools.register(original)
+  assert.equal((await execute('linux_exec', { command: 'id' })).isError, true)
+  unregister()
+  await f.ctx.workingDirectory.set(run.child, f.workspace)
+  assert.equal((await execute('linux_export', { source: 'state', destination: 'outside.txt' })).isError, true)
+  await f.ctx.workingDirectory.set(run.child, join(f.workspace, 'project'))
+  const removeVisibility = f.parent.ctx.tools.restrict({ deny: ['linux_exec'] })
+  assert.equal((await execute('linux_exec', { command: 'id' })).isError, true)
+  removeVisibility()
+  f.backend.close()
+  assert.equal((await execute('linux_exec', { command: 'id' })).isError, true)
+  assert.equal(native.calls.length, 0)
+  await f.guest.disposeChild({ callId: run.published.callId })
+  await f.handle.dispose()
+  await f.unregisterParent()
+  assert.equal(isFirstPartyLinuxDefinition(original, run.child), false)
+})
+
+test('cold-resumed workflow child cannot reconstruct Linux authority from its persisted session', async t => {
+  const native = linuxFixture(t)
+  const f = await fixture(t, [toolCallResponse('exec', 'linux_exec', { command: 'echo temporary' }),
+    textResponse('done'), toolCallResponse('cold', 'linux_exec', { command: 'id' }), textResponse('cold resumed')],
+  { linux: native.owner })
+  const run = await f.start()
+  await run.result()
+  await f.guest.disposeChild({ callId: run.published.callId })
+  f.backend.close()
+  await f.ctx.subagents.sendMessage(f.parent, SessionId(run.child.id), [{ type: 'text', text: 'Continue' }],
+    { signal: new AbortController().signal })
+  await f.ctx.subagents.waitForChildren(f.parent)
+  assert.deepEqual(schemaNames(f.adapter.requests.at(-1)), [])
+  assert.equal(native.calls.length, 1)
+  assert.match(JSON.stringify(f.adapter.requests.at(-1)), /not authorized/)
+})
+
+test('workflow cancellation waits for Linux retirement and retains a late committed receipt', async t => {
+  const started = Promise.withResolvers()
+  const cancelled = Promise.withResolvers()
+  const release = Promise.withResolvers()
+  const native = linuxFixture(t, async method => {
+    if (method.endsWith('.execute')) { started.resolve(); await release.promise }
+    if (method.endsWith('.cancel')) cancelled.resolve()
+  })
+  const f = await fixture(t, [toolCallResponse('exec', 'linux_exec', { command: 'echo published > state' })],
+    { linux: native.owner })
+  const run = await f.start()
+  await started.promise
+  let retired = false
+  const retiring = f.guest.disposeChild({ callId: run.published.callId }).then(() => { retired = true })
+  await cancelled.promise
+  try {
+    assert.equal(retired, false)
+    assert.equal(f.ctx.agents.get(run.child.id), run.child)
+  } finally { release.resolve() }
+  await retiring
+  assert.equal(f.ctx.agents.get(run.child.id), undefined)
+  const recorded = run.child.session.snapshotEvents()
+    .flatMap(event => event.type === 'agent/inbox/spliced' ? event.data.inserted : [])
+    .filter(message => message.source.kind === 'android-linux-receipt')
+  assert.equal(recorded.length, 1)
+  const receipt = JSON.parse(recorded[0].content[0].text).linuxVmReceipt
+  assert.equal(receipt.sessionId, String(run.child.session.id))
+  assert.equal(receipt.diskCommitted, true)
+  assert.equal(receipt.cancelRequested, true)
+  assert.equal(receipt.retirementConfirmed, true)
+})
+
+test('unloading delegated authority during Linux file preparation cannot fall back to ordinary authority', async t => {
+  for (const name of ['linux_import', 'linux_export']) {
+    const native = linuxFixture(t)
+    const f = await fixture(t, ['hang'], { linux: native.owner })
+    const run = await f.start()
+    const fs = f.ctx.fs
+    const method = name === 'linux_import' ? 'stat' : 'authorizeModelAttachmentWrite'
+    const original = fs[method], descriptor = Object.getOwnPropertyDescriptor(fs, method)
+    Object.defineProperty(fs, method, { configurable: true, writable: true, value: async function (...args) {
+      const result = await original.apply(this, args)
+      await f.uninstall()
+      return result
+    } })
+    try {
+      const result = await f.ctx.tools.execute({ agent: run.child, name, callId: 'owner-retired',
+        arguments: { source: 'input.txt', destination: 'output.txt' }, signal: new AbortController().signal })
+      assert.equal(f.ctx.get('androidWorkflowChildTools'), undefined)
+      assert.equal(isFirstPartyLinuxDefinition(f.ctx.tools.get(name, f.parent), f.parent), true)
+      assert.equal(result.isError, true, name)
+      assert.match(JSON.stringify(result), /not authorized/)
+      assert.equal(native.calls.length, 0)
+    } finally {
+      if (descriptor) Object.defineProperty(fs, method, descriptor)
+      else delete fs[method]
+    }
+  }
+})
+
+test('Linux checks the final canonical transfer target when both a directory link and cwd change during preparation', { timeout: 15_000 }, async t => {
+  for (const name of ['linux_import', 'linux_export']) {
+    const native = linuxFixture(t)
+    const f = await fixture(t, ['hang'], { linux: native.owner, projectDirectory: 'project' })
+    const project = join(f.workspace, 'project')
+    const transfer = join(project, 'transfer'), safe = join(project, 'safe'), outside = join(f.workspace, 'outside')
+    for (const directory of [transfer, outside, join(safe, 'transfer')]) await mkdir(directory, { recursive: true })
+    await writeFile(join(transfer, 'input.txt'), 'inside')
+    await writeFile(join(outside, 'input.txt'), 'outside delegated root')
+    await writeFile(join(safe, 'transfer', 'input.txt'), 'safe replacement')
+    const run = await f.start()
+    const fs = f.ctx.fs
+    const method = name === 'linux_import' ? 'stat' : 'authorizeModelAttachmentWrite'
+    const original = fs[method], descriptor = Object.getOwnPropertyDescriptor(fs, method)
+    let count = 0
+    Object.defineProperty(fs, method, { configurable: true, writable: true, value: async function (...args) {
+      const result = await original.apply(this, args)
+      // ensure() also stats the cwd while holding WorkingDirectory's queue.
+      // Inject only after the transfer file stat, outside that directory lock.
+      if (name === 'linux_import' && result?.type !== 'file') return result
+      if (++count === (name === 'linux_import' ? 1 : 2)) {
+        await rename(transfer, join(project, 'original-transfer'))
+        await symlink(outside, transfer, process.platform === 'win32' ? 'junction' : 'dir')
+        await f.ctx.workingDirectory.set(f.parent, safe)
+        await f.ctx.workingDirectory.set(run.child, safe)
+      }
+      return result
+    } })
+    try {
+      const result = await f.ctx.tools.execute({ agent: run.child, name, callId: 'changed-canonical-target',
+        arguments: name === 'linux_import' ? { source: 'transfer/input.txt', destination: 'input.txt' }
+          : { source: 'input.txt', destination: 'transfer/output.txt' }, signal: new AbortController().signal })
+      assert.equal(result.isError, true, name)
+      assert.match(JSON.stringify(result), /not authorized/)
+      assert.equal(native.calls.length, 0)
+    } finally {
+      if (descriptor) Object.defineProperty(fs, method, descriptor)
+      else delete fs[method]
+    }
+  }
 })

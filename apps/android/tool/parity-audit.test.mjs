@@ -108,7 +108,11 @@ test('source review distinguishes alternative launchers from shared capabilities
   const result = await check(manifest())
   assert.equal(result.migration.unassessed, 0)
   assert.equal(result.capabilities.find(capability => capability.id === 'linux').declarations.length, 0)
-  assert.match(result.capabilities.find(capability => capability.id === 'linux').remaining, /guest image/u)
+  const linuxRemaining = result.capabilities.find(capability => capability.id === 'linux').remaining
+  assert.match(linuxRemaining, /offline Alpine candidate/u)
+  assert.match(linuxRemaining, /exact image\/build evidence/u)
+  assert.match(linuxRemaining, /LINUX_VM_DEVICE_ACCEPTED=false/u)
+  assert.match(linuxRemaining, /Production enablement and device acceptance remain/u)
 })
 
 test('excluding a declaration requires an explicit native-entrypoint reason', async () => {

@@ -161,6 +161,23 @@ class CandidateTests(CandidateFixture):
         with self.assertRaisesRegex(ValueError, 'locked source closure'):
             self.stage()
 
+    def test_requires_https_transport_and_guest_helper_in_source_bundle(self):
+        for name in [
+                'apps/android/android/app/src/main/java/com/minnnng/dsh_android/LinuxVmHttpsMailbox.java',
+                'apps/android/android/app/src/main/java/com/minnnng/dsh_android/LocalHttpConnectTunnel.java',
+                'apps/android/android/app/src/main/java/com/minnnng/dsh_android/IsolatedExecutionPolicyOwner.java',
+                'apps/android/tool/linux-vm-host/dsh-fetch.py']:
+            with self.subTest(name=name):
+                self.bundle('project/' + name)
+                with self.assertRaisesRegex(ValueError, 'locked source closure'):
+                    self.stage()
+
+    def test_rejects_source_bundle_after_https_transport_changes(self):
+        name = 'apps/android/android/app/src/main/java/com/minnnng/dsh_android/LocalHttpConnectTunnel.java'
+        (self.root / name).write_bytes(b'changed CONNECT implementation')
+        with self.assertRaisesRegex(ValueError, 'missing or stale'):
+            self.stage()
+
     def test_rejects_a_stale_uncompiled_embedding_file_in_source_bundle(self):
         (self.root / 'apps/android/android/app/src/main/cpp/linux_vm_files.c').write_bytes(b'changed publisher')
         with self.assertRaisesRegex(ValueError, 'missing or stale'):

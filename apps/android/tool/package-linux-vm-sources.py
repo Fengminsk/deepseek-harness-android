@@ -25,6 +25,8 @@ PROJECT_INPUTS = (
         'package-linux-vm-sources.py', 'test_linux_vm_candidate.py', 'tinyemu-build.md', 'tinyemu-build.zh.md',
         'linux-vm-release.py', 'test_linux_vm_release.py', 'verify-apk.ps1', 'verify-apk.test.ps1', 'runtime-lock.json',
         'linux-vm-runtime.md', 'linux-vm-runtime.zh.md',
+        'acceptance-linux-vm-network.mjs', 'linux-vm-network.md', 'linux-vm-network.zh.md',
+        'linux-vm-host/LinuxVmNetworkHost.java', 'linux-vm-host/dsh-fetch.py',
         'linux-vm-host/LinuxVmHost.java', 'linux-vm-host/include/sys/select.h',
         'linux-vm-host/build-alpine.sh', 'linux-vm-host/probe-alpine.sh',
         'linux-vm-host/README.md', 'linux-vm-host/README.zh.md',
@@ -34,6 +36,10 @@ PROJECT_INPUTS = (
     )),
     *(f'apps/android/android/app/src/main/java/com/minnnng/dsh_android/{name}.java' for name in (
         'LinuxVmConsole', 'LinuxVmBlockStore',
+        'LinuxVmHttpsMailbox', 'LocalHttpConnectTunnel', 'IsolatedNetworkBroker',
+        'IsolatedNetworkJournal', 'IsolatedExecutionPolicyOwner', 'AndroidJava28',
+        'IsolatedCapabilityBroker', 'IsolatedScriptWire', 'IsolatedWorkerInput',
+        'IsolatedWorkerTextEdit', 'IsolatedWorkerTextSearch', 'IsolatedWorkerWriteback', 'PtcScriptEngine',
     )),
     *(f'apps/android/android/app/src/main/kotlin/com/minnnng/dsh_android/{name}.kt' for name in (
         'IsolatedLinuxVmService', 'LinuxVmEngine', 'LinuxVmRunner', 'LinuxVmManager',
@@ -41,6 +47,7 @@ PROJECT_INPUTS = (
     )),
     'apps/android/android/app/build.gradle.kts',
     'apps/android/android/app/linux-vm-rules.pro',
+    'apps/android/android/app/src/test/java/com/minnnng/dsh_android/LinuxVmNetworkHostTest.java',
     'apps/android/runtime/native-linux-vm.mjs',
     'apps/android/runtime/tool-linux-vm.mjs',
 )

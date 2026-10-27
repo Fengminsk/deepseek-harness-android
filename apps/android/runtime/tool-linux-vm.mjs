@@ -6,7 +6,40 @@ import { isAbsolute, relative, resolve, sep } from 'node:path'
 import { LINUX_VM_IMPORT_BYTES, LinuxVmOutcomeUncertainError, prepareLinuxVmCommand, prepareLinuxVmImport } from './native-linux-vm.mjs'
 import { canonicalModelTarget, insideModelWorkspace, modelFileObservationDenial } from './model-file-read-guard.mjs'
 
-function sessionPolicy(ctx, execution) {
+const definitionKey = Symbol('Android Linux definition owner')
+
+class LinuxDefinitionOwner {
+  #runtime
+  #active = true
+  #name
+
+  constructor(key, runtime, name) {
+    if (key !== definitionKey) throw new TypeError('Only the Linux tool factory can issue its definition')
+    this.#runtime = runtime
+    this.#name = name
+  }
+
+  static owns(definition, scope) {
+    return definition !== null && typeof definition === 'object' && #runtime in definition
+      && definition.#active && definition.#runtime.get(definition.#name, scope) === definition
+  }
+
+  retire() { this.#active = false }
+}
+
+/** Attest the exact live factory definition, including in a delegated child scope. */
+export function isFirstPartyLinuxDefinition(definition, scope) {
+  return LinuxDefinitionOwner.owns(definition, scope)
+}
+
+function registerDefinition(ctx, options) {
+  const owner = new LinuxDefinitionOwner(definitionKey, ctx.tools, options.name)
+  const definition = Object.freeze(Object.assign(owner, defineTool(options)))
+  ctx.tools.register(definition)
+  ctx.effect(() => () => owner.retire())
+}
+
+function sessionPolicy(ctx, execution, priorDelegationCheck, target) {
   const agent = execution.agent
   if (!agent?.session || ctx.agents.get(agent.id) !== agent || !ctx.tools.isActiveExecution(execution)) {
     throw new Error('Linux VM requires the current registered Agent execution')
@@ -19,7 +52,16 @@ function sessionPolicy(ctx, execution) {
     throw new Error('Linux VM received an invalid session sandbox policy')
   }
   execution.signal.throwIfAborted()
-  return { agent, policy, persistChanges: policy.mode !== 'read-only' }
+  // File preparation awaits filesystem services. Revalidate the delegated
+  // grant here, immediately before dispatch as well as at tool admission.
+  const owner = ctx.get('androidWorkflowChildTools')
+  // Retain the original owner across awaits. Unloading it clears its grants;
+  // absence of a replacement must not turn a child into an unrestricted caller.
+  const checkDelegation = priorDelegationCheck ?? (target => owner?.linuxExecutionPolicy(execution, target))
+  const delegated = checkDelegation(target)
+  if (delegated?.denial) throw new Error(delegated.denial)
+  return { agent, policy, checkDelegation,
+    persistChanges: policy.mode !== 'read-only' && delegated?.persistChanges !== false }
 }
 
 // ToolRuntime deliberately replaces a late success with TOOL_ABORTED. Its
@@ -64,7 +106,7 @@ async function retainReceipt(execution, dispatch) {
 export function registerLinuxExportTool(ctx, owner, available, workspaceRoot = process.cwd()) {
   if (!available) return
   const root = realpathSync(workspaceRoot)
-  ctx.effect(() => ctx.tools.register(defineTool({ name: 'linux_export',
+  registerDefinition(ctx, { name: 'linux_export',
     description: 'Copy one regular file (up to 64 MiB) from this conversation’s Linux VM /workspace into the current Agent workspace. source is guest-relative; destination is relative to the Agent working directory. Absolute paths, .., protected metadata and existing destination files are rejected. Requires a writable session policy. Export does not persist guest disk changes. A confirmed success returns file_path, bytes, sha256 and filePublished:true so the file can be viewed or presented. A cancellation request cannot undo an already published file; inspect cancelRequested and never automatically retry an uncertain publication.',
     parameters: { source: { type: 'string', required: true }, destination: { type: 'string', required: true }, timeoutMs: { type: 'integer' } },
     output: { schema: { type: 'json' }, render: (_args, result) => [{ type: 'text', text: JSON.stringify(result) }] },
@@ -84,7 +126,7 @@ export function registerLinuxExportTool(ctx, owner, available, workspaceRoot = p
       } catch (error) { if (error?.code !== 'ENOENT') throw error }
       const target = await ctx.fs.authorizeModelAttachmentWrite(requested, initial.agent)
       const actual = canonicalModelTarget(ctx.fs.processPath(target))
-      const current = sessionPolicy(ctx, execution)
+      const current = sessionPolicy(ctx, execution, initial.checkDelegation, actual)
       if (!current.persistChanges || !insideModelWorkspace(root, actual)
         || !insideModelWorkspace(realpathSync(current.policy.workspaceRoot), actual)) {
         throw new Error('Linux export destination is outside the current session workspace or policy changed')
@@ -95,13 +137,13 @@ export function registerLinuxExportTool(ctx, owner, available, workspaceRoot = p
       return result.status === 'completed' && result.filePublished === true
         ? { ...result, file_path: actual } : result
     },
-  })))
+  })
 }
 
 /** Register real guest shell execution only after its packaged provider has passed device acceptance. */
 export function registerLinuxVmTool(ctx, owner, available) {
   if (!available) return
-  ctx.effect(() => ctx.tools.register(defineTool({
+  registerDefinition(ctx, {
     name: 'linux_exec',
     description: 'Execute a shell script in the local Linux VM. The guest has BusyBox shell and utilities, its own Linux kernel and a disk per conversation. Commands start in /workspace. The guest cannot access Android app data or phone files directly and has no network. Use linux_import for workspace files. timeoutMs includes boot and execution (1000–120000 ms). With read-only session policy all disk changes are discarded; writable policy persists changes only after successful guest shutdown. A confirmed cancelled or timed-out run discards changes; a cancellation request arriving after publication cannot undo it. Inspect exitCode, status, diskCommitted and cancelRequested before claiming success or retrying.',
     parameters: {
@@ -117,14 +159,14 @@ export function registerLinuxVmTool(ctx, owner, available) {
       return retainReceipt(execution, () => owner.execute(String(agent.session.id),
         prepareLinuxVmCommand(args), execution.signal, { persistChanges }))
     },
-  })))
+  })
 }
 
 /** Import only an authorized file from this Agent's workspace into its own persistent guest disk. */
 export function registerLinuxImportTool(ctx, owner, available, workspaceRoot = process.cwd()) {
   if (!available) return
   const root = realpathSync(workspaceRoot)
-  ctx.effect(() => ctx.tools.register(defineTool({ name: 'linux_import',
+  registerDefinition(ctx, { name: 'linux_import',
     description: 'Copy one file (up to 64 MiB) from the current Agent workspace into this conversation’s Linux VM /workspace directory. source is relative to the current Agent working directory; destination is relative to guest /workspace. Absolute paths and .. are rejected. Requires a writable session policy. Uploaded attachments must first be materialized into the App workspace. The guest has no direct Android file access. Inspect status, bytes, sha256, diskCommitted and cancelRequested. Confirmed cancelled or failed imports do not commit; cancellation requested after publication cannot undo a completed import.',
     parameters: { source: { type: 'string', required: true }, destination: { type: 'string', required: true }, timeoutMs: { type: 'integer' } },
     output: { schema: { type: 'json' }, render: (_args, result) => [{ type: 'text', text: JSON.stringify(result) }] },
@@ -141,7 +183,7 @@ export function registerLinuxImportTool(ctx, owner, available, workspaceRoot = p
         throw new Error('Linux import requires a regular workspace file no larger than 64 MiB')
       }
       const actual = realpathSync(ctx.fs.processPath(target))
-      const current = sessionPolicy(ctx, execution)
+      const current = sessionPolicy(ctx, execution, initial.checkDelegation, actual)
       if (!current.persistChanges || !insideModelWorkspace(root, actual)
         || !insideModelWorkspace(realpathSync(current.policy.workspaceRoot), actual)) {
         throw new Error('Linux import source is outside the current session workspace or policy changed')
@@ -150,5 +192,5 @@ export function registerLinuxImportTool(ctx, owner, available, workspaceRoot = p
       return retainReceipt(execution, () => owner.importFile(String(current.agent.session.id),
         { ...args, source }, execution.signal, { persistChanges: true }))
     },
-  })))
+  })
 }
