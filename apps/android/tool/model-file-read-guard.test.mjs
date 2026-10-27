@@ -189,12 +189,29 @@ test('real ToolRuntime guards original file, search, delivery and editor tools a
   let swapViewBeforeBody = false
   ctx.provide('workingDirectory', { async ensure() { return cwd } })
   const spawns = []
+  let runSearches = false
   // Production providers extend Service: each ctx.subprocess.spawn read is a
   // new Cordis trace proxy. A plain provided object misses that boundary.
   class SearchSubprocess extends cordis.Service {
     constructor(context) { super(context, 'subprocess') }
     spawn(spec) {
     spawns.push(spec)
+    if (runSearches) {
+      const result = spawnSync(spec.argv[0], spec.argv.slice(1), {
+        cwd: spec.cwd, encoding: 'utf8', windowsHide: true, timeout: 10000,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+      assert.equal(result.error, undefined)
+      assert.equal(result.signal, null, 'ripgrep must finish rather than be killed by the fixture')
+      assert.ok(result.status === 0 || result.status === 1, result.stderr)
+      return {
+        done: Promise.resolve({ exitCode: result.status, signal: null }),
+        collected: {
+          stdout: { readFrom: () => ({ text: result.stdout, lossy: false }) },
+          stderr: { readFrom: () => ({ text: result.stderr, lossy: false }) },
+        },
+      }
+    }
     return {
       done: Promise.resolve({ exitCode: 1, signal: null }),
       collected: {
@@ -373,6 +390,28 @@ test('real ToolRuntime guards original file, search, delivery and editor tools a
   assert.equal(grepAllowed.isError, false, JSON.stringify(grepAllowed.content))
   assert.equal(spawns.length, 6)
   assert.ok(spawns[5].argv.includes(workspace), 'original grep receives the absolute workspace root')
+  // Valid leaf/directory names can contain consecutive dots. Exercise the real
+  // first-party tools and ripgrep, not just the guard's argument predicate.
+  mkdirSync(join(workspace, 'v1..v2'))
+  writeFileSync(join(workspace, 'v1..v2', 'release..txt'), 'named file search needle')
+  runSearches = true
+  const dottedGlob = await call('glob', { pattern: 'v1..v2/release..txt' })
+  assert.equal(dottedGlob.isError, false, JSON.stringify(dottedGlob.content))
+  assert.match(JSON.stringify(dottedGlob.content), /release\.\.txt/)
+  const dottedGrep = await call('grep', { pattern: 'search needle', include: 'v1..v2/release..txt' })
+  assert.equal(dottedGrep.isError, false, JSON.stringify(dottedGrep.content))
+  assert.match(JSON.stringify(dottedGrep.content), /named file search needle/, JSON.stringify(spawns.at(-1).argv))
+  for (const [name, args] of [
+    ['glob', { pattern: 'v1..v2/../../*.sqlite' }],
+    ['grep', { pattern: 'private', include: '../*.sqlite' }],
+  ]) {
+    const count = spawns.length
+    const denied = await call(name, args)
+    assert.equal(denied.isError, true)
+    assert.equal(spawns.length, count, 'parent traversal must be rejected before spawning')
+    assert.doesNotMatch(JSON.stringify(denied.content), /private value/)
+  }
+  runSearches = false
   if (process.platform === 'win32') {
     // The original searches bypass ctx.fs and spawn ripgrep. Prove that the
     // bundled binary does not traverse a child junction when rooted at the

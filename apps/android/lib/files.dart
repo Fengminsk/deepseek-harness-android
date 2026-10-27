@@ -619,10 +619,35 @@ class _TextFilePageState extends State<TextFilePage> {
       retryPreserveScroll = preserveScroll;
     });
     try {
+      var expectedVersion = reset ? null : documentVersion;
+      if (reset && offset > 0) {
+        // Native continuations belong to a content-verified snapshot. Rebuild
+        // that snapshot after reconnecting before restoring the visible page.
+        final first = await widget.runtime.call('documents.read', {
+          'root': widget.root,
+          'path': widget.path,
+          'offset': 0,
+        }) as Json;
+        if (!mounted || attempt != generation) return;
+        final refreshedVersion = first['version'];
+        if (first['offset'] != 0 ||
+            refreshedVersion is! String ||
+            !RegExp(r'^[0-9a-f]{64}$').hasMatch(refreshedVersion)) {
+          throw const FormatException('文件版本无效，请从头重新读取');
+        }
+        if (refreshedVersion != documentVersion) {
+          throw const _DocumentChanged();
+        }
+        expectedVersion = refreshedVersion;
+      }
+      if (offset > 0 && expectedVersion == null) {
+        throw const FormatException('继续读取需要已确认的文件版本，请从头重新读取');
+      }
       final result = await widget.runtime.call('documents.read', {
         'root': widget.root,
         'path': widget.path,
         'offset': offset,
+        if (expectedVersion != null) 'version': expectedVersion,
       }) as Json;
       final next = result['nextOffset'] as int;
       final hasMore = result['truncated'] == true;
@@ -635,7 +660,7 @@ class _TextFilePageState extends State<TextFilePage> {
           !RegExp(r'^[0-9a-f]{64}$').hasMatch(version)) {
         throw const FormatException('文件分段信息无效，请重新打开文件');
       }
-      if (!reset && documentVersion != null && version != documentVersion) {
+      if (expectedVersion != null && version != expectedVersion) {
         throw const _DocumentChanged();
       }
       if (!mounted || attempt != generation) return;

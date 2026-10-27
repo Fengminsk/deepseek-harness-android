@@ -44,7 +44,7 @@ function pathArgument(name, args) {
     // absolute/parent-looking glob forms instead of relying on that detail.
     const filter = name === 'glob' ? args.pattern : args.include
     if (filter !== undefined && (typeof filter !== 'string' || filter.startsWith('/')
-      || filter.startsWith('\\') || filter.includes('..'))) return undefined
+      || filter.startsWith('\\') || filter.split(/[\\/]/u).includes('..'))) return undefined
     return args.path === undefined ? '.' : typeof args.path === 'string' ? args.path : undefined
   }
   if (name === 'str_replace_editor') {

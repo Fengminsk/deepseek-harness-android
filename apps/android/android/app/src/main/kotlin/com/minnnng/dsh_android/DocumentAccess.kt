@@ -43,6 +43,7 @@ class DocumentAccess(private val context: Context) {
                 val document = if (directory) DocumentsContract.buildDocumentUriUsingTree(uri, DocumentsContract.getTreeDocumentId(uri)) else uri
                 val info = metadata(document)
                 item.put("name", info.name ?: item.getString("name"))
+                item.put("mediaType", info.mime ?: JSONObject.NULL)
                 item.put("available", true)
             } catch (failure: FileNotFoundException) {
                 item.put("available", false).put("error", failure.message)
@@ -142,6 +143,7 @@ class DocumentAccess(private val context: Context) {
         return JSONArray().apply {
             listing.entries().forEach { entry ->
                 put(JSONObject().put("name", entry.name)
+                    .put("mediaType", entry.mime)
                     .put("directory", entry.mime == DocumentsContract.Document.MIME_TYPE_DIR)
                     .put("size", entry.size ?: JSONObject.NULL))
             }

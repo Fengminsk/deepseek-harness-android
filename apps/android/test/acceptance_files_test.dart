@@ -17,6 +17,7 @@ class _FilesRuntime extends RuntimeController {
     {'id': 'file-id', 'name': '笔记.txt', 'directory': false, 'available': true},
   ];
   final reads = <Json>[];
+  final children = <Json>[];
   final revocations = <String>[];
   bool failNextPage = false;
   bool failFirstPage = false;
@@ -44,8 +45,19 @@ class _FilesRuntime extends RuntimeController {
       grants.removeWhere((entry) => entry['id'] == params['root']);
       return {'revoked': true};
     }
+    if (method == 'documents.list') {
+      return children.map((entry) => Json.from(entry)).toList();
+    }
     if (method == 'documents.read') {
       reads.add(Json.from(params));
+      // DocumentAccess.read requires the observed snapshot for every nonzero
+      // offset. The reader must not rely on an unconstrained fake provider.
+      if (params['offset'] != 0 && params['version'] is! String) {
+        throw PlatformException(
+          code: 'document-version-required',
+          message: '继续读取需要上一段的文件版本，请从头重新读取',
+        );
+      }
       if (readBarrier != null) return readBarrier!.future;
       if (params['offset'] == 0) {
         if (failFirstPage) {
@@ -401,6 +413,8 @@ void main() {
       await tester.tap(find.text('重新确认当前段'));
       await tester.pumpAndSettle();
       expect(runtime.reads.last['offset'], 19);
+      expect(runtime.reads.map((read) => read['offset']), [0, 19, 0, 19]);
+      expect(runtime.reads.last['version'], 'a' * 64);
       expect(find.textContaining('从上次阅读位置开始'), findsOneWidget);
       final previous = tester.widget<PocketButton>(
         find.ancestor(
@@ -412,6 +426,69 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
     },
   );
+
+  testWidgets(
+    'reconnection refuses the old byte position when a fresh snapshot changed',
+    (tester) async {
+      final runtime = _FilesRuntime();
+      addTearDown(runtime.dispose);
+      await tester.pumpWidget(
+        _host(TextFilePage(runtime: runtime, root: 'file-id', path: '')),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('下一段'));
+      await tester.pumpAndSettle();
+      runtime.documentVersion = 'b' * 64;
+      runtime.replaceConnection();
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('重新确认当前段'));
+      await tester.pumpAndSettle();
+      expect(runtime.reads.map((read) => read['offset']), [0, 19, 0]);
+      expect(find.text('第二段'), findsOneWidget);
+      expect(find.text('从头重新读取'), findsOneWidget);
+      await tester.tap(find.text('从头重新读取'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('下一段'));
+      await tester.pumpAndSettle();
+      expect(runtime.reads.last['version'], 'b' * 64);
+      expect(find.text('第二段'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  for (final directory in [false, true]) {
+    testWidgets(
+      'provider MIME opens extensionless text from ${directory ? 'a directory' : 'a single-file grant'} in the reader',
+      (tester) async {
+        final runtime = _FilesRuntime();
+        addTearDown(runtime.dispose);
+        runtime.grants.single
+          ..['name'] = directory ? 'Documents' : 'README'
+          ..['directory'] = directory
+          ..['mediaType'] = directory
+              ? 'vnd.android.document/directory'
+              : 'text/plain';
+        runtime.children.add({
+          'name': 'README',
+          'directory': false,
+          'mediaType': 'text/plain',
+        });
+        await tester.pumpWidget(_host(FilesPage(runtime: runtime)));
+        await tester.pumpAndSettle();
+        if (directory) {
+          await tester.tap(find.text('Documents'));
+          await tester.pumpAndSettle();
+        }
+        await tester.tap(find.text('README'));
+        await tester.pumpAndSettle();
+        expect(find.byType(TextFilePage), findsOneWidget);
+        expect(find.text('第一段中文🙂'), findsOneWidget);
+        expect(runtime.reads.single['path'], directory ? 'README' : '');
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+      },
+    );
+  }
 
   testWidgets(
     'single file grants open their granted document with an empty path',
