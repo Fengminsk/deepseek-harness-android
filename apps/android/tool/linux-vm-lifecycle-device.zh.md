@@ -49,6 +49,8 @@ title: Linux 客体设备生命周期验收
 
 `node --test apps/android/tool/acceptance-linux-vm-lifecycle-device.test.mjs` 在不使用 ADB 的情况下检查证据解析和编排顺序。它拒绝缺失或重复结果、错误身份、缺失运行中工作线程证据、未确认退役、重放、journal 改变、相同进程 ID、哈希不符、签名不符和版本未递增的升级。其注入适配器只证明主机顺序；合成输出不会作为设备验收证据保存。
 
+仅测试使用的观测器，只在 ServiceRecord 和完整 ProcessRecord 身份均一致时合并重复服务展示。它要求精确的 `TID CMD TIME` 列、唯一的 `isolated-linux-vm` 工作线程（或内核截断名 `isolated-linux-`），以及该线程大于零的 CPU 时间；其他线程的 CPU 不计入。Shell 派发与管道读取共用 8 秒时限，之后最多等待 1 秒确认读取线程和描述符关闭线程退出；迟到的描述符也必须关闭，无法确认清理则失败。有界状态消息标识客体发现、工作线程 CPU 和取消阶段。运行 `node apps/android/tool/acceptance-linux-guest-observation.mjs` 检查真实解析器与线程所有者，运行 `python apps/android/tool/acceptance-linux-guest-observation-icu.py --icu-library <ICU4C-library> --symbol-suffix <version>` 检查源码正则兼容性。JVM 或宿主 ICU 通过不能证明 Android 管道行为或设备取消。
+
 <a id="dev-note"></a>
 ## 开发备注
 

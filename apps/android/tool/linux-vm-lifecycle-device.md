@@ -49,6 +49,8 @@ Only the token's dedicated source file, marker and Linux session are created. Re
 
 `node --test apps/android/tool/acceptance-linux-vm-lifecycle-device.test.mjs` checks evidence parsing and orchestration order without ADB. It rejects missing/duplicate results, wrong identities, absent live-worker evidence, unconfirmed retirement, replay, a changed journal, identical process IDs, hash mismatches, signer mismatches and non-increasing upgrade versions. Its injected adapter proves host sequencing only; synthetic outputs are not saved as device acceptance evidence.
 
+The test-only observer accepts duplicate service displays only when their ServiceRecord and complete ProcessRecord identities agree. It requires the exact `TID CMD TIME` columns, one `isolated-linux-vm` worker (or its kernel-truncated `isolated-linux-` name), and positive CPU time on that worker; another thread's CPU does not count. Shell dispatch and pipe reading share an 8-second bound, followed by at most 1 second to confirm reader and descriptor-closer exit; late descriptors are closed and unconfirmed cleanup fails. Bounded status messages identify guest discovery, worker CPU and cancellation stages. Run `node apps/android/tool/acceptance-linux-guest-observation.mjs` for the actual parser and thread-owner checks, and `python apps/android/tool/acceptance-linux-guest-observation-icu.py --icu-library <ICU4C-library> --symbol-suffix <version>` for source-regex compatibility. JVM or host ICU success does not establish Android pipe behavior or device cancellation.
+
 <a id="dev-note"></a>
 ## Dev Note
 

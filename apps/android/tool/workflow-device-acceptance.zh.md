@@ -22,7 +22,7 @@ title: 工作流运行时真机验收
 <a id="execution-and-evidence"></a>
 ## 执行与证据
 
-[运行时载体](device-runtime-acceptance.zh.md) 以 `suite=workflow` 选择此载荷；`suite=all` 时先执行它，再执行 PTC 和 Linux。它使用独立验收 home 和父 Session。载荷先验证默认注册不可用，再以仅供验收的可用性回调注册原工具，不改变产品能力设置。共享前台租约要求手机已解锁，并已绘制、聚焦全黑窗口；任何测试均不得唤醒或解锁手机。
+[运行时载体](device-runtime-acceptance.zh.md) 以 `suite=workflow` 选择此载荷；`suite=all` 时先执行它，再执行 PTC 和 Linux。它使用独立验收 home 和父 Session。载荷先验证默认注册不可用，再以仅供验收的可用性回调注册原工具，不改变产品能力设置。默认 Activity 载体要求手机已解锁，并已绘制、聚焦全黑窗口。显式 `foregroundCarrier=service` 使用无界面验收服务，支持锁屏且不可交互的手机；[OLED 保护器](device-screen-protection.zh.md) 另行核对所有内置面板持续关闭。两种载体均不得唤醒或解锁手机。
 
 十一项检查发起十四次工作流：JSON 拒绝占三次，两项限额检查占两次。每次生产执行仍受 120 秒上限约束；载体需为全部执行及有限退役时间预留预算，不能把一次执行上限当成全套时限。每次执行的子 Agent 并发上限仍为二，总数上限仍为八。一项失败后，后续检查停止；前台工具调用被取消并等待结束，拥有者销毁负责取消并等待后台工作，随后载体才结束。
 

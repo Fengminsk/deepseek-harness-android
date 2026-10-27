@@ -9,7 +9,6 @@ import android.os.SystemClock
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
-import java.io.ByteArrayOutputStream
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.StandardCopyOption
@@ -53,9 +52,28 @@ internal object LinuxVmLifecycleAcceptance {
             }
             instrumentation.finish(-1, report)
         } catch (failure: Throwable) {
-            report.putString("failed", "${failure.javaClass.simpleName}: ${failure.message}")
+            report.putString("failed", describeFailure(failure))
             instrumentation.finish(0, report)
         }
+    }
+
+    /** Initialization/linkage failures often have no outer message; retain a bounded cause chain. */
+    private fun describeFailure(failure: Throwable): String {
+        val text = StringBuilder()
+        var current: Throwable? = failure
+        var depth = 0
+        while (current != null && depth < 4) {
+            if (depth > 0) text.append(" <- ")
+            val type = current.javaClass.name
+            val message = current.message ?: ""
+            text.append(type.substring(0, minOf(type.length, 160))).append(": ")
+                .append(message.substring(0, minOf(message.length, 384)))
+            val next = current.cause
+            if (next === current) break
+            current = next
+            depth++
+        }
+        return text.toString().take(2200)
     }
 
     private class Probe(private val instrumentation: Instrumentation, private val token: String,
@@ -159,19 +177,35 @@ internal object LinuxVmLifecycleAcceptance {
                     execute(owner, request(id, "while :; do sleep 1; done", true))
                 }
                 var guestPid: Int? = null
+                var identityReported = false
                 try {
                     val deadline = SystemClock.elapsedRealtime() + 120_000
+                    stage("waiting-for-identity", id)
                     while (guestPid == null && !pending.isDone && SystemClock.elapsedRealtime() < deadline) {
                         checkForeground()
-                        guestPid = liveGuestPid(id)?.takeIf { workerHasRun(it) }
+                        val observedPid = liveGuestPid(id)
+                        if (observedPid != null) {
+                            if (!identityReported) {
+                                stage("first-identity", id, JSONObject().put("guestPid", observedPid))
+                                identityReported = true
+                            }
+                            if (workerHasRun(observedPid, id)) guestPid = observedPid
+                        }
                         if (guestPid == null) SystemClock.sleep(100)
                     }
+                    stage("readiness-ended", id, JSONObject().put("guestObserved", guestPid != null)
+                        .put("executionReturned", pending.isDone))
                     check(guestPid != null && !pending.isDone) { "No live isolated worker observed before cancellation" }
                     val active = inspect(owner, id)
                     check(active.getString("status") == "active" && active.getBoolean("blocked"))
                     check(active.getJSONArray("records").getJSONObject(0).getString("state") == "running")
+                    stage("cancel-before", id)
                     val cancellation = owner.cancel(JSONObject().put("id", id))
+                    stage("cancel-after", id, JSONObject().put("cancelRequested", cancellation.getBoolean("cancelRequested"))
+                        .put("settled", cancellation.getBoolean("settled")))
                     val result = pending.get(20, TimeUnit.SECONDS)
+                    stage("execution-returned", id, JSONObject().put("status", result.getString("status"))
+                        .put("retirementConfirmed", result.getBoolean("retirementConfirmed")))
                     check(cancellation.getBoolean("cancelRequested") && cancellation.getBoolean("settled"))
                     check(result.getString("status") == "cancelled" && result.getBoolean("cancelled") &&
                         result.getBoolean("retirementConfirmed") && !result.getBoolean("diskCommitted"))
@@ -182,49 +216,55 @@ internal object LinuxVmLifecycleAcceptance {
                         .put("guestProcessStillListed", liveGuestPid(id) != null)
                 } finally {
                     if (!pending.isDone) {
-                        owner.cancel(JSONObject().put("id", id))
+                        stage("cleanup-cancel-before", id)
+                        val cancellation = owner.cancel(JSONObject().put("id", id))
+                        stage("cleanup-cancel-after", id, JSONObject().put("cancelRequested", cancellation.getBoolean("cancelRequested"))
+                            .put("settled", cancellation.getBoolean("settled")))
                         // Failure to retire remains a failure; do not relabel this session as clean.
                         pending.get(20, TimeUnit.SECONDS)
+                        stage("cleanup-execution-returned", id)
                     }
                 }
             }
         }
 
-        private fun shell(command: String): String = ParcelFileDescriptor.AutoCloseInputStream(
-            instrumentation.uiAutomation.executeShellCommand(command)).use { stream ->
-            val output = ByteArrayOutputStream()
-            val buffer = ByteArray(8192)
-            while (true) {
-                val count = stream.read(buffer)
-                if (count < 0) break
-                check(count <= 2 * 1024 * 1024 - output.size()) { "Linux process observation exceeds limit" }
-                output.write(buffer, 0, count)
-            }
-            String(output.toByteArray(), Charsets.UTF_8)
+        private fun shell(command: String): String {
+            carrierReport.putString("linuxObservationCommand", command.take(240))
+            return LinuxVmObservationReader.read({
+                val descriptor = instrumentation.uiAutomation.executeShellCommand(command)
+                try { ParcelFileDescriptor.AutoCloseInputStream(descriptor) }
+                catch (failure: Throwable) {
+                    try { descriptor.close() } catch (cleanup: Throwable) { failure.addSuppressed(cleanup) }
+                    throw failure
+                }
+            }, 8000, 1000)
         }
         private fun liveGuestPid(id: String): Int? {
             val expected = app.packageName + ":linux_vm:" + app.packageName +
                 ".IsolatedLinuxVmService:linux_vm_" + id.replace("-", "")
-            val blocks = shell("dumpsys -t 5 activity services ${app.packageName}").split(Regex("(?m)^\\s*\\* ServiceRecord\\{"))
-            val matches = blocks.filter { block -> block.lineSequence().any { it.trim() == "processName=$expected" } }
-            check(matches.size <= 1) { "Ambiguous Linux guest identity" }
-            if (matches.isEmpty()) return null
-            val pattern = Regex("(?m)^\\s*app=ProcessRecord\\{\\S+ ([1-9][0-9]*):" +
-                Regex.escape(expected) + "/[^}]+}\\s*$")
-            val pids = pattern.findAll(matches.single()).map { it.groupValues[1].toInt() }.toList()
-            check(pids.size <= 1)
-            val pid = pids.singleOrNull() ?: return null
+            val pid = try {
+                LinuxVmGuestObservation.pid(shell("dumpsys -t 5 activity services ${app.packageName}"), expected)
+            } catch (failure: LinuxVmGuestObservation.ObservationFailure) {
+                carrierReport.putString("linuxGuestObservation", JSONObject().put("runId", id)
+                    .put("expectedProcess", expected).put("records", failure.diagnostic).toString())
+                throw failure
+            } ?: return null
             val live = shell("ps -A -o PID").lineSequence().drop(1).map { it.trim() }.toSet()
             return pid.takeIf { it.toString() in live }
         }
-        private fun workerHasRun(pid: Int): Boolean = shell("ps -T -p $pid -o TID,NAME,TIME")
-            .lineSequence().drop(1).any { line ->
-                val fields = line.trim().split(Regex("\\s+"))
-                fields.size == 3 && fields[0].toIntOrNull() != null &&
-                    fields[1] in setOf("isolated-linux-vm", "isolated-linux-") &&
-                    fields[2].matches(Regex("[0-9]+:[0-9]{2}:[0-9]{2}")) &&
-                    fields[2].any { it in '1'..'9' }
-            }
+        private fun workerHasRun(pid: Int, id: String): Boolean {
+            val worker = LinuxVmGuestObservation.workerCpu(shell("ps -T -p $pid -o TID,CMD,TIME")) ?: return false
+            stage("worker-cpu", id, JSONObject().put("guestPid", pid).put("tid", worker.tid)
+                .put("command", worker.command).put("cpuTime", worker.time).put("cpuSeconds", worker.seconds))
+            return true
+        }
+
+        private fun stage(name: String, id: String, details: JSONObject = JSONObject()) {
+            instrumentation.sendStatus(1, Bundle().apply {
+                putString("linuxCancelStage", details.put("stage", name).put("runId", id)
+                    .put("elapsedRealtimeMs", SystemClock.elapsedRealtime()).toString())
+            })
+        }
 
         fun prepareDeath(): Nothing {
             fresh()
