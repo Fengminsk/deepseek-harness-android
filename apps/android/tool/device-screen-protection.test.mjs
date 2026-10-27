@@ -294,6 +294,52 @@ test('full process inventory retains App, test and isolated services and rejects
     'PID ARGS\nbad', 'PID ARGS\n100 adbd\n100 adbd']) assert.throws(() => parseAcceptanceProcesses(text))
 })
 
+test('completion binds the protected device and cannot lose receipt cleanup in a child', async () => {
+  const args = bindAcceptanceArguments(['apps/android/tool/acceptance-task-completion-device.mjs',
+    '--allow-existing', '--installed-only', '--no-wake'], { adb: resolve('local-adb.exe'), serial: 'phone-A' })
+  assert.ok(args.includes('phone-A'))
+  await assert.rejects(runAcceptanceChild(args, new AbortController().signal,
+    { startChild: () => assert.fail('Completion must not spawn Node') }), /receipt cleanup owner/)
+})
+
+test('screen cancellation awaits completion receipt cleanup and retirement before panel reset', async () => {
+  const io = fixture(), controller = new AbortController(), cleanup = Promise.withResolvers(), started = Promise.withResolvers()
+  io.startChild = () => assert.fail('Completion must not spawn Node')
+  const entry = [resolve('apps/android/tool/acceptance-task-completion-device.mjs'), '--serial', 'phone']
+  const run = withScreenProtection(io, signal => runProtectedAcceptance(entry, signal, io,
+    () => assert.fail('Completion must not load network recovery'), async () => ({
+      runTaskCompletionEntry: async (args, options) => {
+        assert.deepEqual(args, ['--serial', 'phone']); assert.equal(options.signal, signal)
+        started.resolve()
+        await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }))
+        await cleanup.promise
+        io.events.push('receipt-cleaned-and-retired')
+        throw Object.assign(new Error('cancelled'), { retirement: { confirmed: true } })
+      },
+    })), { timeoutMs: 1000, pollMs: 10, signal: controller.signal })
+  await started.promise
+  controller.abort(new Error('guard interrupted'))
+  await new Promise(resolve => setImmediate(resolve))
+  assert.ok(!io.events.some(event => event.startsWith('reset:')))
+  cleanup.resolve()
+  await assert.rejects(run, error => error.retirement.confirmed)
+  assert.ok(io.events.indexOf('receipt-cleaned-and-retired') < io.events.indexOf('reset:0'))
+})
+
+test('failed panel reset retains the completion token for scoped receipt recovery', async () => {
+  const io = fixture(), completion = { token: 'a'.repeat(32), syntheticStateMayRemain: true }
+  io.powerReset = async () => { throw new Error('display reset failed') }
+  await assert.rejects(withScreenProtection(io, async () => {
+    throw Object.assign(new Error('receipt verification failed'), { completion, retirement: { confirmed: true } })
+  }, { timeoutMs: 1000, pollMs: 10 }), error => {
+    assert.equal(error.completion, completion)
+    assert.equal(error.retirement.confirmed, true)
+    assert.equal(error.protection.finalDisplayState, 'unknown')
+    return true
+  })
+  assert.deepEqual(io.events.slice(-2), ['off:0', 'off:2'])
+})
+
 function processFixture({ kill = 'close', surviving = false, unreadable = false } = {}) {
   const completion = Promise.withResolvers(), events = []
   return { events, completion,

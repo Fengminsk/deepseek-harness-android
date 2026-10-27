@@ -16,6 +16,7 @@ title: 正式 AgentService 账号任务验收
 - [准入与账号使用](#admission-and-account-use)
 - [显式启用无线网络与 Linux 场景](#radio-linux)
 - [完成与持久化](#completion-and-persistence)
+- [显式检查系统完成通知](#completion-notice)
 - [清理与屏幕保护](#cleanup-and-screen-protection)
 - [Build 116 真机观察](#build-116-observations)
 - [证据范围](#evidence-limits)
@@ -49,6 +50,15 @@ title: 正式 AgentService 账号任务验收
 
 验收将 `session.read` 与已刷盘的 `session.export.prepare` 结果比较，仅包含自己的会话，不包含后代。它只读取 App 导出缓存中属于本轮的规范 UUID 路径 ZIP，核对会话 ID，并要求其中只有一个不超过一 MiB 的 `session.v4.jsonl` 条目。选定的用户、请求、轮次及助手事件必须在实时记录和持久记录中一致。结果保留数量与摘要，不输出账号秘密或助手原文。
 
+<a id="completion-notice"></a>
+## 显式检查系统完成通知
+
+echo 适配器与结果解析器接受显式 `requireCompletionNotice: true` 选项，并向原生仪器传入 `-e requireCompletionNotice true`。默认值为 false；普通 echo 通过不能认证通知投递。提交前，此选项检查 App 通知权限、通知开关及既有 `task-completed` 通道，不修改这些设置。
+
+真实 `task.completed` 信号及匹配的持久最终回复出现后，验收最多等待八秒，要求 Android 活跃通知中恰好一条匹配本会话标签和通知 ID 3。它检查精确的合成标记、通道、私密展示、自动取消标志，以及内容 PendingIntent 的创建者包名和 UID 均属于本 App。报告只保留哈希与固定事实，不输出通知原文。它不读取跨进程 SharedPreferences，也不发送 PendingIntent；`notificationTapTested` 始终为 false，因此不验证点击通知或打开对应会话。
+
+清理只取消本轮精确标签和 ID 的通知，并最多等待三秒确认其已消失；用户通知与偏好设置保持不动。成功要求 `cleanup.completionNoticeCancelled: true`，清理失败会使验收失败。[宿主适配器检查](acceptance-agent-service-task-device.test.mjs)覆盖显式准入及无效通知证据。[r35 真机记录](#completion-notice-r35)证明了本选项的投递；r33 与 r34 未检查活跃系统通知。独立的[回执崩溃验收](task-completion-device-acceptance.zh.md)覆盖另一条路径，仍单独保留。
+
 <a id="cleanup-and-screen-protection"></a>
 ## 清理与屏幕保护
 
@@ -80,7 +90,14 @@ AgentService 保持 PID 6299、相同运行代次及前台服务状态。任务�
 
 最终回执记录客体 UID 99480、Python 等待 40,006 毫秒、退出码为零，以及 `diskCommitted: true`、`retirementConfirmed: true`；输出 SHA-256 为 `67ff8e8ac3df4dffcd6d440fb0cd34f07d33f2f25e7c0ff8452d25d43efd0b2e`。相同调用的结果及最终回复在实时和持久记录中一致。原生任务结束、会话归档、导出释放及断开连接均完成，清理未发起取消。Wi-Fi 和移动数据标志恢复为原始 `1` / `1`，外层所有者确认宿主关闭及设备进程退役。29 次屏幕采样均显示两块面板 Off，屏幕控制在不可交互状态下恢复。记录中的重试事件为零：本轮证明所观察的未完成 Linux 任务在恢复连接后完成，不证明被中断的模型 HTTP 重试、长期 Doze 存活或 r32 冻结问题已修复。
 
+<a id="completion-notice-r35"></a>
+### r35 真实任务与系统完成通知
+
+通过结果为 `.cache/android/account-notice-116-r35-protected-20261028.json.result.json`；配套屏幕报告省去 `.result.json`。`.cache/android/device-v116-20261028/r35/archive-manifest.json` 中的 r35 归档清单保留上文记录的未变更正式 App 摘要，AndroidTest SHA-256 为 `dc06f94ba4fc2861f8e861609e4d52350afb64127b208f5e36169eb2a2b6a926`。启用 `requireCompletionNotice: true` 后，当前 `deepseek-account` / `deepseek-flash` 在 6,753 毫秒内完成一条用户提交和一个最终标记，工具调用为零，持久事件为 15 条。历史 SHA-256 为 `205e1c6f00a7d49456264f366d1d0124be688813d60e7c4f6f5aa08ec944458b`。
+
+恰好一条活跃通知匹配专用会话标签、ID 3、`task-completed` 通道及标记预览。私密展示、自动取消以及内容 PendingIntent 属于本 App 均获确认；清理确认该通知已取消，会话归档、导出释放及断开连接已完成。外层所有者记录六次采样中两块 OLED 面板均为 Off，并确认宿主与设备进程退役，随后在不可交互状态下恢复屏幕控制。没有发送 PendingIntent：本轮验证真实完成通知的投递与清理，不验证通知点击、会话跳转或崩溃后的回执恢复。它没有改变生产行为，也不能解释此前的 r32 冻结。
+
 <a id="evidence-limits"></a>
 ## 证据范围
 
-r33 结果证明了一次经正式服务使用真实账号完成的 echo 请求及其持久回复；r34 另行证明了一次未完成 Linux 调用在实测断网区间保持，并在恢复连接后完成。两者均使用新专用会话，都不能证明账号登录界面或头像显示、重新打开旧会话、令牌刷新、被中断的模型 HTTP 重试、服务死亡后恢复、长时间 Doze 运行，或 r32 冻结的原因及其已解决。[空闲服务恢复验收](agent-service-recovery-driver.zh.md) 与 [Build 116 升级记录](upgrade-116-acceptance.zh.md) 分别拥有各自观察，两者均不能替代这些账号任务结果。
+r33 结果证明了一次经正式服务使用真实账号完成的 echo 请求及其持久回复；r34 另行证明了一次未完成 Linux 调用在实测断网区间保持，并在恢复连接后完成；r35 证明了真实任务的系统完成通知及其清理。各轮均使用新专用会话，都不能证明通知点击、账号登录界面或头像显示、重新打开旧会话、令牌刷新、被中断的模型 HTTP 重试、服务死亡后恢复、长时间 Doze 运行，或 r32 冻结的原因及其已解决。[空闲服务恢复验收](agent-service-recovery-driver.zh.md) 与 [Build 116 升级记录](upgrade-116-acceptance.zh.md) 分别拥有各自观察，两者均不能替代这些账号任务结果。

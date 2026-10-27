@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { parseAgentServiceTaskResult, runAgentServiceTaskAcceptance } from './acceptance-agent-service-task-device.mjs'
 
 const caseId = 'd5d6d3b3-6af8-498b-932a-bfc339cb32f6'
@@ -66,4 +67,54 @@ test('cancellation cannot authorize a request or convert a completed command int
   const during = new AbortController()
   await assert.rejects(runAgentServiceTaskAcceptance({ acceptRealAccountRequest: true, signal: during.signal,
     invoke: async () => { during.abort(new Error('during request')); return output() } }), /during request/)
+})
+
+function noticeResult() {
+  const value = result(), hash = text => createHash('sha256').update(text).digest('hex')
+  value.markerSha256 = hash(`account-acceptance-${caseId}`)
+  value.requireCompletionNotice = true
+  value.completionNotice = { schema: 1, observed: true, matchingCount: 1, notificationId: 3, channelId: 'task-completed',
+    tagSha256: hash(`pocket-completed:${value.sessionId}`), previewSha256: value.markerSha256,
+    visibilityPrivate: true, autoCancel: true, contentIntentPresent: true, contentIntentCreatorMatches: true }
+  value.cleanup.completionNoticeCancelled = true
+  return value
+}
+
+test('system completion notice evidence requires explicit admission and never certifies a notification tap', async () => {
+  const evidence = output(noticeResult())
+  assert.throws(() => parseAgentServiceTaskResult(evidence), /not explicitly requested/)
+  assert.throws(() => parseAgentServiceTaskResult(output(), { requireCompletionNotice: true }), /evidence is missing/)
+  const verified = parseAgentServiceTaskResult(evidence, { requireCompletionNotice: true })
+  assert.equal(verified.completionNoticeTested, true)
+  assert.equal(verified.notificationTapTested, false)
+  assert.equal(verified.processRetirement, 'requires-outer-owner')
+  assert.equal(parseAgentServiceTaskResult(output()).completionNoticeTested, false)
+  const run = await runAgentServiceTaskAcceptance({ acceptRealAccountRequest: true, requireCompletionNotice: true,
+    invoke: async argv => {
+      assert.deepEqual(argv.slice(-4), ['-e', 'requireCompletionNotice', 'true',
+        'com.minnnng.dsh_android.test/com.minnnng.dsh_android.AgentServiceTaskAcceptanceInstrumentation'])
+      return evidence
+    } })
+  assert.equal(run.result.completionNoticeTested, true)
+  for (const invalid of ['true', 1, null]) await assert.rejects(runAgentServiceTaskAcceptance({ acceptRealAccountRequest: true,
+    requireCompletionNotice: invalid, invoke: () => assert.fail('Invalid notice option must not submit') }), /boolean/)
+})
+
+test('wrong-session, private-message, disabled-format, invalid intent and incomplete cleanup cannot certify a system notice', () => {
+  for (const [key, bad] of Object.entries({ schema: 2, observed: false, matchingCount: 0, notificationId: 4, channelId: 'other',
+    tagSha256: 'a'.repeat(64), previewSha256: 'a'.repeat(64), visibilityPrivate: false, autoCancel: false,
+    contentIntentPresent: false, contentIntentCreatorMatches: false })) {
+    const value = noticeResult(); value.completionNotice[key] = bad
+    assert.throws(() => parseAgentServiceTaskResult(output(value), { requireCompletionNotice: true }), key)
+  }
+  const duplicate = noticeResult(); duplicate.completionNotice.matchingCount = 2
+  assert.throws(() => parseAgentServiceTaskResult(output(duplicate), { requireCompletionNotice: true }))
+  const unknown = noticeResult(); unknown.completionNotice.preview = 'PRIVATE NOTIFICATION TEXT'
+  assert.throws(() => parseAgentServiceTaskResult(output(unknown), { requireCompletionNotice: true }), /evidence is missing/)
+  const cleanup = noticeResult(); cleanup.cleanup.completionNoticeCancelled = false
+  assert.throws(() => parseAgentServiceTaskResult(output(cleanup), { requireCompletionNotice: true }), /cleanup is unconfirmed/)
+  const explicit = noticeResult(); explicit.requireCompletionNotice = false
+  assert.throws(() => parseAgentServiceTaskResult(output(explicit), { requireCompletionNotice: true }))
+  const failure = noticeResult(); failure.notificationCleanupFailureCode = 'NOTICE_CLEANUP_UNCONFIRMED'
+  assert.throws(() => parseAgentServiceTaskResult(output(failure), { requireCompletionNotice: true }), /cleanup is unconfirmed/)
 })

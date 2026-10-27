@@ -15,6 +15,21 @@ object AgentServiceTaskEvidence {
     fun marker(caseId: String) = "account-acceptance-$caseId"
     fun prompt(caseId: String) = "请只回复这一行：${marker(caseId)}。不要调用任何工具，不要读取文件，不要添加解释。"
 
+    /** Validate only this Session's Android notice; retain hashes instead of notification text. */
+    fun completionNotice(facts: JSONObject, caseId: String): JSONObject {
+        val expectedTag = "pocket-completed:android-account-acceptance-$caseId"
+        demand(facts.getInt("matchingCount") == 1 && facts.getString("tag") == expectedTag &&
+            facts.getInt("notificationId") == 3 && facts.getBoolean("packageMatches"), "NOTICE_IDENTITY_MISMATCH")
+        demand(facts.getString("preview") == marker(caseId), "NOTICE_PREVIEW_MISMATCH")
+        demand(facts.getString("channelId") == "task-completed" && facts.getBoolean("visibilityPrivate") &&
+            facts.getBoolean("autoCancel"), "NOTICE_PRESENTATION_MISMATCH")
+        demand(facts.getBoolean("contentIntentPresent") && facts.getBoolean("contentIntentCreatorMatches"), "NOTICE_INTENT_MISMATCH")
+        return JSONObject().put("schema", 1).put("observed", true).put("matchingCount", 1).put("notificationId", 3)
+            .put("channelId", "task-completed").put("tagSha256", hash(expectedTag.toByteArray(Charsets.UTF_8)))
+            .put("previewSha256", hash(marker(caseId).toByteArray(Charsets.UTF_8))).put("visibilityPrivate", true)
+            .put("autoCancel", true).put("contentIntentPresent", true).put("contentIntentCreatorMatches", true)
+    }
+
     fun radioCommand(caseId: String): String = listOf("python3 - <<'PY'", "import hashlib,json,time",
         "marker='${marker(caseId)}'", "started=time.monotonic()", "time.sleep(40)",
         "print(json.dumps({'marker':marker,'sha256':hashlib.sha256(marker.encode()).hexdigest(),'waitMs':int((time.monotonic()-started)*1000)}))", "PY").joinToString("\n")

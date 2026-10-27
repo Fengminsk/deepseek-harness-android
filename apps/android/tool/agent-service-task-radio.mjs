@@ -93,7 +93,7 @@ const CLEANUP_FIELDS = ['cancelRequested', 'taskSettled', 'archived', 'exportRel
 const RECEIPT_FIELDS = ['id', 'status', 'exitCode', 'retirementConfirmed', 'cancelled', 'timedOut', 'truncated',
   'cancelRequested', 'diskCommitted', 'guestUid', 'waitMs', 'outputSha256']
 const FAILURE_FIELDS = ['failureCode', 'cleanupFailureCode', 'exportCleanupFailureCode', 'disconnectFailureCode',
-  'screenFailureCode', 'receiverCleanupFailureCode']
+  'screenFailureCode', 'receiverCleanupFailureCode', 'notificationCleanupFailureCode']
 function result(output, initial) {
   ready(initial, initial?.token)
   const value = finalRow(output)
@@ -143,7 +143,7 @@ function result(output, initial) {
 
 const PROGRESS_STAGES = new Set(['instrumentation-start', 'service-start-requested', 'service-started', 'bind-requested', 'bound', 'connected',
   'runtime-ready-wait', 'runtime-ready', 'runtime-info', 'background-preflight', 'catalog-read', 'session-ensure', 'session-rename',
-  'catalog-recheck', 'ready', 'send-requested', 'submitted', 'completed', 'durable', 'cleanup'])
+  'catalog-recheck', 'ready', 'send-requested', 'submitted', 'completed', 'durable', 'completion-notice-wait', 'completion-notice-observed', 'cleanup'])
 const BOOT_STAGES = new Set(['service-created', 'checking-app-processes', 'maintenance', 'process-check-blocked', 'preparing-assets',
   'preparing-storage', 'recovering-workflows', 'starting-node', 'ready', 'unknown'])
 const PROGRESS_FIELDS = ['schema', 'kind', 'token', 'caseId', 'stage', 'lastStage', 'pulse', 'sequence', 'pid', 'elapsedMs', 'uptimeMs', 'runtimeObservedAtMs', 'runtime']
@@ -187,7 +187,9 @@ RADIO_OUTPUT_OVERSIZED RADIO_RECEIPT_INVALID RADIO_RECEIPT_SESSION_MISMATCH RADI
 RADIO_RUN_ID_INVALID RADIO_STAGE_INVALID RADIO_STAGE_OUT_OF_ORDER RADIO_TASK_NOT_RUNNING RADIO_TOOL_FAILED RADIO_TOOL_FINISHED_EARLY
 RADIO_TOOL_INVALID REAL_ACCOUNT_NOT_ADMITTED REPLY_INVALID REQUEST_ID_MISMATCH RPC_FAILED RUNTIME_FAILED SERVICE_DISCONNECTED
 SERVICE_NOT_FOREGROUND SERVICE_NOT_RUNNING SERVICE_PID_CHANGED SESSION_FAILED SESSION_NOT_NEW SUBMISSION_NOT_ACCEPTED TASK_NOT_SETTLED
-TOOL_INVOKED TURN_CHANGED TURN_NOT_COMPLETED USER_CONTENT_MISMATCH USER_COUNT_INVALID`.split(/\s+/u))
+TOOL_INVOKED TURN_CHANGED TURN_NOT_COMPLETED USER_CONTENT_MISMATCH USER_COUNT_INVALID NOTICE_OPTION_INVALID NOTICE_PERMISSION_UNAVAILABLE
+NOTICE_CHANNEL_UNAVAILABLE NOTICE_ALREADY_PRESENT NOTICE_IDENTITY_MISMATCH NOTICE_PREVIEW_MISMATCH NOTICE_PRESENTATION_MISMATCH
+NOTICE_INTENT_MISMATCH NOTICE_NOT_OBSERVED NOTICE_CLEANUP_UNCONFIRMED`.split(/\s+/u))
 const FAILURE_TYPES = new Set(['EvidenceRejected', 'TimeoutException', 'JSONException', 'IOException', 'RuntimeFailure'])
 function failure(output, token) {
   demand(validToken(token), 'failure token is invalid')

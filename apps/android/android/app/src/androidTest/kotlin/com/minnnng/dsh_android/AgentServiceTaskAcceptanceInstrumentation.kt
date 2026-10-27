@@ -1,18 +1,23 @@
 package com.minnnng.dsh_android
 
+import android.Manifest
 import android.app.Activity
 import android.app.ActivityManager
 import android.app.Instrumentation
 import android.app.KeyguardManager
+import android.app.Notification
+import android.app.NotificationManager
 import android.content.ComponentName
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.ServiceConnection
+import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Bundle
+import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -38,11 +43,13 @@ class AgentServiceTaskAcceptanceInstrumentation : Instrumentation() {
     private var admitted = false
     private var exercise = "echo"
     private var token: String? = null
+    private var completionNoticeOption = "false"
     override fun onCreate(arguments: Bundle?) {
         super.onCreate(arguments)
         admitted = arguments?.getString("acceptRealAccountRequest") == "true"
         exercise = arguments?.getString("exercise") ?: "echo"
         token = arguments?.getString("token")
+        completionNoticeOption = arguments?.getString("requireCompletionNotice") ?: "false"
         start()
     }
 
@@ -62,6 +69,9 @@ class AgentServiceTaskAcceptanceInstrumentation : Instrumentation() {
         val toolCall = AtomicReference<JSONObject?>()
         val toolResult = AtomicReference<JSONObject?>()
         val radio = exercise == "radio-linux"
+        val requireCompletionNotice = completionNoticeOption == "true"
+        val noticeTag = "pocket-completed:$sessionId"
+        val notificationManager = app.getSystemService(NotificationManager::class.java)
         val stages = ConcurrentLinkedQueue<String>()
         var receiver: BroadcastReceiver? = null
         var receiverRegistered = false
@@ -300,10 +310,41 @@ class AgentServiceTaskAcceptanceInstrumentation : Instrumentation() {
                 else -> "RuntimeFailure"
             })
         }
+        fun noticePreflight() {
+            demand((Build.VERSION.SDK_INT < 33 || app.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
+                PackageManager.PERMISSION_GRANTED) && notificationManager.areNotificationsEnabled(), "NOTICE_PERMISSION_UNAVAILABLE")
+            val channel = notificationManager.getNotificationChannel("task-completed")
+            demand(channel != null && channel.importance != NotificationManager.IMPORTANCE_NONE, "NOTICE_CHANNEL_UNAVAILABLE")
+            demand(notificationManager.activeNotifications.none { it.tag == noticeTag && it.id == 3 }, "NOTICE_ALREADY_PRESENT")
+        }
+        fun observeCompletionNotice(): JSONObject {
+            val until = minOf(deadline, SystemClock.elapsedRealtime() + 8_000)
+            while (true) {
+                state()
+                val matches = notificationManager.activeNotifications.filter { it.tag == noticeTag && it.id == 3 }
+                demand(matches.size <= 1, "NOTICE_IDENTITY_MISMATCH")
+                if (matches.size == 1) {
+                    val posted = matches.single()
+                    val notice = posted.notification
+                    val intent = notice.contentIntent
+                    return AgentServiceTaskEvidence.completionNotice(JSONObject().put("matchingCount", matches.size)
+                        .put("tag", posted.tag).put("notificationId", posted.id).put("packageMatches", posted.packageName == app.packageName)
+                        .put("preview", notice.extras.getCharSequence(Notification.EXTRA_TEXT)?.toString() ?: "")
+                        .put("channelId", notice.channelId).put("visibilityPrivate", notice.visibility == Notification.VISIBILITY_PRIVATE)
+                        .put("autoCancel", notice.flags and Notification.FLAG_AUTO_CANCEL != 0).put("contentIntentPresent", intent != null)
+                        .put("contentIntentCreatorMatches", intent != null && intent.creatorPackage == app.packageName &&
+                            intent.creatorUid == app.applicationInfo.uid), caseId)
+                }
+                if (SystemClock.elapsedRealtime() >= until) throw AgentServiceTaskEvidence.Rejected("NOTICE_NOT_OBSERVED")
+                Thread.sleep(100)
+            }
+        }
         try {
             progress("instrumentation-start")
             diagnosticHandler.postDelayed(diagnosticPulse, 5000)
             demand(admitted, "REAL_ACCOUNT_NOT_ADMITTED")
+            demand(completionNoticeOption in setOf("true", "false"), "NOTICE_OPTION_INVALID")
+            if (requireCompletionNotice) result.put("requireCompletionNotice", true)
             demand(exercise in setOf("echo", "radio-linux") && (!radio || token?.matches(Regex("[0-9a-f]{32}")) == true), "EXERCISE_INVALID")
             if (radio) result.put("exercise", exercise).put("token", token)
             result.put("deviceStateBefore", state())
@@ -335,6 +376,7 @@ class AgentServiceTaskAcceptanceInstrumentation : Instrumentation() {
             val summary = call("tasks.summary").getJSONObject("summary")
             for (key in listOf("running", "queued", "waiting", "backgroundJobs", "packageOperations"))
                 demand(!summary.isNull(key) && summary.getInt(key) == 0, "OTHER_WORK_ACTIVE_OR_UNKNOWN")
+            if (requireCompletionNotice) noticePreflight()
             fun catalog() = call("api.call", JSONObject().put("namespace", "session").put("method", "modelCatalog").put("args", JSONObject()))
             progress("catalog-read")
             val model = AgentServiceTaskEvidence.model(catalog())
@@ -437,6 +479,11 @@ class AgentServiceTaskAcceptanceInstrumentation : Instrumentation() {
             asynchronousFailure.get()?.let { throw it }
             result.put("generation", generation).put("agentPid", agentPid).put("deviceStateAfter", state())
             progress("durable")
+            if (requireCompletionNotice) {
+                progress("completion-notice-wait")
+                result.put("completionNotice", observeCompletionNotice())
+                progress("completion-notice-observed")
+            }
             success = true
         } catch (error: Throwable) { failure(error, "failureCode") }
         finally {
@@ -470,6 +517,17 @@ class AgentServiceTaskAcceptanceInstrumentation : Instrumentation() {
                 }
                 cleanup.put("exportReleased", true)
             } catch (error: Throwable) { success = false; failure(error, "exportCleanupFailureCode") }
+            if (requireCompletionNotice) {
+                try {
+                    notificationManager.cancel(noticeTag, 3)
+                    val until = minOf(deadline, SystemClock.elapsedRealtime() + 3_000)
+                    while (notificationManager.activeNotifications.any { it.tag == noticeTag && it.id == 3 }) {
+                        if (SystemClock.elapsedRealtime() >= until) throw AgentServiceTaskEvidence.Rejected("NOTICE_CLEANUP_UNCONFIRMED")
+                        Thread.sleep(50)
+                    }
+                    cleanup.put("completionNoticeCancelled", true)
+                } catch (error: Throwable) { success = false; failure(error, "notificationCleanupFailureCode") }
+            }
             try {
                 remote?.send(Message.obtain(null, 3).apply { replyTo = replies })
                 if (bound) app.unbindService(connection)

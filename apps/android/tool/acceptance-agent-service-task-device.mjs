@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto'
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
 const SHA = /^[0-9a-f]{64}$/u
 const demand = (condition, message) => { if (!condition) throw new Error(message) }
@@ -5,9 +7,11 @@ const demand = (condition, message) => { if (!condition) throw new Error(message
 /**
  * Validate a completed real-account task in the production service; the outer owner verifies panel power and process retirement.
  * @param {string} output - Bounded instrumentation output after its ADB child closes.
+ * @param {object} options - Explicit completion-notice evidence requirement, disabled by default.
  * @returns {object} Validated task evidence, excluding credentials, prompts and response bodies.
  */
-export function parseAgentServiceTaskResult(output) {
+export function parseAgentServiceTaskResult(output, { requireCompletionNotice = false } = {}) {
+  demand(typeof requireCompletionNotice === 'boolean', 'Completion notice requirement must be a boolean')
   demand(typeof output === 'string' && output.length <= 2 * 1024 * 1024, 'Invalid production task output')
   const codes = [...output.matchAll(/^INSTRUMENTATION_CODE: (-?\d+)\s*$/gm)]
   const rows = [...output.matchAll(/^INSTRUMENTATION_RESULT: result=(.*)\r?$/gm)]
@@ -38,8 +42,27 @@ export function parseAgentServiceTaskResult(output) {
   demand(result.cleanup?.taskSettled === true && result.cleanup.archived === true
     && result.cleanup.exportReleased === true && result.cleanup.disconnected === true
     && result.cleanup.cancelRequested === false, 'Production task cleanup is unconfirmed or cancelled')
+  if (requireCompletionNotice) {
+    const notice = result.completionNotice
+    const fields = ['schema', 'observed', 'matchingCount', 'notificationId', 'channelId', 'tagSha256', 'previewSha256',
+      'visibilityPrivate', 'autoCancel', 'contentIntentPresent', 'contentIntentCreatorMatches']
+    const hash = value => createHash('sha256').update(value, 'utf8').digest('hex')
+    demand(result.requireCompletionNotice === true && notice && typeof notice === 'object' && !Array.isArray(notice) &&
+      Object.keys(notice).length === fields.length && Object.keys(notice).every(key => fields.includes(key)),
+    'Explicit production completion notice evidence is missing')
+    demand(notice.schema === 1 && notice.observed === true && notice.matchingCount === 1 && notice.notificationId === 3 &&
+      notice.channelId === 'task-completed' && notice.tagSha256 === hash(`pocket-completed:${result.sessionId}`) &&
+      notice.previewSha256 === hash(`account-acceptance-${result.caseId}`) && notice.previewSha256 === result.markerSha256 &&
+      notice.visibilityPrivate === true && notice.autoCancel === true && notice.contentIntentPresent === true && notice.contentIntentCreatorMatches === true,
+    'Production completion notice identity or Android presentation is invalid')
+    demand(result.cleanup.completionNoticeCancelled === true && !Object.hasOwn(result, 'notificationCleanupFailureCode'),
+      'Production completion notice cleanup is unconfirmed')
+  } else {
+    demand(result.requireCompletionNotice !== true && !Object.hasOwn(result, 'completionNotice') &&
+      !Object.hasOwn(result.cleanup, 'completionNoticeCancelled'), 'Completion notice evidence was not explicitly requested')
+  }
   return { ...result, physicalPanelEvidence: 'requires-outer-owner', processRetirement: 'requires-outer-owner',
-    radioRecoveryTested: false, originalConversationRenderingTested: false }
+    radioRecoveryTested: false, originalConversationRenderingTested: false, completionNoticeTested: requireCompletionNotice, notificationTapTested: false }
 }
 
 /**
@@ -47,11 +70,13 @@ export function parseAgentServiceTaskResult(output) {
  * @param {object} options - Owned invoke(args, signal), cancellation signal and explicit real-account admission.
  * @returns {Promise<object>} Task evidence and bounded instrumentation output; the outer owner must retire the service.
  */
-export async function runAgentServiceTaskAcceptance({ invoke, signal, acceptRealAccountRequest }) {
+export async function runAgentServiceTaskAcceptance({ invoke, signal, acceptRealAccountRequest, requireCompletionNotice = false }) {
   demand(typeof invoke === 'function' && acceptRealAccountRequest === true, 'Explicit real-account request admission is required')
+  demand(typeof requireCompletionNotice === 'boolean', 'Completion notice requirement must be a boolean')
   signal?.throwIfAborted()
   const output = await invoke(['shell', 'am', 'instrument', '-w', '-r', '-e', 'acceptRealAccountRequest', 'true',
+    ...(requireCompletionNotice ? ['-e', 'requireCompletionNotice', 'true'] : []),
     'com.minnnng.dsh_android.test/com.minnnng.dsh_android.AgentServiceTaskAcceptanceInstrumentation'], signal)
   signal?.throwIfAborted()
-  return { result: parseAgentServiceTaskResult(output), output }
+  return { result: parseAgentServiceTaskResult(output, { requireCompletionNotice }), output }
 }

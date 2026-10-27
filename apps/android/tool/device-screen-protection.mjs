@@ -11,12 +11,14 @@ const check = (ok, message) => { if (!ok) throw new Error(message) }
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
 const TOOL_ROOT = dirname(fileURLToPath(import.meta.url))
 const RECOVERY_ENTRY = resolve(TOOL_ROOT, 'acceptance-agent-service-recovery-device.mjs')
+const COMPLETION_ENTRY = resolve(TOOL_ROOT, 'acceptance-task-completion-device.mjs')
 const ENTRIES = new Set([
   'acceptance-workflow-lifecycle-device.mjs',
   'acceptance-native-workflow-device.mjs', 'acceptance-native-workflow-process-death-device.mjs',
   'acceptance-upgrade-device.mjs', 'acceptance-ptc-process-death-device.mjs',
   'acceptance-ptc-callback-device.mjs', 'acceptance-linux-vm-lifecycle-device.mjs',
   'acceptance-agent-service-recovery-device.mjs',
+  'acceptance-task-completion-device.mjs',
 ].map(name => resolve(TOOL_ROOT, name)))
 
 /** Match every internal logical display to its physical panel without rounding 64-bit IDs. */
@@ -66,6 +68,7 @@ export async function withScreenProtection(io, run, { timeoutMs, pollMs = 2000, 
   let failure
   let retirement
   let recovery
+  let completion
   let blackout
   let blackoutFailure
   let restored = false
@@ -121,6 +124,7 @@ export async function withScreenProtection(io, run, { timeoutMs, pollMs = 2000, 
     failure = error instanceof Error ? error : new Error(String(error))
     retirement = failure.retirement ?? retirement
     recovery = failure.recovery
+    completion = failure.completion
     interrupt(failure)
   }
   finally {
@@ -163,6 +167,7 @@ export async function withScreenProtection(io, run, { timeoutMs, pollMs = 2000, 
   if (failure) {
     if (retirement) failure.retirement = retirement
     if (recovery) failure.recovery = recovery
+    if (completion) failure.completion = completion
     failure.protection = { samples, restoredWhileNonInteractive: restored,
       finalDisplayState: restored ? 'off' : 'unknown', powerOffAttempted: known.size > 0 }
     throw failure
@@ -298,6 +303,7 @@ async function beforeDeadline(promise, signal) {
 /** Own child termination and verify device retirement before allowing display cleanup to reset overrides. */
 export async function runAcceptanceChild(args, signal, io, { cleanupMs = 20000 } = {}) {
   check(resolve(args[0]) !== RECOVERY_ENTRY, 'Recovery must retain its network owner in the screen guard process')
+  check(resolve(args[0]) !== COMPLETION_ENTRY, 'Completion must retain its receipt cleanup owner in the screen guard process')
   check(Number.isSafeInteger(cleanupMs) && cleanupMs >= 10 && cleanupMs <= 60000, 'Invalid retirement budget')
   signal.throwIfAborted()
   const child = io.startChild(args)
@@ -361,12 +367,17 @@ export async function runAcceptanceChild(args, signal, io, { cleanupMs = 20000 }
   return { exitCode: outcome.code, retirement }
 }
 
-/** Network restoration cannot survive killing a wrapper child; await this owner in-process. */
+/** Await resource owners in-process so cancellation cannot kill their restoration. */
 export async function runProtectedAcceptance(args, signal, io,
-  loadRecovery = () => import('./acceptance-agent-service-recovery-device.mjs')) {
+  loadRecovery = () => import('./acceptance-agent-service-recovery-device.mjs'),
+  loadCompletion = () => import('./acceptance-task-completion-device.mjs')) {
   if (resolve(args[0]) === RECOVERY_ENTRY) {
     const { runRecoveryEntry } = await loadRecovery()
     return runRecoveryEntry(args.slice(1), { signal })
+  }
+  if (resolve(args[0]) === COMPLETION_ENTRY) {
+    const { runTaskCompletionEntry } = await loadCompletion()
+    return runTaskCompletionEntry(args.slice(1), { signal })
   }
   return runAcceptanceChild(args, signal, io)
 }
@@ -396,6 +407,12 @@ async function main(args) {
     const { parseRecoveryArguments } = await import('./acceptance-agent-service-recovery-device.mjs')
     check(parseRecoveryArguments(childArgs.slice(1)).report !== report, 'Recovery and screen reports must use distinct paths')
   }
+  if (childArgs && resolve(childArgs[0]) === COMPLETION_ENTRY) {
+    const { parseTaskCompletionArguments } = await import('./acceptance-task-completion-device.mjs')
+    const completion = parseTaskCompletionArguments(childArgs.slice(1))
+    check(!completion.preflightOnly && completion.report !== report,
+      'Completion device acceptance requires a distinct report path')
+  }
   const run = probe ? signal => runScreenOnlyProbe(signal, timing.observationMs)
     : signal => runProtectedAcceptance(childArgs, signal, io)
   try {
@@ -405,6 +422,7 @@ async function main(args) {
   } catch (error) {
     await writeFile(report, JSON.stringify({ schema: 2, serial, passed: false,
       error: error.message, protection: error.protection, retirement: error.retirement, recovery: error.recovery,
+      completion: error.completion,
       deviceOutcome: error.protection?.finalDisplayState === 'off' && error.retirement?.confirmed !== false
         ? 'Test failed; final panels Off and display control restored while noninteractive'
         : 'Unknown until display and process retirement are verified; keep power-off overrides' }, null, 2) + '\n')

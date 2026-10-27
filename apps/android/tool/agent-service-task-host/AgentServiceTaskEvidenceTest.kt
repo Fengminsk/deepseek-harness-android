@@ -45,6 +45,26 @@ fun main(args: Array<String>) {
     case { rejects("DEFAULT_NOT_ACCOUNT") { AgentServiceTaskEvidence.model(catalog("deepseek-official")) } }
     case { rejects("MODEL_UNAVAILABLE") { AgentServiceTaskEvidence.model(catalog(listed = "other")) } }
     case { rejects("ACCOUNT_UNAVAILABLE") { AgentServiceTaskEvidence.model(catalog().put("groups", JSONArray())) } }
+    fun notice() = JSONObject().put("matchingCount", 1).put("tag", "pocket-completed:$session").put("notificationId", 3)
+        .put("packageMatches", true).put("preview", AgentServiceTaskEvidence.marker(id)).put("channelId", "task-completed")
+        .put("visibilityPrivate", true).put("autoCancel", true).put("contentIntentPresent", true).put("contentIntentCreatorMatches", true)
+    case {
+        val proof = AgentServiceTaskEvidence.completionNotice(notice(), id)
+        check(proof.getBoolean("observed") && proof.getInt("matchingCount") == 1)
+        check(proof.getString("previewSha256") == AgentServiceTaskEvidence.hash(AgentServiceTaskEvidence.marker(id).toByteArray()))
+        check(!proof.toString().contains(AgentServiceTaskEvidence.marker(id)) && !proof.toString().contains(session))
+    }
+    for ((field, bad) in listOf("matchingCount" to 0, "matchingCount" to 2, "tag" to "pocket-completed:other-session",
+            "notificationId" to 4, "packageMatches" to false)) case {
+        rejects("NOTICE_IDENTITY_MISMATCH") { AgentServiceTaskEvidence.completionNotice(notice().put(field, bad), id) }
+    }
+    case { rejects("NOTICE_PREVIEW_MISMATCH") { AgentServiceTaskEvidence.completionNotice(notice().put("preview", "Private unrelated message"), id) } }
+    for ((field, bad) in listOf("channelId" to "background", "visibilityPrivate" to false, "autoCancel" to false)) case {
+        rejects("NOTICE_PRESENTATION_MISMATCH") { AgentServiceTaskEvidence.completionNotice(notice().put(field, bad), id) }
+    }
+    for (field in listOf("contentIntentPresent", "contentIntentCreatorMatches")) case {
+        rejects("NOTICE_INTENT_MISMATCH") { AgentServiceTaskEvidence.completionNotice(notice().put(field, false), id) }
+    }
     case {
         fun active(id: String, status: String) = JSONObject().put("active", JSONArray().put(
             JSONObject().put("sessionId", id).put("status", status)))

@@ -16,6 +16,7 @@ This acceptance checks whether the installed App can use its current DeepSeek ac
 - [Admission and account use](#admission-and-account-use)
 - [Opt-in radio and Linux exercise](#radio-linux)
 - [Completion and persistence](#completion-and-persistence)
+- [Opt-in system completion notice](#completion-notice)
 - [Cleanup and screen protection](#cleanup-and-screen-protection)
 - [Build 116 device observations](#build-116-observations)
 - [Evidence limits](#evidence-limits)
@@ -49,6 +50,15 @@ The [evidence validator](../android/app/src/androidTest/kotlin/com/minnnng/dsh_a
 
 The fixture compares `session.read` with a flushed `session.export.prepare` result for its own Session, without descendants. It reads only its own canonical UUID-named ZIP in the App export cache, checks the Session ID, and requires a single `session.v4.jsonl` entry within a one-MiB bound. The selected user, request, turn and assistant events must agree between live and durable records. The result retains counts and a digest, not account secrets or the assistant's raw text.
 
+<a id="completion-notice"></a>
+## Opt-in system completion notice
+
+The echo adapter and result parser accept an explicit `requireCompletionNotice: true` option, passed to instrumentation as `-e requireCompletionNotice true`. The default is false; an ordinary echo pass cannot certify notification delivery. Before submission, this option checks the App's notification permission, notification enablement and existing `task-completed` channel without changing them.
+
+After the real `task.completed` signal and matching durable final response, the fixture waits at most eight seconds for exactly one active Android notification with this Session's tag and notification ID 3. It checks the exact synthetic marker, channel, private visibility, auto-cancel flag, and a content PendingIntent created by this App's package and UID. The report retains hashes and fixed facts, not notification text. It neither reads cross-process SharedPreferences nor sends the PendingIntent; `notificationTapTested` remains false. Thus it does not verify tapping the notice or opening its Session.
+
+Cleanup cancels only this run's exact notification tag and ID and waits at most three seconds to confirm its absence. It leaves user notifications and preferences untouched. Success requires `cleanup.completionNoticeCancelled: true`; failure invalidates acceptance. The [host adapter checks](acceptance-agent-service-task-device.test.mjs) cover explicit admission and invalid notice evidence. The [r35 device record](#completion-notice-r35) establishes delivery for this option; r33 and r34 did not inspect active system notifications. The independent [receipt crash acceptance](task-completion-device-acceptance.md) covers a different path and remains separate.
+
 <a id="cleanup-and-screen-protection"></a>
 ## Cleanup and screen protection
 
@@ -80,7 +90,14 @@ Host readiness arrived at 13,724.261 ms. Nine offline observations ran from 18,3
 
 The final receipt records guest UID 99480, a 40,006 ms Python wait, exit code zero, `diskCommitted: true` and `retirementConfirmed: true`; its output SHA-256 is `67ff8e8ac3df4dffcd6d440fb0cd34f07d33f2f25e7c0ff8452d25d43efd0b2e`. The same call's result and final reply matched live and durable records. Native settlement, Session archive, export release and disconnection completed without cleanup cancellation. Wi-Fi and mobile-data flags returned to their original `1` / `1`, and the outer owner confirmed host close and device-process retirement. All 29 screen samples showed both panels Off, and screen control was restored while noninteractive. Zero retry events were recorded: this run proves completion of the observed pending Linux task after connectivity restoration, not interrupted model HTTP retry, prolonged Doze survival or a fix for the r32 freeze.
 
+<a id="completion-notice-r35"></a>
+### r35 real task and system completion notice
+
+The passing result is `.cache/android/account-notice-116-r35-protected-20261028.json.result.json`; the companion screen report omits `.result.json`. The r35 archive manifest in `.cache/android/device-v116-20261028/r35/archive-manifest.json` retains the unchanged production App digest recorded above and AndroidTest SHA-256 `dc06f94ba4fc2861f8e861609e4d52350afb64127b208f5e36169eb2a2b6a926`. With `requireCompletionNotice: true`, the current `deepseek-account` / `deepseek-flash` completed one user submission and one final marker, with zero tools and 15 durable events, in 6,753 ms. Its history SHA-256 is `205e1c6f00a7d49456264f366d1d0124be688813d60e7c4f6f5aa08ec944458b`.
+
+Exactly one active notification matched the dedicated Session tag, ID 3, `task-completed` channel and marker preview. Private visibility, auto-cancel and the App-owned content PendingIntent were confirmed; cleanup confirmed cancellation of that notification and completion of Session archive, export release and disconnection. The outer owner recorded six samples with both OLED panels Off and confirmed host and device-process retirement, then restored screen control while noninteractive. No PendingIntent was sent: this verifies real completion-notice posting and cleanup, not notification tapping, Session navigation or receipt recovery after a crash. It changes no production behavior and does not explain the earlier r32 freeze.
+
 <a id="evidence-limits"></a>
 ## Evidence limits
 
-The r33 result establishes one real account-backed echo request through the production service and its durable reply; r34 additionally establishes one pending Linux call retained across the measured outage and completed after connectivity restoration. Both use new dedicated Sessions. Neither establishes account-login UI or avatar rendering, reopening an older conversation, token refresh, interrupted model HTTP retry, recovery after service death, prolonged Doze operation or the cause or resolution of the r32 freeze. The [idle-service recovery acceptance](agent-service-recovery-driver.md) and [Build 116 upgrade record](upgrade-116-acceptance.md) own their separate observations; neither substitutes for these account-task results.
+The r33 result establishes one real account-backed echo request through the production service and its durable reply; r34 additionally establishes one pending Linux call retained across the measured outage and completed after connectivity restoration; r35 establishes a real task's system completion notice and its cleanup. All use new dedicated Sessions. They do not establish notification tapping, account-login UI or avatar rendering, reopening an older conversation, token refresh, interrupted model HTTP retry, recovery after service death, prolonged Doze operation or the cause or resolution of the r32 freeze. The [idle-service recovery acceptance](agent-service-recovery-driver.md) and [Build 116 upgrade record](upgrade-116-acceptance.md) own their separate observations; neither substitutes for these account-task results.

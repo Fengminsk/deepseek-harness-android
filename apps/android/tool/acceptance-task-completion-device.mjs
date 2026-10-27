@@ -1,25 +1,20 @@
 import { createHash, randomBytes } from 'node:crypto'
-import { execFile, spawn } from 'node:child_process'
+import { execFile } from 'node:child_process'
 import { createReadStream } from 'node:fs'
-import { stat } from 'node:fs/promises'
+import { open, stat, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
-import { connectedDevice, parseAgentPids, parseBadging, parseCertificate,
-  parseHoldStatus, parseInstalledPath, sdkTools } from './acceptance-upgrade-device.mjs'
+import { connectedDevice, parseBadging, parseCertificate,
+  parseHoldStatus, sdkTools } from './acceptance-upgrade-device.mjs'
+import { startRecoveryAdb } from './acceptance-agent-service-recovery-device.mjs'
+import { awaitRecoveryClose, parseRecoveryKeyguard } from './agent-service-recovery-driver.mjs'
+import { parseAcceptanceProcesses, parseNonInteractivePowerState } from './device-screen-protection.mjs'
 
 const exec = promisify(execFile)
 const PACKAGE = 'com.minnnng.dsh_android'
 const RUNNER = `${PACKAGE}.test/${PACKAGE}.TaskCompletionCrashInstrumentation`
 const TOKEN = /^[0-9a-f]{32}$/
-
-function argument(args, flag) {
-  const index = args.indexOf(flag)
-  if (index < 0 || index + 1 >= args.length || args[index + 1].startsWith('--')) {
-    throw new Error(`Missing ${flag}`)
-  }
-  return args[index + 1]
-}
 
 async function run(binary, args, timeout = 120_000) {
   const { stdout, stderr } = await exec(binary, args, {
@@ -69,7 +64,7 @@ export function parseTaskCompletionPhase(output, phase, token, heldPid = null) {
       (phase === 'verify' && (values.get('validNotice') !== 'true' ||
         values.get('invalidNotices') !== 'false' || values.get('receiptsCleared') !== 'true')) ||
       (phase === 'cleanup' && values.get('cleaned') !== 'true')) {
-    throw new Error(`Android ${phase} completion acceptance failed: ${output.slice(-4000)}`)
+    throw new Error(`Android ${phase} completion acceptance failed`)
   }
   return { phase, processPid: Number(pid),
     ...(phase === 'verify' ? { validNotice: true, invalidNotices: false, receiptsCleared: true }
@@ -87,124 +82,258 @@ export function parseCommittedHold(output, token) {
   return pid
 }
 
-function startHold(adb, serial, token) {
-  const child = spawn(adb, ['-s', serial, 'shell', 'am', 'instrument', '-w', '-r',
-    '-e', 'phase', 'hold', '-e', 'token', token, RUNNER], {
-    windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
-  })
-  let output = '', closed = false, settled = false
-  let resolveDone, resolveReady, rejectReady
-  const done = new Promise(resolve => { resolveDone = resolve })
-  const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject })
-  const timeout = setTimeout(() => rejectReady(new Error('Committed completion hold did not become ready')), 20_000)
-  const accept = chunk => {
-    output += chunk.toString('utf8')
-    if (output.length > 2 * 1024 * 1024) {
-      clearTimeout(timeout)
-      rejectReady(new Error('Completion instrumentation output exceeded 2 MiB'))
-      child.kill()
-      return
+const BUDGETS = { command: 8000, hold: 20000, phase: 30000, retirement: 20000, close: 20000 }
+const check = (condition, message) => { if (!condition) throw new Error(message) }
+const failureType = error => ['Error', 'TypeError', 'RangeError', 'AbortError', 'AggregateError'].includes(error?.name)
+  ? error.name : 'Error'
+
+/** Parse explicit, noninstalling device consent or preserve the artifact-only preflight. */
+export function parseTaskCompletionArguments(args) {
+  const values = new Map(), flags = new Set(['--preflight-only', '--allow-existing', '--installed-only', '--no-wake'])
+  for (let i = 0; i < args.length; i++) {
+    const flag = args[i]
+    check(!values.has(flag), 'Duplicate completion argument')
+    if (flags.has(flag)) values.set(flag, true)
+    else {
+      check(['--adb', '--serial', '--apk', '--test-apk', '--report'].includes(flag), 'Unknown completion argument')
+      check(args[i + 1] && !args[i + 1].startsWith('--'), `Missing ${flag}`)
+      values.set(flag, args[++i])
     }
-    if (settled) return
-    try {
-      const pid = parseCommittedHold(output, token)
-      if (pid !== null) { settled = true; clearTimeout(timeout); resolveReady(pid) }
-    } catch (error) { settled = true; clearTimeout(timeout); rejectReady(error) }
   }
-  child.stdout.on('data', accept)
-  child.stderr.on('data', accept)
-  child.on('error', error => { clearTimeout(timeout); rejectReady(error) })
-  child.on('close', (code, signal) => {
-    closed = true
-    clearTimeout(timeout)
-    rejectReady(new Error(`Completion hold exited before force-stop: ${output.slice(-1200)}`))
-    resolveDone({ code, signal, output })
-  })
-  return { ready, done, get closed() { return closed }, stopClient: () => child.kill() }
+  for (const name of ['--apk', '--test-apk']) check(values.has(name), `Missing ${name}`)
+  const preflightOnly = values.has('--preflight-only')
+  if (!preflightOnly) for (const name of ['--adb', '--serial', '--allow-existing', '--installed-only', '--no-wake', '--report'])
+    check(values.has(name), `Missing ${name}`)
+  if (values.has('--serial')) check(/^[A-Za-z0-9._:-]+$/.test(values.get('--serial')), 'Invalid device serial')
+  return { preflightOnly, apk: resolve(values.get('--apk')), testApk: resolve(values.get('--test-apk')),
+    ...(preflightOnly ? {} : { adb: resolve(values.get('--adb')), serial: values.get('--serial'),
+      report: resolve(values.get('--report')), allowExisting: true, installedOnly: true, noWake: true }) }
+}
+
+/** Accept one installed base APK only; split APKs cannot be equated with a single local artifact. */
+export function parseCompletionInstalledPath(output) {
+  const match = /^package:(\/data\/app\/[A-Za-z0-9_~+./=-]+\/base\.apk)$/.exec(output.trim())
+  check(match && !match[1].split('/').includes('..'), 'Installed base APK path is missing or ambiguous')
+  return match[1]
+}
+
+/** Require the checksum output to name the exact inspected installed artifact. */
+export function requireCompletionInstalledHash(output, path, expected) {
+  const match = /^([0-9a-f]{64})[ \t]+([^\r\n]+)\r?\n?$/.exec(output)
+  check(/^[0-9a-f]{64}$/.test(expected) && match?.[1] === expected && match[2] === path,
+    'Installed APK SHA-256 differs from the inspected artifact')
+}
+
+/**
+ * Run synthetic receipt recovery against exact installed artifacts and await independent retirement.
+ * @param {object} io - Owned start(argv, options) ADB children, monotonic now() and bounded delay(ms).
+ * @param {object} options - Explicit installed-only admission, serial, artifact hashes, token and optional cancellation.
+ * @returns {Promise<object>} Sanitized evidence after all owned clients close and device processes retire; throws with report otherwise.
+ */
+export async function runTaskCompletionCrashAcceptance(io, { signal = new AbortController().signal, serial,
+  app, testApk, token, allowExisting, installedOnly, noWake, budgets = BUDGETS }) {
+  check(allowExisting === true && installedOnly === true && noWake === true, 'Explicit installed-only no-wake admission is required')
+  check(TOKEN.test(token) && /^[A-Za-z0-9._:-]+$/.test(serial), 'Invalid completion identity')
+  for (const key of Object.keys(BUDGETS)) check(Number.isSafeInteger(budgets[key]) && budgets[key] > 0 && budgets[key] <= BUDGETS[key], 'Invalid completion budget')
+  check([app, testApk].every(value => /^[0-9a-f]{64}$/.test(value?.sha256)), 'Missing artifact hashes')
+  const owners = [], cleanupFailures = []
+  const independent = new AbortController().signal
+  let stage = 'preflight', failure = null, started = false, heldPid, verified, cleaned
+  let preflightEmpty = false, deviceProcessesGone = false, forceStopConfirmed = false
+  const start = (argv, timeoutMs, scope) => {
+    scope?.throwIfAborted()
+    const child = io.start(argv, { timeoutMs, signal: scope })
+    const owner = { child, settled: false, exit: null }
+    owner.closed = child.closed.then(exit => { owner.settled = true; owner.exit = exit; return exit })
+    owners.push(owner)
+    return owner
+  }
+  const command = async (argv, scope = signal) => {
+    const owner = start(['shell', ...argv], budgets.command, scope)
+    return owner.child.result()
+  }
+  const locked = async scope => {
+    check(parseNonInteractivePowerState(await command(['dumpsys', 'power'], scope)), 'Completion acceptance requires noninteractive state')
+    check(parseRecoveryKeyguard(await command(['dumpsys', 'window', 'policy'], scope)), 'Completion acceptance requires locked keyguard')
+  }
+  const processes = async scope => parseAcceptanceProcesses(await command(['ps', '-A', '-w', '-o', 'PID,ARGS'], scope))
+  const waitEmpty = async scope => {
+    const deadline = io.now() + budgets.retirement
+    do {
+      if (!(await processes(scope)).length) return true
+      await io.delay(50)
+    } while (io.now() < deadline)
+    return false
+  }
+  const instrument = (phase, scope) => start(['shell', 'am', 'instrument', '-w', '-r',
+    '-e', 'phase', phase, '-e', 'token', token, RUNNER], phase === 'hold' ? budgets.hold : budgets.phase, scope)
+  const phase = async (name, scope, previousPid) => {
+    const owner = instrument(name, scope)
+    const output = await owner.child.result()
+    return parseTaskCompletionPhase(output, name, token, previousPid)
+  }
+  try {
+    signal.throwIfAborted()
+    const devices = start(['devices'], budgets.command, signal)
+    connectedDevice(await devices.child.result(), serial)
+    await locked(signal)
+    preflightEmpty = (await processes(signal)).length === 0
+    check(preflightEmpty, 'Completion acceptance refuses existing App or test processes')
+    for (const [packageName, artifact] of [[PACKAGE, app], [`${PACKAGE}.test`, testApk]]) {
+      const path = parseCompletionInstalledPath(await command(['pm', 'path', packageName]))
+      requireCompletionInstalledHash(await command(['sha256sum', path]), path, artifact.sha256)
+    }
+    await locked(signal)
+    preflightEmpty = (await processes(signal)).length === 0
+    check(preflightEmpty, 'App or test process started during preflight')
+    signal.throwIfAborted()
+    stage = 'hold'; started = true
+    // The held main thread must be killed before any further observation RPC.
+    const hold = instrument('hold', signal), deadline = io.now() + budgets.hold
+    do {
+      signal.throwIfAborted()
+      check(!hold.settled, 'Completion hold exited before force-stop')
+      heldPid = parseCommittedHold(hold.child.output(), token)
+      if (heldPid !== null) break
+      await io.delay(20)
+    } while (io.now() < deadline)
+    check(heldPid !== null && heldPid !== undefined, 'Committed completion hold did not become ready')
+    stage = 'kill'
+    await command(['am', 'force-stop', PACKAGE], independent)
+    await awaitRecoveryClose(hold.closed, budgets.close)
+    check(!/^INSTRUMENTATION_(RESULT: passed=true|CODE: -1)\s*$/m.test(hold.child.transcript()),
+      'Held Agent returned successfully instead of being killed')
+    check(await waitEmpty(independent), 'Held Agent or related process remained after force-stop')
+    signal.throwIfAborted()
+    await locked(signal)
+    stage = 'verify'; verified = await phase('verify', signal, heldPid)
+    signal.throwIfAborted()
+  } catch (error) { failure = error }
+  finally {
+    // Native cleanup requires a successfully acknowledged receipt. Never bypass
+    // that precondition to clear unknown state after a failed verification.
+    if (verified) {
+      try {
+        await locked(independent)
+        cleaned = await phase('cleanup', independent)
+      } catch (error) { cleanupFailures.push({ stage: 'native-cleanup', type: failureType(error) }) }
+    }
+    if (started) {
+      let stops = 0
+      for (const packageName of [PACKAGE, `${PACKAGE}.test`]) {
+        try { await command(['am', 'force-stop', packageName], independent); stops++ }
+        catch (error) { cleanupFailures.push({ stage: 'force-stop', type: failureType(error) }) }
+      }
+      forceStopConfirmed = stops === 2
+    }
+    for (const owner of owners) {
+      if (!owner.settled) {
+        try {
+          await owner.child.stop()
+          await awaitRecoveryClose(owner.closed, budgets.close)
+        } catch (error) {
+          cleanupFailures.push({ stage: 'client-close', type: failureType(error) })
+          owner.child.unref()
+        }
+      }
+    }
+    if (started) {
+      try { deviceProcessesGone = await waitEmpty(independent) }
+      catch (error) { cleanupFailures.push({ stage: 'process-observation', type: failureType(error) }) }
+      if (!deviceProcessesGone) cleanupFailures.push({ stage: 'device-retirement', type: 'Error' })
+    } else deviceProcessesGone = preflightEmpty
+    // Retirement observations themselves own ADB clients, including failed ps.
+    for (const owner of owners) if (!owner.settled) {
+      try { await owner.child.stop(); await awaitRecoveryClose(owner.closed, budgets.close) }
+      catch (error) { cleanupFailures.push({ stage: 'client-close', type: failureType(error) }); owner.child.unref() }
+    }
+  }
+  if (signal.aborted && !failure) failure = signal.reason ?? new Error('Completion acceptance cancelled')
+  const hostProcessClosed = owners.every(owner => owner.settled)
+  const retirement = { hostProcessClosed, deviceProcessesGone, forceStopConfirmed,
+    confirmed: hostProcessClosed && deviceProcessesGone && (!started || forceStopConfirmed) }
+  const report = { schema: 1, result: !failure && cleaned && retirement.confirmed && !cleanupFailures.length ? 'pass' : 'unknown',
+    phase: failure ? stage : 'complete', token, serial, installedOnly: true, noWake: true,
+    appSha256: app.sha256, testApkSha256: testApk.sha256, heldPid: heldPid ?? null,
+    verified: verified ?? null, cleaned: cleaned ?? null, retirement, cleanupFailures,
+    syntheticStateMayRemain: started && !cleaned, committedReceiptRecoveredAfterForceStop: !!verified,
+    invalidReceiptSuppressed: !!verified, realAgentTaskReplayTested: false,
+    physicalPanelEvidence: 'requires-outer-owner', ...(failure ? { failure: { stage, type: failureType(failure) } } : {}) }
+  if (report.result !== 'pass') {
+    const error = new Error('Completion crash acceptance failed', { cause: failure })
+    error.completion = report; error.retirement = retirement
+    throw error
+  }
+  return report
+}
+
+async function inspectArtifacts(config) {
+  const [app, testApk] = await Promise.all([fingerprint(config.apk), fingerprint(config.testApk)])
+  check(app.path !== testApk.path, 'App and AndroidTest APK must differ')
+  const tools = await sdkTools()
+  const inspect = async artifact => ({ ...artifact,
+    ...parseBadging(await run(tools.aapt2, ['dump', 'badging', artifact.path], 30000)),
+    certificate: parseCertificate(await run('java', ['-jar', tools.apksigner, 'verify', '--print-certs', artifact.path], 30000)) })
+  const [appIdentity, testIdentity] = await Promise.all([inspect(app), inspect(testApk)])
+  check(appIdentity.packageName === PACKAGE && testIdentity.packageName === `${PACKAGE}.test` &&
+    appIdentity.certificate === testIdentity.certificate, 'App and AndroidTest package or signing identity differs')
+  requireTaskCompletionInstrumentation(await run(tools.aapt2,
+    ['dump', 'xmltree', '--file', 'AndroidManifest.xml', testApk.path], 30000))
+  return { app: appIdentity, testApk: testIdentity }
+}
+
+/**
+ * Run in the screen guard process so cancellation waits for independent cleanup.
+ * @param {string[]} args - Explicit installed-only arguments, or artifact-only preflight.
+ * @param {object} options - Optional signal controlled by the caller; no display operations are performed.
+ * @returns {Promise<object>} Persisted sanitized report; a failure also carries completion and retirement evidence.
+ */
+export async function runTaskCompletionEntry(args, { signal = new AbortController().signal } = {}) {
+  const config = parseTaskCompletionArguments(args)
+  if (config.preflightOnly) return { result: 'preflight-pass', ...await inspectArtifacts(config) }
+  check(config.report !== config.apk && config.report !== config.testApk, 'Report must not replace an artifact')
+  const reservation = await open(config.report, 'wx')
+  await reservation.close()
+  const token = randomBytes(16).toString('hex')
+  let completed
+  try {
+    await writeFile(config.report, JSON.stringify({ schema: 1, result: 'pending', token, installedOnly: true }) + '\n')
+    signal.throwIfAborted()
+    const artifacts = await inspectArtifacts(config)
+    signal.throwIfAborted()
+    const result = await runTaskCompletionCrashAcceptance({ now: () => performance.now(),
+      delay: ms => new Promise(resolve => setTimeout(resolve, ms)),
+      start: (argv, options) => startRecoveryAdb(config.adb, config.serial, argv, options),
+    }, { ...config, ...artifacts, token, signal })
+    completed = { ...result, evidence: 'device-adb' }
+    await writeFile(config.report, JSON.stringify(completed, null, 2) + '\n')
+    return completed
+  } catch (error) {
+    const report = { ...(error.completion ?? completed ?? { schema: 1, token, phase: 'artifact-preflight',
+      retirement: { confirmed: false } }), result: 'unknown', evidence: 'device-adb',
+      failure: error.completion?.failure ?? { stage: 'entry', type: failureType(error) } }
+    error.completion = report; error.retirement = report.retirement
+    try { await writeFile(config.report, JSON.stringify(report, null, 2) + '\n') }
+    catch (writeError) {
+      const combined = new AggregateError([error, writeError], 'Completion report persistence failed')
+      combined.completion = report; combined.retirement = report.retirement
+      process.stderr.write(JSON.stringify(report) + '\n')
+      throw combined
+    }
+    throw error
+  }
 }
 
 async function main(args) {
-  const [app, testApk] = await Promise.all([
-    fingerprint(argument(args, '--apk')), fingerprint(argument(args, '--test-apk')),
-  ])
-  if (app.path === testApk.path) throw new Error('App and AndroidTest APK must differ')
-  const tools = await sdkTools()
-  const inspect = async artifact => ({
-    ...parseBadging(await run(tools.aapt2, ['dump', 'badging', artifact.path], 30_000)),
-    certificate: parseCertificate(await run('java', ['-jar', tools.apksigner,
-      'verify', '--print-certs', artifact.path], 30_000)),
-  })
-  const [appIdentity, testIdentity] = await Promise.all([inspect(app), inspect(testApk)])
-  if (appIdentity.packageName !== PACKAGE || testIdentity.packageName !== `${PACKAGE}.test` ||
-      appIdentity.certificate !== testIdentity.certificate) {
-    throw new Error('App and AndroidTest APK package or signing identity differs')
-  }
-  requireTaskCompletionInstrumentation(await run(tools.aapt2,
-    ['dump', 'xmltree', '--file', 'AndroidManifest.xml', testApk.path], 30_000))
-  if (args.includes('--preflight-only')) {
-    process.stdout.write(JSON.stringify({ result: 'preflight-pass', app: { ...app, ...appIdentity },
-      testApk: { ...testApk, ...testIdentity } }, null, 2) + '\n')
-    return
-  }
-
-  const adb = args.includes('--adb') ? resolve(argument(args, '--adb')) : tools.adb
-  const serial = connectedDevice(await run(adb, ['devices'], 15_000),
-    args.includes('--serial') ? argument(args, '--serial') : undefined)
-  const device = (command, timeout) => run(adb, ['-s', serial, ...command], timeout)
-  const installed = parseInstalledPath(await device(['shell', 'pm', 'path', PACKAGE], 15_000))
-  if (installed && !args.includes('--allow-existing')) {
-    throw new Error('App already installed; --allow-existing is required before interrupting its Agent process')
-  }
-  for (const artifact of [app, testApk]) {
-    const output = await device(['install', '-r', artifact.path], 180_000)
-    if (!/^Success\s*$/m.test(output)) throw new Error(`ADB install failed: ${output.slice(-1200)}`)
-  }
-  const token = randomBytes(16).toString('hex')
-  process.stderr.write(`Completion acceptance token=${token}; a failed run may retain synthetic receipts.\n`)
-  const phase = async (name, previousPid) => parseTaskCompletionPhase(
-    await device(['shell', 'am', 'instrument', '-w', '-r', '-e', 'phase', name,
-      '-e', 'token', token, RUNNER], 30_000), name, token, previousPid)
-  const pids = async () => {
-    try { return parseAgentPids(await device(['shell', 'pidof', `${PACKAGE}:agent`], 15_000)) }
-    catch (error) {
-      if (error.code === 1 && !error.stdout?.trim() && !error.stderr?.trim()) return []
-      throw error
-    }
-  }
-  const hold = startHold(adb, serial, token)
-  let heldPid, forceStopped = false
-  try {
-    heldPid = await hold.ready
-    if (hold.closed || !(await pids()).includes(heldPid)) {
-      throw new Error('Committed completion Agent process is not alive')
-    }
-    await device(['shell', 'am', 'force-stop', PACKAGE], 15_000)
-    forceStopped = true
-    if ((await pids()).length !== 0) throw new Error('Agent process remained after force-stop')
-    let timer
-    const terminal = await Promise.race([hold.done, new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new Error('Agent hold did not exit after force-stop')), 20_000)
-    })]).finally(() => clearTimeout(timer))
-    if (/^INSTRUMENTATION_RESULT: passed=true$/m.test(terminal.output)) {
-      throw new Error('Held Agent completed normally instead of being killed')
-    }
-  } finally {
-    if (!hold.closed) {
-      if (!forceStopped) await device(['shell', 'am', 'force-stop', PACKAGE], 15_000)
-      hold.stopClient()
-    }
-  }
-  const verified = await phase('verify', heldPid)
-  const cleaned = await phase('cleanup')
-  process.stdout.write(JSON.stringify({ result: 'pass', serial, app: { ...app, ...appIdentity },
-    testApk: { ...testApk, ...testIdentity }, heldPid, verified, cleaned,
-    committedReceiptRecoveredAfterForceStop: true, invalidReceiptSuppressed: true,
-    realAgentTaskReplayTested: false }, null, 2) + '\n')
+  const controller = new AbortController()
+  const abort = () => controller.abort(new Error('Completion acceptance cancelled'))
+  process.on('SIGINT', abort); process.on('SIGTERM', abort)
+  try { process.stdout.write(JSON.stringify(await runTaskCompletionEntry(args, { signal: controller.signal }), null, 2) + '\n') }
+  finally { process.off('SIGINT', abort); process.off('SIGTERM', abort) }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href)
   main(process.argv.slice(2)).catch(error => {
-    process.stderr.write(`${error.message}\n`)
+    process.stderr.write(JSON.stringify(error.completion ?? { result: 'unknown', failure: { type: failureType(error) } }) + '\n')
     process.exitCode = 1
   })
-}
