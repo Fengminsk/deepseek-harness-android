@@ -75,24 +75,19 @@ function backendFor(ctx, parent, options = {}) {
     authorize: options.authorize ?? appReservation(parent, runId) })
 }
 
-test('a mismatched activation flows from the backend to the owning child port', async () => {
+test('a mismatched activation flows from the backend to the owning child port', async t => {
   const reserved = '00000000-0000-4000-8000-000000000011'
   const different = '00000000-0000-4000-8000-000000000012'
-  const parent = { id: 'workflow-parent', options: { provider: 'mock', model: 'mock' },
-    session: { requestHeader: () => null } }
+  const { ctx: original, parent } = await setup(t)
+  await installWorkflowSubagentPreset(original)
   let disposed = 0
   const ctx = {
-    agents: { get: id => id === parent.id ? parent : undefined },
+    agents: original.agents,
     subagents: { startActivation: async () => ({ childId: different,
       result: Promise.resolve({ output: [], stopReason: 'completed' }),
       dispose: async () => { disposed += 1 } }) },
-    agentPresets: { inspectCompositions: () => [
-      { id: 'android-workflow-child', modules: [{ moduleName: new URL(
-        '../runtime/workflow-child-sandbox.mjs', import.meta.url).href }], leakedServices: [] },
-      { id: 'android-workflow-structured-child', modules: [{ moduleName: new URL(
-        '../runtime/workflow-child-structured-sandbox.mjs', import.meta.url).href }], leakedServices: [] },
-    ] },
-    tools: {}, get: () => ({}),
+    agentPresets: original.agentPresets,
+    tools: original.tools, get: name => original.get(name),
   }
   const backend = backendFor(ctx, parent)
   const guest = new WorkflowGuestHostPort({ prepared: prepared(),
@@ -297,7 +292,7 @@ test('a running structured child rejects every late non-result scoped tool', asy
         callId: 'late-structured-call', name: 'late_local_shell', arguments: {}, agent: child })
       assert.equal(result.isError, true)
       assert.equal(executed, false)
-      assert.match(result.content[0]?.text ?? '', /no tool capabilities beyond structured output/)
+      assert.match(result.content[0]?.text ?? '', /not authorized by its current parent and child policies/)
     } finally { unregister(); await guest.close(); backend.close() }
   } finally { await uninstall() }
 })
@@ -421,7 +416,7 @@ test('a host-wide Android tool remains hidden inside the child preset', async t 
   } finally { await uninstall(); unregister() }
 })
 
-test('a late child-local tool cannot execute under the model-only preset', async t => {
+test('a late child-local tool cannot execute without an exact child grant', async t => {
   const { ctx, parent } = await setup(t, ['hang'])
   const uninstall = await installWorkflowSubagentPreset(ctx)
   const backend = backendFor(ctx, parent)
@@ -441,7 +436,7 @@ test('a late child-local tool cannot execute under the model-only preset', async
       callId: 'late-local-call', name: 'late_local_shell', arguments: {}, agent: child })
     assert.equal(executed, false)
     assert.equal(result.isError, true)
-    assert.match(result.content[0]?.text ?? '', /no tool capabilities/)
+    assert.match(result.content[0]?.text ?? '', /not authorized by its current parent and child policies/)
   } finally {
     unregister()
     await guest.close()

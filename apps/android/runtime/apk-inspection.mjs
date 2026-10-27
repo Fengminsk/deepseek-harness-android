@@ -7,12 +7,17 @@ import { analyzeDex, analyzeElf } from './apk-code.mjs'
 export function apkInspectionQuery(args) {
   const part = args.part ?? 'summary', offset = args.offset ?? 0
   const limit = args.limit ?? (part === 'summary' || part === 'manifest' ? 16 : 1)
+  const sampleLimit = args.sampleLimit === undefined ? 16 : args.sampleLimit
+  if (!Number.isInteger(sampleLimit) || sampleLimit < 0 || sampleLimit > 16
+    || args.sampleLimit !== undefined && !['dex', 'native'].includes(part)) {
+    throw apkEntryError('arguments', 'sampleLimit must be 0–16 and is only valid for part=dex|native')
+  }
   if (!['summary', 'manifest', 'dex', 'native'].includes(part)
     || !Number.isSafeInteger(offset) || offset < 0
     || !Number.isInteger(limit) || limit < 1 || limit > (['summary', 'manifest'].includes(part) ? 100 : 4)
     || (args.contains !== undefined && (typeof args.contains !== 'string' || args.contains.length > 256))
     || args.encoding !== undefined) throw apkEntryError('arguments', 'inspect_apk requires part=summary|manifest|dex|native; limit is 1–100 for Manifest, 1–4 for code; no encoding')
-  return { part, offset, limit, contains: args.contains ?? '' }
+  return { part, offset, limit, sampleLimit, contains: args.contains ?? '' }
 }
 
 /** Read-only built-in APK inspection, independent of Linux and shell tools. */
@@ -34,7 +39,7 @@ export async function inspectVerifiedApk(tail, reference, args, streamFactory, s
       const analysis = manifest ? parseApkManifest(bytes, {
         componentOffset: query.offset, componentLimit: query.limit,
         permissionOffset: query.offset, permissionLimit: query.limit,
-      }) : query.part === 'dex' ? analyzeDex(bytes, { sampleLimit: 16 }) : analyzeElf(bytes, { sampleLimit: 16 })
+      }) : query.part === 'dex' ? analyzeDex(bytes, { sampleLimit: query.sampleLimit }) : analyzeElf(bytes, { sampleLimit: query.sampleLimit })
       if (Buffer.byteLength(JSON.stringify(analysis)) > 128 * 1024) {
         throw apkEntryError('output-limit', 'Analysis exceeds 128 KiB output; request a smaller Manifest page')
       }

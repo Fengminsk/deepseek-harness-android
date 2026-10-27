@@ -831,7 +831,7 @@ class IsolatedScriptAcceptanceInstrumentation : Instrumentation() {
                     .put("name", name).put("arguments", JSONObject()).toString(), true)
             }
             for ((name, actions) in mapOf("android_files" to listOf("roots", "list", "read", "search"),
-                "android_attachments" to listOf("list", "read", "inspect_archive"))) {
+                "android_attachments" to listOf("list", "read", "inspect_archive", "inspect_apk"))) {
                 for (action in actions) IsolatedToolRequest.parse(JSONObject().put("action", "TOOL_CALL")
                     .put("callId", 1).put("name", name)
                     .put("arguments", JSONObject().put("action", action)).toString(), true)

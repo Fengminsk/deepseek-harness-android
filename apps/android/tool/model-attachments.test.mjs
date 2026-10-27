@@ -162,9 +162,11 @@ test('built-in APK inspection uses the live ToolRuntime, honors session policy a
 test('APK golden Manifest and minimal ELF survive real tool JSON output and pagination', async t => {
   const f = await fixture(t)
   const golden = JSON.parse(await readFile(new URL('./fixtures/apk-manifest-aapt2.json', import.meta.url), 'utf8'))
-  const elf = Buffer.alloc(64)
+  const elf = Buffer.alloc(120)
   elf.set([127, 69, 76, 70, 2, 1, 1]); elf.writeUInt16LE(3, 16); elf.writeUInt16LE(183, 18)
   elf.writeUInt32LE(1, 20); elf.writeUInt16LE(64, 52)
+  elf.writeBigUInt64LE(64n, 32); elf.writeUInt16LE(56, 54); elf.writeUInt16LE(1, 56)
+  elf.writeUInt32LE(1, 64); elf.writeBigUInt64LE(120n, 96); elf.writeBigUInt64LE(120n, 104)
   const ref = await f.upload('golden.apk', zipSync({ 'AndroidManifest.xml': Buffer.from(golden.base64, 'base64'),
     'lib/arm64-v8a/one.so': elf, 'lib/arm64-v8a/two.so': elf }))
   const call = async extra => {
@@ -179,6 +181,11 @@ test('APK golden Manifest and minimal ELF survive real tool JSON output and pagi
   assert.equal(remaining.components.length, 2); assert.equal(remaining.nextComponentOffset, null)
   const first = await call({ part: 'native' })
   assert.equal(first.results[0].analysis.header.architecture, 'AArch64'); assert.equal(first.nextOffset, 1)
+  assert.equal(first.results[0].analysis.programHeaders.length, 1)
+  const metadata = await call({ part: 'native', sampleLimit: 0 })
+  assert.equal(metadata.results[0].analysis.header.programCount, 1)
+  assert.deepEqual(metadata.results[0].analysis.programHeaders, [])
+  assert.equal(metadata.results[0].analysis.coverage.programSamplesTruncated, true)
   const second = await call({ part: 'native', offset: first.nextOffset })
   assert.notEqual(second.results[0].name, first.results[0].name); assert.equal(second.nextOffset, null)
 })

@@ -31,6 +31,8 @@
 
 `summary` 不会检查全部 DEX 或原生库，需要分别请求对应部分。`contains` 对 `dex` 和 `native` 的条目名称进行字面量筛选，不筛选 Manifest 声明。`inspect_apk` 请求不能携带 `encoding`。
 
+`dex` 和 `native` 的 `sampleLimit` 接受 0–16，默认为 16。零值不返回描述符、符号等样本数组，但保留解析的头部、计数和检查范围。头部和表范围检查仍然执行；描述符和名称的样本检查随样本上限减少，不能认证省略的条目。较少的样本有助于满足 PTC 回调的 48 KiB 回复上限；Manifest 和摘要请求拒绝此参数。
+
 ## 分页
 <a id="pagination"></a>
 

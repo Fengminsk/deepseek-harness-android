@@ -31,6 +31,8 @@ Call `android_attachments` with `action="list"` first. Reuse its exact `attachme
 
 `summary` does not inspect every DEX or library. Request those parts separately. `contains` is a literal entry-name filter for `dex` and `native`; it does not filter Manifest declarations. Do not supply `encoding` to `inspect_apk`.
 
+For `dex` and `native`, `sampleLimit` accepts 0–16 and defaults to 16. Zero omits descriptor, symbol and other sampled arrays while retaining parsed headers, counts and coverage. Header and table-range checks remain; sampled descriptor and name checks decrease with the sample limit and do not certify omitted entries. Smaller samples help fit a PTC callback's 48 KiB reply limit; Manifest and summary requests reject this parameter.
+
 ## Pagination
 <a id="pagination"></a>
 

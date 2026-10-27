@@ -3,11 +3,13 @@ import test from 'node:test'
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { Context } from '@deepseek-ai/cordis'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
+import AttachmentStore from '@deepseek-ai/dsh-attachment-local'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import FileSystem from '@deepseek-ai/dsh-fs-local'
 import WorkingDirectory from '@deepseek-ai/dsh-working-directory'
 import LocalSubprocess from '@deepseek-ai/dsh-subprocess-local'
@@ -22,11 +24,25 @@ import { createAppOwnedReadOnlyPtcOwner } from '../runtime/model-ptc-readonly-ow
 import { allowsReadOnlyPtcArguments, reviewReadOnlyToolsForModelPtc } from '../runtime/model-ptc-readonly-review.mjs'
 import { projectReadOnlyPtcResult, READONLY_PTC_RESULT_BYTES } from '../runtime/model-ptc-readonly-projection.mjs'
 import { registerModelFileReadGuard } from '../runtime/model-file-read-guard.mjs'
+import { registerAndroidAttachmentsTool } from '../runtime/tool-android-attachments.mjs'
 import { createAndroidReadOnlyPtcToolDefinition, modelReadOnlyPtcCapability,
   registerAndroidReadOnlyPtcTool } from '../runtime/tool-readonly-ptc.mjs'
 
 const AsyncFunction = (async () => {}).constructor
 const size = value => Buffer.byteLength(JSON.stringify(value))
+
+test('APK analysis is admitted read-only with exact bounded results and actionable overflow', () => {
+  assert.equal(allowsReadOnlyPtcArguments('android_attachments', { action: 'inspect_apk' }), true)
+  const value = { part: 'manifest', verified: true, results: [{ analysis: {
+    permissions: ['android.permission.INTERNET'], nextPermissionOffset: null,
+    components: [], nextComponentOffset: null,
+  } }], coverage: { apkSignaturesVerified: false, resourcesResolved: false, codeExecuted: false } }
+  assert.equal(projectReadOnlyPtcResult('android_attachments', { action: 'inspect_apk' }, value), value)
+  const large = { ...value, results: [{ analysis: { components: ['x'.repeat(60000)] } }] }
+  assert.throws(() => projectReadOnlyPtcResult('android_attachments', { action: 'inspect_apk' }, large),
+    /APK analysis exceeds.*48 KiB.*sampleLimit: 0/u)
+  assert.equal(large.results[0].analysis.components[0].length, 60000)
+})
 
 test('read-only model entry rejects forged owners and reports its tool-mediated limits', () => {
   const options = { owner: { start() { throw new Error('forged owner ran') } }, available: () => true }
@@ -45,7 +61,9 @@ test('read-only model entry rejects forged owners and reports its tool-mediated 
 
 test('read-only action review excludes mutation, image delivery and forged arguments', () => {
   for (const action of ['roots', 'list', 'read', 'search']) assert.equal(allowsReadOnlyPtcArguments('android_files', { action }), true)
-  for (const action of ['list', 'read', 'inspect_archive']) assert.equal(allowsReadOnlyPtcArguments('android_attachments', { action }), true)
+  for (const action of ['list', 'read', 'inspect_archive', 'inspect_apk']) {
+    assert.equal(allowsReadOnlyPtcArguments('android_attachments', { action }), true)
+  }
   for (const action of ['read_image', 'materialize', 'write', 'edit']) {
     assert.equal(allowsReadOnlyPtcArguments('android_files', { action }), false)
     assert.equal(allowsReadOnlyPtcArguments('android_attachments', { action }), false)
@@ -195,9 +213,49 @@ test('real parent ToolRuntime dispatches file, search and webpage subcalls with 
   }
   assert.deepEqual(JSON.parse(JSON.stringify(transcript)), JSON.parse(await readFile(
     new URL('./expected/model-ptc-readonly.expected.json', import.meta.url), 'utf8')))
+  await ctx.plugin(AttachmentStore, { dshHome: root })
+  registerAndroidAttachmentsTool(ctx, root)
+  const deviceApk = JSON.parse(await readFile(new URL('./device-runtime-acceptance/apk-fixture.json', import.meta.url), 'utf8'))
+  const bytes = Buffer.from(deviceApk.base64, 'base64')
+  assert.equal(createHash('sha256').update(bytes).digest('hex'), deviceApk.sha256)
+  const ref = await ctx.attachments.saveFile({ name: 'ptc-analysis.apk', data: bytes })
+  agent.session.append('user/message', createUserMessage({ content: [{ type: 'file', attachment: ref }],
+    source: { kind: 'user' } }), { surfaceOp: 'append' })
+  const identity = JSON.stringify({ attachmentId: ref.attachmentId, name: ref.name })
+  const apk = await ctx.tools.execute({ name: 'android_ptc', callId: 'apk-parent',
+    arguments: { description: 'Read APK declarations', code:
+      `const result=await tools.android_attachments({...${identity},action:'inspect_apk',part:'manifest',limit:1});return result` },
+    agent, signal: new AbortController().signal })
+  assert.equal(apk.isError, false, JSON.stringify(apk))
+  assert.equal(apk.value.result.results[0].sha256, deviceApk.manifestSha256)
+  assert.equal(apk.value.result.results[0].analysis.package, 'org.example.apkparser')
+  assert.equal(apk.value.result.results[0].analysis.nextComponentOffset, 1)
+  assert.equal(apk.value.result.coverage.apkSignaturesVerified, false)
+  const apkAudit = agent.session.snapshotEvents().filter(event => event.type === 'tool/ptc-dispatch').at(-1)
+  assert.equal(apkAudit.data.arguments.action, 'inspect_apk')
+  assert.equal(apkAudit.data.content[0].text, JSON.stringify(delivered.at(-1).value))
+  assert.equal(JSON.stringify(apk.value.result), JSON.stringify(delivered.at(-1).value))
+  const overflowFixture = JSON.parse(await readFile(new URL('./device-runtime-acceptance/apk-overflow-fixture.json', import.meta.url), 'utf8'))
+  const overflowBytes = Buffer.from(overflowFixture.base64, 'base64')
+  assert.equal(createHash('sha256').update(overflowBytes).digest('hex'), overflowFixture.sha256)
+  const overflowRef = await ctx.attachments.saveFile({ name: 'ptc-overflow.apk', data: overflowBytes })
+  agent.session.append('user/message', createUserMessage({ content: [{ type: 'file', attachment: overflowRef }],
+    source: { kind: 'user' } }), { surfaceOp: 'append' })
+  const overflowIdentity = JSON.stringify({ attachmentId: overflowRef.attachmentId, name: overflowRef.name })
+  const retry = await ctx.tools.execute({ name: 'android_ptc', callId: 'apk-retry-parent',
+    arguments: { description: 'Retry a smaller APK page', code:
+      `const args={...${overflowIdentity},action:'inspect_apk',part:'manifest'};let recovery;try{await tools.android_attachments({...args,limit:100})}catch(e){recovery=e.message}return {recovery,page:await tools.android_attachments({...args,limit:1})}` },
+    agent, signal: new AbortController().signal })
+  assert.equal(retry.isError, false, JSON.stringify(retry))
+  assert.match(retry.value.result.recovery, /APK analysis exceeds.*48 KiB.*smaller limit/u)
+  assert.equal(retry.value.result.page.results[0].analysis.nextComponentOffset, 1)
+  const retryAudit = agent.session.snapshotEvents().filter(event => event.type === 'tool/ptc-dispatch').slice(-2)
+  assert.equal(retryAudit[0].data.error.reason, retry.value.result.recovery)
+  assert.equal(retryAudit[1].data.isError, false)
+  const callbackCount = delivered.length
   available = false
   const denied = await ctx.tools.execute({ name: 'android_ptc', callId: 'closed-parent',
     arguments: { description: 'Must stay closed', code: 'return 1' }, agent, signal: new AbortController().signal })
   assert.equal(denied.isError, true)
-  assert.equal(delivered.length, 3)
+  assert.equal(delivered.length, callbackCount)
 })

@@ -6,7 +6,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import { defineTool } from '@deepseek-ai/dsh-tools'
+import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
 import type { DiffCallView, DiffResultView, ToolResult } from '@deepseek-ai/dsh-tools'
 import type { FsWriteOutcome } from '@deepseek-ai/dsh-fs'
 import type {} from '@deepseek-ai/dsh-fs'
@@ -15,6 +15,39 @@ import { remediateFsError } from './error.ts'
 import { mutationResult } from './mutation-result.ts'
 import { sessionResolveOptions } from './session-cwd.ts'
 import type { FsSandboxController } from './sandbox.ts'
+
+const definitionKey = Symbol('write definition owner')
+
+/** One registration owns its attestation and retires with its plugin. */
+class WriteDefinitionOwner {
+  readonly #runtime: Context['tools']
+  #active = true
+
+  constructor(key: symbol, runtime: Context['tools']) {
+    if (key !== definitionKey) throw new TypeError('Only the original write factory can issue its definition')
+    this.#runtime = runtime
+  }
+
+  static owns(definition: ToolDefinition, scope: Parameters<Context['tools']['get']>[1]): boolean {
+    return #runtime in definition && definition.#active
+      && definition.#runtime.get('write', scope) === definition
+  }
+
+  retire(): void { this.#active = false }
+}
+
+/**
+ * Identify this package's live, unmodified write registration in a caller scope.
+ * A name, schema, copied object or retired registration cannot establish identity.
+ * @param definition - exact definition selected by the caller's ToolRuntime.
+ * @param scope - caller scope used for visibility; undefined selects the global view.
+ * @returns whether this factory owns the visible live definition.
+ */
+export function isFirstPartyWriteDefinition(
+  definition: ToolDefinition, scope: Parameters<Context['tools']['get']>[1],
+): boolean {
+  return WriteDefinitionOwner.owns(definition, scope)
+}
 
 /**
  * Validate value constraints the schema DSL can't express: only a non-blank
@@ -70,7 +103,7 @@ export function applyWriteTool(ctx: Context, sandbox: FsSandboxController): void
         + '.',
   })
 
-  ctx.tools.register(defineTool({
+  const definition = defineTool({
     name: 'write',
     description: 'Create or fully replace a UTF-8 text file.',
     parameters: {
@@ -149,5 +182,9 @@ export function applyWriteTool(ctx: Context, sandbox: FsSandboxController): void
         ?? [{ path: pathFromMeta(result.meta) ?? args.file_path, oldText: null, newText: args.content }]
       return { card: 'diff', title: `Write ${args.file_path}`, diffs }
     },
-  }))
+  })
+  const owner = new WriteDefinitionOwner(definitionKey, ctx.tools)
+  const owned = Object.freeze(Object.assign(owner, definition))
+  ctx.tools.register(owned)
+  ctx.effect(() => () => owner.retire())
 }

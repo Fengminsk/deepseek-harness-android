@@ -6,7 +6,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import { defineTool } from '@deepseek-ai/dsh-tools'
+import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
 import type { DiffCallView, DiffResultView, ToolResult } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-fs'
 import { computeHunkDiffs, diffsFromMeta } from './diff.ts'
@@ -14,6 +14,39 @@ import { remediateFsError } from './error.ts'
 import { mutationResult } from './mutation-result.ts'
 import { sessionResolveOptions } from './session-cwd.ts'
 import type { FsSandboxController } from './sandbox.ts'
+
+const definitionKey = Symbol('edit definition owner')
+
+/** One registration owns its attestation and retires with its plugin. */
+class EditDefinitionOwner {
+  readonly #runtime: Context['tools']
+  #active = true
+
+  constructor(key: symbol, runtime: Context['tools']) {
+    if (key !== definitionKey) throw new TypeError('Only the original edit factory can issue its definition')
+    this.#runtime = runtime
+  }
+
+  static owns(definition: ToolDefinition, scope: Parameters<Context['tools']['get']>[1]): boolean {
+    return #runtime in definition && definition.#active
+      && definition.#runtime.get('edit', scope) === definition
+  }
+
+  retire(): void { this.#active = false }
+}
+
+/**
+ * Identify this package's live, unmodified edit registration in a caller scope.
+ * A name, schema, copied object or retired registration cannot establish identity.
+ * @param definition - exact definition selected by the caller's ToolRuntime.
+ * @param scope - caller scope used for visibility; undefined selects the global view.
+ * @returns whether this factory owns the visible live definition.
+ */
+export function isFirstPartyEditDefinition(
+  definition: ToolDefinition, scope: Parameters<Context['tools']['get']>[1],
+): boolean {
+  return EditDefinitionOwner.owns(definition, scope)
+}
 
 /** Validated `edit` arguments after defaulting. */
 interface EditInput {
@@ -82,7 +115,7 @@ export function applyEditTool(ctx: Context, sandbox: FsSandboxController): void 
       : 'Read a file before editing it (the default fs-observation-policy requires it), unless you just created or edited it in this session.',
   })
 
-  ctx.tools.register(defineTool({
+  const definition = defineTool({
     name: 'edit',
     description: 'Edit an existing UTF-8 text file by replacing literal text.',
     parameters: {
@@ -165,5 +198,9 @@ export function applyEditTool(ctx: Context, sandbox: FsSandboxController): void 
       if (diffs === undefined) return undefined
       return { card: 'diff', title: `Edit ${args.file_path}`, diffs }
     },
-  }))
+  })
+  const owner = new EditDefinitionOwner(definitionKey, ctx.tools)
+  const owned = Object.freeze(Object.assign(owner, definition))
+  ctx.tools.register(owned)
+  ctx.effect(() => () => owner.retire())
 }

@@ -2,6 +2,8 @@
 
 [English](isolated-tool-call-port.md) | 中文
 
+受信任的结果投影可抛出 `reviewedToolProjectionError(message)`，携带由宿主编写、最多 4 KiB 的恢复提示。端口确认结果不支持后，把私有登记的提示保留在 Guest 可捕获的错误及 Session 错误原因中。修改错误对象不能改变已登记的提示；未知投影异常只返回通用消息。Guest 随后可在同一次调用预算内缩小参数并重试。
+
 `apps/android/runtime/isolated-tool-call-port.mjs` 是**已完成准入的单次**脚本、经审查的 PTC 或工作流 Guest 的宿主侧回调边界。[只读 PTC 所有者](model-ptc-readonly.zh.md)提供原始工具定义审查和有界结果投影。它不注册 `run_code`、不启动 Guest，也不批准文件或网络权限。`cordis.patch.yml` 中的 Android PTC 与工作流仍保持关闭。
 
 原版 DSH `run_code` 接收 TypeScript 异步函数体，并绑定当前 Agent 可见的工具。内部工具调用携带父执行令牌、根调用与子调用 ID，经过 `ToolRuntime` 的策略、取消和配对会话审计。Android 隔离 V8 Guest 接收 JavaScript 函数体；受信任宿主现可把可擦除的 TypeScript 转为该格式。原生 Binder 通道可传递具名异步工具回调，但生产模型调用方尚未绑定原版 `tools.*` 集合。本端口只实现原版契约在宿主侧的一段，不能代表语言或工作流功能齐备。

@@ -31,4 +31,22 @@ fixture.base64 = bytes.toString('base64')
 fixture.xmltree = execFileSync(argumentsByName.aapt2, ['dump', 'xmltree', apk, '--file', 'AndroidManifest.xml'],
   { windowsHide: true, encoding: 'utf8', maxBuffer: 1024 * 1024 }).replaceAll('\r\n', '\n')
 await writeFile(fixturePath, JSON.stringify(fixture, null, 2) + '\n')
+const packaged = await readFile(apk)
+await writeFile(new URL('./device-runtime-acceptance/apk-fixture.json', import.meta.url), JSON.stringify({
+  manifestSha256: fixture.sha256,
+  sha256: createHash('sha256').update(packaged).digest('hex'),
+  base64: packaged.toString('base64'),
+}, null, 2) + '\n')
+const overflowSource = join(directory, 'overflow.xml'), overflowApk = join(directory, 'overflow.apk')
+await writeFile(overflowSource, '<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="org.example.ptcoverflow">'
+  + '<application>' + Array.from({ length: 100 }, (_, index) =>
+    `<activity android:name=".${'A'.repeat(200)}${index}" android:exported="false"/>`).join('')
+  + '</application></manifest>')
+execFileSync(argumentsByName.aapt2, ['link', '-o', overflowApk, '--manifest', overflowSource,
+  '-I', argumentsByName['android-jar']], { windowsHide: true, stdio: 'inherit' })
+const overflowBytes = await readFile(overflowApk)
+await writeFile(new URL('./device-runtime-acceptance/apk-overflow-fixture.json', import.meta.url), JSON.stringify({
+  sha256: createHash('sha256').update(overflowBytes).digest('hex'),
+  base64: overflowBytes.toString('base64'),
+}, null, 2) + '\n')
 console.log(JSON.stringify({ fixture: fileURLToPath(fixturePath), bytes: bytes.length, sha256: fixture.sha256 }))

@@ -4,6 +4,19 @@ import { createHash } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { attachmentArchiveDirectory } from '../runtime/attachment-archive.mjs'
 import { readApkEntryRecords, decodeApkEntry } from '../runtime/apk-entry-reader.mjs'
+import { apkInspectionQuery } from '../runtime/apk-inspection.mjs'
+
+test('APK code sampling is explicit and bounded, including metadata-only requests', () => {
+  assert.equal(apkInspectionQuery({ part: 'dex' }).sampleLimit, 16)
+  assert.equal(apkInspectionQuery({ part: 'native', sampleLimit: 0 }).sampleLimit, 0)
+  assert.equal(apkInspectionQuery({ part: 'dex', sampleLimit: 1 }).sampleLimit, 1)
+  for (const sampleLimit of [-1, 17, 1.5, '1', null]) {
+    assert.throws(() => apkInspectionQuery({ part: 'dex', sampleLimit }), /sampleLimit/u)
+  }
+  for (const part of ['summary', 'manifest']) {
+    assert.throws(() => apkInspectionQuery({ part, sampleLimit: 0 }), /sampleLimit/u)
+  }
+})
 
 const requireStaged = createRequire(new URL('../../../.cache/android/runtime-bundle/package.json', import.meta.url))
 const { zipSync } = requireStaged('fflate')

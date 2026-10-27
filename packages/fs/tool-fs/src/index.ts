@@ -17,6 +17,8 @@ import { READ_MAX_BYTES, READ_MAX_LINE_LENGTH } from './read-render.ts'
 import { FsSandboxController } from './sandbox.ts'
 
 export { isFirstPartyReadDefinition } from './read.ts'
+export { isFirstPartyWriteDefinition } from './write.ts'
+export { isFirstPartyEditDefinition } from './edit.ts'
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'tool-fs'

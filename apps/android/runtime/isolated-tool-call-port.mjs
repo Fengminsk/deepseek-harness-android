@@ -9,6 +9,7 @@ const MAX_AUDIT_BYTES = 128 * 1024
 const MAX_ERROR_BYTES = 4 * 1024
 const NAME = /^[A-Za-z][A-Za-z0-9_./:-]{0,127}$/
 const encoder = new TextEncoder()
+const projectionErrors = new WeakMap()
 const AMBIENT_APP_TOOLS = new Set([
   'android_shell', 'android_linux', 'read_image',
   'write', 'edit', 'str_replace_editor', 'workflow', 'android_ptc',
@@ -27,6 +28,21 @@ class RecoverableGuestToolError extends IsolatedExecutionContractError {
 
 function recoverable(code, message) {
   return new RecoverableGuestToolError(code, message)
+}
+
+/**
+ * Preserve a trusted projection's bounded recovery hint in the guest and audit.
+ * Unknown thrown errors retain the generic projection failure message.
+ * @param message - Host-authored recovery text, at most 4 KiB of UTF-8.
+ * @returns A privately registered error whose hint cannot be changed by mutation.
+ */
+export function reviewedToolProjectionError(message) {
+  if (typeof message !== 'string' || !message || encoder.encode(message).length > MAX_ERROR_BYTES) {
+    throw new TypeError('Reviewed projection recovery must be nonempty text within 4 KiB')
+  }
+  const error = new TypeError(message)
+  projectionErrors.set(error, message)
+  return error
 }
 
 /** Distinguish settled guest errors from failures in audit or transport code. */
@@ -264,12 +280,14 @@ export class IsolatedToolCallPort {
     let errorInfo
     let auditOverflow = false
     let projectedValue
-    let projectionFailed = false
+    let projectionFailure = null
     if (!result.isError && authorized.projectResult !== undefined) {
       try {
         projectedValue = snapshotIsolatedJson(authorized.projectResult(result.value, args),
           'isolated reviewed tool projection', MAX_RESULT_BYTES - 1024)
-      } catch { projectionFailed = true }
+      } catch (error) {
+        projectionFailure = projectionErrors.get(error) ?? 'Reviewed tool result could not be projected'
+      }
     }
     try {
       content = projectedValue === undefined
@@ -289,8 +307,8 @@ export class IsolatedToolCallPort {
     // outcome. A completed tool with a non-JSON or oversized value is a
     // settled unsupported reply, not an uncertain tool dispatch.
     let guestValue
-    let unsupportedReason = projectionFailed ? 'Reviewed tool result could not be projected'
-      : auditOverflow ? 'Tool result exceeded the guest audit limit' : null
+    let unsupportedReason = projectionFailure
+      ?? (auditOverflow ? 'Tool result exceeded the guest audit limit' : null)
     if (!unsupportedReason && result.isError) {
       const message = result.error?.message ?? 'Tool call failed'
       if (typeof message !== 'string' || encoder.encode(message).length > MAX_ERROR_BYTES) {
@@ -313,7 +331,7 @@ export class IsolatedToolCallPort {
       content,
       ...(!auditOverflow && meta !== undefined ? { meta } : {}),
       ...(unsupportedReason
-        ? { error: { name: 'IsolatedToolResultError', code: 'ANDROID_TOOL_RESULT_UNSUPPORTED' } }
+        ? { error: { name: 'IsolatedToolResultError', code: 'ANDROID_TOOL_RESULT_UNSUPPORTED', reason: unsupportedReason } }
         : errorInfo === undefined ? {} : { error: errorInfo }),
     }
     await this.#journal.observe({ runId: this.#runId, callId: number, result: terminalAudit })

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { mkdir, mkdtemp, readFile, writeFile, stat } from 'node:fs/promises'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = fileURLToPath(new URL('../../../', import.meta.url))
@@ -11,6 +11,13 @@ if (!['smoke', 'alpine', 'lifecycle'].includes(suite)) throw new Error('Use smok
 const sha = bytes => createHash('sha256').update(bytes).digest('hex')
 const record = JSON.parse(await readFile(join(root, '.cache/android/tinyemu-host/latest.json'), 'utf8'))
 assert.equal(record.librarySha256, sha(await readFile(record.library)))
+const buildRecordFile = join(dirname(record.library), 'build.json')
+const buildRecord = await readFile(buildRecordFile)
+assert.deepEqual(JSON.parse(buildRecord), record)
+for (const input of record.inputs) assert.equal(input.sha256, sha(await readFile(input.source)))
+for (const input of record.javaSources) assert.equal(input.sha256, sha(await readFile(join(root, input.source))))
+assert.equal(record.patchSha256, sha(await readFile(new URL('./patch-tinyemu.mjs', import.meta.url))))
+assert.equal(record.hostHeaderSha256, sha(await readFile(new URL('./linux-vm-host/include/sys/select.h', import.meta.url))))
 const assets = join(root, '.cache/android/linux-vm-assets')
 const imageManifest = JSON.parse(await readFile(join(assets, 'linux-vm/manifest.json'), 'utf8'))
 for (const name of ['bios', 'kernel', 'disk']) {
@@ -53,7 +60,7 @@ const invoke = async (name, command, disk, workspace = '-', extra = '-', {
   }
   return { directory: destination, text, result }
 }
-let failure
+let failure, alpineImage, imageBuildInput
 try {
   if (suite === 'smoke') {
     const first = await invoke('first', "set -e\nuname -srm\nprintf persistent > /workspace/probe.txt\ncat /workspace/probe.txt\n", join(assets, imageManifest.disk.asset))
@@ -66,6 +73,10 @@ try {
     const manifest = JSON.parse(await readFile(join(input, 'manifest.json'), 'utf8'))
     const tar = join(input, 'input.tar')
     assert.equal((await stat(tar)).size, manifest.bytes); assert.equal(sha(await readFile(tar)), manifest.sha256)
+    const packageLock = await readFile(new URL('./alpine-packages.lock.json', import.meta.url))
+    assert.equal(manifest.packageLockSha256, sha(packageLock))
+    assert.equal(manifest.builderSha256, sha(await readFile(new URL('./build-alpine-vm-input.py', import.meta.url))))
+    imageBuildInput = { ...manifest, artifact: tar }
     const built = await invoke('build', await readFile(new URL('./linux-vm-host/build-alpine.sh', import.meta.url), 'utf8'),
       join(assets, imageManifest.disk.asset), '-', tar)
     assert.match(built.text, /DSH_ALPINE_IMAGE_BUILT/u)
@@ -75,6 +86,8 @@ try {
     const checked = await invoke('filesystem', 'set -e\ne2fsck -fn /dev/vdc\nprintf DSH_ALPINE_FILESYSTEM_OK\n',
       join(built.directory, 'extra.bin'), join(probe.directory, 'workspace.bin'), join(built.directory, 'extra.bin'))
     assert.match(checked.text, /DSH_ALPINE_FILESYSTEM_OK/u)
+    const image = join(built.directory, 'extra.bin')
+    alpineImage = { artifact: image, bytes: (await stat(image)).size, sha256: sha(await readFile(image)) }
   } else {
     const disk = join(assets, imageManifest.disk.asset)
     const before = sha(await readFile(disk))
@@ -89,8 +102,12 @@ try {
     assert.equal(sha(await readFile(disk)), before)
   }
 } catch (error) { failure = String(error.message).slice(0, 2000) }
-const result = { suite, passed: failure === undefined, host: process.platform, androidDeviceVerified: false,
-  librarySha256: record.librarySha256, imageManifest, reports, ...(failure ? { failure } : {}) }
+const result = { format: 'linux-vm-host-report-v2', suite, passed: failure === undefined,
+  host: process.platform, androidDeviceVerified: false, runnerSha256: sha(await readFile(import.meta.filename)),
+  hostBuild: { file: buildRecordFile, sha256: sha(buildRecord) },
+  librarySha256: record.librarySha256, imageManifest, reports,
+  ...(imageBuildInput ? { imageBuildInput } : {}), ...(alpineImage ? { alpineImage } : {}),
+  ...(failure ? { failure } : {}) }
 await writeFile(join(run, 'report.json'), JSON.stringify(result, null, 2) + '\n')
 console.log(JSON.stringify({ report: join(run, 'report.json'), passed: result.passed, androidDeviceVerified: false }))
 if (failure) process.exitCode = 1

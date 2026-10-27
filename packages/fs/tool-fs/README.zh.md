@@ -97,6 +97,8 @@ kind: "package-reference"
 
 工具就是执行器；策略是事件门禁。工具不注入策略服务，也不检查任何缓存——每次变更都通过 `ctx.waterfall` 向单一意图槽位请求防护，每个操作只在成功后发出 `fs/observed`。读取恰好执行一次提供方 `stat`（类型与大小路由加观察到的版本）；变更一次也不执行，因为防护来自意图槽位，提供方在锁内重新检查。
 
+宿主适配器可使用 `isFirstPartyReadDefinition`、`isFirstPartyWriteDefinition` 和 `isFirstPartyEditDefinition` 核验调用者作用域中可见的精确、存活且由原工厂持有的定义。副本和已退役的定义无法通过检查。这仅确认身份，不授予权限：适配器还必须保留并复查 ToolRuntime 注册身份、应用当前策略，并通过 ToolRuntime 分派调用。这些检查不改变文件观察、沙箱、修改或展示行为。
+
 ### 源码地图
 
 | 文件 | 职责 |

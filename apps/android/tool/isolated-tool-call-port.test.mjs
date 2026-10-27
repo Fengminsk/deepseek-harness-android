@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { IsolatedToolCallPort } from '../runtime/isolated-tool-call-port.mjs'
+import { IsolatedToolCallPort, reviewedToolProjectionError } from '../runtime/isolated-tool-call-port.mjs'
 import { IsolatedToolCallJournal } from '../runtime/isolated-tool-call-journal.mjs'
 
 const RUN_ID = '00000000-0000-4000-8000-000000000001'
@@ -185,6 +185,22 @@ test('oversized guest value is confirmed as unsupported and does not poison late
   assert.deepEqual(JSON.parse(JSON.stringify(await port.call(call('safe_echo', { next: true }, 2)))),
     { next: true })
   await port.close()
+})
+
+test('only privately registered bounded projection hints reach guest and durable audit', async t => {
+  assert.throws(() => reviewedToolProjectionError('x'.repeat(4097)), /within 4 KiB/u)
+  const reviewed = reviewedToolProjectionError('Request a smaller page')
+  reviewed.message = 'untrusted replacement'
+  for (const [error, expected] of [[reviewed, 'Request a smaller page'],
+    [new TypeError('private path or unexpected detail'), 'Reviewed tool result could not be projected'],
+    [{ message: 'forged recovery' }, 'Reviewed tool result could not be projected']]) {
+    const { port, events } = setup({ authorizeTool: async input => ({
+      effect: 'read-only', definition: input.definition, projectResult() { throw error },
+    }) })
+    t.after(() => port.close())
+    await assert.rejects(port.call(call()), { code: 'ANDROID_TOOL_RESULT_UNSUPPORTED', message: expected })
+    assert.equal(events.at(-1).data.error.reason, expected)
+  }
 })
 
 test('unrepresentable guest values and oversized tool errors settle as unsupported', async () => {

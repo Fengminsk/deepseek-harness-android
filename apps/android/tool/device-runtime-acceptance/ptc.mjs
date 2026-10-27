@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, writeFile, unlink } from 'node:fs/promises'
+import { mkdir, writeFile, unlink, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import * as FsTools from '@deepseek-ai/dsh-tool-fs'
 import * as SearchTools from '@deepseek-ai/dsh-tool-fs-search'
@@ -99,6 +99,48 @@ export async function runPtcAcceptance({ ctx, transport, agent, workspace }) {
       assert.deepEqual(result.value.result, { listed: true, hex: '504b0304', verified: true,
         entryCount: 1, names: ['acceptance.txt'], refused: true })
       return { state: receipts.at(-1).state, attachmentBytes: ref.bytes, materializationRefused: true }
+    })
+    await check('current-session-apk-through-native-ptc-callback', async () => {
+      const fixture = JSON.parse(await readFile(new URL('./apk-fixture.json', import.meta.url), 'utf8'))
+      const bytes = Buffer.from(fixture.base64, 'base64')
+      assert.equal(createHash('sha256').update(bytes).digest('hex'), fixture.sha256)
+      const ref = await ctx.get('attachments').saveFile({ name: `ptc-${randomUUID()}.apk`, data: bytes })
+      agent.session.append('user/message', createUserMessage({ content: [{ type: 'file', attachment: ref }],
+        source: { kind: 'user' } }), { surfaceOp: 'append' })
+      const identity = JSON.stringify({ attachmentId: ref.attachmentId, name: ref.name })
+      const before = agent.session.seq
+      const result = await invoke(`return await tools.android_attachments({...${identity},action:'inspect_apk',part:'manifest',limit:1})`)
+      assert.equal(result.isError, false, JSON.stringify(result.error))
+      const value = result.value.result
+      assert.equal(value.verified, true)
+      assert.equal(value.results[0].sha256, fixture.manifestSha256)
+      assert.equal(value.results[0].analysis.package, 'org.example.apkparser')
+      assert.equal(value.results[0].analysis.nextComponentOffset, 1)
+      assert.equal(value.coverage.apkSignaturesVerified, false)
+      const events = agent.session.snapshotEvents(before).filter(event => event.type === 'tool/ptc-dispatch')
+      assert.equal(events.length, 1)
+      assert.equal(events[0].data.arguments.action, 'inspect_apk')
+      assert.equal(events[0].data.content[0].text, JSON.stringify(value))
+      return { state: receipts.at(-1).state, manifestSha256: fixture.manifestSha256 }
+    })
+    await check('apk-oversize-callback-can-retry-a-smaller-page', async () => {
+      const fixture = JSON.parse(await readFile(new URL('./apk-overflow-fixture.json', import.meta.url), 'utf8'))
+      const bytes = Buffer.from(fixture.base64, 'base64')
+      assert.equal(createHash('sha256').update(bytes).digest('hex'), fixture.sha256)
+      const ref = await ctx.get('attachments').saveFile({ name: `overflow-${randomUUID()}.apk`, data: bytes })
+      agent.session.append('user/message', createUserMessage({ content: [{ type: 'file', attachment: ref }],
+        source: { kind: 'user' } }), { surfaceOp: 'append' })
+      const identity = JSON.stringify({ attachmentId: ref.attachmentId, name: ref.name })
+      const before = agent.session.seq
+      const result = await invoke(`const args={...${identity},action:'inspect_apk',part:'manifest'};let recovery;try{await tools.android_attachments({...args,limit:100})}catch(e){recovery=e.message}return {recovery,page:await tools.android_attachments({...args,limit:1})}`)
+      assert.equal(result.isError, false, JSON.stringify(result.error))
+      assert.match(result.value.result.recovery, /APK analysis exceeds.*48 KiB.*smaller limit/u)
+      assert.equal(result.value.result.page.results[0].analysis.nextComponentOffset, 1)
+      const events = agent.session.snapshotEvents(before).filter(event => event.type === 'tool/ptc-dispatch')
+      assert.equal(events.length, 2)
+      assert.equal(events[0].data.error.reason, result.value.result.recovery)
+      assert.equal(events[1].data.isError, false)
+      return { state: receipts.at(-1).state, recovered: true }
     })
     await check('model-cancellation-joins-native-retirement', async () => {
       const controller = new AbortController()

@@ -23,3 +23,20 @@ node apps/android/tool/verify-tinyemu-host.mjs lifecycle
 The [runner](../verify-tinyemu-host.mjs) requires the staged development guest assets. `alpine` also requires the hash-checked image-build input. `smoke` verifies boot and workspace retention across two real guest runs. `alpine` creates an ext2 image inside the guest, installs the locked offline packages, boots that image, exercises Python/threads/randomness/SQLite/SSL/subprocesses/git/curl/file operations, then checks an independent unmounted read-only image with `e2fsck -fn`. `lifecycle` times out a running loop and cancels after confirmed guest output; neither publishes changed images. It verifies that the source image stays unchanged.
 
 Each invocation uses a new directory under `.cache/android/tinyemu-host/runs/`. Reports contain native status, guest exit code, hashes and explicit `androidDeviceVerified: false`. Images are written only after a completed guest command and native shutdown; failure diagnostics remain available. Passing host checks does not enable any product capability or certify phone execution. The ordinary Android build excludes this provider and its images as described by the [runtime reference](../linux-vm-runtime.md) ([中文](../linux-vm-runtime.zh.md)).
+
+## Candidate assembly
+
+The `alpine` report binds the successful build, runtime probe and filesystem check to the exact system image, offline package input and interpreter build record. The runner rejects native, console or package inputs that have changed since preparation. Old reports without these bindings are not eligible for candidate assembly.
+
+After `alpine` succeeds, package the current corresponding sources, then pass its printed report path to [the candidate assembler](../stage-alpine-vm-candidate.py). Use the printed candidate directory for independent verification:
+
+```powershell
+python apps/android/tool/package-linux-vm-sources.py
+python apps/android/tool/stage-alpine-vm-candidate.py --host-report <report.json> --source-manifest .cache/android/tinyemu-probe/linux-vm-corresponding-source.manifest.json
+python apps/android/tool/stage-alpine-vm-candidate.py --verify <candidate-directory>
+python apps/android/tool/test_linux_vm_candidate.py
+```
+
+Each candidate occupies a new directory under `.cache/android/linux-vm-candidates/`, containing `assets/linux-vm`, the separate source archive and host evidence. The system disk is the tested Alpine image; the old demonstration disk is not copied. The assembler rehashes copied files and writes `candidate.json` only after verification. A failed copy retains partial files without a success record. Existing fixtures and candidates remain unchanged.
+
+Candidate assembly does not modify Gradle, install an APK, enable model tools or certify Android execution. The image still has no network device; the curl probe verifies local execution, not connectivity. Device lifecycle and production Agent integration remain required before release.

@@ -1,13 +1,8 @@
-/** Model-only child scope. Global and scope-local tools cannot execute. */
+/** A workflow child uses only its Host-issued subset of the parent's tools. */
+import { applyWorkflowChildTools } from './workflow-child-tools.mjs'
 export const name = 'android-workflow-child-sandbox'
-export const inject = ['tools']
+export const inject = ['tools', 'androidWorkflowChildTools']
 
 export function apply(ctx) {
-  // The reserved run_code transport is outside restriction filters. Force the
-  // native presentation even if the host's default changes to PTC mode.
-  ctx.tools.presentAs('native')
-  ctx.tools.restrict({ allow: [] })
-  // A later agent-scoped registration bypasses restrict({ allow: [] }) in the
-  // tool registry. This monotonic guard still denies its execution.
-  ctx.tools.guard(() => 'Workflow children have no tool capabilities')
+  applyWorkflowChildTools(ctx)
 }

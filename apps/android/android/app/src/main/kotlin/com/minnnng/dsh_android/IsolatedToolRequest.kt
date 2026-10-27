@@ -33,7 +33,7 @@ internal data class IsolatedToolRequest(
                 if (name == "android_files") require(arguments.opt("action") in
                     setOf("roots", "list", "read", "search"))
                 if (name == "android_attachments") require(arguments.opt("action") in
-                    setOf("list", "read", "inspect_archive"))
+                    setOf("list", "read", "inspect_archive", "inspect_apk"))
             } else require(name !in setOf("run_code", "android_shell", "android_linux", "android_files",
                 "android_attachments", "read", "read_image", "write", "edit", "str_replace_editor", "workflow", "android_ptc"))
             return IsolatedToolRequest(id, name, arguments)

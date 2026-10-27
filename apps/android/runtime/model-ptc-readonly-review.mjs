@@ -29,7 +29,7 @@ function dataObject(value) {
 export function allowsReadOnlyPtcArguments(name, args) {
   if (!dataObject(args)) return false
   if (name === 'android_files') return ['roots', 'list', 'read', 'search'].includes(args.action)
-  if (name === 'android_attachments') return ['list', 'read', 'inspect_archive'].includes(args.action)
+  if (name === 'android_attachments') return ['list', 'read', 'inspect_archive', 'inspect_apk'].includes(args.action)
   return Object.hasOwn(reviews, name)
 }
 

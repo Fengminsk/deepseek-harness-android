@@ -2381,7 +2381,7 @@
         "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Original Node PTC stays disabled. Android now has an App-owned read-only android_ptc registration behind MODEL_PTC_DEVICE_ACCEPTED=false. It uses live ToolRuntime authorization and exact first-party definitions for list_agents, read/glob/grep, web_search/web_fetch, android_files roots/list/read/search and android_attachments list/read/inspect_archive. Native ptc runs have zero direct file/network grants, 120-second wall and independent 5-second execution-thread CPU limits. Bounded projected results and callbacks retain parent Session records. Writes, images, materialization, nested execution and general Node APIs are excluded. Focused host ToolRuntime/receipt tests pass; the production Node-to-native device suite must still establish usable registration and lifecycle behavior before the gate changes.",
+      "note": "Original Node PTC stays disabled. Android now has an App-owned read-only android_ptc registration behind MODEL_PTC_DEVICE_ACCEPTED=false. It uses live ToolRuntime authorization and exact first-party definitions for list_agents, read/glob/grep, web_search/web_fetch, android_files roots/list/read/search and android_attachments list/read/inspect_archive/inspect_apk. Native ptc runs have zero direct file/network grants, 120-second wall and independent 5-second execution-thread CPU limits. Bounded projected results and callbacks retain parent Session records. Oversized APK analysis returns an audited recovery hint instead of dropping declarations or changing cursors; smaller pages and sampleLimit allow retries. Writes, images, materialization, nested execution and general Node APIs are excluded. Focused host ToolRuntime/receipt tests pass; the production Node-to-native device suite must still establish usable registration and lifecycle behavior before the gate changes.",
       "capability": "programmatic"
     },
     {
@@ -2399,6 +2399,9 @@
         "apps/android/runtime/native-workflow-private-owner.mjs",
         "apps/android/tool/model-workflow-admission.test.mjs",
         "apps/android/runtime/tool-native-workflow.mjs",
+        "apps/android/runtime/workflow-child-tools.mjs",
+        "apps/android/runtime/workflow-subagent-backend.mjs",
+        "apps/android/tool/workflow-child-tools.test.mjs",
         "apps/android/tool/tool-native-workflow.test.mjs",
         "apps/android/tool/device-runtime-acceptance/workflow.mjs"
       ],
@@ -8431,7 +8434,7 @@
         "apps/android/android/app/src/main/kotlin/com/minnnng/dsh_android/IsolatedToolRequest.kt",
         "apps/android/android/app/src/main/cpp/ptc_script_engine.cpp"
       ],
-      "remaining": "Read-only android_ptc and model-only workflow are implemented behind closed source gates. Accept the production Node-to-native ToolRuntime path, bounded results, real file/web callbacks, cancellation and CPU retirement, background child ownership and cold/process-death recovery before opening them. General Node APIs, writes, images and arbitrary tool-bearing workflow children remain outside the reviewed subset; do not describe it as full upstream PTC parity."
+      "remaining": "Read-only android_ptc and workflows with reviewed child file/web tools are implemented behind closed source gates. Workflow children receive only current parent first-party read/glob/grep/write/edit/web registrations, with live parent/child checks and workspace limits; cold resume cannot restore a tool grant. Accept the production Node-to-native ToolRuntime path, bounded results, real file/web callbacks, cancellation and CPU retirement, background child ownership and cold/process-death recovery before opening them. General Node APIs, PTC writes/images/materialization, child Shell/Linux/recursive delegation and arbitrary child tool definitions remain outside the reviewed subset; do not describe it as full upstream PTC parity."
     },
     {
       "id": "linux",
@@ -8444,9 +8447,12 @@
         "apps/android/android/app/src/main/kotlin/com/minnnng/dsh_android/LinuxVmImageStore.kt",
         "apps/android/android/app/src/main/cpp/linux_vm_engine.c",
         "apps/android/tool/linux-vm-runtime.md",
+        "apps/android/tool/stage-alpine-vm-candidate.py",
+        "apps/android/tool/package-linux-vm-sources.py",
+        "apps/android/tool/verify-tinyemu-host.mjs",
         "apps/android/tool/device-runtime-acceptance/linux.mjs"
       ],
-      "remaining": "TinyEMU isolated-UID Linux execution and authorized 64 MiB workspace import/export are implemented behind LINUX_VM_DEVICE_ACCEPTED=false. ToolRuntime resolves live session policy: read-only execution discards disk changes and file transfer requires write permission. Deliver the accepted pinned guest image and distribution/source records, then verify production model calls, file-transfer hashes/readback and no-overwrite publication, writable persistence, read-only discard, cancellation and upgrade recovery on the installed APK. Guest networking is absent; analyst package availability is image-specific. Host checks do not discharge these device and image-delivery requirements."
+      "remaining": "TinyEMU isolated-UID Linux execution and authorized 64 MiB workspace import/export are implemented behind LINUX_VM_DEVICE_ACCEPTED=false. ToolRuntime resolves live session policy: read-only execution discards disk changes and file transfer requires write permission. An offline Alpine candidate with Python, Git and curl has host execution and filesystem checks, exact image/build evidence and a verified corresponding-source archive. Production image integration and device acceptance remain: verify model calls, file-transfer hashes/readback and no-overwrite publication, writable persistence, read-only discard, cancellation and upgrade recovery on the installed APK. Guest networking is absent; having curl installed does not provide network access. Host checks do not discharge these device and image-delivery requirements."
     },
     {
       "id": "web-network",

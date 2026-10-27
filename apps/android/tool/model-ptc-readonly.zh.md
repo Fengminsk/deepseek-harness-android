@@ -25,13 +25,15 @@ Android 运行时在源码控制的设备验收开关后组合[模型工具工�
 | `read`、`glob`、`grep` | 受 Android 文件守卫约束的原版工作区读取与搜索 |
 | `web_search`、`web_fetch` | 配置的网页提供方及其既有策略、取消机制 |
 | `android_files` | 用户授权文档根上的 `roots`、`list`、`read`、`search` |
-| `android_attachments` | 当前会话引用的 `list`、`read`、`inspect_archive` |
+| `android_attachments` | 当前会话引用的 `list`、`read`、`inspect_archive`、`inspect_apk` |
 
 不允许图片、写入、物化文件、Shell 命令、Linux 执行或嵌套 PTC/工作流调用。有效父执行作用域内不存在的工具不会暴露。包身份校验本身不授予访问权限，宿主工具策略仍然有效。客体不能自行指定执行类别或预算。
 
 ## 结果与记录
 
 成功回调的值在交给客体前限制为 48 KiB 编码 JSON。工作区读取保留完整行，缩短时返回下一行偏移；SAF 和附件读取保留有效 UTF-8 或完整十六进制字节，并准确推进字节偏移。搜索和网页摘录明确标注截断，不伪造提供方的继续读取能力。无法放入限额的单个条目返回已确认的不支持结果。
+
+APK 分析保留准确的检查范围和各自独立的 Manifest 游标。结果超过 48 KiB 时拒绝返回并提供恢复方法：减小 Manifest 分页的 `limit`，或对代码使用 `limit: 1` 与 `sampleLimit: 0`。超大的单个结果仍可通过直接附件工具读取；PTC 不会静默丢弃嵌套声明，也不会将分析改写为空的成功分页。
 
 [工具调用端口](isolated-tool-call-port.zh.md)将实际交给客体的投影 JSON 写入配对的 Session 回调事件。持久日志保留不可重放的调用标记及结果摘要。回调审计、分发、取消或收尾不确定时，不发布成功结果。Session append 与独立日志不构成原子磁盘事务；这些检查不证明 Session 已完成刷盘。
 

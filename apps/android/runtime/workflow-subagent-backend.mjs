@@ -1,9 +1,11 @@
 /**
  * A trusted Android workflow adapter for the original in-process `spawn`
  * activation manager. The child joins a dedicated tool-restricted preset, never the
- * Android parent preset that offers App-UID Shell and file tools. This adapter
+ * Android parent preset that offers App-UID Shell. Reviewed file and web tools
+ * are inherited through a per-child Host grant. This adapter
  * does not admit a workflow or expose it to a model.
  */
+import { WorkflowChildTools } from './workflow-child-tools.mjs'
 
 const PRESET_ID = 'android-workflow-child'
 const STRUCTURED_PRESET_ID = 'android-workflow-structured-child'
@@ -20,8 +22,8 @@ function requireServices(ctx) {
     || !ctx.get?.('sessionPersistence') || !ctx.get?.('sessionQuery')) {
     throw denied('Workflow child requires the original agent, subagent, preset, tool, persistence and query services')
   }
-  // The dedicated child preset installs a scoped allow: [] restriction on the
-  // global registry. The runtime may still offer Android tools to its parent.
+  // The dedicated child preset masks inherited tools; a Host grant registers
+  // only reviewed original definitions in the exact child's own scope.
 }
 
 function requireHost(ctx, parent) {
@@ -55,21 +57,24 @@ function modelRoute(parent) {
  */
 export async function installWorkflowSubagentPreset(ctx) {
   requireServices(ctx)
-  const unregisterPlain = await ctx.agentPresets.register({
-    id: PRESET_ID, plugins: [{ name: SANDBOX_MODULE }],
-  })
+  const toolOwner = await ctx.plugin(WorkflowChildTools)
+  let unregisterPlain
   let unregisterStructured
   try {
+    unregisterPlain = await ctx.agentPresets.register({
+      id: PRESET_ID, plugins: [{ name: SANDBOX_MODULE }],
+    })
     unregisterStructured = await ctx.agentPresets.register({
       id: STRUCTURED_PRESET_ID, plugins: [{ name: STRUCTURED_SANDBOX_MODULE }],
     })
     requirePreset(ctx)
   } catch (error) {
     if (unregisterStructured) await unregisterStructured()
-    await unregisterPlain()
+    if (unregisterPlain) await unregisterPlain()
+    await toolOwner.dispose()
     throw error
   }
-  return async () => { await unregisterStructured(); await unregisterPlain() }
+  return async () => { await unregisterStructured(); await unregisterPlain(); await toolOwner.dispose() }
 }
 
 /**
@@ -84,6 +89,7 @@ export function createWorkflowSubagentBackend({ ctx, parent, runId, authorize })
   requireHost(ctx, parent)
   requirePreset(ctx)
   const approved = new WeakMap()
+  const grants = new Set()
   let closed = false
 
   function available() {
@@ -131,24 +137,44 @@ export function createWorkflowSubagentBackend({ ctx, parent, runId, authorize })
       if (current.provider !== route.provider || current.model !== route.model) {
         throw denied('Workflow parent model route changed after child authorization')
       }
-      const run = await ctx.subagents.startActivation({
-        provider: 'spawn',
-        label: 'Workflow child',
-        delivery: 'caller',
-        childId,
-        signal,
-        request: {
-          parent,
-          prompt: [{ type: 'text', text: request.prompt }],
-          agentPreset: request.schema === undefined ? PRESET_ID : STRUCTURED_PRESET_ID,
-          agentOptions: route,
-          ...(request.schema === undefined ? {} : { outputSchema: request.schema }),
-        },
-      })
+      const owner = ctx.get('androidWorkflowChildTools')
+      if (!(owner instanceof WorkflowChildTools)) throw denied('Workflow child tool owner is missing')
+      const revoke = await owner.reserve(parent, childId, signal)
+      grants.add(revoke)
+      const release = () => { revoke(); grants.delete(revoke) }
+      let run
+      try {
+        signal.throwIfAborted()
+        available()
+        const selected = modelRoute(parent)
+        if (selected.provider !== route.provider || selected.model !== route.model) {
+          throw denied('Workflow parent model route changed while preparing child tools')
+        }
+        run = await ctx.subagents.startActivation({
+          provider: 'spawn',
+          label: 'Workflow child',
+          delivery: 'caller',
+          childId,
+          signal,
+          request: {
+            parent,
+            prompt: [{ type: 'text', text: request.prompt }],
+            agentPreset: request.schema === undefined ? PRESET_ID : STRUCTURED_PRESET_ID,
+            agentOptions: route,
+            ...(request.schema === undefined ? {} : { outputSchema: request.schema }),
+          },
+        })
+      } catch (error) {
+        release()
+        throw error
+      }
       // Return even a mismatched handle to WorkflowChildPort. It owns the
       // cancellation and retains an unretired child if disposal fails.
-      return { childId: run.childId, result: run.result, dispose: () => run.dispose() }
+      return { childId: run.childId, result: run.result, dispose: async () => {
+        release()
+        await run.dispose()
+      } }
     },
-    close() { closed = true },
+    close() { closed = true; for (const revoke of grants) revoke(); grants.clear() },
   })
 }

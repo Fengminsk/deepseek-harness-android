@@ -97,6 +97,8 @@ This section explains the design decisions behind the tool suite and points at t
 
 The tools are the executor; policy is an event gate. The tools inject no policy service and inspect no cache — each mutation asks the single intent slot for its guard through `ctx.waterfall`, and each operation emits `fs/observed` only after it succeeded. Reads do exactly one provider `stat` (type and size routing plus the observed version); mutations do none, because the guard comes from the intent slot and the provider re-checks under its lock.
 
+Host adapters can use `isFirstPartyReadDefinition`, `isFirstPartyWriteDefinition`, and `isFirstPartyEditDefinition` to check the exact live factory-owned definition visible in a caller scope. Copies and retired definitions fail the check. This establishes identity, not permission: adapters must also retain and recheck the ToolRuntime registration identity, apply current policy, and dispatch through ToolRuntime. The checks do not change file observation, sandbox, mutation or rendering behavior.
+
 ### Source map
 
 | File | Role |

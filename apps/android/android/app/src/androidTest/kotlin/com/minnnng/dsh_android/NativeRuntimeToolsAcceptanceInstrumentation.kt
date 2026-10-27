@@ -45,7 +45,8 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
             val appWorkspaceRoot = File(app.noBackupFilesDir, "dsh/workspace")
             val workspace = File(appWorkspaceRoot, ".device-acceptance-$fixtureId").apply { check(mkdirs()) }
             val fixture = File(home, "fixture").apply { check(mkdirs()) }
-            for (name in listOf("bootstrap.mjs", "index.mjs", "workflow.mjs", "ptc.mjs", "linux.mjs")) {
+            for (name in listOf("bootstrap.mjs", "index.mjs", "workflow.mjs", "ptc.mjs", "linux.mjs",
+                "apk-fixture.json", "apk-overflow-fixture.json")) {
                 context.assets.open(name).use { source -> File(fixture, name).outputStream().use { source.copyTo(it) } }
             }
             File(fixture, "configuration.json").writeText(JSONObject().put("runtime", runtime.absolutePath)

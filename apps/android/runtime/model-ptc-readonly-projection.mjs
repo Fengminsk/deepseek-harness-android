@@ -1,4 +1,6 @@
 /** Bounded, explicit guest views of completed read-only ToolRuntime results. */
+import { reviewedToolProjectionError } from './isolated-tool-call-port.mjs'
+
 export const READONLY_PTC_RESULT_BYTES = 48 * 1024
 const bytes = value => Buffer.byteLength(JSON.stringify(value), 'utf8')
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -44,6 +46,12 @@ export function projectReadOnlyPtcResult(name, args, value) {
   const original = Array.isArray(value) ? { items: value, truncated: false } : value
   if (!object(original)) throw new TypeError('Read-only PTC expected a structured tool value')
   if (bytes(original) <= READONLY_PTC_RESULT_BYTES) return original
+  if (name === 'android_attachments' && args.action === 'inspect_apk') {
+    // Keep inspection coverage and independent Manifest cursors exact. A guest
+    // can request a smaller analysis; silently slicing nested results cannot.
+    throw reviewedToolProjectionError('APK analysis exceeds the PTC 48 KiB reply limit. Retry Manifest with a smaller limit; '
+      + 'for dex/native use limit: 1 and sampleLimit: 0. Use android_attachments directly for a single oversized result.')
+  }
   if (name === 'read') {
     if (!Number.isSafeInteger(value.offset) || !Number.isSafeInteger(value.totalLines)) throw new TypeError('Invalid read page')
     return fitItems(value.lines, lines => ({ ...value, lines, truncated: true,

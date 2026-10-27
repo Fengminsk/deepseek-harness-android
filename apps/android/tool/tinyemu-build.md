@@ -34,6 +34,8 @@ These build helpers prepare pinned TinyEMU sources, official Alpine packages and
 
 [The source packager](package-linux-vm-sources.py) assembles a separate archive containing TinyEMU, firmware and kernel source, their patches/configuration/notices, Alpine corresponding sources, and a snapshot of the Android embedding sources. Every locked input is rehashed. The archive retains full original source licenses; its manifest indexes members and hashes. Regenerate this artifact after final embedding edits and deliver it alongside the binary distribution. It excludes the old demo rootfs, whose exact BusyBox/glibc build inputs remain unverified.
 
+The version 2 inventory includes the offline image builders, guest build/probe scripts, production console initialization, native embedding, image store, file transfer and host verification tools. Project files keep their repository-relative layout under `project/`; this is not the complete Android App source tree. Verification checks every archive member against its hash, the locked upstream source closure and the current project inputs. It rejects missing or stale build files before [Alpine candidate assembly](linux-vm-host/README.md#candidate-assembly). Repackaging retains the previous archive and its manifest under the previous archive digest.
+
 ## Evidence limits
 
 The [Windows guest probe](linux-vm-host/README.md) compiles the same interpreter and production JNI entry for a local JVM, allowing real guest execution and image checks without a connected phone. Its reports explicitly exclude Android device acceptance.

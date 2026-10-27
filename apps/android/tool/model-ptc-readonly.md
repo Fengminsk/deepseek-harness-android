@@ -25,13 +25,15 @@ Each execution captures the live Agent, active parent token, exact scoped defini
 | `read`, `glob`, `grep` | Original workspace reads and search under the Android file guard |
 | `web_search`, `web_fetch` | Configured web providers with their existing policies and cancellation |
 | `android_files` | `roots`, `list`, `read`, `search` on user-authorized document roots |
-| `android_attachments` | `list`, `read`, `inspect_archive` for current-session references |
+| `android_attachments` | `list`, `read`, `inspect_archive`, `inspect_apk` for current-session references |
 
 Images, writes, materialization, shell commands, Linux execution and nested PTC/workflow calls are excluded. A tool absent from the live parent's scope is not exposed. Package identification grants no access by itself; host tool policy remains authoritative. The guest cannot supply the execution kind or its budget.
 
 ## Results and records
 
 Successful callback values are bounded to 48 KiB of encoded JSON before guest delivery. Workspace reads keep complete lines and expose the next line offset when shortened; SAF and attachment reads keep valid UTF-8 or whole hex bytes and advance the byte offset precisely. Search and page excerpts explicitly report truncation without inventing a provider continuation. An indivisible entry that cannot fit returns a confirmed unsupported result.
+
+APK analysis retains its exact coverage and independent Manifest cursors. A result exceeding 48 KiB is refused with recovery guidance: reduce the Manifest page `limit`, or use code `limit: 1` with `sampleLimit: 0`. An oversized single result remains available through the direct attachment tool; PTC does not silently drop nested declarations or change the analysis into an empty successful page.
 
 The [tool-call port](isolated-tool-call-port.md) records the exact projected JSON delivered to the guest in the paired Session callback event. Its durable journal retains non-replayable call markers and result hashes. Callback audit, dispatch, cancellation or retirement uncertainty withholds success. Session append and the separate journal do not form an atomic disk transaction; these checks do not establish Session flush completion.
 
