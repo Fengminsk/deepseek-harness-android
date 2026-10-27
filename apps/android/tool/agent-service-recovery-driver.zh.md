@@ -37,3 +37,9 @@ node --test apps/android/tool/recovery-network-evidence.test.mjs apps/android/to
 ```
 
 这些无密钥测试通过受控 IO 验证解析、取消、部分修改、不明确回执、精确恢复及退役。网络测试在宿主 JVM 上编译并执行 AndroidTest 的实际 Java 分类器，不算真机验收证据，也不属于 Android APK 构建。真实 ADB 适配器输出的报告带有 `evidence: device-adb`；每次真机尝试都应保留失败报告并使用新路径。
+
+## Build 116 r31 空闲服务观察
+
+真机记录 `.cache/android/agent-service-116-r31-recovery-20261028.json` 报告通过：在线、离线及恢复检查点保持相同的 Agent PID、运行代次、专用会话及单事件摘要。就绪检查点位于 4,510.680 毫秒，在线至恢复观察跨度为 4,623.577 毫秒，且 `minimumDwellMs: 0`；这个跨度不是离线驻留时间。离线观察中没有底层 INTERNET 网络，仍可见一个已验证的 VPN 覆盖层；原 Wi-Fi 和移动数据标志均恢复为 `1`。
+
+配套的 `.cache/android/agent-service-116-r31-screen-20261028.json` 记录七次采样，两块物理面板均为 Off。原生检查点均已锁屏且不可交互，专用会话已归档，清理确认宿主关闭、设备进程退役及网络恢复。这些属于离散观察，不代表连续屏幕状态或长时间休眠证据。本轮没有模型请求或活动 Agent 任务；独立检查由[账号任务验收](agent-service-task-device.zh.md)负责。

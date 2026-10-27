@@ -15,6 +15,61 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.Executors
+
+/** Independent JVM sampling around the unchanged ready wait; no Android display or runtime control. */
+internal class ProductionReadyWaitProbe(private val nanoTime: () -> Long = System::nanoTime) {
+    private val lock = Any()
+    private var entered: Long? = null
+    private var finished: Long? = null
+    private var timedOut: Long? = null
+    private var lastPulse: Long? = null
+    private var maxGap = 0L
+    private var pulses = 0L
+    private var stopped = false
+
+    fun observe(wait: () -> Unit) {
+        synchronized(lock) { check(entered == null); entered = nanoTime() }
+        val sampler = Executors.newSingleThreadScheduledExecutor { task ->
+            Thread(task, "dsh-production-ready-pulse").apply { isDaemon = true }
+        }
+        var originalFailure: Throwable? = null
+        try {
+            sampler.scheduleAtFixedRate({
+                synchronized(lock) {
+                    val now = nanoTime()
+                    lastPulse?.let { maxGap = maxOf(maxGap, now - it) }
+                    lastPulse = now
+                    pulses++
+                }
+            }, 0, 1, TimeUnit.SECONDS)
+            wait()
+        } catch (failure: Throwable) {
+            originalFailure = failure
+            if (failure is TimeoutException) synchronized(lock) { timedOut = nanoTime() }
+            throw failure
+        } finally {
+            synchronized(lock) { finished = nanoTime() }
+            sampler.shutdownNow()
+            try {
+                check(sampler.awaitTermination(5, TimeUnit.SECONDS)) { "Ready diagnostic sampler did not retire" }
+                synchronized(lock) { stopped = true }
+            } catch (cleanup: Throwable) {
+                if (originalFailure != null) originalFailure.addSuppressed(cleanup) else throw cleanup
+            }
+        }
+    }
+
+    fun snapshot(): JSONObject = synchronized(lock) {
+        val start = entered
+        fun millis(time: Long?): Any = if (time == null || start == null) JSONObject.NULL
+            else TimeUnit.NANOSECONDS.toMillis(time - start)
+        JSONObject().put("enteredNanoTime", start ?: JSONObject.NULL)
+            .put("finishedAfterMs", millis(finished)).put("timeoutAfterMs", millis(timedOut))
+            .put("pulseCount", pulses).put("lastPulseAfterMs", millis(lastPulse))
+            .put("maxPulseGapMs", TimeUnit.NANOSECONDS.toMillis(maxGap)).put("samplerStopped", stopped)
+    }
+}
 
 /** Drives the shipped Android profile through its public RPC and a local scripted model. */
 internal class ProductionProfileAcceptanceScenario(
@@ -43,6 +98,7 @@ internal class ProductionProfileAcceptanceScenario(
     @Volatile private var runtimeStatusErrorCode: String? = null
     private val nativeCalls = AtomicInteger()
     private val notifications = AtomicInteger()
+    private val readyWait = ProductionReadyWaitProbe()
 
     private fun mark(stage: String, request: String? = null) {
         currentStage = stage
@@ -61,6 +117,7 @@ internal class ProductionProfileAcceptanceScenario(
             .put("runtimeStatusPhase", runtimeStatusPhase ?: JSONObject.NULL)
             .put("runtimeStatusErrorCode", runtimeStatusErrorCode ?: JSONObject.NULL)
             .put("readyObserved", ready.isDone && !ready.isCompletedExceptionally).put("turnEndObserved", ended.isDone)
+            .put("readyWait", readyWait.snapshot())
         val startup = File(home, "production-profile-startup.jsonl")
         result.put("startupFilePresent", startup.isFile).put("modelProofPresent", proofFile.isFile)
         result.put("bootstrapArtifacts", JSONObject()
@@ -69,6 +126,16 @@ internal class ProductionProfileAcceptanceScenario(
             .put("packageManagerState", File(home, "profiles/android/android-package-manager.json").isFile)
             .put("nodeLauncher", File(home, "package-manager/bin/node").exists()))
         try {
+            val pulse = File(home, "production-profile-node-pulse.json")
+            if (pulse.isFile && pulse.length() in 1..8192) {
+                val source = JSONObject(pulse.readText())
+                val safe = JSONObject()
+                for (field in listOf("schema", "active", "pulseCount", "lastPulseElapsedMs", "maxPulseGapMs",
+                    "elapsedMs", "cpuUserMicros", "cpuSystemMicros", "modules", "artifacts")) {
+                    if (source.has(field)) safe.put(field, source.get(field))
+                }
+                result.put("nodeStartup", safe)
+            }
             if (startup.isFile && startup.length() in 1..32768) {
                 val events = JSONArray()
                 startup.readLines().takeLast(16).forEach { line ->
@@ -194,7 +261,7 @@ internal class ProductionProfileAcceptanceScenario(
         }
         try {
             mark("runtime-ready-wait")
-            ready.get(90, TimeUnit.SECONDS)
+            readyWait.observe { ready.get(90, TimeUnit.SECONDS) }
             val info = call("runtime.info", JSONObject(), 15000)
             check(info.getString("profile") == "android" && info.getString("platform") == "android")
             check(File(info.getString("workspace")).canonicalFile == workspace.canonicalFile)

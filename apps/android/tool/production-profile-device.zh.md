@@ -20,7 +20,13 @@ adb shell am instrument -w -r -e suite production-profile -e foregroundCarrier s
 
 结果记录随包 bootstrap／runtime 哈希、模型工具定义哈希、匹配的 Session ID，以及专用 JSONL 文件哈希。成功要求已完成的落盘轮次包含 PTC 分派和 Linux 执行、最终回复、已关闭的模型监听器，以及载体确认的原生所有者关闭。保留的夹具文件只含合成输入和协议证据。宿主协议／解析测试与独立 Kotlin 编译不构成设备验收；作出设备通过结论前须保留实际 instrumentation 结果及外层退役／显示报告。本套件不验证真实模型凭据、Linux 联网、升级、正式后台存活或通用工作流生命周期限制。
 
-启动诊断记录固定检查点名称、单调时间、当前等待的 RPC、原生与通知方法名、运行时失败阶段及 errno、模型计数、有界的 socket 地址／地址族、匹配的接口身份和堆栈位置。本地 socket 必须是明确的回环地址；对端必须为 `127.0.0.1`、`::ffff:127.0.0.1`、`::1`，或精确匹配该请求即时读取的 `os.networkInterfaces()` 快照中的本机单播地址。快照不可用、地址缺失、通配／组播地址及未分配给本机的远端地址均被拒绝，不允许网段或持久保存的设备 IP。任何通过地址校验的请求仍须提供对应用途的秘密。诊断不包含凭据值、请求头、提示词或模型正文。运行时初始化失败会立即终止 ready 等待。模型证据缺失或关闭响应失败会明确报告监听器退役未确认，不能静默通过收尾。[JVM 场景检查](acceptance-production-profile-host.mjs)使用实际场景类与 Android SDK JSON 源码验证启动凭据和诊断行为，不将其当作 Android 进程证据。
+启动诊断记录固定检查点、单调时间、当前等待的 RPC、原生与通知方法名、运行时失败阶段及 errno、模型计数、有界的 socket 地址／地址族、匹配的接口身份和堆栈位置。以下补充观察由[夹具 bootstrap](device-runtime-acceptance/production-profile-bootstrap.mjs)及 [JVM 场景](../android/app/src/androidTest/kotlin/com/minnnng/dsh_android/ProductionProfileAcceptanceScenario.kt)负责。诊断不包含凭据值、请求头、提示词或模型正文。
+
+在导入随包 bootstrap 期间，夹具记录三个固定模块的加载开始、返回或失败：CLI、profile boot 及 Android 运行时入口。加载钩子返回只确认加载，不表示模块求值完成或内部 CLI／Loader 等待结束。`nodeStartup` 快照记录模块状态、固定产物的存在标记、每秒一次且不保持事件循环存活的采样，以及自观察开始累计、以微秒计的进程 CPU 增量。采样与已用时间字段以夹具时钟起点后的毫秒计；观察器关闭时记录 inactive 状态。仅凭快照缺失或陈旧，不能区分事件循环阻塞、调度延迟、进程挂起或诊断写入延迟。
+
+JVM `readyWait` 探针在保持不变的 `ready.get(90, TimeUnit.SECONDS)` 周围，通过独立守护线程采样。它记录入口 `System.nanoTime()` 值、以毫秒计的相对结束／超时及采样时间、最大采样间隔和 `samplerStopped`。超时记录表示等待线程观察到超时的时刻，不证明调度器恰在 90 秒时交付了超时。Node 与 JVM 观察的时钟起点不同，应比较各自时钟内的间隔，不能直接相减绝对值。测试探针不获取唤醒锁或运行时权限；缺少采样或较大间隔不能证明 Doze、死锁或根因。采样器清理失败仍是失败；若 ready 等待已失败，清理错误保留为 suppressed 异常。
+
+本地 socket 必须是明确的回环地址；对端必须为 `127.0.0.1`、`::ffff:127.0.0.1`、`::1`，或精确匹配该请求即时读取的 `os.networkInterfaces()` 快照中的本机单播地址。快照不可用、地址缺失、通配／组播地址及未分配给本机的远端地址均被拒绝，不允许网段或持久保存的设备 IP。任何通过地址校验的请求仍须提供对应用途的秘密。运行时初始化失败会立即终止 ready 等待。模型证据缺失或关闭响应失败会明确报告监听器退役未确认，不能静默通过收尾。[JVM 场景检查](acceptance-production-profile-host.mjs)通过 Android SDK JSON 源码执行实际场景；主机结果不证明 Android 进程行为，也不能解释保留的 r28 启动失败。
 
 <a id="build-116-r28"></a>
 ## Build 116 r28 真机观察
@@ -32,3 +38,9 @@ adb shell am instrument -w -r -e suite production-profile -e foregroundCarrier s
 随后标记为 `warm` 的运行在 `expectWorkflow=true` 下于 15,462 毫秒通过：四次父模型请求、一次子模型请求、PTC 工作区读取、Linux Python 分析及 workflow 完成。它保留了两份独立的父／子 Session JSONL 持久文件。Linux 客体 UID 为 99478，App UID 为 10496；客体退役与模型监听器关闭均已确认。这些是合成模型端点驱动的实际随包正式 profile 操作。
 
 warm 外层报告记录九次采样中两个物理面板均为 `Off`、在不可交互状态下恢复、宿主命令结束及目标进程消失已确认。进程内 `nodeProcessRetired` 字段仍为 false；整个进程的退役由该外层报告单独提供证据。warm 成功不能解释或抹去首次失败。两次运行均不认证真实账号鉴权、公网模型供应商、正式后台存活或长期 Doze 行为。[115→116 升级记录](upgrade-116-acceptance.zh.md)说明其独立的数据保持检查。
+
+## Build 116 r32 停滞诊断运行
+
+保留的 `.cache/android/production-profile-116-r32-diagnostic-20261028.json` 报告了负责人停止停滞验收后的失败；配套 `.result.json` 包含 `shortMsg: Process crashed.`，原生结果为空，不能提供 profile 成功证据。外层报告确认停止后宿主关闭及设备进程退役，不改变该失败结果。
+
+只读采集 `.cache/android/production-profile-r32-scheduler-01.json` 时，PID 31829 的实际 `cgroup.freeze=1`，且 `cgroup.events` 含 `frozen 1`，但 PowerManager 对验收 partial wake lock 报告 `isFrozen=false`。该 wake-lock 字段不能证明进程可以运行。采集证明该时刻 cgroup 已冻结，不能确定冻结由谁施加，不能认定此前 r28 停滞的原因，也不能证明调度问题已修复。负责人未修改设备冻结策略，只停止了自己拥有的验收进程。

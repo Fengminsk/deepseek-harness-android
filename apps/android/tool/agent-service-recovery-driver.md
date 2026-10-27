@@ -37,3 +37,9 @@ node --test apps/android/tool/recovery-network-evidence.test.mjs apps/android/to
 ```
 
 These keyless tests exercise parsing, cancellation, partial changes, ambiguous receipts, exact restoration and retirement through controlled IO. The network test compiles and executes the actual AndroidTest Java classifier on a host JVM. They are not device acceptance evidence or an Android APK build. A real report is emitted by the ADB adapter with `evidence: device-adb`; preserve failed reports and use a new report path for each device attempt.
+
+## Build 116 r31 idle-service observation
+
+The device record `.cache/android/agent-service-116-r31-recovery-20261028.json` reports a pass with the same Agent PID, runtime generation, dedicated Session and one-event digest across online, offline and restored checkpoints. The ready checkpoint occurred at 4,510.680 ms; online to restored observations spanned 4,623.577 ms with `minimumDwellMs: 0`. That span is not an offline dwell measurement. The offline observation had no underlying INTERNET network, while a validated VPN overlay remained visible; the original Wi-Fi and mobile-data flags were restored to `1`.
+
+The companion `.cache/android/agent-service-116-r31-screen-20261028.json` records seven samples with both physical panels Off. Native checkpoints were locked and noninteractive, the dedicated Session was archived, and cleanup confirmed host close, device retirement and network restoration. These are sampled observations, not continuous screen or long-suspend evidence. No model request or active Agent task ran; the [account-task acceptance](agent-service-task-device.md) owns that separate check.

@@ -49,6 +49,10 @@
         android:targetPackage="com.minnnng.dsh_android"
         android:targetProcesses="com.minnnng.dsh_android" />
     <instrumentation
+        android:name="com.minnnng.dsh_android.AgentServiceTaskAcceptanceInstrumentation"
+        android:targetPackage="com.minnnng.dsh_android"
+        android:targetProcesses="com.minnnng.dsh_android" />
+    <instrumentation
         android:name="com.minnnng.dsh_android.PtcFunctionBodyInstrumentation"
         android:targetPackage="com.minnnng.dsh_android"
         android:targetProcesses="com.minnnng.dsh_android:agent" />

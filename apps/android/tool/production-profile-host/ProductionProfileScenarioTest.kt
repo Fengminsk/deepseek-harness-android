@@ -4,6 +4,10 @@ import org.json.JSONObject
 import java.io.File
 import java.util.Base64
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicLong
 
 /** Exercises the actual AndroidTest scenario against the SDK's JSON implementation on a JVM. */
 fun main(args: Array<String>) {
@@ -23,6 +27,33 @@ fun main(args: Array<String>) {
     val browserName = "records/client-connection/browser-session"
     val secret = Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(32) { (it + 1).toByte() })
     val browserRecord = JSONObject().put("kind", "grant").put("payload", JSONObject().put("version", 1).put("secret", secret)).toString()
+    checkCase {
+        val tick = CountDownLatch(1)
+        val time = AtomicLong(1000000)
+        val probe = ProductionReadyWaitProbe {
+            if (Thread.currentThread().name == "dsh-production-ready-pulse") tick.countDown()
+            time.get()
+        }
+        val failure = denied {
+            probe.observe {
+                check(tick.await(5, TimeUnit.SECONDS))
+                time.addAndGet(TimeUnit.SECONDS.toNanos(287))
+                throw TimeoutException("controlled ready timeout")
+            }
+        }
+        check(failure is TimeoutException)
+        val snapshot = probe.snapshot()
+        check(snapshot.getLong("timeoutAfterMs") == 287000L)
+        check(snapshot.getBoolean("samplerStopped") && snapshot.getLong("pulseCount") >= 1)
+        check(Thread.getAllStackTraces().keys.none { it.isAlive && it.name == "dsh-production-ready-pulse" })
+    }
+    checkCase {
+        val probe = ProductionReadyWaitProbe()
+        probe.observe { }
+        check(probe.snapshot().isNull("timeoutAfterMs") && probe.snapshot().getBoolean("samplerStopped"))
+        check(Thread.getAllStackTraces().keys.none { it.isAlive && it.name == "dsh-production-ready-pulse" })
+        denied { probe.observe { error("A second wait must not be admitted") } }
+    }
     checkCase {
         check(authentication.getString("caseId") == id)
         check(modelKey.matches(Regex("[A-Za-z0-9_-]{43}")) && modelKey != id)
@@ -79,6 +110,8 @@ fun main(args: Array<String>) {
         check(failure.message!!.contains("runtime-ready-wait"))
         check(failure.message!!.contains("EACCES") && !failure.message!!.contains(secret))
         check(scenario.diagnostics().getString("runtimeStatusPhase") == "failed")
+        check(scenario.diagnostics().getJSONObject("readyWait").getBoolean("samplerStopped"))
+        check(scenario.diagnostics().getJSONObject("readyWait").isNull("timeoutAfterMs"))
     }
     checkCase {
         val failure = denied { scenario.close() }
