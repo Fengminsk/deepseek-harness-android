@@ -32,7 +32,7 @@ function fixture(options = {}) {
   const checkpoint = stage => ({ ...ready, stage, networkEvidence: network.wifi === '1' || network.data === '1'
     ? onlineEvidence() : (options.offlineEvidence ?? offlineEvidence()),
     interactive: false, locked: true, ...(stage === 'offline' ? options.offline : {}),
-    ...(stage === 'restored' ? options.restored : {}) })
+    ...(stage === 'restored' ? options.restored : {}), ...options.checkpoint?.({ stage, clock }) })
   const emit = (category, field, value) => { text += `INSTRUMENTATION_${category}: ${field}=${JSON.stringify(value)}\n` }
   const io = {
     events, network, completion, now: () => clock,
@@ -204,6 +204,112 @@ test('entry requires explicit matching target, consent and a report; no wake opt
   assert.deepEqual(parseRecoveryArguments(args), { adb: resolve('adb.exe'), serial: 'phone', report: resolve('report.json') })
   for (const bad of [args.concat('--serial', 'other'), args.concat('--wake'), args.slice(0, -2),
     args.filter(value => value !== '--adb'), args.concat('--adb=other')]) assert.throws(() => parseRecoveryArguments(bad))
+})
+
+test('active radio acceptance requires both the known exercise and explicit existing-account admission', () => {
+  const args = ['--adb', 'adb.exe', '--serial', 'phone', '--report', 'report.json', '--accept-network-toggle-and-lock']
+  assert.equal(parseRecoveryArguments([...args, '--exercise', 'radio-linux', '--accept-real-account-request']).exercise, 'radio-linux')
+  for (const extra of [['--exercise', 'radio-linux'], ['--accept-real-account-request'],
+    ['--exercise', 'echo', '--accept-real-account-request'], ['--exercise', 'other']]) {
+    assert.throws(() => parseRecoveryArguments([...args, ...extra]))
+  }
+})
+
+// Protocol payload validation has its own wire tests; this adapter exercises the recovery owner's timing and cleanup.
+const activeProtocol = {
+  ready: value => ({ ...value, agentPid: 42 }),
+  checkpoint: (value, original, stage) => {
+    assert.equal(value.stage, stage)
+    assert.equal(value.generation, original.generation)
+    assert.notEqual(value.toolPending, false)
+    validateRecoveryNetworks(value.networkEvidence)
+    return value
+  },
+  result: parseRecoveryResult,
+  progress: parseRecoveryProgress,
+  failure: () => null,
+}
+
+test('active recovery observes the same task throughout a measured offline dwell before restoring', async () => {
+  const io = fixture()
+  const result = await run(io, { taskProtocol: activeProtocol })
+  assert.equal(result.result, 'pass')
+  assert.equal(result.activeAgentTaskSurvivalTested, true)
+  assert.equal(result.modelRequestRetryTested, false)
+  assert.equal(result.timing.minimumDwellMs, 15000)
+  assert.ok(result.timing.offlineObservedDwellMs >= 15000)
+  assert.ok(result.offlineSamples.length >= 2)
+  const samples = result.offlineSamples.map(sample => sample.elapsedMs)
+  assert.ok(samples.at(-1) - samples[0] >= 15000)
+  assert.ok(result.offlineSamples.every(sample => sample.observation.networkEvidence.usableUnderlyingInternetNetworks === 0))
+  assert.ok(result.processChecks.filter(check => check.stage === 'offline-dwell').length >= 2)
+  assert.deepEqual(io.network, { wifi: '1', data: '0' })
+  assert.equal(result.retirement.confirmed, true)
+})
+
+test('a completed tool, resumed internet or lost agent during offline observation fails and restores exact flags', async () => {
+  const scenarios = [
+    { checkpoint: ({ stage, clock }) => stage === 'observe' && clock > 5000 ? { toolPending: false } : {} },
+    { pidChangedAt: 4 },
+    { restoredInternet: true },
+  ]
+  for (const options of scenarios) {
+    const io = fixture(options)
+    if (options.restoredInternet) io.hook = async args => {
+      if (args[1] === 'broadcast' && args.at(-1) === 'observe' && io.now() > 5000) io.network.wifi = '1'
+    }
+    await assert.rejects(run(io, { taskProtocol: activeProtocol }), error => {
+      assert.equal(error.recovery.phase, 'active-offline-observation')
+      assert.equal(error.recovery.activeAgentTaskSurvivalTested, false)
+      assert.equal(error.retirement.confirmed, true)
+      return true
+    })
+    assert.deepEqual(io.network, { wifi: '1', data: '0' })
+    assert.ok(!io.events.some(event => event[1] === 'broadcast' && event.at(-1) === 'restored'))
+  }
+})
+
+test('cancelling the active dwell restores radios before retiring without claiming task survival', async () => {
+  const io = fixture({ network: { wifi: '0', data: '1' } }), controller = new AbortController()
+  io.hook = async args => {
+    if (args[1] === 'broadcast' && args.at(-1) === 'observe' && io.now() > 5000) controller.abort(new Error('cancel dwell'))
+  }
+  await assert.rejects(run(io, { signal: controller.signal, taskProtocol: activeProtocol }), error => {
+    assert.equal(error.recovery.phase, 'active-offline-observation')
+    assert.equal(error.recovery.activeAgentTaskSurvivalTested, false)
+    assert.equal(error.retirement.confirmed, true)
+    return true
+  })
+  assert.deepEqual(io.network, { wifi: '0', data: '1' })
+  assert.ok(io.events.findIndex(event => event.join(' ') === 'svc data enable') < io.events.findIndex(event => event[1] === 'force-stop'))
+})
+
+test('a task reporting another agent PID fails before any radio mutation', async () => {
+  const io = fixture()
+  await assert.rejects(run(io, { taskProtocol: { ...activeProtocol, ready: value => ({ ...value, agentPid: 43 }) } }),
+    error => error.retirement.confirmed && /checkpoint differs/.test(error.recovery.failures.execution.message))
+  assert.ok(!io.events.some(event => event[0] === 'svc'))
+})
+
+test('rejected active task observations cannot place unvalidated content in the persisted report', async () => {
+  const io = fixture({ checkpoint: () => ({ privateText: 'private-payload-not-to-retain' }) })
+  await assert.rejects(run(io, { taskProtocol: { ...activeProtocol,
+    checkpoint: () => { throw new Error('Invalid task checkpoint') } } }), error => {
+    assert.equal(error.recovery.lastObservation, undefined)
+    assert.equal(JSON.stringify(error.recovery).includes('private-payload-not-to-retain'), false)
+    assert.equal(error.retirement.confirmed, true)
+    return true
+  })
+})
+
+test('sanitized progress is persisted only for a new sequence and write failure cannot skip cleanup', async () => {
+  const rows = [], io = fixture({ progress: [progress()] })
+  await run(io, { onProgress: async value => { rows.push(value) } })
+  assert.deepEqual(rows, [progress()])
+  const failed = fixture({ progress: [progress()] })
+  await assert.rejects(run(failed, { onProgress: async () => { throw new Error('progress write failed') } }),
+    error => error.retirement.confirmed && error.recovery.nativeStage === 'runtime-ready-wait')
+  assert.ok(!failed.events.some(event => event[0] === 'svc'))
 })
 
 test('all three original network combinations are restored exactly without wake commands', async () => {

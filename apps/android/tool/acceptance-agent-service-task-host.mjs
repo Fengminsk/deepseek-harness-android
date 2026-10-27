@@ -6,6 +6,9 @@ import { delimiter, dirname, join, resolve } from 'node:path'
 
 const root = resolve(import.meta.dirname, '../../..')
 const output = mkdtempSync(join(root, '.cache/android/agent-service-task-host-'))
+const { createToolResultMessage } = await import('../../../packages/llm/llm/lib/index.js')
+writeFileSync(join(output, 'tool-result-message.json'), JSON.stringify(createToolResultMessage({ callId: 'radio-call',
+  content: [{ type: 'text', text: '{}' }], isError: false })))
 const sample = process.argv[2] ? resolve(process.argv[2]) : undefined
 let archive
 if (sample) {
@@ -45,6 +48,7 @@ const annotations = {
 }
 const json = join(sdk, 'sources/android-36/org/json')
 const java = readdirSync(json).filter(name => name.endsWith('.java')).map(name => join(json, name))
+java.push(join(root, 'apps/android/android/app/src/androidTest/java/com/minnnng/dsh_android/RecoveryNetworkEvidence.java'))
 for (const [name, source] of Object.entries(annotations)) {
   const target = join(output, name)
   mkdirSync(dirname(target), { recursive: true }); writeFileSync(target, source); java.push(target)

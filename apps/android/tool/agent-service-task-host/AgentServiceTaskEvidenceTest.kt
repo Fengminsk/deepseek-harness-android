@@ -130,6 +130,77 @@ fun main(args: Array<String>) {
     case { rejects("EXPORT_UNEXPECTED_ENTRY") { read(archive("session.v4.jsonl", log(), true)) } }
     case { rejects("EXPORT_ENTRY_INVALID") { read(archive("../session.v4.jsonl", log())) } }
     case { rejects("EXPORT_OVERSIZED") { read(archive("session.v4.jsonl", "x".repeat(1024 * 1024 + 1))) } }
+    fun radioRows(): JSONArray {
+        val base = rows()
+        base.getJSONObject(1).getJSONObject("data").getJSONArray("content").getJSONObject(0).put("text", AgentServiceTaskEvidence.radioPrompt(id))
+        val receipt = JSONObject().put("id", "b0000000-0000-4000-8000-000000000002").put("sessionId", session)
+            .put("status", "completed").put("exitCode", 0).put("retirementConfirmed", true)
+            .put("cancelled", false).put("timedOut", false).put("truncated", false).put("cancelRequested", false)
+            .put("diskCommitted", true).put("guestUid", 99001).put("output", JSONObject()
+                .put("marker", AgentServiceTaskEvidence.marker(id)).put("sha256", AgentServiceTaskEvidence.hash(AgentServiceTaskEvidence.marker(id).toByteArray()))
+                .put("waitMs", 40000).toString())
+        val resultMessage = JSONObject(File(args[0], "tool-result-message.json").readText())
+        check(resultMessage.getString("toolCallId") == "radio-call" && resultMessage.getJSONObject("source").getString("kind") == "tool")
+        resultMessage.put("content", JSONArray().put(text(receipt.toString())))
+        return JSONArray((0..4).map { base.getJSONObject(it) })
+            .put(event(5, "assistant/message", JSONObject().put("turn", 1).put("step", 1).put("message", JSONObject()
+                .put("content", JSONArray().put(JSONObject().put("type", "tool-call").put("id", "radio-call").put("name", "linux_exec"))))))
+            .put(event(6, "tool/call", JSONObject().put("turn", 1).put("step", 1).put("callId", "radio-call").put("name", "linux_exec")
+                .put("arguments", JSONObject().put("command", AgentServiceTaskEvidence.radioCommand(id)).put("timeoutMs", 120000).toString())))
+            .put(event(7, "tool/result", JSONObject().put("turn", 1).put("step", 1).put("message", resultMessage))
+                .put("surfaceOp", "append").put("sourceEventSeqs", JSONArray().put(6)))
+            .put(base.getJSONObject(5).put("seq", 8)).put(base.getJSONObject(6).put("seq", 9))
+    }
+    fun verifyRadio(value: JSONArray, durable: JSONArray = radioRows()) =
+        AgentServiceTaskEvidence.completed(value, durable, id, request, model, true)
+    fun changeReceipt(rows: JSONArray, change: (JSONObject) -> Unit) {
+        val text = rows.getJSONObject(7).getJSONObject("data").getJSONObject("message").getJSONArray("content").getJSONObject(0)
+        val receipt = JSONObject(text.getString("text")); change(receipt); text.put("text", receipt.toString())
+    }
+    case {
+        val result = verifyRadio(radioRows())
+        check(result.getInt("toolCalls") == 1 && result.getLong("toolStartSeq") == 6L && result.getLong("toolEndSeq") == 7L)
+        check(result.getJSONObject("linuxReceipt").getLong("waitMs") == 40000L)
+        check(!result.toString().contains(AgentServiceTaskEvidence.marker(id)))
+    }
+    case {
+        val value = radioRows(); value.getJSONObject(6).getJSONObject("data").put("arguments",
+            JSONObject().put("command", "sleep 40").put("timeoutMs", 120000).toString())
+        rejects("RADIO_ARGUMENTS_CHANGED") { verifyRadio(value) }
+    }
+    case {
+        val value = radioRows(); value.getJSONObject(6).getJSONObject("data").put("arguments",
+            JSONObject().put("command", AgentServiceTaskEvidence.radioCommand(id)).put("timeoutMs", 120000).put("networkHosts", JSONArray().put("example.com")).toString())
+        rejects("RADIO_ARGUMENTS_CHANGED") { verifyRadio(value) }
+    }
+    case {
+        val value = radioRows(); value.getJSONObject(7).getJSONObject("data").getJSONObject("message").put("toolCallId", "wrong")
+        rejects("RADIO_TOOL_FAILED") { verifyRadio(value) }
+    }
+    case {
+        val value = radioRows(); value.getJSONObject(7).put("sourceEventSeqs", JSONArray().put(5))
+        rejects("RADIO_RESULT_SOURCE_MISMATCH") { verifyRadio(value) }
+    }
+    case {
+        val value = radioRows(); changeReceipt(value) { it.put("cancelRequested", true) }
+        rejects("RADIO_EXECUTION_FAILED") { verifyRadio(value) }
+    }
+    case {
+        val value = radioRows(); changeReceipt(value) { it.put("sessionId", "another-session") }
+        rejects("RADIO_RECEIPT_SESSION_MISMATCH") { verifyRadio(value) }
+    }
+    case {
+        val value = radioRows(); changeReceipt(value) { val output = JSONObject(it.getString("output")); output.put("waitMs", 1000); it.put("output", output.toString()) }
+        rejects("RADIO_OUTPUT_MISMATCH") { verifyRadio(value) }
+    }
+    case {
+        val value = radioRows(); value.put(JSONObject(value.getJSONObject(6).toString()).put("seq", 10))
+        rejects("EVENT_COUNT_INVALID") { verifyRadio(value) }
+    }
+    case {
+        val stored = radioRows(); changeReceipt(stored) { val output = JSONObject(it.getString("output")); output.put("waitMs", 41000); it.put("output", output.toString()) }
+        rejects("DURABLE_MISMATCH") { verifyRadio(radioRows(), stored) }
+    }
     if (args.size == 3) case {
         // Optional unchanged shipped-profile log and original exporter output; no account content is printed.
         val raw = File(args[1]).readLines().filter { it.isNotBlank() }.map { JSONObject(it) }

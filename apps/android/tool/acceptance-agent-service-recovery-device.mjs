@@ -5,21 +5,23 @@ import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { connectedDevice } from './acceptance-upgrade-device.mjs'
 import { awaitRecoveryClose, runRecoveryAcceptance } from './agent-service-recovery-driver.mjs'
+import { radioTaskProtocol } from './agent-service-task-radio.mjs'
 
 const PACKAGE = 'com.minnnng.dsh_android'
 const RUNNER = `${PACKAGE}.test/${PACKAGE}.AgentServiceRecoveryInstrumentation`
+const TASK_RUNNER = `${PACKAGE}.test/${PACKAGE}.AgentServiceTaskAcceptanceInstrumentation`
 const check = (ok, message) => { if (!ok) throw new Error(message) }
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
 
-/** Require explicit target, consent and a fresh report path; this driver has no wake mode. */
+/** Require target, network consent and a fresh report; radio-linux additionally admits one existing-account request. */
 export function parseRecoveryArguments(args) {
-  const values = new Map(), flags = new Set(['--accept-network-toggle-and-lock', '--no-wake'])
+  const values = new Map(), flags = new Set(['--accept-network-toggle-and-lock', '--no-wake', '--accept-real-account-request'])
   for (let i = 0; i < args.length; i++) {
     const flag = args[i]
     check(!values.has(flag), `Duplicate ${flag}`)
     if (flags.has(flag)) values.set(flag, true)
     else {
-      check(['--adb', '--serial', '--report'].includes(flag), `Unknown recovery argument ${flag}`)
+      check(['--adb', '--serial', '--report', '--exercise'].includes(flag), `Unknown recovery argument ${flag}`)
       check(args[i + 1] && !args[i + 1].startsWith('--'), `Missing ${flag}`)
       values.set(flag, args[++i])
     }
@@ -27,7 +29,12 @@ export function parseRecoveryArguments(args) {
   check(values.get('--accept-network-toggle-and-lock'), 'Explicit --accept-network-toggle-and-lock is required')
   for (const flag of ['--adb', '--serial', '--report']) check(values.has(flag), `Missing ${flag}`)
   check(/^[A-Za-z0-9._:-]+$/.test(values.get('--serial')), 'Invalid recovery serial')
-  return { adb: resolve(values.get('--adb')), serial: values.get('--serial'), report: resolve(values.get('--report')) }
+  const exercise = values.get('--exercise')
+  check(exercise === undefined || exercise === 'radio-linux', 'Unsupported recovery exercise')
+  check((exercise === 'radio-linux') === values.has('--accept-real-account-request'),
+    'radio-linux and explicit --accept-real-account-request must be supplied together')
+  return { adb: resolve(values.get('--adb')), serial: values.get('--serial'), report: resolve(values.get('--report')),
+    ...(exercise ? { exercise } : {}) }
 }
 
 /** Own bounded ADB close; timeout or cancellation never becomes a successful command. */
@@ -84,6 +91,8 @@ export async function runRecoveryEntry(args, { signal }) {
   const reservation = await open(config.report, 'wx')
   await reservation.close()
   const originalPath = `${config.report}.original.json`
+  const progressPath = `${config.report}.progress.json`
+  await writeFile(progressPath, '{}\n', { flag: 'wx' })
   const io = {
     now: () => performance.now(), delay,
     command: async (argv, scope) => {
@@ -92,21 +101,27 @@ export async function runRecoveryEntry(args, { signal }) {
         { timeoutMs: 8000, signal: scope, mutation: argv[0] === 'svc' }).result()
     },
     instrument: token => startRecoveryAdb(config.adb, config.serial,
-      ['shell', 'am', 'instrument', '-w', '-r', '-e', 'token', token, RUNNER], { timeoutMs: 330000 }),
+      ['shell', 'am', 'instrument', '-w', '-r', '-e', 'token', token,
+        ...(config.exercise === 'radio-linux'
+          ? ['-e', 'acceptRealAccountRequest', 'true', '-e', 'exercise', config.exercise, TASK_RUNNER] : [RUNNER])],
+      { timeoutMs: 330000 }),
   }
   let completed
   try {
     const devices = await startRecoveryAdb(config.adb, config.serial, ['devices'], { timeoutMs: 8000, signal }).result()
     connectedDevice(devices, config.serial)
     const report = await runRecoveryAcceptance(io, { signal, token: randomBytes(16).toString('hex'),
+      taskProtocol: config.exercise === 'radio-linux' ? radioTaskProtocol : undefined,
+      onProgress: progress => writeFile(progressPath, JSON.stringify(progress, null, 2) + '\n'),
       onSnapshot: snapshot => writeFile(originalPath, JSON.stringify({ ...snapshot, serial: config.serial }, null, 2) + '\n', { flag: 'wx' }) })
-    const result = { ...report, evidence: 'device-adb', serial: config.serial, originalSnapshotPath: originalPath }
+    const result = { ...report, evidence: 'device-adb', serial: config.serial, originalSnapshotPath: originalPath,
+      progressPath, exercise: config.exercise ?? 'idle-session' }
     completed = result
     await writeFile(config.report, JSON.stringify(result, null, 2) + '\n')
     return result
   } catch (error) {
     const report = { ...(error.recovery ?? completed), result: 'unknown', evidence: 'device-adb', serial: config.serial,
-      originalSnapshotPath: originalPath, error: error.message }
+      originalSnapshotPath: originalPath, progressPath, exercise: config.exercise ?? 'idle-session', error: error.message }
     error.recovery = report
     error.retirement ??= completed?.retirement
     try { await writeFile(config.report, JSON.stringify(report, null, 2) + '\n') }

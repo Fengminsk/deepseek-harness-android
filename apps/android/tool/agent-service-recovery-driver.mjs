@@ -26,7 +26,9 @@ export function parseRecoveryKeyguard(text) {
 function jsonField(output, category, name) {
   const matches = [...output.matchAll(new RegExp(`^INSTRUMENTATION_${category}: ${name}=(.*)\\r?\\n`, 'gm'))]
   check(matches.length <= 1, `Duplicate instrumentation ${name}`)
-  return matches.length ? JSON.parse(matches[0][1]) : null
+  if (!matches.length) return null
+  try { return JSON.parse(matches[0][1]) }
+  catch { throw new Error(`Invalid instrumentation ${name} JSON`) }
 }
 
 const PROGRESS_STAGES = new Set(['instrumentation-start', 'service-start-requested', 'service-started',
@@ -173,15 +175,22 @@ export async function awaitRecoveryClose(promise, milliseconds) {
 /** Own network restoration and instrumentation/device retirement before returning.
  * IO commands join bounded subprocess close or report commandOutcomeUnknown.
  * Caller cancellation never cancels this owner's independent cleanup.
+ * Without taskProtocol this observes an idle Session; with it, the validated task must survive a 15-second offline dwell.
+ * onProgress receives each new sanitized diagnostic sequence; omission retains diagnostics only in the final report.
  */
-export async function runRecoveryAcceptance(io, { signal, token, onSnapshot = async () => {}, budgets = BUDGETS }) {
+export async function runRecoveryAcceptance(io, { signal, token, onSnapshot = async () => {}, onProgress = async () => {},
+  budgets = BUDGETS, taskProtocol }) {
   check(/^[0-9a-f]{32}$/.test(token), 'Invalid recovery token')
   for (const key of Object.keys(BUDGETS)) check(Number.isSafeInteger(budgets[key]) && budgets[key] > 0 && budgets[key] <= BUDGETS[key], `Invalid ${key} budget`)
+  const validation = taskProtocol ?? { ready: validateReady, checkpoint: validateCheckpoint,
+    result: parseRecoveryResult, progress: parseRecoveryProgress }
   let original = null, child = null, closed = null, childOutcome = null, closeFailure = null, changed = false, failure = null
   let ready, online, offline, restored, agentPid, lastObservedNetwork, lastObservation, nativeFailure, lastProgress
   let phase = 'preflight'
   let instrumentationStartedAt = null
-  const timing = { clock: 'host-monotonic', minimumDwellMs: 0, observationTimeoutMs: budgets.observation, checkpoints: {} }
+  const timing = { clock: 'host-monotonic', minimumDwellMs: taskProtocol ? 15000 : 0,
+    observationTimeoutMs: budgets.observation, checkpoints: {} }
+  const offlineSamples = []
   const processChecks = []
   const elapsed = () => {
     const value = io.now() - instrumentationStartedAt
@@ -206,12 +215,19 @@ export async function runRecoveryAcceptance(io, { signal, token, onSnapshot = as
     try { await command(['svc', kind, value === '1' ? 'enable' : 'disable'], scope) }
     catch (error) { networkCommandUnknown ||= error.commandOutcomeUnknown === true; throw error }
   }
+  const recordProgress = async output => {
+    const value = validation.progress(output, token)
+    if (value && value.sequence !== lastProgress?.sequence) {
+      lastProgress = value
+      await onProgress(value)
+    }
+  }
   const wait = async (read, ms, label, scope = signal, allowClosed = false) => {
     const end = io.now() + ms
     while (io.now() < end) {
       scope.throwIfAborted()
       if (closeFailure && !allowClosed) throw closeFailure
-      if (child && !allowClosed) lastProgress = parseRecoveryProgress(child.transcript(), token) ?? lastProgress
+      if (child && !allowClosed) await recordProgress(child.transcript())
       const result = await read()
       if (result) return result
       if (childOutcome && !allowClosed) throw new Error(`Instrumentation closed before ${label}`)
@@ -223,13 +239,16 @@ export async function runRecoveryAcceptance(io, { signal, token, onSnapshot = as
   const observe = async (predicate, label) => wait(async () => {
     const cut = child.output().length
     await broadcast('observe')
-    lastObservation = await wait(() => jsonField(child.output().slice(cut), 'STATUS', 'observation'), budgets.observation, `${label} observation`)
-    const state = validateCheckpoint(lastObservation, ready, 'observe')
+    const value = await wait(() => jsonField(child.output().slice(cut), 'STATUS', 'observation'), budgets.observation, `${label} observation`)
+    if (!taskProtocol) lastObservation = value
+    const state = validation.checkpoint(value, ready, 'observe')
+    lastObservation = state
     return predicate(state) ? state : null
   }, budgets.stage, label)
   const requireAgent = async stage => {
     const pid = (await command(['pidof', `${PACKAGE}:agent`])).trim()
     check(/^[1-9]\d*$/.test(pid) && (!agentPid || agentPid === pid), 'Production AgentService PID changed or is unavailable')
+    if (taskProtocol) check(pid === String(ready.agentPid), 'Task checkpoint differs from the observed production AgentService PID')
     agentPid = pid
     processChecks.push({ stage, pid, elapsedMs: elapsed() })
   }
@@ -257,7 +276,7 @@ export async function runRecoveryAcceptance(io, { signal, token, onSnapshot = as
     closed = child.closed.then(outcome => { childOutcome = outcome; return outcome })
     // A rejected close is retained for the awaited retirement path, not ignored as success.
     closed.catch(error => { closeFailure = error })
-    ready = validateReady(await wait(() => jsonField(child.output(), 'STATUS', 'ready'), budgets.ready, 'AgentService ready'), token)
+    ready = validation.ready(await wait(() => jsonField(child.output(), 'STATUS', 'ready'), budgets.ready, 'AgentService ready'), token)
     mark('ready')
     await requireAgent('ready')
     phase = 'online-observation'
@@ -275,11 +294,31 @@ export async function runRecoveryAcceptance(io, { signal, token, onSnapshot = as
     const cut = child.output().length
     phase = 'offline-checkpoint'
     await broadcast('offline')
-    offline = validateCheckpoint(await wait(() => jsonField(child.output().slice(cut), 'STATUS', 'checkpoint'), budgets.stage, 'offline Session checkpoint'), ready, 'offline')
+    offline = validation.checkpoint(await wait(() => jsonField(child.output().slice(cut), 'STATUS', 'checkpoint'), budgets.stage, 'offline Session checkpoint'), ready, 'offline')
     lastObservation = offline
     check(isOffline(offline), 'Offline checkpoint still has usable or unknown underlying networks')
     mark('offline')
     await requireAgent('offline')
+    if (taskProtocol) {
+      phase = 'active-offline-observation'
+      let began = null
+      let dwellObserved = false
+      do {
+        signal.throwIfAborted()
+        await locked(signal)
+        await requireAgent('offline-dwell')
+        const state = await observe(() => true, 'active offline task')
+        check(isOffline(state), 'Underlying internet returned during the offline dwell')
+        const flags = await network(signal)
+        check(flags.wifi === '0' && flags.data === '0', 'Network flags changed during the offline dwell')
+        offlineSamples.push({ elapsedMs: elapsed(), observation: state })
+        began ??= io.now()
+        dwellObserved = io.now() - began >= timing.minimumDwellMs
+        if (!dwellObserved) await io.delay(Math.min(1000, timing.minimumDwellMs - (io.now() - began)))
+      } while (!dwellObserved)
+      timing.offlineObservedDwellMs = io.now() - began
+      check(offlineSamples.length >= 2, 'Offline dwell requires separate task observations')
+    }
     phase = 'restore-network'
     mark('restorationRequested')
     await restoreNetwork(signal)
@@ -292,8 +331,9 @@ export async function runRecoveryAcceptance(io, { signal, token, onSnapshot = as
     phase = 'restored-result'
     mark('finishRequested')
     await broadcast('restored')
-    await wait(() => /^INSTRUMENTATION_CODE: -?\d+[ \t]*\r?\n/m.test(child.output()), budgets.stage, 'restored result')
-    restored = parseRecoveryResult(child.output(), ready)
+    // Active recovery waits for the original model turn, not just the idle fixture's checkpoint RPC.
+    await wait(() => /^INSTRUMENTATION_CODE: -?\d+[ \t]*\r?\n/m.test(child.output()), taskProtocol ? 120000 : budgets.stage, 'restored result')
+    restored = validation.result(child.output(), ready)
     lastObservation = restored
     mark('nativeFinished')
     check((await awaitRecoveryClose(closed, budgets.retirement)).code === 0, 'Instrumentation host exited unsuccessfully')
@@ -303,12 +343,15 @@ export async function runRecoveryAcceptance(io, { signal, token, onSnapshot = as
     if (child) {
       try {
         const output = child.transcript()
-        try { lastProgress = parseRecoveryProgress(output, token) ?? lastProgress }
+        try { await recordProgress(output) }
         catch (progressError) { nativeFailure = { progressFailure: describeRecoveryFailure(progressError) } }
-        nativeFailure = { ...nativeFailure, causes: jsonField(output, 'RESULT', 'failureCauses'),
-          lastObservation: jsonField(output, 'RESULT', 'lastObservation') }
-        const message = [...output.matchAll(/^INSTRUMENTATION_RESULT: failure=(.*)\r?\n/gm)]
-        if (message.length) nativeFailure.message = message.at(-1)[1].slice(0, 2000)
+        if (taskProtocol) nativeFailure = { ...nativeFailure, task: taskProtocol.failure(output, token) }
+        else {
+          nativeFailure = { ...nativeFailure, causes: jsonField(output, 'RESULT', 'failureCauses'),
+            lastObservation: jsonField(output, 'RESULT', 'lastObservation') }
+          const message = [...output.matchAll(/^INSTRUMENTATION_RESULT: failure=(.*)\r?\n/gm)]
+          if (message.length) nativeFailure.message = message.at(-1)[1].slice(0, 2000)
+        }
         if (nativeFailure.lastObservation) lastObservation = nativeFailure.lastObservation
       } catch (diagnosticError) { nativeFailure = { readFailure: describeRecoveryFailure(diagnosticError) } }
     }
@@ -342,14 +385,15 @@ export async function runRecoveryAcceptance(io, { signal, token, onSnapshot = as
   const report = { schema: 1, result: failure || cleanupErrors.length || !retirement.confirmed || signal.aborted ? 'unknown' : 'pass',
     token, phase, agentPid, original, lastObservedNetwork, lastObservation, nativeFailure,
     lastProgress, nativeStage: lastProgress?.stage ?? null,
-    processChecks, timing: { ...timing, observedCheckpointSpanMs:
+    processChecks, offlineSamples, timing: { ...timing, observedCheckpointSpanMs:
       timing.checkpoints.online !== undefined && timing.checkpoints.restored !== undefined
         ? timing.checkpoints.restored - timing.checkpoints.online : null },
     failures: { execution: describeRecoveryFailure(failure), cleanup: cleanupErrors.map(describeRecoveryFailure),
       cancellation: signal.aborted ? describeRecoveryFailure(signal.reason) : null },
     online, offline, restored, instrumentationExit: childOutcome,
     noWake: true, retirement, networkCommandOutcomeUnknown: networkCommandUnknown,
-    modelRequestRetryTested: false, activeAgentTaskSurvivalTested: false }
+    modelRequestRetryTested: false, activeAgentTaskSurvivalTested: Boolean(taskProtocol) &&
+      !failure && !cleanupErrors.length && retirement.confirmed && !signal.aborted }
   if (report.result !== 'pass') {
     const error = new AggregateError([failure, ...cleanupErrors, signal.aborted ? signal.reason : null].filter(Boolean),
       'AgentService recovery did not pass; inspect original network snapshot and retirement evidence')

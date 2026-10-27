@@ -5,9 +5,13 @@ import android.app.ActivityManager
 import android.app.Instrumentation
 import android.app.KeyguardManager
 import android.content.ComponentName
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.ServiceConnection
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
@@ -24,6 +28,7 @@ import java.nio.file.LinkOption
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicReference
@@ -31,9 +36,13 @@ import java.util.concurrent.atomic.AtomicReference
 /** One explicitly admitted real-account request through the existing production service, without settings writes. */
 class AgentServiceTaskAcceptanceInstrumentation : Instrumentation() {
     private var admitted = false
+    private var exercise = "echo"
+    private var token: String? = null
     override fun onCreate(arguments: Bundle?) {
         super.onCreate(arguments)
         admitted = arguments?.getString("acceptRealAccountRequest") == "true"
+        exercise = arguments?.getString("exercise") ?: "echo"
+        token = arguments?.getString("token")
         start()
     }
 
@@ -50,6 +59,15 @@ class AgentServiceTaskAcceptanceInstrumentation : Instrumentation() {
         val connected = CompletableFuture<Unit>()
         val ended = AtomicReference<JSONObject?>()
         val completion = AtomicReference<JSONObject?>()
+        val toolCall = AtomicReference<JSONObject?>()
+        val toolResult = AtomicReference<JSONObject?>()
+        val radio = exercise == "radio-linux"
+        val stages = ConcurrentLinkedQueue<String>()
+        var receiver: BroadcastReceiver? = null
+        var receiverRegistered = false
+        var radioReady = false
+        var offlineAt: Long? = null
+        var radioRestored = false
         val asynchronousFailure = AtomicReference<Throwable?>()
         var remote: Messenger? = null
         var bound = false
@@ -92,6 +110,7 @@ class AgentServiceTaskAcceptanceInstrumentation : Instrumentation() {
                 .put("sequence", ++progressSequence).put("pid", android.os.Process.myPid())
                 .put("elapsedMs", SystemClock.elapsedRealtime() - began).put("uptimeMs", SystemClock.uptimeMillis() - beganUptime)
                 .put("runtimeObservedAtMs", runtimeObservedAt ?: JSONObject.NULL).put("runtime", safeRuntime ?: JSONObject.NULL)
+                .apply { if (radio) put("token", token?.takeIf { it.matches(Regex("[0-9a-f]{32}")) } ?: JSONObject.NULL) }
                 .toString()
             demand(value.toByteArray(Charsets.UTF_8).size <= 1024, "PROGRESS_OVERSIZED")
             sendStatus(1, Bundle().apply { putString("progress", value) })
@@ -122,8 +141,14 @@ class AgentServiceTaskAcceptanceInstrumentation : Instrumentation() {
                         when (frame.optString("method")) {
                             "session.event" -> {
                                 val event = params.getJSONObject("event")
-                                if (event.getString("type").startsWith("tool/"))
-                                    asynchronousFailure.compareAndSet(null, AgentServiceTaskEvidence.Rejected("TOOL_INVOKED"))
+                                if (event.getString("type").startsWith("tool/")) {
+                                    if (radio && event.getString("type") == "tool/call") {
+                                        AgentServiceTaskEvidence.radioCall(event, caseId)
+                                        demand(toolCall.compareAndSet(null, event), "DUPLICATE_TOOL_CALL")
+                                    } else if (radio && event.getString("type") == "tool/result") {
+                                        demand(toolResult.compareAndSet(null, event), "DUPLICATE_TOOL_RESULT")
+                                    } else asynchronousFailure.compareAndSet(null, AgentServiceTaskEvidence.Rejected("TOOL_INVOKED"))
+                                }
                                 if (event.getString("type") == "turn/end") {
                                     if (!ended.compareAndSet(null, event))
                                         asynchronousFailure.compareAndSet(null, AgentServiceTaskEvidence.Rejected("DUPLICATE_TURN_END"))
@@ -134,8 +159,9 @@ class AgentServiceTaskAcceptanceInstrumentation : Instrumentation() {
                         }
                     }
                 }
-            } catch (_: Throwable) {
-                asynchronousFailure.compareAndSet(null, AgentServiceTaskEvidence.Rejected("REPLY_INVALID"))
+            } catch (error: Throwable) {
+                asynchronousFailure.compareAndSet(null, if (error is AgentServiceTaskEvidence.Rejected) error
+                    else AgentServiceTaskEvidence.Rejected("REPLY_INVALID"))
             }
             true
         })
@@ -210,6 +236,53 @@ class AgentServiceTaskAcceptanceInstrumentation : Instrumentation() {
             }
             cleanup.put("taskSettled", true)
         }
+        fun networkEvidence(): JSONObject {
+            val connectivity = app.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val active = connectivity.activeNetwork
+            val networks = connectivity.allNetworks.toMutableList()
+            if (active != null && active !in networks) networks.add(active)
+            demand(networks.size <= 64 && networks.distinct().size == networks.size, "NETWORK_INVENTORY_INVALID")
+            val facts = ArrayList<RecoveryNetworkEvidence.Fact>()
+            val details = JSONArray()
+            for (network in networks) {
+                val capabilities = connectivity.getNetworkCapabilities(network)
+                val internet = capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+                val validated = capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
+                val vpn = capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+                val transports = (0..NetworkCapabilities.TRANSPORT_SATELLITE).filter { capabilities?.hasTransport(it) == true }
+                facts.add(RecoveryNetworkEvidence.Fact(capabilities != null, internet, validated, vpn))
+                details.put(JSONObject().put("handle", network.networkHandle.toString()).put("capabilitiesKnown", capabilities != null)
+                    .put("internet", internet).put("validated", validated).put("vpn", vpn).put("appDefault", network == active)
+                    .put("notSuspended", capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED) == true)
+                    .put("transportTypes", JSONArray(transports)))
+            }
+            val counts = RecoveryNetworkEvidence.classify(facts.toTypedArray())
+            return JSONObject().put("schema", 2).put("appDefaultNetworkHandle", active?.networkHandle?.toString() ?: JSONObject.NULL)
+                .put("networks", details).put("validatedNetworks", counts.validatedNetworks)
+                .put("validatedInternetNetworks", counts.validatedInternetNetworks).put("validatedVpnInternetNetworks", counts.validatedVpnInternetNetworks)
+                .put("usableUnderlyingInternetNetworks", counts.usableUnderlyingInternetNetworks)
+                .put("unvalidatedUnderlyingInternetNetworks", counts.unvalidatedUnderlyingInternetNetworks)
+                .put("unknownCapabilityNetworks", counts.unknownCapabilityNetworks)
+        }
+        fun checkpoint(stage: String): JSONObject {
+            val callEvent = toolCall.get() ?: throw AgentServiceTaskEvidence.Rejected("RADIO_CALL_MISSING")
+            val facts = AgentServiceTaskEvidence.radioCall(callEvent, caseId)
+            val background = observe("")
+            demand(AgentServiceTaskEvidence.runningOwnTask(call("tasks.summary"), sessionId), "RADIO_TASK_NOT_RUNNING")
+            demand(background.getBoolean("fresh") && background.getInt("running") > 0 && background.getBoolean("wakeLockHeld"),
+                "RADIO_BACKGROUND_NOT_ACTIVE")
+            val networks = networkEvidence()
+            demand(networks.getInt("unknownCapabilityNetworks") == 0, "NETWORK_UNKNOWN")
+            demand(toolResult.get() == null, "RADIO_TOOL_FINISHED_EARLY")
+            if (stage == "offline") demand(networks.getInt("usableUnderlyingInternetNetworks") == 0 &&
+                networks.getInt("unvalidatedUnderlyingInternetNetworks") == 0, "NETWORK_NOT_OFFLINE")
+            if (stage in setOf("ready", "restored")) demand(networks.getInt("usableUnderlyingInternetNetworks") > 0, "NETWORK_NOT_RESTORED")
+            return facts.put("schema", 1).put("token", token).put("caseId", caseId).put("sessionId", sessionId)
+                .put("generation", generation).put("agentPid", agentPid).put("stage", stage)
+                .put("locked", true).put("interactive", false).put("networkEvidence", networks)
+                .put("ownTaskRunning", true).put("toolPending", true).put("background", background)
+                .put("elapsedMs", SystemClock.elapsedRealtime() - began)
+        }
         fun failure(error: Throwable, field: String) {
             var cause = error
             repeat(5) { cause.cause?.let { if (it !== cause) cause = it } }
@@ -231,6 +304,8 @@ class AgentServiceTaskAcceptanceInstrumentation : Instrumentation() {
             progress("instrumentation-start")
             diagnosticHandler.postDelayed(diagnosticPulse, 5000)
             demand(admitted, "REAL_ACCOUNT_NOT_ADMITTED")
+            demand(exercise in setOf("echo", "radio-linux") && (!radio || token?.matches(Regex("[0-9a-f]{32}")) == true), "EXERCISE_INVALID")
+            if (radio) result.put("exercise", exercise).put("token", token)
             result.put("deviceStateBefore", state())
             progress("service-start-requested")
             uiAutomation.adoptShellPermissionIdentity("android.permission.START_FOREGROUND_SERVICES_FROM_BACKGROUND")
@@ -274,13 +349,26 @@ class AgentServiceTaskAcceptanceInstrumentation : Instrumentation() {
             progress("catalog-recheck")
             demand(AgentServiceTaskEvidence.model(catalog()) == model, "DEFAULT_CHANGED")
             progress("ready")
+            if (radio) {
+                receiver = object : BroadcastReceiver() {
+                    override fun onReceive(context: Context, intent: Intent) {
+                        val stage = intent.getStringExtra("stage")
+                        if (stage !in setOf("observe", "offline", "restored") || stages.size >= 4)
+                            asynchronousFailure.compareAndSet(null, AgentServiceTaskEvidence.Rejected("RADIO_STAGE_INVALID"))
+                        else stages.add(stage!!)
+                    }
+                }
+                app.registerReceiver(receiver, IntentFilter("${app.packageName}.acceptance.$token"),
+                    "android.permission.DUMP", Handler(Looper.getMainLooper()), Context.RECEIVER_EXPORTED)
+                receiverRegistered = true
+            }
             val turnBy = SystemClock.elapsedRealtime() + 120_000
             submitted = true
             result.put("submittedCount", 1)
             progress("send-requested")
             val accepted = call("session.send", JSONObject().put("sessionId", sessionId).put("requestId", requestId)
                 .put("provider", "deepseek-account").put("model", model).put("selectModel", false)
-                .put("text", AgentServiceTaskEvidence.prompt(caseId)))
+                .put("text", if (radio) AgentServiceTaskEvidence.radioPrompt(caseId) else AgentServiceTaskEvidence.prompt(caseId)))
             demand(accepted.getBoolean("accepted"), "SUBMISSION_NOT_ACCEPTED")
             progress("submitted")
             var activeObserved = false
@@ -293,7 +381,28 @@ class AgentServiceTaskAcceptanceInstrumentation : Instrumentation() {
                         .put("ownTaskRunningObserved", true)
                     activeObserved = true
                 }
-                if (ended.get() != null && completion.get() != null) break
+                if (radio && !radioReady && toolCall.get() != null && activeObserved) {
+                    val ready = checkpoint("ready")
+                    radioReady = true
+                    sendStatus(1, Bundle().apply { putString("ready", ready.toString()) })
+                }
+                while (radio && stages.isNotEmpty()) {
+                    val stage = stages.remove()
+                    demand(radioReady && !radioRestored, "RADIO_STAGE_OUT_OF_ORDER")
+                    if (stage == "offline") demand(offlineAt == null, "RADIO_OFFLINE_REPEATED")
+                    if (stage == "restored") demand(offlineAt != null && SystemClock.elapsedRealtime() - offlineAt!! >= 15_000,
+                        "RADIO_OFFLINE_DWELL_SHORT")
+                    val value = checkpoint(stage)
+                    if (stage == "offline") offlineAt = SystemClock.elapsedRealtime()
+                    if (stage == "restored") {
+                        radioRestored = true
+                        result.put("radioRestoredObserved", true).put("offlineCheckpointElapsedMs", offlineAt!! - began)
+                            .put("restoredCheckpointElapsedMs", SystemClock.elapsedRealtime() - began)
+                    }
+                    sendStatus(if (stage == "observe") 3 else 2,
+                        Bundle().apply { putString(if (stage == "observe") "observation" else "checkpoint", value.toString()) })
+                }
+                if ((!radio || radioRestored) && ended.get() != null && completion.get() != null) break
                 if (SystemClock.elapsedRealtime() >= turnBy) throw TimeoutException()
                 Thread.sleep(250)
             } while (true)
@@ -317,9 +426,14 @@ class AgentServiceTaskAcceptanceInstrumentation : Instrumentation() {
             val durable = Files.newInputStream(file.toPath(), LinkOption.NOFOLLOW_LINKS).use {
                 AgentServiceTaskEvidence.readExport(it, sessionId)
             }
-            val evidence = AgentServiceTaskEvidence.completed(history.getJSONArray("events"), durable, caseId, requestId, model)
+            val evidence = AgentServiceTaskEvidence.completed(history.getJSONArray("events"), durable, caseId, requestId, model, radio)
             for (key in evidence.keys()) result.put(key, evidence.get(key))
             demand(evidence.getLong("endSeq") == ended.get()!!.getLong("seq"), "LIVE_END_MISMATCH")
+            if (radio) {
+                demand(radioRestored && evidence.getLong("toolStartSeq") == toolCall.get()!!.getLong("seq") &&
+                    evidence.getLong("toolEndSeq") == toolResult.get()!!.getLong("seq"), "RADIO_LIVE_DURABLE_MISMATCH")
+                demand(evidence.getJSONObject("linuxReceipt").getInt("guestUid") != info.getInt("uid"), "RADIO_GUEST_NOT_ISOLATED")
+            }
             asynchronousFailure.get()?.let { throw it }
             result.put("generation", generation).put("agentPid", agentPid).put("deviceStateAfter", state())
             progress("durable")
@@ -331,6 +445,10 @@ class AgentServiceTaskAcceptanceInstrumentation : Instrumentation() {
             synchronized(diagnosticLock) {
                 diagnosticsOpen = false
                 diagnosticHandler.removeCallbacks(diagnosticPulse)
+            }
+            if (receiverRegistered) {
+                try { app.unregisterReceiver(receiver) }
+                catch (error: Throwable) { success = false; failure(error, "receiverCleanupFailureCode") }
             }
             if (created) {
                 try {

@@ -15,6 +15,57 @@ object AgentServiceTaskEvidence {
     fun marker(caseId: String) = "account-acceptance-$caseId"
     fun prompt(caseId: String) = "请只回复这一行：${marker(caseId)}。不要调用任何工具，不要读取文件，不要添加解释。"
 
+    fun radioCommand(caseId: String): String = listOf("python3 - <<'PY'", "import hashlib,json,time",
+        "marker='${marker(caseId)}'", "started=time.monotonic()", "time.sleep(40)",
+        "print(json.dumps({'marker':marker,'sha256':hashlib.sha256(marker.encode()).hexdigest(),'waitMs':int((time.monotonic()-started)*1000)}))", "PY").joinToString("\n")
+    fun radioPrompt(caseId: String) = "这是本地任务的断网恢复验收。请只调用一次 linux_exec，timeoutMs 为 120000，command 必须原样使用以下代码，不添加其他参数，不调用其他工具，不读取或修改文件。工具成功后只回复 ${marker(caseId)}。\n" + radioCommand(caseId)
+
+    /** The durable call precedes dispatch; the final native receipt must separately confirm execution. */
+    fun radioCall(event: JSONObject, caseId: String): JSONObject {
+        demand(event.getString("type") == "tool/call", "RADIO_CALL_INVALID")
+        val data = event.getJSONObject("data")
+        demand(data.getString("name") == "linux_exec" && data.getInt("turn") == 1, "RADIO_TOOL_INVALID")
+        val args = JSONObject(data.getString("arguments"))
+        demand(args.keys().asSequence().toSet() == setOf("command", "timeoutMs") &&
+            args.getString("command") == radioCommand(caseId) && args.getInt("timeoutMs") == 120000, "RADIO_ARGUMENTS_CHANGED")
+        val callId = data.getString("callId")
+        demand(callId.isNotBlank() && callId.length <= 256, "RADIO_CALL_ID_INVALID")
+        return JSONObject().put("callId", callId).put("toolStartSeq", event.getLong("seq"))
+            .put("commandSha256", hash(radioCommand(caseId).toByteArray(Charsets.UTF_8)))
+    }
+
+    fun radioReceipt(call: JSONObject, result: JSONObject, caseId: String): JSONObject {
+        val facts = radioCall(call, caseId)
+        demand(result.getString("type") == "tool/result" && result.getLong("seq") > call.getLong("seq"), "RADIO_RESULT_INVALID")
+        val data = result.getJSONObject("data")
+        val message = data.getJSONObject("message")
+        demand(data.getInt("turn") == 1 && message.getString("toolCallId") == facts.getString("callId") &&
+            !message.getBoolean("isError"), "RADIO_TOOL_FAILED")
+        val sources = result.getJSONArray("sourceEventSeqs")
+        demand(sources.length() == 1 && sources.getLong(0) == call.getLong("seq"), "RADIO_RESULT_SOURCE_MISMATCH")
+        val content = message.getJSONArray("content")
+        demand(content.length() == 1 && content.getJSONObject(0).getString("type") == "text", "RADIO_RECEIPT_INVALID")
+        val receipt = JSONObject(content.getJSONObject(0).getString("text"))
+        demand(receipt.getString("sessionId") == "android-account-acceptance-$caseId", "RADIO_RECEIPT_SESSION_MISMATCH")
+        demand(receipt.getString("status") == "completed" && receipt.getInt("exitCode") == 0 &&
+            receipt.getBoolean("retirementConfirmed") && !receipt.getBoolean("cancelled") &&
+            !receipt.getBoolean("timedOut") && !receipt.getBoolean("truncated") && !receipt.optBoolean("cancelRequested", false), "RADIO_EXECUTION_FAILED")
+        val output = receipt.getString("output").trim()
+        demand(output.length <= 1024, "RADIO_OUTPUT_OVERSIZED")
+        val value = JSONObject(output)
+        demand(value.keys().asSequence().toSet() == setOf("marker", "sha256", "waitMs") && value.getString("marker") == marker(caseId) &&
+            value.getString("sha256") == hash(marker(caseId).toByteArray(Charsets.UTF_8)) && value.getLong("waitMs") in 39000..120000,
+            "RADIO_OUTPUT_MISMATCH")
+        val id = receipt.getString("id")
+        demand(id.matches(Regex("[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")), "RADIO_RUN_ID_INVALID")
+        demand(receipt.getInt("guestUid") > 0, "RADIO_GUEST_INVALID")
+        return facts.put("toolEndSeq", result.getLong("seq")).put("linuxReceipt", JSONObject()
+            .put("id", id).put("status", "completed").put("exitCode", 0).put("retirementConfirmed", true)
+            .put("cancelled", false).put("timedOut", false).put("truncated", false).put("cancelRequested", false)
+            .put("diskCommitted", receipt.getBoolean("diskCommitted")).put("guestUid", receipt.getInt("guestUid"))
+            .put("waitMs", value.getLong("waitMs")).put("outputSha256", hash(output.toByteArray(Charsets.UTF_8))))
+    }
+
     fun runningOwnTask(snapshot: JSONObject, sessionId: String): Boolean {
         val active = snapshot.getJSONArray("active")
         return (0 until active.length()).map { active.getJSONObject(it) }.count {
@@ -69,8 +120,8 @@ object AgentServiceTaskEvidence {
     }
 
     /** Both live and flushed records must independently contain a single completed assistant marker. */
-    fun completed(history: JSONArray, durable: JSONArray, caseId: String, requestId: String, model: String): JSONObject {
-        val types = setOf("user/message", "request/header", "turn/start", "assistant/message", "turn/end")
+    fun completed(history: JSONArray, durable: JSONArray, caseId: String, requestId: String, model: String, radio: Boolean = false): JSONObject {
+        val types = setOf("user/message", "request/header", "turn/start", "assistant/message", "turn/end", "tool/call", "tool/result")
         fun inspect(events: JSONArray): Pair<JSONObject, String> {
             demand(events.length() in 1..511, "HISTORY_SIZE_INVALID")
             val rows = (0 until events.length()).map { events.getJSONObject(it) }
@@ -78,7 +129,7 @@ object AgentServiceTaskEvidence {
             for (row in rows) {
                 val seq = row.getLong("seq")
                 demand(seq > previous, "EVENT_ORDER_INVALID"); previous = seq
-                demand(!row.getString("type").startsWith("tool/"), "TOOL_INVOKED")
+                demand(!row.getString("type").startsWith("tool/") || radio && row.getString("type") in setOf("tool/call", "tool/result"), "TOOL_INVOKED")
             }
             fun all(type: String) = rows.filter { it.getString("type") == type }
             fun one(type: String): JSONObject {
@@ -89,7 +140,7 @@ object AgentServiceTaskEvidence {
             val user = users.single()
             val userData = user.getJSONObject("data")
             demand(userData.getJSONObject("source").getString("rpcId") == requestId, "REQUEST_ID_MISMATCH")
-            val expected = JSONArray().put(JSONObject().put("type", "text").put("text", prompt(caseId)))
+            val expected = JSONArray().put(JSONObject().put("type", "text").put("text", if (radio) radioPrompt(caseId) else prompt(caseId)))
             demand(canonical(userData.getJSONArray("content")) == canonical(expected), "USER_CONTENT_MISMATCH")
             val headers = all("request/header")
             demand(headers.isNotEmpty(), "MODEL_EVIDENCE_MISSING")
@@ -99,7 +150,14 @@ object AgentServiceTaskEvidence {
                     "MODEL_CHANGED")
             }
             val turn = one("turn/start")
-            val assistant = one("assistant/message")
+            val assistant = if (!radio) one("assistant/message") else {
+                val finals = all("assistant/message").filter { row ->
+                    val content = row.getJSONObject("data").getJSONObject("message").getJSONArray("content")
+                    (0 until content.length()).map { content.getJSONObject(it) }.filter { it.getString("type") == "text" }
+                        .joinToString("") { it.getString("text") }.trim() == marker(caseId)
+                }
+                demand(finals.size == 1, "ASSISTANT_MARKER_MISMATCH"); finals.single()
+            }
             val data = assistant.getJSONObject("data")
             val blocks = data.getJSONObject("message").getJSONArray("content")
             val texts = ArrayList<String>()
@@ -121,10 +179,18 @@ object AgentServiceTaskEvidence {
             demand(user.getLong("seq") < assistant.getLong("seq") && turn.getLong("seq") < assistant.getLong("seq") &&
                 assistant.getLong("seq") < end.getLong("seq"), "COMPLETION_ORDER_INVALID")
             val summary = JSONObject().put("userMessageCount", 1).put("assistantMarkerMatches", 1)
-                .put("toolCalls", 0).put("turnEndCount", 1).put("completionKind", "completed")
+                .put("toolCalls", if (radio) 1 else 0).put("turnEndCount", 1).put("completionKind", "completed")
                 .put("endSeq", end.getLong("seq")).put("eventCount", events.length())
+            if (radio) {
+                val call = one("tool/call"); val returned = one("tool/result")
+                val receipt = radioReceipt(call, returned, caseId)
+                demand(returned.getLong("seq") < assistant.getLong("seq"), "RADIO_FINAL_BEFORE_RESULT")
+                for (key in receipt.keys()) summary.put(key, receipt.get(key))
+                summary.put("retryEventCount", all("llm/retry").size)
+            }
             val comparison = JSONArray(rows.filter { it.getString("type") in types }.map {
                 JSONObject().put("type", it.getString("type")).put("seq", it.getLong("seq")).put("data", it.getJSONObject("data"))
+                    .put("sourceEventSeqs", it.opt("sourceEventSeqs") ?: JSONObject.NULL)
             })
             return summary to canonical(comparison)
         }
