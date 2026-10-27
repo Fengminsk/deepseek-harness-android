@@ -19,6 +19,7 @@ import android.os.Message
 import android.os.Messenger
 import android.os.PowerManager
 import org.json.JSONObject
+import org.json.JSONArray
 import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
@@ -26,6 +27,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 /** Observes the real started AgentService and a dedicated, credential-free Session.
  * The host owns temporary device connectivity/display changes and restores them.
@@ -92,6 +94,7 @@ class AgentServiceRecoveryInstrumentation : Instrumentation() {
         val report = Bundle()
         var receiver: BroadcastReceiver? = null
         var success = false
+        val lastObservation = AtomicReference<JSONObject?>()
         try {
             uiAutomation.adoptShellPermissionIdentity("android.permission.START_FOREGROUND_SERVICES_FROM_BACKGROUND")
             try { app.startForegroundService(Intent().setClassName(app.packageName, "${app.packageName}.AgentService")) }
@@ -112,22 +115,59 @@ class AgentServiceRecoveryInstrumentation : Instrumentation() {
             val expected = digest(baseline.toString())
             val stages = AtomicInteger(0)
             val connectivity = app.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            fun networkEvidence(): JSONObject {
+                val active = connectivity.activeNetwork
+                val networks = connectivity.allNetworks.toMutableList()
+                if (active != null && active !in networks) networks.add(active)
+                check(networks.size <= 64 && networks.distinct().size == networks.size) { "Network inventory is ambiguous" }
+                val facts = ArrayList<RecoveryNetworkEvidence.Fact>()
+                val details = JSONArray()
+                for (network in networks) {
+                    val capabilities = connectivity.getNetworkCapabilities(network)
+                    val internet = capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+                    val validated = capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
+                    val vpn = capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+                    // NetworkCapabilities.getTransportTypes is hidden; enumerate SDK-known codes
+                    // through the public predicate. Internet classification never filters by transport.
+                    val transports = (0..NetworkCapabilities.TRANSPORT_SATELLITE).filter { capabilities?.hasTransport(it) == true }
+                    facts.add(RecoveryNetworkEvidence.Fact(capabilities != null, internet, validated, vpn))
+                    details.put(JSONObject().put("handle", network.networkHandle.toString())
+                        .put("capabilitiesKnown", capabilities != null).put("internet", internet)
+                        .put("validated", validated).put("vpn", vpn).put("appDefault", network == active)
+                        .put("notSuspended", capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED) == true)
+                        .put("transportTypes", JSONArray(transports)))
+                }
+                val counts = RecoveryNetworkEvidence.classify(facts.toTypedArray())
+                return JSONObject().put("schema", 2)
+                    .put("appDefaultNetworkHandle", active?.networkHandle?.toString() ?: JSONObject.NULL)
+                    .put("networks", details).put("validatedNetworks", counts.validatedNetworks)
+                    .put("validatedInternetNetworks", counts.validatedInternetNetworks)
+                    .put("validatedVpnInternetNetworks", counts.validatedVpnInternetNetworks)
+                    .put("usableUnderlyingInternetNetworks", counts.usableUnderlyingInternetNetworks)
+                    .put("unvalidatedUnderlyingInternetNetworks", counts.unvalidatedUnderlyingInternetNetworks)
+                    .put("unknownCapabilityNetworks", counts.unknownCapabilityNetworks)
+            }
             fun checkpoint(stage: String): JSONObject {
                 val state = call("runtime.status")
                 check(state.getString("phase") == "ready" && state.getString("generation") == generation)
                 check(call("runtime.info").getString("platform") == "android")
                 val history = call("session.read", address).getJSONArray("events")
                 check(history.length() == baseline.length() && digest(history.toString()) == expected) { "Dedicated Session changed during connectivity transition" }
-                val validated = connectivity.allNetworks.count {
-                    connectivity.getNetworkCapabilities(it)?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
-                }
+                val networks = networkEvidence()
                 val interactive = (app.getSystemService(Context.POWER_SERVICE) as PowerManager).isInteractive
                 val locked = (app.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager).isKeyguardLocked
-                if (stage == "offline") check(validated == 0 && !interactive && locked) { "Offline checkpoint requires a locked screen and no validated network" }
-                if (stage == "restored") check(validated > 0) { "Restored checkpoint has no validated network" }
-                return JSONObject().put("stage", stage).put("generation", generation).put("sessionId", sessionId)
-                    .put("eventCount", history.length()).put("eventsSha256", expected).put("validatedNetworks", validated)
+                val result = JSONObject().put("stage", stage).put("generation", generation).put("sessionId", sessionId)
+                    .put("eventCount", history.length()).put("eventsSha256", expected).put("networkEvidence", networks)
                     .put("interactive", interactive).put("locked", locked)
+                lastObservation.set(result)
+                if (stage == "offline") check(networks.getInt("unknownCapabilityNetworks") == 0 &&
+                    networks.getInt("usableUnderlyingInternetNetworks") == 0 &&
+                    networks.getInt("unvalidatedUnderlyingInternetNetworks") == 0 && !interactive && locked) {
+                    "Offline checkpoint requires a locked screen, known capabilities and no underlying INTERNET network, validated or otherwise; evidence=$networks"
+                }
+                if (stage == "restored") check(networks.getInt("unknownCapabilityNetworks") == 0 &&
+                    networks.getInt("usableUnderlyingInternetNetworks") > 0) { "Restored checkpoint lacks usable underlying internet; evidence=$networks" }
+                return result
             }
             receiver = object : BroadcastReceiver() {
                 override fun onReceive(context: Context, intent: Intent) {
@@ -157,7 +197,18 @@ class AgentServiceRecoveryInstrumentation : Instrumentation() {
                 .put("sessionId", sessionId).put("eventsSha256", expected).put("eventCount", baseline.length()).toString()) })
             report.putString("result", completed.get(180, TimeUnit.SECONDS).toString())
             success = true
-        } catch (failure: Throwable) { report.putString("failure", "${failure.javaClass.simpleName}: ${failure.message}") }
+        } catch (failure: Throwable) {
+            report.putString("failure", "${failure.javaClass.simpleName}: ${failure.message}")
+            val causes = JSONArray()
+            var cause: Throwable? = failure
+            repeat(8) {
+                val current = cause ?: return@repeat
+                causes.put(JSONObject().put("type", current.javaClass.simpleName).put("message", current.message))
+                cause = current.cause?.takeUnless { it === current }
+            }
+            report.putString("failureCauses", causes.toString())
+            lastObservation.get()?.let { report.putString("lastObservation", it.toString()) }
+        }
         finally {
             if (registered) app.unregisterReceiver(receiver)
             try { remote?.send(Message.obtain(null, 3).apply { replyTo = replies }) } catch (_: Throwable) {}

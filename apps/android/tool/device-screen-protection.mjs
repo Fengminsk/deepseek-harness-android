@@ -10,10 +10,12 @@ const CATEGORY = 'android.hardware.display.category.ALL_INCLUDING_DISABLED'
 const check = (ok, message) => { if (!ok) throw new Error(message) }
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
 const TOOL_ROOT = dirname(fileURLToPath(import.meta.url))
+const RECOVERY_ENTRY = resolve(TOOL_ROOT, 'acceptance-agent-service-recovery-device.mjs')
 const ENTRIES = new Set([
   'acceptance-native-workflow-device.mjs', 'acceptance-native-workflow-process-death-device.mjs',
   'acceptance-upgrade-device.mjs', 'acceptance-ptc-process-death-device.mjs',
   'acceptance-ptc-callback-device.mjs', 'acceptance-linux-vm-lifecycle-device.mjs',
+  'acceptance-agent-service-recovery-device.mjs',
 ].map(name => resolve(TOOL_ROOT, name)))
 
 /** Match every internal logical display to its physical panel without rounding 64-bit IDs. */
@@ -62,6 +64,7 @@ export async function withScreenProtection(io, run, { timeoutMs, pollMs = 2000, 
   let result
   let failure
   let retirement
+  let recovery
   let blackout
   let blackoutFailure
   let restored = false
@@ -116,6 +119,7 @@ export async function withScreenProtection(io, run, { timeoutMs, pollMs = 2000, 
   } catch (error) {
     failure = error instanceof Error ? error : new Error(String(error))
     retirement = failure.retirement ?? retirement
+    recovery = failure.recovery
     interrupt(failure)
   }
   finally {
@@ -157,6 +161,7 @@ export async function withScreenProtection(io, run, { timeoutMs, pollMs = 2000, 
   }
   if (failure) {
     if (retirement) failure.retirement = retirement
+    if (recovery) failure.recovery = recovery
     failure.protection = { samples, restoredWhileNonInteractive: restored,
       finalDisplayState: restored ? 'off' : 'unknown', powerOffAttempted: known.size > 0 }
     throw failure
@@ -291,6 +296,7 @@ async function beforeDeadline(promise, signal) {
 
 /** Own child termination and verify device retirement before allowing display cleanup to reset overrides. */
 export async function runAcceptanceChild(args, signal, io, { cleanupMs = 20000 } = {}) {
+  check(resolve(args[0]) !== RECOVERY_ENTRY, 'Recovery must retain its network owner in the screen guard process')
   check(Number.isSafeInteger(cleanupMs) && cleanupMs >= 10 && cleanupMs <= 60000, 'Invalid retirement budget')
   signal.throwIfAborted()
   const child = io.startChild(args)
@@ -354,6 +360,16 @@ export async function runAcceptanceChild(args, signal, io, { cleanupMs = 20000 }
   return { exitCode: outcome.code, retirement }
 }
 
+/** Network restoration cannot survive killing a wrapper child; await this owner in-process. */
+export async function runProtectedAcceptance(args, signal, io,
+  loadRecovery = () => import('./acceptance-agent-service-recovery-device.mjs')) {
+  if (resolve(args[0]) === RECOVERY_ENTRY) {
+    const { runRecoveryEntry } = await loadRecovery()
+    return runRecoveryEntry(args.slice(1), { signal })
+  }
+  return runAcceptanceChild(args, signal, io)
+}
+
 async function main(args) {
   const separator = args.indexOf('--')
   const options = separator < 0 ? args : args.slice(0, separator)
@@ -375,15 +391,19 @@ async function main(args) {
   process.on('SIGINT', interrupted)
   process.on('SIGTERM', interrupted)
   const childArgs = probe ? null : bindAcceptanceArguments(args.slice(separator + 1), { adb, serial })
+  if (childArgs && resolve(childArgs[0]) === RECOVERY_ENTRY) {
+    const { parseRecoveryArguments } = await import('./acceptance-agent-service-recovery-device.mjs')
+    check(parseRecoveryArguments(childArgs.slice(1)).report !== report, 'Recovery and screen reports must use distinct paths')
+  }
   const run = probe ? signal => runScreenOnlyProbe(signal, timing.observationMs)
-    : signal => runAcceptanceChild(childArgs, signal, io)
+    : signal => runProtectedAcceptance(childArgs, signal, io)
   try {
     const result = await withScreenProtection(io, run, { timeoutMs: timing.timeoutMs, signal: controller.signal })
     await writeFile(report, JSON.stringify({ schema: 2, serial, passed: true, ...result }, null, 2) + '\n')
     process.stdout.write(`Screen protection verified; report: ${report}\n`)
   } catch (error) {
     await writeFile(report, JSON.stringify({ schema: 2, serial, passed: false,
-      error: error.message, protection: error.protection, retirement: error.retirement,
+      error: error.message, protection: error.protection, retirement: error.retirement, recovery: error.recovery,
       deviceOutcome: error.protection?.finalDisplayState === 'off' && error.retirement?.confirmed !== false
         ? 'Test failed; final panels Off and display control restored while noninteractive'
         : 'Unknown until display and process retirement are verified; keep power-off overrides' }, null, 2) + '\n')

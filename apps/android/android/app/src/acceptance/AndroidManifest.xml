@@ -3,7 +3,19 @@
         android:name="${applicationId}.permission.RUNTIME_ACCEPTANCE"
         android:protectionLevel="signature" />
     <uses-permission android:name="${applicationId}.permission.RUNTIME_ACCEPTANCE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <application>
+        <service
+            android:name=".RuntimeAcceptanceService"
+            android:exported="false"
+            android:process=":agent"
+            android:stopWithTask="false"
+            android:foregroundServiceType="specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Explicit instrumented runtime acceptance with bounded CPU lease; no product runtime or display startup" />
+        </service>
         <activity
             android:name=".RuntimeAcceptanceActivity"
             android:exported="false"

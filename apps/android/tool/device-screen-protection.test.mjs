@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { resolve } from 'node:path'
 import { bindAcceptanceArguments, parseAcceptanceProcesses, parseNonInteractivePowerState,
   parseInternalDisplays, resolveScreenProtectionTiming, runAcceptanceChild,
-  runScreenOnlyProbe, withScreenProtection } from './device-screen-protection.mjs'
+  runScreenOnlyProbe, runProtectedAcceptance, withScreenProtection } from './device-screen-protection.mjs'
 
 const ids = '0\n2\n'
 const mapping = 'LogicalDisplayMapper:\n  Display 0:\n    mPrimaryDisplayDevice=outer(local:4630946165954792596)\n  Display 2:\n    mPrimaryDisplayDevice=inner(local:4630946317637160339)\nOther:\n'
@@ -236,9 +236,42 @@ test('only reviewed entries accept the exact protected device and ADB path', () 
   for (const args of [
     [entry, '--serial', 'phone-B'], [entry, '--adb', 'different-adb.exe'],
     [entry, '--serial', 'phone-A', '--serial', 'phone-A'], [entry, '--serial=phone-A'],
-    [entry, '--adb'], [entry, '--'], ['apps/android/tool/acceptance-agent-service-recovery-device.mjs'],
+    [entry, '--adb'], [entry, '--'],
     ['apps/android/tool/acceptance-unreviewed-device.mjs'],
   ]) assert.throws(() => bindAcceptanceArguments(args, target))
+})
+
+test('recovery binds the same device but cannot enter the killable child path', async () => {
+  const entry = 'apps/android/tool/acceptance-agent-service-recovery-device.mjs'
+  const args = bindAcceptanceArguments([entry, '--accept-network-toggle-and-lock', '--report', 'recovery.json'],
+    { adb: resolve('local-adb.exe'), serial: 'phone-A' })
+  assert.ok(args.includes('phone-A'))
+  await assert.rejects(runAcceptanceChild(args, new AbortController().signal,
+    { startChild: () => assert.fail('Recovery must not spawn Node') }), /network owner/)
+})
+
+test('screen cancellation awaits in-process recovery restoration before resetting panels', async () => {
+  const io = fixture(), controller = new AbortController(), cleanup = Promise.withResolvers(), started = Promise.withResolvers()
+  io.startChild = () => assert.fail('Recovery must not spawn Node')
+  const entry = [resolve('apps/android/tool/acceptance-agent-service-recovery-device.mjs'), '--serial', 'phone']
+  const run = withScreenProtection(io, signal => runProtectedAcceptance(entry, signal, io, async () => ({
+    runRecoveryEntry: async (args, options) => {
+      assert.deepEqual(args, ['--serial', 'phone']); assert.equal(options.signal, signal)
+      started.resolve()
+      await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }))
+      await cleanup.promise
+      io.events.push('network-restored-and-retired')
+      const error = Object.assign(new Error('cancelled'), { retirement: { confirmed: true }, recovery: { result: 'unknown', networkRestored: true } })
+      throw error
+    },
+  })), { timeoutMs: 1000, pollMs: 10, signal: controller.signal })
+  await started.promise
+  controller.abort(new Error('guard interrupted'))
+  await new Promise(resolve => setImmediate(resolve))
+  assert.ok(!io.events.some(event => event.startsWith('reset:')))
+  cleanup.resolve()
+  await assert.rejects(run, error => error.recovery.networkRestored && error.retirement.confirmed)
+  assert.ok(io.events.indexOf('network-restored-and-retired') < io.events.indexOf('reset:0'))
 })
 
 test('full process inventory retains App, test and isolated services and rejects truncated input', () => {

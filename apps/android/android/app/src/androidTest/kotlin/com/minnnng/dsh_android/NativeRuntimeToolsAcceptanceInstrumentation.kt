@@ -21,12 +21,15 @@ import java.util.concurrent.atomic.AtomicReference
  */
 class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
     private var suite = "workflow"
+    private var foregroundCarrier = "activity"
     private var ptcPhase: String? = null
     private var ptcCaseId: String? = null
     private var processStopConfirmed = false
     override fun onCreate(arguments: Bundle?) {
         super.onCreate(arguments)
         suite = arguments?.getString("suite") ?: "workflow"
+        foregroundCarrier = arguments?.getString("foregroundCarrier") ?: "activity"
+        require(foregroundCarrier in setOf("activity", "service"))
         require(suite in setOf("workflow", "ptc", "linux", "all", "ptc-process-death", "ptc-saf"))
         if (suite == "ptc-process-death") {
             ptcPhase = arguments?.getString("phase")
@@ -50,14 +53,32 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
         val startupSettled = AtomicBoolean(false)
         val startupTimedOut = AtomicBoolean(false)
         val app = targetContext.applicationContext
+        report.putString("foregroundCarrier", foregroundCarrier)
+        report.putString("deviceStateBefore", AcceptanceServiceLease.deviceState(app))
+        val linuxBudgetSeconds = 11L * (120L + 30L) + 120L
+        val workflowBudgetSeconds = 14L * (120L + 30L) + 120L
+        val budgetSeconds = when (suite) {
+            "linux" -> linuxBudgetSeconds
+            "workflow" -> workflowBudgetSeconds
+            "ptc" -> 360L
+            "all" -> linuxBudgetSeconds + workflowBudgetSeconds + 360L
+            else -> 240L
+        }
         val fixtureId = ptcCaseId ?: UUID.randomUUID().toString()
         val home = File(app.noBackupFilesDir, "native-runtime-acceptance/$fixtureId")
         report.putString("home", home.absolutePath)
         val done = CompletableFuture<JSONObject>()
         val foreground = AtomicReference<AcceptanceForegroundLease?>()
+        val serviceForeground = AtomicReference<AcceptanceServiceLease?>()
+        fun checkForeground() {
+            foreground.get()?.checkActive()
+            serviceForeground.get()?.checkActive()
+        }
         fun closeForeground(): Boolean {
+            val acquired = foreground.get() != null || serviceForeground.get() != null
             foreground.get()?.close()
-            return true
+            serviceForeground.get()?.close()
+            return acquired
         }
         fun stage(value: String) {
             phase.set(value)
@@ -65,11 +86,12 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
                 putString("stage", value)
                 putString("suite", suite)
                 putString("home", home.absolutePath)
+                putString("foregroundCarrier", foregroundCarrier)
             })
         }
         fun startingStage(value: String) {
             check(!startupTimedOut.get()) { "Acceptance startup already timed out" }
-            foreground.get()?.checkActive()
+            checkForeground()
             stage(value)
         }
         val startupWatchdog = Executors.newSingleThreadScheduledExecutor { task ->
@@ -79,11 +101,21 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
         startupFailure.putString("suite", suite)
         startupFailure.putString("home", home.absolutePath)
         startupFailure.putString("cleanupConfirmed", "false")
+        startupFailure.putString("foregroundCarrier", foregroundCarrier)
         val startupTimeout = startupWatchdog.schedule(Runnable {
             var ownsFinish = false
             try {
                 if (!startupSettled.compareAndSet(false, true)) return@Runnable
                 startupTimedOut.set(true)
+                if (foregroundCarrier == "service") {
+                    val failure = IllegalStateException("Acceptance startup exceeded 120 seconds at ${phase.get()}")
+                    done.completeExceptionally(failure)
+                    startupFailure.putString("stage", "startup-timeout")
+                    startupFailure.putString("failure", failure.toString())
+                    sendStatus(1, startupFailure)
+                    // The instrumentation thread retains cleanup ownership. Never report retirement from cancellation.
+                    return@Runnable
+                }
                 if (!finished.compareAndSet(false, true)) return@Runnable
                 ownsFinish = true
                 val timedOutPhase = phase.get()
@@ -136,8 +168,13 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
         var readSocket: ParcelFileDescriptor? = null
         try {
             startingStage("foreground-starting")
-            foreground.set(AcceptanceForegroundLease.open(this) { done.completeExceptionally(it) })
+            if (foregroundCarrier == "service")
+                serviceForeground.set(AcceptanceServiceLease.open(this, (budgetSeconds + 180L) * 1000L) {
+                    done.completeExceptionally(it)
+                })
+            else foreground.set(AcceptanceForegroundLease.open(this) { done.completeExceptionally(it) })
             startingStage("foreground-ready")
+            report.putString("deviceStateReady", AcceptanceServiceLease.deviceState(app))
             startingStage("runtime-prepare-start")
             val runtime = RuntimeAssets.prepare(app)
             startingStage("runtime-prepared")
@@ -163,7 +200,7 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
             val fixture = File(home, if (recovering) "recovery-fixture" else "fixture").apply { check(mkdirs()) }
             for (name in listOf("bootstrap.mjs", "index.mjs", "report.mjs", "workflow.mjs", "ptc.mjs", "linux.mjs", "callback-routing.mjs",
                 "python-analysis.mjs", "python-analysis.py", "apk-fixture.json", "apk-overflow-fixture.json",
-                "ptc-process-death.mjs", "ptc-saf.mjs", "workflow-checks.mjs", "workflow-model-fixture.mjs")) {
+                "ptc-process-death.mjs", "ptc-saf.mjs", "ptc-linux.mjs", "workflow-checks.mjs", "workflow-model-fixture.mjs")) {
                 val bytes = context.assets.open(name).use { it.readBytes() }
                 if (recovering) check(File(preparedFixture, name).readBytes().contentEquals(bytes)) {
                     "Recovery fixture differs from the prepared APK assets"
@@ -292,7 +329,7 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
             workers.execute {
                 try {
                     check(startupSettled.compareAndSet(false, true)) { "Acceptance startup ended before Node dispatch" }
-                    foreground.get()?.checkActive()
+                    checkForeground()
                     startupTimeout.cancel(false)
                     startupWatchdog.shutdown()
                     stage("node-starting")
@@ -303,17 +340,8 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
             }
             try {
                 startingStage("waiting-result")
-                // Eight parent boots and three child boots each retain the
-                // production 120-second limit plus 30 seconds for retirement.
-                val linuxBudgetSeconds = 11L * (120L + 30L) + 120L
-                val workflowBudgetSeconds = 14L * (120L + 30L) + 120L
-                val budgetSeconds = when (suite) {
-                    "linux" -> linuxBudgetSeconds
-                    "workflow" -> workflowBudgetSeconds
-                    "all" -> linuxBudgetSeconds + workflowBudgetSeconds + 240L
-                    else -> 240L
-                }
                 val result = done.get(budgetSeconds, TimeUnit.SECONDS)
+                result.put("foregroundCarrier", foregroundCarrier)
                 if (ptcPhase == "recover" && result.optBoolean("passed")) {
                     val evidence = result.getJSONArray("reports").getJSONObject(0).getJSONArray("checks").getJSONObject(0)
                     val receipt = IsolatedScriptRunController.readReceipt(app, evidence.getString("runId"))
@@ -338,17 +366,18 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
             report.putString("failure", "${failure.javaClass.simpleName}: ${failure.message}")
             report.putString("failureStage", phase.get())
         } finally {
+            var nativeOwnersClosed = true
             startupSettled.compareAndSet(false, true)
             startupTimeout.cancel(false)
             startupWatchdog.shutdownNow()
             stage("cleanup-workflow")
-            try { workflow?.close() } catch (failure: Throwable) { passed = false; report.putString("workflowCloseFailure", failure.toString()) }
+            try { workflow?.close() } catch (failure: Throwable) { nativeOwnersClosed = false; passed = false; report.putString("workflowCloseFailure", failure.toString()) }
             stage("cleanup-isolated")
-            try { isolated?.close() } catch (failure: Throwable) { passed = false; report.putString("isolatedCloseFailure", failure.toString()) }
+            try { isolated?.close() } catch (failure: Throwable) { nativeOwnersClosed = false; passed = false; report.putString("isolatedCloseFailure", failure.toString()) }
             stage("cleanup-linux")
-            try { linux?.close() } catch (failure: Throwable) { passed = false; report.putString("linuxCloseFailure", failure.toString()) }
+            try { linux?.close() } catch (failure: Throwable) { nativeOwnersClosed = false; passed = false; report.putString("linuxCloseFailure", failure.toString()) }
             stage("cleanup-searches")
-            try { searches?.close() } catch (failure: Throwable) { passed = false; report.putString("searchCloseFailure", failure.toString()) }
+            try { searches?.close() } catch (failure: Throwable) { nativeOwnersClosed = false; passed = false; report.putString("searchCloseFailure", failure.toString()) }
             try { saf?.close() } catch (failure: Throwable) { passed = false; report.putString("safCloseFailure", failure.toString()) }
             stage("cleanup-socket")
             try { socket?.close() } catch (_: Throwable) {}
@@ -356,9 +385,13 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
             try { readSocket?.close() } catch (_: Throwable) {}
             stage("cleanup-workers")
             workers.shutdownNow()
+            report.putString("nativeOwnersClosed", nativeOwnersClosed.toString())
+            // NativeRuntime.start has no stop API. The host guard owns final package stop and whole-process checks.
+            report.putString("nodeProcessRetired", "false")
             stage("cleanup-foreground")
             try { report.putString("foregroundClosed", closeForeground().toString()) }
             catch (failure: Throwable) { passed = false; report.putString("foregroundCloseFailure", failure.toString()) }
+            report.putString("deviceStateAfter", AcceptanceServiceLease.deviceState(app))
         }
         report.putString("suite", suite)
         stage("finish")
