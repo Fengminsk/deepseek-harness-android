@@ -18,11 +18,11 @@ const requiredChecks = {
   ],
   linux: [
     'production-tool-shell-and-session-persistence',
+    'production-python-stdlib-file-analysis',
     'production-tool-import-hash-and-guest-readback',
     'production-tool-export-hash-and-no-overwrite',
     'production-read-only-policy-discards-disk-and-denies-import',
     'workflow-child-linux-import-exec-export',
-    'Python and analyst package availability',
     'Guest networking',
     'Process-death import recovery',
   ],

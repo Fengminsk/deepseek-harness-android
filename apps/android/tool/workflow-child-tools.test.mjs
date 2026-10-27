@@ -25,7 +25,7 @@ import AndroidFileSystem from '../runtime/android-filesystem.mjs'
 import { registerModelFileReadGuard } from '../runtime/model-file-read-guard.mjs'
 import { createWorkflowSubagentBackend, installWorkflowSubagentPreset } from '../runtime/workflow-subagent-backend.mjs'
 import { WorkflowGuestHostPort } from '../runtime/workflow-guest-host-port.mjs'
-import { registerLinuxVmTool, registerLinuxImportTool, registerLinuxExportTool,
+import { registerLinuxVmTool, registerLinuxImportTool, registerLinuxExportTool, registerLinuxInspectTool,
   isFirstPartyLinuxDefinition } from '../runtime/tool-linux-vm.mjs'
 import { NativeLinuxVm } from '../runtime/native-linux-vm.mjs'
 
@@ -72,6 +72,7 @@ async function fixture(t, script, { mode = 'workspace-write', web = true, fetch,
       registerLinuxVmTool(linuxCtx, linux, true)
       registerLinuxImportTool(linuxCtx, linux, true, workspace)
       registerLinuxExportTool(linuxCtx, linux, true, workspace)
+      registerLinuxInspectTool(linuxCtx, linux, true)
     },
   }
   const unregisterParent = await ctx.agentPresets.register({ id: 'parent', plugins: [
@@ -345,7 +346,14 @@ test('structured output rejects a later same-name registration before its execut
 // workflow ownership and Session persistence run their production paths.
 function linuxFixture(t, dispatch) {
   const calls = []
+  const inspections = []
   const owner = new NativeLinuxVm({ request: async (method, params, signal) => {
+    if (method === 'native.linuxVm.inspect') {
+      inspections.push({ method, params, signal })
+      return { version: 1, sessionId: params.sessionId, status: 'absent',
+        blocked: false, needsReview: false, requestedRunFound: params.id ? false : null,
+        truncated: false, automaticReplay: false, records: [] }
+    }
     calls.push({ method, params, signal })
     if (dispatch) await dispatch(method, params, signal)
     if (method.endsWith('.cancel')) return { cancelRequested: true, settled: true }
@@ -359,7 +367,7 @@ function linuxFixture(t, dispatch) {
       ...exporting ? { filePublished: true } : {} }
   } })
   t.after(() => owner.dispose())
-  return { owner, calls }
+  return { owner, calls, inspections }
 }
 
 test('real workflow child calls original Linux tools in its own session and retains receipts in JSONL', async t => {
@@ -375,12 +383,13 @@ test('real workflow child calls original Linux tools in its own session and reta
   ], { linux: native.owner, projectDirectory: 'project' })
   const run = await f.start()
   assert.equal((await run.result()).stopReason, 'completed')
-  assert.deepEqual(schemaNames(f.adapter.requests[0]), [...NAMES, 'linux_exec', 'linux_import', 'linux_export'].sort())
+  assert.deepEqual(schemaNames(f.adapter.requests[0]), [...NAMES, 'linux_exec', 'linux_import', 'linux_export', 'linux_inspect'].sort())
   const rows = toolRows(run.child)
   assert.equal(rows.length, 3)
   for (const row of rows) assert.equal(row.data.message.isError, false, resultText(row))
   assert.deepEqual(native.calls.map(call => call.method),
     ['native.linuxVm.importFile', 'native.linuxVm.execute', 'native.linuxVm.exportFile'])
+  assert.deepEqual(native.inspections.map(call => call.params), [{ sessionId: String(run.child.session.id) }])
   for (const call of native.calls) {
     assert.equal(call.params.sessionId, String(run.child.session.id))
     assert.notEqual(call.params.sessionId, String(f.parent.session.id))
@@ -402,6 +411,28 @@ test('real workflow child calls original Linux tools in its own session and reta
   assert.equal(receipts.length, 3)
 })
 
+test('read-only workflow child inspects only its own Session and cannot select its parent Session', async t => {
+  const native = linuxFixture(t)
+  const f = await fixture(t, [
+    toolCallResponse('inspect', 'linux_inspect', { runId: 'd9ee88e9-038d-4078-bd3a-4b575a8bf760' }),
+    toolCallResponse('other-session', 'linux_inspect', { sessionId: 'parent' }),
+    textResponse('status inspected without execution'),
+  ], { linux: native.owner, mode: 'read-only', web: false })
+  const run = await f.start()
+  await run.result()
+  const rows = toolRows(run.child)
+  assert.equal(rows[0].data.message.isError, false, resultText(rows[0]))
+  assert.equal(rows[1].data.message.isError, true)
+  assert.equal(native.calls.length, 0)
+  assert.equal(native.inspections.length, 1)
+  assert.deepEqual(native.inspections[0].params, { sessionId: String(run.child.session.id),
+    id: 'd9ee88e9-038d-4078-bd3a-4b575a8bf760' })
+  assert.notEqual(native.inspections[0].params.sessionId, String(f.parent.session.id))
+  assert.equal(native.inspections[0].method, 'native.linuxVm.inspect')
+  assert.match(JSON.stringify(f.adapter.requests.at(-1)), /android-linux-inspection/)
+  await f.guest.disposeChild({ callId: run.published.callId })
+})
+
 test('read-only workflow activation stays disposable after policy upgrades and cannot gain imports or exports', async t => {
   const native = linuxFixture(t)
   let f
@@ -414,8 +445,9 @@ test('read-only workflow activation stays disposable after policy upgrades and c
   ], { linux: native.owner, mode: 'read-only', web: false })
   const run = await f.start()
   await run.result()
-  assert.deepEqual(schemaNames(f.adapter.requests[0]), ['glob', 'grep', 'linux_exec', 'read'])
+  assert.deepEqual(schemaNames(f.adapter.requests[0]), ['glob', 'grep', 'linux_exec', 'linux_inspect', 'read'])
   assert.deepEqual(native.calls.map(call => call.params.persistChanges), [false, false])
+  assert.equal(native.inspections.length, 1)
   assert.equal(toolRows(run.child)[2].data.message.isError, true)
   assert.equal(toolRows(run.child)[3].data.message.isError, true)
 })
@@ -458,6 +490,7 @@ test('delegated Linux transfers repeat parent authorization after asynchronous f
     assert.equal(result.isError, true)
     assert.match(JSON.stringify(result), /not authorized/)
     assert.equal(native.calls.length, 0)
+    assert.equal(native.inspections.length, 0)
   } finally {
     if (descriptor) Object.defineProperty(fs, 'stat', descriptor)
     else delete fs.stat
@@ -486,6 +519,7 @@ test('Linux factory identity, activation directory and reservation remain live a
   f.backend.close()
   assert.equal((await execute('linux_exec', { command: 'id' })).isError, true)
   assert.equal(native.calls.length, 0)
+  assert.equal(native.inspections.length, 0)
   await f.guest.disposeChild({ callId: run.published.callId })
   await f.handle.dispose()
   await f.unregisterParent()
@@ -506,6 +540,7 @@ test('cold-resumed workflow child cannot reconstruct Linux authority from its pe
   await f.ctx.subagents.waitForChildren(f.parent)
   assert.deepEqual(schemaNames(f.adapter.requests.at(-1)), [])
   assert.equal(native.calls.length, 1)
+  assert.equal(native.inspections.length, 1)
   assert.match(JSON.stringify(f.adapter.requests.at(-1)), /not authorized/)
 })
 
@@ -562,6 +597,7 @@ test('unloading delegated authority during Linux file preparation cannot fall ba
       assert.equal(result.isError, true, name)
       assert.match(JSON.stringify(result), /not authorized/)
       assert.equal(native.calls.length, 0)
+      assert.equal(native.inspections.length, 0)
     } finally {
       if (descriptor) Object.defineProperty(fs, method, descriptor)
       else delete fs[method]
@@ -604,6 +640,7 @@ test('Linux checks the final canonical transfer target when both a directory lin
       assert.equal(result.isError, true, name)
       assert.match(JSON.stringify(result), /not authorized/)
       assert.equal(native.calls.length, 0)
+      assert.equal(native.inspections.length, 0)
     } finally {
       if (descriptor) Object.defineProperty(fs, method, descriptor)
       else delete fs[method]

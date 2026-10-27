@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readFile, writeFile, unlink } from 'node:fs/promises'
 import { join, relative, isAbsolute, sep } from 'node:path'
 import SandboxPolicy, { setSandboxMode } from '@deepseek-ai/dsh-sandbox-policy'
+import { preparePythonAnalysis, validatePythonAnalysis } from './python-analysis.mjs'
 
 /** Exercise production ToolRuntime and Linux native ownership using only acceptance-owned files. */
 export async function runLinuxAcceptance({ ctx, transport, agent, workspace, appWorkspaceRoot, nativeModule,
@@ -11,7 +12,8 @@ export async function runLinuxAcceptance({ ctx, transport, agent, workspace, app
   assert.equal(typeof appWorkspaceRoot, 'string', 'Acceptance requires the explicit production App workspace root')
   const scope = relative(appWorkspaceRoot, workspace)
   assert.ok(scope && !isAbsolute(scope) && scope !== '..' && !scope.startsWith(`..${sep}`))
-  const [{ NativeLinuxVm }, { registerLinuxVmTool, registerLinuxImportTool, registerLinuxExportTool }] = await Promise.all([
+  const [{ NativeLinuxVm }, { registerLinuxVmTool, registerLinuxImportTool, registerLinuxExportTool,
+    registerLinuxInspectTool }] = await Promise.all([
     nativeModule('native-linux-vm.mjs'), nativeModule('tool-linux-vm.mjs'),
   ])
   if (!ctx.get('sandboxPolicy')) await ctx.plugin(SandboxPolicy, { mode: 'workspace-write', workspaceRoot: workspace })
@@ -32,6 +34,7 @@ export async function runLinuxAcceptance({ ctx, transport, agent, workspace, app
   registerLinuxVmTool(ctx, owner, true)
   registerLinuxImportTool(ctx, owner, true, appWorkspaceRoot)
   registerLinuxExportTool(ctx, owner, true, appWorkspaceRoot)
+  registerLinuxInspectTool(ctx, owner, true)
   const invoke = (name, args) => ctx.tools.execute({ name, arguments: args, agent,
     callId: `linux-device-${randomUUID()}`, signal: new AbortController().signal })
   const execute = async (command, persisted = true) => {
@@ -60,7 +63,27 @@ export async function runLinuxAcceptance({ ctx, transport, agent, workspace, app
       assert.ok(first.output.includes(token))
       const next = await execute(`cat '${state}'`)
       assert.equal(next.output.trim(), token)
-      return { guestUid: next.guestUid, appUid: process.getuid(), diskCommitted: next.diskCommitted }
+      const observation = await invoke('linux_inspect', { runId: next.id })
+      assert.equal(observation.isError, false, JSON.stringify(observation))
+      assert.equal(observation.value.sessionId, String(agent.session.id))
+      assert.equal(observation.value.status, 'ready')
+      assert.equal(observation.value.needsReview, false)
+      assert.equal(observation.value.requestedRunFound, true)
+      assert.equal(observation.value.records.length, 1)
+      assert.equal(observation.value.records[0].runId, next.id)
+      assert.equal(observation.value.records[0].diskCommitted, true)
+      assert.equal(observation.value.records[0].retirementConfirmed, true)
+      return { guestUid: next.guestUid, appUid: process.getuid(), diskCommitted: next.diskCommitted,
+        inspectionConfirmed: true }
+    })
+    await check('production-python-stdlib-file-analysis', async () => {
+      const fixture = await preparePythonAnalysis(token)
+      const receipt = await execute(fixture.command)
+      const analysis = validatePythonAnalysis(receipt.output, fixture.expected)
+      assert.equal(analysis.platform, 'linux')
+      assert.equal(analysis.machine, 'riscv64')
+      return { guestUid: receipt.guestUid, diskCommitted: receipt.diskCommitted,
+        retirementConfirmed: receipt.retirementConfirmed, ...analysis }
     })
     await check('production-tool-import-hash-and-guest-readback', async () => {
       const result = await invoke('linux_import', { source, destination, timeoutMs: 120000 })
@@ -115,7 +138,7 @@ export async function runLinuxAcceptance({ ctx, transport, agent, workspace, app
     })
     return { suite: 'linux', checks, passed: checks.filter(item => item.status === 'passed').length,
       failed: checks.filter(item => item.status === 'failed').length,
-      unverified: ['Python and analyst package availability', 'Guest networking', 'Process-death import recovery'] }
+      unverified: ['Guest networking', 'Process-death import recovery'] }
   } finally {
     setSandboxMode(agent.session, 'workspace-write')
     await owner.dispose()
@@ -126,7 +149,7 @@ export async function runLinuxAcceptance({ ctx, transport, agent, workspace, app
 }
 
 const inheritedTools = ['read', 'glob', 'grep', 'write', 'edit', 'web_search', 'web_fetch',
-  'linux_exec', 'linux_import', 'linux_export']
+  'linux_exec', 'linux_import', 'linux_export', 'linux_inspect']
 
 async function runLinuxWorkflowAcceptance({ ctx, transport, agent, adapter, workflow, requests,
   source, content, sha256, destination, workspace, appWorkspaceRoot }) {
@@ -184,10 +207,17 @@ async function runLinuxWorkflowAcceptance({ ctx, transport, agent, adapter, work
     const child = children[0], childSessionId = String(child.session.id)
     assert.notEqual(childSessionId, String(agent.session.id))
     assert.equal(ctx.agents.get(child.id), undefined, 'Completed workflow must retire its child')
-    const executed = requests.slice(requestStart)
-    assert.deepEqual(executed.map(row => row.method), [
-      'native.linuxVm.importFile', 'native.linuxVm.execute', 'native.linuxVm.exportFile',
+    const childRequests = requests.slice(requestStart)
+    assert.deepEqual(childRequests.map(row => row.method), [
+      'native.linuxVm.inspect', 'native.linuxVm.importFile', 'native.linuxVm.execute', 'native.linuxVm.exportFile',
     ])
+    assert.deepEqual(childRequests[0].params, { sessionId: childSessionId })
+    assert.equal(childRequests[0].result.sessionId, childSessionId)
+    assert.ok(['absent', 'ready'].includes(childRequests[0].result.status))
+    assert.equal(childRequests[0].result.blocked, false)
+    assert.equal(childRequests[0].result.needsReview, false)
+    assert.deepEqual(childRequests[0].result.records, [])
+    const executed = childRequests.slice(1)
     for (const { params, result: receipt } of executed) {
       assert.equal(params.sessionId, childSessionId)
       assert.equal(receipt.sessionId, childSessionId)

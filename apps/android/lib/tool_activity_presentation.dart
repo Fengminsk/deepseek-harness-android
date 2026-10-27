@@ -27,6 +27,7 @@ class ToolActivityPresentation {
         fields['取消'] == '是' ||
         fields['执行状态'] == '失败' ||
         fields['执行状态'] == '未确认' ||
+        fields['需核对'] == '是' ||
         (fields['终止信号']?.isNotEmpty ?? false) ||
         (exitCode != null && exitCode != 0);
   }
@@ -47,7 +48,9 @@ class ToolActivityPresentation {
   String status(ToolActivity activity) => switch (activity.phase) {
     ToolActivityPhase.pending => '正在调用',
     ToolActivityPhase.completed =>
-      fields['超时'] == '是'
+      kind == 'inspection'
+          ? fields['执行状态'] ?? '状态待确认'
+          : fields['超时'] == '是'
           ? '已超时'
           : fields['取消'] == '是'
           ? '已取消'
@@ -66,6 +69,30 @@ class ToolActivityPresentation {
     final result = activity.resultValue;
     final fields = <String, String>{};
     final name = activity.name;
+    if (name == 'linux_inspect') {
+      if (args?['runId'] is String) fields['执行记录'] = args!['runId'] as String;
+      if (result is Json) {
+        final review =
+            result['needsReview'] == true ||
+            result['status'] == 'blocked' ||
+            result['status'] == 'unknown';
+        fields['需核对'] = review ? '是' : '否';
+        fields['执行状态'] = review
+            ? '需核对'
+            : switch (result['status']) {
+                'absent' => '无执行记录',
+                'active' => '正在执行',
+                'ready' => '已核对',
+                _ => '未确认',
+              };
+        if (result['records'] is List) {
+          fields['记录数'] = '${(result['records'] as List).length}';
+        }
+        if (result['requestedRunFound'] == false) fields['查询结果'] = '未找到该执行记录';
+        if (result['truncated'] == true) fields['范围'] = '仅显示部分记录';
+      }
+      return ToolActivityPresentation('inspection', fields);
+    }
     if (name == 'android_shell' ||
         name == 'linux_exec' ||
         name == 'bash' ||
@@ -254,7 +281,9 @@ class ToolActivityPresentation {
 /// Group summaries inspect explicit failure markers without rendering/parsing
 /// file result lines or search result lists for every collapsed invocation.
 bool toolActivityNeedsAttention(ToolActivity activity) {
-  if (activity.name == 'linux_import' || activity.name == 'linux_export') {
+  if (activity.name == 'linux_import' ||
+      activity.name == 'linux_export' ||
+      activity.name == 'linux_inspect') {
     return ToolActivityPresentation.from(activity).needsAttention(activity);
   }
   if (activity.phase == ToolActivityPhase.failed ||
@@ -290,6 +319,7 @@ String toolActivityName(ToolActivity activity) => switch (activity.name) {
   'linux_exec' => '执行 Linux 命令',
   'linux_import' => '导入 Linux 文件',
   'linux_export' => '取回 Linux 文件',
+  'linux_inspect' => '查看 Linux 执行状态',
   'android_shell' || 'bash' || 'pwsh' || 'terminal_send' => '执行命令',
   'android_files' => switch (activity.args?['action']) {
     'roots' => '查看授权目录',
@@ -321,6 +351,7 @@ String toolActivityProgressLabel(ToolActivity activity) =>
     switch (activity.name) {
       'linux_import' => '正在导入文件',
       'linux_export' => '正在取回文件',
+      'linux_inspect' => '正在核对执行状态',
       'web_search' || 'web_fetch' || 'search' || 'fetch' => '正在搜索',
       'android_shell' ||
       'linux_exec' ||

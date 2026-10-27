@@ -47,6 +47,18 @@ title: Android Linux 虚拟机执行
 
 Linux 工具通过真实 ToolRuntime 结果附加有界的 `android-linux-receipt` 上下文。即使调用方取消使工具结果归一化为 `ABORTED`，仍保留原生运行标识和实际发布状态。不确定结果使用结构化 `HarnessError` 错误码 `linux-vm/outcome-uncertain`；未知发布状态保持 `null`，不根据取消确认推断为假。取消后收到的上下文由 AgentLoop 写入 Session 的 `agent/inbox/spliced` 事件，并在下一轮交给模型。此审计不包含 Shell 输出或命令文本。宿主回归同时覆盖取消后的规范结果与真实 Session 事件顺序。
 
+## 查看中断的任务
+
+[恢复协议](linux-vm-recovery.zh.md) 说明持久准入、指针归因及进程死亡后的保守处理边界。
+
+`linux_inspect` 读取当前 Agent Session 的有限执行记录。可选 `runId` 用于查询一条记录；省略时返回最多 32 条近期或待核对记录。会话身份由宿主提供。工作流子级可以继承父级注册的原始查询工具，但只能查询自己的 Session。查询不会启动客体、重放命令、发布文件，也不会重新开放已关闭的执行 owner。
+
+[原生响应解析器](../runtime/native-linux-vm-inspection.mjs) 分别保留磁盘发布、文件发布和执行器退役三个可空事实。磁盘指针已提交不代表退出码或输出已恢复。记录不存在也不构成安全重试的依据。存储无法可靠读取时，`requestedRunFound: null` 表示连记录是否存在都尚未确认。阻止执行或未知的观察结果会停止后续命令；再次查询本身不能解除停止状态。Android 将需要复核的结果显示为“需核对”，而非命令执行成功。
+
+Node owner 在每个 Session 首次执行前先占用执行槽位，再查询原生记录。存在阻止执行、正在运行或需要核对的观察时，新命令会在派发前被拒绝，相关事实会交给模型。因而，已提交但回执丢失的调用不能通过新执行 ID 被静默重复。仅缓存无待处理问题的观察；原生准入仍执行自己的屏障。本增量没有确认或解锁 API，查询本身不能授权向待核对会话继续写入。
+
+工具将完整的有界观察作为 `android-linux-inspection` 上下文保留到 Session，即使取消替换了标准工具结果也不会丢失。[宿主测试](native-linux-vm-inspection.test.mjs) 覆盖响应校验、关闭 owner 后的查询、准入竞态及禁止重放行为；ToolRuntime 和子级测试覆盖当前会话身份与持久观察。这些检查不能证明 Android 进程死亡后的执行器退役。缺少该证据的中断调用仍会阻止执行并要求核对。
+
 ## 构建与证据
 
 [源码构建器](build-tinyemu.mjs)校验[固定的官方输入](tinyemu-source-lock.mjs)，应用[嵌入补丁](patch-tinyemu.mjs)，记录编译器、源码和产物哈希。[CMake](../android/app/src/main/cpp/linux_vm.cmake)使用准备好的源码重新编译 JNI 执行器。[Alpine 发行验证器](linux-vm-release.py)在合并资产前检查候选是否过期，并将最终 APK 与候选磁盘、源码记录及编译出的执行器对照。独立的旧 `-PdshLinuxGuestFixture=true` 路径保留受限启动样例供调查；它不能与 Alpine 选择同时使用，也不属于 Alpine 发行。

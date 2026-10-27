@@ -8,6 +8,36 @@ import 'package:flutter_test/flutter_test.dart';
 import 'tool_activity_fixture.dart';
 
 void main() {
+  test('Linux inspection distinguishes review facts from successful command execution', () {
+    for (final sample in <(String, bool, String)>[
+      ('blocked', true, '需核对'),
+      ('ready', true, '需核对'),
+      ('ready', false, '已核对'),
+      ('active', false, '正在执行'),
+      ('absent', false, '无执行记录'),
+    ]) {
+      final projection = ToolActivityProjection()
+        ..reconcile([
+          callEvent(1, name: 'linux_inspect', args: {}),
+          resultEvent(
+            2,
+            text: jsonEncode({
+              'status': sample.$1,
+              'needsReview': sample.$2,
+              'blocked': sample.$1 == 'blocked' || sample.$1 == 'active',
+              'records': [],
+              'automaticReplay': false,
+            }),
+          ),
+        ]);
+      final activity = projection.byAnchorSeq[1]!;
+      final presentation = ToolActivityPresentation.from(activity);
+      expect(presentation.status(activity), sample.$3);
+      expect(toolActivityNeedsAttention(activity), sample.$2);
+      expect(toolActivityName(activity), '查看 Linux 执行状态');
+    }
+  });
+
   test(
     'pairs by turn step and source call id, including repeated fallback ids',
     () {

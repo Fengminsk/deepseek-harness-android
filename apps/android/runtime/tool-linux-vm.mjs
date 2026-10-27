@@ -3,7 +3,8 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { realpathSync } from 'node:fs'
 import { lstat } from 'node:fs/promises'
 import { isAbsolute, relative, resolve, sep } from 'node:path'
-import { LINUX_VM_IMPORT_BYTES, LinuxVmOutcomeUncertainError, prepareLinuxVmCommand, prepareLinuxVmImport } from './native-linux-vm.mjs'
+import { LINUX_VM_IMPORT_BYTES, LinuxVmOutcomeUncertainError, LinuxVmRecoveryRequiredError, prepareLinuxVmCommand, prepareLinuxVmImport,
+  prepareLinuxVmInspection } from './native-linux-vm.mjs'
 import { canonicalModelTarget, insideModelWorkspace, modelFileObservationDenial } from './model-file-read-guard.mjs'
 
 const definitionKey = Symbol('Android Linux definition owner')
@@ -92,8 +93,34 @@ async function retainReceipt(execution, dispatch) {
     return result
   } catch (error) {
     if (error instanceof LinuxVmOutcomeUncertainError) deferReceipt(execution, error.receipt)
+    if (error instanceof LinuxVmRecoveryRequiredError) deferInspection(execution, error.inspection)
     throw error
   }
+}
+
+function deferInspection(execution, result) {
+  execution.deferContext(createUserMessage({ source: { kind: 'android-linux-inspection' },
+    content: [{ type: 'text', text: JSON.stringify({ linuxVmInspection: result }) }] }))
+}
+
+/** Query current-Session recovery facts without starting or replaying a Linux command. */
+export function registerLinuxInspectTool(ctx, owner, available) {
+  if (!available) return
+  registerDefinition(ctx, {
+    name: 'linux_inspect',
+    description: 'Inspect Linux execution records in the current Agent Session without booting the guest, changing files, replaying commands or reopening a blocked execution owner. Supply a runId from an earlier receipt, or omit it to see bounded recent and unresolved records. diskCommitted, filePublished and retirementConfirmed are independent facts; null means unknown. A missing record does not establish safe retry. recovered_committed proves the disk pointer belongs to that run, not that its output or successful exit was recovered. blocked or needsReview means stop dependent work and report the facts; never automatically rerun an uncertain command.',
+    parameters: { runId: { type: 'string' } },
+    output: { schema: { type: 'json' }, render: (_args, result) => [{ type: 'text', text: JSON.stringify(result) }] },
+    async execute(args, execution) {
+      prepareLinuxVmInspection(args)
+      const { agent } = sessionPolicy(ctx, execution)
+      const result = await owner.inspect(String(agent.session.id), args, execution.signal)
+      // Persist the full bounded observation even if caller cancellation later
+      // normalizes the canonical result to TOOL_ABORTED.
+      deferInspection(execution, result)
+      return result
+    },
+  })
 }
 
 /**

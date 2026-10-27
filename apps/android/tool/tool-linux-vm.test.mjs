@@ -12,7 +12,7 @@ import SandboxPolicy, { setSandboxMode } from '@deepseek-ai/dsh-sandbox-policy'
 import { mkdtemp, writeFile, readFile, mkdir, rm, symlink, truncate } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { registerLinuxVmTool, registerLinuxImportTool, registerLinuxExportTool } from '../runtime/tool-linux-vm.mjs'
+import { registerLinuxVmTool, registerLinuxImportTool, registerLinuxExportTool, registerLinuxInspectTool } from '../runtime/tool-linux-vm.mjs'
 import AndroidFileSystem from '../runtime/android-filesystem.mjs'
 import { NativeLinuxVm } from '../runtime/native-linux-vm.mjs'
 import { MockAdapter, textResponse, toolCallResponse } from '../../../packages/core/agent-loop/tests/mock-adapter.ts'
@@ -71,11 +71,106 @@ function contextReceipt(result) {
   return JSON.parse(context.content[0].text).linuxVmReceipt
 }
 
+function inspection(sessionId, requestedRunFound = null) {
+  return { version: 1, sessionId, status: 'absent', blocked: false, needsReview: false,
+    requestedRunFound, truncated: false, automaticReplay: false, records: [] }
+}
+
+test('read-only Linux inspection pins the live Agent Session and rejects caller-selected sessions', async t => {
+  const { ctx, agent, execute } = await setup(t, { mode: 'read-only' })
+  const requests = []
+  const owner = new NativeLinuxVm({ request: async (method, params) => {
+    requests.push({ method, params }); return inspection(params.sessionId)
+  } })
+  t.after(() => owner.dispose())
+  registerLinuxInspectTool(ctx, owner, true)
+  const result = await execute('linux_inspect', {})
+  assert.equal(result.isError, false)
+  assert.deepEqual(result.value, inspection(String(agent.session.id)))
+  assert.deepEqual(result.content, [{ type: 'text', text: JSON.stringify(result.value) }])
+  const context = result.additionalContexts.find(item => item.source.kind === 'android-linux-inspection')
+  assert.deepEqual(JSON.parse(context.content[0].text).linuxVmInspection, result.value)
+  for (const args of [{ sessionId: 'other' }, { runId: '../outside' }, { retry: true }]) {
+    assert.equal((await execute('linux_inspect', args)).isError, true)
+  }
+  assert.deepEqual(requests, [{ method: 'native.linuxVm.inspect', params: { sessionId: String(agent.session.id) } }])
+})
+
+test('cancelled inspection persists its observation into the next AgentLoop turn without replay', async t => {
+  const adapter = new MockAdapter([
+    toolCallResponse('inspect-recovery', 'linux_inspect', {}), textResponse('observation retained'),
+  ])
+  const { ctx, agent } = await setup(t, { adapter })
+  let calls = 0
+  const observation = { ...inspection(String(agent.session.id)), status: 'blocked', blocked: true,
+    needsReview: true, records: [{ runId: 'd9ee88e9-038d-4078-bd3a-4b575a8bf760', operation: 'import',
+      state: 'outcome_uncertain', retirementConfirmed: null, diskCommitted: null, filePublished: null,
+      exitCode: null, reason: 'retirement_unconfirmed', needsReview: true }] }
+  // Native returned the bounded observation before caller cancellation. The
+  // real ToolRuntime and Session must retain it when the canonical call aborts.
+  const owner = { async inspect(sessionId) {
+    assert.equal(sessionId, String(agent.session.id)); calls++
+    agent.cancel({ kind: 'user' }); return observation
+  } }
+  registerLinuxInspectTool(ctx, owner, true)
+  agent.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'inspect pending work' }] }))
+  await agent.whenIdle()
+  const events = agent.session.snapshotEvents()
+  const recorded = events.flatMap(event => event.type === 'agent/inbox/spliced' ? event.data.inserted : [])
+    .find(message => message.source.kind === 'android-linux-inspection')
+  assert.ok(recorded)
+  assert.deepEqual(JSON.parse(recorded.content[0].text).linuxVmInspection, observation)
+  assert.equal(events.find(event => event.type === 'tool/result').data.error.code, TOOL_ABORTED)
+  agent.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'report status only' }] }))
+  await agent.whenIdle()
+  assert.equal(calls, 1)
+  assert.match(JSON.stringify(adapter.requests[1].messages), /retirement_unconfirmed/)
+})
+
+test('AgentLoop retains a recovered commit from first-Session inspection without dispatching a new command', async t => {
+  const adapter = new MockAdapter([
+    toolCallResponse('recover-before-exec', 'linux_exec', { command: 'echo duplicate > state' }),
+    textResponse('Previous committed work requires review; no command was started.'),
+  ])
+  const { ctx, agent } = await setup(t, { adapter })
+  const observation = { ...inspection(String(agent.session.id)), status: 'ready', needsReview: true,
+    records: [{ runId: 'd9ee88e9-038d-4078-bd3a-4b575a8bf760', operation: 'execute',
+      state: 'recovered_committed', retirementConfirmed: true, diskCommitted: true, filePublished: null,
+      exitCode: null, reason: 'pointer_committed', needsReview: true }] }
+  const requests = []
+  const owner = new NativeLinuxVm({ request: async (method, params) => {
+    requests.push({ method, params })
+    assert.equal(method, 'native.linuxVm.inspect')
+    return observation
+  } })
+  t.after(() => owner.dispose())
+  registerLinuxVmTool(ctx, owner, true)
+  agent.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'continue analysis' }] }))
+  await agent.whenIdle()
+  assert.deepEqual(requests, [{ method: 'native.linuxVm.inspect', params: { sessionId: String(agent.session.id) } }])
+  const events = agent.session.snapshotEvents()
+  const result = events.find(event => event.type === 'tool/result')
+  assert.equal(result.data.error.code, 'linux-vm/recovery-required')
+  const observations = events.flatMap(event => event.type === 'agent/inbox/spliced' ? event.data.inserted : [])
+    .filter(message => message.source.kind === 'android-linux-inspection')
+  assert.equal(observations.length, 1)
+  assert.deepEqual(JSON.parse(observations[0].content[0].text).linuxVmInspection, observation)
+  assert.equal(events.some(event => event.type === 'agent/inbox/spliced'
+    && event.data.inserted.some(message => message.source.kind === 'android-linux-receipt')), false)
+  assert.equal(adapter.requests.length, 2)
+  const delivered = events.find(event => event.type === 'user/message'
+    && event.data.source.kind === 'android-linux-inspection')
+  assert.ok(delivered)
+  assert.deepEqual(JSON.parse(delivered.data.content[0].text).linuxVmInspection, observation)
+  assert.ok(JSON.stringify(adapter.requests[1].messages).includes(JSON.stringify(observations[0].content[0].text)))
+})
+
 test('cancelled ToolRuntime execution retains a completed disk commit and native run identity', async t => {
   const { ctx, agent } = await setup(t)
   const abort = new AbortController()
   let request
   const owner = new NativeLinuxVm({ request: async (method, params) => {
+    if (method === 'native.linuxVm.inspect') return inspection(params.sessionId)
     if (method.endsWith('.cancel')) return { cancelRequested: true, settled: true }
     request = params
     abort.abort(new DOMException('cancel after commit', 'AbortError'))
@@ -95,6 +190,7 @@ test('cancelled export retains host publication without claiming a guest disk co
   const { ctx, agent, root } = await setup(t, { android: true })
   const abort = new AbortController()
   const owner = new NativeLinuxVm({ request: async (method, params) => {
+    if (method === 'native.linuxVm.inspect') return inspection(params.sessionId)
     if (method.endsWith('.cancel')) return { cancelRequested: true, settled: true }
     abort.abort(new DOMException('cancel after publication', 'AbortError'))
     return nativeReceipt(params, { source: params.source, destination: params.destination,
@@ -117,6 +213,7 @@ test('uncertain publication is a structured ToolRuntime error, keeps true or unk
     const { ctx, root, execute } = await setup(t, { android: true })
     let nativeCalls = 0
     const owner = new NativeLinuxVm({ request: async (method, params) => {
+      if (method === 'native.linuxVm.inspect') return inspection(params.sessionId)
       if (method.endsWith('.cancel')) return { cancelRequested: false, settled: true }
       nativeCalls++
       return nativeReceipt(params, { status: 'outcome_uncertain', diskCommitted: false, filePublished })
@@ -140,7 +237,8 @@ test('uncertain publication is a structured ToolRuntime error, keeps true or unk
 test('lost final receipt after caller cancellation remains unknown despite settled cancel acknowledgement', async t => {
   const { ctx, agent } = await setup(t)
   const abort = new AbortController()
-  const owner = new NativeLinuxVm({ request: async (method) => {
+  const owner = new NativeLinuxVm({ request: async (method, params) => {
+    if (method === 'native.linuxVm.inspect') return inspection(params.sessionId)
     if (method.endsWith('.cancel')) return { cancelRequested: true, settled: true }
     abort.abort(new DOMException('cancel', 'AbortError'))
     throw new Error('receipt transport lost')
@@ -167,6 +265,7 @@ test('AgentLoop records the cancelled Linux receipt in Session inbox events and 
   const { ctx, agent } = await setup(t, { adapter })
   let request
   const owner = new NativeLinuxVm({ request: async (method, params) => {
+    if (method === 'native.linuxVm.inspect') return inspection(params.sessionId)
     if (method.endsWith('.cancel')) return { cancelRequested: true, settled: true }
     request = params
     agent.cancel({ kind: 'user' })
@@ -198,9 +297,11 @@ test('Linux VM remains unavailable to models until its device and image checks a
   registerLinuxVmTool(ctx, owner, false)
   registerLinuxImportTool(ctx, owner, false)
   registerLinuxExportTool(ctx, owner, false)
+  registerLinuxInspectTool(ctx, owner, false)
   assert.equal(ctx.tools.get('linux_exec'), undefined)
   assert.equal(ctx.tools.get('linux_import'), undefined)
   assert.equal(ctx.tools.get('linux_export'), undefined)
+  assert.equal(ctx.tools.get('linux_inspect'), undefined)
   assert.deepEqual(calls, [])
 })
 

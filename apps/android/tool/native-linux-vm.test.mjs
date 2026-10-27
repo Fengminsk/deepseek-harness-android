@@ -11,12 +11,27 @@ const completed = request => ({ id: request.id, sessionId: request.sessionId,
   timedOut: false, cancelled: false, truncated: false, diskCommitted: true,
   retirementConfirmed: true, detail: null })
 
+// Execution-focused fixtures answer the first-Session recovery query without
+// running command/cancellation hooks. The owner and response parser stay real.
+function executionOwner(transport, inspections = []) {
+  return new NativeLinuxVm({ request(method, params, signal) {
+    if (method === 'native.linuxVm.inspect') {
+      assert.deepEqual(params, { sessionId })
+      inspections.push({ method, params })
+      return Promise.resolve({ version: 1, sessionId, status: 'absent', blocked: false,
+        needsReview: false, requestedRunFound: null, truncated: false, automaticReplay: false, records: [] })
+    }
+    return transport.request(method, params, signal)
+  } })
+}
+
 test('passes arbitrary guest shell scripts with the host-bound conversation identity', async () => {
   let request
-  const owner = new NativeLinuxVm({ request: async (method, params) => {
+  const inspections = []
+  const owner = executionOwner({ request: async (method, params) => {
     assert.equal(method, 'native.linuxVm.execute'); request = params
     return completed(params)
-  } })
+  } }, inspections)
   const script = "printf '%s\\n' 中文; find . -type f | sort"
   const result = await owner.execute(sessionId, { command: script }, new AbortController().signal, writable)
   assert.equal(request.command, script)
@@ -24,6 +39,7 @@ test('passes arbitrary guest shell scripts with the host-bound conversation iden
   assert.equal(request.persistChanges, true)
   assert.equal(result.exitCode, 0)
   assert.equal(result.diskCommitted, true)
+  assert.deepEqual(inspections, [{ method: 'native.linuxVm.inspect', params: { sessionId } }])
   await owner.dispose()
 })
 
@@ -39,7 +55,7 @@ test('model arguments cannot choose an Android path, image, environment or sessi
 })
 
 test('a nonzero shell exit stays completed with an explicit nonzero status', async () => {
-  const owner = new NativeLinuxVm({ request: async (_method, params) => ({ ...completed(params), exitCode: 7 }) })
+  const owner = executionOwner({ request: async (_method, params) => ({ ...completed(params), exitCode: 7 }) })
   const result = await owner.execute(sessionId, { command: 'exit 7' }, new AbortController().signal, writable)
   assert.equal(result.exitCode, 7)
   await owner.dispose()
@@ -51,7 +67,7 @@ test('cancellation joins the original execution receipt without aborting its tra
   const dispatched = new Promise(resolve => { began = resolve })
   const methods = []
   let finish, request, executionSignal
-  const owner = new NativeLinuxVm({ request: (method, params, signal) => {
+  const owner = executionOwner({ request: (method, params, signal) => {
     methods.push(method)
     if (method.endsWith('.cancel')) {
       finish({ ...completed(request), status: 'cancelled', exitCode: null, cancelled: true, diskCommitted: false })
@@ -74,7 +90,7 @@ test('cancellation joins the original execution receipt without aborting its tra
 })
 
 test('unconfirmed VM retirement prevents a second run instead of silently retrying', async () => {
-  const owner = new NativeLinuxVm({ request: async (method, params) => method.endsWith('.cancel')
+  const owner = executionOwner({ request: async (method, params) => method.endsWith('.cancel')
     ? { cancelRequested: true, settled: false }
     : { ...completed(params), retirementConfirmed: false } })
   await assert.rejects(owner.execute(sessionId, { command: 'id' }, new AbortController().signal, writable),
@@ -89,7 +105,7 @@ test('disposal requests cancellation but waits for the final original receipt', 
   let began
   const dispatched = new Promise(resolve => { began = resolve })
   let finish, request, executionSignal
-  const owner = new NativeLinuxVm({ request: (method, params, signal) => {
+  const owner = executionOwner({ request: (method, params, signal) => {
     if (method.endsWith('.cancel')) return Promise.resolve({ cancelRequested: true, settled: true })
     request = params; executionSignal = signal
     began()
@@ -109,7 +125,7 @@ test('disposal requests cancellation but waits for the final original receipt', 
 })
 
 test('invalid receipts cannot claim a timed-out disk was committed', async () => {
-  const owner = new NativeLinuxVm({ request: async (method, params) => method.endsWith('.cancel')
+  const owner = executionOwner({ request: async (method, params) => method.endsWith('.cancel')
     ? { cancelRequested: false, settled: true }
     : { ...completed(params), status: 'timed_out', timedOut: true } })
   await assert.rejects(owner.execute(sessionId, { command: 'sleep 3' }, new AbortController().signal, writable),
@@ -118,7 +134,7 @@ test('invalid receipts cannot claim a timed-out disk was committed', async () =>
 })
 
 test('uncertain disk publication stops the owner even when the virtual CPU has retired', async () => {
-  const owner = new NativeLinuxVm({ request: async (method, params) => method.endsWith('.cancel')
+  const owner = executionOwner({ request: async (method, params) => method.endsWith('.cancel')
     ? { cancelRequested: false, settled: true }
     : { ...completed(params), status: 'outcome_uncertain', diskCommitted: null } })
   await assert.rejects(owner.execute(sessionId, { command: 'echo data > result' }, new AbortController().signal, writable),
@@ -128,7 +144,7 @@ test('uncertain disk publication stops the owner even when the virtual CPU has r
 
 test('read-only execution accepts only a receipt proving disk changes were discarded', async () => {
   for (const diskCommitted of [false, true]) {
-    const owner = new NativeLinuxVm({ request: async (method, params) => {
+    const owner = executionOwner({ request: async (method, params) => {
       if (method.endsWith('.cancel')) return { cancelRequested: false, settled: true }
       assert.equal(params.persistChanges, false)
       return { ...completed(params), diskCommitted }
@@ -168,7 +184,7 @@ test('successful imports validate their actual file identity and bounded content
   const args = { source: 'files/app.apk', destination: 'analysis/app.apk', timeoutMs: 30000 }
   for (const invalid of [null, { source: 'other.apk' }, { destination: '/workspace/analysis/app.apk' },
     { bytes: LINUX_VM_IMPORT_BYTES + 1 }, { bytes: -1 }, { sha256: 'not-a-hash' }]) {
-    const owner = new NativeLinuxVm({ request: async (method, params) => {
+    const owner = executionOwner({ request: async (method, params) => {
       if (method.endsWith('.cancel')) return { cancelRequested: false, settled: true }
       assert.equal(method, 'native.linuxVm.importFile')
       assert.deepEqual(Object.keys(params).sort(), ['destination', 'id', 'sessionId', 'source', 'timeoutMs'])
@@ -184,7 +200,7 @@ test('successful imports validate their actual file identity and bounded content
 })
 
 test('an import command failure returns its diagnostic receipt without persisting disk changes', async () => {
-  const owner = new NativeLinuxVm({ request: async (_method, params) => ({ ...completed(params),
+  const owner = executionOwner({ request: async (_method, params) => ({ ...completed(params),
     exitCode: 2, diskCommitted: false, output: 'destination is a directory' }) })
   const result = await owner.importFile(sessionId, { source: 'app.apk', destination: 'folder' },
     new AbortController().signal, writable)
@@ -196,7 +212,7 @@ test('an import command failure returns its diagnostic receipt without persistin
 test('publication winning a user cancellation still returns its committed final receipt', async () => {
   const abort = new AbortController(), methods = []
   let finish, request, committed = false
-  const owner = new NativeLinuxVm({ request(method, params, signal) {
+  const owner = executionOwner({ request(method, params, signal) {
     methods.push(method)
     if (method.endsWith('.cancel')) {
       assert.equal(committed, true)
@@ -219,7 +235,7 @@ test('publication winning a user cancellation still returns its committed final 
 test('lost execution receipt is uncertain even when cancellation confirms retirement', async () => {
   const abort = new AbortController()
   let calls = 0
-  const owner = new NativeLinuxVm({ request: async method => {
+  const owner = executionOwner({ request: async method => {
     if (method.endsWith('.cancel')) return { cancelRequested: true, settled: true }
     calls++
     abort.abort(new DOMException('Cancelled after publication', 'AbortError'))
@@ -235,7 +251,7 @@ test('lost execution receipt is uncertain even when cancellation confirms retire
 test('disposal surfaces uncertainty when the execution receipt is lost', async () => {
   let fail, began
   const started = new Promise(resolve => { began = resolve })
-  const owner = new NativeLinuxVm({ request(method) {
+  const owner = executionOwner({ request(method) {
     if (method.endsWith('.cancel')) {
       fail(new Error('execution deadline elapsed without receipt'))
       return Promise.resolve({ cancelRequested: true, settled: true })
@@ -259,19 +275,24 @@ test('independent RPC and cancellation deadlines bound disposal even for an unre
   // AbortSignal timeouts are unref'ed; retain only this test's bounded wait.
   const keepAlive = setTimeout(() => {}, 1000)
   try {
-    const owner = new NativeLinuxVm({ request: () => new Promise(() => {}) })
+    const started = Promise.withResolvers()
+    const owner = executionOwner({ request: method => {
+      if (method === 'native.linuxVm.execute') started.resolve()
+      return new Promise(() => {})
+    } })
     const pending = owner.execute(sessionId, { command: 'sleep 100', timeoutMs: 1000 },
       new AbortController().signal, writable)
     const rejected = assert.rejects(pending, LinuxVmOutcomeUncertainError)
+    await started.promise
     await assert.rejects(owner.dispose(), LinuxVmOutcomeUncertainError)
     await rejected
-    assert.deepEqual(deadlines, [31000, 10000])
+    assert.deepEqual(deadlines, [31000, 10000, 10000])
   } finally { clearTimeout(keepAlive) }
 })
 
 test('export validates file publication without treating it as a guest disk commit', async () => {
   const args = { source: 'report.txt', destination: 'agent/report.txt' }
-  const owner = new NativeLinuxVm({ request: async (method, params) => {
+  const owner = executionOwner({ request: async (method, params) => {
     assert.equal(method, 'native.linuxVm.exportFile')
     assert.equal(Object.hasOwn(params, 'persistChanges'), false)
     return { ...completed(params), source: params.source, destination: params.destination,
@@ -286,7 +307,7 @@ test('export validates file publication without treating it as a guest disk comm
 test('export rejects publication claims without bounded and matching content metadata', async () => {
   for (const invalid of [{ source: 'other' }, { destination: 'other' }, { bytes: LINUX_VM_IMPORT_BYTES + 1 },
     { sha256: 'invalid' }, { filePublished: false }, { diskCommitted: true }]) {
-    const owner = new NativeLinuxVm({ request: async (method, params) => method.endsWith('.cancel')
+    const owner = executionOwner({ request: async (method, params) => method.endsWith('.cancel')
       ? { cancelRequested: false, settled: true }
       : { ...completed(params), source: params.source, destination: params.destination, diskCommitted: false,
         filePublished: true, bytes: 3, sha256: 'a'.repeat(64), ...invalid } })
@@ -298,7 +319,7 @@ test('export rejects publication claims without bounded and matching content met
 
 test('uncertain host publication closes the export owner and preserves the publication fact', async () => {
   for (const filePublished of [true, null]) {
-    const owner = new NativeLinuxVm({ request: async (method, params) => method.endsWith('.cancel')
+    const owner = executionOwner({ request: async (method, params) => method.endsWith('.cancel')
       ? { cancelRequested: false, settled: true }
       : { ...completed(params), status: 'outcome_uncertain', diskCommitted: false,
         filePublished, detail: 'host publication uncertain' } })
@@ -312,7 +333,7 @@ test('uncertain host publication closes the export owner and preserves the publi
 })
 
 test('failed exports and denied write policy never claim a published file', async () => {
-  const owner = new NativeLinuxVm({ request: async (_method, params) => ({ ...completed(params),
+  const owner = executionOwner({ request: async (_method, params) => ({ ...completed(params),
     exitCode: 73, output: 'target already exists', diskCommitted: false, filePublished: false }) })
   const args = { source: 'report', destination: 'out' }
   await assert.rejects(owner.exportFile(sessionId, args, new AbortController().signal,

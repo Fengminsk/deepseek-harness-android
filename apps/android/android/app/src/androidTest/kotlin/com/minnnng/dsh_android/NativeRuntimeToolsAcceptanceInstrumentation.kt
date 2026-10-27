@@ -46,7 +46,7 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
             val workspace = File(appWorkspaceRoot, ".device-acceptance-$fixtureId").apply { check(mkdirs()) }
             val fixture = File(home, "fixture").apply { check(mkdirs()) }
             for (name in listOf("bootstrap.mjs", "index.mjs", "report.mjs", "workflow.mjs", "ptc.mjs", "linux.mjs",
-                "apk-fixture.json", "apk-overflow-fixture.json")) {
+                "python-analysis.mjs", "python-analysis.py", "apk-fixture.json", "apk-overflow-fixture.json")) {
                 context.assets.open(name).use { source -> File(fixture, name).outputStream().use { source.copyTo(it) } }
             }
             File(fixture, "configuration.json").writeText(JSONObject().put("runtime", runtime.absolutePath)
@@ -112,6 +112,7 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
                                         "native.linuxVm.cancel" -> linuxOwner.cancel(params)
                                         "native.linuxVm.importFile" -> linuxOwner.importFile(params)
                                         "native.linuxVm.exportFile" -> linuxOwner.exportFile(params)
+                                        "native.linuxVm.inspect" -> linuxOwner.inspect(params)
                                         else -> error("Unexpected acceptance native method: $method")
                                     }
                                     write(JSONObject().put("jsonrpc", "2.0").put("id", id).put("result", value ?: JSONObject.NULL))
@@ -138,9 +139,9 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
                 } catch (failure: Throwable) { done.completeExceptionally(failure) }
             }
             try {
-                // Seven parent boots and three child boots each retain the
+                // Eight parent boots and three child boots each retain the
                 // production 120-second limit plus 30 seconds for retirement.
-                val linuxBudgetSeconds = 10L * (120L + 30L) + 120L
+                val linuxBudgetSeconds = 11L * (120L + 30L) + 120L
                 val budgetSeconds = when (suite) {
                     "linux" -> linuxBudgetSeconds
                     "all" -> linuxBudgetSeconds + 2L * 240L

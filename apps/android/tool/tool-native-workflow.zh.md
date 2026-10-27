@@ -4,7 +4,7 @@
 
 `registerAndroidWorkflowTool` 通过 `createWorkflowToolDefinition` 复用原版 `workflow` 的参数、结果和展示契约。执行器及构建持有的可用性函数由 App 提供，默认关闭。配置档字段、模型参数或用户凭据都不能开启此门槛。生产 `index.mjs` 保持 `MODEL_WORKFLOW_DEVICE_ACCEPTED=false`，仅导入此模块不会注册工具。系统提示只允许在用户明确要求工作流或多 Agent 编排时使用 workflow。
 
-`modelWorkflowCapability` 将最大已审查子级工具集合报告为 `read`、`glob`、`grep`、`write`、`edit`、`web_search`、`web_fetch`、`linux_exec`、`linux_import` 和 `linux_export`，对应 `childTools: 'reviewed-parent-tools'`。这不保证某个父级或子级一定具有其中任何工具，也不授权调用关闭中的生产入口。Linux 工具必须已在父级注册；`LINUX_VM_DEVICE_ACCEPTED=false` 使生产环境中仍没有这些工具。能力说明描述激活时工作区、父子策略交集、继承的网页提供方，以及子 Session 私有且离线的 Linux 磁盘。面向模型的工具描述与系统提示列明这些条件能力及限制。
+`modelWorkflowCapability` 将最大已审查子级工具集合报告为 `read`、`glob`、`grep`、`write`、`edit`、`web_search`、`web_fetch`、`linux_exec`、`linux_import`、`linux_export` 和 `linux_inspect`，对应 `childTools: 'reviewed-parent-tools'`。这不保证某个父级或子级一定具有其中任何工具，也不授权调用关闭中的生产入口。Linux 工具必须已在父级注册；`LINUX_VM_DEVICE_ACCEPTED=false` 使生产环境中仍没有这些工具。能力说明描述激活时工作区、父子策略交集、继承的网页提供方，以及子 Session 私有且离线的 Linux 磁盘。面向模型的工具描述与系统提示列明这些条件能力及限制。
 
 每次调用捕获准确的当前 ToolRuntime 定义和注册身份，核验存活的父 Agent 与真实 Session ID，并只消费一次 App 持有的准入票据。App 发放无文件及网络授权的 DSL 作用域，限定 120 秒、最多八个子级且并发两个。原版 JavaScript DSL 经固定的隔离客体执行，不在 Node 宿主中运行。子级工具使用独立的宿主授权，不向 DSL 提供直接文件系统或网络访问。
 

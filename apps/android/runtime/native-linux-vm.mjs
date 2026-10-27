@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { HarnessError } from '@deepseek-ai/dsh-llm'
+import { prepareLinuxVmInspection, parseLinuxVmInspection } from './native-linux-vm-inspection.mjs'
+export { prepareLinuxVmInspection } from './native-linux-vm-inspection.mjs'
 
 const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}(?![\s\S])/
 const TERMINAL = new Set(['completed', 'cancelled', 'timed_out', 'failed', 'worker_died', 'outcome_uncertain'])
@@ -7,6 +9,17 @@ export const LINUX_VM_COMMAND_BYTES = 32 * 1024
 export const LINUX_VM_OUTPUT_BYTES = 64 * 1024
 export const LINUX_VM_TIMEOUT_MS = 120_000
 export const LINUX_VM_IMPORT_BYTES = 64 * 1024 * 1024
+
+/** No command was dispatched; prior Session execution facts need review first. */
+export class LinuxVmRecoveryRequiredError extends HarnessError {
+  constructor(inspection) {
+    super(inspection.status === 'active'
+      ? 'Linux 仍在执行，当前命令未启动。请等待后查看状态。'
+      : 'Linux 有待核对的执行记录，当前命令未启动。请先查看状态，勿自动重试。',
+    'linux-vm/recovery-required')
+    this.inspection = inspection
+  }
+}
 
 function object(value, fields) {
   if (!value || typeof value !== 'object' || Array.isArray(value)
@@ -94,7 +107,7 @@ function receipt(value, request, method) {
     || value.status === 'completed' && (value.exitCode === null || value.guestUid === null
       || value.timedOut || value.cancelled
       || value.diskCommitted !== (exporting ? false : importing ? value.exitCode === 0 : request.persistChanges))
-    || value.status !== 'completed' && value.diskCommitted) {
+    || !['completed', 'outcome_uncertain'].includes(value.status) && value.diskCommitted) {
     throw new Error('Linux VM returned an invalid execution receipt')
   }
   if (exporting && (!(typeof value.filePublished === 'boolean'
@@ -136,10 +149,40 @@ export class NativeLinuxVm {
   #transport
   #runs = new Map()
   #closed = false
+  #disposed = false
+  #inspectedSessions = new Set()
 
   constructor(transport) {
     if (!transport || typeof transport.request !== 'function') throw new TypeError('Native transport required')
     this.#transport = transport
+  }
+
+  /**
+   * @param sessionId - Current registered Agent's Session, never model-selected.
+   * @param args - An optional canonical runId; omission inspects recent and unresolved records.
+   * @param signal - Cancellation of this read-only query.
+   * @returns Bounded recovery facts. Inspection never reopens a closed execution owner.
+   */
+  async inspect(sessionId, args, signal) {
+    if (this.#disposed) throw new Error('Linux VM owner is disposed')
+    if (typeof sessionId !== 'string' || !SESSION_ID.test(sessionId)) throw new TypeError('Invalid Agent session ID')
+    if (!(signal instanceof AbortSignal)) throw new TypeError('An inspection signal is required')
+    signal.throwIfAborted()
+    const request = { sessionId, ...prepareLinuxVmInspection(args) }
+    const deadline = AbortSignal.any([signal, AbortSignal.timeout(10000)])
+    try {
+      const response = await boundedRequest(this.#transport, 'native.linuxVm.inspect', request, deadline)
+      const observation = parseLinuxVmInspection(response, request)
+      if (observation.status === 'blocked' || observation.status === 'unknown') this.#closed = true
+      return observation
+    } catch (cause) {
+      // Cancelling a read-only observation has no publication to settle.
+      // An invalid or unavailable native observation cannot authorize new work.
+      if (signal.aborted) throw signal.reason
+      this.#closed = true
+      throw new HarnessError('无法确认 Linux 执行记录，已停止后续命令。请查看任务状态，勿自动重试。',
+        'linux-vm/inspection-unavailable', { cause })
+    }
   }
 
   /**
@@ -200,6 +243,16 @@ export class NativeLinuxVm {
       try {
         signal.throwIfAborted()
         deadline.throwIfAborted()
+        if (!this.#inspectedSessions.has(sessionId)) {
+          const observation = await this.inspect(sessionId, {}, signal)
+          if (observation.blocked || observation.needsReview) {
+            throw new LinuxVmRecoveryRequiredError(observation)
+          }
+          this.#inspectedSessions.add(sessionId)
+        }
+        signal.throwIfAborted()
+        deadline.throwIfAborted()
+        if (this.#closed || this.#disposed) throw new Error('Linux VM owner is closed')
         run.dispatched = true
         const result = await boundedRequest(this.#transport, method, request, deadline)
         return Object.freeze({ ...receipt(result, request, method), cancelRequested: run.cancelRequested })
@@ -226,14 +279,15 @@ export class NativeLinuxVm {
 
   async dispose() {
     this.#closed = true
+    this.#disposed = true
     const running = [...this.#runs.entries()]
     const outcomes = await Promise.all(running.map(async ([id, { run, cancel }]) => {
       run.cancelRequested = true
       void cancel()
       const [outcome] = await Promise.allSettled([run.done])
-      return { id, outcome }
+      return { id, outcome, dispatched: run.dispatched }
     }))
-    const uncertain = outcomes.find(value => value.outcome.status === 'rejected')
+    const uncertain = outcomes.find(value => value.dispatched && value.outcome.status === 'rejected')
     if (uncertain) throw uncertain.outcome.reason instanceof LinuxVmOutcomeUncertainError
       ? uncertain.outcome.reason : new LinuxVmOutcomeUncertainError(uncertain.id, uncertain.outcome.reason)
   }

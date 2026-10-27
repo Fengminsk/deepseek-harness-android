@@ -15,8 +15,9 @@ const REVIEWED = new Map([
   ['web_fetch', isFirstPartyWebFetchDefinition],
   ['linux_exec', isFirstPartyLinuxDefinition], ['linux_import', isFirstPartyLinuxDefinition],
   ['linux_export', isFirstPartyLinuxDefinition],
+  ['linux_inspect', isFirstPartyLinuxDefinition],
 ])
-const LINUX = new Set(['linux_exec', 'linux_import', 'linux_export'])
+const LINUX = new Set(['linux_exec', 'linux_import', 'linux_export', 'linux_inspect'])
 const FILES = new Set(['read', 'glob', 'grep', 'write', 'edit', 'linux_import', 'linux_export'])
 const WRITES = new Set(['write', 'edit', 'linux_import', 'linux_export'])
 const WRITABLE = new Set(['workspace-write', 'danger-full-access'])

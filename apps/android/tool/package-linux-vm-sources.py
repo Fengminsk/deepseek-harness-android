@@ -25,6 +25,7 @@ PROJECT_INPUTS = (
         'package-linux-vm-sources.py', 'test_linux_vm_candidate.py', 'tinyemu-build.md', 'tinyemu-build.zh.md',
         'linux-vm-release.py', 'test_linux_vm_release.py', 'verify-apk.ps1', 'verify-apk.test.ps1', 'runtime-lock.json',
         'linux-vm-runtime.md', 'linux-vm-runtime.zh.md',
+        'linux-vm-recovery.md', 'linux-vm-recovery.zh.md', 'acceptance-linux-vm-recovery.mjs',
         'acceptance-linux-vm-network.mjs', 'linux-vm-network.md', 'linux-vm-network.zh.md',
         'linux-vm-host/LinuxVmNetworkHost.java', 'linux-vm-host/dsh-fetch.py',
         'linux-vm-host/LinuxVmHost.java', 'linux-vm-host/include/sys/select.h',
@@ -35,7 +36,7 @@ PROJECT_INPUTS = (
         'CMakeLists.txt', 'linux_vm_engine.c', 'linux_vm_files.c', 'linux_vm.cmake',
     )),
     *(f'apps/android/android/app/src/main/java/com/minnnng/dsh_android/{name}.java' for name in (
-        'LinuxVmConsole', 'LinuxVmBlockStore',
+        'LinuxVmConsole', 'LinuxVmBlockStore', 'LinuxVmRecoveryStore',
         'LinuxVmHttpsMailbox', 'LocalHttpConnectTunnel', 'IsolatedNetworkBroker',
         'IsolatedNetworkJournal', 'IsolatedExecutionPolicyOwner', 'AndroidJava28',
         'IsolatedCapabilityBroker', 'IsolatedScriptWire', 'IsolatedWorkerInput',
@@ -48,7 +49,9 @@ PROJECT_INPUTS = (
     'apps/android/android/app/build.gradle.kts',
     'apps/android/android/app/linux-vm-rules.pro',
     'apps/android/android/app/src/test/java/com/minnnng/dsh_android/LinuxVmNetworkHostTest.java',
+    'apps/android/android/app/src/test/java/com/minnnng/dsh_android/LinuxVmRecoveryStoreTest.java',
     'apps/android/runtime/native-linux-vm.mjs',
+    'apps/android/runtime/native-linux-vm-inspection.mjs',
     'apps/android/runtime/tool-linux-vm.mjs',
 )
 

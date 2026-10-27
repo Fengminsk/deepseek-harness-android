@@ -20,7 +20,7 @@ import { modelWorkflowCapability, registerAndroidWorkflowTool } from './tool-nat
 import { NativeLinuxCommands } from './native-linux-commands.mjs'
 import { registerIsolatedLinuxTool } from './tool-isolated-linux.mjs'
 import { NativeLinuxVm } from './native-linux-vm.mjs'
-import { registerLinuxVmTool, registerLinuxImportTool, registerLinuxExportTool } from './tool-linux-vm.mjs'
+import { registerLinuxVmTool, registerLinuxImportTool, registerLinuxExportTool, registerLinuxInspectTool } from './tool-linux-vm.mjs'
 import AndroidShell from './android-shell.mjs'
 import { WebAccess } from './web-access.mjs'
 import { AppSessions } from './sessions.mjs'
@@ -169,6 +169,7 @@ export function apply(ctx, config) {
     registerLinuxVmTool(linuxCtx, nativeLinuxVm, LINUX_VM_DEVICE_ACCEPTED)
     registerLinuxImportTool(linuxCtx, nativeLinuxVm, LINUX_VM_DEVICE_ACCEPTED, process.cwd())
     registerLinuxExportTool(linuxCtx, nativeLinuxVm, LINUX_VM_DEVICE_ACCEPTED, process.cwd())
+    registerLinuxInspectTool(linuxCtx, nativeLinuxVm, LINUX_VM_DEVICE_ACCEPTED)
   })
   const credentials = new AndroidCredentials(ctx, transport)
   ctx.plugin(AndroidShell)

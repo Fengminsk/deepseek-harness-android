@@ -103,6 +103,16 @@ final class LinuxVmBlockStore {
         }
     }
 
+    /** Read-only recovery checks every referenced block without allocating a complete guest disk. */
+    void validate(int bytes, Map<Integer, String> blocks) throws IOException {
+        if (bytes < 1 || bytes > MAX_BYTES) throw new IOException("Invalid Linux disk length");
+        Map<Integer, String> checked = manifest(blocks, bytes, false);
+        requireDirectory();
+        for (Map.Entry<Integer, String> entry : checked.entrySet()) {
+            readBlock(entry.getValue(), blockLength(bytes, entry.getKey()));
+        }
+    }
+
     private void publish(String checksum, byte[] bytes) throws IOException {
         // The JVM monitor prevents OverlappingFileLockException between store
         // instances; the file lock covers independent App processes as well.

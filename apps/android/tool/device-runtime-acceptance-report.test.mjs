@@ -18,14 +18,15 @@ const ptc = () => ({ kind: 'production-node-native-ptc', passed: 9, failed: 0, c
   'model-busy-loop-has-independent-cpu-limit',
   'real-public-web-fetch',
 ].map(name => ({ name, status: 'passed' })).concat({ name: 'saf-revocation-and-search', status: 'unverified' }) })
-const linux = () => ({ suite: 'linux', passed: 5, failed: 0, checks: [
+const linux = () => ({ suite: 'linux', passed: 6, failed: 0, checks: [
   'production-tool-shell-and-session-persistence',
+  'production-python-stdlib-file-analysis',
   'production-tool-import-hash-and-guest-readback',
   'production-tool-export-hash-and-no-overwrite',
   'production-read-only-policy-discards-disk-and-denies-import',
   'workflow-child-linux-import-exec-export',
 ].map(name => ({ name, status: 'passed' })),
-unverified: ['Python and analyst package availability', 'Guest networking', 'Process-death import recovery'] })
+unverified: ['Guest networking', 'Process-death import recovery'] })
 
 test('a complete workflow retains the existing detail format and executed-check pass', () => {
   const report = workflow(), original = structuredClone(report)
@@ -81,12 +82,12 @@ test('Linux free-standing evidence gaps participate in completeness and cannot s
     const result = summarizeAcceptance('linux', [input])
     assert.equal(result.passed, true)
     assert.equal(result.complete, false)
-    assert.equal(result.coverage.passed.length, 5)
+    assert.equal(result.coverage.passed.length, 6)
     assert.deepEqual(result.coverage.unverified, report.unverified.map(name => `linux:${name}`))
   }
 })
 
-test('the four parent Linux checks cannot certify a workflow child Linux execution', () => {
+test('parent Linux checks cannot certify a workflow child Linux execution', () => {
   const report = linux()
   report.checks.pop()
   const result = summarizeAcceptance('linux', [report])
@@ -94,6 +95,21 @@ test('the four parent Linux checks cannot certify a workflow child Linux executi
   assert.equal(result.complete, false)
   assert.ok(result.coverage.unverified.includes('linux:workflow-child-linux-import-exec-export'))
   assert.ok(result.coverage.issues.includes('Missing required check: linux:workflow-child-linux-import-exec-export'))
+})
+
+test('Python analysis is required and a failed analysis cannot be hidden by passing counters', () => {
+  const missing = linux()
+  missing.checks = missing.checks.filter(check => check.name !== 'production-python-stdlib-file-analysis')
+  const omitted = summarizeAcceptance('linux', [missing])
+  assert.equal(omitted.complete, false)
+  assert.ok(omitted.coverage.unverified.includes('linux:production-python-stdlib-file-analysis'))
+  const failed = linux()
+  failed.checks.find(check => check.name === 'production-python-stdlib-file-analysis').status = 'failed'
+  const result = summarizeAcceptance('linux', [failed])
+  assert.equal(result.passed, false)
+  assert.equal(result.complete, false)
+  assert.deepEqual(result.coverage.failed, ['linux:production-python-stdlib-file-analysis'])
+  assert.deepEqual(result.coverage.unverified, ['linux:Guest networking', 'linux:Process-death import recovery'])
 })
 
 test('all requires reports from every suite rather than only the reports returned', () => {

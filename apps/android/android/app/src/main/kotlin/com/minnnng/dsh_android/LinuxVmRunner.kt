@@ -125,6 +125,8 @@ internal object LinuxVmRunner {
         var bound = false
         try {
             if (cancelled.asBoolean) return Result("cancelled", cancelled = true, retirementConfirmed = true)
+            // This durable boundary precedes binding, so no Binder START can outrun admission.
+            images.markDispatched()
             val intent = Intent(context, IsolatedLinuxVmService::class.java)
             bound = if (Build.VERSION.SDK_INT >= 29) context.bindIsolatedService(intent,
                 Context.BIND_AUTO_CREATE, "linux_vm_" + id.replace("-", ""), context.mainExecutor, connection)

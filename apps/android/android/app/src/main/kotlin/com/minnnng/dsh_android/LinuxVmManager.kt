@@ -15,6 +15,16 @@ internal class LinuxVmManager(private val context: Context) : AutoCloseable {
     private val images = LinuxVmImageStore(context)
     private val publication = Any()
 
+    fun inspect(params: JSONObject): JSONObject {
+        require(params.keys().asSequence().toSet() in setOf(setOf("sessionId"), setOf("sessionId", "id"))) {
+            "Invalid Linux inspection fields"
+        }
+        require(params.opt("sessionId") is String && (!params.has("id") || params.opt("id") is String)) {
+            "Invalid Linux inspection identity"
+        }
+        return images.inspect(params.getString("sessionId"), if (params.has("id")) params.getString("id") else null)
+    }
+
     fun execute(params: JSONObject): JSONObject {
         val fields = setOf("id", "sessionId", "command", "timeoutMs", "persistChanges")
         require(params.keys().asSequence().toSet() == fields) { "Invalid Linux VM request fields" }
@@ -75,6 +85,7 @@ internal class LinuxVmManager(private val context: Context) : AutoCloseable {
         var input: LinuxVmFileInput? = null
         var output: LinuxVmFileOutput? = null
         var exportPublished: Boolean? = false
+        var openingImages = false
         try {
             ownsCapacity = busy.compareAndSet(false, true)
             check(ownsCapacity) { "Linux VM is already executing a command" }
@@ -85,12 +96,14 @@ internal class LinuxVmManager(private val context: Context) : AutoCloseable {
                 else input = LinuxVmFileInput.open(context, source, requireNotNull(destination),
                     BooleanSupplier { ticket.isCancelled })
             }
-            return images.open(sessionId, id).use { lease ->
+            openingImages = true
+            return images.open(sessionId, id, if (export) "export" else if (source != null) "import" else "execute").use { lease ->
                 retired = false
                 val execution = LinuxVmRunner.run(context, id, input?.command() ?: output?.command() ?: command,
                     timeoutMs, lease, BooleanSupplier { ticket.isCancelled }, input?.memory ?: output?.input, output?.memory)
                 executed = execution
                 retired = execution.retirementConfirmed
+                if (retired) lease.markRetired(execution.status, execution.exitCode)
                 val commit = persistChanges && retired && execution.status == "completed" && !ticket.isCancelled
                     && (input == null || execution.exitCode == 0)
                 // An aborted waiter cannot commit a disk even if shutdown won
@@ -100,7 +113,9 @@ internal class LinuxVmManager(private val context: Context) : AutoCloseable {
                         if (ticket.isCancelled) false else { publish(); true }
                     }
                 }
-                var settled = if (!committed && ticket.isCancelled)
+                var settled = if (!retired) execution.copy(status = "outcome_uncertain",
+                    detail = "Linux worker retirement is unconfirmed; inspect this run before continuing")
+                else if (!committed && ticket.isCancelled)
                     execution.copy(status = "cancelled", cancelled = true) else execution
                 val exportFields = JSONObject().put("filePublished", false)
                 output?.let { snapshot ->
@@ -109,6 +124,8 @@ internal class LinuxVmManager(private val context: Context) : AutoCloseable {
                         try {
                             snapshot.stage(settled.output, BooleanSupplier { ticket.isCancelled }).use { staged ->
                                 exportFields.put("bytes", staged.bytes).put("sha256", staged.sha256)
+                                lease.prepareExport()
+                                exportFields.put("filePublished", JSONObject.NULL)
                                 images.recordExport(sessionId, id, "prepared", exportFields)
                                 val published = synchronized(publication) {
                                     if (ticket.isCancelled) null else {
@@ -119,6 +136,7 @@ internal class LinuxVmManager(private val context: Context) : AutoCloseable {
                                 }
                                 if (published == null) {
                                     exportPublished = false
+                                    exportFields.put("filePublished", false)
                                     settled = settled.copy(status = "cancelled", cancelled = true)
                                 } else {
                                     exportPublished = published.published
@@ -140,7 +158,11 @@ internal class LinuxVmManager(private val context: Context) : AutoCloseable {
                         }
                     }
                 }
-                result(id, sessionId, settled, committed).apply {
+                if (export && retired) {
+                    exportFields.put("filePublished", exportPublished ?: JSONObject.NULL)
+                    lease.settleExport(settled.status, exportPublished)
+                }
+                result(id, sessionId, settled, if (retired) committed else null).apply {
                     input?.let { snapshot ->
                         put("source", source); put("destination", destination)
                         put("bytes", snapshot.bytes); put("sha256", snapshot.sha256)
@@ -150,6 +172,21 @@ internal class LinuxVmManager(private val context: Context) : AutoCloseable {
             }
         } catch (failure: Exception) {
             val execution = executed
+            if (openingImages) {
+                // Local variables cannot establish whether dispatch or a rename crossed its durable boundary.
+                // Inspect after use{} released the lease; never overwrite an uncertain journal during cleanup.
+                val inspection = images.inspect(sessionId, id)
+                val record = inspection.getJSONArray("records").optJSONObject(0)
+                val knownRetired = record?.opt("retirementConfirmed") as? Boolean
+                val knownDisk = record?.opt("diskCommitted") as? Boolean
+                val knownFile = record?.opt("filePublished") as? Boolean
+                retired = knownRetired == true
+                admission.close()
+                return result(id, sessionId, (execution ?: LinuxVmRunner.Result("outcome_uncertain"))
+                    .copy(status = "outcome_uncertain", retirementConfirmed = retired,
+                        detail = "Linux recovery requires inspection; no command is replayed and this owner is closed"), knownDisk)
+                    .apply { if (export) put("filePublished", knownFile ?: JSONObject.NULL) }
+            }
             if (execution == null && ticket.isCancelled) {
                 return result(id, sessionId, LinuxVmRunner.Result("cancelled", cancelled = true,
                     retirementConfirmed = retired), false).apply { if (export) put("filePublished", false) }

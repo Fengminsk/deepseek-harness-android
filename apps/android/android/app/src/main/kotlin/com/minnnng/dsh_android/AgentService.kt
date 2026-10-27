@@ -605,6 +605,7 @@ class AgentService : Service() {
                         "native.linuxCommand.execute" -> linuxCommands.execute(params)
                         "native.linuxCommand.cancel" -> linuxCommands.cancel(params)
                         "native.linuxVm.execute" -> linuxVm.execute(params)
+                        "native.linuxVm.inspect" -> linuxVm.inspect(params)
                         "native.linuxVm.importFile" -> linuxVm.importFile(params)
                         "native.linuxVm.exportFile" -> linuxVm.exportFile(params)
                         "native.linuxVm.cancel" -> linuxVm.cancel(params)
