@@ -1,6 +1,27 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="com.minnnng.dsh_android.permission.RUNTIME_ACCEPTANCE" />
+    <application>
+        <provider
+            android:name="com.minnnng.dsh_android.PtcSafAcceptanceProvider"
+            android:authorities="com.minnnng.dsh_android.test.ptc.documents"
+            android:exported="true"
+            android:grantUriPermissions="true"
+            android:permission="android.permission.MANAGE_DOCUMENTS" />
+        <receiver
+            android:name="com.minnnng.dsh_android.PtcSafAcceptanceControlReceiver"
+            android:exported="true"
+            android:permission="com.minnnng.dsh_android.permission.RUNTIME_ACCEPTANCE" />
+    </application>
     <instrumentation
         android:name="com.minnnng.dsh_android.IsolatedScriptAcceptanceInstrumentation"
+        android:targetPackage="com.minnnng.dsh_android"
+        android:targetProcesses="com.minnnng.dsh_android:agent" />
+    <instrumentation
+        android:name="com.minnnng.dsh_android.PtcSafAcceptanceInstrumentation"
+        android:targetPackage="com.minnnng.dsh_android"
+        android:targetProcesses="com.minnnng.dsh_android:agent" />
+    <instrumentation
+        android:name="com.minnnng.dsh_android.BlackScreenAcceptanceInstrumentation"
         android:targetPackage="com.minnnng.dsh_android"
         android:targetProcesses="com.minnnng.dsh_android:agent" />
     <instrumentation

@@ -55,6 +55,8 @@ Storage is bounded: a complete scan admits at most 1,024 run records and inspect
 
 Run `node apps/android/tool/acceptance-linux-vm-recovery.mjs` from the repository root. The host runner preserves its report under `.cache/android/linux-vm-recovery-tests/` and emits `.cache/android/linux-recovery-native-contract.json` using the same Java encoder as the Android adapter. It exercises real files and atomic moves, including child-process termination after dispatch and after pointer publication. Directory fsync, Binder retirement and Android process-death behavior still require device evidence; Windows host checks do not certify those boundaries.
 
+The separate [device lifecycle runner](linux-vm-lifecycle-device.md) prepares live cancellation, import death after retirement but before publication, and ordinary-upgrade workspace checks. Its host tests do not replace the saved reports from those device runs.
+
 <a id="dev-note"></a>
 ## Dev Note
 

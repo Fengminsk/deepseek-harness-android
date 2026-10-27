@@ -7,6 +7,17 @@ const workflow = () => ({ suite: 'workflow', passed: 3, details: [
   { case: 'real-confined-child-and-durable-session', runId: 'child' },
   { case: 'real-background-job-kill-and-child-retirement', runId: 'background', jobId: 'job' },
 ] })
+
+test('disruptive lifecycle checks require explicit suites and cannot join all implicitly', () => {
+  const all = summarizeAcceptance('all', [])
+  assert.ok(all.coverage.required.every(check => !check.startsWith('ptc-process-death:') && !check.startsWith('ptc-saf:')))
+  for (const [suite, name] of [['ptc-process-death', 'ptc-killed-dispatch-no-replay'], ['ptc-saf', 'saf-revocation-and-search']]) {
+    assert.equal(summarizeAcceptance(suite, []).complete, false)
+    const result = summarizeAcceptance(suite, [{ suite, checks: [{ name, status: 'passed' }] }])
+    assert.equal(result.complete, true)
+    assert.deepEqual(result.coverage.required, [`${suite}:${name}`])
+  }
+})
 const ptc = () => ({ kind: 'production-node-native-ptc', passed: 9, failed: 0, checks: [
   'first-party-list-read-glob-roots-and-guard',
   'authorized-saf-read-through-native-ptc-callback',

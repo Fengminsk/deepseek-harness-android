@@ -1,4 +1,6 @@
 const requiredChecks = {
+  'ptc-process-death': ['ptc-killed-dispatch-no-replay'],
+  'ptc-saf': ['saf-revocation-and-search'],
   workflow: [
     'real-tool-runtime-native-compute',
     'real-confined-child-and-durable-session',
@@ -35,7 +37,7 @@ const requiredChecks = {
  * @returns {{passed: boolean, complete: boolean, coverage: object}} Scoped acceptance and named evidence gaps.
  */
 export function summarizeAcceptance(suite, reports) {
-  const suites = suite === 'all' ? Object.keys(requiredChecks)
+  const suites = suite === 'all' ? ['workflow', 'ptc', 'linux']
     : Object.hasOwn(requiredChecks, suite) ? [suite] : []
   const coverage = { required: suites.flatMap(name => requiredChecks[name].map(check => `${name}:${check}`)),
     passed: [], failed: [], unverified: [], issues: [] }

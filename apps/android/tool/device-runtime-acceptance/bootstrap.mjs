@@ -8,7 +8,8 @@ process.chdir(configuration.workspace)
 const runtime = pathToFileURL(realpathSync(configuration.runtime) + '/')
 registerHooks({ resolve(specifier, context, nextResolve) {
   if (/^\.\.\/\.\.\/runtime\/[a-z0-9-]+\.mjs$/.test(specifier)
-    && context.parentURL === new URL('./ptc.mjs', import.meta.url).href) {
+    && ['ptc.mjs', 'ptc-process-death.mjs', 'ptc-saf.mjs']
+      .some(name => context.parentURL === new URL(name, import.meta.url).href)) {
     return { url: new URL('node_modules/@minnnng/dsh-android-runtime/' + specifier.split('/').at(-1), runtime).href, shortCircuit: true }
   }
   if (specifier === 'node-addon-require-builtin' && process.platform === 'android') {

@@ -55,6 +55,8 @@ App 的独占文件锁保护磁盘发布。锁释放不代表隔离 worker 已�
 
 从仓库根目录运行 `node apps/android/tool/acceptance-linux-vm-recovery.mjs`。主机测试器将报告保留在 `.cache/android/linux-vm-recovery-tests/`，并使用与 Android 适配器相同的 Java 编码器生成 `.cache/android/linux-recovery-native-contract.json`。它使用真实文件与原子移动，包括在派发后及指针发布后终止子进程。目录 fsync、Binder 退役和 Android 进程死亡行为仍需真机证据；Windows 主机检查不能认证这些边界。
 
+独立的[设备生命周期执行器](linux-vm-lifecycle-device.zh.md)准备运行中取消、导入退役后且发布前的进程终止，以及普通升级后的工作区检查。其主机测试不能代替这些设备运行保存的报告。
+
 <a id="dev-note"></a>
 ## 开发备注
 

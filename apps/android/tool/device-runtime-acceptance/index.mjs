@@ -89,7 +89,11 @@ export async function apply(ctx) {
         await ctx.agentPresets.register({ id: 'device-acceptance-parent', plugins: [] })
         const adapter = new FixtureAdapter()
         ctx.llm.registerAdapter(['device-acceptance'], adapter)
-        const handle = await ctx.agents.create({ sessionId: SessionId(`android-acceptance-${randomUUID()}`),
+        const ptcDeath = configuration.suite === 'ptc-process-death' ? configuration.ptcDeath : null
+        const handle = ptcDeath?.phase === 'recover'
+          ? await ctx.agents.resume({ resumeSessionId: SessionId(`ptc-death-${ptcDeath.caseId}`) })
+          : await ctx.agents.create({ sessionId: SessionId(ptcDeath
+            ? `ptc-death-${ptcDeath.caseId}` : `android-acceptance-${randomUUID()}`),
           agentOptions: { provider: 'device-acceptance', model: 'fixture' },
           meta: { cwd: process.cwd() },
           setup: async agentCtx => { await ctx.agentPresets.mount(agentCtx, 'device-acceptance-parent') },
@@ -113,6 +117,16 @@ export async function apply(ctx) {
             const { runLinuxAcceptance } = await import('./linux.mjs')
             reports.push(await runLinuxAcceptance({ ctx, transport, agent, workspace: process.cwd(),
               appWorkspaceRoot: configuration.appWorkspaceRoot, nativeModule, adapter, workflow }))
+          }
+          if (configuration.suite === 'ptc-process-death') {
+            const { runPtcProcessDeathAcceptance } = await import('./ptc-process-death.mjs')
+            reports.push(await runPtcProcessDeathAcceptance({ ctx, transport, agent,
+              workspace: process.cwd(), callbackRouting, configuration: ptcDeath }))
+          }
+          if (configuration.suite === 'ptc-saf') {
+            const { runPtcSafAcceptance } = await import('./ptc-saf.mjs')
+            reports.push(await runPtcSafAcceptance({ ctx, transport, agent, callbackRouting,
+              root: configuration.saf.root, caseId: configuration.saf.caseId }))
           }
           if (await ctx.sessions.flush(agent.session) !== true) throw new Error('Acceptance Session did not flush')
         } finally { await workflow?.dispose() }

@@ -13,14 +13,20 @@ import java.util.concurrent.TimeUnit
 class LinuxVmAcceptanceInstrumentation : Instrumentation() {
     private var selected = "boot"
     private var retainedSession: String? = null
+    private var lifecycleArguments = Bundle()
     override fun onCreate(arguments: Bundle?) {
         super.onCreate(arguments)
         selected = arguments?.getString("suite") ?: "boot"
         retainedSession = arguments?.getString("sessionId")
+        lifecycleArguments = arguments?.let { Bundle(it) } ?: Bundle()
         start()
     }
 
     override fun onStart() {
+        if (selected.startsWith("lifecycle-")) {
+            LinuxVmLifecycleAcceptance.run(this, selected.removePrefix("lifecycle-"), lifecycleArguments)
+            return
+        }
         val results = JSONArray()
         var failure: String? = null
         try {

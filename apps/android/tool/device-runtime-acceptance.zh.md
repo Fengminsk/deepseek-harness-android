@@ -2,11 +2,15 @@
 
 [English](device-runtime-acceptance.md)
 
-`NativeRuntimeToolsAcceptanceInstrumentation` 使用已打包的 Android Node 引擎、普通 `dsh --profile device-acceptance` 启动入口、生产 AgentLoop、ToolRuntime、Session 持久化、子 Agent／任务服务及原生 Binder owner。样例 profile 与脚本模型仅存在于 AndroidTest 资产中，产品运行时不注册这些样例。每次执行创建独立的 `noBackup/native-runtime-acceptance/<uuid>` home，与用户 profile、凭据、会话分开。回调通道调用生产工作流／PTC owner，但只代表有限的测试承载，不代表完整 `AgentService` 或 UI 启动路径。
+`NativeRuntimeToolsAcceptanceInstrumentation` 使用已打包的 Android Node 引擎、普通 `dsh --profile device-acceptance` 启动入口、生产 AgentLoop、ToolRuntime、Session 持久化、子 Agent／任务服务及原生 Binder owner。样例 profile 与脚本模型仅存在于 AndroidTest 资产中，产品运行时不注册这些样例。标准执行创建独立的 `noBackup/native-runtime-acceptance/<uuid>` home，与用户 profile、凭据、会话分开。显式 PTC 恢复会复用自己准备的 home 和 Session，并保留原样例。回调通道调用生产工作流／PTC owner，但只代表有限的测试承载，不代表完整 `AgentService` 或 UI 启动路径。
+
+`all` 只包含 `workflow`、`ptc` 和 `linux`。独立的 `ptc-process-death` 与 `ptc-saf` 需要各自准备样例，不会隐式加入 `all`；准备、清理和证据限制见 [PTC 生命周期验收](ptc-lifecycle-device.zh.md)。
 
 使用 `-PdshAcceptanceBuildType=release -Ptarget-platform=android-arm64` 同时构建 App 和 AndroidTest，分别通过 `adb install -r` 安装；每次运行仪器测试前停止 App，保证嵌入式 Node 在新进程中启动。执行 `adb shell am instrument -w -r -e suite workflow com.minnnng.dsh_android.test/com.minnnng.dsh_android.NativeRuntimeToolsAcceptanceInstrumentation`；也可选择 `ptc`、`linux` 或 `all`。`INSTRUMENTATION_CODE: -1` 与 `passed: true` 表示至少执行了一项具名检查且没有失败，不表示完整验收通过。保留的样例 home 只包含验收数据及运行时诊断。
 
-整个样例执行期间，保持验收页面位于前台。仅 release 验收构建包含 `RuntimeAcceptanceActivity`：它位于 `:agent`，不对外导出，也没有桌面入口。仪器测试打开页面并等待其恢复前台的确认后，才准备运行时。页面只绘制纯黑色，隐藏系统栏，并将窗口亮度降至最低，不改变系统亮度设置。它可以覆盖锁屏但不会解锁设备；可见时保持亮屏，不启动 Flutter、`AgentService` 或产品 Node profile。系统返回操作可关闭页面并使样例失败；承载清理时会请求关闭页面。此前台条件避免依赖缓存后台进程获得调度。这些检查通过不代表后台 Agent 执行、锁屏存活或任务进行中进程死亡后的恢复已验收。
+整个样例执行期间，保持验收页面位于前台。仅 release 验收构建包含 `RuntimeAcceptanceActivity`：它位于 `:agent`，不对外导出，也没有桌面入口。`AcceptanceForegroundLease` 要求设备已经解锁且屏幕可交互，不会主动唤醒或解锁。只有黑色窗口已绘制、获得焦点且截图所有像素的 RGB 均为零后，才准备运行时。页面隐藏系统栏，将窗口亮度降至最低，不改变系统设置；可见时保持亮屏，不启动 Flutter、`AgentService` 或产品 Node profile。失焦、系统栏露出或系统返回操作都会使样例失败。承载清理时关闭页面。此前台条件避免依赖缓存后台进程获得调度，但不能证明后台执行或锁屏存活。
+
+运行 `BlackScreenAcceptanceInstrumentation` 可在三十秒内对包含系统栏的合成画面采样六次，只记录尺寸和结果，不保存截图。声称某台手机的黑屏保护有效前，必须取得真机证据。黑色 Activity 与 Agent 同进程：终止该进程、强停软件或安装升级均会移除黑窗。用户要求全程黑屏时，在另有屏幕保护覆盖这些切换前，不运行此类破坏性验收。正常清理同样会移除黑窗；测试结束后，主机操作方应让屏幕息屏。
 
 启动 watchdog 的期限为 120 秒，到样例 Node 派发时结束。超时后先发布 `startup-timeout` 及当前启动阶段，再让独立守护线程读取调用栈；承载最多等待两秒获取调用栈，随后报告失败且不确认清理完成。超时会阻止排队中的 worker 稍后派发 Node。整个进程被冻结时，watchdog 自身也无法执行，因此没有超时输出不代表启动仍有进展。这些启动诊断与下文的套件执行期限分开计算。
 

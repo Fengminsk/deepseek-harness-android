@@ -124,3 +124,5 @@
 -keep class com.minnnng.dsh_android.LinuxVmBlockStore$* { *; }
 -keep class com.minnnng.dsh_android.LinuxVmFilePublisher { *; }
 -keep class com.minnnng.dsh_android.LinuxVmFilePublisher$* { *; }
+-keep class com.minnnng.dsh_android.LinuxVmFileInput { *; }
+-keep class com.minnnng.dsh_android.LinuxVmFileInput$* { *; }

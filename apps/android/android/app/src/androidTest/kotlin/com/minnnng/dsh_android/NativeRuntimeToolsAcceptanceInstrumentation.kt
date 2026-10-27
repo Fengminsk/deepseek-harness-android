@@ -2,11 +2,6 @@ package com.minnnng.dsh_android
 
 import android.app.Activity
 import android.app.Instrumentation
-import android.content.BroadcastReceiver
-import android.content.Context
-import android.content.Intent
-import android.content.IntentFilter
-import android.os.Build
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
 import org.json.JSONObject
@@ -26,10 +21,21 @@ import java.util.concurrent.atomic.AtomicReference
  */
 class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
     private var suite = "workflow"
+    private var ptcPhase: String? = null
+    private var ptcCaseId: String? = null
+    private var processStopConfirmed = false
     override fun onCreate(arguments: Bundle?) {
         super.onCreate(arguments)
         suite = arguments?.getString("suite") ?: "workflow"
-        require(suite in setOf("workflow", "ptc", "linux", "all"))
+        require(suite in setOf("workflow", "ptc", "linux", "all", "ptc-process-death", "ptc-saf"))
+        if (suite == "ptc-process-death") {
+            ptcPhase = arguments?.getString("phase")
+            require(ptcPhase in setOf("prepare", "recover"))
+            ptcCaseId = requireNotNull(arguments?.getString("caseId"))
+            require(UUID.fromString(ptcCaseId).toString() == ptcCaseId && UUID.fromString(ptcCaseId).version() == 4)
+            processStopConfirmed = arguments?.getString("processStopConfirmed") == "true"
+            require(processStopConfirmed == (ptcPhase == "recover"))
+        }
         start()
     }
 
@@ -44,44 +50,14 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
         val startupSettled = AtomicBoolean(false)
         val startupTimedOut = AtomicBoolean(false)
         val app = targetContext.applicationContext
-        val fixtureId = UUID.randomUUID().toString()
+        val fixtureId = ptcCaseId ?: UUID.randomUUID().toString()
         val home = File(app.noBackupFilesDir, "native-runtime-acceptance/$fixtureId")
         report.putString("home", home.absolutePath)
         val done = CompletableFuture<JSONObject>()
-        val foregroundToken = UUID.randomUUID().toString()
-        val foregroundPermission = "${app.packageName}.permission.RUNTIME_ACCEPTANCE"
-        val foregroundReady = CompletableFuture<Boolean>()
-        val foregroundClosed = CompletableFuture<Boolean>()
-        val foregroundRegistered = AtomicBoolean(false)
-        val foregroundClosing = AtomicBoolean(false)
-        val foregroundUserClosed = AtomicBoolean(false)
-        val foregroundReceiver = object : BroadcastReceiver() {
-            override fun onReceive(context: Context, intent: Intent) {
-                if (intent.getStringExtra("token") != foregroundToken) return
-                when (intent.getStringExtra("state")) {
-                    "ready" -> foregroundReady.complete(true)
-                    "closed" -> {
-                        foregroundClosed.complete(true)
-                        if (!foregroundClosing.get()) {
-                            foregroundUserClosed.set(true)
-                            val failure = IllegalStateException("Acceptance foreground page was closed")
-                            foregroundReady.completeExceptionally(failure)
-                            done.completeExceptionally(failure)
-                        }
-                    }
-                }
-            }
-        }
+        val foreground = AtomicReference<AcceptanceForegroundLease?>()
         fun closeForeground(): Boolean {
-            if (!foregroundRegistered.get()) return true
-            try {
-                if (foregroundClosing.compareAndSet(false, true)) app.sendBroadcast(
-                    Intent("${app.packageName}.acceptance.foreground.close").setPackage(app.packageName)
-                        .putExtra("token", foregroundToken), foregroundPermission)
-                return foregroundClosed.get(2, TimeUnit.SECONDS)
-            } finally {
-                if (foregroundRegistered.compareAndSet(true, false)) app.unregisterReceiver(foregroundReceiver)
-            }
+            foreground.get()?.close()
+            return true
         }
         fun stage(value: String) {
             phase.set(value)
@@ -93,7 +69,7 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
         }
         fun startingStage(value: String) {
             check(!startupTimedOut.get()) { "Acceptance startup already timed out" }
-            check(!foregroundClosed.isDone) { "Acceptance foreground page was closed" }
+            foreground.get()?.checkActive()
             stage(value)
         }
         val startupWatchdog = Executors.newSingleThreadScheduledExecutor { task ->
@@ -153,37 +129,55 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
         var workflow: IsolatedWorkflowRunNativeBridge? = null
         var isolated: IsolatedRunNativeBridge? = null
         var linux: LinuxVmManager? = null
+        var searches: DocumentSearchManager? = null
+        var saf: PtcSafAcceptanceFixture? = null
+        val deathReady = AtomicBoolean(false)
         var socket: ParcelFileDescriptor? = null
         var readSocket: ParcelFileDescriptor? = null
         try {
             startingStage("foreground-starting")
-            val foregroundFilter = IntentFilter("${app.packageName}.acceptance.foreground.status")
-            if (Build.VERSION.SDK_INT >= 33) app.registerReceiver(foregroundReceiver, foregroundFilter,
-                foregroundPermission, null, Context.RECEIVER_NOT_EXPORTED)
-            else app.registerReceiver(foregroundReceiver, foregroundFilter, foregroundPermission, null)
-            foregroundRegistered.set(true)
-            uiAutomation.adoptShellPermissionIdentity("android.permission.START_ACTIVITIES_FROM_BACKGROUND")
-            try {
-                app.startActivity(Intent().setClassName(app.packageName, "${app.packageName}.RuntimeAcceptanceActivity")
-                    .putExtra("token", foregroundToken)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK))
-            } finally { uiAutomation.dropShellPermissionIdentity() }
-            foregroundReady.get(20, TimeUnit.SECONDS)
+            foreground.set(AcceptanceForegroundLease.open(this) { done.completeExceptionally(it) })
             startingStage("foreground-ready")
             startingStage("runtime-prepare-start")
             val runtime = RuntimeAssets.prepare(app)
             startingStage("runtime-prepared")
-            check(File(home, "workspace").mkdirs())
+            val recovering = ptcPhase == "recover"
+            if (recovering) check(home.isDirectory && File(home, "ptc-death-ready.json").isFile)
+            else check(File(home, "workspace").mkdirs())
             val appWorkspaceRoot = File(app.noBackupFilesDir, "dsh/workspace")
-            val workspace = File(appWorkspaceRoot, ".device-acceptance-$fixtureId").apply { check(mkdirs()) }
-            val fixture = File(home, "fixture").apply { check(mkdirs()) }
-            for (name in listOf("bootstrap.mjs", "index.mjs", "report.mjs", "workflow.mjs", "ptc.mjs", "linux.mjs", "callback-routing.mjs",
-                "python-analysis.mjs", "python-analysis.py", "apk-fixture.json", "apk-overflow-fixture.json")) {
-                context.assets.open(name).use { source -> File(fixture, name).outputStream().use { source.copyTo(it) } }
+            val workspace = File(appWorkspaceRoot, if (ptcCaseId != null) ".ptc-death-$fixtureId"
+                else ".device-acceptance-$fixtureId").apply { check(if (recovering) isDirectory else mkdirs()) }
+            val preparedFixture = File(home, "fixture")
+            if (recovering) {
+                val oldConfiguration = File(preparedFixture, "configuration.json")
+                check(oldConfiguration.isFile && oldConfiguration.length() in 1..16_384)
+                val original = JSONObject(oldConfiguration.readText())
+                check(original.getString("suite") == suite &&
+                    original.getString("workspace") == workspace.absolutePath &&
+                    original.getString("appWorkspaceRoot") == appWorkspaceRoot.absolutePath &&
+                    original.getString("runtime") == runtime.absolutePath)
+                val originalPhase = original.getJSONObject("ptcDeath")
+                check(originalPhase.getString("phase") == "prepare" &&
+                    originalPhase.getString("caseId") == fixtureId && !originalPhase.getBoolean("processStopConfirmed"))
             }
+            val fixture = File(home, if (recovering) "recovery-fixture" else "fixture").apply { check(mkdirs()) }
+            for (name in listOf("bootstrap.mjs", "index.mjs", "report.mjs", "workflow.mjs", "ptc.mjs", "linux.mjs", "callback-routing.mjs",
+                "python-analysis.mjs", "python-analysis.py", "apk-fixture.json", "apk-overflow-fixture.json",
+                "ptc-process-death.mjs", "ptc-saf.mjs")) {
+                val bytes = context.assets.open(name).use { it.readBytes() }
+                if (recovering) check(File(preparedFixture, name).readBytes().contentEquals(bytes)) {
+                    "Recovery fixture differs from the prepared APK assets"
+                }
+                File(fixture, name).writeBytes(bytes)
+            }
+            if (suite == "ptc-saf") saf = PtcSafAcceptanceFixture.open(this)
             File(fixture, "configuration.json").writeText(JSONObject().put("runtime", runtime.absolutePath)
                 .put("workspace", workspace.absolutePath).put("appWorkspaceRoot", appWorkspaceRoot.absolutePath)
-                .put("suite", suite).toString())
+                .put("suite", suite).apply {
+                    if (ptcCaseId != null) put("ptcDeath", JSONObject().put("phase", ptcPhase)
+                        .put("caseId", ptcCaseId).put("processStopConfirmed", processStopConfirmed))
+                    saf?.let { put("saf", JSONObject().put("root", it.root).put("caseId", it.caseId)) }
+                }.toString())
             startingStage("fixture-home-ready")
             startingStage("socket-pair-start")
             val pair = NativeRuntime.socketPair()
@@ -219,6 +213,7 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
             isolated = isolatedOwner
             startingStage("isolated-owner-ready")
             val linuxOwner by lazy { LinuxVmManager(app).also { linux = it } }
+            val searchOwner by lazy { DocumentSearchManager(app).also { searches = it } }
             val input = ParcelFileDescriptor.AutoCloseInputStream(readSocket).bufferedReader()
             startingStage("reader-starting")
             workers.execute {
@@ -249,6 +244,14 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
                                         "native.documents.read" -> DocumentAccess(app).read(params.getString("root"),
                                             params.getString("path"), DocumentReadAccess.offset(params.opt("offset")),
                                             params.optString("version").takeIf { it.isNotEmpty() })
+                                        "native.documents.search.prepare" -> searchOwner.prepare(params.getString("id"))
+                                        "native.documents.search.run" -> searchOwner.run(params)
+                                        "native.documents.search.cancel" -> searchOwner.cancel(params.getString("id"))
+                                        "acceptance.saf.revoke" -> {
+                                            val controlled = checkNotNull(saf)
+                                            check(suite == "ptc-saf" && params.getString("root") == controlled.root)
+                                            controlled.revoke(searchOwner)
+                                        }
                                         "native.linuxVm.execute" -> linuxOwner.execute(params)
                                         "native.linuxVm.cancel" -> linuxOwner.cancel(params)
                                         "native.linuxVm.importFile" -> linuxOwner.importFile(params)
@@ -268,6 +271,17 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
                             else waiter?.complete(frame.getJSONObject("result"))
                         } else if (frame.optString("method") == "acceptance.result") {
                             done.complete(frame.getJSONObject("params"))
+                        } else if (frame.optString("method") == "acceptance.ptcDeathReady") {
+                            check(ptcPhase == "prepare" && deathReady.compareAndSet(false, true))
+                            val marker = frame.getJSONObject("params")
+                            check(marker.keys().asSequence().toSet() == setOf("schema", "caseId", "runId", "agentPid", "fileSha256"))
+                            check(marker.getInt("schema") == 1 && marker.getString("caseId") == fixtureId &&
+                                marker.getInt("agentPid") == android.os.Process.myPid())
+                            IsolatedScriptWire.requireUuid(marker.getString("runId"))
+                            check(marker.getString("fileSha256").matches(Regex("[0-9a-f]{64}")))
+                            val receipt = IsolatedScriptRunController.readReceipt(app, marker.getString("runId"))
+                            check(receipt.state() == IsolatedScriptReceipt.State.ADMITTED && receipt.outputJson() == null)
+                            sendStatus(1, Bundle().apply { putString("ready", marker.toString()) })
                         }
                     } }
                     if (!done.isDone) done.completeExceptionally(IllegalStateException("Acceptance IPC ended before a result"))
@@ -278,7 +292,7 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
             workers.execute {
                 try {
                     check(startupSettled.compareAndSet(false, true)) { "Acceptance startup ended before Node dispatch" }
-                    check(!foregroundClosed.isDone) { "Acceptance foreground page was closed before Node dispatch" }
+                    foreground.get()?.checkActive()
                     startupTimeout.cancel(false)
                     startupWatchdog.shutdown()
                     stage("node-starting")
@@ -298,6 +312,13 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
                     else -> 240L
                 }
                 val result = done.get(budgetSeconds, TimeUnit.SECONDS)
+                if (ptcPhase == "recover" && result.optBoolean("passed")) {
+                    val evidence = result.getJSONArray("reports").getJSONObject(0).getJSONArray("checks").getJSONObject(0)
+                    val receipt = IsolatedScriptRunController.readReceipt(app, evidence.getString("runId"))
+                    check(receipt.state() in setOf(IsolatedScriptReceipt.State.ADMITTED,
+                        IsolatedScriptReceipt.State.INTERRUPTED_UNCONFIRMED) && receipt.outputJson() == null)
+                    result.put("nativeReceiptState", receipt.state().name).put("nativeOutputAbsent", true)
+                }
                 report.putString("result", result.toString())
                 passed = result.getBoolean("passed")
             } finally {
@@ -324,6 +345,9 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
             try { isolated?.close() } catch (failure: Throwable) { passed = false; report.putString("isolatedCloseFailure", failure.toString()) }
             stage("cleanup-linux")
             try { linux?.close() } catch (failure: Throwable) { passed = false; report.putString("linuxCloseFailure", failure.toString()) }
+            stage("cleanup-searches")
+            try { searches?.close() } catch (failure: Throwable) { passed = false; report.putString("searchCloseFailure", failure.toString()) }
+            try { saf?.close() } catch (failure: Throwable) { passed = false; report.putString("safCloseFailure", failure.toString()) }
             stage("cleanup-socket")
             try { socket?.close() } catch (_: Throwable) {}
             stage("cleanup-read-socket")
@@ -335,10 +359,6 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
             catch (failure: Throwable) { passed = false; report.putString("foregroundCloseFailure", failure.toString()) }
         }
         report.putString("suite", suite)
-        if (foregroundUserClosed.get()) {
-            passed = false
-            report.putString("failure", "Acceptance foreground page was closed by the user")
-        }
         stage("finish")
         if (finished.compareAndSet(false, true)) finish(if (passed) Activity.RESULT_OK else Activity.RESULT_CANCELED, report)
     }
