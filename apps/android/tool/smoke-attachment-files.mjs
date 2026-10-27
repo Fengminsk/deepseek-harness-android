@@ -1,3 +1,4 @@
+import { replyScheduleWakeupFixture } from './schedule-wakeup-native-fixture.mjs'
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
 import { glob, mkdir, mkdtemp, readFile, readdir, stat } from 'node:fs/promises'
@@ -62,6 +63,7 @@ async function launch(seed) {
     if (failure || ended) return
     try {
       const frame = JSON.parse(line)
+      if (replyScheduleWakeupFixture(frame, send)) return
       if (frame.method === 'fixture.failed') throw new Error(`Fixture seed failed: ${frame.params.message}; ${JSON.stringify(frame.params.causes)}`)
       if (frame.method === 'fixture.unexpectedNetwork') throw new Error('Attachment read unexpectedly requested network access')
       if (frame.method?.startsWith('native.')) {

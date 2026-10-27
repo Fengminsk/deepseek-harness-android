@@ -1,3 +1,4 @@
+import { replyScheduleWakeupFixture, scheduleWakeupFixtureFor } from './schedule-wakeup-native-fixture.mjs'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
@@ -24,8 +25,8 @@ const model = createServer((request, response) => {
   void (async () => {
     const body = JSON.parse(Buffer.concat(await Array.fromAsync(request)).toString('utf8'))
     modelRequests++
-    const agent = body.tools?.some(tool => tool.name === 'smoke_approval')
-    const step = agent ? modelSteps.shift() : undefined
+    const expected = modelSteps[0]
+    const step = expected && body.tools?.some(tool => tool.name === expected.tool) ? modelSteps.shift() : undefined
     const block = step ? { type: 'tool_use', id: step.id, name: step.tool, input: step.args }
       : { type: 'text', text: 'interaction complete' }
     response.writeHead(200, { 'content-type': 'text/event-stream' })
@@ -66,6 +67,7 @@ const lines = createInterface({ input: child.stdout })
 child.stderr.pipe(process.stderr)
 lines.on('line', line => {
   const frame = JSON.parse(line)
+  if (replyScheduleWakeupFixture(frame, send)) return
   if (frame.method?.startsWith('native.credentials.')) {
     const { name, value } = frame.params
     let result = null
@@ -238,7 +240,8 @@ try {
       checkpoint('document search App and tool routing complete')
     }
     if (process.argv.includes('--search-only')) return
-    await verifySchedule({ request, waitFor, finish, modelSteps, notices })
+    await verifySchedule({ request, waitFor, finish, modelSteps, notices,
+      wakeProjection: () => scheduleWakeupFixtureFor(send).snapshot() })
     checkpoint('original schedule APIs and model tool complete')
     if (process.argv.includes('--schedule-only')) return
     const question = await run('question-direct', { id: 'question-one', tool: 'ask_user_question',

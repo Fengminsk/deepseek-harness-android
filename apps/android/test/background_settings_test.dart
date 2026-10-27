@@ -59,6 +59,17 @@ class BackgroundRuntime extends RuntimeController {
               ...background,
               'keepAwakeWhileWorking': params['keepAwakeWhileWorking'],
             });
+      case 'runtime.scheduleWake.status':
+        return {
+          'enabled': false,
+          'exactAlarmsAllowed': true,
+          'projectionState': 'ready',
+          'activeCount': 0,
+          'nextDueAtMs': null,
+          'alarmState': 'disabled',
+          'error': null,
+          'armedAtMs': null,
+        };
       default:
         throw StateError('Unexpected runtime call: $method');
     }
@@ -131,7 +142,10 @@ Future<void> open(
 Finder get refresh => find.byWidgetPredicate(
   (widget) => widget is GlassButton && widget.label == '刷新状态',
 );
-Finder get toggle => find.byType(PocketSwitchRow);
+Finder get toggle => find.ancestor(
+  of: find.text('执行任务时保持 CPU 运行'),
+  matching: find.byType(PocketSwitchRow),
+);
 
 Future<void> tap(WidgetTester tester, Finder finder) async {
   await tester.ensureVisible(finder);
@@ -469,6 +483,12 @@ void main() {
       await tester.pumpAndSettle();
       expect(tester.widget<PocketSwitchRow>(toggle).value, isFalse);
       expect(tester.widget<PocketSwitchRow>(toggle).onChanged, isNull);
+      await tester.scrollUntilVisible(
+        find.textContaining('设置保存未确认'),
+        -300,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
       expect(find.textContaining('设置保存未确认'), findsOneWidget);
       runtime.configureResult = null;
       runtime.background = snapshot(keepAwake: true);

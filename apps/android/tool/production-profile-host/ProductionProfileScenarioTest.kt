@@ -24,6 +24,52 @@ fun main(args: Array<String>) {
         try { action() } catch (failure: Throwable) { return failure }
         error("Expected rejection")
     }
+    fun projection(generation: String, revision: Long = 1) = JSONObject().put("version", 1)
+        .put("generation", generation).put("revision", revision).put("state", "ready")
+        .put("nextDueAtMs", JSONObject.NULL).put("activeCount", 0).put("reason", JSONObject.NULL)
+    checkCase {
+        check(scenario.handlesNative("native.scheduleWakeup.begin") && scenario.handlesNative("native.scheduleWakeup.update"))
+        val begin = scenario.handleNative("native.scheduleWakeup.begin", JSONObject()) as JSONObject
+        val generation = begin.getString("generation")
+        check(UUID.fromString(generation).toString() == generation)
+        check((scenario.handleNative("native.scheduleWakeup.begin", JSONObject()) as JSONObject).getString("generation") == generation)
+        for (revision in listOf(1L, 3L)) {
+            val ack = scenario.handleNative("native.scheduleWakeup.update", projection(generation, revision)) as JSONObject
+            check(ack.getBoolean("accepted") && ack.getLong("revision") == revision && ack.getString("generation") == generation)
+        }
+        val observed = scenario.diagnostics().getJSONObject("scheduleWakeupFixture")
+        check(observed.getInt("systemAlarmsRegistered") == 0 && observed.getString("kind") == "protocol-only")
+        check(observed.getJSONArray("updates").length() == 2 && observed.getInt("beginCalls") == 2)
+        observed.getJSONArray("updates").getJSONObject(0).put("prompt", "not retained")
+        check(!scenario.diagnostics().getJSONObject("scheduleWakeupFixture").toString().contains("not retained"))
+    }
+    checkCase {
+        val fixture = ProductionScheduleWakeFixture()
+        val generation = fixture.request("native.scheduleWakeup.begin", JSONObject()).getString("generation")
+        val edits: List<(JSONObject) -> Unit> = listOf(
+            { it.put("generation", UUID.randomUUID().toString()) }, { it.put("revision", 0) },
+            { it.put("revision", 1.5) }, { it.put("version", 2) }, { it.put("prompt", "private-prompt") },
+            { it.put("nextDueAtMs", 1) }, { it.put("activeCount", 1) }, { it.put("activeCount", -1) },
+            { it.put("state", "unknown") }, { it.put("reason", "private-error") },
+        )
+        for (edit in edits) denied { fixture.request("native.scheduleWakeup.update", projection(generation).also(edit)) }
+        check(fixture.snapshot().getJSONArray("updates").length() == 0)
+        fixture.request("native.scheduleWakeup.update", projection(generation))
+        denied { fixture.request("native.scheduleWakeup.update", projection(generation)) }
+        denied { fixture.request("native.scheduleWakeup.begin", JSONObject().put("prompt", "private-prompt")) }
+    }
+    checkCase {
+        val fixture = ProductionScheduleWakeFixture()
+        val other = ProductionScheduleWakeFixture()
+        val generation = fixture.request("native.scheduleWakeup.begin", JSONObject()).getString("generation")
+        check(generation != other.snapshot().getString("generation"))
+        denied { other.request("native.scheduleWakeup.update", projection(other.snapshot().getString("generation"))) }
+        val unavailable = projection(generation).put("state", "unavailable").put("activeCount", JSONObject.NULL)
+            .put("reason", "catalog_read_failed")
+        fixture.request("native.scheduleWakeup.update", unavailable)
+        check(fixture.snapshot().getJSONArray("updates").getJSONObject(0).isNull("activeCount"))
+        denied { fixture.request("native.scheduleWakeup.update", unavailable.put("revision", 2).put("activeCount", 0)) }
+    }
     val browserName = "records/client-connection/browser-session"
     val secret = Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(32) { (it + 1).toByte() })
     val browserRecord = JSONObject().put("kind", "grant").put("payload", JSONObject().put("version", 1).put("secret", secret)).toString()

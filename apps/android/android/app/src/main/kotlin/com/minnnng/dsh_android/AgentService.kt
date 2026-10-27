@@ -114,6 +114,7 @@ class AgentService : Service() {
     private lateinit var taskCompletion: TaskCompletionNotifications
     private lateinit var documentSearch: DocumentSearchManager
     private lateinit var background: BackgroundExecution
+    private lateinit var scheduleWakeup: ScheduleWakeup
     private var summaryRequest: String? = null
     // This process runs Node once. Never release its cache lease merely because Android destroys the Service.
     private var attachmentCache: AttachmentCacheLease? = null
@@ -312,6 +313,21 @@ class AgentService : Service() {
                 else send(client, JSONObject().put("id", id).put("result", JSONObject()
                     .put("phase", phase).put("generation", recovery.generation)
                     .put("configuration", appliedProxy ?: JSONObject.NULL)))
+            } else if (frame.getString("method") in setOf("runtime.scheduleWake.status", "runtime.scheduleWake.configure")) {
+                if (!appClients.containsKey(client)) send(client, error(id, "定时唤醒连接已断开"))
+                else workers.execute {
+                    try {
+                        val value = if (frame.getString("method") == "runtime.scheduleWake.status") scheduleWakeup.status()
+                        else {
+                            val params = frame.getJSONObject("params")
+                            require(params.length() == 1 && params.get("enabled") is Boolean)
+                            scheduleWakeup.configure(params.getBoolean("enabled"))
+                        }
+                        main.post { send(client, JSONObject().put("id", id).put("result", value)) }
+                    } catch (_: Exception) {
+                        main.post { send(client, error(id, "定时唤醒状态未确认，请核对闹钟权限并刷新")) }
+                    }
+                }
             } else if (frame.getString("method") == "runtime.background.configure") {
                 try {
                     val value = frame.getJSONObject("params").get("keepAwakeWhileWorking")
@@ -439,6 +455,8 @@ class AgentService : Service() {
         try { capabilityJournal = IsolatedCapabilityWorkspace.journal(this) }
         catch (_: Exception) { /* A failed audit scan blocks later file-granted admission. */ }
         recovery = RecoveryRuntime(this)
+        scheduleWakeup = ScheduleWakeup.get(this)
+        scheduleWakeup.bind(recovery.generation)
         vault = CredentialVault(this)
         webPreferences = WebPreferences(this)
         documentSearch = DocumentSearchManager(this)
@@ -470,6 +488,11 @@ class AgentService : Service() {
         background.start()
     }
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ScheduleWakeup.ACTION_WAKE &&
+            !scheduleWakeup.acceptWake(intent.getStringExtra(ScheduleWakeup.EXTRA_TOKEN) ?: "")) {
+            if (!started) stopSelf(startId)
+            return START_NOT_STICKY
+        }
         if (!started) {
             started = true
             try {
@@ -607,6 +630,13 @@ class AgentService : Service() {
                     val method = frame.getString("method")
                     val params = frame.optJSONObject("params") ?: JSONObject()
                     val value: Any? = when (method) {
+                        "native.scheduleWakeup.begin" -> {
+                            require(params.length() == 0)
+                            scheduleWakeup.begin()
+                        }
+                        "native.scheduleWakeup.update" -> scheduleWakeup.update(params).also {
+                            main.post { requestTaskSummary() }
+                        }
                         "native.credentials.get" -> vault.get(params.getString("name"))
                         "native.credentials.set" -> { vault.set(params.getString("name"), params.getString("value")); true }
                         "native.credentials.remove" -> { vault.set(params.getString("name"), null); true }
@@ -682,7 +712,10 @@ class AgentService : Service() {
                 broadcast(status())
             }
             if (frame.optString("method") == "runtime.tasks.changed") {
-                try { background.observe(frame.getJSONObject("params")) }
+                try {
+                    background.observe(frame.getJSONObject("params"))
+                    scheduleWakeup.observeBackground(background.status())
+                }
                 catch (_: Exception) { background.unavailable() }
             }
             if (frame.optString("method") == "task.completed") {
@@ -721,7 +754,10 @@ class AgentService : Service() {
                 if (phase == "ready") {
                     result.fold(
                         onSuccess = { snapshot ->
-                            try { background.observe(snapshot) }
+                            try {
+                                background.observe(snapshot)
+                                scheduleWakeup.observeBackground(background.status())
+                            }
                             catch (_: Exception) { background.pollUnavailable() }
                         },
                         onFailure = { background.pollUnavailable() },
@@ -1318,6 +1354,7 @@ class AgentService : Service() {
 
     private fun reportFailure(message: String) {
         phase = "failed"; failure = message
+        scheduleWakeup.runtimeFailed(recovery.generation)
         background.phase(phase)
         main.removeCallbacks(summaryPoll)
         main.removeCallbacks(summaryTimeout)
@@ -1378,6 +1415,7 @@ class AgentService : Service() {
         Thread({ documentImages.close() }, "document-image-close").start()
     }
     override fun onDestroy() {
+        if (::scheduleWakeup.isInitialized) scheduleWakeup.unbind(recovery.generation)
         closeLinuxNetworkApprovals()
         val plannedProcessExit = lifecycle.processExitRequired()
         val unexpectedNodeStop = synchronized(nodeStartLock) {

@@ -1,3 +1,4 @@
+import { replyScheduleWakeupFixture } from './schedule-wakeup-native-fixture.mjs'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
@@ -61,6 +62,7 @@ async function smoke() {
     if (exited) return
     try {
       const frame = JSON.parse(line)
+      if (replyScheduleWakeupFixture(frame, send)) return
       if (frame.method?.startsWith('native.')) {
         let result
         const { name, value } = frame.params ?? {}

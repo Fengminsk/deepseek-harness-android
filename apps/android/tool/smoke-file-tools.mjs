@@ -1,3 +1,4 @@
+import { replyScheduleWakeupFixture } from './schedule-wakeup-native-fixture.mjs'
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
 import { once } from 'node:events'
@@ -130,6 +131,7 @@ function launch() {
     if (ended || failure) return
     try {
       const frame = JSON.parse(line)
+      if (replyScheduleWakeupFixture(frame, send)) return
       if (frame.method === 'fixture.unexpectedNetwork') throw new Error('Unexpected model endpoint')
       if (frame.method?.startsWith('native.')) {
         const { name, value } = frame.params ?? {}

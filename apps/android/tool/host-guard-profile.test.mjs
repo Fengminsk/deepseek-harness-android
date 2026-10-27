@@ -1,3 +1,4 @@
+import { replyScheduleWakeupFixture } from './schedule-wakeup-native-fixture.mjs'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { spawn } from 'node:child_process'
@@ -122,6 +123,7 @@ test('real profile keeps ordinary host settings and original credential referenc
   lines.on('line', line => {
     try {
       const frame = JSON.parse(line)
+      if (replyScheduleWakeupFixture(frame, send)) return
       if (frame.method?.startsWith('native.')) {
         let result
         const { name, value } = frame.params ?? {}

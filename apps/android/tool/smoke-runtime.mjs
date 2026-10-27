@@ -1,3 +1,4 @@
+import { replyScheduleWakeupFixture } from './schedule-wakeup-native-fixture.mjs'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { mkdir, mkdtemp } from 'node:fs/promises'
@@ -44,6 +45,7 @@ child.once('exit', () => {
 lines.on('line', line => {
   let frame
   try { frame = JSON.parse(line) } catch (error) { boot.reject(new Error('Invalid runtime frame', { cause: error })); return }
+  if (replyScheduleWakeupFixture(frame, send)) return
   if (frame.method?.startsWith('native.')) trace(`native request ${frame.method}`)
   if (frame.method === 'session.event') trace(`session event ${frame.params.event.type}`)
   if (frame.method === 'session.event' && frame.params.event.type === 'turn/end') trace(`turn ended ${JSON.stringify(frame.params.event.data?.reason ?? frame.params.event.reason)}`)

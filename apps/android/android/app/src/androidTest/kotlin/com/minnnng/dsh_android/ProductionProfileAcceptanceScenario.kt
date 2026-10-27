@@ -71,6 +71,51 @@ internal class ProductionReadyWaitProbe(private val nanoTime: () -> Long = Syste
     }
 }
 
+/** Test carrier protocol only; no AlarmManager call, authorization or natural wake claim. */
+internal class ProductionScheduleWakeFixture {
+    private val generation = UUID.randomUUID().toString()
+    private var begins = 0
+    private var revision = 0L
+    private val updates = JSONArray()
+    fun handles(method: String) = method in setOf("native.scheduleWakeup.begin", "native.scheduleWakeup.update")
+
+    @Synchronized fun request(method: String, params: JSONObject): JSONObject {
+        require(handles(method))
+        if (method == "native.scheduleWakeup.begin") {
+            require(params.length() == 0)
+            begins++
+            return JSONObject().put("version", 1).put("generation", generation)
+        }
+        require(begins > 0 && params.keys().asSequence().toSet() == setOf(
+            "version", "generation", "revision", "state", "nextDueAtMs", "activeCount", "reason"))
+        require(integer(params.get("version")) == 1L && params.get("generation") == generation)
+        val next = integer(params.get("revision")); require(next > revision)
+        val due = if (params.isNull("nextDueAtMs")) null else integer(params.get("nextDueAtMs"))
+        val count = if (params.isNull("activeCount")) null else integer(params.get("activeCount"))
+        if (params.get("state") == "ready") {
+            require(params.isNull("reason") && count != null && count <= Int.MAX_VALUE &&
+                (if (count == 0L) due == null else due != null))
+        } else {
+            require(params.get("state") == "unavailable" && count == null && due == null &&
+                params.get("reason") in setOf("catalog_read_failed", "invalid_catalog"))
+        }
+        revision = next
+        updates.put(JSONObject(params.toString()))
+        return JSONObject().put("version", 1).put("generation", generation).put("revision", revision).put("accepted", true)
+    }
+
+    @Synchronized fun snapshot(): JSONObject = JSONObject().put("kind", "protocol-only")
+        .put("systemAlarmsRegistered", 0).put("generation", generation).put("beginCalls", begins)
+        .put("updates", JSONArray(updates.toString()))
+
+    private fun integer(value: Any): Long {
+        require(value is Number)
+        val number = value.toDouble()
+        require(number.isFinite() && number >= 0 && number <= 9_007_199_254_740_991.0 && number % 1.0 == 0.0)
+        return number.toLong()
+    }
+}
+
 /** Drives the shipped Android profile through its public RPC and a local scripted model. */
 internal class ProductionProfileAcceptanceScenario(
     private val home: File,
@@ -99,6 +144,7 @@ internal class ProductionProfileAcceptanceScenario(
     private val nativeCalls = AtomicInteger()
     private val notifications = AtomicInteger()
     private val readyWait = ProductionReadyWaitProbe()
+    private val scheduleWakeup = ProductionScheduleWakeFixture()
 
     private fun mark(stage: String, request: String? = null) {
         currentStage = stage
@@ -118,6 +164,7 @@ internal class ProductionProfileAcceptanceScenario(
             .put("runtimeStatusErrorCode", runtimeStatusErrorCode ?: JSONObject.NULL)
             .put("readyObserved", ready.isDone && !ready.isCompletedExceptionally).put("turnEndObserved", ended.isDone)
             .put("readyWait", readyWait.snapshot())
+            .put("scheduleWakeupFixture", scheduleWakeup.snapshot())
         val startup = File(home, "production-profile-startup.jsonl")
         result.put("startupFilePresent", startup.isFile).put("modelProofPresent", proofFile.isFile)
         result.put("bootstrapArtifacts", JSONObject()
@@ -188,7 +235,7 @@ internal class ProductionProfileAcceptanceScenario(
             StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)
     }
 
-    fun handlesNative(method: String): Boolean = method.startsWith("native.credentials.") || method in setOf(
+    fun handlesNative(method: String): Boolean = scheduleWakeup.handles(method) || method.startsWith("native.credentials.") || method in setOf(
         "native.storage.root", "native.web.preferences", "native.network.addresses", "native.documents.roots",
         "native.attachments.directory", "native.attachmentFiles.directory", "native.exports.directory",
     )
@@ -196,6 +243,7 @@ internal class ProductionProfileAcceptanceScenario(
     @Synchronized fun handleNative(method: String, params: JSONObject): Any? {
         lastNativeMethod = method
         nativeCalls.incrementAndGet()
+        if (scheduleWakeup.handles(method)) return scheduleWakeup.request(method, params)
         return when (method) {
         "native.credentials.get" -> {
             val name = params.getString("name")

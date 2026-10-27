@@ -327,6 +327,16 @@ class MainActivity : FlutterActivity() {
                         result.error("overlay-permission", "无法打开悬浮窗授权页面，请在系统设置中查找", null)
                     }
                 }
+                "background.scheduleWake.openPermission" -> {
+                    if (!foreground) result.error("schedule-background", "请在 App 前台打开闹钟授权页面", null)
+                    else if (Build.VERSION.SDK_INT < 31 || ScheduleWakeup.permissionGranted(this)) result.success(null)
+                    else try {
+                        startActivity(ScheduleWakeup.permissionIntent(this))
+                        result.success(null)
+                    } catch (_: Exception) {
+                        result.error("schedule-permission", "无法打开闹钟授权页面，请在系统设置中查找", null)
+                    }
+                }
                 "account.openPage" -> {
                     try {
                         AuthTabs.open(this, call.argument<String>("url") ?: "", call.argument<Boolean>("dark") ?: false)

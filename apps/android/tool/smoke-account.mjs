@@ -1,3 +1,4 @@
+import { replyScheduleWakeupFixture } from './schedule-wakeup-native-fixture.mjs'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
@@ -59,6 +60,7 @@ const lines = createInterface({ input: child.stdout })
 child.stderr.pipe(process.stderr)
 lines.on('line', line => {
   const frame = JSON.parse(line)
+  if (replyScheduleWakeupFixture(frame, send)) return
   if (frame.method?.startsWith('native.credentials.')) {
     const { name, value } = frame.params
     let result = null

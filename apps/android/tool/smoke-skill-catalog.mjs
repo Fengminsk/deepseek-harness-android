@@ -1,3 +1,4 @@
+import { replyScheduleWakeupFixture } from './schedule-wakeup-native-fixture.mjs'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { once } from 'node:events'
@@ -96,6 +97,7 @@ function launch(seed) {
     if (ended || failure) return
     try {
       const frame = JSON.parse(line)
+      if (replyScheduleWakeupFixture(frame, send)) return
       if (frame.method === 'fixture.failed') throw new Error(`Fixture failed: ${frame.params.message}`)
       if (frame.method === 'fixture.unexpectedNetwork') throw new Error('Skill fixture attempted non-fixture network access')
       if (frame.method?.startsWith('native.')) {

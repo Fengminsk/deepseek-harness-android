@@ -6,6 +6,7 @@ import 'package:material_ui/material_ui.dart';
 import 'runtime.dart';
 import 'capability_audit.dart';
 import 'overlay_keepalive_settings.dart';
+import 'schedule_wake_settings.dart';
 import 'tasks.dart';
 import 'ui.dart';
 
@@ -401,6 +402,10 @@ class _BackgroundSettingsPageState extends State<BackgroundSettingsPage>
                 ),
               ),
             ],
+          ),
+          ScheduleWakeSettingsSection(
+            key: const ValueKey('schedule-wake-settings'),
+            runtime: widget.runtime,
           ),
           PocketSection(
             title: '隔离执行',

@@ -1,3 +1,4 @@
+import { replyScheduleWakeupFixture } from './schedule-wakeup-native-fixture.mjs'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -126,6 +127,7 @@ function launch() {
   })
   lines.on('line', line => {
     const frame = JSON.parse(line)
+    if (replyScheduleWakeupFixture(frame, send)) return
     if (frame.method === 'native.storage.root') send({ id: frame.id, result: home })
     else if (frame.method === 'native.credentials.get') send({ id: frame.id,
       result: credentials.get(frame.params.name) ?? null })

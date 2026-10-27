@@ -1,3 +1,4 @@
+import { replyScheduleWakeupFixture } from './schedule-wakeup-native-fixture.mjs'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
@@ -80,6 +81,7 @@ function launch() {
   })
   function receive(line) {
     const frame = JSON.parse(line)
+    if (replyScheduleWakeupFixture(frame, send)) return
     if (process.env.POCKET_SMOKE_TRACE === '1' && frame.method?.startsWith('native.')) checkpoint(`native request ${frame.method}`)
     if (process.env.POCKET_SMOKE_TRACE === '1' && frame.method === 'session.event') checkpoint(`session event ${frame.params.event.type}`)
     if (process.env.POCKET_SMOKE_TRACE === '1' && frame.method === 'session.event' && frame.params.event.type === 'turn/end') checkpoint(`turn ended ${JSON.stringify(frame.params.event.data?.reason ?? frame.params.event.reason)}`)

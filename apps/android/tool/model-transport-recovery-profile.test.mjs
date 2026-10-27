@@ -1,3 +1,4 @@
+import { replyScheduleWakeupFixture } from './schedule-wakeup-native-fixture.mjs'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
@@ -52,6 +53,7 @@ test('packaged Android profile retries a consumed SSE reset and persists the sam
     try {
       assert.ok(line.length <= 2 * 1024 * 1024)
       const frame = JSON.parse(line)
+      if (replyScheduleWakeupFixture(frame, send)) return
       if (pending.has(frame.id)) {
         const waiter = pending.get(frame.id)
         if (frame.error) waiter.reject(new Error('Runtime RPC rejected'))

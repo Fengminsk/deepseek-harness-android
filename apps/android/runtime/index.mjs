@@ -45,6 +45,7 @@ import { AppWorkspaceChanges } from './workspace-changes.mjs'
 import { maskUserText } from './user-text-mask.mjs'
 import { AppTasks } from './tasks.mjs'
 import { AppTaskCompletion } from './task-completion.mjs'
+import { NativeScheduleWakeup } from './native-schedule-wakeup.mjs'
 import { AppPackageOperations } from './package-operations.mjs'
 import { AppConfigurationTransfers } from './configuration-transfer.mjs'
 import { AppSubagents } from './subagents.mjs'
@@ -61,6 +62,8 @@ export const Config = Schema.object({
   appStreamMaxSubscriptions: Schema.natural().min(1).max(128).default(32).volatile(),
   appStreamMaxFrameBytes: Schema.natural().min(4096).max(16777216).default(16777216).volatile(),
   streamPublishMs: Schema.natural().min(16).max(250).default(50).volatile(),
+  scheduleWakeupRequestTimeoutMs: Schema.natural().min(100).max(60000).default(15000).volatile(),
+  scheduleWakeupCloseTimeoutMs: Schema.natural().min(100).max(30000).default(5000).volatile(),
   documentSearchFileBytes: Schema.natural().min(1024).max(67108864).default(8388608).volatile(),
   documentSearchTotalBytes: Schema.natural().min(1024).max(268435456).default(67108864).volatile(),
   documentSearchMaxEntries: Schema.natural().min(1).max(10000).default(2000).volatile(),
@@ -260,6 +263,12 @@ export function apply(ctx, config) {
   }, { shellContext: (sessionId, callId) => shell.context(sessionId, callId), receipts: interactionReceipts })
   tasks = new AppTasks(ctx, transport, { interactions: () => interactions.snapshot() })
   const taskCompletion = new AppTaskCompletion(ctx, transport)
+  const scheduleWakeup = new NativeScheduleWakeup({ invoke, transport,
+    subscribe: listener => ctx.on('schedule/changed', listener),
+    warn: message => ctx.logger.warn(message),
+    limits: () => ({ requestTimeoutMs: config.scheduleWakeupRequestTimeoutMs.get(),
+      closeTimeoutMs: config.scheduleWakeupCloseTimeoutMs.get() }),
+  })
   packageOperations = new AppPackageOperations(ctx, {
     pendingAppSessions: () => sessions.pendingCount(),
     terminalActivity: () => terminals.activitySnapshot(),
@@ -591,6 +600,8 @@ export function apply(ctx, config) {
       }).then(() => library.initialize()).then(() => interactions.start()).then(() => {
         transport.notify('runtime.ready', { node: process.version })
         tasks.publish()
+        // A failed wake projection is reported by its owner; other Agent work remains available.
+        void scheduleWakeup.start().catch(_error => { /* The projection owner already reports its failure. */ })
         return web.restore().catch(error =>
           transport.notify('web.changed', { ...web.status(), phase: 'failed', error: String(error) }),
         )
@@ -602,6 +613,7 @@ export function apply(ctx, config) {
       remove()
       const results = await Promise.allSettled([
         () => taskCompletion.close(),
+        () => scheduleWakeup.close(),
         () => documentSearch.close(), () => attachments.close(), () => attachmentFiles.close(), () => exports.close(), () => tasks.close(),
         () => packageOperations.close(),
         () => configurationTransfers.close(), () => subagents.close(), () => workspaceFiles.close(), () => library.close(),

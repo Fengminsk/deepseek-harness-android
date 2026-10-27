@@ -1,3 +1,4 @@
+import { replyScheduleWakeupFixture } from './schedule-wakeup-native-fixture.mjs'
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
 import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises'
@@ -114,6 +115,7 @@ function launch() {
   lines.on('line', line => {
     try {
       const frame = JSON.parse(line)
+      if (replyScheduleWakeupFixture(frame, send)) return
       if (frame.method?.startsWith('native.')) {
         const { name, value } = frame.params ?? {}
         let result

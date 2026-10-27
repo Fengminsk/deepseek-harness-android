@@ -1,3 +1,4 @@
+import { replyScheduleWakeupFixture } from './schedule-wakeup-native-fixture.mjs'
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
@@ -163,6 +164,7 @@ export async function launchRecoveryFixture({ processes, root, home, origin, fai
     if (ended || failure) return
     try {
       const frame = JSON.parse(line)
+      if (replyScheduleWakeupFixture(frame, send)) return
       if (frame.method?.startsWith('native.')) {
         let result
         if (frame.method.startsWith('native.credentials.')) result = vault.request(frame.method, frame.params ?? {})

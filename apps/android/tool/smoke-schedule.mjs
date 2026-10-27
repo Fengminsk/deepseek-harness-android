@@ -2,11 +2,25 @@ import assert from 'node:assert/strict'
 import { setTimeout as delay } from 'node:timers/promises'
 
 /** Exercise the original schedule tool and owner APIs inside a built Android profile. */
-export async function verifySchedule({ request, waitFor, finish, modelSteps, notices }) {
+export async function verifySchedule({ request, waitFor, finish, modelSteps, notices, wakeProjection }) {
   const call = (method, input) => request('api.call', {
     namespace: 'schedule', method, args: input === undefined ? {} : { request: input },
   })
+  const projected = async (afterRevision, due, count) => {
+    const deadline = Date.now() + 10_000
+    while (Date.now() < deadline) {
+      const observation = wakeProjection()
+      assert.equal(observation.kind, 'protocol-only')
+      assert.equal(observation.systemAlarmsRegistered, 0)
+      const match = observation.updates.find(update => update.revision > afterRevision && update.state === 'ready'
+        && update.nextDueAtMs === due && update.activeCount === count)
+      if (match) return match
+      await delay(20)
+    }
+    assert.fail('Original schedule catalog did not reach the native wake protocol fixture')
+  }
   assert.deepEqual(await call('catalog'), [])
+  const emptyProjection = await projected(0, null, 0)
   const sessionId = 'schedule-fixture'
   const eventOffset = notices.length
   modelSteps.push({ id: 'create-schedule', tool: 'schedule_create', args: {
@@ -14,24 +28,30 @@ export async function verifySchedule({ request, waitFor, finish, modelSteps, not
   } })
   await request('session.send', { sessionId, requestId: 'create-schedule', text: 'Create the fixture schedule.',
     provider: 'deepseek-official', model: 'deepseek-flash' })
-  await finish(sessionId)
-  await waitFor(frame => notices.indexOf(frame) >= eventOffset
-    && frame.method === 'api.event' && frame.params.event === 'schedule/changed')
+  const creationEnd = await finish(sessionId)
+  assert.equal(creationEnd.params.event.data.reason.kind, 'completed', 'Model schedule creation did not complete')
   const entries = await call('catalog')
   assert.equal(entries.length, 1)
+  await waitFor(frame => notices.indexOf(frame) >= eventOffset
+    && frame.method === 'api.event' && frame.params.event === 'schedule/changed')
   const entry = entries[0]
   assert.equal(entry.sessionId, sessionId)
   assert.equal(entry.status, 'active')
   assert.equal(entry.title, 'Owned schedule fixture')
+  const createdProjection = await projected(emptyProjection.revision, Date.parse(entry.scheduledAt), 1)
   const expected = { id: entry.id, kind: entry.kind, title: entry.title, prompt: entry.prompt,
     afterSeconds: entry.afterSeconds, scheduledAt: entry.scheduledAt }
   try {
     const history = await call('history', { sessionId, id: entry.id, limit: 20 })
     assert.equal(history.id, entry.id)
     assert.deepEqual(history.records, [])
-    const updated = await call('update', { sessionId, id: entry.id, expected, title: 'Edited fixture title' })
+    const rescheduledAt = new Date(Date.now() + 7_200_000).toISOString()
+    const updated = await call('update', { sessionId, id: entry.id, expected, title: 'Edited fixture title',
+      change: { kind: 'at', at: rescheduledAt } })
     assert.equal(updated.updated, true)
     assert.equal(updated.record.title, 'Edited fixture title')
+    assert.equal(updated.record.scheduledAt, rescheduledAt)
+    await projected(createdProjection.revision, Date.parse(rescheduledAt), 1)
     const stale = await call('update', { sessionId, id: entry.id, expected, title: 'Must not overwrite' })
     assert.equal(stale.updated, false)
     assert.equal(stale.code, 'schedule_conflict')
@@ -44,6 +64,14 @@ export async function verifySchedule({ request, waitFor, finish, modelSteps, not
     assert.deepEqual(await call('delete', { sessionId, id: entry.id }), { id: entry.id, deleted: true })
   }
   assert.deepEqual(await call('catalog'), [])
+  const deletedProjection = await projected(createdProjection.revision, null, 0)
+  const wakeEvidence = wakeProjection()
+  assert.ok(deletedProjection.revision > createdProjection.revision)
+  for (const privateValue of [entry.id, entry.sessionId, entry.prompt, entry.title, 'Edited fixture title']) {
+    assert.ok(!JSON.stringify(wakeEvidence).includes(privateValue), 'Reminder content crossed the native wake boundary')
+  }
+  console.log(JSON.stringify({ originalScheduleWakeProjection: true,
+    lifecycle: ['empty', 'created', 'rescheduled', 'deleted'], ...wakeEvidence }))
   assert.deepEqual(await call('history', { sessionId, id: entry.id, limit: 20 }),
     { id: entry.id, code: 'schedule_not_found' })
   assert.ok(notices.filter(frame => frame.method === 'api.event'
