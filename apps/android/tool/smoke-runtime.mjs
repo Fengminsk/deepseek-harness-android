@@ -106,7 +106,7 @@ try {
         available: false, reason: 'device-lifecycle-unverified', maxTotalAgents: 8, maxConcurrentAgents: 2,
         deadlineMillis: 120000, background: false, childTools: 'reviewed-parent-tools',
         reviewedChildTools: ['read', 'glob', 'grep', 'write', 'edit', 'web_search', 'web_fetch',
-          'linux_exec', 'linux_import', 'linux_export'],
+          'linux_exec', 'linux_import', 'linux_export', 'linux_inspect'],
         filesystem: 'activation-workspace-policy-intersection', network: 'reviewed-parent-web-tools',
         linuxDisk: 'child-session-private', linuxNetwork: 'off',
       },
