@@ -36,6 +36,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 /** One explicitly admitted real-account request through the existing production service, without settings writes. */
@@ -74,6 +75,7 @@ class AgentServiceTaskAcceptanceInstrumentation : Instrumentation() {
         val pending = ConcurrentHashMap<String, CompletableFuture<JSONObject>>()
         val connected = CompletableFuture<Unit>()
         val ended = AtomicReference<JSONObject?>()
+        val sessionErrorAt = AtomicLong(0)
         val completion = AtomicReference<JSONObject?>()
         val toolCall = AtomicReference<JSONObject?>()
         val toolResult = AtomicReference<JSONObject?>()
@@ -178,10 +180,13 @@ class AgentServiceTaskAcceptanceInstrumentation : Instrumentation() {
                                 if (event.getString("type") == "turn/end") {
                                     if (!ended.compareAndSet(null, event))
                                         asynchronousFailure.compareAndSet(null, AgentServiceTaskEvidence.Rejected("DUPLICATE_TURN_END"))
+                                    val reason = event.getJSONObject("data").getJSONObject("reason")
+                                    if (reason.getString("kind") == "error") sessionErrorAt.compareAndSet(0, SystemClock.elapsedRealtime())
                                 }
                             }
                             "task.completed" -> completion.compareAndSet(null, params)
-                            "session.error" -> asynchronousFailure.compareAndSet(null, AgentServiceTaskEvidence.Rejected("SESSION_FAILED"))
+                            // The durable turn/end reason carries the bounded failure code; the loop classifies it.
+                            "session.error" -> sessionErrorAt.compareAndSet(0, SystemClock.elapsedRealtime())
                         }
                     }
                 }
@@ -485,6 +490,16 @@ class AgentServiceTaskAcceptanceInstrumentation : Instrumentation() {
             var activeObserved = false
             do {
                 asynchronousFailure.get()?.let { throw it }
+                val failedAt = sessionErrorAt.get()
+                if (failedAt != 0L) {
+                    val failedTurn = ended.get()
+                    // The live failure precedes the durable turn/end by one dispatch; wait for its bounded reason.
+                    if (failedTurn == null && SystemClock.elapsedRealtime() - failedAt < 2_000) {
+                        Thread.sleep(100)
+                        continue
+                    }
+                    throw AgentServiceTaskEvidence.sessionFailure(failedTurn)
+                }
                 val observed = observe("")
                 if (observed.getBoolean("fresh") && observed.getInt("running") > 0 &&
                     AgentServiceTaskEvidence.runningOwnTask(call("tasks.summary"), sessionId)) {

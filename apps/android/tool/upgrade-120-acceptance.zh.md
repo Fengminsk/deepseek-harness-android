@@ -21,7 +21,7 @@ Build 120 r43 已保留数据覆盖安装到现有 App。它修正了已确认�
 
 `.cache/android/ptc-120-r43-protected-20261028.json.result.json` 记录十二项已执行 PTC 检查通过，失败为零。独立的 SAF 撤权／搜索检查在该套件中仍为未验证，因此 `complete` 为 false。外层报告记录了 71 次双物理屏幕 Off 采样和测试进程退出确认。r42 的取消失败仍保留；[APK 检查参考](apk-inspection.zh.md)单独说明其合成正文检查通过的事实。
 
-真实账号 `workflow-linux` 的 r42 尝试仍为失败：严格参数检查拒绝了斜杠转义的不同写法。[账号验收参考](agent-service-task-device.zh.md#programmatic)记录了有限哈希重建，确认解码后的子提示词未变。`.cache/android/workflow-linux-r42-diagnostic-under-120-r43-20261028.json.result.json` 是成功的只读诊断，新提交为零，不是成功的工作流验收；夹具仍需修订并执行。诊断发现一个工作流运行和零条持久成员记录，这不证明子任务从未创建，也不授权子会话清理。r42 首次账号尝试的内核冻结证据同样未解释。
+真实账号 `workflow-linux` 的 r42 尝试仍为失败：严格参数检查拒绝了斜杠转义的不同写法，而 `.cache/android/workflow-linux-r42-diagnostic-under-120-r43-20261028.json.result.json` 是零新提交的只读诊断，不是工作流验收。[账号验收参考](agent-service-task-device.zh.md#programmatic)记录了本次修订：验收改为解码经审核的包装、比较解析后的子参数，并为失败回合保留有界的提供方错误码；重建的 AndroidTest（SHA-256 `fbe87fff10147b7d2b7620c686211849fe05215c59c454da7313216157ed98fc`，正式 App 未变）通过 135 项宿主断言。真机尝试保留了各自的失败：r44 被 OEM 灭屏冻结器阻塞（`cgroup.freeze=1`，而 AMS 报告 `isFrozen=false`），在 319,535 毫秒后失败；r45 至 r49 各提交一次后以 `SESSION_FAILED` 与提供方错误码 `TRANSPORT` 失败，原因是 App 侧网络代理已启用但没有可达的代理；r51 在缓慢冷启动中触达 120 秒回合上限；r54 因模型写出了另一段程序而被拒绝。随后 `.cache/android/real-account-workflow-linux-120-r55-protected-20261028.json.result.json` 以 33,178 毫秒通过：一次已完成的工作流运行、一个子会话、一份隔离的 `linux_exec` 回执（客体 UID 99,028 与 App UID 10,496 不同、退出码为零、确认退役与临时清理），以及确认的父会话与子会话归档。r42 的冻结没有留存厂商日志；本次复现的特征与 r32 记录的 OEM 冻结器一致。对该旧案情的诊断发现一个工作流运行和零条持久成员记录，这不证明子任务从未创建，也不授权子会话清理。
 
 [自然闹钟驱动](schedule-wakeup-device.zh.md)现保留有界失败阶段，并在只读状态检查失败后独立验证测试客户端退出。`.cache/android/schedule-natural-status-119-r42-stages-20261028.json` 成功读到精确闹钟权限已允许，但 App 启用偏好为 false，活动提醒为零。它没有提交任务，并保留原主进程。此前的状态检查超时仍有记录；后续成功不能解释它们。自然触发、权限撤销和重启恢复仍未验收。
 

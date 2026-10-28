@@ -22,8 +22,10 @@ object AgentServiceChildLinuxEvidence {
             "print(json.dumps({'marker':marker,'sha256':digest,'bytes':len(readback),'archiveEntries':1,'cleaned':True}))", "PY").joinToString("\n")
     }
     fun arguments(caseId: String) = JSONObject().put("command", command(caseId)).put("timeoutMs", 120000)
-    fun prompt(caseId: String) = "请只调用一次 linux_exec，原样使用以下 JSON 参数。仅在自己的 Linux /workspace 临时目录中执行这段离线文件任务，不访问网络、不导入或读取用户文件、不调用其他工具。" +
-        "成功且 cleaned 为 true 后只回复这一行：${response(caseId)}。\n${arguments(caseId)}"
+    /** Fixed prose that precedes the child's tool arguments in the reviewed child prompt. */
+    fun promptIntro(caseId: String) = "请只调用一次 linux_exec，原样使用以下 JSON 参数。仅在自己的 Linux /workspace 临时目录中执行这段离线文件任务，不访问网络、不导入或读取用户文件、不调用其他工具。" +
+        "成功且 cleaned 为 true 后只回复这一行：${response(caseId)}。"
+    fun prompt(caseId: String) = "${promptIntro(caseId)}\n${arguments(caseId)}"
 
     /** Bind native execution, its output and the persisted source link to this exact child Session. */
     fun receipt(rows: List<JSONObject>, caseId: String, childId: String, appUid: Int): JSONObject {

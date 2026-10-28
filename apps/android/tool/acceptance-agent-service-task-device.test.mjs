@@ -207,15 +207,28 @@ function diagnosticResult() {
   const fingerprint = (type = 'string', sha = 'a'.repeat(64)) => ({ present: true, type, bytes: 8, sha256: sha })
   value.diagnostic = { schema: 1, originalExercise: 'workflow-linux', parentEventCount: 16, parentHistorySha256: 'a'.repeat(64),
     toolStartSeq: 6, cleanupAuthorized: false,
-    arguments: { schema: 1, exercise: 'workflow-linux', parsed: true, matches: false, rawBytes: 150, rawSha256: 'b'.repeat(64),
+    arguments: { schema: 2, exercise: 'workflow-linux', parsed: true, matches: false, rawBytes: 150, rawSha256: 'b'.repeat(64),
       expectedSha256: 'c'.repeat(64), actualSha256: 'd'.repeat(64), unexpectedFields: 0, unexpectedMetaFields: 0,
       fields: ['script', 'meta', 'meta.name', 'meta.description'].map(field => ({ field,
         expected: fingerprint(field === 'meta' ? 'object' : 'string'), actual: fingerprint(field === 'meta' ? 'object' : 'string',
-          field === 'meta' || field === 'meta.description' ? 'e'.repeat(64) : 'a'.repeat(64)), matches: field === 'script' || field === 'meta.name' })) },
+          field === 'meta' || field === 'meta.description' ? 'e'.repeat(64) : 'a'.repeat(64)), matches: field === 'script' || field === 'meta.name' })),
+      script: { wrapperMatches: true, promptBytes: 8, promptSha256: 'a'.repeat(64), expectedPromptBytes: 9, expectedPromptSha256: 'b'.repeat(64),
+        proseMatches: true, argumentsMatches: false, argumentsSha256: 'f'.repeat(64), expectedArgumentsSha256: 'e'.repeat(64), matches: false } },
     lineage: { state: 'verified', runCount: 1, memberCount: 1, runId: 'b0000000-0000-4000-8000-000000000002',
       childSessionId: 'c0000000-0000-4000-8000-000000000003', childEventCount: 10, childHistorySha256: 'f'.repeat(64), childTerminal: 'cancelled' } }
   return value
 }
+
+test('plain workflow diagnosis accepts only an exact prompt without nested child arguments', () => {
+  const value = diagnosticResult()
+  value.diagnostic.originalExercise = 'workflow'
+  value.diagnostic.arguments.exercise = 'workflow'
+  const script = value.diagnostic.arguments.script
+  script.argumentsSha256 = null; script.expectedArgumentsSha256 = null; script.argumentsMatches = false; script.matches = false
+  assert.equal(parseAgentServiceTaskDiagnosticResult(output(value), { caseId, originalExercise: 'workflow' }).cleanupAuthorized, false)
+  script.argumentsSha256 = 'f'.repeat(64)
+  assert.throws(() => parseAgentServiceTaskDiagnosticResult(output(value), { caseId, originalExercise: 'workflow' }))
+})
 
 test('named workflow diagnosis is read-only and cannot certify task success or authorize cleanup', async () => {
   const evidence = output(diagnosticResult())
@@ -246,6 +259,15 @@ test('diagnosis rejects unknown raw fields, inconsistent fingerprints and foreig
     value => { value.diagnostic.arguments.fields[0].actual.raw = 'secret' },
     value => { value.diagnostic.arguments.fields[0].actual.bytes = -1 },
     value => { value.diagnostic.arguments.fields[0].matches = false },
+    value => { value.diagnostic.arguments.script.matches = true },
+    value => { value.diagnostic.arguments.script.wrapperMatches = false },
+    value => { value.diagnostic.arguments.script.proseMatches = true; value.diagnostic.arguments.script.wrapperMatches = false },
+    value => { value.diagnostic.arguments.script.expectedArgumentsSha256 = null },
+    value => { value.diagnostic.arguments.script.argumentsMatches = true },
+    value => { value.diagnostic.arguments.script.argumentsSha256 = 'raw' },
+    value => { value.diagnostic.arguments.script.promptBytes = 1; value.diagnostic.arguments.script.promptSha256 = null },
+    value => { value.diagnostic.arguments.script.expectedPromptBytes = 0 },
+    value => { delete value.diagnostic.arguments.script },
     value => { value.diagnostic.lineage.memberCount = 2 }, value => { value.diagnostic.lineage.childSessionId = 'existing-user-session' },
     value => { value.diagnostic.lineage.childTerminal = 'private model text' },
     value => { value.deviceStateAfter.interactive = true }, value => { value.backgroundBefore.running = 1 }]) {

@@ -222,7 +222,7 @@ export function parseAgentServiceTaskDiagnosticResult(output, { caseId, original
   'Diagnostic parent evidence is invalid')
   const args = proof.arguments
   demand(exactKeys(args, ['schema', 'exercise', 'parsed', 'matches', 'rawBytes', 'rawSha256', 'expectedSha256', 'actualSha256',
-    'unexpectedFields', 'unexpectedMetaFields', 'fields']) && args.schema === 1 && args.exercise === originalExercise &&
+    'unexpectedFields', 'unexpectedMetaFields', 'fields', 'script']) && args.schema === 2 && args.exercise === originalExercise &&
     typeof args.parsed === 'boolean' && typeof args.matches === 'boolean' && boundedCount(args.rawBytes, 262144) && SHA.test(args.rawSha256) &&
     SHA.test(args.expectedSha256) && (args.parsed ? SHA.test(args.actualSha256) : args.actualSha256 === null) &&
     boundedCount(args.unexpectedFields, 262144) && boundedCount(args.unexpectedMetaFields, 262144), 'Argument diagnostic fields are invalid')
@@ -240,8 +240,26 @@ export function parseAgentServiceTaskDiagnosticResult(output, { caseId, original
     demand(field.matches === (field.expected.present === field.actual.present && field.expected.type === field.actual.type &&
       field.expected.bytes === field.actual.bytes && field.expected.sha256 === field.actual.sha256), 'Argument field match contradicts its fingerprint')
   }
-  demand(args.matches === (args.parsed && args.actualSha256 === args.expectedSha256 && args.unexpectedFields === 0 &&
-    args.unexpectedMetaFields === 0 && args.fields.every(field => field.matches)), 'Argument match contradicts exact-field evidence')
+  const script = args.script
+  demand(exactKeys(script, ['wrapperMatches', 'promptBytes', 'promptSha256', 'expectedPromptBytes', 'expectedPromptSha256',
+    'proseMatches', 'argumentsMatches', 'argumentsSha256', 'expectedArgumentsSha256', 'matches']) &&
+    ['wrapperMatches', 'proseMatches', 'argumentsMatches', 'matches'].every(key => typeof script[key] === 'boolean') &&
+    boundedCount(script.promptBytes, 262144) && boundedCount(script.expectedPromptBytes, 262144) && script.expectedPromptBytes > 0 &&
+    SHA.test(script.expectedPromptSha256) && (script.promptSha256 === null || SHA.test(script.promptSha256)) &&
+    (script.promptSha256 !== null || script.promptBytes === 0) &&
+    (script.argumentsSha256 === null || SHA.test(script.argumentsSha256)) &&
+    (script.expectedArgumentsSha256 === null || SHA.test(script.expectedArgumentsSha256)) &&
+    script.wrapperMatches === (script.promptSha256 !== null) && (!script.proseMatches || script.wrapperMatches) &&
+    script.matches === (script.wrapperMatches && script.proseMatches && script.argumentsMatches), 'Script evidence is invalid')
+  const linux = originalExercise === 'workflow-linux'
+  demand(linux ? SHA.test(script.expectedArgumentsSha256) : script.expectedArgumentsSha256 === null,
+    'Script argument evidence contradicts the exercise')
+  if (linux) demand(script.argumentsMatches === (script.argumentsSha256 !== null && script.argumentsSha256 === script.expectedArgumentsSha256),
+    'Script argument match contradicts its digests')
+  else demand(script.argumentsSha256 === null && script.argumentsMatches === script.matches, 'Plain workflow prompt evidence is invalid')
+  const metaMatches = args.fields.slice(1).every(field => field.matches)
+  demand(args.matches === (args.parsed && args.unexpectedFields === 0 && args.unexpectedMetaFields === 0 && metaMatches && script.matches),
+    'Argument match contradicts semantic script evidence')
   const lineage = proof.lineage
   const verified = lineage?.state === 'verified'
   demand(exactKeys(lineage, ['state', 'runCount', 'memberCount', ...(verified ? ['runId', 'childSessionId', 'childEventCount', 'childHistorySha256', 'childTerminal'] : [])]) &&

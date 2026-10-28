@@ -23,7 +23,11 @@ object AgentServiceProgrammaticDiagnostic {
             .put("sha256", bytes?.let { AgentServiceTaskEvidence.hash(it) } ?: JSONObject.NULL)
     }
 
-    /** Exact equality remains required; fingerprints explain differences without retaining raw arguments. */
+    /**
+     * Raw fingerprints stay exact. Workflow acceptance additionally requires the decoded script to
+     * carry the reviewed child prompt, because an equivalent JSON escape spelling changes only bytes.
+     * Fingerprints and digests explain differences without retaining raw arguments.
+     */
     fun arguments(raw: String, caseId: String, exercise: String): JSONObject {
         val expected = AgentServiceProgrammaticEvidence.arguments(caseId, exercise)
         demand(raw.toByteArray(Charsets.UTF_8).size <= 262144, "PROGRAMMATIC_ARGUMENTS_OVERSIZED")
@@ -44,11 +48,19 @@ object AgentServiceProgrammaticDiagnostic {
         val allowed = if (exercise == "ptc") setOf("code", "description") else setOf("script", "meta")
         val extras = actual?.keys()?.asSequence()?.count { it !in allowed } ?: 0
         val nested = actual?.optJSONObject("meta")?.keys()?.asSequence()?.count { it !in setOf("name", "description") } ?: 0
-        return JSONObject().put("schema", 1).put("exercise", exercise).put("parsed", actual != null)
-            .put("matches", actual != null && canonical(actual) == canonical(expected))
+        val script = if (exercise == "ptc") null else AgentServiceProgrammaticEvidence.scriptEvidence(
+            actual?.opt("script") as? String ?: "", caseId, exercise)
+        val metaMatches = canonical(expected.opt("meta")) == canonical(actual?.opt("meta"))
+        val identical = actual != null && canonical(actual) == canonical(expected)
+        val accepted = if (script == null) identical else script.getBoolean("matches") && metaMatches
+        val matches = actual != null && extras == 0 && nested == 0 && accepted
+        val result = JSONObject().put("schema", 2).put("exercise", exercise).put("parsed", actual != null)
+            .put("matches", matches)
             .put("rawBytes", raw.toByteArray(Charsets.UTF_8).size).put("rawSha256", hash(raw))
             .put("expectedSha256", hash(canonical(expected))).put("actualSha256", actual?.let { hash(canonical(it)) } ?: JSONObject.NULL)
             .put("unexpectedFields", extras).put("unexpectedMetaFields", nested).put("fields", rows)
+        if (script != null) result.put("script", script)
+        return result
     }
 
     private fun rows(events: JSONArray): List<JSONObject> {

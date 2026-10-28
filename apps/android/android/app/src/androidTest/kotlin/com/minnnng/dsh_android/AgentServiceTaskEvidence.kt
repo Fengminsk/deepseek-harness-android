@@ -15,6 +15,25 @@ object AgentServiceTaskEvidence {
     fun marker(caseId: String) = "account-acceptance-$caseId"
     fun prompt(caseId: String) = "请只回复这一行：${marker(caseId)}。不要调用任何工具，不要读取文件，不要添加解释。"
 
+    /**
+     * Bounded classification of one failed turn, using its recorded `turn/end` reason.
+     * The provider message is represented only by its byte length and SHA-256.
+     */
+    fun sessionFailure(turnEnd: JSONObject?): Rejected {
+        val reason = turnEnd?.optJSONObject("data")?.optJSONObject("reason")
+        val error = if (reason?.optString("kind") == "error") reason.optJSONObject("error") else null
+        val message = error?.opt("message") as? String ?: ""
+        val bytes = message.toByteArray(Charsets.UTF_8)
+        val code = error?.opt("code") as? String
+        val status = (error?.opt("status") as? Number)?.toInt()
+        return Rejected("SESSION_FAILED", JSONObject()
+            .put("schema", 1)
+            .put("errorCode", code?.takeIf { it.matches(Regex("[A-Z][A-Z0-9_]{1,31}")) } ?: "UNCLASSIFIED")
+            .put("errorStatus", status?.takeIf { it in 100..599 } ?: JSONObject.NULL)
+            .put("errorBytes", bytes.size)
+            .put("errorSha256", if (bytes.isEmpty()) JSONObject.NULL else hash(bytes)))
+    }
+
     /** Validate only this Session's Android notice; retain hashes instead of notification text. */
     fun completionNotice(facts: JSONObject, caseId: String): JSONObject {
         val expectedTag = "pocket-completed:android-account-acceptance-$caseId"

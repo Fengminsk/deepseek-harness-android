@@ -48,8 +48,88 @@ object AgentServiceProgrammaticEvidence {
     fun childMarker(caseId: String) = "account-child-$caseId"
     fun childResponse(caseId: String, exercise: String = "workflow") =
         if (exercise == "workflow-linux") AgentServiceChildLinuxEvidence.response(caseId) else childMarker(caseId)
-    fun childPrompt(caseId: String, exercise: String = "workflow") = if (exercise == "workflow-linux") AgentServiceChildLinuxEvidence.prompt(caseId)
+    /** Fixed prose of the child prompt; the Linux exercise appends its tool arguments as JSON text. */
+    fun childPromptIntro(caseId: String, exercise: String = "workflow") =
+        if (exercise == "workflow-linux") AgentServiceChildLinuxEvidence.promptIntro(caseId)
         else "请只回复这一行：${childMarker(caseId)}。不要调用任何工具，不要读取文件，不要添加解释。"
+    /** Child tool arguments the prompt must carry; the plain workflow exercise carries none. */
+    fun childArguments(caseId: String, exercise: String = "workflow"): JSONObject? =
+        if (exercise == "workflow-linux") AgentServiceChildLinuxEvidence.arguments(caseId) else null
+    fun childPrompt(caseId: String, exercise: String = "workflow"): String {
+        val intro = childPromptIntro(caseId, exercise)
+        return childArguments(caseId, exercise)?.let { "$intro\n$it" } ?: intro
+    }
+
+    private const val SCRIPT_PREFIX = "return await agent("
+    private const val SCRIPT_SUFFIX = ");"
+
+    /** Decoded prompt of the reviewed `return await agent(<string>);` program; null for any other program. */
+    private fun scriptPrompt(script: String): String? {
+        if (!script.startsWith(SCRIPT_PREFIX) || !script.endsWith(SCRIPT_SUFFIX)) return null
+        val literal = script.substring(SCRIPT_PREFIX.length, script.length - SCRIPT_SUFFIX.length)
+        if (literal.length < 2 || !literal.startsWith("\"") || !literal.endsWith("\"")) return null
+        return try {
+            val values = JSONArray("[$literal]")
+            if (values.length() == 1) values.getString(0) else null
+        } catch (error: org.json.JSONException) {
+            null
+        }
+    }
+
+    /** Parsed child arguments after the fixed intro; JSON escape spelling and trailing whitespace do not matter. */
+    private fun promptArguments(prompt: String, intro: String): JSONObject? {
+        if (!prompt.startsWith("$intro\n")) return null
+        return try {
+            val tokener = org.json.JSONTokener(prompt.substring(intro.length + 1))
+            val value = tokener.nextValue()
+            if (tokener.nextClean() != 0.toChar()) null else value as? JSONObject
+        } catch (error: org.json.JSONException) {
+            null
+        }
+    }
+
+    private fun argumentsDigest(value: JSONObject?) =
+        value?.let { AgentServiceTaskEvidence.hash(AgentServiceTaskEvidence.canonical(it).toByteArray(Charsets.UTF_8)) }
+
+    /**
+     * Semantic evidence for a model-generated workflow script: the reviewed wrapper, the decoded intro
+     * and the parsed child arguments. An equivalent JSON escape spelling changes bytes, not these facts.
+     * Only digests and counts leave this function.
+     */
+    internal fun scriptEvidence(script: String, caseId: String, exercise: String): JSONObject {
+        val intro = childPromptIntro(caseId, exercise)
+        val expected = childArguments(caseId, exercise)
+        val decoded = scriptPrompt(script)
+        val prompt = decoded ?: ""
+        val promptBytes = prompt.toByteArray(Charsets.UTF_8)
+        val expectedBytes = childPrompt(caseId, exercise).toByteArray(Charsets.UTF_8)
+        val proseMatches = decoded != null && prompt.startsWith(intro)
+        val parsed = if (decoded == null) null else promptArguments(prompt, intro)
+        val argumentsMatches = when {
+            decoded == null -> false
+            expected == null -> prompt == intro
+            else -> parsed != null && AgentServiceTaskEvidence.canonical(parsed) == AgentServiceTaskEvidence.canonical(expected)
+        }
+        return JSONObject().put("wrapperMatches", decoded != null)
+            .put("promptBytes", promptBytes.size)
+            .put("promptSha256", if (decoded == null) JSONObject.NULL else AgentServiceTaskEvidence.hash(promptBytes))
+            .put("expectedPromptBytes", expectedBytes.size)
+            .put("expectedPromptSha256", AgentServiceTaskEvidence.hash(expectedBytes))
+            .put("proseMatches", proseMatches)
+            .put("argumentsMatches", argumentsMatches)
+            .put("argumentsSha256", argumentsDigest(parsed) ?: JSONObject.NULL)
+            .put("expectedArgumentsSha256", argumentsDigest(expected) ?: JSONObject.NULL)
+            .put("matches", decoded != null && proseMatches && argumentsMatches)
+    }
+
+    /** Whether a recorded child prompt carries the exact reviewed intro and parsed child arguments. */
+    fun childPromptMatches(prompt: String, caseId: String, exercise: String = "workflow"): Boolean {
+        val intro = childPromptIntro(caseId, exercise)
+        if (!prompt.startsWith(intro)) return false
+        val expected = childArguments(caseId, exercise) ?: return prompt == intro
+        val parsed = promptArguments(prompt, intro) ?: return false
+        return AgentServiceTaskEvidence.canonical(parsed) == AgentServiceTaskEvidence.canonical(expected)
+    }
     fun arguments(caseId: String, exercise: String): JSONObject {
         demand(uuid.matches(caseId) && supported(exercise), "PROGRAMMATIC_EXERCISE_INVALID")
         return if (exercise == "ptc") JSONObject().put("code",
@@ -173,7 +253,7 @@ object AgentServiceProgrammaticEvidence {
             val input = all("user/message").flatMap { row ->
                 val blocks = row.getJSONObject("data").getJSONArray("content")
                 (0 until blocks.length()).map { blocks.getJSONObject(it) }
-            }.count { it.optString("type") == "text" && it.optString("text") == childPrompt(caseId, exercise) }
+            }.count { it.optString("type") == "text" && childPromptMatches(it.optString("text"), caseId, exercise) }
             demand(input == 1, "CHILD_PROMPT_MISMATCH")
             val finals = all("assistant/message").filter { row ->
                 val content = row.getJSONObject("data").getJSONObject("message").getJSONArray("content")

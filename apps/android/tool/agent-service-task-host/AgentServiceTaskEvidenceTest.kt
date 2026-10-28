@@ -65,6 +65,35 @@ fun main(args: Array<String>) {
     for (field in listOf("contentIntentPresent", "contentIntentCreatorMatches")) case {
         rejects("NOTICE_INTENT_MISMATCH") { AgentServiceTaskEvidence.completionNotice(notice().put(field, false), id) }
     }
+    fun turnEnd(reason: JSONObject) = event(9, "turn/end", JSONObject().put("turn", 1).put("reason", reason))
+    fun failedTurn(code: String, status: Int, message: String = "private provider text") = turnEnd(JSONObject()
+        .put("kind", "error").put("error", JSONObject().put("message", message).put("code", code).put("status", status)))
+    case {
+        val failure = AgentServiceTaskEvidence.sessionFailure(failedTurn("AUTH", 401))
+        val diagnostic = failure.diagnostic!!
+        check(failure.code == "SESSION_FAILED" && diagnostic.getString("errorCode") == "AUTH" &&
+            diagnostic.getInt("errorStatus") == 401 && diagnostic.getInt("errorBytes") == 21 &&
+            diagnostic.getString("errorSha256") == AgentServiceTaskEvidence.hash("private provider text".toByteArray()) &&
+            !diagnostic.toString().contains("private"))
+    }
+    case {
+        val diagnostic = AgentServiceTaskEvidence.sessionFailure(null).diagnostic!!
+        check(diagnostic.getString("errorCode") == "UNCLASSIFIED" && diagnostic.isNull("errorStatus") &&
+            diagnostic.isNull("errorSha256") && diagnostic.getInt("errorBytes") == 0)
+    }
+    for (code in listOf("auth", "AUTH: private text")) case {
+        val diagnostic = AgentServiceTaskEvidence.sessionFailure(failedTurn(code, 401)).diagnostic!!
+        check(diagnostic.getString("errorCode") == "UNCLASSIFIED" && diagnostic.getInt("errorStatus") == 401 &&
+            !diagnostic.toString().contains("private"))
+    }
+    for (status in listOf(999, 0)) case {
+        val diagnostic = AgentServiceTaskEvidence.sessionFailure(failedTurn("AUTH", status)).diagnostic!!
+        check(diagnostic.getString("errorCode") == "AUTH" && diagnostic.isNull("errorStatus"))
+    }
+    case {
+        val diagnostic = AgentServiceTaskEvidence.sessionFailure(turnEnd(JSONObject().put("kind", "completed"))).diagnostic!!
+        check(diagnostic.getString("errorCode") == "UNCLASSIFIED" && diagnostic.isNull("errorStatus"))
+    }
     case {
         fun active(id: String, status: String) = JSONObject().put("active", JSONArray().put(
             JSONObject().put("sessionId", id).put("status", status)))
@@ -395,6 +424,30 @@ fun main(args: Array<String>) {
         val events = linuxChildRows(); modifyLinuxReceipt(events) { it.put("diskCommitted", false) }
         rejects("CHILD_DURABLE_MISMATCH") { verifyLinuxChild(durable = events) }
     }
+    fun normalizeSlashes(value: String) = value.replace("\\" + "/", "/")
+    case {
+        // A recorded child prompt may spell nested JSON slashes without the redundant escape.
+        val normalized = normalizeSlashes(AgentServiceProgrammaticEvidence.childPrompt(id, "workflow-linux"))
+        check(normalized != AgentServiceProgrammaticEvidence.childPrompt(id, "workflow-linux"))
+        val live = linuxChildRows(); val durable = linuxChildRows()
+        for (rows in listOf(live, durable)) rows.getJSONObject(1).getJSONObject("data").getJSONArray("content").getJSONObject(0)
+            .put("text", normalized)
+        check(verifyLinuxChild(live, durable).getJSONObject("linuxReceipt").getString("status") == "completed")
+    }
+    for (changed in listOf(
+        AgentServiceProgrammaticEvidence.childPrompt(id, "workflow-linux").replace("\"timeoutMs\":120000", "\"timeoutMs\":60000"),
+        AgentServiceProgrammaticEvidence.childPrompt(id, "workflow-linux") + "\ntrailing instruction",
+        AgentServiceProgrammaticEvidence.childPrompt(id, "workflow-linux").replace("不访问网络", "允许访问网络"))) case {
+        val value = linuxChildRows()
+        value.getJSONObject(1).getJSONObject("data").getJSONArray("content").getJSONObject(0).put("text", changed)
+        rejects("CHILD_PROMPT_MISMATCH") { verifyLinuxChild(value) }
+    }
+    case {
+        check(AgentServiceProgrammaticEvidence.childPromptMatches(AgentServiceProgrammaticEvidence.childPrompt(id), id))
+        check(!AgentServiceProgrammaticEvidence.childPromptMatches("wrong", id))
+        check(!AgentServiceProgrammaticEvidence.childPromptMatches(
+            AgentServiceProgrammaticEvidence.childPrompt(id) + " ", id))
+    }
     case {
         var calls = 0
         AgentServiceProgrammaticEvidence.archiveChild(cleanupChild) { method, params ->
@@ -538,6 +591,38 @@ fun main(args: Array<String>) {
     for (exercise in listOf("ptc", "workflow", "workflow-linux")) case {
         val raw = AgentServiceProgrammaticEvidence.arguments(id, exercise).toString()
         check(AgentServiceProgrammaticDiagnostic.arguments(raw, id, exercise).getBoolean("matches"))
+    }
+    fun normalizeScriptSlashes(script: String) = Regex("\\\\{1,3}/").replace(script) { it.value.drop(1) }
+    fun variantArguments(script: String): JSONObject =
+        JSONObject(AgentServiceProgrammaticEvidence.arguments(id, "workflow-linux").toString()).put("script", script)
+    case {
+        // A model may re-serialize the nested JSON with one redundant escape fewer; the decoded prompt is unchanged.
+        val expected = AgentServiceProgrammaticEvidence.arguments(id, "workflow-linux").getString("script")
+        val variant = normalizeScriptSlashes(expected)
+        check(variant.length < expected.length && variant != expected)
+        val raw = variantArguments(variant).toString()
+        val proof = AgentServiceProgrammaticDiagnostic.arguments(raw, id, "workflow-linux")
+        check(proof.getBoolean("matches") && proof.getJSONObject("script").getBoolean("wrapperMatches") &&
+            proof.getJSONObject("script").getBoolean("argumentsMatches"))
+        check(!proof.getJSONArray("fields").getJSONObject(0).getBoolean("matches"))
+        val live = programRows("workflow-linux"); val durable = programRows("workflow-linux")
+        for (rows in listOf(live, durable)) rows.getJSONObject(6).getJSONObject("data").put("arguments", raw)
+        check(verifyProgram("workflow-linux", live, durable).getJSONObject("programmatic").getString("exercise") == "workflow-linux")
+    }
+    for (script in listOf(
+        "console.log(1); " + AgentServiceProgrammaticEvidence.arguments(id, "workflow-linux").getString("script"),
+        AgentServiceProgrammaticEvidence.arguments(id, "workflow-linux").getString("script") + "; console.log(1)",
+        "return await agent(${JSONObject.quote(AgentServiceProgrammaticEvidence.childPrompt(id, "workflow-linux")
+            .replace("\"timeoutMs\":120000", "\"timeoutMs\":60000"))});")) case {
+        val raw = variantArguments(script).toString()
+        check(!AgentServiceProgrammaticDiagnostic.arguments(raw, id, "workflow-linux").getBoolean("matches"))
+        val value = programRows("workflow-linux"); value.getJSONObject(6).getJSONObject("data").put("arguments", raw)
+        rejects("PROGRAMMATIC_ARGUMENTS_CHANGED") { verifyProgram("workflow-linux", value) }
+    }
+    case {
+        val expected = AgentServiceProgrammaticEvidence.arguments(id, "workflow")
+        val changed = JSONObject(expected.toString()).put("meta", JSONObject().put("name", "account-child").put("description", "Other child"))
+        check(!AgentServiceProgrammaticDiagnostic.arguments(changed.toString(), id, "workflow").getBoolean("matches"))
     }
     for (raw in listOf("{private-secret", "{\"script\":null}", "{\"script\":12,\"meta\":[]}",
         "{\"private-secret-key\":\"private-secret-value\",\"meta\":{\"credential\":\"private-secret-token\"}}")) case {
