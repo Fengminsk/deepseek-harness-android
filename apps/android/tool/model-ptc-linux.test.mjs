@@ -27,6 +27,7 @@ import { IsolatedToolCallJournal } from '../runtime/isolated-tool-call-journal.m
 import { createNativeIsolatedExecutionBridge } from '../runtime/native-isolated-execution-bridge.mjs'
 import { createAppOwnedPtcOwner } from '../runtime/model-ptc-reviewed-owner.mjs'
 import { registerAndroidPtcTool } from '../runtime/tool-model-ptc.mjs'
+import { inPtcAcceptanceTurn } from './device-runtime-acceptance/ptc.mjs'
 
 const sha = bytes => createHash('sha256').update(bytes).digest('hex')
 const complete = (p, extra = {}) => ({ id: p.id, sessionId: p.sessionId, status: 'completed',
@@ -142,7 +143,7 @@ async function fixture(t, options = {}) {
         current.outputJson = JSON.stringify(await fn(JSON.parse(current.inputJson), {
           async callAsync({ action, ...request }) {
             assert.equal(action, 'TOOL_CALL')
-            const { runId, callId, ...reply } = await callbacks.call({ ...request, runId: current.runId, token: current.token })
+            const { runId: _runId, callId: _callId, ...reply } = await callbacks.call({ ...request, runId: current.runId, token: current.token })
             return reply
           },
         }))
@@ -155,7 +156,17 @@ async function fixture(t, options = {}) {
     if (method === 'native.isolated.release' || method === 'native.isolated.cancel') return true
     throw new Error(method)
   } }
-  callbacks = new NativeIsolatedToolCallbacks(transport, new IsolatedToolCallJournal(join(root, 'journal')))
+  const journal = new IsolatedToolCallJournal(join(root, 'journal'))
+  callbacks = new NativeIsolatedToolCallbacks(transport, journal)
+  const callbackClosures = []
+  const bind = callbacks.bind.bind(callbacks)
+  callbacks.bind = async input => {
+    const binding = await bind(input)
+    return { runId: binding.runId, async close() {
+      try { await binding.close(); callbackClosures.push({ runId: binding.runId, closed: true }) }
+      catch (error) { callbackClosures.push({ runId: binding.runId, closed: false, code: error.code }); throw error }
+    } }
+  }
   const services = { agents: ctx.agents, sandboxPolicy: ctx.sandboxPolicy,
     sessions: { async flush(session) {
       flushes++
@@ -164,7 +175,7 @@ async function fixture(t, options = {}) {
     } } }
   owner = createAppOwnedPtcOwner({ bridge: createNativeIsolatedExecutionBridge(transport), callbacks, runtime: ctx.tools, services })
   registerAndroidPtcTool(ctx, { owner, available: () => true })
-  return { ...state, services, linux, owner,
+  return { ...state, services, linux, owner, journal, callbackClosures,
     get flushes() { return flushes },
     invoke(code, signal = new AbortController().signal) {
       return ctx.tools.execute({ agent, signal, callId: randomUUID(), name: 'android_ptc',
@@ -296,6 +307,42 @@ test('PTC cancellation waits for Linux settlement and preserves a published expo
   assert.equal(f.nativeCalls.filter(c => c.method.endsWith('.exportFile')).length, 1)
   assert.equal(f.nativeCalls.filter(c => c.method.endsWith('.cancel')).length, 1)
   assert.ok((await f.diskLog()).includes('android-linux-receipt'))
+})
+
+test('confirmed cancelled Linux settles its durable callback before rejecting the cancelled guest', { timeout: 15000 }, async t => {
+  const entered = Promise.withResolvers(), settle = Promise.withResolvers(), abort = new AbortController()
+  const f = await fixture(t, { adapter: new MockAdapter([]), async execute(_params, result) {
+    entered.resolve()
+    await settle.promise
+    return { ...result, status: 'cancelled', cancelled: true, exitCode: null, diskCommitted: false }
+  } })
+  let completed = false
+  const pending = inPtcAcceptanceTurn(f.ctx, f.agent, () =>
+    f.invoke("return await tools.linux_exec({command:'fixture:held-until-cancelled'})", abort.signal))
+    .finally(() => { completed = true })
+  try {
+    await checkpoint(entered.promise, pending)
+    abort.abort(new Error('Parent cancelled while actual ToolRuntime Linux execution is pending'))
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(completed, false, 'The parent must still join the final Linux receipt')
+  } finally { settle.resolve() }
+  const result = await pending
+  assert.equal(result.isError, true)
+  const dispatch = f.agent.session.snapshotEvents().filter(event => event.type === 'tool/ptc-dispatch')
+  assert.equal(dispatch.length, 1)
+  assert.equal(dispatch[0].data.isError, true)
+  const context = dispatch[0].data.additionalContexts.find(value => value.source.kind === 'android-linux-receipt')
+  const receipt = JSON.parse(context.content[0].text).linuxVmReceipt
+  assert.equal(receipt.status, 'cancelled'); assert.equal(receipt.retirementConfirmed, true)
+  assert.equal(receipt.diskCommitted, false); assert.equal(receipt.cancelRequested, true)
+  assert.equal(await f.ctx.sessions.flush(f.agent.session), true)
+  assert.ok((await f.diskLog()).includes(JSON.stringify(dispatch[0].data)), 'Original terminal audit is durable')
+  const admission = f.ptcCalls.find(row => row.method === 'native.isolated.admit').params
+  assert.deepEqual(await f.journal.inspect({ runId: admission.runId, callId: 1 }),
+    { runId: admission.runId, callId: 1, state: 'confirmed', outcome: 'tool-error' })
+  assert.deepEqual(f.callbackClosures, [{ runId: admission.runId, closed: true }])
+  assert.equal(f.nativeCalls.filter(row => row.method === 'native.linuxVm.execute').length, 1)
+  assert.equal(f.nativeCalls.filter(row => row.method === 'native.linuxVm.cancel').length, 1)
 })
 
 test('oversized Linux output is explicit unsupported while retained execution facts remain intact', async t => {

@@ -246,7 +246,7 @@ fun main(args: Array<String>) {
                     .put("childId", "c0000000-0000-4000-8000-000000000003").put("label", "Dedicated child")))
                 .put(event(9, "tool-workflow/agent-end", JSONObject().put("runId", runId).put("seq", 1).put("outcome", "completed")))
                 .put(event(10, "tool-workflow/run-end", JSONObject().put("runId", runId).put("stopReason", "completed")))
-            resultText = "workflow \"account-child\" completed (1 agent).\nReturn value:\n${JSONObject.quote(AgentServiceProgrammaticEvidence.childMarker(id))}"
+            resultText = "workflow \"account-child\" completed (1 agent).\nReturn value:\n${JSONObject.quote(AgentServiceProgrammaticEvidence.childResponse(id, exercise))}"
         }
         val resultMessage = JSONObject(File(args[0], "tool-result-message.json").readText()).put("toolCallId", "program-call")
             .put("content", JSONArray().put(text(resultText)))
@@ -259,7 +259,7 @@ fun main(args: Array<String>) {
     fun verifyProgram(exercise: String, live: JSONArray = programRows(exercise), durable: JSONArray = programRows(exercise)) =
         AgentServiceTaskEvidence.completed(live, durable, id, request, model, false, exercise)
     val nativeContracts = JSONObject().put("caseId", id)
-    for (exercise in listOf("ptc", "workflow")) case {
+    for (exercise in listOf("ptc", "workflow", "workflow-linux")) case {
         val result = verifyProgram(exercise)
         check(result.getInt("toolCalls") == 1 && result.getLong("toolStartSeq") == 6L)
         check(result.getJSONObject("programmatic").getString("exercise") == exercise)
@@ -323,6 +323,78 @@ fun main(args: Array<String>) {
     fun verifyChild(live: JSONArray = childRows(), durable: JSONArray = childRows()) =
         AgentServiceProgrammaticEvidence.child(live, durable, id, "c0000000-0000-4000-8000-000000000003", model)
     val cleanupChild = "c0000000-0000-4000-8000-000000000003"
+    fun linuxChildRows(): JSONArray {
+        val base = childRows()
+        base.getJSONObject(1).getJSONObject("data").getJSONArray("content").getJSONObject(0)
+            .put("text", AgentServiceProgrammaticEvidence.childPrompt(id, "workflow-linux"))
+        val out = JSONArray((0..4).map { base.getJSONObject(it) })
+            .put(event(5, "assistant/message", JSONObject().put("turn", 1).put("step", 1).put("message", JSONObject()
+                .put("content", JSONArray().put(JSONObject().put("type", "tool-call").put("id", "child-linux-call").put("name", "linux_exec"))))))
+            .put(event(6, "tool/call", JSONObject().put("turn", 1).put("step", 1).put("callId", "child-linux-call").put("name", "linux_exec")
+                .put("arguments", AgentServiceChildLinuxEvidence.arguments(id).toString())))
+        val native = JSONObject().put("id", "e0000000-0000-4000-8000-000000000005").put("sessionId", cleanupChild)
+            .put("status", "completed").put("exitCode", 0).put("retirementConfirmed", true).put("guestUid", 99001)
+            .put("cancelled", false).put("timedOut", false).put("truncated", false).put("cancelRequested", false).put("diskCommitted", true)
+            .put("output", JSONObject().put("marker", AgentServiceProgrammaticEvidence.childMarker(id))
+                .put("sha256", AgentServiceChildLinuxEvidence.payloadHash(id)).put("bytes", AgentServiceChildLinuxEvidence.payload(id).toByteArray().size)
+                .put("archiveEntries", 1).put("cleaned", true).toString())
+        val message = JSONObject(File(args[0], "tool-result-message.json").readText()).put("toolCallId", "child-linux-call")
+            .put("content", JSONArray().put(text(native.toString())))
+        out.put(event(7, "tool/result", JSONObject().put("turn", 1).put("step", 1).put("message", message))
+            .put("sourceEventSeqs", JSONArray().put(6)))
+        out.put(base.getJSONObject(5).put("seq", 8).apply {
+            getJSONObject("data").getJSONObject("message").put("content", JSONArray().put(text(AgentServiceChildLinuxEvidence.response(id))))
+        })
+        out.put(base.getJSONObject(6).put("seq", 9))
+        return out
+    }
+    fun verifyLinuxChild(live: JSONArray = linuxChildRows(), durable: JSONArray = linuxChildRows()) =
+        AgentServiceProgrammaticEvidence.child(live, durable, id, cleanupChild, model, "workflow-linux", 10496)
+    fun modifyLinuxReceipt(events: JSONArray, change: (JSONObject) -> Unit) {
+        val block = events.getJSONObject(7).getJSONObject("data").getJSONObject("message").getJSONArray("content").getJSONObject(0)
+        val native = JSONObject(block.getString("text")); change(native); block.put("text", native.toString())
+    }
+    case { nativeContracts.put("linuxChild", verifyLinuxChild()) }
+    case {
+        val live = linuxChildRows(); val durable = linuxChildRows()
+        modifyLinuxReceipt(live) { it.put("diskCommitted", false) }; modifyLinuxReceipt(durable) { it.put("diskCommitted", false) }
+        check(!verifyLinuxChild(live, durable).getJSONObject("linuxReceipt").getBoolean("diskCommitted"))
+    }
+    for ((key, value) in listOf("retirementConfirmed" to false, "cancelled" to true, "timedOut" to true,
+        "truncated" to true, "cancelRequested" to true, "exitCode" to 1)) case {
+        val events = linuxChildRows(); modifyLinuxReceipt(events) { it.put(key, value) }
+        rejects("CHILD_LINUX_EXECUTION_UNCONFIRMED") { verifyLinuxChild(events) }
+    }
+    case {
+        val events = linuxChildRows(); modifyLinuxReceipt(events) { it.put("guestUid", 10496) }
+        rejects("CHILD_LINUX_UID_NOT_ISOLATED") { verifyLinuxChild(events) }
+    }
+    case {
+        val events = linuxChildRows(); modifyLinuxReceipt(events) { it.put("sessionId", session) }
+        rejects("CHILD_LINUX_SESSION_MISMATCH") { verifyLinuxChild(events) }
+    }
+    for ((key, value) in listOf("cleaned" to false, "bytes" to 1, "sha256" to "bad", "archiveEntries" to 2)) case {
+        val events = linuxChildRows(); modifyLinuxReceipt(events) {
+            it.put("output", JSONObject(it.getString("output")).put(key, value).toString())
+        }
+        rejects("CHILD_LINUX_FILE_RESULT_INVALID") { verifyLinuxChild(events) }
+    }
+    case {
+        val events = linuxChildRows(); events.getJSONObject(6).getJSONObject("data").put("arguments", "{\"command\":\"ls /\",\"timeoutMs\":120000}")
+        rejects("CHILD_LINUX_ARGUMENTS_CHANGED") { verifyLinuxChild(events) }
+    }
+    case {
+        val events = linuxChildRows(); events.getJSONObject(7).put("sourceEventSeqs", JSONArray().put(5))
+        rejects("CHILD_LINUX_RESULT_MISMATCH") { verifyLinuxChild(events) }
+    }
+    case {
+        val events = linuxChildRows(); events.put(event(10, "tool/call", events.getJSONObject(6).getJSONObject("data")))
+        rejects("CHILD_LINUX_TOOL_COUNT_INVALID") { verifyLinuxChild(events) }
+    }
+    case {
+        val events = linuxChildRows(); modifyLinuxReceipt(events) { it.put("diskCommitted", false) }
+        rejects("CHILD_DURABLE_MISMATCH") { verifyLinuxChild(durable = events) }
+    }
     case {
         var calls = 0
         AgentServiceProgrammaticEvidence.archiveChild(cleanupChild) { method, params ->
@@ -423,6 +495,91 @@ fun main(args: Array<String>) {
     case {
         val stored = childRows(); stored.put(event(7, "session/title", JSONObject().put("title", "Late dedicated title")))
         check(verifyChild(durable = stored).getInt("eventCount") == 8)
+    }
+    fun changedParent(): JSONArray = programRows("workflow-linux").apply {
+        getJSONObject(6).getJSONObject("data").put("arguments", AgentServiceProgrammaticEvidence.arguments(id, "workflow-linux")
+            .apply { getJSONObject("meta").put("description", "private credential-like fixture never print") }.toString())
+    }
+    fun diagnose(parent: JSONArray = changedParent(), stored: JSONArray = parent,
+        childHeaderParent: String = session, childHeaderOrigin: String = "subagent", failChild: Boolean = false,
+        calls: MutableList<String> = ArrayList()): JSONObject = AgentServiceProgrammaticDiagnostic.inspect(id, "workflow-linux",
+        { method, params ->
+            calls.add(method)
+            check(method == "session.read")
+            val target = params.getString("sessionId")
+            check(target in setOf(session, cleanupChild))
+            if (failChild && target == cleanupChild) throw AgentServiceTaskEvidence.Rejected("DOMAIN_FAILED")
+            JSONObject().put("events", if (target == session) parent else linuxChildRows())
+        }, { target ->
+            check(target in setOf(session, cleanupChild))
+            val header = JSONObject().put("type", "session").put("version", 4).put("id", target)
+            if (target == cleanupChild) header.put("origin", childHeaderOrigin).put("parentSession", childHeaderParent)
+            JSONObject().put("header", header).put("events", if (target == session) stored else linuxChildRows())
+        })
+    case {
+        val methods = ArrayList<String>()
+        val proof = diagnose(calls = methods)
+        check(methods == listOf("session.read", "session.read"))
+        check(!proof.getBoolean("cleanupAuthorized") && proof.getJSONObject("lineage").getString("state") == "verified")
+        check(!proof.getJSONObject("arguments").getBoolean("matches"))
+        check(!proof.toString().contains("private credential-like fixture") && !proof.toString().contains("python3"))
+        nativeContracts.put("diagnostic", proof)
+    }
+    case {
+        val raw = changedParent().getJSONObject(6).getJSONObject("data").getString("arguments")
+        try { AgentServiceProgrammaticEvidence.call(changedParent().getJSONObject(6), id, "workflow-linux"); error("Must reject") }
+        catch (error: AgentServiceTaskEvidence.Rejected) {
+            check(error.code == "PROGRAMMATIC_ARGUMENTS_CHANGED")
+            check(error.diagnostic!!.getString("rawSha256") == AgentServiceTaskEvidence.hash(raw.toByteArray()))
+            val fields = error.diagnostic!!.getJSONArray("fields")
+            check(fields.getJSONObject(0).getBoolean("matches") && !fields.getJSONObject(3).getBoolean("matches"))
+        }
+    }
+    for (exercise in listOf("ptc", "workflow", "workflow-linux")) case {
+        val raw = AgentServiceProgrammaticEvidence.arguments(id, exercise).toString()
+        check(AgentServiceProgrammaticDiagnostic.arguments(raw, id, exercise).getBoolean("matches"))
+    }
+    for (raw in listOf("{private-secret", "{\"script\":null}", "{\"script\":12,\"meta\":[]}",
+        "{\"private-secret-key\":\"private-secret-value\",\"meta\":{\"credential\":\"private-secret-token\"}}")) case {
+        val proof = AgentServiceProgrammaticDiagnostic.arguments(raw, id, "workflow-linux")
+        check(!proof.getBoolean("matches") && !proof.toString().contains("private-secret") && !proof.toString().contains("credential"))
+    }
+    case {
+        val proof = AgentServiceProgrammaticDiagnostic.arguments("{\"script\":\"字\",\"meta\":{}}", id, "workflow-linux")
+        check(proof.getJSONArray("fields").getJSONObject(0).getJSONObject("actual").getInt("bytes") == 3)
+    }
+    case { rejects("PROGRAMMATIC_ARGUMENTS_OVERSIZED") { AgentServiceProgrammaticDiagnostic.arguments("x".repeat(262145), id, "workflow-linux") } }
+    case {
+        val parent = changedParent(); parent.getJSONObject(1).getJSONObject("data").getJSONObject("source").put("rpcId", "other-request")
+        rejects("REQUEST_ID_MISMATCH") { diagnose(parent) }
+    }
+    case {
+        val parent = changedParent(); parent.getJSONObject(1).getJSONObject("data").getJSONArray("content").getJSONObject(0).put("text", "other-user")
+        rejects("USER_CONTENT_MISMATCH") { diagnose(parent) }
+    }
+    case {
+        val stored = changedParent(); stored.getJSONObject(6).getJSONObject("data").put("arguments", "{}")
+        rejects("DIAGNOSTIC_DURABLE_MISMATCH") { diagnose(stored = stored) }
+    }
+    for ((parent, origin) in listOf("other-parent" to "subagent", session to "user")) case {
+        check(diagnose(childHeaderParent = parent, childHeaderOrigin = origin).getJSONObject("lineage").getString("state") == "unconfirmed")
+    }
+    case { check(diagnose(failChild = true).getJSONObject("lineage").getString("state") == "child_read_unconfirmed") }
+    case {
+        val parent = changedParent(); parent.getJSONObject(8).put("type", "other-event")
+        val calls = ArrayList<String>()
+        check(diagnose(parent, calls = calls).getJSONObject("lineage").getString("state") == "no_member_record")
+        check(calls == listOf("session.read"))
+    }
+    case {
+        val parent = changedParent(); parent.getJSONObject(8).getJSONObject("data").put("childId", "existing-user-session")
+        val calls = ArrayList<String>()
+        check(diagnose(parent, calls = calls).getJSONObject("lineage").getString("state") == "unconfirmed")
+        check(calls == listOf("session.read"))
+    }
+    case {
+        rejects("DIAGNOSTIC_CASE_INVALID") { AgentServiceProgrammaticDiagnostic.inspect("other", "workflow-linux",
+            { _, _ -> error("No RPC allowed") }, { error("No export allowed") }) }
     }
     File(args[0], "programmatic-native-contract.json").writeText(nativeContracts.toString())
     if (args.size == 3) case {

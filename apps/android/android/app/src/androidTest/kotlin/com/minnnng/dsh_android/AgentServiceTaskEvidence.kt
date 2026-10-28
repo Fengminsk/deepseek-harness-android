@@ -8,7 +8,7 @@ import java.util.zip.ZipInputStream
 
 /** Pure checks for one dedicated real-account submission; failures never include model or account text. */
 object AgentServiceTaskEvidence {
-    class Rejected(val code: String) : IllegalStateException(code)
+    class Rejected(val code: String, val diagnostic: JSONObject? = null) : IllegalStateException(code)
     fun demand(value: Boolean, code: String) { if (!value) throw Rejected(code) }
     fun hash(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256").digest(bytes)
         .joinToString("") { "%02x".format(it.toInt() and 255) }
@@ -105,7 +105,7 @@ object AgentServiceTaskEvidence {
     }
 
     /** Only the owned plain Session log may occur; no extraction or arbitrary path reads occur. */
-    fun readExport(input: InputStream, sessionId: String): JSONArray {
+    fun readExport(input: InputStream, sessionId: String, onHeader: (JSONObject) -> Unit = {}): JSONArray {
         val text = ZipInputStream(input).use { zip ->
             val entry = zip.nextEntry ?: throw Rejected("EXPORT_EMPTY")
             demand(entry.name == "session.v4.jsonl" && !entry.isDirectory, "EXPORT_ENTRY_INVALID")
@@ -121,6 +121,7 @@ object AgentServiceTaskEvidence {
         val header = rows.first()
         demand(header.getString("type") == "session" && header.getInt("version") == 4 &&
             header.getString("id") == sessionId, "EXPORT_SESSION_MISMATCH")
+        onHeader(header)
         return JSONArray(rows.drop(1))
     }
 
@@ -138,7 +139,7 @@ object AgentServiceTaskEvidence {
     fun completed(history: JSONArray, durable: JSONArray, caseId: String, requestId: String, model: String,
                   radio: Boolean = false, exercise: String = if (radio) "radio-linux" else "echo"): JSONObject {
         val programmatic = AgentServiceProgrammaticEvidence.supported(exercise)
-        demand(exercise in setOf("echo", "radio-linux", "ptc", "workflow") && radio == (exercise == "radio-linux"), "EXERCISE_INVALID")
+        demand((exercise in setOf("echo", "radio-linux") || programmatic) && radio == (exercise == "radio-linux"), "EXERCISE_INVALID")
         val toolExercise = radio || programmatic
         val types = setOf("user/message", "request/header", "turn/start", "assistant/message", "turn/end", "tool/call", "tool/result",
             "tool/ptc-dispatch-start", "tool/ptc-dispatch", "tool-workflow/run-start", "tool-workflow/run-end",
@@ -153,7 +154,7 @@ object AgentServiceTaskEvidence {
                 val allowedTools = if (exercise == "ptc") setOf("tool/call", "tool/result", "tool/ptc-dispatch-start", "tool/ptc-dispatch")
                     else setOf("tool/call", "tool/result")
                 demand(!row.getString("type").startsWith("tool/") || toolExercise && row.getString("type") in allowedTools, "TOOL_INVOKED")
-                demand(!row.getString("type").startsWith("tool-workflow/") || exercise == "workflow", "UNEXPECTED_WORKFLOW")
+                demand(!row.getString("type").startsWith("tool-workflow/") || AgentServiceProgrammaticEvidence.workflow(exercise), "UNEXPECTED_WORKFLOW")
             }
             fun all(type: String) = rows.filter { it.getString("type") == type }
             fun one(type: String): JSONObject {

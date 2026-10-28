@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { IsolatedToolCallPort, reviewedToolProjectionError } from '../runtime/isolated-tool-call-port.mjs'
+import { IsolatedToolCallPort, reviewedToolProjectionError, confirmedToolCallbackClosure } from '../runtime/isolated-tool-call-port.mjs'
 import { IsolatedToolCallJournal } from '../runtime/isolated-tool-call-journal.mjs'
 
 const RUN_ID = '00000000-0000-4000-8000-000000000001'
@@ -133,7 +133,7 @@ test('revoked visibility is checked after prior call settles', async () => {
 test('cancellation joins running tool and withholds its late value', async () => {
   const release = deferred()
   const started = deferred()
-  const { port, inputs } = setup({ execute: async input => {
+  const { port, inputs } = setup({ execute: async () => {
     started.resolve()
     await release.promise
     return { isError: false, content: [], value: { leaked: true } }
@@ -143,9 +143,16 @@ test('cancellation joins running tool and withholds its late value', async () =>
   const queued = port.call(call('another_tool', {}, 2))
   const closing = port.close('guest exited')
   release.resolve()
-  await assert.rejects(running, { code: 'ANDROID_TOOL_CALLBACK_CLOSED' })
+  await assert.rejects(running, error => {
+    assert.equal(error.code, 'ANDROID_TOOL_CALLBACK_CLOSED')
+    assert.deepEqual(confirmedToolCallbackClosure(error, RUN_ID, 1), { closed: true, cancelRequested: false })
+    assert.equal(confirmedToolCallbackClosure(error, RUN_ID, 2), undefined)
+    assert.equal(confirmedToolCallbackClosure(error, 'another-run', 1), undefined)
+    assert.equal(confirmedToolCallbackClosure({ ...error }, RUN_ID, 1), undefined)
+    return true
+  })
   await assert.rejects(queued, { code: 'ANDROID_TOOL_CALLBACK_CLOSED' })
-  await assert.rejects(closing, { code: 'ANDROID_TOOL_DISPATCH_UNCONFIRMED' })
+  await closing
   assert.equal(inputs.length, 1)
 })
 
@@ -237,8 +244,32 @@ test('parent cancellation closes the lane and joins a running call', async () =>
   release.resolve()
   await assert.rejects(running, { code: 'ANDROID_TOOL_CALLBACK_CLOSED' })
   assert.throws(() => port.call(call()), { code: 'ANDROID_TOOL_CALLBACK_CLOSED' })
-  await assert.rejects(port.close(), { code: 'ANDROID_TOOL_DISPATCH_UNCONFIRMED' })
+  await port.close()
 })
+
+for (const failedStage of ['observe', 'flush', 'confirm']) {
+  test(`parent cancellation cannot confirm a Linux outcome after ${failedStage} failure`, async () => {
+    const started = deferred(), release = deferred(), stored = journal()
+    let flushes = 0
+    const wrapped = Object.fromEntries(['prepare', 'dispatch', 'observe', 'confirm'].map(name => [name, async (...args) => {
+      if (name === failedStage) throw new Error(`Deliberate ${failedStage} failure`)
+      return stored[name](...args)
+    }]))
+    const { port, parentController } = setup({ kind: 'ptc', names: ['linux_exec'], journal: wrapped,
+      authorizeTool: async input => ({ definition: input.definition, effect: 'isolated-execution',
+        flushSession: async () => !(++flushes === 2 && failedStage === 'flush') }),
+      execute: async () => { started.resolve(); await release.promise; return { isError: true,
+        content: [{ type: 'text', text: 'cancelled' }], error: { message: 'cancelled', info: { code: 'ABORTED' } } } },
+    })
+    const running = port.call(call('linux_exec', { command: 'fixture:pending' }))
+    await started.promise
+    parentController.abort('parent cancelled')
+    release.resolve()
+    await assert.rejects(running)
+    await assert.rejects(port.close(), { code: 'ANDROID_TOOL_DISPATCH_UNCONFIRMED' })
+    assert.notEqual((await stored.inspect({ runId: RUN_ID, callId: 1 })).state, 'confirmed')
+  })
+}
 
 test('matching admission and visible trusted allowlist are mandatory', () => {
   const { port, runtime, parent } = setup()
@@ -613,10 +644,11 @@ test('cancelled mutation preserves its returned receipt and durable terminal aud
   const closing = port.close('cancel requested')
   release.resolve()
   await assert.rejects(running, { code: 'ANDROID_TOOL_CALLBACK_CLOSED' })
-  await assert.rejects(closing, { code: 'ANDROID_TOOL_DISPATCH_UNCONFIRMED' })
+  await closing
   assert.equal(flushes, 2)
   assert.equal(contexts[0], context)
   assert.equal(events[1].data.additionalContexts[0].id, 'committed')
   assert.equal(events[1].data.mutation.status, 'verify-before-retry')
-  assert.equal((await callJournal.inspect({ runId: RUN_ID, callId: 1 })).state, 'result-unconfirmed')
+  assert.deepEqual(await callJournal.inspect({ runId: RUN_ID, callId: 1 }),
+    { runId: RUN_ID, callId: 1, state: 'confirmed', outcome: 'tool-error' })
 })

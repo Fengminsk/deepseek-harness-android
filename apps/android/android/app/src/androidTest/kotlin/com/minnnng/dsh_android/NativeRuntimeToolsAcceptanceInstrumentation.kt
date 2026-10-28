@@ -103,9 +103,9 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
         val budgetSeconds = when (suite) {
             "linux" -> linuxBudgetSeconds
             "workflow" -> workflowBudgetSeconds
-            "ptc" -> 360L
+            "ptc" -> 540L
             "production-profile" -> if (expectWorkflow) 480L else 360L
-            "all" -> linuxBudgetSeconds + workflowBudgetSeconds + 360L
+            "all" -> linuxBudgetSeconds + workflowBudgetSeconds + 540L
             else -> 240L
         }
         val fixtureId = ptcCaseId ?: workflowCaseId ?: UUID.randomUUID().toString()
@@ -256,6 +256,7 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
             val fixture = File(home, if (recovering) "recovery-fixture" else "fixture").apply { check(mkdirs()) }
             for (name in listOf("bootstrap.mjs", "index.mjs", "report.mjs", "workflow.mjs", "ptc.mjs", "linux.mjs", "callback-routing.mjs",
                 "python-analysis.mjs", "python-analysis.py", "apk-fixture.json", "apk-overflow-fixture.json",
+                "apk-inspection.mjs", "apk-code-fixture.json", "ptc-linux-lifecycle.mjs",
                 "ptc-process-death.mjs", "ptc-saf.mjs", "ptc-linux.mjs", "workflow-checks.mjs", "workflow-model-fixture.mjs",
                 "workflow-lifecycle.mjs", "workflow-lifecycle-evidence.mjs",
                 "production-profile-bootstrap.mjs", "production-profile-model.mjs",
@@ -313,6 +314,18 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
             })
             workflow = workflowOwner
             val admittedWorkflowSessions = ConcurrentHashMap<String, String>()
+            val admittedPtcSessions = ConcurrentHashMap<String, String>()
+            val dispatchedLinuxSessions = ConcurrentHashMap<String, String>()
+            val ptcLinuxObservation by lazy { PtcLinuxLifecycleObservation(this) }
+            fun observePtcLinux(params: JSONObject): JSONObject {
+                check(suite in setOf("ptc", "all"))
+                check(params.keys().asSequence().toSet() == setOf("ptcRunId", "linuxRunId"))
+                val ptcId = params.getString("ptcRunId").also(IsolatedScriptWire::requireUuid)
+                val linuxId = params.getString("linuxRunId").also(IsolatedScriptWire::requireUuid)
+                val session = checkNotNull(admittedPtcSessions[ptcId]) { "PTC run was not admitted by this carrier" }
+                check(dispatchedLinuxSessions[linuxId] == session) { "Linux run does not belong to the admitted PTC Session" }
+                return ptcLinuxObservation.observe(params)
+            }
             fun workflowObservation(params: JSONObject): JSONObject {
                 check(suite in setOf("workflow-deadline", "workflow-process-death"))
                 check(params.keys().asSequence().toSet() == setOf("runId"))
@@ -377,7 +390,13 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
                                         "native.workflow.inspect" -> workflowOwner.inspect(params)
                                         "native.workflow.release" -> workflowOwner.release(params)
                                         "acceptance.workflow.observe" -> workflowObservation(params)
-                                        "native.isolated.admit" -> isolatedOwner.admit(params)
+                                        "native.isolated.admit" -> {
+                                            val trackPtc = params.optString("kind") == "ptc"
+                                            if (trackPtc) check(admittedPtcSessions.size < 64)
+                                            isolatedOwner.admit(params).also {
+                                                if (trackPtc) admittedPtcSessions[params.getString("runId")] = params.getString("sessionId")
+                                            }
+                                        }
                                         "native.isolated.bindTools" -> isolatedOwner.bindTools(params)
                                         "native.isolated.execute" -> isolatedOwner.execute(params)
                                         "native.isolated.cancel" -> isolatedOwner.cancel(params)
@@ -398,11 +417,18 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
                                             check(textOwner.revokeRoot(controlled.root)) { "Owned SAF reads did not retire after revocation" }
                                             revoked
                                         }
-                                        "native.linuxVm.execute" -> linuxOwner.execute(params)
+                                        "native.linuxVm.execute" -> {
+                                            val run = params.getString("id").also(IsolatedScriptWire::requireUuid)
+                                            val session = params.getString("sessionId").also(IsolatedScriptWire::requireSessionId)
+                                            check(dispatchedLinuxSessions.size < 64)
+                                            check(dispatchedLinuxSessions.putIfAbsent(run, session) == null)
+                                            linuxOwner.execute(params)
+                                        }
                                         "native.linuxVm.cancel" -> linuxOwner.cancel(params)
                                         "native.linuxVm.importFile" -> linuxOwner.importFile(params)
                                         "native.linuxVm.exportFile" -> linuxOwner.exportFile(params)
                                         "native.linuxVm.inspect" -> linuxOwner.inspect(params)
+                                        "acceptance.ptcLinux.observe" -> observePtcLinux(params)
                                         else -> error("Unexpected acceptance native method: $method")
                                     }
                                     write(JSONObject().put("jsonrpc", "2.0").put("id", id).put("result", value ?: JSONObject.NULL))

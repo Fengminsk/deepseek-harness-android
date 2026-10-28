@@ -23,6 +23,10 @@ Cleanup cancels only its own unfinished task, deletes only its UUID-owned remind
 
 Retirement means the fixture instrumentation and host ADB clients have exited and its own task has settled. The pre-existing App main process remains; the report explicitly sets `mainPreserved=true` and `wholeAppRetired=false`. The display guard requires locked, noninteractive state and physical Off on every internal panel before releasing its override. Unknown retirement cannot authorize that release.
 
+A failed read-only `status` remains failed even when independent cleanup confirms no active instrumentation, closed fixture ADB clients, and the unchanged main PID. That confirmation retires only the fixture; it neither establishes natural delivery nor stops the App. Failed task cleanup additionally requires its own task-settlement evidence before retirement can be confirmed.
+
+Failure reports retain the runner-owned `result` through screen-protection `AggregateError` wrappers. Fixed `hostStage` values distinguish `main-query`, `idle-preflight`, and `instrument`, plus passive natural-wait and cleanup operations. `failureCode` and `nativeFailureCode` preserve the primary error; `cleanupFailureCode`, optional `cleanupNativeFailureCode`, and `cleanupHostStage` record independent cleanup failure. Optional `lastProgress` contains only the matching case's fixed native `phase`, `stage`, and bounded `elapsedMs`; missing progress does not establish where native execution stopped. Diagnostics exclude exception prose, stacks, and raw ADB output and do not change deadlines or acceptance requirements.
+
 ## Host verification
 
 ```powershell

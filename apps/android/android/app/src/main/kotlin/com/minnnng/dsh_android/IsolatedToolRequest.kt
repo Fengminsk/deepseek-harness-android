@@ -61,5 +61,14 @@ internal data class IsolatedToolRequest(
                     IsolatedScriptWire.utf8Bytes(it) <= PtcScriptEngine.MAX_HOST_REPLY_BYTES)
             }
         }
+
+        /** Trusted Node-only terminal frame; not a guest value or a generic RPC error. */
+        fun confirmedClosure(value: JSONObject, runId: String, callId: Int): Boolean? {
+            if (!value.has("closed") && !value.has("cancelRequested")) return null
+            require(value.keys().asSequence().toSet() == setOf("runId", "callId", "closed", "cancelRequested"))
+            require(value.get("runId") == runId && value.get("callId") == callId)
+            require(value.get("closed") == true && value.get("cancelRequested") is Boolean)
+            return value.getBoolean("cancelRequested")
+        }
     }
 }

@@ -14,6 +14,10 @@
 
 App 私有日志只存 ID、名称和 SHA-256 摘要，不存文件路径或负载。原生绑定前先独占占用每个运行目录。所有目录与调用标记均不可重放，包括绑定失败和已确认调用。重启后，`prepared` 表示尚未分发，`dispatch-unconfirmed` 表示副作用可能发生，`result-unconfirmed` 表示审计确认未完成。`confirmed` 只说明工具结果已收尾，绝不能证明报错的写操作没有改变文件。可读审计和已保留的提交路径回执存在持久 Session 中。日志与 Session 写入有先后顺序，但并非跨存储原子事务。[日志快照](isolated-tool-call-journal.snapshot.json)记录这些状态。
 
-只有私有签发的策略拒绝、已确认工具失败和已确认的不支持结果会变成 Guest 可捕获错误。审计、传输或取消状态不确定时，运行会停止。`close()` 取消排队和在途调用，并等待实际执行结束；审计未确认会使关闭失败。原生回调另外校验 UID、运行身份、nonce、序号和私有准入令牌。Guest 提供的运行 ID 只用于关联，不是身份认证。精确工具身份不能防御同 UID 恶意代码绕过 ToolRuntime。
+只有私有签发的策略拒绝、已确认工具失败和已确认的不支持结果会变成 Guest 可捕获错误。审计、传输或取消状态不确定时，运行会停止。若取消发生时已取得完整结果、终态审计与必要 Session 刷盘均成功，仍先确认该结果，再阻止向 Guest 回复；不会把已知取消或提交事实改成未知。结果观察、刷盘或日志确认失败仍阻止确认关闭。`close()` 取消排队和在途调用，并等待实际执行结束；审计未确认会使关闭失败。原生回调另外校验 UID、运行身份、nonce、序号和私有准入令牌。Guest 提供的运行 ID 只用于关联，不是身份认证。精确工具身份不能防御同 UID 恶意代码绕过 ToolRuntime。
+
+Node 到原生的转发仅将私有确认的回调关闭表示为 `{runId,callId,closed:true,cancelRequested}`。私有身份在日志确认后绑定原运行与调用；排队、未分发、关闭后新到达以及审计失败的调用均不能签发。`cancelRequested` 来自实际父取消信号。原生可能在 cancel RPC 前收到该回包，但不会把它作为工具值发送给 Guest。本所有者请求的工作线程中断，仅对中断／取消异常类型视为预期；普通 RPC 错误、超时、畸形帧及此前不确定状态仍保留失败。PTC 截止回包可以在回调未结束时进入退役，不会改成用户取消；成功仍要求零待处理回调。工作线程退出、原始 Node 关闭确认、Binder 死亡及绑定清理仍是各自独立的要求。
+
+`node apps/android/tool/acceptance-isolated-tool-callback-retirement.mjs` 使用真实 JVM 工作线程屏障及 SDK JSON 执行实际回调桥，仅替换 Android 消息传递和无关的能力结果枚举；另行使用真实 Android SDK 消息类型编译回调桥。`--baseline` 将当前 `HEAD` 回调桥读取到临时目录进行负例比较，不改写生产源码。检查覆盖两种取消先后顺序、非法关闭帧、RPC 故障、关闭拒绝及待处理回调的到期退役，不代表设备 Binder 行为。Build 120／r43 已通过这条中继的简单取消、嵌套取消及共享截止检查；[Linux 验证记录](model-ptc-linux.zh.md#verification)保留 r42 失败、实际退役事实和剩余限制。这不是嵌套进程死亡恢复或完整 PTC 套件验收。
 
 宿主检查使用 `node --import tsx --test apps/android/tool/isolated-tool-call-port.test.mjs apps/android/tool/model-ptc-caller-binding.test.mjs apps/android/tool/isolated-tool-mutations.test.mjs`，覆盖真实 ToolRuntime 与 Session、原版文件工具、JSONL 刷盘、只读撤销、后置策略上下文、晚到取消及不确定结果。Windows 需要允许原版文件原子发布操作。这些检查不能证明 Android UID／Binder 隔离、进程死亡恢复或设备文件系统持久性；设备验收由 [PTC 执行设计](ptc-execution-design.zh.md)负责。

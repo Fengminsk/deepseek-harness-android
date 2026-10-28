@@ -44,6 +44,8 @@ class AgentServiceTaskAcceptanceInstrumentation : Instrumentation() {
     private var exercise = "echo"
     private var token: String? = null
     private var cleanupCaseId: String? = null
+    private var diagnosticCaseId: String? = null
+    private var originalExercise: String? = null
     private var completionNoticeOption = "false"
     override fun onCreate(arguments: Bundle?) {
         super.onCreate(arguments)
@@ -51,6 +53,8 @@ class AgentServiceTaskAcceptanceInstrumentation : Instrumentation() {
         exercise = arguments?.getString("exercise") ?: "echo"
         token = arguments?.getString("token")
         cleanupCaseId = arguments?.getString("cleanupCaseId")
+        diagnosticCaseId = arguments?.getString("diagnosticCaseId")
+        originalExercise = arguments?.getString("originalExercise")
         completionNoticeOption = arguments?.getString("requireCompletionNotice") ?: "false"
         start()
     }
@@ -58,7 +62,9 @@ class AgentServiceTaskAcceptanceInstrumentation : Instrumentation() {
     override fun onStart() {
         val app = targetContext.applicationContext
         val cleanupOnly = exercise == "workflow-cleanup"
-        val caseId = if (cleanupOnly && AgentServiceProgrammaticEvidence.validCaseId(cleanupCaseId)) cleanupCaseId!! else UUID.randomUUID().toString()
+        val diagnosticOnly = exercise == "workflow-diagnose"
+        val previousCaseId = if (diagnosticOnly) diagnosticCaseId else cleanupCaseId
+        val caseId = if ((cleanupOnly || diagnosticOnly) && AgentServiceProgrammaticEvidence.validCaseId(previousCaseId)) previousCaseId!! else UUID.randomUUID().toString()
         val sessionId = "android-account-acceptance-$caseId"
         val requestId = "account-request-$caseId"
         val exportId = UUID.randomUUID().toString()
@@ -94,7 +100,7 @@ class AgentServiceTaskAcceptanceInstrumentation : Instrumentation() {
         var success = false
         val cleanup = JSONObject().put("cancelRequested", false).put("taskSettled", false)
             .put("archived", false).put("exportReleased", false).put("disconnected", false)
-        val result = JSONObject().put("schema", 1).put("kind", if (cleanupOnly) "production-account-task-cleanup" else "production-account-task")
+        val result = JSONObject().put("schema", 1).put("kind", if (diagnosticOnly) "production-account-task-diagnostic" else if (cleanupOnly) "production-account-task-cleanup" else "production-account-task")
             .put("caseId", caseId).put("sessionId", sessionId).put("requestId", requestId)
             .put("submittedCount", 0).put("archived", false)
             .put("markerSha256", AgentServiceTaskEvidence.hash(AgentServiceTaskEvidence.marker(caseId).toByteArray()))
@@ -204,7 +210,7 @@ class AgentServiceTaskAcceptanceInstrumentation : Instrumentation() {
                 return value
             } finally { pending.remove(id) }
         }
-        fun exportOwnedSession(ownedSession: String, id: String): JSONArray {
+        fun exportOwnedSession(ownedSession: String, id: String, onHeader: (JSONObject) -> Unit = {}): JSONArray {
             requestedExports.add(id)
             val exported = call("session.export.prepare", JSONObject().put("id", id).put("sessionId", ownedSession)
                 .put("includeDescendants", false))
@@ -213,7 +219,7 @@ class AgentServiceTaskAcceptanceInstrumentation : Instrumentation() {
             val file = File(directory, "$id.zip")
             demand(file.canonicalFile.parentFile == directory && Files.isRegularFile(file.toPath(), LinkOption.NOFOLLOW_LINKS), "EXPORT_PATH_INVALID")
             return Files.newInputStream(file.toPath(), LinkOption.NOFOLLOW_LINKS).use {
-                AgentServiceTaskEvidence.readExport(it, ownedSession)
+                AgentServiceTaskEvidence.readExport(it, ownedSession, onHeader)
             }
         }
         val connection = object : ServiceConnection {
@@ -324,6 +330,9 @@ class AgentServiceTaskAcceptanceInstrumentation : Instrumentation() {
                 else -> "EVIDENCE_UNCONFIRMED"
             }
             result.put(field, code)
+            if (cause is AgentServiceTaskEvidence.Rejected) (cause as AgentServiceTaskEvidence.Rejected).diagnostic?.let {
+                result.put("${field}Diagnostic", it)
+            }
             result.put("${field}Type", when (cause) {
                 is AgentServiceTaskEvidence.Rejected -> "EvidenceRejected"
                 is TimeoutException -> "TimeoutException"
@@ -364,15 +373,20 @@ class AgentServiceTaskAcceptanceInstrumentation : Instrumentation() {
         try {
             progress("instrumentation-start")
             diagnosticHandler.postDelayed(diagnosticPulse, 5000)
-            if (cleanupOnly) demand(!admitted && cleanupCaseId == caseId && token == null && !requireCompletionNotice, "CLEANUP_ADMISSION_INVALID")
-            else demand(admitted && cleanupCaseId == null, "REAL_ACCOUNT_NOT_ADMITTED")
+            if (diagnosticOnly) demand(!admitted && diagnosticCaseId == caseId && cleanupCaseId == null && token == null &&
+                !requireCompletionNotice && originalExercise in setOf("workflow", "workflow-linux"), "DIAGNOSTIC_ADMISSION_INVALID")
+            else {
+                demand(diagnosticCaseId == null && originalExercise == null, "DIAGNOSTIC_OPTION_INVALID")
+                if (cleanupOnly) demand(!admitted && cleanupCaseId == caseId && token == null && !requireCompletionNotice, "CLEANUP_ADMISSION_INVALID")
+                else demand(admitted && cleanupCaseId == null, "REAL_ACCOUNT_NOT_ADMITTED")
+            }
             demand(completionNoticeOption in setOf("true", "false"), "NOTICE_OPTION_INVALID")
             if (requireCompletionNotice) result.put("requireCompletionNotice", true)
-            demand(exercise in setOf("echo", "radio-linux", "ptc", "workflow", "workflow-cleanup") && (!radio || token?.matches(Regex("[0-9a-f]{32}")) == true), "EXERCISE_INVALID")
+            demand((exercise in setOf("echo", "radio-linux", "workflow-cleanup", "workflow-diagnose") || programmatic) && (!radio || token?.matches(Regex("[0-9a-f]{32}")) == true), "EXERCISE_INVALID")
             demand(!programmatic || !requireCompletionNotice, "PROGRAMMATIC_NOTICE_UNSUPPORTED")
-            if (radio || programmatic || cleanupOnly) result.put("exercise", exercise)
+            if (radio || programmatic || cleanupOnly || diagnosticOnly) result.put("exercise", exercise)
             if (radio) result.put("token", token)
-            if (exercise == "workflow" || cleanupOnly) cleanup.put("childArchived", false)
+            if (AgentServiceProgrammaticEvidence.workflow(exercise) || cleanupOnly) cleanup.put("childArchived", false)
             result.put("deviceStateBefore", state())
             progress("service-start-requested")
             uiAutomation.adoptShellPermissionIdentity("android.permission.START_FOREGROUND_SERVICES_FROM_BACKGROUND")
@@ -397,12 +411,26 @@ class AgentServiceTaskAcceptanceInstrumentation : Instrumentation() {
             progress("runtime-info")
             val info = call("runtime.info")
             demand(info.getString("platform") == "android" && info.getString("profile") == "android", "PROFILE_MISMATCH")
+            if (exercise == "workflow-linux") result.put("appUid", info.getInt("uid"))
             progress("background-preflight")
             observe("Before")
             val summary = call("tasks.summary").getJSONObject("summary")
             for (key in listOf("running", "queued", "waiting", "backgroundJobs", "packageOperations"))
                 demand(!summary.isNull(key) && summary.getInt(key) == 0, "OTHER_WORK_ACTIVE_OR_UNKNOWN")
             run task@ {
+            if (diagnosticOnly) {
+                progress("diagnostic-history-read")
+                result.put("diagnostic", AgentServiceProgrammaticDiagnostic.inspect(caseId, originalExercise!!,
+                    { method, params -> call(method, params) }, { id ->
+                        val document = JSONObject()
+                        val events = exportOwnedSession(id, UUID.randomUUID().toString()) { document.put("header", it) }
+                        document.put("events", events)
+                    }))
+                observe("After")
+                result.put("generation", generation).put("agentPid", agentPid).put("deviceStateAfter", state())
+                success = true
+                return@task
+            }
             if (cleanupOnly) {
                 progress("cleanup-history-read")
                 val evidence = AgentServiceProgrammaticEvidence.cleanupWorkflow(caseId,
@@ -509,7 +537,7 @@ class AgentServiceTaskAcceptanceInstrumentation : Instrumentation() {
             }
             if (programmatic) demand(evidence.getLong("toolStartSeq") == toolCall.get()!!.getLong("seq") &&
                 evidence.getLong("toolEndSeq") == toolResult.get()!!.getLong("seq"), "PROGRAMMATIC_LIVE_DURABLE_MISMATCH")
-            if (exercise == "workflow") {
+            if (AgentServiceProgrammaticEvidence.workflow(exercise)) {
                 val proof = evidence.getJSONObject("programmatic")
                 val childId = proof.getString("childSessionId")
                 ownedChildId = childId
@@ -520,7 +548,8 @@ class AgentServiceTaskAcceptanceInstrumentation : Instrumentation() {
                 val child = call("session.read", JSONObject().put("sessionId", childId))
                 demand(!child.has("snapshot"), "CHILD_HISTORY_REQUIRES_PAGING")
                 proof.put("child", AgentServiceProgrammaticEvidence.child(child.getJSONArray("events"),
-                    exportOwnedSession(childId, UUID.randomUUID().toString()), caseId, childId, model))
+                    exportOwnedSession(childId, UUID.randomUUID().toString()), caseId, childId, model, exercise,
+                    if (exercise == "workflow-linux") info.getInt("uid") else null))
             }
             asynchronousFailure.get()?.let { throw it }
             result.put("generation", generation).put("agentPid", agentPid).put("deviceStateAfter", state())

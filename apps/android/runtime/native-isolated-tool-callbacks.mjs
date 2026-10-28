@@ -1,4 +1,4 @@
-import { IsolatedToolCallPort, isRecoverableToolGuestError } from './isolated-tool-call-port.mjs'
+import { IsolatedToolCallPort, isRecoverableToolGuestError, confirmedToolCallbackClosure } from './isolated-tool-call-port.mjs'
 
 const MAX_PENDING_RUNS = 4
 const BIND_TIMEOUT_MS = 10_000
@@ -86,6 +86,8 @@ export class NativeIsolatedToolCallbacks {
         name: params.name, arguments: params.arguments })
       return { runId, callId: params.callId, value: result }
     } catch (error) {
+      const closure = confirmedToolCallbackClosure(error, runId, params.callId)
+      if (closure) return { runId, callId: params.callId, ...closure }
       // These outcomes are either rejected before dispatch or have a durable
       // terminal confirmation. Return them as guest exceptions. Any audit,
       // transport or cancellation failure still tears down the native run.

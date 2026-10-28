@@ -19,7 +19,7 @@ test('disruptive lifecycle checks require explicit suites and cannot join all im
     assert.deepEqual(result.coverage.required, [`${suite}:${name}`])
   }
 })
-const ptc = () => ({ kind: 'production-node-native-ptc', passed: 10, failed: 0, checks: [
+const ptc = () => ({ kind: 'production-node-native-ptc', passed: 12, failed: 0, checks: [
   'first-party-list-read-glob-roots-and-guard',
   'authorized-saf-read-through-native-ptc-callback',
   'current-session-attachment-read-and-archive-through-ptc',
@@ -30,6 +30,8 @@ const ptc = () => ({ kind: 'production-node-native-ptc', passed: 10, failed: 0, 
   'model-busy-loop-has-independent-cpu-limit',
   'real-public-web-fetch',
   'reviewed-ptc-linux-import-analysis-export',
+  'reviewed-ptc-linux-active-cancellation-and-retirement',
+  'reviewed-ptc-linux-shared-deadline-and-retirement',
 ].map(name => ({ name, status: 'passed' })).concat({ name: 'saf-revocation-and-search', status: 'unverified' }) })
 const linux = () => ({ suite: 'linux', passed: 6, failed: 0, checks: [
   'production-tool-shell-and-session-persistence',
@@ -114,12 +116,12 @@ test('a missing workflow check preserves an executed pass but blocks complete ac
   assert.equal(result.coverage.unverified.length, WORKFLOW_UNVERIFIED_CHECKS.length + 1)
 })
 
-test('the existing PTC SAF gap remains visible despite ten passing checks', () => {
+test('the existing PTC SAF gap remains visible despite twelve passing checks', () => {
   const result = summarizeAcceptance('ptc', [ptc()])
   assert.equal(result.passed, true)
   assert.equal(result.complete, false)
-  assert.equal(result.coverage.required.length, 11)
-  assert.equal(result.coverage.passed.length, 10)
+  assert.equal(result.coverage.required.length, 13)
+  assert.equal(result.coverage.passed.length, 12)
   assert.deepEqual(result.coverage.unverified, ['ptc:saf-revocation-and-search'])
 })
 
@@ -143,6 +145,17 @@ test('omitting an unverified PTC declaration cannot erase its requirement', () =
   assert.equal(result.complete, false)
   assert.deepEqual(result.coverage.unverified, ['ptc:saf-revocation-and-search'])
   assert.ok(result.coverage.issues.includes('Missing required check: ptc:saf-revocation-and-search'))
+})
+
+test('a passing PTC Linux chain and direct cancellation cannot replace nested lifecycle evidence', () => {
+  const report = ptc()
+  const lifecycle = ['reviewed-ptc-linux-active-cancellation-and-retirement', 'reviewed-ptc-linux-shared-deadline-and-retirement']
+  report.checks = report.checks.filter(check => !lifecycle.includes(check.name))
+  const result = summarizeAcceptance('all', [workflow(), report, linux()])
+  assert.equal(result.complete, false)
+  for (const name of lifecycle) assert.ok(result.coverage.unverified.includes(`ptc:${name}`))
+  assert.ok(result.coverage.passed.includes('ptc:reviewed-ptc-linux-import-analysis-export'))
+  assert.ok(result.coverage.passed.includes('ptc:model-cancellation-joins-native-retirement'))
 })
 
 test('Linux free-standing evidence gaps participate in completeness and cannot silently disappear', () => {
@@ -185,8 +198,8 @@ test('all requires reports from every suite rather than only the reports returne
   const result = summarizeAcceptance('all', [workflow()])
   assert.equal(result.passed, true)
   assert.equal(result.complete, false)
-  assert.equal(result.coverage.required.length, 33)
-  assert.equal(result.coverage.unverified.length, 22)
+  assert.equal(result.coverage.required.length, 35)
+  assert.equal(result.coverage.unverified.length, 24)
 })
 
 test('all can complete only when every declared gap becomes an executed passing check', () => {
@@ -199,7 +212,7 @@ test('all can complete only when every declared gap becomes an executed passing 
   const result = summarizeAcceptance('all', [workflowReport, ptcReport, linuxReport])
   assert.equal(result.passed, true)
   assert.equal(result.complete, true)
-  assert.equal(result.coverage.passed.length, 33)
+  assert.equal(result.coverage.passed.length, 35)
   assert.deepEqual(result.coverage.unverified, [])
 })
 

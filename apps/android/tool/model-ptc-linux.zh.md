@@ -51,6 +51,12 @@ Linux 结果保留全部有界原生字段；48 KiB 客体限额不会静默丢�
 
 检查读取真实导出字节，独立核对 SHA-256、长度及计算结果、原生导入导出路径、原始 Linux 运行 ID、App／PTC／Linux UID 隔离、磁盘提交和文件发布事实。它刷盘父 Session 并重新打开持久化读取器，验证四组回调开始与结束记录、三份原始 Linux 回执及最后的检查上下文。注册位于可释放 fiber 中，使 `all` 后续可以挂载 Linux 套件自己的所有者。只移除以 UUID 命名的验收文件；Session 日志与原生执行记录保留为证据。
 
+独立的[嵌套生命周期夹具](device-runtime-acceptance/ptc-linux-lifecycle.mjs)增加必需的 `reviewed-ptc-linux-active-cancellation-and-retirement` 与 `reviewed-ptc-linux-shared-deadline-and-retirement` 检查。它等待同一 Session 的原生 running 记录、两个精确客体进程和正数 Linux 工作线程 CPU 时间后，才取消父执行。截止用例先完成真实五秒 Linux 前置命令，再在原始 120 秒 PTC 预算内启动另一条 120 秒 Linux 命令；不会用夹具 abort 冒充原生到期。两项均要求 App／PTC／Linux UID 不同、Linux 取消回执确认未提交磁盘、父运行已确认释放、两次完整进程列表确认原进程消失，以及实时和持久回调终态一致。清理未确认即失败；取消失败后，依赖的截止项保持未验证。失败诊断保留白名单内的原生回执详情和回调关闭结果，不包含客体文字或回调令牌。
+
+Build 120／r43 的简单取消在 154 毫秒、嵌套取消在 9,018 毫秒、共享截止退役在 120,603 毫秒内通过。嵌套取消返回父运行 `CANCELLED`、Linux `cancelled`，且没有提交磁盘。截止用例的父原生执行在 120,287.97 毫秒后返回 `TIMED_OUT`；后启动的 Linux 命令在 112,610.21 毫秒后被取消，没有达到自己的时限。两个嵌套用例均确认释放、两次观察原始客体 PID 消失，以及实时／持久终态回调一致；截止用例保留两次派发。实际执行的 12 项 PTC 检查全部通过，但独立 SAF 撤权／搜索项未验证，因此套件仍不完整。外层所有者确认进程退役，71 次采样均记录两块物理屏幕 Off。Build 119／r42 失败记录保留：Linux 取消及其持久终态已确认，但父运行返回 `RETIRE_UNCONFIRMED`，依赖的截止项未验证。[回调退役修复](isolated-tool-call-port.zh.md)现已有该范围内的真机证据；嵌套进程死亡恢复与客体联网审批仍是独立要求。
+
+`node --import tsx/esm --test apps/android/tool/device-runtime-acceptance-ptc-linux-lifecycle.test.mjs apps/android/tool/device-runtime-acceptance-report.test.mjs` 检查缺失或矛盾的生命周期证据，并保留两个必需名称。`node apps/android/tool/acceptance-ptc-linux-lifecycle-host.mjs` 使用 SDK 类型编译实际测试专用 Kotlin 观察器，以注入的服务及进程观察检查缺失、畸形和进程仍存活等情况，不执行 ADB 命令。`model-ptc-linux.test.mjs` 中真实 ToolRuntime 屏障用例验证：持久记录的 Linux 取消结果先确认回调日志，再拒绝向已取消 Guest 回复；`isolated-tool-call-port.test.mjs` 保留结果观察、刷盘与确认失败的负例。
+
 `node --import tsx --test apps/android/tool/device-runtime-acceptance-ptc-linux.test.mjs apps/android/tool/device-runtime-acceptance-report.test.mjs` 检查夹具验证器在证据不全时拒绝通过、生成程序遇到不确定结果后停止、原版 Cordis 注册清理，以及报告必须包含准确名称。它还在真实主机临时文件上运行相同的内嵌 Python 程序。验证器的合成观察和主机 Python 执行都不是设备证据。保留的 r15 真机报告记录离线调用链在 17,048 毫秒内通过，包含三份 Linux 回执和四组持久回调记录。更早的 r14 在 120,529 毫秒后未确认退役，其原因仍未解释；后续成功不是根因修复。该结果不认证 PTC 到 Linux 的取消、共享时限到期、联网审批或嵌套进程死亡恢复。独立的 r26 [正式 profile 真机检查](production-profile-device.zh.md)已通过所装 bootstrap／index、脚本模型服务、PTC 工作区读取及 Linux Python hashlib／sqlite3／zipfile 分析，耗时 15,933 毫秒。客体 UID 与 App UID 不同，退役结果与持久 Session JSONL 一致，设备全程锁屏息屏。这是限定范围的正式 profile 证据，不是重测所有 r15 传输或失败路径。普通 Build 116 升级仍待验证。
 
 <a id="dev-note"></a>

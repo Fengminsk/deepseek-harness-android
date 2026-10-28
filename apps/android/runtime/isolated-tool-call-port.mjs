@@ -10,6 +10,7 @@ const MAX_ERROR_BYTES = 4 * 1024
 const NAME = /^[A-Za-z][A-Za-z0-9_./:-]{0,127}$/
 const encoder = new TextEncoder()
 const projectionErrors = new WeakMap()
+const confirmedClosures = new WeakMap()
 const AMBIENT_APP_TOOLS = new Set([
   'android_shell', 'android_linux', 'read_image',
   'str_replace_editor', 'workflow', 'android_ptc',
@@ -23,7 +24,14 @@ function denied(code, message) {
   return new IsolatedExecutionContractError(code, message)
 }
 
+/** Only a settled callback may tell the native owner that withholding its reply was expected. */
+export function confirmedToolCallbackClosure(error, runId, callId) {
+  const issued = error !== null && typeof error === 'object' ? confirmedClosures.get(error) : undefined
+  return issued && issued.runId === runId && issued.callId === callId ? issued.closure : undefined
+}
+
 class RecoverableGuestToolError extends IsolatedExecutionContractError {
+  // eslint-disable-next-line no-unused-private-class-members -- The private-in check below verifies this brand.
   #brand = true
   static is(value) {
     return value !== null && typeof value === 'object' && #brand in value
@@ -326,7 +334,7 @@ export class IsolatedToolCallPort {
         parent: this.#parent.token,
         signal: this.#controller.signal,
       })
-    } catch (error) {
+    } catch {
       // ToolRuntime normally materializes failures; a thrown failure means
       // the pipeline or its audit is uncertain. Do not fabricate a settle.
       if (mutating) await deferMutationReceipt(this.#parent, mutationReceipt(name, args, {}, false))
@@ -423,28 +431,26 @@ export class IsolatedToolCallPort {
         throw error
       }
     }
+    // Cancellation withholds the guest reply, not a materialized outcome whose
+    // journal and Session audit have both completed. Failed persistence leaves
+    // #unconfirmed set and still prevents a confirmed callback retirement.
+    await this.#journal.confirm({ runId: this.#runId, callId: number,
+      outcome: unsupportedReason ? 'unsupported' : result.isError ? 'tool-error' : 'success',
+      result: terminalAudit })
+    this.#unconfirmed = false
     if (this.#controller.signal.aborted) {
-      throw denied('ANDROID_TOOL_CALLBACK_CLOSED', 'Tool settled after guest cancellation')
+      const error = denied('ANDROID_TOOL_CALLBACK_CLOSED', 'Tool confirmed after guest cancellation')
+      confirmedClosures.set(error, { runId: this.#runId, callId: number,
+        closure: Object.freeze({ closed: true, cancelRequested: this.#parent.signal.aborted }) })
+      throw error
     }
     if (unsupportedReason) {
-      await this.#journal.confirm({ runId: this.#runId, callId: number,
-        outcome: 'unsupported', result: terminalAudit })
-      this.#unconfirmed = false
       throw recoverable('ANDROID_TOOL_RESULT_UNSUPPORTED', unsupportedReason)
     }
     if (result.isError) {
       const baseMessage = result.error?.message ?? 'Tool call failed'
       const message = mutating ? `${baseMessage.slice(0, 500)} ${verifyBeforeRetry}` : baseMessage
-      await this.#journal.confirm({ runId: this.#runId, callId: number,
-        outcome: 'tool-error', result: terminalAudit })
-      this.#unconfirmed = false
       throw recoverable('ANDROID_TOOL_DISPATCH_FAILED', message)
-    }
-    await this.#journal.confirm({ runId: this.#runId, callId: number,
-      outcome: 'success', result: terminalAudit })
-    this.#unconfirmed = false
-    if (this.#controller.signal.aborted) {
-      throw denied('ANDROID_TOOL_CALLBACK_CLOSED', 'Tool confirmed after guest cancellation')
     }
     return guestValue
   }

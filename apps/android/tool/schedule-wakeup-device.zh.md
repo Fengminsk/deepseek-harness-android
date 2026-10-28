@@ -23,6 +23,10 @@ node apps/android/tool/acceptance-schedule-wakeup-device.mjs --adb C:/Android/pl
 
 退出确认表示本次 instrumentation 和主机 ADB 客户端已退出，且自己的任务已停止。原先的 App 主进程继续保留，报告明确写入 `mainPreserved=true` 和 `wholeAppRetired=false`。屏幕保护只有在锁屏、不可交互且所有内置物理屏幕均为 Off 时才恢复系统控制；退出状态未知时不能恢复。
 
+只读 `status` 失败后，即使独立清理确认没有活动 instrumentation、本次 ADB 客户端已关闭且主进程 PID 未变，验收仍然失败。这只确认验收载体退出，不证明自然投递，也不停止 App。任务清理失败时，还必须取得本次任务已停止的证据，才能确认退出。
+
+失败报告可穿过屏幕保护的 `AggregateError` 包装保留驱动自己创建的 `result`。固定 `hostStage` 区分 `main-query`、`idle-preflight`、`instrument`，以及自然等待期间的被动观察与清理操作。`failureCode` 和 `nativeFailureCode` 保留最初错误；`cleanupFailureCode`、可选的 `cleanupNativeFailureCode` 和 `cleanupHostStage` 单独记录清理失败。可选的 `lastProgress` 只包含匹配本次用例的固定原生 `phase`、`stage` 及有界 `elapsedMs`；进度缺失不能证明原生执行停在哪一步。诊断不包含异常正文、堆栈或原始 ADB 输出，也不改变期限与验收要求。
+
 ## 主机验证
 
 ```powershell

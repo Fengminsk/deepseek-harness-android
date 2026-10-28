@@ -38,7 +38,8 @@ internal class IsolatedScriptToolBridge(
     private var lastSequence = 0
     private val outstanding = mutableSetOf<Int>()
     private var closed = false
-    private var uncertain = false
+    private val retirement = IsolatedToolCallbackRetirement()
+    override val parentCancellationRequested: Boolean get() = retirement.parentCancellationRequested()
     private var closeFuture: Future<Boolean>? = null
 
     override fun call(message: Message, guest: Messenger, reject: (String) -> Unit) {
@@ -59,7 +60,8 @@ internal class IsolatedScriptToolBridge(
         require(envelope.runId() == request.runId() && envelope.nonce() == request.nonce())
         val parsed = IsolatedToolRequest.parse(envelope.requestJson(), reviewedPtc)
         synchronized(gate) {
-            check(!closed && !cancelled.asBoolean)
+            retirement.requireActive(cancelled.asBoolean)
+            check(!closed)
             check(sender >= 0 && sender != Process.myUid() &&
                 sender == data.getInt(IsolatedScriptWire.KEY_UID, -1))
             if (attachedUid == -1) attachedUid = sender else check(attachedUid == sender)
@@ -77,9 +79,17 @@ internal class IsolatedScriptToolBridge(
                         .put("callId", parsed.callId).put("name", parsed.name)
                         .put("arguments", parsed.arguments)
                     val response = transport.call(params, remainingMillis())
+                    val closure = IsolatedToolRequest.confirmedClosure(response, request.runId(), parsed.callId)
+                    if (closure != null) {
+                        synchronized(gate) { retirement.confirmedClosure(closure, cancelled.asBoolean) }
+                        cancel()
+                        reject("Isolated tool callback was confirmed closed")
+                        return@execute
+                    }
                     val encoded = IsolatedToolRequest.response(response, request.runId(), parsed.callId)
                     synchronized(gate) {
-                        check(!closed && !cancelled.asBoolean && outstanding.remove(parsed.callId))
+                        retirement.requireActive(cancelled.asBoolean)
+                        check(!closed && outstanding.remove(parsed.callId))
                         guest.send(Message.obtain(null, IsolatedScriptWire.HOST_RESULT).apply {
                             this.data = Bundle().apply {
                                 putInt(IsolatedScriptWire.KEY_VERSION, IsolatedScriptWire.VERSION)
@@ -90,8 +100,8 @@ internal class IsolatedScriptToolBridge(
                             }
                         })
                     }
-                } catch (_: Exception) {
-                    synchronized(gate) { uncertain = true }
+                } catch (failure: Exception) {
+                    synchronized(gate) { retirement.recordFailure(failure, cancelled.asBoolean) }
                     cancel()
                     reject("Isolated tool outcome needs inspection")
                 } finally {
@@ -99,27 +109,32 @@ internal class IsolatedScriptToolBridge(
                 }
             }
         } catch (failure: Exception) {
-            synchronized(gate) { outstanding.remove(parsed.callId); uncertain = true }
+            synchronized(gate) { outstanding.remove(parsed.callId); retirement.markUncertain() }
             cancel()
             throw failure
         }
     }
 
-    override fun proposedResult(sender: Int, reported: Int) {
+    override fun proposedResult(sender: Int, reported: Int) =
+        proposedResult(sender, reported, PtcScriptEngine.Status.COMPLETED)
+
+    override fun proposedResult(sender: Int, reported: Int, status: PtcScriptEngine.Status) {
         synchronized(gate) {
-            check(!closed && !cancelled.asBoolean && outstanding.isEmpty())
+            retirement.requireActive(cancelled.asBoolean)
+            check(!closed)
             check(attachedUid == -1 || attachedUid == sender)
             check(sender >= 0 && sender != Process.myUid() && sender == reported)
+            retirement.requireResult(status, outstanding.size, reviewedPtc)
         }
     }
 
     override fun cancel() {
-        synchronized(gate) { closed = true; startClose() }
+        synchronized(gate) { closed = true; retirement.requestStop(); startClose() }
         worker.shutdownNow()
     }
 
     override fun retire(scriptCompleted: Boolean): IsolatedScriptHostBridge.Retirement {
-        synchronized(gate) { closed = true; startClose() }
+        synchronized(gate) { closed = true; retirement.requestStop(); startClose() }
         worker.shutdownNow()
         val quiet = try { worker.awaitTermination(remainingMillis(), TimeUnit.MILLISECONDS) }
         catch (_: InterruptedException) { Thread.currentThread().interrupt(); false }
@@ -127,7 +142,7 @@ internal class IsolatedScriptToolBridge(
         catch (_: Exception) { false }
         closer.shutdownNow()
         return when {
-            !quiet || !settled || uncertain -> IsolatedScriptHostBridge.Retirement.UNCONFIRMED
+            !retirement.confirmed(quiet, settled) -> IsolatedScriptHostBridge.Retirement.UNCONFIRMED
             scriptCompleted -> IsolatedScriptHostBridge.Retirement.COMPLETED
             else -> IsolatedScriptHostBridge.Retirement.FAILED
         }

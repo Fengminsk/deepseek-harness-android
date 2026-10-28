@@ -8,6 +8,7 @@ import { pathToFileURL } from 'node:url'
 import { modelFileObservationDenial } from '../runtime/model-file-read-guard.mjs'
 import { inspectAttachmentArchive } from '../runtime/attachment-archive.mjs'
 import { eventFileReferences } from '../runtime/attachment-references.mjs'
+import { runApkCodeAcceptance } from './device-runtime-acceptance/apk-inspection.mjs'
 
 const requireStaged = createRequire(new URL('../../../.cache/android/runtime-bundle/package.json', import.meta.url))
 const load = specifier => import(pathToFileURL(requireStaged.resolve(specifier)).href)
@@ -196,6 +197,52 @@ test('APK golden Manifest and minimal ELF survive real tool JSON output and pagi
   assert.equal(metadata.results[0].analysis.coverage.programSamplesTruncated, true)
   const second = await call({ part: 'native', offset: first.nextOffset })
   assert.notEqual(second.results[0].name, first.results[0].name); assert.equal(second.nextOffset, null)
+})
+
+async function apkDeviceCall(f, args) {
+  const outcome = await f.ctx.tools.execute({ name: 'android_attachments', arguments: args, ...f.execution() })
+  const text = outcome.content.map(part => part.text ?? '').join('')
+  if (outcome.isError) throw new Error(text)
+  return JSON.parse(text)
+}
+
+test('APK device code helper checks actual ToolRuntime bodies, pagination and budget recovery', async t => {
+  const f = await fixture(t)
+  f.session.append('sandbox/mode', { mode: 'read-only' })
+  const calls = []
+  const result = await runApkCodeAcceptance({ upload: f.upload, async call(args) {
+    calls.push(args)
+    return apkDeviceCall(f, args)
+  } })
+  assert.equal(result.fixture, 'synthetic-apk-code-v1')
+  assert.equal(result.dexBodySha256.length, 2)
+  assert.equal(result.elfBodySha256.length, 2)
+  assert.equal(new Set([...result.dexBodySha256, ...result.elfBodySha256]).size, 4)
+  assert.equal(result.oversizedDecodedEntryRejected, true)
+  assert.equal(result.recoveredAfterRejection, true)
+  assert.equal(calls.length, 8)
+  assert.deepEqual(await readdir(f.workspace), [])
+})
+
+test('APK device helper rejects a directory-only result instead of claiming body coverage', async t => {
+  const f = await fixture(t)
+  await assert.rejects(runApkCodeAcceptance({ upload: f.upload, async call(args) {
+    const result = await apkDeviceCall(f, args)
+    delete result.results[0].analysis
+    return result
+  } }), /Missing decoded dex body/u)
+})
+
+test('APK device helper rejects altered ELF dependencies and an accepted over-budget entry', async t => {
+  for (const mutation of ['dependency', 'budget']) {
+    const f = await fixture(t)
+    await assert.rejects(runApkCodeAcceptance({ upload: f.upload, async call(args) {
+      if (mutation === 'budget' && args.name === 'synthetic-oversize.apk') return { verified: true, results: [] }
+      const result = await apkDeviceCall(f, args)
+      if (mutation === 'dependency' && args.part === 'native') result.results[0].analysis.dependencies.items[0].name = 'wrong.so'
+      return result
+    } }), { name: 'AssertionError' })
+  }
 })
 
 test('APK second-pass readers are serialized and close drains their lifetime', { timeout: 10000 }, async t => {

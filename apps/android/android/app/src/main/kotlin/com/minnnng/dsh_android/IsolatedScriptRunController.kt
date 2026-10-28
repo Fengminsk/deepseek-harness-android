@@ -427,7 +427,10 @@ internal object IsolatedScriptRunController {
                         fileHost.call(message, boundGuest) { detail ->
                             synchronized(pending.monitor) {
                                 if (pending.active) {
-                                    pending.rejected = detail
+                                    if (pending.host?.parentCancellationRequested == true &&
+                                        pending.proposal?.status() != PtcScriptEngine.Status.DEADLINE_EXCEEDED)
+                                        pending.cancelled = true
+                                    else pending.rejected = detail
                                     try { sendControl(pending, IsolatedScriptWire.CANCEL) }
                                     catch (_: Exception) { /* Binder death remains the retirement signal. */ }
                                     pending.signal()

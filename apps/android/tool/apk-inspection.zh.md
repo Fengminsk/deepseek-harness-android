@@ -79,9 +79,16 @@ Manifest 中的资源引用不会被解析。组件未声明 `exported` 时，�
 ```sh
 node --test apps/android/tool/apk-manifest.test.mjs apps/android/tool/apk-entry-reader.test.mjs apps/android/tool/apk-code.test.mjs
 node --import tsx --test --test-name-pattern=APK apps/android/tool/model-attachments.test.mjs
+node apps/android/tool/generate-apk-device-fixture.mjs --check
 ```
 
-ToolRuntime 样例会创建独立的临时会话和附件。这些主机检查不认证 Android 打包、设备内存表现或手机附件界面；Android 真机验收仍待完成。上述回归命令不会读取现有用户附件。
+ToolRuntime 样例会创建独立的临时会话和附件。[设备 APK helper](device-runtime-acceptance/apk-inspection.mjs)与主机测试共用合成元数据构建器，检查两个 DEX 正文、32／64 位 ELF 的依赖与符号、解码后的摘要和 CRC、分页、仅元数据采样，以及拒绝超限声明后成功重试。负控会拒绝仅有目录的输出、被篡改的 ELF 依赖和被错误接纳的超限输入。通过[受保护的设备 runner](device-screen-protection.md)执行既有 `ptc` 套件；测试 APK 必须包含 `apk-inspection.mjs` 和 `apk-code-fixture.json`。这些合成元数据文件不是原始 FlClash APK，也不会被执行或安装。
+
+已有设备 PTC 记录覆盖二进制 Manifest 解析和回调输出超限后的恢复（`.cache/android/ptc-r15-protected-20261028.json.result.json`）。r42 设备报告（`.cache/android/ptc-119-r42-protected-20261028.json.result.json`）还记录了 `current-session-apk-through-native-ptc-callback` 经真实附件工具和原生 PTC 回调，在 1,391 ms 内通过。合成样例的两个 DEX 正文、32／64 位 ELF、解码后摘要和 CRC、分页、仅元数据采样、超限条目与分页拒绝，以及随后成功重试均通过。这是合成样例的设备证据，不代表手机分析了原始 FlClash APK，也不代表执行代码或验证签名。
+
+同轮 r42 PTC 套件未完整通过：九项通过、两项取消检查失败、两项未验证。仪器报告 `nodeProcessRetired=false`，外层 runner 随后确认进程已退役。APK 单项结果不能证明整组取消和收尾成功，也不认证一般手机内存表现或附件界面。
+
+独立的原始附件主机报告（`.cache/android/apk-inspection-original-host.json`）通过 ToolRuntime 检查了缓存 FlClash APK 的 Manifest、一个 DEX 和全部十个原生库。上述回归命令不会读取现有用户附件。
 
 ## 开发备注
 <a id="dev-note"></a>

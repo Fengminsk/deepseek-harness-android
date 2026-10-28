@@ -60,6 +60,8 @@ The report prints declaration counts, migration classifications, evidence counts
 
 ## Delivery priorities
 
+The [Build 120 record](upgrade-120-acceptance.md) owns the latest ordinary upgrade, native cancellation/deadline device evidence and retained failures. Its passing execution subset does not close natural alarms, recovery acknowledgement, unrestricted runtime or document-authoring work.
+
 Use `--capabilities` for the grouped work. Prioritize natural scheduled wake-up without a test-held foreground or CPU lease, then explicit Linux HTTPS approval and route evidence before enabling that model option. The existing Linux network fixture requires an interactive foreground window and cannot run under the current uninterrupted-screen-Off constraint without adaptation. Keep Office authoring/runtime dependencies, remaining terminal VT/OSC behavior and native document/UI acceptance separate from the delivered execution subset. Full original PTC/workflow semantics remain incomplete. Device operations must be serialized against one identified APK; no current success resolves the unexplained startup/freezer observations.
 
 ## Dev Note

@@ -2,7 +2,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { parseAgentServiceTaskResult, runAgentServiceTaskAcceptance,
-  parseAgentServiceTaskCleanupResult, runAgentServiceTaskCleanup } from './acceptance-agent-service-task-device.mjs'
+  parseAgentServiceTaskCleanupResult, runAgentServiceTaskCleanup,
+  parseAgentServiceTaskDiagnosticResult, runAgentServiceTaskDiagnostic } from './acceptance-agent-service-task-device.mjs'
 
 const caseId = 'd5d6d3b3-6af8-498b-932a-bfc339cb32f6'
 const result = () => ({ schema: 1, passed: true, kind: 'production-account-task', caseId,
@@ -117,6 +118,16 @@ function programmaticResult(exercise) {
       child: { sessionId: childSessionId, eventCount: 12, toolCalls: 0, assistantMarkerMatches: 1,
         turnEndCount: 1, completionKind: 'completed', historySha256: 'f'.repeat(64) } })
     value.cleanup.childArchived = true
+    if (exercise === 'workflow-linux') {
+      value.appUid = 10496
+      value.programmatic.child.toolCalls = 1
+      const payload = `account-child-${caseId}\n7,11,13\n`
+      value.programmatic.child.linuxReceipt = { id: 'e0000000-0000-4000-8000-000000000005', sessionId: childSessionId,
+        callId: 'child-linux-call', toolStartSeq: 6, toolEndSeq: 7, commandSha256: '1'.repeat(64), status: 'completed', exitCode: 0,
+        retirementConfirmed: true, guestUid: 99001, appUid: value.appUid, cancelled: false, timedOut: false, truncated: false,
+        cancelRequested: false, diskCommitted: true, outputSha256: '2'.repeat(64), fileSha256: createHash('sha256').update(payload).digest('hex'),
+        fileBytes: Buffer.byteLength(payload), archiveEntries: 1, cleaned: true }
+    }
   }
   return value
 }
@@ -188,8 +199,79 @@ test('cleanup cancellation cannot dispatch or turn an interrupted acknowledgemen
     invoke: async () => { during.abort(new Error('during cleanup')); return output(cleanupResult()) } }), /during cleanup/)
 })
 
-test('PTC and workflow task exercises require separate explicit selection and retain outer retirement obligations', async () => {
-  for (const exercise of ['ptc', 'workflow']) {
+function diagnosticResult() {
+  const value = cleanupResult()
+  value.kind = 'production-account-task-diagnostic'; value.exercise = 'workflow-diagnose'
+  delete value.programmatic
+  delete value.cleanup.childArchived
+  const fingerprint = (type = 'string', sha = 'a'.repeat(64)) => ({ present: true, type, bytes: 8, sha256: sha })
+  value.diagnostic = { schema: 1, originalExercise: 'workflow-linux', parentEventCount: 16, parentHistorySha256: 'a'.repeat(64),
+    toolStartSeq: 6, cleanupAuthorized: false,
+    arguments: { schema: 1, exercise: 'workflow-linux', parsed: true, matches: false, rawBytes: 150, rawSha256: 'b'.repeat(64),
+      expectedSha256: 'c'.repeat(64), actualSha256: 'd'.repeat(64), unexpectedFields: 0, unexpectedMetaFields: 0,
+      fields: ['script', 'meta', 'meta.name', 'meta.description'].map(field => ({ field,
+        expected: fingerprint(field === 'meta' ? 'object' : 'string'), actual: fingerprint(field === 'meta' ? 'object' : 'string',
+          field === 'meta' || field === 'meta.description' ? 'e'.repeat(64) : 'a'.repeat(64)), matches: field === 'script' || field === 'meta.name' })) },
+    lineage: { state: 'verified', runCount: 1, memberCount: 1, runId: 'b0000000-0000-4000-8000-000000000002',
+      childSessionId: 'c0000000-0000-4000-8000-000000000003', childEventCount: 10, childHistorySha256: 'f'.repeat(64), childTerminal: 'cancelled' } }
+  return value
+}
+
+test('named workflow diagnosis is read-only and cannot certify task success or authorize cleanup', async () => {
+  const evidence = output(diagnosticResult())
+  const parsed = parseAgentServiceTaskDiagnosticResult(evidence, { caseId, originalExercise: 'workflow-linux' })
+  assert.equal(parsed.taskAcceptancePassed, false)
+  assert.equal(parsed.cleanupAuthorized, false)
+  assert.equal(parsed.newTaskSubmitted, false)
+  assert.equal(parsed.processRetirement, 'requires-outer-owner')
+  assert.throws(() => parseAgentServiceTaskResult(evidence, { exercise: 'workflow-linux' }))
+  assert.throws(() => parseAgentServiceTaskCleanupResult(evidence, { caseId }))
+  await runAgentServiceTaskDiagnostic({ caseId, originalExercise: 'workflow-linux', invoke: async argv => {
+    assert.deepEqual(argv, ['shell', 'am', 'instrument', '-w', '-r', '-e', 'acceptRealAccountRequest', 'false',
+      '-e', 'exercise', 'workflow-diagnose', '-e', 'diagnosticCaseId', caseId, '-e', 'originalExercise', 'workflow-linux',
+      'com.minnnng.dsh_android.test/com.minnnng.dsh_android.AgentServiceTaskAcceptanceInstrumentation'])
+    return evidence
+  } })
+})
+
+test('diagnosis rejects unknown raw fields, inconsistent fingerprints and foreign identities', () => {
+  const parse = value => parseAgentServiceTaskDiagnosticResult(output(value), { caseId, originalExercise: 'workflow-linux' })
+  for (const change of [value => { value.submittedCount = 1 }, value => { value.archived = true },
+    value => { value.sessionId = 'user-session' }, value => { value.caseId = 'other' },
+    value => { value.cleanup.cancelRequested = true }, value => { value.cleanup.childArchived = true },
+    value => { value.cleanup.exportReleased = false }, value => { value.diagnostic.cleanupAuthorized = true },
+    value => { value.diagnostic.originalExercise = 'workflow' }, value => { value.diagnostic.arguments.raw = 'private model text' },
+    value => { value.diagnostic.arguments.matches = true }, value => { value.diagnostic.arguments.actualSha256 = null },
+    value => { value.diagnostic.arguments.fields[0].field = 'secret' },
+    value => { value.diagnostic.arguments.fields[0].actual.raw = 'secret' },
+    value => { value.diagnostic.arguments.fields[0].actual.bytes = -1 },
+    value => { value.diagnostic.arguments.fields[0].matches = false },
+    value => { value.diagnostic.lineage.memberCount = 2 }, value => { value.diagnostic.lineage.childSessionId = 'existing-user-session' },
+    value => { value.diagnostic.lineage.childTerminal = 'private model text' },
+    value => { value.deviceStateAfter.interactive = true }, value => { value.backgroundBefore.running = 1 }]) {
+    const value = diagnosticResult(); change(value); assert.throws(() => parse(value))
+  }
+  for (const state of ['unconfirmed', 'child_read_unconfirmed', 'no_member_record']) {
+    const value = diagnosticResult()
+    value.diagnostic.lineage = { state, runCount: 1, memberCount: state === 'no_member_record' ? 0 : 1 }
+    assert.equal(parse(value).cleanupAuthorized, false)
+  }
+})
+
+test('diagnostic admission and cancellation never become a model request or accepted incomplete observation', async () => {
+  const invoke = () => assert.fail('Invalid diagnostic must not be invoked')
+  for (const patch of [{ acceptRealAccountRequest: true }, { caseId: 'other' }, { originalExercise: 'ptc' }]) {
+    await assert.rejects(runAgentServiceTaskDiagnostic({ invoke, caseId, originalExercise: 'workflow-linux', ...patch }))
+  }
+  const before = new AbortController(); before.abort(new Error('before diagnosis'))
+  await assert.rejects(runAgentServiceTaskDiagnostic({ invoke, caseId, originalExercise: 'workflow-linux', signal: before.signal }), /before diagnosis/)
+  const during = new AbortController()
+  await assert.rejects(runAgentServiceTaskDiagnostic({ caseId, originalExercise: 'workflow-linux', signal: during.signal,
+    invoke: async () => { during.abort(new Error('during diagnosis')); return output(diagnosticResult()) } }), /during diagnosis/)
+})
+
+test('PTC, workflow and child Linux exercises require separate explicit selection and retain outer retirement obligations', async () => {
+  for (const exercise of ['ptc', 'workflow', 'workflow-linux']) {
     const value = programmaticResult(exercise)
     assert.throws(() => parseAgentServiceTaskResult(output(value)), /exercise/)
     assert.throws(() => parseAgentServiceTaskResult(output(value), { exercise: exercise === 'ptc' ? 'workflow' : 'ptc' }), /exercise/)
@@ -208,6 +290,26 @@ test('PTC and workflow task exercises require separate explicit selection and re
   }), /exercise/)
   await assert.rejects(runAgentServiceTaskAcceptance({ acceptRealAccountRequest: true, exercise: 'workflow', requireCompletionNotice: true,
     invoke: () => assert.fail('Combined exercise was invoked') }), /completion notice/)
+})
+
+test('workflow child Linux requires its own completed isolated receipt, exact file result and artifact cleanup', () => {
+  const exercise = 'workflow-linux'
+  for (const patch of [{ sessionId: `android-account-acceptance-${caseId}` }, { guestUid: 10496 }, { appUid: 1 },
+    { id: 'invalid' }, { retirementConfirmed: false }, { timedOut: true }, { cancelled: true }, { truncated: true },
+    { cancelRequested: true }, { exitCode: 1 }, { diskCommitted: null }, { status: 'outcome_uncertain' }, { cleaned: false },
+    { fileBytes: 1 }, { fileSha256: '3'.repeat(64) }, { archiveEntries: 2 }, { toolEndSeq: 6 }, { unknown: true }]) {
+    const value = programmaticResult(exercise); Object.assign(value.programmatic.child.linuxReceipt, patch)
+    assert.throws(() => parseAgentServiceTaskResult(output(value), { exercise }), JSON.stringify(patch))
+  }
+  for (const change of [value => { delete value.programmatic.child.linuxReceipt }, value => { value.programmatic.child.toolCalls = 0 },
+    value => { value.appUid = 0 }, value => { value.cleanup.childArchived = false }]) {
+    const value = programmaticResult(exercise); change(value)
+    assert.throws(() => parseAgentServiceTaskResult(output(value), { exercise }))
+  }
+  const disposable = programmaticResult(exercise); disposable.programmatic.child.linuxReceipt.diskCommitted = false
+  assert.equal(parseAgentServiceTaskResult(output(disposable), { exercise }).programmatic.child.linuxReceipt.diskCommitted, false)
+  const ordinary = programmaticResult('workflow'); ordinary.programmatic.child.linuxReceipt = programmaticResult(exercise).programmatic.child.linuxReceipt
+  assert.throws(() => parseAgentServiceTaskResult(output(ordinary), { exercise: 'workflow' }))
 })
 
 test('PTC acceptance rejects missing, foreign, failed and extra callback evidence', () => {

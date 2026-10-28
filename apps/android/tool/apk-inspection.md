@@ -79,9 +79,16 @@ Host checks exercise the parsers, bounded decompression and the real ToolRuntime
 ```sh
 node --test apps/android/tool/apk-manifest.test.mjs apps/android/tool/apk-entry-reader.test.mjs apps/android/tool/apk-code.test.mjs
 node --import tsx --test --test-name-pattern=APK apps/android/tool/model-attachments.test.mjs
+node apps/android/tool/generate-apk-device-fixture.mjs --check
 ```
 
-The ToolRuntime fixture creates its own temporary session and attachment. These host checks do not certify Android packaging, device memory behavior or the phone's attachment UI; Android device acceptance remains pending. Existing user attachments are not inputs to these regression commands.
+The ToolRuntime fixture creates its own temporary session and attachment. The [device APK helper](device-runtime-acceptance/apk-inspection.mjs) shares synthetic metadata builders with the host suite and checks two DEX bodies, 32/64-bit ELF dependencies and symbols, decoded hashes/CRC, pagination, metadata-only sampling and rejection of an over-budget declaration before a successful retry. Its negative controls reject directory-only output, altered ELF dependencies and incorrectly accepted oversized input. Run the helper through the existing `ptc` suite with the [protected device runner](device-screen-protection.md); the test APK must include `apk-inspection.mjs` and `apk-code-fixture.json`. These synthetic metadata files are not the original FlClash APK and are not executed or installed.
+
+Recorded device PTC evidence covers binary Manifest parsing and recovery from an oversized callback (`.cache/android/ptc-r15-protected-20261028.json.result.json`). The r42 device report (`.cache/android/ptc-119-r42-protected-20261028.json.result.json`) also records `current-session-apk-through-native-ptc-callback` passing in 1,391 ms through the real attachment tool and native PTC callback. Its synthetic fixture passed both DEX body checks, 32/64-bit ELF checks, decoded hashes/CRC, pagination, metadata-only sampling, oversized entry/page rejection and a successful retry. This is synthetic-fixture device evidence, not a phone analysis of the original FlClash APK, code execution or signature verification.
+
+The same r42 PTC suite was incomplete: nine checks passed, two cancellation checks failed and two checks remained unverified. The instrumentation reported `nodeProcessRetired=false`; the outer runner subsequently confirmed process retirement. The APK result does not establish successful suite-wide cancellation or teardown, general phone memory behavior, or attachment UI acceptance.
+
+The separate original-attachment host report (`.cache/android/apk-inspection-original-host.json`) inspected the cached FlClash APK's Manifest, one DEX and all ten native libraries through ToolRuntime. Existing user attachments are not inputs to the regression commands above.
 
 ## Dev Note
 <a id="dev-note"></a>

@@ -12,6 +12,105 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{1
 const SHA = /^[0-9a-f]{64}$/u
 const check = (value, code) => { if (!value) throw Object.assign(new Error(code), { code }) }
 const hash = value => createHash('sha256').update(value).digest('hex')
+const FAILURE_CODE = /^[A-Z_]{1,80}$/u
+const HOST_STAGES = new Set(['main-query', 'idle-preflight', 'instrument', 'idle-cleanup', 'main-cleanup',
+  'host-client-cleanup', 'instrument-cleanup', 'natural-idle', 'natural-processes', 'natural-service', 'natural-wait'])
+const ownedResults = new WeakSet()
+const PROGRESS_STAGES = new Map([
+  ['status', new Set(['existing-service-bind'])],
+  ['prepare', new Set(['existing-service-bind', 'schedule-create-request', 'waiting-without-carrier'])],
+  ['observe', new Set(['existing-service-bind', 'natural-delivery-wait'])],
+  ['cleanup', new Set(['existing-service-bind', 'owned-reminder-cleanup'])],
+])
+
+function progressFields(value) {
+  if (!value || !PROGRESS_STAGES.get(value.phase)?.has(value.stage) ||
+      !Number.isSafeInteger(value.elapsedMs) || value.elapsedMs < 0 || value.elapsedMs > 660_000) return undefined
+  return { phase: value.phase, stage: value.stage, elapsedMs: value.elapsedMs }
+}
+
+/** Progress is diagnostic only; a matching phase and case cannot replace final native evidence. */
+export function parseScheduleWakeProgress(output, { phase, caseId }) {
+  if (typeof output !== 'string' || output.length > 2 * 1024 * 1024 || !UUID.test(caseId)) return undefined
+  const rows = [...output.matchAll(/^INSTRUMENTATION_STATUS: scheduleWakeProgress=([^\r\n]{1,2048})\r?$/gmu)].slice(-32)
+  let last
+  for (const row of rows) {
+    let value
+    try { value = JSON.parse(row[1]) }
+    catch (error) {
+      void error /* Malformed progress cannot replace the original phase failure. */
+      continue
+    }
+    if (value?.schema !== 1 || value.caseId !== caseId || value.phase !== phase) continue
+    const selected = progressFields(value)
+    if (selected && (!last || selected.elapsedMs >= last.elapsedMs)) last = selected
+  }
+  return last
+}
+
+function failureDetails(error) {
+  const pending = [{ error, depth: 0 }], seen = new Set(), failures = []
+  let truncated = false, lastProgress, result, hostStage, cleanupFailureCode, cleanupNativeFailureCode, cleanupHostStage
+  while (pending.length && seen.size < 16) {
+    const { error: current, depth } = pending.shift()
+    if (!current || typeof current !== 'object' || seen.has(current)) continue
+    seen.add(current)
+    const record = {}
+    const code = current.code ?? current.failureCode ?? current.result?.failureCode
+    const native = current.nativeFailureCode ?? current.result?.nativeFailureCode
+    if (typeof code === 'string' && FAILURE_CODE.test(code)) record.failureCode = code
+    if (typeof native === 'string' && FAILURE_CODE.test(native)) record.nativeFailureCode = native
+    if (Object.keys(record).length) failures.push(record)
+    lastProgress ??= progressFields(current.lastProgress ?? current.result?.lastProgress)
+    const stage = current.hostStage ?? current.result?.hostStage
+    if (hostStage === undefined && HOST_STAGES.has(stage)) hostStage = stage
+    if (ownedResults.has(current.result)) {
+      result ??= current.result
+      const cleanupCode = current.result.cleanupFailureCode, nativeCleanup = current.result.cleanupNativeFailureCode
+      if (typeof cleanupCode === 'string' && FAILURE_CODE.test(cleanupCode)) cleanupFailureCode ??= cleanupCode
+      if (typeof nativeCleanup === 'string' && FAILURE_CODE.test(nativeCleanup)) cleanupNativeFailureCode ??= nativeCleanup
+      if (HOST_STAGES.has(current.result.cleanupHostStage)) cleanupHostStage ??= current.result.cleanupHostStage
+    }
+    const nested = current instanceof AggregateError && Array.isArray(current.errors) ? current.errors : []
+    if (depth < 4) {
+      const children = [...nested.slice(0, 16), current.cause].filter(Boolean)
+      const room = 16 - seen.size - pending.length
+      pending.push(...children.slice(0, Math.max(0, room)).map(error => ({ error, depth: depth + 1 })))
+      if (nested.length > 16 || children.length > room) truncated = true
+    } else if (nested.length || current.cause) truncated = true
+  }
+  if (pending.length) truncated = true
+  const first = failures.find(item => item.failureCode)
+  const native = failures.find(item => item.nativeFailureCode)
+  return { result, diagnostics: { failureCode: first?.failureCode ?? 'ACCEPTANCE_FAILED',
+    ...(native ? { nativeFailureCode: native.nativeFailureCode } : {}),
+    ...(lastProgress ? { lastProgress } : {}), ...(hostStage ? { hostStage } : {}),
+    ...(cleanupFailureCode ? { cleanupFailureCode } : {}),
+    ...(cleanupNativeFailureCode ? { cleanupNativeFailureCode } : {}),
+    ...(cleanupHostStage ? { cleanupHostStage } : {}), failures, diagnosticsTruncated: truncated } }
+}
+
+/** Retain bounded structured codes through screen-cleanup aggregates, never exception prose or raw output. */
+export function scheduleWakeFailureDiagnostics(error) {
+  return failureDetails(error).diagnostics
+}
+
+/** Preserve only results created by this runner, including when the screen owner wraps its failure. */
+export function scheduleWakeFailureReport(error) {
+  const { result, diagnostics } = failureDetails(error)
+  return { ...(result ? { result } : {}), ...diagnostics,
+    protection: error?.protection, retirement: error?.retirement ?? result?.retirement }
+}
+
+async function requestPhase(io, options, signal) {
+  const output = await io.phase(options, signal)
+  try { return parseScheduleWakePhase(output, options) }
+  catch (error) {
+    const lastProgress = parseScheduleWakeProgress(output, options)
+    if (lastProgress) error.lastProgress = lastProgress
+    throw error
+  }
+}
 
 async function bounded(promise, ms, fallback) {
   let timer
@@ -88,12 +187,66 @@ export function scheduleWakeInstrumentationIdle(text) {
   return !/Active instrumentation:|ActiveInstrumentation\{/u.test(text)
 }
 
+/** A failed read-only status can retire its fixture while the original App and alarms remain alive. */
+export async function runScheduleWakePhaseAcceptance(io, { phase, caseId, signal }) {
+  check(['status', 'cleanup'].includes(phase) && UUID.test(caseId), 'INVALID_PHASE_ARGUMENTS')
+  const result = { phase: undefined, naturalWakeAccepted: false, passed: false,
+    retirement: { confirmed: false, mainPreserved: false, wholeAppRetired: false } }
+  ownedResults.add(result)
+  let mainPid, failure, hostStage = 'main-query'
+  try {
+    signal.throwIfAborted()
+    const mains = (await io.processes(signal)).filter(item => item.name === PACKAGE)
+    check(mains.length === 1, 'PREEXISTING_MAIN_REQUIRED')
+    mainPid = mains[0].pid
+    hostStage = 'idle-preflight'
+    check(await io.instrumentationIdle(signal), 'INSTRUMENTATION_STILL_ACTIVE')
+    const options = { phase, caseId, mainPid }
+    hostStage = 'instrument'
+    result.phase = await requestPhase(io, options, signal)
+  } catch (error) { failure = error; result.hostStage = hostStage }
+  finally {
+    const cleanup = new AbortController()
+    const timer = setTimeout(() => cleanup.abort(Object.assign(new Error('CLEANUP_DEADLINE'),
+      { code: 'CLEANUP_DEADLINE' })), 60_000)
+    let cleanupStage = 'idle-cleanup'
+    try {
+      check(await io.instrumentationIdle(cleanup.signal), 'INSTRUMENTATION_RETIREMENT_UNCONFIRMED')
+      cleanupStage = 'main-cleanup'
+      const mains = (await io.processes(cleanup.signal)).filter(item => item.name === PACKAGE)
+      check(mainPid && mains.length === 1 && mains[0].pid === mainPid, 'PREEXISTING_MAIN_REQUIRED')
+      cleanupStage = 'host-client-cleanup'
+      check(io.childrenClosed(), 'HOST_CLIENT_RETIREMENT_UNCONFIRMED')
+      // A status request creates no task. Failed explicit cleanup still leaves its task effects unconfirmed.
+      result.retirement = { confirmed: phase === 'status' || !failure,
+        fixtureInstrumentationRetired: true, hostClientsClosed: true, mainPreserved: true, wholeAppRetired: false,
+        ...(phase === 'cleanup' ? { ownedTaskSettled: result.phase?.ownTaskSettled === true } : {}) }
+    } catch (error) {
+      const diagnostic = scheduleWakeFailureDiagnostics(error)
+      result.cleanupFailureCode = diagnostic.failureCode
+      result.cleanupHostStage = cleanupStage
+      if (diagnostic.nativeFailureCode) result.cleanupNativeFailureCode = diagnostic.nativeFailureCode
+      if (!failure) result.hostStage = cleanupStage
+      failure ??= error
+    } finally { clearTimeout(timer) }
+  }
+  if (failure) {
+    Object.assign(result, scheduleWakeFailureDiagnostics(failure))
+    throw Object.assign(new Error(result.failureCode, { cause: failure }),
+      { code: result.failureCode, nativeFailureCode: result.nativeFailureCode, hostStage: result.hostStage,
+        result, retirement: result.retirement })
+  }
+  result.passed = true
+  return result
+}
+
 /** Keep the natural waiting interval free of instrumentation, service bindings and fixture CPU leases. */
 export async function runNaturalWakeAcceptance(io, { caseId, signal, acceptRealAccountRequest = false }) {
   check(UUID.test(caseId) && acceptRealAccountRequest === true, 'REAL_ACCOUNT_NOT_ADMITTED')
   const result = { schema: 1, kind: 'natural-schedule-wake-device', caseId, passed: false, phases: {}, samples: [],
     retirement: { confirmed: false, mainPreserved: true, wholeAppRetired: false } }
-  let mainPid, preparationAttempted = false, failure
+  ownedResults.add(result)
+  let mainPid, preparationAttempted = false, failure, hostStage = 'main-query'
   const inspect = async scope => {
     const processes = await io.processes(scope)
     const mains = processes.filter(item => item.name === PACKAGE)
@@ -104,10 +257,13 @@ export async function runNaturalWakeAcceptance(io, { caseId, signal, acceptRealA
     return agents[0]?.pid ?? null
   }
   const phase = async (name, scope) => {
+    hostStage = name === 'cleanup' ? 'main-cleanup' : 'main-query'
     await inspect(scope)
+    hostStage = name === 'cleanup' ? 'idle-cleanup' : 'idle-preflight'
     check(await io.instrumentationIdle(scope), 'INSTRUMENTATION_STILL_ACTIVE')
     const options = { phase: name, caseId, mainPid, acceptRealAccountRequest }
-    return parseScheduleWakePhase(await io.phase(options, scope), options)
+    hostStage = name === 'cleanup' ? 'instrument-cleanup' : 'instrument'
+    return requestPhase(io, options, scope)
   }
   try {
     signal.throwIfAborted()
@@ -123,18 +279,22 @@ export async function runNaturalWakeAcceptance(io, { caseId, signal, acceptRealA
     const until = dueAt + 150_000
     while (io.now() < until) {
       signal.throwIfAborted()
+      hostStage = 'natural-idle'
       check(await io.instrumentationIdle(signal), 'WAIT_INTERVAL_HAS_INSTRUMENTATION')
+      hostStage = 'natural-processes'
       const pid = await inspect(signal), elapsedToDueMs = io.now() - dueAt
       check(pid !== prepared.oldAgentPid, 'OLD_AGENT_STILL_PRESENT')
       result.samples.push({ elapsedToDueMs, agentPid: pid, instrumentationIdle: true })
       check(result.samples.length <= 400, 'WAIT_SAMPLE_LIMIT')
       if (pid) {
         check(emptyCount >= 2 && elapsedToDueMs >= -1000, 'AGENT_STARTED_BEFORE_ALARM')
+        hostStage = 'natural-service'
         observed = naturalWakeServiceEvidence(await io.services(signal), pid)
         result.naturalStart = observed
         break
       }
       emptyCount++
+      hostStage = 'natural-wait'
       await io.delay(1000, signal)
     }
     check(observed, 'NATURAL_WAKE_NOT_OBSERVED')
@@ -142,27 +302,35 @@ export async function runNaturalWakeAcceptance(io, { caseId, signal, acceptRealA
     check(observation.agentPid === observed.agentPid && observation.oldAgentPid === prepared.oldAgentPid &&
       observation.generation !== prepared.generation && observation.dueAtMs === prepared.dueAtMs, 'OBSERVATION_IDENTITY_MISMATCH')
     result.phases.observe = observation
-  } catch (error) { failure = error }
+  } catch (error) { failure = error; result.hostStage = hostStage }
   finally {
     const cleanup = new AbortController()
     const timer = setTimeout(() => cleanup.abort(new Error('CLEANUP_DEADLINE')), 60_000)
     try {
       if (preparationAttempted) result.phases.cleanup = await phase('cleanup', cleanup.signal)
+      hostStage = 'idle-cleanup'
       check(await io.instrumentationIdle(cleanup.signal), 'INSTRUMENTATION_RETIREMENT_UNCONFIRMED')
+      hostStage = 'host-client-cleanup'
       check(io.childrenClosed(), 'HOST_CLIENT_RETIREMENT_UNCONFIRMED')
+      hostStage = 'main-cleanup'
       await inspect(cleanup.signal)
       result.retirement = { confirmed: true, fixtureInstrumentationRetired: true, hostClientsClosed: true,
         ownedTaskSettled: !preparationAttempted || result.phases.cleanup.ownTaskSettled,
         mainPreserved: true, wholeAppRetired: false }
     } catch (error) {
-      result.cleanupFailureCode = /^[A-Z_]{1,80}$/u.test(error.code ?? '') ? error.code : 'CLEANUP_UNCONFIRMED'
+      const diagnostic = scheduleWakeFailureDiagnostics(error)
+      result.cleanupFailureCode = diagnostic.failureCode
+      result.cleanupHostStage = hostStage
+      if (diagnostic.nativeFailureCode) result.cleanupNativeFailureCode = diagnostic.nativeFailureCode
+      if (!failure) result.hostStage = hostStage
       failure ??= error
     } finally { clearTimeout(timer) }
   }
   if (failure) {
-    result.failureCode = /^[A-Z_]{1,80}$/u.test(failure.code ?? '') ? failure.code : 'ACCEPTANCE_FAILED'
-    if (failure.nativeFailureCode) result.nativeFailureCode = failure.nativeFailureCode
-    throw Object.assign(new Error(result.failureCode), { result, retirement: result.retirement })
+    Object.assign(result, scheduleWakeFailureDiagnostics(failure))
+    throw Object.assign(new Error(result.failureCode, { cause: failure }),
+      { code: result.failureCode, nativeFailureCode: result.nativeFailureCode, hostStage: result.hostStage,
+        result, retirement: result.retirement })
   }
   result.passed = true
   return result
@@ -170,7 +338,7 @@ export async function runNaturalWakeAcceptance(io, { caseId, signal, acceptRealA
 
 function deviceIo(adb, serial) {
   const children = new Set()
-  async function command(args, signal, timeoutMs = 10_000, cancelPhase, fixtureOwned = true) {
+  async function command(args, signal, timeoutMs = 10_000, cancelPhase, fixtureOwned = true, phaseOptions) {
     const child = spawn(adb, ['-s', serial, ...args], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
     if (fixtureOwned) children.add(child)
     let output = '', stopping
@@ -193,7 +361,7 @@ function deviceIo(adb, serial) {
       }
       child.kill('SIGKILL')
       const ended = await bounded(closed.then(() => true, () => true), 8000, false)
-      if (!ended) { child.unref(); throw new Error('HOST_CLIENT_RETIREMENT_UNCONFIRMED') }
+      if (!ended) { child.unref(); check(false, 'HOST_CLIENT_RETIREMENT_UNCONFIRMED') }
     })()
     const abort = () => { void stop().catch(error => { void error /* The awaited stop below preserves unknown retirement. */ }) }
     const timer = setTimeout(abort, timeoutMs)
@@ -202,8 +370,12 @@ function deviceIo(adb, serial) {
     try {
       const code = await bounded(closed, timeoutMs + 50_000, null)
       if (code === null) { await stop(); check(false, 'HOST_CLIENT_DEADLINE') }
-      if (stopping) { await stopping; throw signal?.reason ?? new Error('COMMAND_DEADLINE') }
+      if (stopping) { await stopping; throw signal?.reason ?? Object.assign(new Error('COMMAND_DEADLINE'), { code: 'COMMAND_DEADLINE' }) }
       check(code === 0, 'COMMAND_FAILED'); signal?.throwIfAborted(); return output
+    } catch (error) {
+      const lastProgress = phaseOptions && parseScheduleWakeProgress(output, phaseOptions)
+      if (lastProgress) error.lastProgress = lastProgress
+      throw error
     } finally { clearTimeout(timer); signal?.removeEventListener('abort', abort) }
   }
   const shell = (args, signal, fixtureOwned = true) => command(['shell', ...args], signal, 10_000, undefined, fixtureOwned)
@@ -213,7 +385,7 @@ function deviceIo(adb, serial) {
     instrumentationIdle: async signal => scheduleWakeInstrumentationIdle(await shell(['dumpsys', 'activity', 'processes', PACKAGE], signal)),
     services: signal => shell(['dumpsys', 'activity', 'services', `${PACKAGE}.AgentService`], signal),
     phase: (options, signal) => command(scheduleWakeInstrumentationArguments(options), signal,
-      options.phase === 'prepare' ? 260_000 : options.phase === 'observe' ? 170_000 : 60_000, options.caseId),
+      options.phase === 'prepare' ? 260_000 : options.phase === 'observe' ? 170_000 : 60_000, options.caseId, true, options),
     // The guard joins its own ADB reads after the fixture retires; they are not fixture clients.
     inspect: async signal => parseInternalDisplays(
       await shell(['cmd', 'display', 'get-displays', '--ids-only', '--type', 'internal', '--category', 'android.hardware.display.category.ALL_INCLUDING_DISABLED'], signal, false),
@@ -239,25 +411,16 @@ async function main() {
   check(mode !== 'run' || values.get('--accept-real-account-request') === 'true', 'REAL_ACCOUNT_NOT_ADMITTED')
   const handle = await open(resolve(report), 'wx')
   const controller = new AbortController()
-  const interrupt = () => controller.abort(new Error('HOST_INTERRUPTED'))
+  const interrupt = () => controller.abort(Object.assign(new Error('HOST_INTERRUPTED'), { code: 'HOST_INTERRUPTED' }))
   process.on('SIGINT', interrupt); process.on('SIGTERM', interrupt)
   const io = deviceIo(resolve(adb), serial)
   let result, failure
   try {
     result = await withScreenProtection(io, async signal => {
       if (mode === 'run') return runNaturalWakeAcceptance(io, { caseId, signal, acceptRealAccountRequest: true })
-      try {
-        const main = (await io.processes(signal)).filter(item => item.name === PACKAGE)
-        check(main.length === 1, 'PREEXISTING_MAIN_REQUIRED')
-        check(await io.instrumentationIdle(signal), 'INSTRUMENTATION_STILL_ACTIVE')
-        const options = { phase: mode, caseId, mainPid: main[0].pid }
-        const value = parseScheduleWakePhase(await io.phase(options, signal), options)
-        check(await io.instrumentationIdle(signal) && io.childrenClosed(), 'PHASE_RETIREMENT_UNCONFIRMED')
-        return { phase: value, naturalWakeAccepted: false, retirement: { confirmed: true, mainPreserved: true, wholeAppRetired: false } }
-      } catch (error) { throw Object.assign(error, { retirement: { confirmed: false } }) }
+      return runScheduleWakePhaseAcceptance(io, { phase: mode, caseId, signal })
     }, { timeoutMs: mode === 'run' ? 660_000 : 200_000, signal: controller.signal })
-  } catch (error) { failure = error; result = { result: error.result, failureCode: error.code ?? 'ACCEPTANCE_FAILED',
-    protection: error.protection, retirement: error.retirement } }
+  } catch (error) { failure = error; result = scheduleWakeFailureReport(error) }
   finally {
     process.off('SIGINT', interrupt); process.off('SIGTERM', interrupt)
     await handle.writeFile(JSON.stringify({ schema: 1, serial, mode, caseId, ...result }, null, 2) + '\n')

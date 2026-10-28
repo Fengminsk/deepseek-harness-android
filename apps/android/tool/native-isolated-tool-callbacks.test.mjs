@@ -32,7 +32,8 @@ function setup(options = {}) {
   } }
   const root = mkdtempSync(join(tmpdir(), 'dsh-isolated-native-call-'))
   tempRoots.push(root)
-  const callbacks = new NativeIsolatedToolCallbacks(transport, new IsolatedToolCallJournal(root))
+  const journal = new IsolatedToolCallJournal(root)
+  const callbacks = new NativeIsolatedToolCallbacks(transport, journal)
   const safeEcho = { name: 'safe_echo' }
   const runtime = {
     get(name) { return name === 'safe_echo' ? safeEcho : undefined },
@@ -42,13 +43,14 @@ function setup(options = {}) {
       return { isError: false, content: [{ type: 'text', text: 'ok' }], value: input.arguments }
     },
   }
-  const parent = { token: Symbol('parent'), callId: 'root-call', signal: new AbortController().signal,
+  const controller = new AbortController()
+  const parent = { token: Symbol('parent'), callId: 'root-call', signal: controller.signal,
     agent: { session: { id: runId, append(type, data) { events.push({ type, data }) } } } }
   const bind = () => callbacks.bind({ prepared, admission: { runId, token }, runtime, parent,
     allowedToolNames: ['safe_echo'], authorizeTool: options.authorizeTool
       ?? (async input => ({ effect: 'pure', definition: input.definition })) })
   const request = (callId = 1) => ({ runId, token, callId, name: 'safe_echo', arguments: { text: 'ok' } })
-  return { callbacks, methods, events, executions, parent, bind, request }
+  return { callbacks, methods, events, executions, parent, controller, journal, bind, request }
 }
 
 test('native admission binds before a guest callback and host dispatch remains paired with its parent', async () => {
@@ -142,8 +144,60 @@ test('native close joins an in-flight ToolRuntime call and withholds late output
   await Promise.resolve()
   assert.equal(closed, false)
   release.resolve()
-  await assert.rejects(running, { code: 'ANDROID_TOOL_CALLBACK_CLOSED' })
-  await assert.rejects(closing, { code: 'ANDROID_TOOL_DISPATCH_UNCONFIRMED' })
+  assert.deepEqual(await running, { runId, callId: 1, closed: true, cancelRequested: false })
+  assert.deepEqual(await closing, { closed: true })
   assert.equal(closed, true)
   await owner.callbacks.dispose()
+})
+
+test('a parent cancellation reply is signed only after the exact callback journal confirms', async () => {
+  const started = deferred(), release = deferred()
+  const owner = setup({ execute: async () => { started.resolve(); await release.promise;
+    return { isError: true, content: [], error: { message: 'cancelled' } } } })
+  const binding = await owner.bind()
+  const pending = owner.callbacks.call(owner.request())
+  await started.promise; owner.controller.abort('parent stopped')
+  let replied = false
+  pending.finally(() => { replied = true })
+  await Promise.resolve(); assert.equal(replied, false)
+  release.resolve()
+  assert.deepEqual(await pending, { runId, callId: 1, closed: true, cancelRequested: true })
+  assert.deepEqual(await owner.journal.inspect({ runId, callId: 1 }),
+    { runId, callId: 1, state: 'confirmed', outcome: 'tool-error' })
+  await binding.close()
+})
+
+for (const stage of ['observe', 'confirm']) test(`a forged closed code from failed ${stage} cannot become a signed closure`, async () => {
+  const started = deferred(), release = deferred()
+  const owner = setup({ execute: async () => { started.resolve(); await release.promise; return { isError: false, content: [], value: {} } } })
+  owner.journal[stage] = async () => { throw Object.assign(new Error('unconfirmed audit'), { code: 'ANDROID_TOOL_CALLBACK_CLOSED' }) }
+  const binding = await owner.bind()
+  const pending = owner.callbacks.call(owner.request())
+  await started.promise; owner.controller.abort('parent stopped'); release.resolve()
+  await assert.rejects(pending, /unconfirmed audit/u)
+  await assert.rejects(binding.close(), { code: 'ANDROID_TOOL_DISPATCH_UNCONFIRMED' })
+})
+
+test('cancellation before dispatch is not misrepresented as a confirmed callback result', async () => {
+  const owner = setup(); const binding = await owner.bind()
+  owner.controller.abort('before callback')
+  await assert.rejects(owner.callbacks.call(owner.request()), { code: 'ANDROID_TOOL_CALLBACK_CLOSED' })
+  assert.equal(owner.executions.length, 0)
+  await binding.close()
+})
+
+test('queued and post-close callbacks cannot inherit the running call confirmation', async () => {
+  const started = deferred(), release = deferred()
+  const owner = setup({ execute: async () => { started.resolve(); await release.promise; return { isError: false, content: [], value: {} } } })
+  await owner.bind()
+  const first = owner.callbacks.call(owner.request()), queued = owner.callbacks.call(owner.request(2))
+  queued.catch(() => {})
+  await started.promise
+  const closing = owner.callbacks.close({ runId, token })
+  await assert.rejects(owner.callbacks.call(owner.request(3)), /no live admitted owner/u)
+  release.resolve()
+  assert.deepEqual(await first, { runId, callId: 1, closed: true, cancelRequested: false })
+  await assert.rejects(queued, { code: 'ANDROID_TOOL_CALLBACK_CLOSED' })
+  assert.deepEqual(await closing, { closed: true })
+  assert.equal(owner.executions.length, 1)
 })

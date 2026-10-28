@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
 const SHA = /^[0-9a-f]{64}$/u
 const demand = (condition, message) => { if (!condition) throw new Error(message) }
-const exercises = new Set(['echo', 'ptc', 'workflow'])
+const exercises = new Set(['echo', 'ptc', 'workflow', 'workflow-linux'])
 const exactKeys = (value, expected) => value && typeof value === 'object' && !Array.isArray(value)
   && Object.keys(value).length === expected.length && Object.keys(value).every(key => expected.includes(key))
 
@@ -46,19 +46,42 @@ function programmaticEvidence(result, exercise) {
     'Workflow task run or member evidence is invalid')
     demand(exactKeys(observed, ['runId', 'state', 'requiresReview']) && observed.runId === proof.runId &&
       observed.state === 'completed' && observed.requiresReview === false, 'Workflow task inspection remains unconfirmed')
-    demand(exactKeys(child, ['sessionId', 'eventCount', 'toolCalls', 'assistantMarkerMatches', 'turnEndCount', 'completionKind', 'historySha256']) &&
+    const linux = exercise === 'workflow-linux'
+    demand(exactKeys(child, ['sessionId', 'eventCount', 'toolCalls', 'assistantMarkerMatches', 'turnEndCount', 'completionKind', 'historySha256',
+      ...(linux ? ['linuxReceipt'] : [])]) &&
       child.sessionId === proof.childSessionId && child.sessionId !== result.sessionId &&
       Number.isSafeInteger(child.eventCount) && child.eventCount > 0 && child.eventCount <= 511 &&
-      child.toolCalls === 0 && child.assistantMarkerMatches === 1 && child.turnEndCount === 1 && child.completionKind === 'completed' &&
+      child.toolCalls === (linux ? 1 : 0) && child.assistantMarkerMatches === 1 && child.turnEndCount === 1 && child.completionKind === 'completed' &&
       SHA.test(child.historySha256) && result.cleanup.childArchived === true,
     'Workflow child durable completion or dedicated cleanup is missing')
+    if (linux) childLinuxEvidence(child, result)
   }
+}
+
+function childLinuxEvidence(child, result) {
+  const receipt = child.linuxReceipt
+  const fields = ['id', 'sessionId', 'callId', 'toolStartSeq', 'toolEndSeq', 'commandSha256', 'status', 'exitCode', 'retirementConfirmed',
+    'guestUid', 'appUid', 'cancelled', 'timedOut', 'truncated', 'cancelRequested', 'diskCommitted', 'outputSha256',
+    'fileSha256', 'fileBytes', 'archiveEntries', 'cleaned']
+  const payload = `account-child-${result.caseId}\n7,11,13\n`
+  demand(exactKeys(receipt, fields) && UUID.test(receipt.id) && receipt.sessionId === child.sessionId &&
+    typeof receipt.callId === 'string' && receipt.callId.length > 0 && receipt.callId.length <= 256 &&
+    Number.isSafeInteger(receipt.toolStartSeq) && receipt.toolStartSeq >= 0 && Number.isSafeInteger(receipt.toolEndSeq) &&
+    receipt.toolEndSeq > receipt.toolStartSeq && SHA.test(receipt.commandSha256), 'Child Linux execution identity is invalid')
+  demand(receipt.status === 'completed' && receipt.exitCode === 0 && receipt.retirementConfirmed === true &&
+    ['cancelled', 'timedOut', 'truncated', 'cancelRequested'].every(key => receipt[key] === false) && typeof receipt.diskCommitted === 'boolean' &&
+    Number.isSafeInteger(result.appUid) && result.appUid > 0 && receipt.appUid === result.appUid &&
+    Number.isSafeInteger(receipt.guestUid) && receipt.guestUid > 0 && receipt.guestUid !== result.appUid,
+  'Child Linux execution or independent UID is unconfirmed')
+  demand(SHA.test(receipt.outputSha256) && receipt.fileSha256 === createHash('sha256').update(payload).digest('hex') &&
+    receipt.fileBytes === Buffer.byteLength(payload) && receipt.archiveEntries === 1 && receipt.cleaned === true,
+  'Child Linux file task or its temporary artifact cleanup is unconfirmed')
 }
 
 /**
  * Validate a completed real-account task in the production service; the outer owner verifies panel power and process retirement.
  * @param {string} output - Bounded instrumentation output after its ADB child closes.
- * @param {object} options - Explicit echo/PTC/workflow selection and optional echo completion-notice evidence.
+ * @param {object} options - Explicit echo/PTC/workflow/workflow-linux selection and optional echo completion-notice evidence.
  * @returns {object} Validated task evidence, excluding credentials, prompts and response bodies.
  */
 export function parseAgentServiceTaskResult(output, { requireCompletionNotice = false, exercise = 'echo' } = {}) {
@@ -163,6 +186,89 @@ export async function runAgentServiceTaskCleanup({ invoke, signal, caseId, accep
     'com.minnnng.dsh_android.test/com.minnnng.dsh_android.AgentServiceTaskAcceptanceInstrumentation'], signal)
   signal?.throwIfAborted()
   return { result: parseAgentServiceTaskCleanupResult(output, { caseId }), output }
+}
+
+/**
+ * Validate one read-only diagnostic of a named dedicated Session; this never certifies its original task or permits cleanup.
+ * @param {string} output - Bounded output after the diagnostic carrier closes.
+ * @param {object} options - Exact previous caseId and original workflow exercise.
+ * @returns {object} Bounded field fingerprints and independently checked lineage observations.
+ */
+export function parseAgentServiceTaskDiagnosticResult(output, { caseId, originalExercise } = {}) {
+  demand(UUID.test(caseId) && ['workflow', 'workflow-linux'].includes(originalExercise), 'Explicit diagnostic identity is required')
+  const result = instrumentationResult(output)
+  demand(result.passed === true && result.schema === 1 && result.kind === 'production-account-task-diagnostic' &&
+    result.exercise === 'workflow-diagnose' && result.caseId === caseId && result.sessionId === `android-account-acceptance-${caseId}` &&
+    result.requestId === `account-request-${caseId}`, 'Diagnostic identity differs from the named previous case')
+  demand(result.submittedCount === 0 && result.archived === false && !Object.hasOwn(result, 'programmatic') &&
+    !Object.hasOwn(result, 'backgroundDuring') && !Object.hasOwn(result, 'ownTaskRunningObserved') && !Object.hasOwn(result, 'requireCompletionNotice'),
+  'Read-only diagnostic cannot submit, archive, or certify a task')
+  demand(typeof result.generation === 'string' && result.generation.length > 0 && result.generation.length <= 128 &&
+    Number.isSafeInteger(result.agentPid) && result.agentPid > 0 && Number.isSafeInteger(result.elapsedMs) && result.elapsedMs >= 0,
+  'Diagnostic service identity is invalid')
+  for (const when of ['Before', 'After']) {
+    const state = result[`deviceState${when}`], background = result[`background${when}`]
+    demand(state?.locked === true && state.interactive === false && result[`foreground${when}`] === true && background?.fresh === true &&
+      ['running', 'queued', 'waiting', 'backgroundJobs', 'packageOperations'].every(key => background[key] === 0), 'Diagnostic must remain idle and locked')
+  }
+  demand(exactKeys(result.cleanup, ['cancelRequested', 'taskSettled', 'archived', 'exportReleased', 'disconnected']) &&
+    result.cleanup.cancelRequested === false && result.cleanup.taskSettled === true && result.cleanup.archived === false &&
+    result.cleanup.exportReleased === true && result.cleanup.disconnected === true, 'Read-only diagnostic left resources or mutated Session state')
+  const proof = result.diagnostic
+  const boundedCount = (value, max) => Number.isSafeInteger(value) && value >= 0 && value <= max
+  demand(exactKeys(proof, ['schema', 'originalExercise', 'parentEventCount', 'parentHistorySha256', 'toolStartSeq', 'arguments', 'cleanupAuthorized', 'lineage']) &&
+    proof.schema === 1 && proof.originalExercise === originalExercise && boundedCount(proof.parentEventCount, 511) && proof.parentEventCount > 0 &&
+    SHA.test(proof.parentHistorySha256) && boundedCount(proof.toolStartSeq, Number.MAX_SAFE_INTEGER) && proof.cleanupAuthorized === false,
+  'Diagnostic parent evidence is invalid')
+  const args = proof.arguments
+  demand(exactKeys(args, ['schema', 'exercise', 'parsed', 'matches', 'rawBytes', 'rawSha256', 'expectedSha256', 'actualSha256',
+    'unexpectedFields', 'unexpectedMetaFields', 'fields']) && args.schema === 1 && args.exercise === originalExercise &&
+    typeof args.parsed === 'boolean' && typeof args.matches === 'boolean' && boundedCount(args.rawBytes, 262144) && SHA.test(args.rawSha256) &&
+    SHA.test(args.expectedSha256) && (args.parsed ? SHA.test(args.actualSha256) : args.actualSha256 === null) &&
+    boundedCount(args.unexpectedFields, 262144) && boundedCount(args.unexpectedMetaFields, 262144), 'Argument diagnostic fields are invalid')
+  const fieldNames = ['script', 'meta', 'meta.name', 'meta.description']
+  demand(Array.isArray(args.fields) && args.fields.length === fieldNames.length, 'Argument diagnostic field count differs')
+  for (const [index, field] of args.fields.entries()) {
+    demand(exactKeys(field, ['field', 'expected', 'actual', 'matches']) && field.field === fieldNames[index] && typeof field.matches === 'boolean',
+      'Argument diagnostic contains an unknown field')
+    for (const value of [field.expected, field.actual]) {
+      demand(exactKeys(value, ['present', 'type', 'bytes', 'sha256']) && typeof value.present === 'boolean' &&
+        ['missing', 'null', 'string', 'object', 'array', 'boolean', 'number', 'unknown'].includes(value.type) && boundedCount(value.bytes, 1048576) &&
+        (value.present ? value.type !== 'missing' && SHA.test(value.sha256) : value.type === 'missing' && value.bytes === 0 && value.sha256 === null),
+      'Argument fingerprint is invalid or contains raw content')
+    }
+    demand(field.matches === (field.expected.present === field.actual.present && field.expected.type === field.actual.type &&
+      field.expected.bytes === field.actual.bytes && field.expected.sha256 === field.actual.sha256), 'Argument field match contradicts its fingerprint')
+  }
+  demand(args.matches === (args.parsed && args.actualSha256 === args.expectedSha256 && args.unexpectedFields === 0 &&
+    args.unexpectedMetaFields === 0 && args.fields.every(field => field.matches)), 'Argument match contradicts exact-field evidence')
+  const lineage = proof.lineage
+  const verified = lineage?.state === 'verified'
+  demand(exactKeys(lineage, ['state', 'runCount', 'memberCount', ...(verified ? ['runId', 'childSessionId', 'childEventCount', 'childHistorySha256', 'childTerminal'] : [])]) &&
+    ['verified', 'unconfirmed', 'no_member_record', 'child_read_unconfirmed'].includes(lineage.state) &&
+    boundedCount(lineage.runCount, 511) && boundedCount(lineage.memberCount, 511), 'Lineage diagnostic is invalid')
+  if (verified) demand(lineage.runCount === 1 && lineage.memberCount === 1 && UUID.test(lineage.runId) && UUID.test(lineage.childSessionId) &&
+    boundedCount(lineage.childEventCount, 511) && lineage.childEventCount > 0 && SHA.test(lineage.childHistorySha256) &&
+    ['completed', 'cancelled', 'error', 'aborted', 'unconfirmed'].includes(lineage.childTerminal), 'Verified lineage lacks the exported child identity')
+  if (lineage.state === 'no_member_record') demand(lineage.memberCount === 0, 'Missing-member claim contradicts the recorded count')
+  return { ...result, taskAcceptancePassed: false, cleanupAuthorized: false, newTaskSubmitted: false,
+    physicalPanelEvidence: 'requires-outer-owner', processRetirement: 'requires-outer-owner' }
+}
+
+/**
+ * Read one named previous workflow case without account admission or cleanup.
+ * @param {object} options - Owned invocation, cancellation, caseId and originalExercise.
+ * @returns {Promise<object>} Diagnostic observations and bounded carrier output.
+ */
+export async function runAgentServiceTaskDiagnostic({ invoke, signal, caseId, originalExercise, acceptRealAccountRequest = false }) {
+  demand(typeof invoke === 'function' && UUID.test(caseId) && ['workflow', 'workflow-linux'].includes(originalExercise) &&
+    acceptRealAccountRequest === false, 'Explicit diagnostic identity without account admission is required')
+  signal?.throwIfAborted()
+  const output = await invoke(['shell', 'am', 'instrument', '-w', '-r', '-e', 'acceptRealAccountRequest', 'false',
+    '-e', 'exercise', 'workflow-diagnose', '-e', 'diagnosticCaseId', caseId, '-e', 'originalExercise', originalExercise,
+    'com.minnnng.dsh_android.test/com.minnnng.dsh_android.AgentServiceTaskAcceptanceInstrumentation'], signal)
+  signal?.throwIfAborted()
+  return { result: parseAgentServiceTaskDiagnosticResult(output, { caseId, originalExercise }), output }
 }
 
 /**

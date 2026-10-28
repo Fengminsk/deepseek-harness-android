@@ -15,6 +15,7 @@ title: 正式 AgentService 账号任务验收
 
 - [准入与账号使用](#admission-and-account-use)
 - [显式启用无线网络与 Linux 场景](#radio-linux)
+- [程序化调用与子 Agent Linux 场景](#programmatic)
 - [完成与持久化](#completion-and-persistence)
 - [显式检查系统完成通知](#completion-notice)
 - [清理与屏幕保护](#cleanup-and-screen-protection)
@@ -41,6 +42,19 @@ title: 正式 AgentService 账号任务验收
 
 完成验收必须将原调用对应到唯一成功的 `tool/result`、退出码为零且确认客体退役的完成 Linux 回执，以及实时和已刷盘会话记录中的最终标记。客体 UID 必须不同于 App UID；输出标记和 SHA-256 必须匹配，实测等待须在 39,000 至 120,000 毫秒之间。取消、超时、输出截断、额外调用或清理时取消都会使验收失败。此场景不测试客体网络或被中断的模型 HTTP 流，也不能证明模型传输重试行为。[r34 真机记录](#radio-linux-r34)证明了本场景上述限定范围的结果。
 
+<a id="programmatic"></a>
+## 程序化调用与子 Agent Linux 场景
+
+任务适配器还接受显式 `exercise: 'ptc'`、`'workflow'` 或 `'workflow-linux'`。每种场景都要求当前真实账号、一个专用父会话以及相同的外层屏幕保护和进程退役控制。[程序化证据校验器](../android/app/src/androidTest/kotlin/com/minnnng/dsh_android/AgentServiceProgrammaticEvidence.kt)要求固定的父工具参数与结果、有序的回调或成员事件、已完成的父回复，以及一致的实时和持久记录。`ptc` 只允许一次经审核的 `list_agents` 回调。`workflow` 要求一个已完成的子会话，包含自己的标记且没有工具调用。父会话和已验证的子会话均通过各自原有管理入口归档；子会话使用 `workspace.archiveSession`，其回执包含整个归档集合。清理失败仍使验收失败。
+
+`workflow-linux` 要求该子 Agent 调用一次 `linux_exec`，执行[固定的离线 Python 文件任务](../android/app/src/androidTest/kotlin/com/minnnng/dsh_android/AgentServiceChildLinuxEvidence.kt)。它仅在子会话 `/workspace` 下新建的临时目录内写入自己的测试输入，打包并读回 ZIP，校验内容、计算 SHA-256，然后删除临时目录。子回复和父工作流结果必须包含精确的子标记、摘要和字节数。子会话的独立导出必须包含匹配的 Linux 调用、原生结果及来源事件关联。验收要求执行完成、退出码为零、客体确认退役、客体 UID 不同于正式 App UID，没有超时、取消或截断，并确认临时文件已清理。`diskCommitted` 记录实际策略结果：只读子会话可以完成这项临时文件任务而不提交磁盘。本场景不导入手机文件，也不请求客体联网；账号模型流量仍会发生。定向宿主检查验证载体及证据规则，不认证真机子 Agent Linux 执行。
+
+参数不匹配时仍返回 `PROGRAMMATIC_ARGUMENTS_CHANGED`，并附加固定字段诊断：`code` / `description` 或 `script` / `meta` / `meta.name` / `meta.description` 的存在状态、类型、UTF-8 字节数、SHA-256 和是否相等。未知字段名与原始值均不输出，额外字段仅计数。这些观察不放宽参数严格相等要求，也不能撤销事件检查前已经派发的工具。
+
+独立的 `runAgentServiceTaskDiagnostic` 适配器选择 `workflow-diagnose`、`diagnosticCaseId`、原来的 `workflow` 或 `workflow-linux` 场景，以及 `acceptRealAccountRequest: false`。它仅读取指定专用父会话及唯一记录的子会话，将实时历史与自己的导出比较，并核验原父请求和提示词。子会话归属还要求其导出头明确指向该父会话且 `origin: subagent`。成员记录缺失、归属冲突与子证据不可用均明确保留；这些结果都不授权清理，也不认证原任务。诊断不会请求会话 ensure、send、cancel 或 archive，仅释放自己的导出。既有 `workflow-cleanup` 仍是独立且仅适用于已完成工作流的模式。`parseAgentServiceTaskDiagnosticResult` 保留外层屏幕和进程退役责任。
+
+r42 的 `workflow-linux` 尝试仍因参数严格比较而失败。其 r43 只读诊断 `.cache/android/workflow-linux-r42-diagnostic-under-120-r43-20261028.json.result.json` 确认元数据相同且没有额外字段，但预期脚本为 1,311 字节，实际为 1,308 字节。本机固定验收输入计算 `.cache/android/workflow-linux-r42-slash-variants.json` 在 128 个斜杠转义变体中仅找到一个与实际 SHA-256 `5c22393b82ee9ee59c7e1abb1abb92c534cec313add8c4fcb7b314d33f56368b` 完全一致的变体：三处嵌套 JSON 斜杠各少了一个冗余反斜杠。两者解码后的子提示词完全相同。这解释了不匹配原因，但不认证任务执行，也不改变可接受的输入。诊断记录了一个工作流开始事件和零个成员记录（`no_member_record`）；这既不能证明没有创建子会话，也不构成归档子会话的许可。
+
 <a id="completion-and-persistence"></a>
 ## 完成与持久化
 
@@ -64,7 +78,7 @@ echo 适配器与结果解析器接受显式 `requireCompletionNotice: true` 选
 
 工作总预算为 300 秒，就绪等待上限为从入口起 120 秒，轮次等待上限为 120 秒。原生清理另有最多 60 秒预算，并以入口起 360 秒为上限；radio 适配器独立的 330 秒宿主截止时间可能更早到期。已提交任务尚未结束时，原生清理先等待 `session.ensure` 形成准入屏障，再仅取消自己的会话，并确认它没有运行、排队或等待中的工作。随后归档专用会话、仅释放自己的导出，并注销和解除 Messenger 连接。原生清理不清除数据、不停止服务，也不修改其他会话；radio 的宿主负责人另行恢复网络并使 App 与测试进程退役。
 
-成功要求任务结束、会话归档、导出释放及连接解除均完成，且清理期间未请求取消；清理失败会使成功失效。失败仅保留有界的错误码与异常类型，不包含账号详情、模型文本或任意错误原文。[主机检查](acceptance-agent-service-task-host.mjs) 编译原生仪器并执行证据辅助代码，包括原始会话导出格式，但不证明真实账号请求或真机通过。
+成功要求任务结束、会话归档、导出释放及连接解除均完成，且清理期间未请求取消；清理失败会使成功失效。失败保留有界的错误码、异常类型及上述固定字段指纹，不包含账号详情、模型文本或任意错误原文。[主机检查](acceptance-agent-service-task-host.mjs) 编译原生仪器并执行证据辅助代码，包括原始会话导出格式，但不证明真实账号请求或真机通过。
 
 原生的锁屏／不可交互观察及解析成功都不能证明物理面板状态或进程退役。外层设备负责人必须使用[屏幕保护](device-screen-protection.zh.md)，保留面板观察，关闭自己拥有的宿主进程，并确认设备进程退役后才能报告验收通过。echo 适配器明确将 `physicalPanelEvidence` 与 `processRetirement` 标为需要外层负责人提供。两种场景都不唤醒或解锁手机。echo 不修改无线网络；radio 的修改与恢复仅由[共享宿主清理所有者](agent-service-recovery-driver.zh.md)负责。
 

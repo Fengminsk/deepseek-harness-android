@@ -7,7 +7,8 @@ import org.json.JSONObject
 object AgentServiceProgrammaticEvidence {
     private val uuid = Regex("[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
     private fun demand(value: Boolean, code: String) = AgentServiceTaskEvidence.demand(value, code)
-    fun supported(exercise: String) = exercise in setOf("ptc", "workflow")
+    fun workflow(exercise: String) = exercise in setOf("workflow", "workflow-linux")
+    fun supported(exercise: String) = exercise == "ptc" || workflow(exercise)
     fun validCaseId(value: String?) = value != null && uuid.matches(value)
     /** Archive only the validated dedicated child through the original workspace owner; active work still rejects. */
     fun archiveChild(childId: String, call: (String, JSONObject) -> JSONObject) {
@@ -45,27 +46,32 @@ object AgentServiceProgrammaticEvidence {
         return evidence.put("provider", "deepseek-account").put("model", model)
     }
     fun childMarker(caseId: String) = "account-child-$caseId"
-    fun childPrompt(caseId: String) = "请只回复这一行：${childMarker(caseId)}。不要调用任何工具，不要读取文件，不要添加解释。"
+    fun childResponse(caseId: String, exercise: String = "workflow") =
+        if (exercise == "workflow-linux") AgentServiceChildLinuxEvidence.response(caseId) else childMarker(caseId)
+    fun childPrompt(caseId: String, exercise: String = "workflow") = if (exercise == "workflow-linux") AgentServiceChildLinuxEvidence.prompt(caseId)
+        else "请只回复这一行：${childMarker(caseId)}。不要调用任何工具，不要读取文件，不要添加解释。"
     fun arguments(caseId: String, exercise: String): JSONObject {
         demand(uuid.matches(caseId) && supported(exercise), "PROGRAMMATIC_EXERCISE_INVALID")
         return if (exercise == "ptc") JSONObject().put("code",
             "const children = await tools.list_agents({scope:\"children\"}); return {marker:${JSONObject.quote(AgentServiceTaskEvidence.marker(caseId))},children:children.length};")
             .put("description", "Check this dedicated Session's child catalog")
-        else JSONObject().put("script", "return await agent(${JSONObject.quote(childPrompt(caseId))});")
+        else JSONObject().put("script", "return await agent(${JSONObject.quote(childPrompt(caseId, exercise))});")
             .put("meta", JSONObject().put("name", "account-child").put("description", "One dedicated account acceptance child"))
     }
     fun prompt(caseId: String, exercise: String): String =
         "这是实际账号的${if (exercise == "ptc") "PTC" else "工作流及子 Agent"}验收。请只调用一次 ${if (exercise == "ptc") "android_ptc" else "workflow"}，" +
-            "必须原样使用以下 JSON 参数。不要额外调用工具，不要读取或修改文件。工具成功后只回复这一行：${AgentServiceTaskEvidence.marker(caseId)}。\n" + arguments(caseId, exercise)
+            "必须原样使用以下 JSON 参数。不要额外调用工具，" +
+            (if (exercise == "workflow-linux") "除子 Agent 的专用 Linux 文件任务外，不要读取或修改文件。" else "不要读取或修改文件。") +
+            "工具成功后只回复这一行：${AgentServiceTaskEvidence.marker(caseId)}。\n" + arguments(caseId, exercise)
 
     fun call(event: JSONObject, caseId: String, exercise: String): JSONObject {
         demand(event.getString("type") == "tool/call", "PROGRAMMATIC_CALL_INVALID")
         val data = event.getJSONObject("data")
         demand(data.getString("name") == (if (exercise == "ptc") "android_ptc" else "workflow") &&
             data.getInt("turn") == 1, "PROGRAMMATIC_TOOL_INVALID")
+        val diagnostic = AgentServiceProgrammaticDiagnostic.arguments(data.getString("arguments"), caseId, exercise)
+        if (!diagnostic.getBoolean("matches")) throw AgentServiceTaskEvidence.Rejected("PROGRAMMATIC_ARGUMENTS_CHANGED", diagnostic)
         val actual = JSONObject(data.getString("arguments"))
-        demand(AgentServiceTaskEvidence.canonical(actual) == AgentServiceTaskEvidence.canonical(arguments(caseId, exercise)),
-            "PROGRAMMATIC_ARGUMENTS_CHANGED")
         val callId = data.getString("callId")
         demand(callId.isNotBlank() && callId.length <= 256, "PROGRAMMATIC_CALL_ID_INVALID")
         return JSONObject().put("callId", callId).put("toolStartSeq", event.getLong("seq"))
@@ -118,7 +124,7 @@ object AgentServiceProgrammaticEvidence {
             proof.put("reviewedCallbacks", 1).put("callbackName", "list_agents").put("callbackStartSeq", started.getLong("seq"))
                 .put("callbackEndSeq", settled.getLong("seq")).put("children", 0)
         } else {
-            demand(text == "workflow \"account-child\" completed (1 agent).\nReturn value:\n${JSONObject.quote(childMarker(caseId))}",
+            demand(text == "workflow \"account-child\" completed (1 agent).\nReturn value:\n${JSONObject.quote(childResponse(caseId, exercise))}",
                 "WORKFLOW_RESULT_MISMATCH")
             val start = one("tool-workflow/run-start"); val end = one("tool-workflow/run-end")
             val member = one("tool-workflow/agent-start"); val memberEnd = one("tool-workflow/agent-end")
@@ -141,18 +147,22 @@ object AgentServiceProgrammaticEvidence {
     }
 
     /** Check only a child identified by the validated parent's sole completed workflow member. */
-    fun child(history: JSONArray, durable: JSONArray, caseId: String, childId: String, model: String): JSONObject {
+    fun child(history: JSONArray, durable: JSONArray, caseId: String, childId: String, model: String,
+              exercise: String = "workflow", appUid: Int? = null): JSONObject {
         demand(uuid.matches(childId), "WORKFLOW_CHILD_ID_INVALID")
-        fun inspect(events: JSONArray) {
+        demand(workflow(exercise), "PROGRAMMATIC_EXERCISE_INVALID")
+        val linux = exercise == "workflow-linux"
+        fun inspect(events: JSONArray): JSONObject? {
             demand(events.length() in 1..511, "CHILD_HISTORY_SIZE_INVALID")
             val rows = (0 until events.length()).map { events.getJSONObject(it) }
             var previous = -1L
             for (row in rows) {
                 demand(row.getLong("seq") > previous, "CHILD_EVENT_ORDER_INVALID"); previous = row.getLong("seq")
-                demand(!row.getString("type").startsWith("tool/") && !row.getString("type").startsWith("tool-workflow/"), "CHILD_TOOL_INVOKED")
+                demand((!row.getString("type").startsWith("tool/") || linux && row.getString("type") in setOf("tool/call", "tool/result")) &&
+                    !row.getString("type").startsWith("tool-workflow/"), "CHILD_TOOL_INVOKED")
             }
             fun all(type: String) = rows.filter { it.getString("type") == type }
-            demand(all("turn/start").size == 1 && all("turn/end").size == 1 && all("assistant/message").size == 1,
+            demand(all("turn/start").size == 1 && all("turn/end").size == 1 && (linux || all("assistant/message").size == 1),
                 "CHILD_EVENT_COUNT_INVALID")
             val header = all("request/header")
             demand(header.isNotEmpty(), "CHILD_MODEL_EVIDENCE_MISSING")
@@ -163,9 +173,15 @@ object AgentServiceProgrammaticEvidence {
             val input = all("user/message").flatMap { row ->
                 val blocks = row.getJSONObject("data").getJSONArray("content")
                 (0 until blocks.length()).map { blocks.getJSONObject(it) }
-            }.count { it.optString("type") == "text" && it.optString("text") == childPrompt(caseId) }
+            }.count { it.optString("type") == "text" && it.optString("text") == childPrompt(caseId, exercise) }
             demand(input == 1, "CHILD_PROMPT_MISMATCH")
-            val assistant = all("assistant/message").single()
+            val finals = all("assistant/message").filter { row ->
+                val content = row.getJSONObject("data").getJSONObject("message").getJSONArray("content")
+                (0 until content.length()).map { content.getJSONObject(it) }.filter { it.getString("type") == "text" }
+                    .joinToString("") { it.getString("text") }.trim() == childResponse(caseId, exercise)
+            }
+            demand(finals.size == 1, "CHILD_MARKER_MISMATCH")
+            val assistant = finals.single()
             val blocks = assistant.getJSONObject("data").getJSONObject("message").getJSONArray("content")
             val text = ArrayList<String>()
             for (i in 0 until blocks.length()) {
@@ -177,17 +193,22 @@ object AgentServiceProgrammaticEvidence {
                 }
             }
             val ended = all("turn/end").single()
-            demand(text.joinToString("").trim() == childMarker(caseId) && !assistant.getJSONObject("data").optBoolean("interrupted", false),
+            demand(text.joinToString("").trim() == childResponse(caseId, exercise) && !assistant.getJSONObject("data").optBoolean("interrupted", false),
                 "CHILD_MARKER_MISMATCH")
             demand(all("turn/start").single().getJSONObject("data").getInt("turn") == 1 &&
                 assistant.getJSONObject("data").getInt("turn") == 1 && ended.getJSONObject("data").getInt("turn") == 1 &&
                 ended.getJSONObject("data").getJSONObject("reason").getString("kind") == "completed" &&
                 all("turn/start").single().getLong("seq") < assistant.getLong("seq") && assistant.getLong("seq") < ended.getLong("seq"),
                 "CHILD_TURN_NOT_COMPLETED")
+            if (!linux) return null
+            val receipt = AgentServiceChildLinuxEvidence.receipt(rows, caseId, childId, appUid ?: 0)
+            demand(receipt.getLong("toolStartSeq") > all("turn/start").single().getLong("seq") &&
+                receipt.getLong("toolEndSeq") < assistant.getLong("seq"), "CHILD_LINUX_FINAL_BEFORE_RESULT")
+            return receipt
         }
-        inspect(history); inspect(durable)
+        val linuxReceipt = inspect(history); inspect(durable)
         fun evidence(events: JSONArray): String {
-            val types = setOf("user/message", "request/header", "turn/start", "assistant/message", "turn/end")
+            val types = setOf("user/message", "request/header", "turn/start", "assistant/message", "turn/end", "tool/call", "tool/result")
             return AgentServiceTaskEvidence.canonical(JSONArray((0 until events.length()).map { events.getJSONObject(it) }
                 .filter { it.getString("type") in types }.map {
                     JSONObject().put("type", it.getString("type")).put("seq", it.getLong("seq")).put("data", it.getJSONObject("data"))
@@ -195,8 +216,10 @@ object AgentServiceProgrammaticEvidence {
                 }))
         }
         demand(evidence(history) == evidence(durable), "CHILD_DURABLE_MISMATCH")
-        return JSONObject().put("sessionId", childId).put("eventCount", durable.length()).put("toolCalls", 0)
+        val result = JSONObject().put("sessionId", childId).put("eventCount", durable.length()).put("toolCalls", if (linux) 1 else 0)
             .put("assistantMarkerMatches", 1).put("turnEndCount", 1).put("completionKind", "completed")
             .put("historySha256", AgentServiceTaskEvidence.hash(AgentServiceTaskEvidence.canonical(durable).toByteArray(Charsets.UTF_8)))
+        if (linuxReceipt != null) result.put("linuxReceipt", linuxReceipt)
+        return result
     }
 }

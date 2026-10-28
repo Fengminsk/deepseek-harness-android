@@ -23,6 +23,8 @@ import { registerAndroidFilesTool } from '../../runtime/tool-android-files.mjs'
 import { registerAndroidAttachmentsTool } from '../../runtime/tool-android-attachments.mjs'
 import AndroidAttachmentStore from '../../runtime/android-attachment-store.mjs'
 import { PTC_LINUX_DEVICE_CHECK, PtcLinuxAcceptanceFailure, runPtcLinuxAcceptance } from './ptc-linux.mjs'
+import { runApkCodeAcceptance } from './apk-inspection.mjs'
+import { PTC_LINUX_CANCEL_CHECK, PTC_LINUX_DEADLINE_CHECK, runPtcLinuxLifecycle, ptcNativeRetirementDiagnostics } from './ptc-linux-lifecycle.mjs'
 
 // A stored, single-file ZIP containing only "readonly archive device fixture\n".
 const archiveFixture = 'UEsDBBQAAAAAAChsW12obBxMIAAAACAAAAAOAAAAYWNjZXB0YW5jZS50eHRyZWFkb25seSBhcmNoaXZlIGRldmljZSBmaXh0dXJlClBLAQIUABQAAAAAAChsW12obBxMIAAAACAAAAAOAAAAAAAAAAAAAAAAAAAAAABhY2NlcHRhbmNlLnR4dFBLBQYAAAAAAQABADwAAABMAAAAAAA='
@@ -77,24 +79,38 @@ async function runPtcChecks({ ctx, transport, agent, workspace, callbackRouting,
   const fileName = `ptc-acceptance-${randomUUID()}.txt`
   const file = join(workspace, fileName)
   await writeFile(file, 'readonly-ptc-device\n42\n', { flag: 'wx' })
-  const checks = [], receipts = []
+  const checks = [], receipts = [], ptcRequests = [], callbackClosures = []
   const measuredTransport = { async request(method, params, signal) {
-    const result = await transport.request(method, params, signal)
-    if (method === 'native.isolated.settle') receipts.push(result)
-    return result
+    const row = { method, params: { runId: params.runId, kind: params.kind,
+      sessionId: params.sessionId, deadlineMillis: params.deadlineMillis }, startedAtMs: performance.now() }
+    ptcRequests.push(row)
+    try {
+      const result = await transport.request(method, params, signal)
+      if (method === 'native.isolated.settle') receipts.push(result)
+      row.acknowledged = true
+      return result
+    } finally { row.completedAtMs = performance.now() }
   } }
   const callbacks = new NativeIsolatedToolCallbacks(measuredTransport,
     new IsolatedToolCallJournal(join(home, 'ptc-device-journal')))
+  const closeCallbacks = callbacks.close.bind(callbacks)
+  callbacks.close = async value => {
+    const row = { runId: value.runId, status: 'pending', closed: false }; callbackClosures.push(row)
+    try { const result = await closeCallbacks(value); row.status = 'returned'; row.closed = result.closed === true; return result }
+    catch (error) { row.status = 'rejected'; row.errorCode = error?.code; throw error }
+  }
   const unbind = callbackRouting.bind('tool', callbacks)
   const owner = createAppOwnedPtcOwner({ bridge: createNativeIsolatedExecutionBridge(measuredTransport),
     callbacks, runtime: ctx.tools, services: { agents: ctx.agents, subagents: ctx.subagents,
       sessions: ctx.sessions, sandboxPolicy: ctx.sandboxPolicy } })
   const originalMode = ctx.sandboxPolicy.resolve({ session: agent.session }).mode
   const check = async (name, action) => {
-    const started = Date.now()
+    const started = Date.now(), initialReceipts = receipts.length, initialRequests = ptcRequests.length
     try { checks.push({ name, status: 'passed', ...(await action()), elapsedMs: Date.now() - started }) }
     catch (error) { checks.push({ name, status: 'failed', error: String(error?.message ?? error).slice(0, 1000),
-      ...(error instanceof PtcLinuxAcceptanceFailure ? { diagnostics: error.diagnostics } : {}), elapsedMs: Date.now() - started }) }
+      diagnostics: { ...(error instanceof PtcLinuxAcceptanceFailure ? error.diagnostics : {}),
+        ...ptcNativeRetirementDiagnostics(receipts.length > initialReceipts ? receipts.at(-1) : null,
+          ptcRequests.slice(initialRequests), callbackClosures) }, elapsedMs: Date.now() - started }) }
   }
   const reads = new AppDocumentReads(transport, { maxRequests: () => 2, timeoutMs: () => 30000 })
   const invoke = (code, signal = new AbortController().signal) => ctx.tools.execute({ name: 'android_ptc',
@@ -211,7 +227,25 @@ async function runPtcChecks({ ctx, transport, agent, workspace, callbackRouting,
       assert.equal(events.length, 1)
       assert.equal(events[0].data.arguments.action, 'inspect_apk')
       assert.equal(events[0].data.content[0].text, JSON.stringify(value))
-      return { state: receipts.at(-1).state, manifestSha256: fixture.manifestSha256 }
+      const code = await runApkCodeAcceptance({
+        async upload(name, data) {
+          const ref = await ctx.get('attachments').saveFile({ name: `${randomUUID()}-${name}`, data })
+          agent.session.append('user/message', createUserMessage({ content: [{ type: 'file', attachment: ref }],
+            source: { kind: 'user' } }), { surfaceOp: 'append' })
+          return ref
+        },
+        async call(args) {
+          const outcome = await invoke(`try{return {ok:true,value:await tools.android_attachments(${JSON.stringify(args)})}}catch(e){return {ok:false,message:String(e.message)}}`)
+          assert.equal(outcome.isError, false, JSON.stringify(outcome.error))
+          const response = outcome.value.result
+          if (response.ok !== true) throw new Error(response.message)
+          return response.value
+        },
+      })
+      const allEvents = agent.session.snapshotEvents(before).filter(event => event.type === 'tool/ptc-dispatch')
+      assert.equal(allEvents.length, 9)
+      assert.equal(allEvents.filter(event => event.data.isError === true).length, 2)
+      return { state: receipts.at(-1).state, manifestSha256: fixture.manifestSha256, code }
     })
     await check('apk-oversize-callback-can-retry-a-smaller-page', async () => {
       const fixture = JSON.parse(await readFile(new URL('./apk-overflow-fixture.json', import.meta.url), 'utf8'))
@@ -275,6 +309,12 @@ async function runPtcChecks({ ctx, transport, agent, workspace, callbackRouting,
     })
     await check(PTC_LINUX_DEVICE_CHECK, () => runPtcLinuxAcceptance({ ctx, transport, agent, workspace,
       appWorkspaceRoot, nativeModule, invoke, settlements: receipts }))
+    await check(PTC_LINUX_CANCEL_CHECK, () => runPtcLinuxLifecycle({ mode: 'cancel', ctx, transport, agent,
+      nativeModule, invoke, settlements: receipts, ptcRequests, callbackClosures }))
+    if (checks.at(-1).status === 'passed') {
+      await check(PTC_LINUX_DEADLINE_CHECK, () => runPtcLinuxLifecycle({ mode: 'deadline', ctx, transport, agent,
+        nativeModule, invoke, settlements: receipts, ptcRequests, callbackClosures }))
+    } else checks.push({ name: PTC_LINUX_DEADLINE_CHECK, status: 'unverified', detail: 'Nested cancellation did not settle; stop dependent lifecycle checks.' })
     checks.push({ name: 'saf-revocation-and-search', status: 'unverified', detail: 'SAF grant revocation and document search require their separate provider lifecycle acceptance.' })
     return { kind: 'production-node-native-ptc', checks,
       passed: checks.filter(value => value.status === 'passed').length,

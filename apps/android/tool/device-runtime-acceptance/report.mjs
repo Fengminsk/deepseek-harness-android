@@ -17,6 +17,8 @@ const requiredChecks = {
     'model-busy-loop-has-independent-cpu-limit',
     'real-public-web-fetch',
     'reviewed-ptc-linux-import-analysis-export',
+    'reviewed-ptc-linux-active-cancellation-and-retirement',
+    'reviewed-ptc-linux-shared-deadline-and-retirement',
     'saf-revocation-and-search',
   ],
   linux: [
