@@ -16,8 +16,13 @@ import ToolRuntime from '@deepseek-ai/dsh-tools'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import SubagentRuntime from '@deepseek-ai/dsh-subagent'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
+import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import type { Agent } from '@deepseek-ai/dsh-agent'
 import * as tool from '../src/index.ts'
 import { registerListSubagentModels } from '../src/list-models.ts'
+import {
+  subagentModelSelectionProjectionDefinition,
+} from '../src/model-selection-state.ts'
 import { testToolSignal, text } from './harness.ts'
 
 class CatalogAdapter extends LlmAdapter {
@@ -69,33 +74,31 @@ async function setupListTool(routes = [
   await ctx.plugin(LlmRuntime)
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(ToolRuntime)
-  registerListSubagentModels(ctx, { routes })
-  return ctx
+  await ctx.plugin(SessionProjectionRegistry)
+  const handle = await ctx.sessionProjections.register(subagentModelSelectionProjectionDefinition)
+  const session = Session.create(SessionId(`list-models-${++counter}`))
+  session.append('subagent/model-selection-policy', { allowedModels: routes })
+  registerListSubagentModels(ctx, handle)
+  return { ctx, agent: { session } as Agent, handle }
 }
 
 async function setupAllowedListTool() {
-  const ctx = new Context()
-  await ctx.plugin(LlmRuntime)
-  await ctx.plugin(SystemPrompt)
-  await ctx.plugin(ToolRuntime)
-  registerListSubagentModels(ctx, {
-    routes: [
-      { provider: 'alpha', model: 'fast' },
-      { provider: 'alpha', model: 'unlisted' },
-      { provider: 'missing', model: 'hidden' },
-    ],
-  })
-  return ctx
+  return setupListTool([
+    { provider: 'alpha', model: 'fast' },
+    { provider: 'alpha', model: 'unlisted' },
+    { provider: 'missing', model: 'hidden' },
+  ])
 }
 
 let counter = 0
 
-function call(ctx: Context, args: unknown) {
+function call(ctx: Context, agent: Agent, args: unknown) {
   return ctx.tools.execute({
     signal: testToolSignal,
     callId: ToolCallId(`list-models-${++counter}`),
     name: 'list_subagent_models',
     arguments: args,
+    agent,
   })
 }
 
@@ -114,36 +117,40 @@ describe('list_subagent_models', () => {
 
   it('stays registered without the optional LLM service and rejects discovery calls', async () => {
     const ctx = new Context()
+    await ctx.plugin(SessionProjectionRegistry)
     await ctx.plugin(SystemPrompt)
     await ctx.plugin(ToolRuntime)
     await mountWorkingDirectoryFixture(ctx)
     await ctx.plugin(SubagentRuntime)
-    registerListSubagentModels(ctx, { routes: [{ provider: 'alpha', model: 'fast' }] })
-    const result = await call(ctx, {})
+    const handle = await ctx.sessionProjections.register(subagentModelSelectionProjectionDefinition)
+    const session = Session.create(SessionId(`list-models-${++counter}`))
+    session.append('subagent/model-selection-policy', { allowedModels: [{ provider: 'alpha', model: 'fast' }] })
+    registerListSubagentModels(ctx, handle)
+    const result = await call(ctx, { session } as Agent, {})
     expect(result.isError).toBe(true)
     expect(text(result)).toContain('`llm` service is unavailable')
   })
 
   it('rejects two discovery-owning instances in one tool scope', async () => {
-    const ctx = await setupListTool()
+    const { ctx, handle } = await setupListTool()
     expect(() => {
-      registerListSubagentModels(ctx, { routes: [{ provider: 'alpha', model: 'fast' }] })
+      registerListSubagentModels(ctx, handle)
     }).toThrow('tool "list_subagent_models" is already registered')
   })
 
   it('lists registered providers and follows live registration changes', async () => {
-    const ctx = await setupListTool()
-    const empty = await call(ctx, {})
+    const { ctx, agent } = await setupListTool()
+    const empty = await call(ctx, agent, {})
     expect(empty.isError).toBe(false)
     expect(text(empty)).toBe('(no LLM providers)')
 
     const registration = ctx.llm.registerAdapter(['alpha'], new CatalogAdapter())
-    const providers = await call(ctx, {})
+    const providers = await call(ctx, agent, {})
     expect(providers.isError).toBe(false)
     expect(text(providers)).toBe('alpha — ALPHA API')
 
     registration.replace(['beta'])
-    const changed = await call(ctx, {})
+    const changed = await call(ctx, agent, {})
     expect(text(changed)).toBe('beta — BETA API')
 
     const tools = ctx.tools
@@ -152,34 +159,34 @@ describe('list_subagent_models', () => {
   })
 
   it('lists one provider\'s advertised models without treating the catalog as a whitelist', async () => {
-    const ctx = await setupListTool()
+    const { ctx, agent } = await setupListTool()
     ctx.llm.registerAdapter(['alpha'], new CatalogAdapter())
-    const result = await call(ctx, { provider: 'alpha' })
+    const result = await call(ctx, agent, { provider: 'alpha' })
     expect(result.isError).toBe(false)
     expect(text(result)).toBe('alpha/fast — Fast: Focused work.\nalpha/plain — Plain')
   })
 
   it('intersects provider and model discovery with the Session allowlist', async () => {
-    const ctx = await setupAllowedListTool()
+    const { ctx, agent } = await setupAllowedListTool()
     ctx.llm.registerAdapter(['alpha', 'beta'], new CatalogAdapter())
 
-    expect(text(await call(ctx, {}))).toBe('alpha — ALPHA API')
-    expect(text(await call(ctx, { provider: 'alpha' }))).toBe('alpha/fast — Fast: Focused work.')
-    expect(text(await call(ctx, { provider: 'alpha', model: 'unlisted' })))
+    expect(text(await call(ctx, agent, {}))).toBe('alpha — ALPHA API')
+    expect(text(await call(ctx, agent, { provider: 'alpha' }))).toBe('alpha/fast — Fast: Focused work.')
+    expect(text(await call(ctx, agent, { provider: 'alpha', model: 'unlisted' })))
       .toContain('alpha/unlisted — Fast')
 
-    const denied = await call(ctx, { provider: 'alpha', model: 'plain' })
+    const denied = await call(ctx, agent, { provider: 'alpha', model: 'plain' })
     expect(denied.isError).toBe(true)
     expect(text(denied)).toContain('is not allowed for this Session')
   })
 
   it('rejects an unauthorized provider before calling its adapter catalog', async () => {
-    const ctx = await setupListTool([{ provider: 'alpha', model: 'fast' }])
+    const { ctx, agent } = await setupListTool([{ provider: 'alpha', model: 'fast' }])
     const adapter = new CatalogAdapter()
     const listModels = vi.spyOn(adapter, 'listModels')
     ctx.llm.registerAdapter(['alpha', 'secret'], adapter)
 
-    const result = await call(ctx, { provider: 'secret' })
+    const result = await call(ctx, agent, { provider: 'secret' })
 
     expect(result.isError).toBe(true)
     expect(text(result)).toContain('provider "secret" is not allowed for this Session')
@@ -187,17 +194,17 @@ describe('list_subagent_models', () => {
   })
 
   it('renders an empty advertised model list', async () => {
-    const ctx = await setupListTool([{ provider: 'alpha', model: 'fast' }])
+    const { ctx, agent } = await setupListTool([{ provider: 'alpha', model: 'fast' }])
     ctx.llm.registerAdapter(['alpha'], new CatalogAdapter(true))
-    const result = await call(ctx, { provider: 'alpha' })
+    const result = await call(ctx, agent, { provider: 'alpha' })
     expect(result.isError).toBe(false)
     expect(text(result)).toBe('(no advertised models for alpha)')
   })
 
   it('inspects exact-model efforts, descriptions, and defaults', async () => {
-    const ctx = await setupListTool()
+    const { ctx, agent } = await setupListTool()
     ctx.llm.registerAdapter(['alpha', 'secret'], new CatalogAdapter())
-    const result = await call(ctx, { provider: 'alpha', model: 'fast' })
+    const result = await call(ctx, agent, { provider: 'alpha', model: 'fast' })
     expect(result.isError).toBe(false)
     expect(text(result)).toBe(
       'alpha/fast — Fast: Focused work.\nReasoning efforts:\n'
@@ -206,9 +213,9 @@ describe('list_subagent_models', () => {
   })
 
   it('renders exact models without reasoning metadata', async () => {
-    const ctx = await setupListTool()
+    const { ctx, agent } = await setupListTool()
     ctx.llm.registerAdapter(['alpha'], new CatalogAdapter())
-    const result = await call(ctx, { provider: 'alpha', model: 'plain' })
+    const result = await call(ctx, agent, { provider: 'alpha', model: 'plain' })
     expect(result.isError).toBe(false)
     expect(text(result)).toBe('alpha/plain — Plain\nReasoning efforts:\n(no advertised reasoning efforts)')
   })
@@ -218,35 +225,35 @@ describe('list_subagent_models', () => {
     { args: { provider: '' }, expected: '`provider` must be non-empty' },
     { args: { provider: 'missing' }, expected: 'is not allowed for this Session' },
   ])('rejects incomplete or unavailable provider requests', async ({ args, expected }) => {
-    const ctx = await setupListTool()
-    const result = await call(ctx, args)
+    const { ctx, agent } = await setupListTool()
+    const result = await call(ctx, agent, args)
     expect(result.isError).toBe(true)
     expect(text(result)).toContain(expected)
   })
 
   it('rejects an empty exact model after resolving the provider', async () => {
-    const ctx = await setupListTool()
+    const { ctx, agent } = await setupListTool()
     ctx.llm.registerAdapter(['alpha'], new CatalogAdapter())
-    const result = await call(ctx, { provider: 'alpha', model: '' })
+    const result = await call(ctx, agent, { provider: 'alpha', model: '' })
     expect(result.isError).toBe(true)
     expect(text(result)).toContain('`model` must be non-empty')
   })
 
   it('reports registered alternatives for an unavailable provider', async () => {
-    const ctx = await setupListTool([
+    const { ctx, agent } = await setupListTool([
       { provider: 'alpha', model: 'fast' },
       { provider: 'missing', model: 'fast' },
     ])
     ctx.llm.registerAdapter(['alpha'], new CatalogAdapter())
-    const result = await call(ctx, { provider: 'missing' })
+    const result = await call(ctx, agent, { provider: 'missing' })
     expect(result.isError).toBe(true)
     expect(text(result)).toContain('available providers: alpha')
     expect(text(result)).not.toContain('secret')
   })
 
   it('reports no available provider when the authorized registry intersection is empty', async () => {
-    const ctx = await setupListTool([{ provider: 'missing', model: 'fast' }])
-    const result = await call(ctx, { provider: 'missing' })
+    const { ctx, agent } = await setupListTool([{ provider: 'missing', model: 'fast' }])
+    const result = await call(ctx, agent, { provider: 'missing' })
     expect(result.isError).toBe(true)
     expect(text(result)).toContain('available providers: (none)')
   })

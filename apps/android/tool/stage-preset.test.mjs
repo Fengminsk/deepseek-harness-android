@@ -67,7 +67,7 @@ test('Android stages original local delegation without enabling PTC or changing 
   })
   assert.deepEqual(delegated.config.map(entry => entry.id), delegationIds)
   assert.deepEqual(delegated.config.find(entry => entry.id === 'tool-subagent').config,
-    { provider: 'spawn', toolName: 'subagent', modelSelectionSettings: true })
+    { provider: 'spawn', toolName: 'subagent', modelSelection: true, modelDiscovery: true })
   assert.deepEqual(delegated.config.find(entry => entry.id === 'tool-subagent-fork').config,
     { provider: 'fork', toolName: 'subagent_fork' })
   assert.equal(staged.find(entry => entry.id === 'ptc-runtime').disabled, true)

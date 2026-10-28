@@ -121,7 +121,7 @@ describe('dsh-tool-subagent model selection', () => {
       'provider',
       'reasoning_effort',
     ])
-    expect(schema.description).toContain('list_subagent_models')
+    expect(schema.description).toContain('Supply `provider` and `model` together')
     expect(ctx.tools.get('list_subagent_models', agent)).toBeDefined()
     expect(schema.description).not.toContain('alpha')
 
@@ -137,7 +137,7 @@ describe('dsh-tool-subagent model selection', () => {
     const schema = ctx.tools.schemas().find(entry => entry.name === 'subagent')!
     const props = (schema.parameters as { properties?: Record<string, unknown> }).properties ?? {}
     expect(Object.keys(props).sort()).toEqual(['cwd', 'description', 'prompt'])
-    expect(schema.description).not.toContain('list_subagent_models')
+    expect(schema.description).not.toContain('Supply `provider`')
     expect(ctx.tools.get('list_subagent_models')).toBeUndefined()
 
     const result = await callSubagent(ctx, {
