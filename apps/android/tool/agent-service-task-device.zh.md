@@ -9,7 +9,7 @@ title: 正式 AgentService 账号任务验收
 
 ## 摘要
 
-这项验收检查已安装 App 能否在手机保持锁屏时，使用当前 DeepSeek 账号与默认模型完成一次后台请求并持久化结果。默认 echo 场景检查不调用工具的回复；显式选择的 `radio-linux` 场景检查一次未完成 Linux 调用跨越实测离线区间。两者均使用正式 AgentService 及其既有 home，并创建一个专用会话。Build 116 r33 于 5,051 毫秒完成 echo 检查；保留的 r32 超时及进程冻结观察仍未解决。
+这项验收检查已安装 App 能否在手机保持锁屏时，使用当前 DeepSeek 账号与默认模型完成一次后台请求并持久化结果。默认 echo 场景检查不调用工具的回复；显式选择的 `radio-linux` 场景检查一次未完成 Linux 调用跨越实测离线区间。两者均使用正式 AgentService 及其既有 home，并创建一个专用会话。Build 116 r33 于 5,051 毫秒完成 echo 检查；保留的 r32 超时及进程冻结已归因于设备 OEM 冻结器：它在 AMS 报告未冻结时冻结了 App。
 
 ## 目录
 
@@ -91,7 +91,7 @@ r33 结果位于 `.cache/android/account-task-116-r33-protected-20261028.json.re
 
 AgentService 保持 PID 6299、相同运行代次及前台服务状态。任务期间观测到一个运行任务且正式服务持有 wake lock；任务前后均为空闲、运行数为零且未持有 wake lock。原生观察均为锁屏且不可交互。外层报告记录五次采样中两块物理面板均为 Off、宿主实际关闭及设备进程退役已确认。这些是本次短请求的离散状态，不能作为连续面板或长时间休眠证据。
 
-此前 `.cache/android/account-task-116-r32-protected-20261028.json.result.json` 在 190,012 毫秒后以 `DEADLINE_EXCEEDED` 失败，提交数为零。`.cache/android/account-task-r32-scheduler-01.json` 在采集时读取到主进程 PID 28936 与 Agent PID 28956 的 `cgroup.freeze=1`，且 `cgroup.events` 含 `frozen 1`。施加冻结的主体未知。r33 成功以及新增的早期进度脉冲不能证明该冻结已被修复，也不能解释 r32 超时。
+此前 `.cache/android/account-task-116-r32-protected-20261028.json.result.json` 在 190,012 毫秒后以 `DEADLINE_EXCEEDED` 失败，提交数为零。`.cache/android/account-task-r32-scheduler-01.json` 在采集时读取到主进程 PID 28936 与 Agent PID 28956 的 `cgroup.freeze=1`，且 `cgroup.events` 含 `frozen 1`。该状态由设备 OEM 冻结器施加：2026-10-28 已安装的 Build 120 记录了 `OplusHansManager ... freeze uid: 10496 com.minnnng.dsh_android ... scene: |StrictMode-3|LcdOff`，当时 `AgentService` 为前台服务，而 AMS 报告 `isFrozen=false`，因此该状态从不属于 AMS。该冻结器忽略前台服务，不受 App 控制；`AgentService` 现会记录暂停区间并随失败一并报告。r33 成功以及新增的早期进度脉冲不能修复该冻结，迟到截止时间由暂停解释，而不是模型或工具过慢。
 
 只读记录 `.cache/android/account-task-r33-power-policy.json` 显示 `RUN_ANY_IN_BACKGROUND: allow`、`RUN_IN_BACKGROUND` 无显式记录且默认模式为 `allow`，DSH 已在用户 device-idle 白名单中；`settingsChanged` 为 false。这些是观测到的策略配置，不能证明所有系统调度器或冻结器都会允许持续执行。
 
@@ -102,16 +102,16 @@ AgentService 保持 PID 6299、相同运行代次及前台服务状态。任务�
 
 宿主于 13,724.261 毫秒收到就绪；九次离线观察从 18,320.3411 至 33,554.017 毫秒，从首次离线采样完成起执行的驻留要求实测为 15,233.6717 毫秒。每次均保留 Agent PID 13213、相同运行代次及调用身份、自己的运行父任务和未完成 Linux 调用。独立的原生离线至恢复区间为 18,534 毫秒。两种时钟起点不同；就绪或这些离散待完成状态都不能确定 Python 何时开始执行。
 
-最终回执记录客体 UID 99480、Python 等待 40,006 毫秒、退出码为零，以及 `diskCommitted: true`、`retirementConfirmed: true`；输出 SHA-256 为 `67ff8e8ac3df4dffcd6d440fb0cd34f07d33f2f25e7c0ff8452d25d43efd0b2e`。相同调用的结果及最终回复在实时和持久记录中一致。原生任务结束、会话归档、导出释放及断开连接均完成，清理未发起取消。Wi-Fi 和移动数据标志恢复为原始 `1` / `1`，外层所有者确认宿主关闭及设备进程退役。29 次屏幕采样均显示两块面板 Off，屏幕控制在不可交互状态下恢复。记录中的重试事件为零：本轮证明所观察的未完成 Linux 任务在恢复连接后完成，不证明被中断的模型 HTTP 重试、长期 Doze 存活或 r32 冻结问题已修复。
+最终回执记录客体 UID 99480、Python 等待 40,006 毫秒、退出码为零，以及 `diskCommitted: true`、`retirementConfirmed: true`；输出 SHA-256 为 `67ff8e8ac3df4dffcd6d440fb0cd34f07d33f2f25e7c0ff8452d25d43efd0b2e`。相同调用的结果及最终回复在实时和持久记录中一致。原生任务结束、会话归档、导出释放及断开连接均完成，清理未发起取消。Wi-Fi 和移动数据标志恢复为原始 `1` / `1`，外层所有者确认宿主关闭及设备进程退役。29 次屏幕采样均显示两块面板 Off，屏幕控制在不可交互状态下恢复。记录中的重试事件为零：本轮证明所观察的未完成 Linux 任务在恢复连接后完成，不证明被中断的模型 HTTP 重试、长期 Doze 存活，也不证明 r32 记录的 OEM 冻结已被消除。
 
 <a id="completion-notice-r35"></a>
 ### r35 真实任务与系统完成通知
 
 通过结果为 `.cache/android/account-notice-116-r35-protected-20261028.json.result.json`；配套屏幕报告省去 `.result.json`。`.cache/android/device-v116-20261028/r35/archive-manifest.json` 中的 r35 归档清单保留上文记录的未变更正式 App 摘要，AndroidTest SHA-256 为 `dc06f94ba4fc2861f8e861609e4d52350afb64127b208f5e36169eb2a2b6a926`。启用 `requireCompletionNotice: true` 后，当前 `deepseek-account` / `deepseek-flash` 在 6,753 毫秒内完成一条用户提交和一个最终标记，工具调用为零，持久事件为 15 条。历史 SHA-256 为 `205e1c6f00a7d49456264f366d1d0124be688813d60e7c4f6f5aa08ec944458b`。
 
-恰好一条活跃通知匹配专用会话标签、ID 3、`task-completed` 通道及标记预览。私密展示、自动取消以及内容 PendingIntent 属于本 App 均获确认；清理确认该通知已取消，会话归档、导出释放及断开连接已完成。外层所有者记录六次采样中两块 OLED 面板均为 Off，并确认宿主与设备进程退役，随后在不可交互状态下恢复屏幕控制。没有发送 PendingIntent：本轮验证真实完成通知的投递与清理，不验证通知点击、会话跳转或崩溃后的回执恢复。它没有改变生产行为，也不能解释此前的 r32 冻结。
+恰好一条活跃通知匹配专用会话标签、ID 3、`task-completed` 通道及标记预览。私密展示、自动取消以及内容 PendingIntent 属于本 App 均获确认；清理确认该通知已取消，会话归档、导出释放及断开连接已完成。外层所有者记录六次采样中两块 OLED 面板均为 Off，并确认宿主与设备进程退役，随后在不可交互状态下恢复屏幕控制。没有发送 PendingIntent：本轮验证真实完成通知的投递与清理，不验证通知点击、会话跳转或崩溃后的回执恢复。它不能阻止 r32 记录的 OEM 冻结。
 
 <a id="evidence-limits"></a>
 ## 证据范围
 
-r33 结果证明了一次经正式服务使用真实账号完成的 echo 请求及其持久回复；r34 另行证明了一次未完成 Linux 调用在实测断网区间保持，并在恢复连接后完成；r35 证明了真实任务的系统完成通知及其清理。各轮均使用新专用会话，都不能证明通知点击、账号登录界面或头像显示、重新打开旧会话、令牌刷新、被中断的模型 HTTP 重试、服务死亡后恢复、长时间 Doze 运行，或 r32 冻结的原因及其已解决。[空闲服务恢复验收](agent-service-recovery-driver.zh.md) 与 [Build 116 升级记录](upgrade-116-acceptance.zh.md) 分别拥有各自观察，两者均不能替代这些账号任务结果。
+r33 结果证明了一次经正式服务使用真实账号完成的 echo 请求及其持久回复；r34 另行证明了一次未完成 Linux 调用在实测断网区间保持，并在恢复连接后完成；r35 证明了真实任务的系统完成通知及其清理。各轮均使用新专用会话，都不能证明通知点击、账号登录界面或头像显示、重新打开旧会话、令牌刷新、被中断的模型 HTTP 重试、服务死亡后恢复、长时间 Doze 运行，或 r32 记录的 OEM 冻结已被修复。[空闲服务恢复验收](agent-service-recovery-driver.zh.md) 与 [Build 116 升级记录](upgrade-116-acceptance.zh.md) 分别拥有各自观察，两者均不能替代这些账号任务结果。

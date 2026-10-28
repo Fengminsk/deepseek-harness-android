@@ -19,6 +19,13 @@ import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.CompletableFuture
 
+/** A one-second cadence distinguishes suspension from ordinary GC or IO stalls. */
+private const val SUSPENSION_SAMPLE_MILLIS = 1_000L
+/** Ordinary stalls stay below ten seconds; a longer gap means this process did not run. */
+private const val SUSPENSION_THRESHOLD_MILLIS = 10_000L
+/** Matches the acceptance startup watchdog; a longer start is a stall, not a slow device. */
+private const val STARTUP_READY_TIMEOUT_MILLIS = 120_000L
+
 /** Owns Node and its IPC endpoint; activity destruction does not terminate tasks. */
 class AgentService : Service() {
     private val main = Handler(Looper.getMainLooper())
@@ -110,6 +117,10 @@ class AgentService : Service() {
     @Volatile private var mutationAllowed = false
     @Volatile private var bootStage = "service-created"
     @Volatile private var workflowRecovery = JSONObject().put("state", "checking")
+    private lateinit var suspension: ProcessSuspensionWatch
+    private val startupWatchdog = Runnable {
+        fail("运行时启动超时：${STARTUP_READY_TIMEOUT_MILLIS / 1000} 秒内未就绪（阶段 $bootStage）")
+    }
     private var started = false
     private var recoveryBusy = false
     private lateinit var transitions: PackageOperationTransitions
@@ -490,6 +501,15 @@ class AgentService : Service() {
             }
         }
         getSystemService(ConnectivityManager::class.java).registerNetworkCallback(NetworkRequest.Builder().build(), networkCallback)
+        suspension = ProcessSuspensionWatch(object : ProcessSuspensionWatch.Clock {
+            override fun monotonicNanos(): Long = System.nanoTime()
+            override fun elapsedRealtimeMillis(): Long = SystemClock.elapsedRealtime()
+        }, SUSPENSION_SAMPLE_MILLIS, SUSPENSION_THRESHOLD_MILLIS) { _, _ ->
+            // A thawed process owes a fresh observation; waiting for the next poll
+            // would leave the wake lease and overlay withdrawn for up to 30 seconds.
+            main.post { requestTaskSummary() }
+        }
+        suspension.start()
         background.start()
     }
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -537,6 +557,7 @@ class AgentService : Service() {
                 }
             } else {
                 broadcast(status())
+                main.postDelayed(startupWatchdog, STARTUP_READY_TIMEOUT_MILLIS)
                 workers.execute { boot() }
             }
         }
@@ -577,7 +598,11 @@ class AgentService : Service() {
             // Recovery may mark an old run interrupted. Prove that no prior
             // Agent process still owns Node before touching its receipts.
             synchronized(nodeStartLock) {
-                if (!lifecycle.acceptsFrames()) return
+                if (!lifecycle.acceptsFrames()) {
+                    // A client waiting for ready must observe cancellation, not a silent return.
+                    fail("运行时启动已取消：服务连接已失效")
+                    return
+                }
                 runtimeLease = RuntimeProcessLease.start(noBackupFilesDir,
                     System.currentTimeMillis())
             }
@@ -610,7 +635,10 @@ class AgentService : Service() {
             bootStage = "starting-node"
             appliedProxy = NetworkProxyPreferences(this).installEnvironment()
             synchronized(nodeStartLock) {
-                if (!lifecycle.acceptsFrames()) return
+                if (!lifecycle.acceptsFrames()) {
+                    fail("运行时启动已取消：服务连接已失效")
+                    return
+                }
                 nodeStarted = true
             }
             val code = NativeRuntime.start(runtime.path, home.path, cacheDir.path, applicationInfo.nativeLibraryDir, pair[1])
@@ -1007,18 +1035,26 @@ class AgentService : Service() {
     private fun error(id: String, message: String) = JSONObject().put("jsonrpc", "2.0").put("id", id)
         .put("error", JSONObject().put("code", -32603).put("message", message))
     private fun fail(message: String) {
+        main.removeCallbacks(startupWatchdog)
         if (!lifecycle.fail()) return
         main.post {
             lifecycle.stopFailedProcess(
                 {
                     val stored = persistInterruption(RuntimeInterruptionRecord.RUNTIME_LOST)
-                    reportFailure(if (stored) message else "$message；本地中断摘要未能保存")
+                    reportFailure(withSuspension(if (stored) message else "$message；本地中断摘要未能保存"))
                 },
                 { stopForeground(STOP_FOREGROUND_REMOVE) },
                 { stopSelf() },
                 { Process.killProcess(Process.myPid()) },
             )
         }
+    }
+    /** A suspended process delivers every in-process deadline late; say so instead of implying a slow operation. */
+    private fun withSuspension(message: String): String {
+        if (!::suspension.isInitialized) return message
+        val snapshot = suspension.snapshot()
+        if (snapshot.count() == 0L) return message
+        return "$message；运行期间本进程未运行 ${snapshot.count()} 次，累计 ${snapshot.totalMillis() / 1000} 秒"
     }
     private fun persistInterruption(kind: String): Boolean = try {
         val now = System.currentTimeMillis()
@@ -1427,6 +1463,8 @@ class AgentService : Service() {
         Thread({ documentImages.close() }, "document-image-close").start()
     }
     override fun onDestroy() {
+        main.removeCallbacks(startupWatchdog)
+        if (::suspension.isInitialized) suspension.close()
         if (::scheduleWakeup.isInitialized) scheduleWakeup.unbind(recovery.generation)
         closeLinuxNetworkApprovals()
         val plannedProcessExit = lifecycle.processExitRequired()

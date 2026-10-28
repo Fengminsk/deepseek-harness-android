@@ -23,6 +23,8 @@ try {
     'android/app/src/test/java/com/minnnng/dsh_android/RuntimeInterruptionRecordTest.java',
     'android/app/src/main/java/com/minnnng/dsh_android/RuntimeTransport.java',
     'android/app/src/test/java/com/minnnng/dsh_android/RuntimeTransportTest.java',
+    'android/app/src/main/java/com/minnnng/dsh_android/ProcessSuspensionWatch.java',
+    'android/app/src/test/java/com/minnnng/dsh_android/ProcessSuspensionWatchTest.java',
   ].map(path => join(project, path))
   execFileSync('javac', ['-encoding', 'UTF-8', '-sourcepath', join(project, 'android/app/src/main/java'), '-d', output, ...sources], { stdio: 'inherit', windowsHide: true })
   execFileSync('java', ['-cp', output, 'com.minnnng.dsh_android.BackgroundTaskStateTest'], {
@@ -44,6 +46,9 @@ try {
     stdio: 'inherit', windowsHide: true,
   })
   execFileSync('java', ['-cp', output, 'com.minnnng.dsh_android.RuntimeTransportTest'], {
+    stdio: 'inherit', windowsHide: true,
+  })
+  execFileSync('java', ['-cp', output, 'com.minnnng.dsh_android.ProcessSuspensionWatchTest'], {
     stdio: 'inherit', windowsHide: true,
   })
 } finally {

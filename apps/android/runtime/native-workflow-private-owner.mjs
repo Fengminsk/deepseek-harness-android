@@ -5,6 +5,43 @@ import { inspectWorkflowColdRun } from './workflow-cold-observation.mjs'
 import { createAppOwnedModelWorkflowAdmission } from './model-workflow-admission.mjs'
 
 const MAX_BACKGROUND_RESULT_CHARS = 12_000
+// The App owns the native deadline and cancels at deadline + 3 s. Node must outlive
+// that path so the App settles first, but an unanswered request must end the tool call.
+const EXECUTION_GRACE_MILLIS = 30_000
+// One bounded attempt per cleanup call; a suspended or dead App cannot answer at all.
+const CLEANUP_TIMEOUT_MILLIS = 30_000
+
+function unanswered(label, timeoutMillis) {
+  return Object.assign(new Error(`${label} did not answer within ${timeoutMillis} ms`),
+    { code: 'ANDROID_WORKFLOW_UNANSWERED' })
+}
+
+/** Race one App operation against a bound and, when supplied, the tool's abort signal. */
+async function withinTimeout(operation, timeoutMillis, label, signal) {
+  if (!Number.isSafeInteger(timeoutMillis) || timeoutMillis <= 0) {
+    throw new TypeError('Workflow operation timeout is invalid')
+  }
+  let timer
+  let abortListener
+  try {
+    const pending = [Promise.resolve().then(operation),
+      new Promise((_resolve, reject) => {
+        timer = setTimeout(() => reject(unanswered(label, timeoutMillis)), timeoutMillis)
+      })]
+    if (signal) {
+      pending.push(new Promise((_resolve, reject) => {
+        abortListener = () => reject(signal.reason instanceof Error
+          ? signal.reason : new Error(`${label} was cancelled`))
+        if (signal.aborted) abortListener()
+        else signal.addEventListener('abort', abortListener, { once: true })
+      }))
+    }
+    return await Promise.race(pending)
+  } finally {
+    clearTimeout(timer)
+    if (signal && abortListener) signal.removeEventListener('abort', abortListener)
+  }
+}
 
 function backgroundResult(receipt, prepared) {
   const output = JSON.parse(receipt.outputJson)
@@ -130,7 +167,8 @@ export function createNativeWorkflowPrivateOwner(ctx, callbacks, transport) {
         let admission, bound, receipt, failure
         let recorded = false
         try {
-          admission = await transport.request('native.workflow.admit', request)
+          admission = await withinTimeout(() => transport.request('native.workflow.admit', request),
+            CLEANUP_TIMEOUT_MILLIS, 'native.workflow.admit')
           if (!admission || admission.runId !== prepared.runId || typeof admission.token !== 'string') {
             throw new Error('Native workflow admission was not confirmed')
           }
@@ -150,7 +188,8 @@ export function createNativeWorkflowPrivateOwner(ctx, callbacks, transport) {
             abortRequested = true
             // Join the native cancellation before settlement or release. A fire-and-forget
             // request can still be retiring children when execute returns.
-            abortCancellation ??= transport.request('native.workflow.cancel', identity)
+            abortCancellation ??= withinTimeout(() => transport.request('native.workflow.cancel', identity),
+              CLEANUP_TIMEOUT_MILLIS, 'native.workflow.cancel')
               .then(value => value === true
                 ? { confirmed: true } : { confirmed: false,
                   error: new Error('Native workflow cancellation was not confirmed') },
@@ -161,7 +200,8 @@ export function createNativeWorkflowPrivateOwner(ctx, callbacks, transport) {
           try {
             if (signal?.aborted) onAbort()
             signal?.throwIfAborted()
-            if (await transport.request('native.workflow.execute', identity) !== true) {
+            if (await withinTimeout(() => transport.request('native.workflow.execute', identity),
+              prepared.deadlineMillis + EXECUTION_GRACE_MILLIS, 'native.workflow.execute', signal) !== true) {
               throw new Error('Native workflow execution was not confirmed')
             }
           } catch (error) { executionFailure = error }
@@ -184,7 +224,8 @@ export function createNativeWorkflowPrivateOwner(ctx, callbacks, transport) {
           let cleanupCertain = true
           if (failure) {
             try {
-              if (await transport.request('native.workflow.cancel', identity) !== true) {
+              if (await withinTimeout(() => transport.request('native.workflow.cancel', identity),
+                CLEANUP_TIMEOUT_MILLIS, 'native.workflow.cancel') !== true) {
                 throw new Error('Native workflow cancellation was not confirmed')
               }
             }
@@ -201,7 +242,8 @@ export function createNativeWorkflowPrivateOwner(ctx, callbacks, transport) {
                 ? new AggregateError([failure, error], 'Workflow child retirement is unconfirmed') : error
             }
           }
-          try { receipt = await transport.request('native.workflow.settle', identity) }
+          try { receipt = await withinTimeout(() => transport.request('native.workflow.settle', identity),
+            CLEANUP_TIMEOUT_MILLIS, 'native.workflow.settle') }
           catch (error) { failure = failure
             ? new AggregateError([failure, error], 'Workflow settlement is unconfirmed') : error }
           let confirmedTerminal = false
@@ -231,7 +273,8 @@ export function createNativeWorkflowPrivateOwner(ctx, callbacks, transport) {
           if (confirmedTerminal && cleanupCertain) {
             let released = false
             try {
-              if (await transport.request('native.workflow.release', identity) !== true) {
+              if (await withinTimeout(() => transport.request('native.workflow.release', identity),
+                CLEANUP_TIMEOUT_MILLIS, 'native.workflow.release') !== true) {
                 throw new Error('Native workflow release was not confirmed')
               }
               released = true
@@ -271,8 +314,9 @@ export function createNativeWorkflowPrivateOwner(ctx, callbacks, transport) {
           authorizeChild: backend.authorizeChild,
           activateChild: backend.activateChild, onProgress, signal })
         return Object.freeze({ runId: bound.runId, async close() {
-          try { await bound.close() }
-          finally { backend.close(); backends.delete(backend) }
+          try {
+            await withinTimeout(() => bound.close(), CLEANUP_TIMEOUT_MILLIS, 'workflow child retirement')
+          } finally { backend.close(); backends.delete(backend) }
         } })
       } catch (error) {
         backend.close()

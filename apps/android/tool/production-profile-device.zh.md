@@ -10,7 +10,7 @@
 
 请求认证先于运行状态变更和正文解析。没有提供任一用途专用秘密的请求返回 401，只记录有界的拒绝计数及最近的方法／路径，因此无关本机探测不能使已认证轮次失败或向前执行。已认证请求的方法、路径或关闭 case 无效时，套件仍严格失败。请求诊断排除请求头与查询字符串，限制方法／路径长度，并隐藏两种夹具秘密。
 
-套件要求 `foregroundCarrier=service`，且设备已锁定、不可交互。它不打开 Activity，不唤醒或解锁屏幕。只能在现有[物理面板保护与进程退役所有者](device-screen-protection.zh.md)内运行。验收服务保持测试进程获得调度，不构成正式 `AgentService` 后台存活证据。宿主必须等待自己启动的 ADB 调用结束，仅停止该测试拥有的 App／测试进程，并验证最终全部进程退役。框架锁屏与显示状态不构成像素或物理面板证据。
+套件要求 `foregroundCarrier=service`，且设备已锁定、不可交互。它不打开 Activity，不唤醒或解锁屏幕。只能在现有[物理面板保护与进程退役所有者](device-screen-protection.zh.md)内运行。验收服务保持测试进程获得调度，不构成正式 `AgentService` 后台存活证据。运行前应把 App 排除在设备的后台冻结策略之外：OEM 冻结器可能在锁屏、面板关闭时暂停它，这类运行属于环境结果，而不是产品证据。宿主必须等待自己启动的 ADB 调用结束，仅停止该测试拥有的 App／测试进程，并验证最终全部进程退役。框架锁屏与显示状态不构成像素或物理面板证据。
 
 ```sh
 adb shell am instrument -w -r -e suite production-profile -e foregroundCarrier service -e expectWorkflow false com.minnnng.dsh_android.test/com.minnnng.dsh_android.NativeRuntimeToolsAcceptanceInstrumentation
@@ -33,7 +33,7 @@ JVM `readyWait` 探针在保持不变的 `ready.get(90, TimeUnit.SECONDS)` 周�
 
 保留的两次运行使用同一 App SHA-256 `5cd11e06ab70a170235971f7a0140c982db992acf2c3c368066752e7089c7b41` 和 AndroidTest SHA-256 `74d913413f36559cb9272df2bbfe2ae1c614e8878cbd5a024010e75091399b0e`。结果文件为 `.cache/android/production-profile-116-r28-protected-20261028.json.result.json` 和 `.cache/android/production-profile-116-r28-warm-20261028.json.result.json`；各自的外层屏幕／退役报告位于去掉 `.result.json` 的同路径文件。
 
-首次运行到达 `production-bootstrap-import-start` 后，在 `runtime-ready-wait` 失败。ready 等待配置为 90 秒，失败记录的实际已用时间为 287,158 毫秒，原生调用、通知和模型调用均为零。启动停滞及超时延后报告的原因仍未知。随后关闭及外层退役不能使该次运行变为通过。
+首次运行到达 `production-bootstrap-import-start` 后，在 `runtime-ready-wait` 失败。ready 等待配置为 90 秒，失败记录的实际已用时间为 287,158 毫秒，原生调用、通知和模型调用均为零。协作式的 `CompletableFuture.get(90, TimeUnit.SECONDS)` 只有在等待线程重新被调度后才能观察到超时，因此多出的 197 秒说明整个进程被暂停，而不是启动缓慢。2026-10-28 已安装的 Build 120 呈现同一状态：`AgentService` 为前台服务（`isForeground=true`、`foregroundServiceType=specialUse`），而设备的 `OplusHansManager` 在场景 `|StrictMode-3|LcdOff` 下以 `cgroup.freeze=1` 冻结了 App 的两个进程，AMS 仍报告 `isFrozen=false`。该 OEM 冻结不受 App 控制。`AgentService` 现将启动就绪上限设为 120 秒并记录观测到的暂停，重现时会给出有归因的失败而不是未知停滞。随后关闭及外层退役不能使该次运行变为通过。
 
 随后标记为 `warm` 的运行在 `expectWorkflow=true` 下于 15,462 毫秒通过：四次父模型请求、一次子模型请求、PTC 工作区读取、Linux Python 分析及 workflow 完成。它保留了两份独立的父／子 Session JSONL 持久文件。Linux 客体 UID 为 99478，App UID 为 10496；客体退役与模型监听器关闭均已确认。这些是合成模型端点驱动的实际随包正式 profile 操作。
 
@@ -43,4 +43,4 @@ warm 外层报告记录九次采样中两个物理面板均为 `Off`、在不可
 
 保留的 `.cache/android/production-profile-116-r32-diagnostic-20261028.json` 报告了负责人停止停滞验收后的失败；配套 `.result.json` 包含 `shortMsg: Process crashed.`，原生结果为空，不能提供 profile 成功证据。外层报告确认停止后宿主关闭及设备进程退役，不改变该失败结果。
 
-只读采集 `.cache/android/production-profile-r32-scheduler-01.json` 时，PID 31829 的实际 `cgroup.freeze=1`，且 `cgroup.events` 含 `frozen 1`，但 PowerManager 对验收 partial wake lock 报告 `isFrozen=false`。该 wake-lock 字段不能证明进程可以运行。采集证明该时刻 cgroup 已冻结，不能确定冻结由谁施加，不能认定此前 r28 停滞的原因，也不能证明调度问题已修复。负责人未修改设备冻结策略，只停止了自己拥有的验收进程。
+只读采集 `.cache/android/production-profile-r32-scheduler-01.json` 时，PID 31829 的实际 `cgroup.freeze=1`，且 `cgroup.events` 含 `frozen 1`，但 PowerManager 对验收 partial wake lock 报告 `isFrozen=false`。该 wake-lock 字段不能证明进程可以运行。r28 小节记录的 OEM 冻结观测把该 cgroup 状态归因于设备的 `oplus_freeze` 服务：它在 AMS 报告未冻结时冻结 App；该采集本身仍不能确定冻结的起始时刻，也不能证明调度问题已修复。负责人未修改设备冻结策略，只停止了自己拥有的验收进程。

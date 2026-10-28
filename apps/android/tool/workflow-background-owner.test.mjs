@@ -10,7 +10,7 @@ const prepared = () => ({ kind: 'workflow', runId, sessionId,
   scope: { workspaceId: null, readablePaths: [], writablePaths: [], exactHosts: [],
     fileCallLimit: 0, networkCallLimit: 0 } })
 
-function fixture(native) {
+function fixture(native, overrides = {}) {
   const events = []
   const session = { id: sessionId, append(type, data) { events.push({ type, data }) } }
   const parent = { id: sessionId, session }
@@ -40,6 +40,7 @@ function fixture(native) {
       return async () => { compositions.delete(id) }
     }, inspectCompositions() { return [...compositions.values()] } },
     subagents: {}, tools: {},
+    async plugin() { return { async dispose() {} } },
     get(name) { return name === 'jobs' ? registry
       : ['sessionPersistence', 'sessionQuery'].includes(name) ? {} : undefined },
   }
@@ -54,7 +55,8 @@ function fixture(native) {
     if (method === 'native.workflow.release') return true
     throw new Error(`unexpected native call: ${method}`)
   } }
-  const callbacks = { async bind() { return { runId, async close() {} } }, async dispose() {} }
+  const callbacks = overrides.callbacks
+    ?? { async bind() { return { runId, async close() {} } }, async dispose() {} }
   return { owner: createNativeWorkflowPrivateOwner(ctx, callbacks, transport),
     parent, ctx, jobs, events, calls }
 }
@@ -135,5 +137,54 @@ test('lost native retirement settles the job failed and leaves the run for cold 
   assert.match(outcome.detail, /requires review/i)
   assert.equal(outcome.result, undefined)
   assert.equal(f.events.some(event => event.type === 'tool-workflow/run-end'), false)
+  await f.owner.dispose()
+})
+
+test('an unanswered native execute ends the tool call at its deadline', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const f = fixture({ execute: () => new Promise(() => {}), async cancel() { return true },
+    async settle() { return { runId, sessionId, state: 'CANCELLED',
+      outputJson: null, requiresReview: false } } })
+  const started = f.owner.startBackgroundDsl({ prepared: prepared(), parent: f.parent })
+  await new Promise(resolve => setImmediate(resolve))
+  t.mock.timers.tick(5_000 + 30_000)
+  const outcome = await f.jobs.get(started.jobId).done
+  assert.equal(outcome.status, 'failed')
+  assert.match(outcome.detail, /native\.workflow\.execute did not answer within 35000 ms/)
+  assert.deepEqual(f.calls.slice(0, 2), ['native.workflow.admit', 'native.workflow.execute'])
+  assert.ok(f.calls.includes('native.workflow.cancel'))
+  assert.ok(f.calls.includes('native.workflow.settle'))
+  await f.owner.dispose()
+})
+
+test('an unanswered child retirement keeps the failure explicit and still settles', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const f = fixture({ async execute() { return true }, async cancel() { return true },
+    async settle() { return { runId, sessionId, state: 'CANCELLED',
+      outputJson: null, requiresReview: false } } },
+  { callbacks: { async bind() { return { runId, async close() { return new Promise(() => {}) } } },
+    async dispose() {} } })
+  const started = f.owner.startBackgroundDsl({ prepared: prepared(), parent: f.parent })
+  await new Promise(resolve => setImmediate(resolve))
+  t.mock.timers.tick(30_000)
+  const outcome = await f.jobs.get(started.jobId).done
+  assert.equal(outcome.status, 'failed')
+  assert.match(outcome.detail, /workflow child retirement did not answer within 30000 ms/)
+  assert.ok(f.calls.includes('native.workflow.settle'))
+  assert.equal(f.calls.includes('native.workflow.release'), false)
+  await f.owner.dispose()
+})
+
+test('an aborted workflow stops waiting for native execute and settles cancelled', async () => {
+  const controller = new AbortController()
+  const f = fixture({ execute: () => new Promise(() => {}), async cancel() { return true },
+    async settle() { return { runId, sessionId, state: 'CANCELLED',
+      outputJson: null, requiresReview: false } } })
+  const running = f.owner.runDsl({ prepared: prepared(), parent: f.parent, signal: controller.signal })
+  await new Promise(resolve => setImmediate(resolve))
+  controller.abort(new Error('user cancelled'))
+  await assert.rejects(running, /user cancelled/)
+  assert.ok(f.calls.includes('native.workflow.cancel'))
+  assert.ok(f.calls.includes('native.workflow.settle'))
   await f.owner.dispose()
 })
