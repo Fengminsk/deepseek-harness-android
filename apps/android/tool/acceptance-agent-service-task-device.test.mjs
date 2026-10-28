@@ -1,7 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { parseAgentServiceTaskResult, runAgentServiceTaskAcceptance } from './acceptance-agent-service-task-device.mjs'
+import { parseAgentServiceTaskResult, runAgentServiceTaskAcceptance,
+  parseAgentServiceTaskCleanupResult, runAgentServiceTaskCleanup } from './acceptance-agent-service-task-device.mjs'
 
 const caseId = 'd5d6d3b3-6af8-498b-932a-bfc339cb32f6'
 const result = () => ({ schema: 1, passed: true, kind: 'production-account-task', caseId,
@@ -98,6 +99,149 @@ test('system completion notice evidence requires explicit admission and never ce
   assert.equal(run.result.completionNoticeTested, true)
   for (const invalid of ['true', 1, null]) await assert.rejects(runAgentServiceTaskAcceptance({ acceptRealAccountRequest: true,
     requireCompletionNotice: invalid, invoke: () => assert.fail('Invalid notice option must not submit') }), /boolean/)
+})
+
+function programmaticResult(exercise) {
+  const value = result()
+  Object.assign(value, { exercise, requestId: `account-request-${caseId}`, toolCalls: 1, callId: 'program-call',
+    argumentsSha256: 'd'.repeat(64), toolStartSeq: 6, toolEndSeq: exercise === 'ptc' ? 9 : 11,
+    endSeq: exercise === 'ptc' ? 11 : 13, markerSha256: createHash('sha256').update(`account-acceptance-${caseId}`).digest('hex') })
+  value.programmatic = { exercise, tool: exercise === 'ptc' ? 'android_ptc' : 'workflow', callId: value.callId,
+    argumentsSha256: value.argumentsSha256, resultSha256: 'e'.repeat(64) }
+  if (exercise === 'ptc') Object.assign(value.programmatic, { reviewedCallbacks: 1, callbackName: 'list_agents',
+    callbackStartSeq: 7, callbackEndSeq: 8, children: 0 })
+  else {
+    const runId = 'b0000000-0000-4000-8000-000000000002', childSessionId = 'c0000000-0000-4000-8000-000000000003'
+    Object.assign(value.programmatic, { runId, childSessionId, memberCount: 1, runEndCount: 1, runStartSeq: 7, runEndSeq: 10,
+      inspection: { runId, state: 'completed', requiresReview: false },
+      child: { sessionId: childSessionId, eventCount: 12, toolCalls: 0, assistantMarkerMatches: 1,
+        turnEndCount: 1, completionKind: 'completed', historySha256: 'f'.repeat(64) } })
+    value.cleanup.childArchived = true
+  }
+  return value
+}
+
+function cleanupResult() {
+  const value = programmaticResult('workflow')
+  Object.assign(value, { kind: 'production-account-task-cleanup', exercise: 'workflow-cleanup', submittedCount: 0, archived: false })
+  delete value.ownTaskRunningObserved
+  delete value.backgroundDuring
+  delete value.foregroundDuring
+  value.cleanup.archived = false
+  for (const when of ['Before', 'After']) value[`background${when}`] = {
+    fresh: true, running: 0, queued: 0, waiting: 0, backgroundJobs: 0, packageOperations: 0 }
+  return value
+}
+
+test('previous workflow cleanup explicitly selects its original case without a new account request', async () => {
+  const evidence = output(cleanupResult())
+  const parsed = parseAgentServiceTaskCleanupResult(evidence, { caseId })
+  assert.equal(parsed.newTaskSubmitted, false)
+  assert.equal(parsed.cleanup.childArchived, true)
+  assert.equal(parsed.processRetirement, 'requires-outer-owner')
+  assert.throws(() => parseAgentServiceTaskResult(evidence, { exercise: 'workflow' }))
+  let calls = 0
+  const invoke = async argv => {
+    calls++
+    assert.deepEqual(argv, ['shell', 'am', 'instrument', '-w', '-r', '-e', 'acceptRealAccountRequest', 'false',
+      '-e', 'exercise', 'workflow-cleanup', '-e', 'cleanupCaseId', caseId,
+      'com.minnnng.dsh_android.test/com.minnnng.dsh_android.AgentServiceTaskAcceptanceInstrumentation'])
+    return evidence
+  }
+  for (const options of [{}, { caseId: 'foreign' }, { caseId, acceptRealAccountRequest: true }]) {
+    await assert.rejects(runAgentServiceTaskCleanup({ invoke, ...options }), /cleanup identity/)
+  }
+  assert.equal(calls, 0)
+  assert.equal((await runAgentServiceTaskCleanup({ invoke, caseId })).result.submittedCount, 0)
+  assert.equal(calls, 1)
+})
+
+test('cleanup cannot certify a new task, altered ownership, unconfirmed archive or a busy service', () => {
+  for (const patch of [{ kind: 'production-account-task' }, { caseId: 'b0000000-0000-4000-8000-000000000002' },
+    { sessionId: 'unrelated' }, { requestId: 'unrelated' }, { submittedCount: 1 }, { archived: true }, { ownTaskRunningObserved: true },
+    { backgroundDuring: { running: 1 } }, { requireCompletionNotice: false }, { toolCalls: 0 }, { generation: '' }, { agentPid: 0 },
+    { historySha256: '' }, { eventCount: 0 }, { childCleanupFailureCode: 'FAILED' }, { completionKind: 'cancelled' }]) {
+    assert.throws(() => parseAgentServiceTaskCleanupResult(output({ ...cleanupResult(), ...patch }), { caseId }))
+  }
+  for (const key of ['childArchived', 'taskSettled', 'exportReleased', 'disconnected']) {
+    const value = cleanupResult(); value.cleanup[key] = false
+    assert.throws(() => parseAgentServiceTaskCleanupResult(output(value), { caseId }))
+  }
+  for (const key of ['archived', 'cancelRequested']) {
+    const value = cleanupResult(); value.cleanup[key] = true
+    assert.throws(() => parseAgentServiceTaskCleanupResult(output(value), { caseId }))
+  }
+  for (const when of ['Before', 'After']) {
+    const value = cleanupResult(); value[`background${when}`].running = 1
+    assert.throws(() => parseAgentServiceTaskCleanupResult(output(value), { caseId }))
+  }
+  const value = cleanupResult(); value.programmatic.child.sessionId = 'foreign'
+  assert.throws(() => parseAgentServiceTaskCleanupResult(output(value), { caseId }))
+})
+
+test('cleanup cancellation cannot dispatch or turn an interrupted acknowledgement into success', async () => {
+  const before = new AbortController(); before.abort(new Error('before cleanup'))
+  await assert.rejects(runAgentServiceTaskCleanup({ caseId, signal: before.signal,
+    invoke: () => assert.fail('No cancelled cleanup dispatch') }), /before cleanup/)
+  const during = new AbortController()
+  await assert.rejects(runAgentServiceTaskCleanup({ caseId, signal: during.signal,
+    invoke: async () => { during.abort(new Error('during cleanup')); return output(cleanupResult()) } }), /during cleanup/)
+})
+
+test('PTC and workflow task exercises require separate explicit selection and retain outer retirement obligations', async () => {
+  for (const exercise of ['ptc', 'workflow']) {
+    const value = programmaticResult(exercise)
+    assert.throws(() => parseAgentServiceTaskResult(output(value)), /exercise/)
+    assert.throws(() => parseAgentServiceTaskResult(output(value), { exercise: exercise === 'ptc' ? 'workflow' : 'ptc' }), /exercise/)
+    const parsed = parseAgentServiceTaskResult(output(value), { exercise })
+    assert.equal(parsed.programmaticExercise, exercise)
+    assert.equal(parsed.processRetirement, 'requires-outer-owner')
+    const run = await runAgentServiceTaskAcceptance({ acceptRealAccountRequest: true, exercise, invoke: async argv => {
+      assert.deepEqual(argv.slice(-4), ['-e', 'exercise', exercise,
+        'com.minnnng.dsh_android.test/com.minnnng.dsh_android.AgentServiceTaskAcceptanceInstrumentation'])
+      return output(value)
+    } })
+    assert.equal(run.result.programmaticExercise, exercise)
+  }
+  for (const exercise of ['radio-linux', 'unknown', null, true]) await assert.rejects(runAgentServiceTaskAcceptance({
+    acceptRealAccountRequest: true, exercise, invoke: () => assert.fail('Unsupported exercise was invoked'),
+  }), /exercise/)
+  await assert.rejects(runAgentServiceTaskAcceptance({ acceptRealAccountRequest: true, exercise: 'workflow', requireCompletionNotice: true,
+    invoke: () => assert.fail('Combined exercise was invoked') }), /completion notice/)
+})
+
+test('PTC acceptance rejects missing, foreign, failed and extra callback evidence', () => {
+  for (const patch of [{ reviewedCallbacks: 0 }, { reviewedCallbacks: 2 }, { callbackName: 'read' }, { children: 1 },
+    { callbackStartSeq: 6 }, { callbackEndSeq: 9 }, { callId: 'foreign' }, { argumentsSha256: 'c'.repeat(64) },
+    { tool: 'linux_exec' }, { resultSha256: '' }, { unknown: 'private content' }]) {
+    const value = programmaticResult('ptc'); Object.assign(value.programmatic, patch)
+    assert.throws(() => parseAgentServiceTaskResult(output(value), { exercise: 'ptc' }))
+  }
+  for (const patch of [{ requestId: 'foreign' }, { markerSha256: 'a'.repeat(64) }, { toolCalls: 0 }, { toolEndSeq: 5 },
+    { endSeq: 8 }, { programmatic: null }, { childCleanupFailureCode: 'FAILED' }]) {
+    const value = Object.assign(programmaticResult('ptc'), patch)
+    assert.throws(() => parseAgentServiceTaskResult(output(value), { exercise: 'ptc' }))
+  }
+  const extraCleanup = programmaticResult('ptc'); extraCleanup.cleanup.childArchived = true
+  assert.throws(() => parseAgentServiceTaskResult(output(extraCleanup), { exercise: 'ptc' }))
+})
+
+test('workflow acceptance requires one completed workflow observation and an independent durable child', () => {
+  for (const patch of [{ state: 'running' }, { requiresReview: true }, { runId: 'foreign' }, { extra: true }]) {
+    const value = programmaticResult('workflow'); Object.assign(value.programmatic.inspection, patch)
+    assert.throws(() => parseAgentServiceTaskResult(output(value), { exercise: 'workflow' }))
+  }
+  for (const patch of [{ sessionId: `android-account-acceptance-${caseId}` }, { eventCount: 0 }, { eventCount: 512 },
+    { toolCalls: 1 }, { assistantMarkerMatches: 0 }, { completionKind: 'cancelled' }, { historySha256: '' }, { prompt: 'private' }]) {
+    const value = programmaticResult('workflow'); Object.assign(value.programmatic.child, patch)
+    assert.throws(() => parseAgentServiceTaskResult(output(value), { exercise: 'workflow' }))
+  }
+  for (const patch of [{ memberCount: 2 }, { runEndCount: 0 }, { runStartSeq: 6 }, { runEndSeq: 11 }, { childSessionId: 'foreign' }]) {
+    const value = programmaticResult('workflow'); Object.assign(value.programmatic, patch)
+    assert.throws(() => parseAgentServiceTaskResult(output(value), { exercise: 'workflow' }))
+  }
+  const cleanup = programmaticResult('workflow'); cleanup.cleanup.childArchived = false
+  assert.throws(() => parseAgentServiceTaskResult(output(cleanup), { exercise: 'workflow' }))
 })
 
 test('wrong-session, private-message, disabled-format, invalid intent and incomplete cleanup cannot certify a system notice', () => {

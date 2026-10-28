@@ -62,7 +62,9 @@ lines.on('line', line => {
   else if (frame.method === 'native.web.save') { preferences = frame.params; send({ id: frame.id, result: true }) }
   else if (frame.method === 'native.network.addresses') send({ id: frame.id, result: { addresses: [] } })
   else if (frame.method === 'native.documents.roots') send({ id: frame.id, result: [{ id: 'b'.repeat(64), name: 'Smoke', available: true }] })
-  else if (frame.method === 'native.documents.read') {
+  else if (frame.method === 'native.documents.read.prepare') send({ id: frame.id, result: { prepared: true } })
+  else if (frame.method === 'native.documents.read.cancel') send({ id: frame.id, result: { cancelled: true } })
+  else if (frame.method === 'native.documents.read.run') {
     assert.equal(frame.params.root, 'b'.repeat(64))
     assert.equal(frame.params.path, 'test.txt')
     fileReads++

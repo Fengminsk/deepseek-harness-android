@@ -1,3 +1,4 @@
+import { AppDocumentReads } from '../../runtime/document-reads.mjs'
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, writeFile, unlink, readFile } from 'node:fs/promises'
@@ -95,6 +96,7 @@ async function runPtcChecks({ ctx, transport, agent, workspace, callbackRouting,
     catch (error) { checks.push({ name, status: 'failed', error: String(error?.message ?? error).slice(0, 1000),
       ...(error instanceof PtcLinuxAcceptanceFailure ? { diagnostics: error.diagnostics } : {}), elapsedMs: Date.now() - started }) }
   }
+  const reads = new AppDocumentReads(transport, { maxRequests: () => 2, timeoutMs: () => 30000 })
   const invoke = (code, signal = new AbortController().signal) => ctx.tools.execute({ name: 'android_ptc',
     callId: `ptc-device-${randomUUID()}`, arguments: { code, description: 'PTC device acceptance' }, agent, signal })
   try {
@@ -105,7 +107,7 @@ async function runPtcChecks({ ctx, transport, agent, workspace, callbackRouting,
     if (!ctx.tools.get('list_agents', agent)) await ctx.plugin(ListAgents)
     if (!ctx.tools.get('android_files', agent)) registerAndroidFilesTool(ctx, transport, {
       run() { throw new Error('SAF search is outside this acceptance profile') },
-    })
+    }, reads)
     if (!ctx.get('attachments')) await ctx.plugin(AndroidAttachmentStore, { dshHome: home })
     if (!ctx.tools.get('android_attachments', agent)) registerAndroidAttachmentsTool(ctx, workspace)
     registerAndroidPtcTool(ctx, { owner, available: () => true })
@@ -280,6 +282,7 @@ async function runPtcChecks({ ctx, transport, agent, workspace, callbackRouting,
   } finally {
     setSandboxMode(agent.session, originalMode)
     try {
+      await reads.close()
       await owner.close()
       await callbacks.dispose()
     } finally { unbind() }

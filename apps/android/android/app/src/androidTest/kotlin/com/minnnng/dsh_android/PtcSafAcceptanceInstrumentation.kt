@@ -198,14 +198,21 @@ class PtcSafAcceptanceInstrumentation : Instrumentation() {
             check(Application.getProcessName() == targetContext.packageName + ":agent")
             val ownerLock = Any()
             var activeSearches: DocumentSearchManager? = null
+            var activeReads: DocumentTextReads? = null
             var cancellation: CompletableFuture<Void>? = null
             AcceptanceCarrierLease.open(this, arguments, output, 90_000) {
                 synchronized(ownerLock) {
                     val owner = activeSearches
-                    if (owner != null && cancellation == null)
-                        cancellation = CompletableFuture.runAsync { owner.close() }
+                    val reader = activeReads
+                    if ((owner != null || reader != null) && cancellation == null)
+                        cancellation = CompletableFuture.runAsync {
+                            try { owner?.close() } finally { reader?.close() }
+                        }
                 }
             }.use { foreground ->
+                DocumentTextReadAcceptance.run(this, output, { foreground.checkActive() }) {
+                    synchronized(ownerLock) { activeReads = it }
+                }
                 PtcSafAcceptanceFixture.open(this).use { fixture ->
                     val searches = DocumentSearchManager(targetContext)
                     val worker = Executors.newSingleThreadExecutor()

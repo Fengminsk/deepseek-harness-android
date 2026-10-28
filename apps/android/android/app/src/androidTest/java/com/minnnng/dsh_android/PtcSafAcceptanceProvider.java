@@ -158,7 +158,7 @@ public final class PtcSafAcceptanceProvider extends DocumentsProvider {
         if (!"r".equals(mode)) throw new FileNotFoundException("Read-only test documents");
         Selection selected = selection(documentId);
         if (selected.name == null) throw new FileNotFoundException("Directory");
-        if (selected.fixture.hold.get()) {
+        if (selected.fixture.hold.get() && "alpha.txt".equals(selected.name)) {
             CountDownLatch cancelled = new CountDownLatch(1);
             if (signal != null) signal.setOnCancelListener(cancelled::countDown);
             selected.fixture.signalPresent.set(signal != null);

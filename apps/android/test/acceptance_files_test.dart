@@ -17,6 +17,9 @@ class _FilesRuntime extends RuntimeController {
     {'id': 'file-id', 'name': '笔记.txt', 'directory': false, 'available': true},
   ];
   final reads = <Json>[];
+  final cancelledReads = <String>[];
+  Completer<Json>? cancelBarrier;
+  bool refuseCancel = false;
   final children = <Json>[];
   final revocations = <String>[];
   bool failNextPage = false;
@@ -47,6 +50,11 @@ class _FilesRuntime extends RuntimeController {
     }
     if (method == 'documents.list') {
       return children.map((entry) => Json.from(entry)).toList();
+    }
+    if (method == 'documents.read.cancel') {
+      cancelledReads.add(params['requestId'] as String);
+      if (cancelBarrier != null) return cancelBarrier!.future;
+      return {'cancelled': !refuseCancel};
     }
     if (method == 'documents.read') {
       reads.add(Json.from(params));
@@ -104,6 +112,144 @@ Widget _host(Widget child, {double scale = 1}) => MaterialApp(
 );
 
 void main() {
+  testWidgets(
+    'back waits for text read cancellation before leaving and ignores a later response',
+    (tester) async {
+      final runtime = _FilesRuntime()
+        ..readBarrier = Completer<Json>()
+        ..cancelBarrier = Completer<Json>();
+      addTearDown(runtime.dispose);
+      try {
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: pocketTheme(Brightness.dark),
+            home: Builder(
+              builder: (context) => PocketScaffold(
+                title: const Text('文件父页面'),
+                body: PocketButton(
+                  onPressed: () => Navigator.of(context).push(
+                    PocketRoute<void>(
+                      builder: (_) => TextFilePage(
+                        runtime: runtime,
+                        root: 'file-id',
+                        path: '',
+                      ),
+                    ),
+                  ),
+                  child: const Text('进入文本'),
+                ),
+              ),
+            ),
+          ),
+        );
+        await tester.tap(find.text('进入文本'));
+        await tester.pumpAndSettle();
+        await tester.binding.handlePopRoute();
+        await tester.pumpAndSettle();
+        expect(find.byType(TextFilePage), findsOneWidget);
+        expect(runtime.cancelledReads, hasLength(1));
+        expect(find.text('正在停止…'), findsOneWidget);
+        runtime.cancelBarrier!.complete({'cancelled': true});
+        await tester.pumpAndSettle();
+        expect(find.byType(TextFilePage), findsNothing);
+        expect(find.text('文件父页面'), findsOneWidget);
+        runtime.readBarrier!.complete({
+          'text': 'late after back',
+          'offset': 0,
+          'nextOffset': 15,
+          'truncated': false,
+          'version': 'a' * 64,
+        });
+        await tester.pumpAndSettle();
+        expect(find.text('late after back'), findsNothing);
+        expect(tester.takeException(), isNull);
+      } finally {
+        if (!runtime.readBarrier!.isCompleted)
+          runtime.readBarrier!.completeError(StateError('fixture retired'));
+        if (!runtime.cancelBarrier!.isCompleted)
+          runtime.cancelBarrier!.complete({'cancelled': true});
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pumpAndSettle();
+      }
+    },
+  );
+
+  testWidgets(
+    'text read cancellation waits for retirement and rejects a late page',
+    (tester) async {
+      final runtime = _FilesRuntime()
+        ..readBarrier = Completer<Json>()
+        ..cancelBarrier = Completer<Json>();
+      addTearDown(runtime.dispose);
+      try {
+        await tester.pumpWidget(
+          _host(TextFilePage(runtime: runtime, root: 'file-id', path: '')),
+        );
+        await tester.pumpAndSettle();
+        expect(runtime.reads, hasLength(1));
+        await tester.tap(find.text('停止读取'));
+        await tester.pumpAndSettle();
+        expect(find.text('正在停止…'), findsOneWidget);
+        expect(
+          runtime.cancelledReads.single,
+          runtime.reads.single['requestId'],
+        );
+        runtime.readBarrier!.complete({
+          'text': 'late cancelled bytes',
+          'offset': 0,
+          'nextOffset': 20,
+          'truncated': false,
+          'version': 'a' * 64,
+        });
+        await tester.pumpAndSettle();
+        expect(find.text('late cancelled bytes'), findsNothing);
+        expect(find.text('正在停止…'), findsOneWidget);
+        runtime.cancelBarrier!.complete({'cancelled': true});
+        await tester.pumpAndSettle();
+        expect(find.textContaining('读取已取消'), findsOneWidget);
+        expect(find.text('late cancelled bytes'), findsNothing);
+      } finally {
+        if (!runtime.readBarrier!.isCompleted)
+          runtime.readBarrier!.completeError(StateError('fixture retired'));
+        if (!runtime.cancelBarrier!.isCompleted)
+          runtime.cancelBarrier!.complete({'cancelled': true});
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pumpAndSettle();
+      }
+    },
+  );
+
+  testWidgets(
+    'unconfirmed read cancellation remains stoppable and does not admit another read',
+    (tester) async {
+      final runtime = _FilesRuntime()
+        ..readBarrier = Completer<Json>()
+        ..refuseCancel = true;
+      addTearDown(runtime.dispose);
+      try {
+        await tester.pumpWidget(
+          _host(TextFilePage(runtime: runtime, root: 'file-id', path: '')),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('停止读取'));
+        await tester.pumpAndSettle();
+        expect(find.textContaining('尚未确认文件读取已停止'), findsOneWidget);
+        await tester.tap(find.text('重试读取'));
+        await tester.pumpAndSettle();
+        expect(runtime.reads, hasLength(1));
+        runtime.refuseCancel = false;
+        await tester.tap(find.text('停止读取'));
+        await tester.pumpAndSettle();
+        expect(runtime.cancelledReads, hasLength(2));
+      } finally {
+        runtime.refuseCancel = false;
+        runtime.readBarrier!.completeError(StateError('retired fixture'));
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pumpAndSettle();
+      }
+    },
+  );
+
   TestWidgetsFlutterBinding.ensureInitialized();
 
   testWidgets('binary SAF grant opens its selected URI through Android', (
@@ -503,7 +649,12 @@ void main() {
         'root': 'file-id',
         'path': '',
         'offset': 0,
+        'requestId': runtime.reads.single['requestId'],
       });
+      expect(
+        runtime.reads.single['requestId'],
+        matches(RegExp(r'^[0-9a-f-]{36}$')),
+      );
     },
   );
 

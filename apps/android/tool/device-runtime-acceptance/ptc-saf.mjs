@@ -1,3 +1,4 @@
+import { AppDocumentReads } from '../../runtime/document-reads.mjs'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
@@ -34,7 +35,8 @@ async function checks({ ctx, transport, agent, callbackRouting, root, caseId }) 
   const searches = new AppDocumentSearch(measured, { maxRequests: () => 1,
     limits: () => ({ fileBytes: 4096, totalBytes: 8192, maxEntries: 8, maxFiles: 4,
       maxDepth: 4, maxMatches: 8, previewChars: 512, maxDurationMs: 15000 }) })
-  registerAndroidFilesTool(ctx, measured, searches)
+  const reads = new AppDocumentReads(measured, { maxRequests: () => 2, timeoutMs: () => 15000 })
+  registerAndroidFilesTool(ctx, measured, searches, reads)
   const callbacks = new NativeIsolatedToolCallbacks(measured,
     new IsolatedToolCallJournal(join(resolveDshHome(), 'ptc-saf-journal')))
   const unbind = callbackRouting.bind('tool', callbacks)
@@ -79,6 +81,6 @@ async function checks({ ctx, transport, agent, callbackRouting, root, caseId }) 
       revokedReadDenied: true, revokedSearchDenied: true }] }
   } finally {
     try { await owner.close() }
-    finally { try { await callbacks.dispose(); await searches.close() } finally { unbind() } }
+    finally { try { await callbacks.dispose(); await searches.close(); await reads.close() } finally { unbind() } }
   }
 }

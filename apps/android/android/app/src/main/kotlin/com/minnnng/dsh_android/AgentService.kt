@@ -78,6 +78,11 @@ class AgentService : Service() {
         sync = IsolatedScriptRunController::syncDirectory,
     ) }
     private val linuxNetworkApprovals get() = linuxNetworkApprovalsDelegate.value
+    private val documentTextDelegate = lazy { DocumentTextReads { params, signal, job ->
+        DocumentAccess(this).read(params.getString("root"), params.getString("path"),
+            DocumentReadAccess.offset(params.opt("offset")), params.optString("version").takeIf { it.isNotEmpty() }, signal, job)
+    } }
+    private val documentText get() = documentTextDelegate.value
     private val documentImagesDelegate = lazy { DocumentImageReads(this) }
     private val documentImages get() = documentImagesDelegate.value
     private data class ManualRun(
@@ -176,7 +181,7 @@ class AgentService : Service() {
             val frame = JSONObject(raw)
             val id = frame.getString("id")
             if (frame.getString("method") in setOf("api.subscribe", "api.ack", "api.unsubscribe",
-                    "documents.search", "documents.search.cancel", "session.attachmentFile.prepare",
+                    "documents.read", "documents.read.cancel", "documents.search", "documents.search.cancel", "session.attachmentFile.prepare",
                     "session.attachmentFile.info", "session.attachmentFile.read",
                     "session.attachmentFile.cancel", "session.attachmentFile.release",
                     "document.call", "document.bytes", "document.cancel", "document.release", "document.mediaPolicy",
@@ -646,13 +651,16 @@ class AgentService : Service() {
                         "native.network.addresses" -> webPreferences.addresses()
                         "native.documents.roots" -> DocumentAccess(this).roots()
                         "native.documents.list" -> DocumentAccess(this).list(params.getString("root"), params.optString("path"))
-                        "native.documents.read" -> DocumentAccess(this).read(params.getString("root"), params.getString("path"), DocumentReadAccess.offset(params.opt("offset")), params.optString("version").takeIf { it.isNotEmpty() })
+                        "native.documents.read.prepare" -> documentText.prepare(params)
+                        "native.documents.read.run" -> documentText.run(params)
+                        "native.documents.read.cancel" -> documentText.cancel(params.getString("id"))
                         "native.documents.image.read" -> documentImages.read(params)
                         "native.documents.image.cancel" -> documentImages.cancel(params)
                         "native.documents.revoke" -> {
                             val root = params.getString("root")
                             val result = DocumentAccess(this).revoke(root)
                             if (documentImagesDelegate.isInitialized()) documentImages.revokeRoot(root)
+                            if (documentTextDelegate.isInitialized()) result.put("readsStopped", documentText.revokeRoot(root))
                             result.put("searchesStopped", documentSearch.revokeRoot(root))
                         }
                         "native.documents.search.prepare" -> documentSearch.prepare(params.getString("id"))
@@ -1410,6 +1418,10 @@ class AgentService : Service() {
         }, "document-search-close").start()
     }
     private fun closeDocumentImages() {
+        if (documentTextDelegate.isInitialized()) Thread({
+            try { documentText.close() }
+            catch (failure: Exception) { android.util.Log.e("DSH", "Document read cleanup did not complete", failure) }
+        }, "document-text-close").start()
         if (!documentImagesDelegate.isInitialized()) return
         // A provider cancellation callback may block; lifecycle teardown must not wait on the main thread.
         Thread({ documentImages.close() }, "document-image-close").start()

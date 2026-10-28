@@ -37,7 +37,7 @@ import AndroidAccountCallback from './account-callback.mjs'
 import { AppAttachments } from './attachments.mjs'
 import { createRuntimeTransport } from './transport.mjs'
 import { AppDocumentSearch } from './document-search.mjs'
-import { readAuthorizedDocument } from './document-read.mjs'
+import { AppDocumentReads } from './document-reads.mjs'
 import { AppDocumentPreview, PRIVATE_WORKSPACE_SCOPE } from './document-preview.mjs'
 import { AppChatImages } from './chat-images.mjs'
 import { AppReferenceDiscovery } from './reference-discovery.mjs'
@@ -64,6 +64,8 @@ export const Config = Schema.object({
   streamPublishMs: Schema.natural().min(16).max(250).default(50).volatile(),
   scheduleWakeupRequestTimeoutMs: Schema.natural().min(100).max(60000).default(15000).volatile(),
   scheduleWakeupCloseTimeoutMs: Schema.natural().min(100).max(30000).default(5000).volatile(),
+  documentReadMaxDurationMs: Schema.natural().min(100).max(300000).default(30000).volatile(),
+  documentReadMaxRequests: Schema.natural().min(1).max(4).default(2).volatile(),
   documentSearchFileBytes: Schema.natural().min(1024).max(67108864).default(8388608).volatile(),
   documentSearchTotalBytes: Schema.natural().min(1024).max(268435456).default(67108864).volatile(),
   documentSearchMaxEntries: Schema.natural().min(1).max(10000).default(2000).volatile(),
@@ -294,6 +296,9 @@ export function apply(ctx, config) {
       maxDepth: config.documentSearchMaxDepth.get(), maxMatches: config.documentSearchMaxMatches.get(),
       previewChars: config.documentSearchPreviewChars.get(), maxDurationMs: config.documentSearchMaxDurationMs.get(),
   })
+  const documentReads = new AppDocumentReads(transport, {
+    timeoutMs: () => config.documentReadMaxDurationMs.get(), maxRequests: () => config.documentReadMaxRequests.get(),
+  })
   const documentSearch = new AppDocumentSearch(transport, {
     maxRequests: () => config.documentSearchMaxRequests.get(), limits: searchLimits,
   })
@@ -394,6 +399,7 @@ export function apply(ctx, config) {
       void references.closeOwner(params.owner).catch(error => console.error('App reference cleanup failed:', error))
       void workspaceChanges.closeOwner(params.owner).catch(error => console.error('App change comparison cleanup failed:', error))
       void streams.closeOwner(params.owner).catch(error => console.error('App stream cleanup failed:', error))
+      void documentReads.closeOwner(params.owner).catch(error => console.error('App file read cleanup failed:', error))
       void documentSearch.closeOwner(params.owner).catch(error => console.error('App file search cleanup failed:', error))
       void documentPreview.closeOwner(params.owner).catch(error => console.error('App document preview cleanup failed:', error))
       void attachmentFiles.closeOwner(params.owner).catch(() => console.error('App attachment file cleanup failed'))
@@ -572,8 +578,8 @@ export function apply(ctx, config) {
       case 'session.cancel': return tasks.cancel(params)
       case 'documents.roots': return transport.request('native.documents.roots', {})
       case 'documents.list': return transport.request('native.documents.list', params)
-      case 'documents.read': return readAuthorizedDocument(
-        request => transport.request('native.documents.read', request), params)
+      case 'documents.read': return documentReads.run(params, { owner: params.owner })
+      case 'documents.read.cancel': return documentReads.cancel(params, { owner: params.owner })
       case 'documents.revoke': return packageOperations.runWork(() => transport.request('native.documents.revoke', params))
       case 'documents.search': return packageOperations.runWork(() => documentSearch.run(params, { owner: params.owner }))
       case 'documents.search.cancel': return documentSearch.cancel(params, { owner: params.owner })
@@ -589,7 +595,7 @@ export function apply(ctx, config) {
     if (change.domain === 'workspace') transport.notify('sessions.changed', {})
   })
   ctx.on('settings/document-updated', () => transport.notify('settings.changed'))
-  registerAndroidFilesTool(ctx, transport, documentSearch)
+  registerAndroidFilesTool(ctx, transport, documentSearch, documentReads)
   registerAndroidAttachmentsTool(ctx)
   ctx.effect(() => {
     const remove = ctx.appReady.onReady(() => {
@@ -614,7 +620,7 @@ export function apply(ctx, config) {
       const results = await Promise.allSettled([
         () => taskCompletion.close(),
         () => scheduleWakeup.close(),
-        () => documentSearch.close(), () => attachments.close(), () => attachmentFiles.close(), () => exports.close(), () => tasks.close(),
+        () => documentReads.close(), () => documentSearch.close(), () => attachments.close(), () => attachmentFiles.close(), () => exports.close(), () => tasks.close(),
         () => packageOperations.close(),
         () => configurationTransfers.close(), () => subagents.close(), () => workspaceFiles.close(), () => library.close(),
         () => terminals.dispose(),

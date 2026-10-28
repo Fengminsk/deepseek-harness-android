@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 
 import 'package:material_ui/material_ui.dart';
 
@@ -562,7 +563,8 @@ class _TextFilePageState extends State<TextFilePage> {
 
   final scroll = ScrollController();
   final starts = <int>[0];
-  String? text, error, documentVersion;
+  String? text, error, documentVersion, requestId;
+  bool cancelling = false, leaving = false;
   int index = 0, retryIndex = 0, retryOffset = 0;
   bool more = false, loading = false;
   bool current = false, retryReset = false, retryPreserveScroll = false;
@@ -590,6 +592,8 @@ class _TextFilePageState extends State<TextFilePage> {
     phase = widget.runtime.phase;
     generation++;
     setState(() {
+      requestId = null;
+      cancelling = false;
       current = false;
       loading = false;
       error = '连接已变化，已显示的内容尚未核实。请重新确认当前段或从头读取。';
@@ -602,6 +606,83 @@ class _TextFilePageState extends State<TextFilePage> {
     });
   }
 
+  Future<bool> stop(String id) async {
+    final result = await widget.runtime.call('documents.read.cancel', {
+      'requestId': id,
+    });
+    if (result is! Map || result['cancelled'] != true) {
+      throw StateError('文件提供方尚未停止读取，请重试停止');
+    }
+    return true;
+  }
+
+  Future<dynamic> readPage(Json params) async {
+    final bytes = List.generate(16, (_) => Random.secure().nextInt(256));
+    bytes[6] = (bytes[6] & 15) | 64;
+    bytes[8] = (bytes[8] & 63) | 128;
+    final hex = bytes
+        .map((value) => value.toRadixString(16).padLeft(2, '0'))
+        .join();
+    final id =
+        '${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}';
+    setState(() => requestId = id);
+    try {
+      final result = await widget.runtime.call('documents.read', {
+        ...params,
+        'requestId': id,
+      });
+      if (mounted && requestId == id && !cancelling)
+        setState(() => requestId = null);
+      return result;
+    } catch (failure) {
+      try {
+        await stop(id);
+        if (mounted && requestId == id && !cancelling)
+          setState(() => requestId = null);
+      } catch (stopFailure) {
+        throw StateError('$failure\n尚未确认文件读取已停止，请重试停止。$stopFailure');
+      }
+      rethrow;
+    }
+  }
+
+  Future<void> cancel({bool pop = false}) async {
+    if (cancelling) return;
+    final id = requestId;
+    if (id == null) {
+      if (pop) Navigator.of(context).pop();
+      return;
+    }
+    final attempt = ++generation;
+    setState(() {
+      cancelling = true;
+      error = null;
+    });
+    try {
+      await stop(id);
+      if (!mounted || generation != attempt) return;
+      setState(() {
+        requestId = null;
+        loading = false;
+        leaving = pop;
+        error = '读取已取消，已显示的内容仍保留。';
+      });
+      if (pop)
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && leaving && generation == attempt)
+            Navigator.of(context).pop();
+        });
+    } catch (failure) {
+      if (mounted && generation == attempt)
+        setState(() {
+          loading = false;
+          error = '尚未确认文件读取已停止，请重试停止。\n$failure';
+        });
+    } finally {
+      if (mounted && generation == attempt) setState(() => cancelling = false);
+    }
+  }
+
   /// Only a completed page changes navigation. Re-reading earlier pages keeps memory bounded.
   Future<void> load(
     int targetIndex,
@@ -609,7 +690,8 @@ class _TextFilePageState extends State<TextFilePage> {
     bool reset = false,
     bool preserveScroll = false,
   }) async {
-    if (loading || !widget.runtime.ready) return;
+    if (loading || requestId != null || cancelling || !widget.runtime.ready)
+      return;
     final attempt = generation;
     setState(() {
       loading = true;
@@ -623,7 +705,7 @@ class _TextFilePageState extends State<TextFilePage> {
       if (reset && offset > 0) {
         // Native continuations belong to a content-verified snapshot. Rebuild
         // that snapshot after reconnecting before restoring the visible page.
-        final first = await widget.runtime.call('documents.read', {
+        final first = await readPage({
           'root': widget.root,
           'path': widget.path,
           'offset': 0,
@@ -643,7 +725,7 @@ class _TextFilePageState extends State<TextFilePage> {
       if (offset > 0 && expectedVersion == null) {
         throw const FormatException('继续读取需要已确认的文件版本，请从头重新读取');
       }
-      final result = await widget.runtime.call('documents.read', {
+      final result = await readPage({
         'root': widget.root,
         'path': widget.path,
         'offset': offset,
@@ -705,122 +787,136 @@ class _TextFilePageState extends State<TextFilePage> {
   void dispose() {
     externalOpen.dispose();
     generation++;
+    final id = requestId;
+    if (id != null) unawaited(stop(id).catchError((Object failure) => false));
     widget.runtime.removeListener(runtimeChanged);
     scroll.dispose();
     super.dispose();
   }
 
   @override
-  Widget build(BuildContext context) => PocketScaffold(
-    title: Text(widget.name ?? (widget.path.isEmpty ? '文件内容' : widget.path)),
-    trailing: Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        GlassButton(
-          icon: Icons.open_in_new_rounded,
-          label: '在其他应用中打开',
-          onPressed: openingExternal
-              ? null
-              : () async {
-                  setState(() => openingExternal = true);
-                  await externalOpen.open(
-                    context,
-                    root: widget.root,
-                    path: widget.path,
-                  );
-                  if (mounted) setState(() => openingExternal = false);
-                },
-        ),
-        GlassButton(
-          icon: Icons.search_rounded,
-          label: '搜索此文件的文字',
-          onPressed: () => Navigator.of(context).push(
-            PocketRoute<void>(
-              builder: (_) => DocumentSearchPage(
-                runtime: widget.runtime,
-                root: widget.root,
-                path: widget.path,
-                name: widget.name ?? '已授权文件',
-              ),
-            ),
+  Widget build(BuildContext context) => PopScope(
+    canPop: leaving || (requestId == null && !cancelling),
+    onPopInvokedWithResult: (didPop, result) {
+      if (!didPop) unawaited(cancel(pop: true));
+    },
+    child: PocketScaffold(
+      title: Text(widget.name ?? (widget.path.isEmpty ? '文件内容' : widget.path)),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          GlassButton(
+            icon: Icons.open_in_new_rounded,
+            label: '在其他应用中打开',
+            onPressed: openingExternal
+                ? null
+                : () async {
+                    setState(() => openingExternal = true);
+                    await externalOpen.open(
+                      context,
+                      root: widget.root,
+                      path: widget.path,
+                    );
+                    if (mounted) setState(() => openingExternal = false);
+                  },
           ),
-        ),
-        GlassButton(
-          icon: Icons.refresh_rounded,
-          label: '重新从头读取',
-          onPressed: loading || !widget.runtime.ready
-              ? null
-              : () => load(0, 0, reset: true),
-        ),
-      ],
-    ),
-    bottom: text == null
-        ? null
-        : Wrap(
-            alignment: WrapAlignment.center,
-            spacing: 12,
-            children: [
-              PocketButton.tonal(
-                glass: true,
-                onPressed:
-                    loading || !current || !widget.runtime.ready || index == 0
-                    ? null
-                    : () => load(index - 1, starts[index - 1]),
-                child: const Text('上一段'),
-              ),
-              PocketButton(
-                glass: true,
-                onPressed: loading || !current || !widget.runtime.ready || !more
-                    ? null
-                    : () => load(index + 1, starts[index + 1]),
-                child: const Text('下一段'),
-              ),
-            ],
-          ),
-    body: PocketList(
-      controller: scroll,
-      padding: const EdgeInsets.all(20),
-      children: [
-        if (loading) const Text('正在读取文件…'),
-        if (error != null)
-          PocketSection(
-            children: [
-              Padding(
-                padding: const EdgeInsets.all(20),
-                child: SelectableText(error!),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
-                child: PocketButton.tonal(
-                  onPressed: loading || !widget.runtime.ready
-                      ? null
-                      : () => load(
-                          retryIndex,
-                          retryOffset,
-                          reset: retryReset,
-                          preserveScroll: retryPreserveScroll,
-                        ),
-                  child: Text(
-                    restartRequired
-                        ? '从头重新读取'
-                        : reconfirmRequired
-                        ? '重新确认当前段'
-                        : '重试读取',
-                  ),
+          GlassButton(
+            icon: Icons.search_rounded,
+            label: '搜索此文件的文字',
+            onPressed: () => Navigator.of(context).push(
+              PocketRoute<void>(
+                builder: (_) => DocumentSearchPage(
+                  runtime: widget.runtime,
+                  root: widget.root,
+                  path: widget.path,
+                  name: widget.name ?? '已授权文件',
                 ),
               ),
-            ],
-          ),
-        if (text != null) ...[
-          Padding(
-            padding: const EdgeInsets.only(bottom: 16),
-            child: Text(
-              '第 ${index + 1} 段${starts.first > 0 ? '（从上次阅读位置开始）' : ''}${more ? '' : ' · 文件末尾'}${current ? '' : ' · 尚未核实'}',
             ),
           ),
-          SelectableText(text!.isEmpty ? '文件为空。' : text!),
+          GlassButton(
+            icon: Icons.refresh_rounded,
+            label: '重新从头读取',
+            onPressed: loading || !widget.runtime.ready
+                ? null
+                : () => load(0, 0, reset: true),
+          ),
         ],
-      ],
+      ),
+      bottom: text == null
+          ? null
+          : Wrap(
+              alignment: WrapAlignment.center,
+              spacing: 12,
+              children: [
+                PocketButton.tonal(
+                  glass: true,
+                  onPressed:
+                      loading || !current || !widget.runtime.ready || index == 0
+                      ? null
+                      : () => load(index - 1, starts[index - 1]),
+                  child: const Text('上一段'),
+                ),
+                PocketButton(
+                  glass: true,
+                  onPressed:
+                      loading || !current || !widget.runtime.ready || !more
+                      ? null
+                      : () => load(index + 1, starts[index + 1]),
+                  child: const Text('下一段'),
+                ),
+              ],
+            ),
+      body: PocketList(
+        controller: scroll,
+        padding: const EdgeInsets.all(20),
+        children: [
+          if (loading) const Text('正在读取文件…'),
+          if (requestId != null || cancelling)
+            PocketButton.tonal(
+              onPressed: cancelling ? null : () => cancel(),
+              child: Text(cancelling ? '正在停止…' : '停止读取'),
+            ),
+          if (error != null)
+            PocketSection(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: SelectableText(error!),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+                  child: PocketButton.tonal(
+                    onPressed: loading || !widget.runtime.ready
+                        ? null
+                        : () => load(
+                            retryIndex,
+                            retryOffset,
+                            reset: retryReset,
+                            preserveScroll: retryPreserveScroll,
+                          ),
+                    child: Text(
+                      restartRequired
+                          ? '从头重新读取'
+                          : reconfirmRequired
+                          ? '重新确认当前段'
+                          : '重试读取',
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          if (text != null) ...[
+            Padding(
+              padding: const EdgeInsets.only(bottom: 16),
+              child: Text(
+                '第 ${index + 1} 段${starts.first > 0 ? '（从上次阅读位置开始）' : ''}${more ? '' : ' · 文件末尾'}${current ? '' : ' · 尚未核实'}',
+              ),
+            ),
+            SelectableText(text!.isEmpty ? '文件为空。' : text!),
+          ],
+        ],
+      ),
     ),
   );
 }

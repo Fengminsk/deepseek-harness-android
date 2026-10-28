@@ -15,12 +15,16 @@ import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.UUID;
+import java.util.HashMap;
+import java.util.Map;
 
 /** Bounded, immutable, app-private copy for one SAF document read sequence. */
 public final class DocumentSnapshotStore {
     public interface Reader<T> { T read() throws IOException; }
     public interface Source {
         void check() throws IOException;
+        /** Cancellation-only check under the commit monitor; must not call a provider or perform I/O. */
+        default void checkCommit() throws IOException {}
         InputStream open() throws IOException;
     }
 
@@ -30,6 +34,8 @@ public final class DocumentSnapshotStore {
     public static final int MAX_ENTRIES = 8;
     private static final long MIN_FREE_BYTES = 128L * 1024 * 1024;
     private static final Object LOCK = new Object();
+    private static final Map<Path, Long> RESERVATIONS = new HashMap<>();
+    private static final Map<Path, Integer> PINS = new HashMap<>();
     private final File directory;
     private final long maxFileBytes, maxCacheBytes, ttlMillis, minFreeBytes;
 
@@ -38,7 +44,7 @@ public final class DocumentSnapshotStore {
     }
 
     DocumentSnapshotStore(File appCacheDirectory, long maxFileBytes, long maxCacheBytes, long ttlMillis, long minFreeBytes) {
-        directory = new File(appCacheDirectory, "document-read-snapshots");
+        directory = new File(appCacheDirectory, "document-read-snapshots").getAbsoluteFile();
         this.maxFileBytes = maxFileBytes;
         this.maxCacheBytes = maxCacheBytes;
         this.ttlMillis = ttlMillis;
@@ -55,73 +61,84 @@ public final class DocumentSnapshotStore {
     public Snapshot create(String identity, String metadataVersion, Source source) throws IOException {
         validateToken(identity);
         validateToken(metadataVersion);
+        Path temporary = new File(directory, ".part-" + UUID.randomUUID()).toPath();
+        Path temporaryInfo = new File(directory, ".part-" + UUID.randomUUID()).toPath();
         synchronized (LOCK) {
             prepare();
-            // Reserve room before writing so the temporary copy cannot take the committed
-            // 512 MiB cache above its cap while a large provider stream is still arriving.
-            ensureRoom(Math.min(maxFileBytes, maxCacheBytes), new File(directory, ".pending"));
-            Path temporary = new File(directory, ".part-" + UUID.randomUUID()).toPath();
-            Path temporaryInfo = new File(directory, ".part-" + UUID.randomUUID()).toPath();
-            try {
-                MessageDigest first = sha256();
-                long length = 0;
-                long nextCheck = 1024 * 1024;
-                source.check();
-                try (InputStream input = requireStream(source.open()); FileOutputStream output = new FileOutputStream(temporary.toFile())) {
-                    byte[] buffer = new byte[64 * 1024];
-                    for (int count; (count = input.read(buffer)) != -1;) {
-                        if (count == 0) {
-                            int single = input.read();
-                            if (single == -1) break;
-                            buffer[0] = (byte) single;
-                            count = 1;
-                        }
-                        length += count;
-                        if (length >= nextCheck) { source.check(); nextCheck = length + 1024 * 1024; }
-                        if (length > maxFileBytes) throw new IOException("文件超过 256 MiB 稳定阅读上限，请选择较小的文件");
-                        if (directory.getUsableSpace() < minFreeBytes) throw new IOException("设备缓存空间不足，无法建立稳定阅读副本");
-                        first.update(buffer, 0, count);
-                        output.write(buffer, 0, count);
+            long reserved = Math.min(maxFileBytes, maxCacheBytes);
+            ensureRoom(reserved, new File(directory, ".pending"), null);
+            RESERVATIONS.put(temporary, reserved);
+            RESERVATIONS.put(temporaryInfo, 0L);
+        }
+        try {
+            MessageDigest first = sha256();
+            long length = 0;
+            long nextCheck = 1024 * 1024;
+            source.check();
+            try (InputStream input = requireStream(source.open()); FileOutputStream output = new FileOutputStream(temporary.toFile())) {
+                byte[] buffer = new byte[64 * 1024];
+                for (int count; (count = input.read(buffer)) != -1;) {
+                    if (count == 0) {
+                        int single = input.read();
+                        if (single == -1) break;
+                        buffer[0] = (byte) single;
+                        count = 1;
                     }
-                    output.getFD().sync();
+                    length += count;
+                    if (length >= nextCheck) { source.check(); nextCheck = length + 1024 * 1024; }
+                    if (length > Math.min(maxFileBytes, maxCacheBytes)) throw new IOException("文件超过 256 MiB 稳定阅读上限，请选择较小的文件");
+                    if (directory.getUsableSpace() < minFreeBytes) throw new IOException("设备缓存空间不足，无法建立稳定阅读副本");
+                    first.update(buffer, 0, count);
+                    output.write(buffer, 0, count);
                 }
-                source.check();
-                MessageDigest second = sha256();
-                long verifiedLength = 0;
-                nextCheck = 1024 * 1024;
-                try (InputStream input = requireStream(source.open())) {
-                    byte[] buffer = new byte[64 * 1024];
-                    for (int count; (count = input.read(buffer)) != -1;) {
-                        if (count == 0) {
-                            int single = input.read();
-                            if (single == -1) break;
-                            buffer[0] = (byte) single;
-                            count = 1;
-                        }
-                        verifiedLength += count;
-                        if (verifiedLength >= nextCheck) { source.check(); nextCheck = verifiedLength + 1024 * 1024; }
-                        if (verifiedLength > maxFileBytes) throw new IOException("文件超过 256 MiB 稳定阅读上限，请选择较小的文件");
-                        second.update(buffer, 0, count);
+                output.getFD().sync();
+            }
+            source.check();
+            MessageDigest second = sha256();
+            long verifiedLength = 0;
+            nextCheck = 1024 * 1024;
+            try (InputStream input = requireStream(source.open())) {
+                byte[] buffer = new byte[64 * 1024];
+                for (int count; (count = input.read(buffer)) != -1;) {
+                    if (count == 0) {
+                        int single = input.read();
+                        if (single == -1) break;
+                        buffer[0] = (byte) single;
+                        count = 1;
                     }
+                    verifiedLength += count;
+                    if (verifiedLength >= nextCheck) { source.check(); nextCheck = verifiedLength + 1024 * 1024; }
+                    if (verifiedLength > maxFileBytes) throw new IOException("文件超过 256 MiB 稳定阅读上限，请选择较小的文件");
+                    second.update(buffer, 0, count);
                 }
-                source.check();
-                String hash = hex(first.digest());
-                if (verifiedLength != length || !hash.equals(hex(second.digest()))) {
-                    throw new IOException("文件在建立稳定副本时发生变化，请从头重新读取");
-                }
-                String version = DocumentRevision.token(identity, metadataVersion, hash, length, null);
-                File destination = new File(directory, version + ".bin");
-                File info = new File(directory, version + ".meta");
-                ensureRoom(length, destination);
+            }
+            source.check();
+            String hash = hex(first.digest());
+            if (verifiedLength != length || !hash.equals(hex(second.digest()))) {
+                throw new IOException("文件在建立稳定副本时发生变化，请从头重新读取");
+            }
+            String version = DocumentRevision.token(identity, metadataVersion, hash, length, null);
+            File destination = new File(directory, version + ".bin");
+            File info = new File(directory, version + ".meta");
+            synchronized (LOCK) {
+                source.checkCommit();
+                ensureRoom(length, destination, temporary);
                 Files.write(temporaryInfo, (identity + "\n" + metadataVersion + "\n" + length + "\n" + hash + "\n").getBytes(StandardCharsets.US_ASCII));
                 publish(temporary, destination.toPath());
                 publish(temporaryInfo, info.toPath());
                 destination.setLastModified(System.currentTimeMillis());
                 info.setLastModified(destination.lastModified());
+                RESERVATIONS.remove(temporary);
+                RESERVATIONS.remove(temporaryInfo);
                 return new Snapshot(destination, version);
-            } finally {
-                Files.deleteIfExists(temporary);
-                Files.deleteIfExists(temporaryInfo);
+            }
+        } finally {
+            synchronized (LOCK) {
+                try { Files.deleteIfExists(temporary); }
+                finally {
+                    try { Files.deleteIfExists(temporaryInfo); }
+                    finally { RESERVATIONS.remove(temporary); RESERVATIONS.remove(temporaryInfo); }
+                }
             }
         }
     }
@@ -154,13 +171,19 @@ public final class DocumentSnapshotStore {
         }
     }
 
-    /** Keep a page's file open/use and cache eviction in one process-wide critical section. */
+    /** Pin eviction while reading; provider metadata and file I/O never hold the cache monitor. */
     public <T> T withPinnedSnapshot(Snapshot snapshot, Reader<T> reader) throws IOException {
         synchronized (LOCK) {
             if (!snapshot.file.isFile() || Files.isSymbolicLink(snapshot.file.toPath())) {
                 throw new IOException("文件稳定阅读副本已过期，请从头重新读取");
             }
-            return reader.read();
+            PINS.merge(snapshot.file.toPath(), 1, Integer::sum);
+        }
+        try { return reader.read(); }
+        finally {
+            synchronized (LOCK) {
+                PINS.compute(snapshot.file.toPath(), (path, count) -> count == 1 ? null : count - 1);
+            }
         }
     }
 
@@ -171,6 +194,7 @@ public final class DocumentSnapshotStore {
         File[] files = directory.listFiles();
         if (files == null) throw new IOException("无法读取文件阅读缓存");
         for (File file : files) {
+            if (RESERVATIONS.containsKey(file.toPath()) || pinned(file)) continue;
             if (file.getName().startsWith(".part-") ||
                     file.getName().matches("[0-9a-f]{64}\\.(bin|meta)") &&
                     (Files.isSymbolicLink(file.toPath()) || now - file.lastModified() > ttlMillis)) {
@@ -181,13 +205,22 @@ public final class DocumentSnapshotStore {
             String name = file.getName();
             if (!name.matches("[0-9a-f]{64}\\.(bin|meta)")) continue;
             String sibling = name.endsWith(".bin") ? name.replace(".bin", ".meta") : name.replace(".meta", ".bin");
-            if (!new File(directory, sibling).isFile()) Files.deleteIfExists(file.toPath());
+            if (!pinned(file) && !new File(directory, sibling).isFile()) Files.deleteIfExists(file.toPath());
         }
     }
 
-    private void ensureRoom(long incoming, File replacement) throws IOException {
+    private boolean pinned(File file) {
+        String name = file.getName().replace(".meta", ".bin");
+        return PINS.containsKey(new File(directory, name).toPath());
+    }
+
+    private void ensureRoom(long incoming, File replacement, Path ownReservation) throws IOException {
         ArrayList<File> files = new ArrayList<>();
         long total = incoming;
+        for (Map.Entry<Path, Long> reservation : RESERVATIONS.entrySet()) {
+            if (reservation.getKey().getParent().equals(directory.toPath()) &&
+                    !reservation.getKey().equals(ownReservation)) total += reservation.getValue();
+        }
         File[] listed = directory.listFiles();
         if (listed == null) throw new IOException("无法读取文件阅读缓存");
         for (File file : listed) {
@@ -199,13 +232,14 @@ public final class DocumentSnapshotStore {
         int count = files.size() + 1;
         for (File file : files) {
             if (total <= maxCacheBytes && count <= MAX_ENTRIES) break;
+            if (pinned(file)) continue;
             long size = file.length();
             Files.delete(file.toPath());
             Files.deleteIfExists(new File(directory, file.getName().replace(".bin", ".meta")).toPath());
             total -= size;
             count--;
         }
-        if (total > maxCacheBytes) throw new IOException("文件阅读缓存已满，请稍后重试");
+        if (total > maxCacheBytes || count > MAX_ENTRIES) throw new IOException("文件阅读缓存已满，请稍后重试");
     }
 
     private static InputStream requireStream(InputStream stream) throws IOException {

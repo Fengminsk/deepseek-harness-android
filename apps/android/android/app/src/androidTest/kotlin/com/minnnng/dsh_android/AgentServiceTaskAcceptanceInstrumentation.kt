@@ -43,19 +43,22 @@ class AgentServiceTaskAcceptanceInstrumentation : Instrumentation() {
     private var admitted = false
     private var exercise = "echo"
     private var token: String? = null
+    private var cleanupCaseId: String? = null
     private var completionNoticeOption = "false"
     override fun onCreate(arguments: Bundle?) {
         super.onCreate(arguments)
         admitted = arguments?.getString("acceptRealAccountRequest") == "true"
         exercise = arguments?.getString("exercise") ?: "echo"
         token = arguments?.getString("token")
+        cleanupCaseId = arguments?.getString("cleanupCaseId")
         completionNoticeOption = arguments?.getString("requireCompletionNotice") ?: "false"
         start()
     }
 
     override fun onStart() {
         val app = targetContext.applicationContext
-        val caseId = UUID.randomUUID().toString()
+        val cleanupOnly = exercise == "workflow-cleanup"
+        val caseId = if (cleanupOnly && AgentServiceProgrammaticEvidence.validCaseId(cleanupCaseId)) cleanupCaseId!! else UUID.randomUUID().toString()
         val sessionId = "android-account-acceptance-$caseId"
         val requestId = "account-request-$caseId"
         val exportId = UUID.randomUUID().toString()
@@ -69,6 +72,7 @@ class AgentServiceTaskAcceptanceInstrumentation : Instrumentation() {
         val toolCall = AtomicReference<JSONObject?>()
         val toolResult = AtomicReference<JSONObject?>()
         val radio = exercise == "radio-linux"
+        val programmatic = AgentServiceProgrammaticEvidence.supported(exercise)
         val requireCompletionNotice = completionNoticeOption == "true"
         val noticeTag = "pocket-completed:$sessionId"
         val notificationManager = app.getSystemService(NotificationManager::class.java)
@@ -83,13 +87,14 @@ class AgentServiceTaskAcceptanceInstrumentation : Instrumentation() {
         var bound = false
         var created = false
         var submitted = false
-        var exportRequested = false
+        val requestedExports = LinkedHashSet<String>()
+        var ownedChildId: String? = null
         var generation: String? = null
         var agentPid: Int? = null
         var success = false
         val cleanup = JSONObject().put("cancelRequested", false).put("taskSettled", false)
             .put("archived", false).put("exportReleased", false).put("disconnected", false)
-        val result = JSONObject().put("schema", 1).put("kind", "production-account-task")
+        val result = JSONObject().put("schema", 1).put("kind", if (cleanupOnly) "production-account-task-cleanup" else "production-account-task")
             .put("caseId", caseId).put("sessionId", sessionId).put("requestId", requestId)
             .put("submittedCount", 0).put("archived", false)
             .put("markerSha256", AgentServiceTaskEvidence.hash(AgentServiceTaskEvidence.marker(caseId).toByteArray()))
@@ -155,8 +160,13 @@ class AgentServiceTaskAcceptanceInstrumentation : Instrumentation() {
                                     if (radio && event.getString("type") == "tool/call") {
                                         AgentServiceTaskEvidence.radioCall(event, caseId)
                                         demand(toolCall.compareAndSet(null, event), "DUPLICATE_TOOL_CALL")
-                                    } else if (radio && event.getString("type") == "tool/result") {
+                                    } else if (programmatic && event.getString("type") == "tool/call") {
+                                        AgentServiceProgrammaticEvidence.call(event, caseId, exercise)
+                                        demand(toolCall.compareAndSet(null, event), "DUPLICATE_TOOL_CALL")
+                                    } else if ((radio || programmatic) && event.getString("type") == "tool/result") {
                                         demand(toolResult.compareAndSet(null, event), "DUPLICATE_TOOL_RESULT")
+                                    } else if (exercise == "ptc" && event.getString("type") in setOf("tool/ptc-dispatch-start", "tool/ptc-dispatch")) {
+                                        // Exact callback identity and count are checked against the flushed parent log.
                                     } else asynchronousFailure.compareAndSet(null, AgentServiceTaskEvidence.Rejected("TOOL_INVOKED"))
                                 }
                                 if (event.getString("type") == "turn/end") {
@@ -193,6 +203,18 @@ class AgentServiceTaskAcceptanceInstrumentation : Instrumentation() {
                 if (method == "runtime.status") observeRuntime(value)
                 return value
             } finally { pending.remove(id) }
+        }
+        fun exportOwnedSession(ownedSession: String, id: String): JSONArray {
+            requestedExports.add(id)
+            val exported = call("session.export.prepare", JSONObject().put("id", id).put("sessionId", ownedSession)
+                .put("includeDescendants", false))
+            demand(exported.getString("id") == id && exported.getLong("size") in 1..1024 * 1024, "EXPORT_INVALID")
+            val directory = File(app.cacheDir, "pocket-session-exports").canonicalFile
+            val file = File(directory, "$id.zip")
+            demand(file.canonicalFile.parentFile == directory && Files.isRegularFile(file.toPath(), LinkOption.NOFOLLOW_LINKS), "EXPORT_PATH_INVALID")
+            return Files.newInputStream(file.toPath(), LinkOption.NOFOLLOW_LINKS).use {
+                AgentServiceTaskEvidence.readExport(it, ownedSession)
+            }
         }
         val connection = object : ServiceConnection {
             override fun onServiceConnected(name: ComponentName, binder: IBinder) {
@@ -342,11 +364,15 @@ class AgentServiceTaskAcceptanceInstrumentation : Instrumentation() {
         try {
             progress("instrumentation-start")
             diagnosticHandler.postDelayed(diagnosticPulse, 5000)
-            demand(admitted, "REAL_ACCOUNT_NOT_ADMITTED")
+            if (cleanupOnly) demand(!admitted && cleanupCaseId == caseId && token == null && !requireCompletionNotice, "CLEANUP_ADMISSION_INVALID")
+            else demand(admitted && cleanupCaseId == null, "REAL_ACCOUNT_NOT_ADMITTED")
             demand(completionNoticeOption in setOf("true", "false"), "NOTICE_OPTION_INVALID")
             if (requireCompletionNotice) result.put("requireCompletionNotice", true)
-            demand(exercise in setOf("echo", "radio-linux") && (!radio || token?.matches(Regex("[0-9a-f]{32}")) == true), "EXERCISE_INVALID")
-            if (radio) result.put("exercise", exercise).put("token", token)
+            demand(exercise in setOf("echo", "radio-linux", "ptc", "workflow", "workflow-cleanup") && (!radio || token?.matches(Regex("[0-9a-f]{32}")) == true), "EXERCISE_INVALID")
+            demand(!programmatic || !requireCompletionNotice, "PROGRAMMATIC_NOTICE_UNSUPPORTED")
+            if (radio || programmatic || cleanupOnly) result.put("exercise", exercise)
+            if (radio) result.put("token", token)
+            if (exercise == "workflow" || cleanupOnly) cleanup.put("childArchived", false)
             result.put("deviceStateBefore", state())
             progress("service-start-requested")
             uiAutomation.adoptShellPermissionIdentity("android.permission.START_FOREGROUND_SERVICES_FROM_BACKGROUND")
@@ -376,6 +402,19 @@ class AgentServiceTaskAcceptanceInstrumentation : Instrumentation() {
             val summary = call("tasks.summary").getJSONObject("summary")
             for (key in listOf("running", "queued", "waiting", "backgroundJobs", "packageOperations"))
                 demand(!summary.isNull(key) && summary.getInt(key) == 0, "OTHER_WORK_ACTIVE_OR_UNKNOWN")
+            run task@ {
+            if (cleanupOnly) {
+                progress("cleanup-history-read")
+                val evidence = AgentServiceProgrammaticEvidence.cleanupWorkflow(caseId,
+                    { method, params -> call(method, params) },
+                    { id -> exportOwnedSession(id, UUID.randomUUID().toString()) })
+                for (key in evidence.keys()) result.put(key, evidence.get(key))
+                cleanup.put("childArchived", true)
+                observe("After")
+                result.put("generation", generation).put("agentPid", agentPid).put("deviceStateAfter", state())
+                success = true
+                return@task
+            }
             if (requireCompletionNotice) noticePreflight()
             fun catalog() = call("api.call", JSONObject().put("namespace", "session").put("method", "modelCatalog").put("args", JSONObject()))
             progress("catalog-read")
@@ -410,7 +449,9 @@ class AgentServiceTaskAcceptanceInstrumentation : Instrumentation() {
             progress("send-requested")
             val accepted = call("session.send", JSONObject().put("sessionId", sessionId).put("requestId", requestId)
                 .put("provider", "deepseek-account").put("model", model).put("selectModel", false)
-                .put("text", if (radio) AgentServiceTaskEvidence.radioPrompt(caseId) else AgentServiceTaskEvidence.prompt(caseId)))
+                .put("text", if (radio) AgentServiceTaskEvidence.radioPrompt(caseId)
+                    else if (programmatic) AgentServiceProgrammaticEvidence.prompt(caseId, exercise)
+                    else AgentServiceTaskEvidence.prompt(caseId)))
             demand(accepted.getBoolean("accepted"), "SUBMISSION_NOT_ACCEPTED")
             progress("submitted")
             var activeObserved = false
@@ -457,24 +498,29 @@ class AgentServiceTaskAcceptanceInstrumentation : Instrumentation() {
             progress("completed")
             val history = call("session.read", address)
             demand(!history.has("snapshot"), "HISTORY_REQUIRES_PAGING")
-            exportRequested = true
-            val exported = call("session.export.prepare", JSONObject().put("id", exportId).put("sessionId", sessionId)
-                .put("includeDescendants", false))
-            demand(exported.getString("id") == exportId && exported.getLong("size") in 1..1024 * 1024, "EXPORT_INVALID")
-            val directory = File(app.cacheDir, "pocket-session-exports").canonicalFile
-            val file = File(directory, "$exportId.zip")
-            demand(file.canonicalFile.parentFile == directory && Files.isRegularFile(file.toPath(), LinkOption.NOFOLLOW_LINKS),
-                "EXPORT_PATH_INVALID")
-            val durable = Files.newInputStream(file.toPath(), LinkOption.NOFOLLOW_LINKS).use {
-                AgentServiceTaskEvidence.readExport(it, sessionId)
-            }
-            val evidence = AgentServiceTaskEvidence.completed(history.getJSONArray("events"), durable, caseId, requestId, model, radio)
+            val durable = exportOwnedSession(sessionId, exportId)
+            val evidence = AgentServiceTaskEvidence.completed(history.getJSONArray("events"), durable, caseId, requestId, model, radio, exercise)
             for (key in evidence.keys()) result.put(key, evidence.get(key))
             demand(evidence.getLong("endSeq") == ended.get()!!.getLong("seq"), "LIVE_END_MISMATCH")
             if (radio) {
                 demand(radioRestored && evidence.getLong("toolStartSeq") == toolCall.get()!!.getLong("seq") &&
                     evidence.getLong("toolEndSeq") == toolResult.get()!!.getLong("seq"), "RADIO_LIVE_DURABLE_MISMATCH")
                 demand(evidence.getJSONObject("linuxReceipt").getInt("guestUid") != info.getInt("uid"), "RADIO_GUEST_NOT_ISOLATED")
+            }
+            if (programmatic) demand(evidence.getLong("toolStartSeq") == toolCall.get()!!.getLong("seq") &&
+                evidence.getLong("toolEndSeq") == toolResult.get()!!.getLong("seq"), "PROGRAMMATIC_LIVE_DURABLE_MISMATCH")
+            if (exercise == "workflow") {
+                val proof = evidence.getJSONObject("programmatic")
+                val childId = proof.getString("childSessionId")
+                ownedChildId = childId
+                val observed = call("workflow.inspect", JSONObject().put("sessionId", sessionId).put("runId", proof.getString("runId")))
+                demand(observed.getString("runId") == proof.getString("runId") && observed.getString("state") == "completed" &&
+                    !observed.getBoolean("requiresReview"), "WORKFLOW_INSPECTION_UNCONFIRMED")
+                proof.put("inspection", JSONObject().put("runId", observed.getString("runId")).put("state", "completed").put("requiresReview", false))
+                val child = call("session.read", JSONObject().put("sessionId", childId))
+                demand(!child.has("snapshot"), "CHILD_HISTORY_REQUIRES_PAGING")
+                proof.put("child", AgentServiceProgrammaticEvidence.child(child.getJSONArray("events"),
+                    exportOwnedSession(childId, UUID.randomUUID().toString()), caseId, childId, model))
             }
             asynchronousFailure.get()?.let { throw it }
             result.put("generation", generation).put("agentPid", agentPid).put("deviceStateAfter", state())
@@ -485,6 +531,7 @@ class AgentServiceTaskAcceptanceInstrumentation : Instrumentation() {
                 progress("completion-notice-observed")
             }
             success = true
+            }
         } catch (error: Throwable) { failure(error, "failureCode") }
         finally {
             deadline = minOf(began + 360_000, SystemClock.elapsedRealtime() + 60_000)
@@ -506,15 +553,27 @@ class AgentServiceTaskAcceptanceInstrumentation : Instrumentation() {
                         call("session.cancel", JSONObject().put("sessionId", sessionId), 10_000)
                     }
                     awaitSettled(15_000)
+                    ownedChildId?.let { childId ->
+                        try {
+                            AgentServiceProgrammaticEvidence.archiveChild(childId) { method, params -> call(method, params, 10_000) }
+                            cleanup.put("childArchived", true)
+                        } catch (error: Throwable) { success = false; failure(error, "childCleanupFailureCode") }
+                    }
                     call("library.sessionArchive", JSONObject().put("sessionId", sessionId).put("archived", true), 10_000)
                     cleanup.put("archived", true); result.put("archived", true)
                 } catch (error: Throwable) { success = false; failure(error, "cleanupFailureCode") }
             } else cleanup.put("taskSettled", !submitted)
             try {
-                if (exportRequested) {
-                    val released = call("session.export.release", JSONObject().put("id", exportId), 10_000)
-                    demand(released.getBoolean("released"), "EXPORT_RELEASE_UNCONFIRMED")
+                var exportFailure: Throwable? = null
+                for (id in requestedExports) {
+                    try {
+                        val released = call("session.export.release", JSONObject().put("id", id), 10_000)
+                        demand(released.getBoolean("released"), "EXPORT_RELEASE_UNCONFIRMED")
+                    } catch (error: Throwable) {
+                        if (exportFailure == null) exportFailure = error else exportFailure!!.addSuppressed(error)
+                    }
                 }
+                exportFailure?.let { throw it }
                 cleanup.put("exportReleased", true)
             } catch (error: Throwable) { success = false; failure(error, "exportCleanupFailureCode") }
             if (requireCompletionNotice) {

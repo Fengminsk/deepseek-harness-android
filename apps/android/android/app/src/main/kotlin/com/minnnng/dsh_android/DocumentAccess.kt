@@ -150,9 +150,10 @@ class DocumentAccess(private val context: Context) {
         }
     }
     /** Each page comes from one immutable bounded snapshot; revoked/moved grants invalidate it. */
-    fun read(root: String, path: String, offset: Long, expectedVersion: String? = null): JSONObject {
-        val uri = document(root, path)
-        val before = metadata(uri)
+    fun read(root: String, path: String, offset: Long, expectedVersion: String? = null,
+        cancellation: CancellationSignal = CancellationSignal(), lifecycle: DocumentSearchJob? = null): JSONObject {
+        val uri = document(root, path, cancellation)
+        val before = metadata(uri, cancellation)
         check(before.mime != DocumentsContract.Document.MIME_TYPE_DIR) { "这是目录，请打开其中的文件" }
         check(before.flags and DocumentsContract.Document.FLAG_VIRTUAL_DOCUMENT == 0) {
             "文件提供方提供的是虚拟文档，当前无法按原格式读取；请在提供方中导出实体文件后重试"
@@ -161,8 +162,10 @@ class DocumentAccess(private val context: Context) {
             throw IOException("文件超过 256 MiB 稳定阅读上限，请选择较小的文件")
         }
         fun checkStable() {
-            val current = document(root, path)
-            if (current != uri || metadata(current) != before) {
+            lifecycle?.check()
+            cancellation.throwIfCanceled()
+            val current = document(root, path, cancellation)
+            if (current != uri || metadata(current, cancellation) != before) {
                 throw IOException("文件在读取期间已移动或变化，请重新从头读取")
             }
         }
@@ -172,13 +175,22 @@ class DocumentAccess(private val context: Context) {
         checkStable()
         val snapshot = if (offset == 0L) {
             store.create(identity, metadataVersion, object : DocumentSnapshotStore.Source {
+                override fun checkCommit() { lifecycle?.check(); cancellation.throwIfCanceled() }
                 override fun check() {
+                    lifecycle?.check()
+                    cancellation.throwIfCanceled()
                     if (Thread.currentThread().isInterrupted) throw java.io.InterruptedIOException("文件读取已停止")
                     if (!hasGrant(root)) throw SecurityException("文件授权已撤销，请重新授权")
                 }
                 override fun open(): java.io.InputStream? {
                     checkStable()
-                    return resolver.openInputStream(uri)
+                    val stream = DocumentProviderRead.open(resolver, uri, cancellation)
+                    lifecycle?.attach(stream)
+                    return object : java.io.FilterInputStream(stream) {
+                        override fun close() {
+                            try { super.close() } finally { lifecycle?.detach() }
+                        }
+                    }
                 }
             })
         } else {

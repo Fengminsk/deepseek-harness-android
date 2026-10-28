@@ -124,7 +124,7 @@ object AgentServiceTaskEvidence {
         return JSONArray(rows.drop(1))
     }
 
-    private fun canonical(value: Any?): String = when (value) {
+    internal fun canonical(value: Any?): String = when (value) {
         null, JSONObject.NULL -> "null"
         is JSONObject -> value.keys().asSequence().toList().sorted().joinToString(",", "{", "}") {
             JSONObject.quote(it) + ":" + canonical(value.get(it))
@@ -135,8 +135,14 @@ object AgentServiceTaskEvidence {
     }
 
     /** Both live and flushed records must independently contain a single completed assistant marker. */
-    fun completed(history: JSONArray, durable: JSONArray, caseId: String, requestId: String, model: String, radio: Boolean = false): JSONObject {
-        val types = setOf("user/message", "request/header", "turn/start", "assistant/message", "turn/end", "tool/call", "tool/result")
+    fun completed(history: JSONArray, durable: JSONArray, caseId: String, requestId: String, model: String,
+                  radio: Boolean = false, exercise: String = if (radio) "radio-linux" else "echo"): JSONObject {
+        val programmatic = AgentServiceProgrammaticEvidence.supported(exercise)
+        demand(exercise in setOf("echo", "radio-linux", "ptc", "workflow") && radio == (exercise == "radio-linux"), "EXERCISE_INVALID")
+        val toolExercise = radio || programmatic
+        val types = setOf("user/message", "request/header", "turn/start", "assistant/message", "turn/end", "tool/call", "tool/result",
+            "tool/ptc-dispatch-start", "tool/ptc-dispatch", "tool-workflow/run-start", "tool-workflow/run-end",
+            "tool-workflow/agent-start", "tool-workflow/agent-end")
         fun inspect(events: JSONArray): Pair<JSONObject, String> {
             demand(events.length() in 1..511, "HISTORY_SIZE_INVALID")
             val rows = (0 until events.length()).map { events.getJSONObject(it) }
@@ -144,7 +150,10 @@ object AgentServiceTaskEvidence {
             for (row in rows) {
                 val seq = row.getLong("seq")
                 demand(seq > previous, "EVENT_ORDER_INVALID"); previous = seq
-                demand(!row.getString("type").startsWith("tool/") || radio && row.getString("type") in setOf("tool/call", "tool/result"), "TOOL_INVOKED")
+                val allowedTools = if (exercise == "ptc") setOf("tool/call", "tool/result", "tool/ptc-dispatch-start", "tool/ptc-dispatch")
+                    else setOf("tool/call", "tool/result")
+                demand(!row.getString("type").startsWith("tool/") || toolExercise && row.getString("type") in allowedTools, "TOOL_INVOKED")
+                demand(!row.getString("type").startsWith("tool-workflow/") || exercise == "workflow", "UNEXPECTED_WORKFLOW")
             }
             fun all(type: String) = rows.filter { it.getString("type") == type }
             fun one(type: String): JSONObject {
@@ -155,7 +164,8 @@ object AgentServiceTaskEvidence {
             val user = users.single()
             val userData = user.getJSONObject("data")
             demand(userData.getJSONObject("source").getString("rpcId") == requestId, "REQUEST_ID_MISMATCH")
-            val expected = JSONArray().put(JSONObject().put("type", "text").put("text", if (radio) radioPrompt(caseId) else prompt(caseId)))
+            val expectedPrompt = if (radio) radioPrompt(caseId) else if (programmatic) AgentServiceProgrammaticEvidence.prompt(caseId, exercise) else prompt(caseId)
+            val expected = JSONArray().put(JSONObject().put("type", "text").put("text", expectedPrompt))
             demand(canonical(userData.getJSONArray("content")) == canonical(expected), "USER_CONTENT_MISMATCH")
             val headers = all("request/header")
             demand(headers.isNotEmpty(), "MODEL_EVIDENCE_MISSING")
@@ -165,7 +175,7 @@ object AgentServiceTaskEvidence {
                     "MODEL_CHANGED")
             }
             val turn = one("turn/start")
-            val assistant = if (!radio) one("assistant/message") else {
+            val assistant = if (!toolExercise) one("assistant/message") else {
                 val finals = all("assistant/message").filter { row ->
                     val content = row.getJSONObject("data").getJSONObject("message").getJSONArray("content")
                     (0 until content.length()).map { content.getJSONObject(it) }.filter { it.getString("type") == "text" }
@@ -194,7 +204,7 @@ object AgentServiceTaskEvidence {
             demand(user.getLong("seq") < assistant.getLong("seq") && turn.getLong("seq") < assistant.getLong("seq") &&
                 assistant.getLong("seq") < end.getLong("seq"), "COMPLETION_ORDER_INVALID")
             val summary = JSONObject().put("userMessageCount", 1).put("assistantMarkerMatches", 1)
-                .put("toolCalls", if (radio) 1 else 0).put("turnEndCount", 1).put("completionKind", "completed")
+                .put("toolCalls", if (toolExercise) 1 else 0).put("turnEndCount", 1).put("completionKind", "completed")
                 .put("endSeq", end.getLong("seq")).put("eventCount", events.length())
             if (radio) {
                 val call = one("tool/call"); val returned = one("tool/result")
@@ -202,6 +212,11 @@ object AgentServiceTaskEvidence {
                 demand(returned.getLong("seq") < assistant.getLong("seq"), "RADIO_FINAL_BEFORE_RESULT")
                 for (key in receipt.keys()) summary.put(key, receipt.get(key))
                 summary.put("retryEventCount", all("llm/retry").size)
+            }
+            if (programmatic) {
+                val receipt = AgentServiceProgrammaticEvidence.receipt(rows, caseId, exercise)
+                demand(receipt.getLong("toolEndSeq") < assistant.getLong("seq"), "PROGRAMMATIC_FINAL_BEFORE_RESULT")
+                for (key in receipt.keys()) summary.put(key, receipt.get(key))
             }
             val comparison = JSONArray(rows.filter { it.getString("type") in types }.map {
                 JSONObject().put("type", it.getString("type")).put("seq", it.getLong("seq")).put("data", it.getJSONObject("data"))

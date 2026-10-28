@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { readAuthorizedDocument } from './document-read.mjs'
 import { readAuthorizedImage, renderAuthorizedImage } from './authorized-image.mjs'
 
 const firstPartyDefinitions = new WeakMap()
@@ -31,7 +30,7 @@ export function validateAndroidFileArguments(args) {
   return { ...args, path }
 }
 
-export function registerAndroidFilesTool(ctx, transport, documentSearch) {
+export function registerAndroidFilesTool(ctx, transport, documentSearch, documentReads) {
   const definition = defineTool({
     name: 'android_files', description: ANDROID_FILES_DESCRIPTION,
     parameters: {
@@ -62,7 +61,11 @@ export function registerAndroidFilesTool(ctx, transport, documentSearch) {
         { owner: `tool:${execution.agent.session.id}:${execution.callId}`, signal: execution.signal })
       }
       if (args.action === 'read_image') return readAuthorizedImage(ctx, transport, args, execution)
-      if (args.action === 'read') return readAuthorizedDocument(request => transport.request('native.documents.read', request), args, true)
+      if (args.action === 'read') {
+        if (!execution.agent || !documentReads) throw new Error('File reading requires a session-owned read service')
+        return documentReads.run({ ...args, requestId: randomUUID() },
+          { owner: `tool:${execution.agent.session.id}:${execution.callId}`, signal: execution.signal })
+      }
       return transport.request('native.documents.list', { root: args.root, path: args.path })
     },
   })

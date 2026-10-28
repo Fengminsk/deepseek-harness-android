@@ -38,7 +38,9 @@ try {
     if (phase === 'recover') throw new Error(`Recovery unexpectedly used native RPC: ${method}`)
     if (phase.startsWith('saf')) {
       if (method === 'native.documents.roots') return revoked ? [] : [{ id: root, name: 'Fixture', directory: true }]
-      if (method === 'native.documents.read') return { text: `PTC SAF needle ${caseId}\n`, offset: 0,
+      if (method === 'native.documents.read.prepare') return { prepared: true }
+      if (method === 'native.documents.read.cancel') return { cancelled: true }
+      if (method === 'native.documents.read.run') return { text: `PTC SAF needle ${caseId}\n`, offset: 0,
         nextOffset: 52, truncated: false, version: 'a'.repeat(64), encoding: 'utf-8' }
       if (method === 'native.documents.search.prepare') return { prepared: true }
       if (method === 'native.documents.search.cancel') return { cancelled: true }

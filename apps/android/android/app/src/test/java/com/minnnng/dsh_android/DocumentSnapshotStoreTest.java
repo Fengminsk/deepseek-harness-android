@@ -18,6 +18,10 @@ public final class DocumentSnapshotStoreTest {
     public static void main(String[] args) throws Exception {
         Path temp = Files.createTempDirectory("dsh-saf-snapshot-");
         try {
+            if (args.length == 1 && args[0].equals("blocked-provider-only")) {
+                blockedProviderDoesNotOwnCacheLock(temp);
+                return;
+            }
             DocumentSnapshotStore store = new DocumentSnapshotStore(temp.toFile(), 32, 64, 1000, 0);
             byte[] first = "first page content".getBytes(StandardCharsets.UTF_8);
             byte[] edited = "second page edited".getBytes(StandardCharsets.UTF_8);
@@ -88,17 +92,24 @@ public final class DocumentSnapshotStoreTest {
                     return parallelStore.create(ID, META, new Mutable("other content".getBytes(StandardCharsets.UTF_8)));
                 });
                 assertTrue(evictionStarted.await(2, TimeUnit.SECONDS), "eviction must be scheduled");
-                Thread.sleep(75);
-                assertTrue(!evicting.isDone(), "eviction must wait for the active page read");
+                try {
+                    evicting.get(2, TimeUnit.SECONDS);
+                    throw new AssertionError("A full pinned cache must reject new admission");
+                } catch (java.util.concurrent.ExecutionException failure) {
+                    assertTrue(failure.getCause() instanceof IOException, "pinned quota must report cache full");
+                }
+                assertTrue(Files.exists(held.file.toPath()), "a rejected admission must preserve the pinned page");
                 release.countDown();
                 assertTrue(Arrays.equals(reading.get(2, TimeUnit.SECONDS), "first content".getBytes(StandardCharsets.UTF_8)),
                         "pinned page must finish before eviction");
-                evicting.get(2, TimeUnit.SECONDS);
+                parallelStore.create(ID, META, new Mutable("other content".getBytes(StandardCharsets.UTF_8)));
                 expect(IOException.class, () -> parallelStore.get(ID, META, held.version), "evicted continuation");
             } finally {
                 release.countDown();
                 pool.shutdownNow();
+                assertTrue(pool.awaitTermination(5, TimeUnit.SECONDS), "snapshot workers must retire");
             }
+            blockedProviderDoesNotOwnCacheLock(temp);
             System.out.println("DocumentSnapshotStoreTest passed");
         } finally {
             try (var walk = Files.walk(temp)) {
@@ -106,6 +117,51 @@ public final class DocumentSnapshotStoreTest {
                     try { Files.deleteIfExists(path); } catch (IOException failure) { throw new RuntimeException(failure); }
                 });
             }
+        }
+    }
+
+    private static void blockedProviderDoesNotOwnCacheLock(Path temp) throws Exception {
+        Path cache = Files.createDirectory(temp.resolve("blocked-provider"));
+        DocumentSnapshotStore store = new DocumentSnapshotStore(cache.toFile(), 32, 64, 1000, 0);
+        CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicBoolean cancelled = new java.util.concurrent.atomic.AtomicBoolean();
+        var pool = Executors.newFixedThreadPool(2);
+        try {
+            var blocked = pool.submit(() -> store.create(ID, META, new DocumentSnapshotStore.Source() {
+                public void check() throws IOException {
+                    if (cancelled.get()) throw new java.io.InterruptedIOException("read cancelled");
+                }
+                public InputStream open() {
+                    return new InputStream() {
+                        public int read() throws IOException {
+                            entered.countDown();
+                            try { if (!release.await(5, TimeUnit.SECONDS)) throw new IOException("fixture release missing"); }
+                            catch (InterruptedException failure) { throw new IOException(failure); }
+                            return -1;
+                        }
+                        // Deliberately ignores close/cancellation: the second request still must complete.
+                        public void close() {}
+                    };
+                }
+            }));
+            assertTrue(entered.await(2, TimeUnit.SECONDS), "provider stream must actually block");
+            cancelled.set(true);
+            var independent = pool.submit(() -> new DocumentSnapshotStore(cache.toFile(), 32, 64, 1000, 0)
+                    .create("c".repeat(64), META, new Mutable("normal file".getBytes(StandardCharsets.UTF_8))));
+            var completed = independent.get(2, TimeUnit.SECONDS);
+            assertTrue(Files.readString(completed.file.toPath()).equals("normal file"), "uncooperative provider must not block another file");
+            assertTrue(!blocked.isDone(), "first provider must still be blocked during the second completion");
+            release.countDown();
+            try { blocked.get(2, TimeUnit.SECONDS); throw new AssertionError("late cancelled capture published"); }
+            catch (java.util.concurrent.ExecutionException failure) {
+                assertTrue(failure.getCause() instanceof java.io.InterruptedIOException, "cancelled capture must fail");
+            }
+            try (var entries = Files.list(cache.resolve("document-read-snapshots"))) {
+                assertTrue(entries.noneMatch(path -> path.getFileName().toString().startsWith(".part-")), "retired capture must delete its temporary files");
+            }
+        } finally {
+            release.countDown(); pool.shutdownNow();
+            assertTrue(pool.awaitTermination(5, TimeUnit.SECONDS), "blocked fixture must retire before cache removal");
         }
     }
 

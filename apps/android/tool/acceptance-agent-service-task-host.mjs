@@ -3,6 +3,8 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { delimiter, dirname, join, resolve } from 'node:path'
+import { createHash } from 'node:crypto'
+import { parseAgentServiceTaskResult, parseAgentServiceTaskCleanupResult } from './acceptance-agent-service-task-device.mjs'
 
 const root = resolve(import.meta.dirname, '../../..')
 const output = mkdtempSync(join(root, '.cache/android/agent-service-task-host-'))
@@ -55,7 +57,7 @@ for (const [name, source] of Object.entries(annotations)) {
 }
 execFileSync('javac', ['--release', '17', '-encoding', 'UTF-8', '-d', output, ...java],
   { stdio: 'inherit', windowsHide: true, timeout: 60000 })
-const scenarios = ['AgentServiceTaskEvidence', 'AgentServiceTaskAcceptanceInstrumentation']
+const scenarios = ['AgentServiceTaskEvidence', 'AgentServiceProgrammaticEvidence', 'AgentServiceTaskAcceptanceInstrumentation']
   .map(name => join(root, `apps/android/android/app/src/androidTest/kotlin/com/minnnng/dsh_android/${name}.kt`))
 execFileSync('java', ['-cp', compiler, 'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler',
   '-no-stdlib', '-no-reflect', '-jvm-target', '17', '-classpath', [output, compiler, join(sdk, 'platforms/android-36/android.jar')].join(delimiter), '-d', output,
@@ -65,4 +67,35 @@ execFileSync('java', ['-cp', compiler, 'org.jetbrains.kotlin.cli.jvm.K2JVMCompil
 execFileSync('java', ['-cp', [output, compiler].join(delimiter),
   'com.minnnng.dsh_android.AgentServiceTaskEvidenceTestKt', output, ...(sample ? [sample, archive] : [])],
 { stdio: 'inherit', windowsHide: true, timeout: 30000 })
+// Carrier facts below are explicit host doubles; only the programmatic facts came from the actual Kotlin validator.
+const contracts = JSON.parse(readFileSync(join(output, 'programmatic-native-contract.json'), 'utf8'))
+for (const exercise of ['ptc', 'workflow']) {
+  const evidence = contracts[exercise], caseId = contracts.caseId
+  const result = { ...evidence, schema: 1, passed: true, kind: 'production-account-task', caseId, exercise,
+    sessionId: `android-account-acceptance-${caseId}`, requestId: `account-request-${caseId}`,
+    provider: 'deepseek-account', model: 'deepseek-flash', generation: 'host-fixture-generation', agentPid: 1234,
+    markerSha256: createHash('sha256').update(`account-acceptance-${caseId}`).digest('hex'),
+    submittedCount: 1, elapsedMs: 1, archived: true, ownTaskRunningObserved: true,
+    foregroundBefore: true, foregroundDuring: true, foregroundAfter: true, backgroundDuring: { fresh: true, running: 1 },
+    deviceStateBefore: { locked: true, interactive: false }, deviceStateAfter: { locked: true, interactive: false },
+    cleanup: { taskSettled: true, archived: true, exportReleased: true, disconnected: true, cancelRequested: false } }
+  if (exercise === 'workflow') {
+    result.programmatic.child = contracts.child
+    result.programmatic.inspection = { runId: evidence.programmatic.runId, state: 'completed', requiresReview: false }
+    result.cleanup.childArchived = true
+  }
+  parseAgentServiceTaskResult(`INSTRUMENTATION_RESULT: result=${JSON.stringify(result)}\nINSTRUMENTATION_CODE: -1\n`, { exercise })
+}
+const cleanup = { ...contracts.cleanup, schema: 1, passed: true, kind: 'production-account-task-cleanup', exercise: 'workflow-cleanup',
+  caseId: contracts.caseId, sessionId: `android-account-acceptance-${contracts.caseId}`, requestId: `account-request-${contracts.caseId}`,
+  markerSha256: createHash('sha256').update(`account-acceptance-${contracts.caseId}`).digest('hex'),
+  generation: 'host-fixture-generation', agentPid: 1234, submittedCount: 0, elapsedMs: 1, archived: false,
+  cleanup: { taskSettled: true, archived: false, childArchived: true, exportReleased: true, disconnected: true, cancelRequested: false } }
+for (const when of ['Before', 'After']) {
+  cleanup[`foreground${when}`] = true
+  cleanup[`deviceState${when}`] = { locked: true, interactive: false }
+  cleanup[`background${when}`] = { fresh: true, running: 0, queued: 0, waiting: 0, backgroundJobs: 0, packageOperations: 0 }
+}
+parseAgentServiceTaskCleanupResult(`INSTRUMENTATION_RESULT: result=${JSON.stringify(cleanup)}\nINSTRUMENTATION_CODE: -1\n`, { caseId: contracts.caseId })
+process.stdout.write('Kotlin programmatic evidence -> Node parser: 3 host contracts passed\n')
 process.stdout.write(`Host scenario output: ${output}\n`)

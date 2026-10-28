@@ -11,6 +11,8 @@
 -keep class com.minnnng.dsh_android.DocumentSearchColumns$* { *; }
 -keep class com.minnnng.dsh_android.DocumentSearchManager { *; }
 -keep class com.minnnng.dsh_android.DocumentSearchManager$* { *; }
+-keep class com.minnnng.dsh_android.DocumentTextReads { *; }
+-keep class com.minnnng.dsh_android.DocumentTextReads$* { *; }
 -keep class com.minnnng.dsh_android.DurableWorkflowOwner { *; }
 -keep class com.minnnng.dsh_android.DurableWorkflowOwner$* { *; }
 -keep class com.minnnng.dsh_android.GuestTerminal { *; }

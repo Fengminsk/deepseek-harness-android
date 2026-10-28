@@ -35,7 +35,13 @@ DSH 已有[会话工作目录文件树](../../packages/client/ui-sidebar-files/R
 
 文件页区分目录返回和路由返回，避免递归拦截路由。文件阅读页返回前不重复打开同一入口。文件浏览器共用 App 的背景氛围，滚动时暂停背景动效。
 
-Android 源码现开放受审查的 [android_ptc 入口](tool/model-ptc-readonly.md)及四个[离线 Linux 工具](tool/linux-vm-runtime.md)。Linux 注册还要求原生构建能力与经过验证的 Alpine 候选；不含客体的普通安装包不暴露这些工具。已安装的 Build 116 另已开放独立的受审查模型 workflow 入口，依据是 r26 常规 workflow 检查（11／11）、120,256 毫秒时限检查与进程死亡恢复均通过真机验证。其 [r28 正式 profile](tool/production-profile-device.md#build-116-r28) 随后在 `expectWorkflow=true` 下通过 warm 运行；首次 runtime-ready 超时仍未解释。原版不受限 Node PTC／workflow 插件及客体联网审批仍禁用。此前 r25 workflow 挂起仍未解释；后续通过不能证明其原因。已安装 Build 115 r15／r17／r21 的证据覆盖各自记录的回调、恢复和取消用例；r26 另已在真机通过所装正式 profile：受审查的 PTC 读取专用工作区文件，Linux 执行 Python 标准库分析，全程锁屏息屏。这些限定范围的测试使用脚本模型服务。[115→116 升级](tool/upgrade-116-acceptance.md)保留了 Session 字节、SAF 观察结果及合成 Keystore 凭据；真实账号登录和会话恢复执行仍未验证。原版终端控制器、完整移动端 VT 渲染器及其他已记录迁移缺口尚未完成。Root、设备 ADB 控制、离线模型推理和开机自启动仍不属于约定的本期范围。
+已安装的 Build 118 保留受审查的 [android_ptc 入口](tool/model-ptc-readonly.md)、[带已审核子工具的工作流](tool/tool-native-workflow.md)及四个[离线 Linux 工具](tool/linux-vm-runtime.md)。Linux 注册还要求原生能力与经过验证的 Alpine 镜像；不含客体的安装包不暴露这些工具。[Build 116 r28 正式 profile 检查](tool/production-profile-device.md#build-116-r28)已在 `expectWorkflow=true` 下通过，此前限定范围的 PTC、Linux 和工作流生命周期检查也已通过。首次启动超时和此前工作流挂起仍未解释。原版不受限 Node PTC／workflow 插件及客体联网审批仍禁用。完整上游语义、终端剩余 VT／OSC 行为和 Office 创作仍未完成。Root、设备 ADB 控制和离线模型推理仍不属于约定的本期范围。
+
+[真实账号任务记录](tool/agent-service-task-device.md)覆盖 r33 简单回复、r34 一次跨无线断网恢复的 Linux 调用，以及 r35 简单回复与完成通知。这些记录不证明登录界面、头像渲染、令牌刷新、重新打开旧会话或点击通知已通过验收。[115→116 升级](tool/upgrade-116-acceptance.md)及后续升级至 118 均保留了记录范围内的 Session 字节和 SAF 授权。117→118 r40 检查保留了 55 个会话文件（共 1,573,622 字节）、全部三项 SAF 授权及合成凭据；记录位于 `.cache/android/upgrade-117-118-r40-20261028.log`。Build 118 还通过了[受控原生文本读取检查](tool/file-tool-parity.md#build-118-device-evidence)。这些针对特定产物的结果不证明每项 App 交互均通过验收。
+
+Build 117 新增[定时唤醒](tool/schedule-wakeup.md)，默认关闭，只有明确开启设置并具备 Android 精确闹钟权限后才启用。它包含开机后凭据加密存储可用时恢复已保存唤醒索引的路径，不会在开机时无条件启动 Agent。自然闹钟触发、权限变更和重启恢复仍需真机验收。
+
+Build 118 r40 通过了一次真实账号 `android_ptc` 调用：一个 `list_agents` 回调有完整审计，最终回复已持久化，清理得到确认。在正式 App 完全相同的条件下，r41 通过了一个带单个子 Agent 的真实账号工作流，父子持久结果一致且清理已确认。r40 工作流失败记录继续保留：当时夹具误用普通会话归档 API 清理子会话。r41 只修正测试清理 API，另行在零新提交的情况下清理旧专用子会话，并完成新的完整验收；[清单审查记录](tool/parity-review.md)分别记录这些结果。
 
 Android 在模型工具分发边界守护 `read`、`read_image`、`write`、`glob`、`grep`、`edit`、`present`，以及动态加载的 `str_replace_editor`。会话工作目录和请求目标都必须实际解析到 App 自有工作区内。`read`、`read_image`、`write`、`edit` 和 `present` 可以使用相对工作区路径；`glob` 和 `grep` 也可以使用相对搜索路径或省略搜索路径。守卫为工具执行体固定会话目录并复查文件提供方的解析结果，避免稍后的会话目录变化重定向这些操作。原版 `str_replace_editor` 仍要求绝对文件路径；其目录查看暂不可用，因为原版两层遍历会跟随子级符号链接。新建目标只有在现存上级目录能够证明其仍在工作区内时才允许；无法确认的路径拒绝。这样可阻止模型通过普通文件工具读取工作区外的 App 私有账号和运行时文件，而可信 App 服务仍按各自权限访问。SAF 文档授权走 `android_files`，不能当作普通路径。`workspace-write` 本身只约束修改，不限制观察；此守卫是模型工具边界，并非对获批 Shell 或其他 App UID 代码的操作系统沙箱。主机夹具覆盖私有目录、符号链接和相似前缀拒绝，真机行为仍待验收。
 
@@ -101,9 +107,9 @@ Web 偏好与浏览器可修改的运行时设置分开。App 控制监听、范
 
 **网页搜索** 将搜索方式、服务参数和凭据引用合为一个原生流程。选择方式会同时调整搜索与网页读取服务；未知的自定义组合保持原样，直到用户明确更换。保存先检查各项原版配置的版本，再依次保存参数、凭据和服务选择。各项可能部分成功并立即生效；页面保留未解决的草稿，不自动重放结果未确认的写入。
 
-Android Shell 工具通过原版 DSH 工具执行流程逐条请求授权，仅 `allowed-once` 允许执行；拒绝、取消及 `never` 授权策略都不会放行。命令使用应用现有 UID 和 Android 权限执行，不提供只读或仅工作区的操作系统沙箱。逐条审批是 Android 工具的规则，不代表桌面版默认策略。Root、ADB 控制、开机自启动和离线模型推理尚未实现。
+Android Shell 工具通过原版 DSH 工具执行流程逐条请求授权，仅 `allowed-once` 允许执行；拒绝、取消及 `never` 授权策略都不会放行。命令使用应用现有 UID 和 Android 权限执行，不提供只读或仅工作区的操作系统沙箱。逐条审批是 Android 工具的规则，不代表桌面版默认策略。Root、ADB 控制和离线模型推理尚未实现；主动开启的定时唤醒有独立的权限与交付限制。
 
-会话资源页可打开由内嵌 Host 持有的 Android PTY。独立 ARM64 helper 确认每次输入和尺寸调整；Host 在页面重新进入时保留有上限的 xterm 屏幕，并在明确关闭或 Host 退出时回收进程。移动端页面投影带样式的字符格，限制可见行与样式段，并提供纯文本复制。实时输入按顺序发送输入法已确认的文字；写入失败时保留未确认文字，也保留手动发送的草稿模式。控制键与外接键盘发送 PTY 字节，方向键遵守应用光标模式。Host 通过有容量上限的队列回答支持的 xterm 查询与先前由程序设置的 OSC 颜色查询。程序的调色板和光标设置在重新进入页面后仍可恢复。[终端行为与剩余差距](../../docs/android-terminal.zh.md)列明这些限制。原版 Web 终端控制器仍被禁用，因为 APK 没有打包适用于 Android 的 `node-pty` 二进制文件。鼠标协议、完整 VT／OSC 行为、桌面停靠布局及真机 PTY／输入法验收仍未完成。
+会话资源页可打开由内嵌 Host 持有的 Android PTY。独立 ARM64 helper 确认每次输入和尺寸调整；Host 在页面重新进入时保留有上限的 xterm 屏幕，并在明确关闭或 Host 退出时回收进程。移动端页面投影带样式的字符格，限制可见行与样式段，并提供纯文本复制。实时输入按顺序发送输入法已确认的文字；写入失败时保留未确认文字，也保留手动发送的草稿模式。控制键与外接键盘发送 PTY 字节，方向键遵守应用光标模式。Host 通过有容量上限的队列回答支持的 xterm 查询与先前由程序设置的 OSC 颜色查询。程序的调色板和光标设置在重新进入页面后仍可恢复。[终端行为与剩余差距](../../docs/android-terminal.zh.md)列明这些限制。原版 Web 终端控制器仍被禁用，因为 APK 没有打包适用于 Android 的 `node-pty` 二进制文件。旧版鼠标编码、剩余 VT／OSC 行为、桌面停靠布局及真机 PTY／输入法验收仍未完成；已支持的 SGR 鼠标路径有主机测试覆盖。
 
 Shell 超时结果区分终止请求与命令已结束后才处理的截止定时器。截止时间会持续生效到输出管道关闭，因为 Shell 成功退出后仍可能有存活的后代占用管道。无法通过进程观察确认结果时，工具返回 `timedOut: null`、`timeoutStatus: "unconfirmed"` 及诊断信息，App 明确显示未确认。退出码为零本身不会清除超时标记，默认超时时长保持不变。
 
@@ -151,7 +157,7 @@ SAF 图片模型读取现在最多同时接纳两个提供方数据流。每个�
 
 **执行权限**设置页读取运行时实时提供的策略快照，区分原版文件工具沙箱模式与 Android Shell 的默认策略：隔离执行器就绪前不向模型注册命令工具。明确启用的内部迁移模式保留每次获批的 App UID Shell，并标明它不受隔离。运行时连接变化会使旧观察结果失效；页面可以进入待处理授权请求，但不会提供虚构的预设开关。Shell 命令实现独立约束前，原版权限预设服务继续禁用；该页面不证明设备 UID 行为，也不等于迁移了原版 `/permission` 指令。
 
-**沙箱与执行权限**页面区分尚不可用的通用程序执行环境与受审查的 `modelPtc` 能力。[Android PTC 工具](tool/model-ptc-readonly.md)已在源码中开放，限制为 120 秒总耗时、5 秒执行线程 CPU、经过审查的 ToolRuntime 回调，且没有直接的原生文件系统／网络授权。离线 Linux 工具还要求打包的原生能力；文件传输仍需显式授权。已安装的 Build 116 在限定范围的 r26 真机检查后，开放了独立的受审查模型 workflow 入口。包含 workflow 的正式 profile 已通过 warm 运行，但首次启动超时仍未解释；参见[保留的 r28 观察](tool/production-profile-device.md#build-116-r28)。Linux 联网审批仍禁用。[Shell 隔离门禁](tool/shell-isolation-gate.md)继续在普通模型工具中排除 `android_shell`，并在审批或进程启动前拒绝 App UID Shell 执行；内部诊断模式不向模型授予权限。
+**沙箱与执行权限**页面区分尚不可用的通用程序执行环境与受审查的 `modelPtc` 能力。[Android PTC 工具](tool/model-ptc-readonly.md)已在源码中开放，限制为 120 秒总耗时、5 秒执行线程 CPU、经过审查的 ToolRuntime 回调，且没有直接的原生文件系统／网络授权。离线 Linux 工具还要求打包的原生能力；文件传输仍需显式授权。已安装的 Build 117 保留在限定范围 r26 真机检查后开放的独立受审查模型 workflow 入口。包含 workflow 的正式 profile 已通过 warm 运行，但首次启动超时仍未解释；参见[保留的 r28 观察](tool/production-profile-device.md#build-116-r28)。Linux 联网审批仍禁用。[Shell 隔离门禁](tool/shell-isolation-gate.md)继续在普通模型工具中排除 `android_shell`，并在审批或进程启动前拒绝 App UID Shell 执行；内部诊断模式不向模型授予权限。
 
 **通用设置**将原版共享的 `ui-settings.enabled` 偏好显示为原生开关，而不是 JSON 字段。Host 配置经确认后才可操作，写入携带文档版本；回执确认前继续显示已接受的选择。重连或写入结果不确定时必须重新读取并由用户明确核对，不自动重发。已确认的值控制工作区改动、会话轨迹入口和内置未命名 PTC／极简预设的展示，不构成工具权限。如果关闭后默认值仍是未定制的内置 PTC／极简预设，App 会通过原版带版本检查的设置服务有条件地改选健康的标准预设。已定制、未知或已经变化的默认值留给用户人工核对。原版其他通用设置项及首次引导仍待迁移。
 

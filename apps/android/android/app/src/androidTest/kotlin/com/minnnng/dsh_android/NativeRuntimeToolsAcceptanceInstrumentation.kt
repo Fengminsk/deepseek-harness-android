@@ -209,6 +209,7 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
         var isolated: IsolatedRunNativeBridge? = null
         var linux: LinuxVmManager? = null
         var searches: DocumentSearchManager? = null
+        var textReads: DocumentTextReads? = null
         var saf: PtcSafAcceptanceFixture? = null
         var productionProfile: ProductionProfileAcceptanceScenario? = null
         var transportRecovery: ModelTransportRecoveryScenario? = null
@@ -342,6 +343,13 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
             startingStage("isolated-owner-ready")
             val linuxOwner by lazy { LinuxVmManager(app).also { linux = it } }
             val searchOwner by lazy { DocumentSearchManager(app).also { searches = it } }
+            val textOwner by lazy {
+                DocumentTextReads { params, signal, job ->
+                    DocumentAccess(app).read(params.getString("root"), params.getString("path"),
+                        DocumentReadAccess.offset(params.opt("offset")),
+                        params.optString("version").takeIf { it.isNotEmpty() }, signal, job)
+                }.also { textReads = it }
+            }
             val input = ParcelFileDescriptor.AutoCloseInputStream(readSocket).bufferedReader()
             startingStage("reader-starting")
             workers.execute {
@@ -377,16 +385,18 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
                                         "native.isolated.release" -> isolatedOwner.release(params)
                                         "native.documents.roots" -> DocumentAccess(app).roots()
                                         "native.storage.root" -> File(app.applicationInfo.dataDir).canonicalPath
-                                        "native.documents.read" -> DocumentAccess(app).read(params.getString("root"),
-                                            params.getString("path"), DocumentReadAccess.offset(params.opt("offset")),
-                                            params.optString("version").takeIf { it.isNotEmpty() })
+                                        "native.documents.read.prepare" -> textOwner.prepare(params)
+                                        "native.documents.read.run" -> textOwner.run(params)
+                                        "native.documents.read.cancel" -> textOwner.cancel(params.getString("id"))
                                         "native.documents.search.prepare" -> searchOwner.prepare(params.getString("id"))
                                         "native.documents.search.run" -> searchOwner.run(params)
                                         "native.documents.search.cancel" -> searchOwner.cancel(params.getString("id"))
                                         "acceptance.saf.revoke" -> {
                                             val controlled = checkNotNull(saf)
                                             check(suite == "ptc-saf" && params.getString("root") == controlled.root)
-                                            controlled.revoke(searchOwner)
+                                            val revoked = controlled.revoke(searchOwner)
+                                            check(textOwner.revokeRoot(controlled.root)) { "Owned SAF reads did not retire after revocation" }
+                                            revoked
                                         }
                                         "native.linuxVm.execute" -> linuxOwner.execute(params)
                                         "native.linuxVm.cancel" -> linuxOwner.cancel(params)
@@ -530,6 +540,7 @@ class NativeRuntimeToolsAcceptanceInstrumentation : Instrumentation() {
             try { linux?.close() } catch (failure: Throwable) { nativeOwnersClosed = false; passed = false; report.putString("linuxCloseFailure", failure.toString()) }
             stage("cleanup-searches")
             try { searches?.close() } catch (failure: Throwable) { nativeOwnersClosed = false; passed = false; report.putString("searchCloseFailure", failure.toString()) }
+            try { textReads?.close() } catch (failure: Throwable) { nativeOwnersClosed = false; passed = false; report.putString("textReadCloseFailure", failure.toString()) }
             try { saf?.close() } catch (failure: Throwable) { passed = false; report.putString("safCloseFailure", failure.toString()) }
             stage("cleanup-socket")
             try { socket?.close() } catch (_: Throwable) {}
