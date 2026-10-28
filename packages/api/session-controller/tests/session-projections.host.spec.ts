@@ -225,7 +225,7 @@ describe('session.history projections block', () => {
 
   it('serves the unit value on the tail page with asOfSeq = last event seq', async () => {
     const { ctx, session } = await harness(true)
-    ctx.sessionProjections.register(lastUserUnit())
+    void ctx.sessionProjections.register(lastUserUnit())
     seedMessages(session, 3)
     const snapshot = await opening(remote(ctx), session.id)
     const { records, projections } = snapshot
@@ -309,7 +309,7 @@ describe('session.history projections block', () => {
 
   it('returns a complete current replacement cut on each follow generation', async () => {
     const { ctx, session } = await harness(true)
-    ctx.sessionProjections.register(lastUserUnit())
+    void ctx.sessionProjections.register(lastUserUnit())
     seedMessages(session, 2)
 
     const snapshot = await opening(remote(ctx), session.id)
@@ -323,7 +323,7 @@ describe('session.history projections block', () => {
 
   it('projects an empty log at cursor -1', async () => {
     const { ctx, session } = await harness(true)
-    ctx.sessionProjections.register(lastUserUnit())
+    void ctx.sessionProjections.register(lastUserUnit())
 
     const snapshot = await opening(remote(ctx), session.id)
 
@@ -386,7 +386,7 @@ describe('session.history projections block', () => {
 
   it('never carries the block on loadOlder pages (beforeSeq present)', async () => {
     const { ctx, session } = await harness(true)
-    ctx.sessionProjections.register(lastUserUnit())
+    void ctx.sessionProjections.register(lastUserUnit())
     seedMessages(session, 5)
     const older = await page(remote(ctx), request({
       sessionId: session.id, throughSeq: session.seq - 1, beforeSeq: 3, maxMessages: 2,
@@ -407,7 +407,7 @@ describe('session.history projections block', () => {
 
   it('never exposes a host-only unit through history, listing, or push frames', async () => {
     const { ctx, session } = await harness(true)
-    ctx.sessionProjections.register(internalCountUnit())
+    void ctx.sessionProjections.register(internalCountUnit())
     const proxy = remote(ctx)
     await new Promise(resolve => setTimeout(resolve, 0))
     const abort = new AbortController()
@@ -444,7 +444,7 @@ describe('session.history projections block', () => {
     const before = await opening(proxy, session.id)
     expect(before.projections.values['test/last-user']).toEqual({ text: 'm0' })
 
-    dispose()
+    void dispose()
     const after = await opening(proxy, session.id)
     // The registry stays mounted; only the disposed key leaves while the
     // gateway-owned Session-list unit remains.
@@ -475,7 +475,7 @@ describe('session.history projections block', () => {
 describe('session.list projections column', () => {
   it('serves every already-materialized wire value from the live registry without folding', async () => {
     const { ctx, session } = await harness(true)
-    ctx.sessionProjections.register(lastUserUnit())
+    void ctx.sessionProjections.register(lastUserUnit())
     const gateway = remote(ctx)
     await new Promise(resolve => setTimeout(resolve, 0))
     session.append('turn/start', { turn: 1 })
@@ -496,7 +496,7 @@ describe('session.list projections column', () => {
     const session = ctx.sessions.create(SessionId('preset-list'), {
       meta: { cwd: '/workspace', agentPreset: 'standard' },
     })
-    ctx.sessionProjections.register(agentPresetProjectionDefinition)
+    void ctx.sessionProjections.register(agentPresetProjectionDefinition)
     const gateway = remote(ctx)
     await new Promise(resolve => setTimeout(resolve, 0))
     session.append('agent-preset/selected', { agentPreset: 'minimal' })
@@ -512,7 +512,7 @@ describe('session.list projections column', () => {
     seedMessages(session, 1)
     const unit = lastUserUnit()
     const apply = vi.fn(unit.apply)
-    ctx.sessionProjections.register({ ...unit, apply })
+    void ctx.sessionProjections.register({ ...unit, apply })
 
     const response = await remote(ctx).list(request({}))
     if (!response.ok) throw new Error('unreachable')
@@ -580,7 +580,7 @@ describe('session.list projections column', () => {
       await ctx.plugin(SessionStore)
       await ctx.plugin(AgentRegistry)
       await ctx.plugin(SessionProjectionRegistry)
-      ctx.sessionProjections.register(privatePromptUnit())
+      void ctx.sessionProjections.register(privatePromptUnit())
       await ctx.plugin(SessionProjectionCache, { writeEveryEvents: 100, writeIntervalMs: 60_000 })
       const gateway = remote(ctx)
       await new Promise(resolve => setTimeout(resolve, 0))
@@ -635,7 +635,7 @@ describe('session.list projections column', () => {
       await ctx.plugin(SessionStore)
       await ctx.plugin(AgentRegistry)
       await ctx.plugin(SessionProjectionRegistry)
-      ctx.sessionProjections.register(titleProjectionDefinition)
+      void ctx.sessionProjections.register(titleProjectionDefinition)
       await ctx.plugin(SessionProjectionCache, { writeEveryEvents: 100, writeIntervalMs: 60_000 })
       return ctx
     }
@@ -721,7 +721,7 @@ describe('session.list projections column', () => {
 
   it('a throwing column read degrades that row, never the listing', async () => {
     const { ctx, session } = await harness(true)
-    ctx.sessionProjections.register({
+    void ctx.sessionProjections.register({
       ...lastUserUnit(),
       wire: {
         viewSchema: z.union([z.object({ text: z.string() }), z.null()]),
@@ -754,7 +754,7 @@ describe('Session control projection frames', () => {
 
   it('broadcasts changed view references with the causing seq and skips same-reference applies', async () => {
     const { ctx, session } = await harness(true)
-    ctx.sessionProjections.register(lastUserUnit())
+    void ctx.sessionProjections.register(lastUserUnit())
     const proxy = remote(ctx)
     // The controller's onChanged subscription lives in an inject child whose
     // fiber activates asynchronously; yield until it lands before appending.

@@ -165,8 +165,8 @@ async function harness(options: HarnessOptions = {}) {
     defaultModelSelection: () => ({ provider: 'test', model: 'test-model' }),
     cwd,
   })
-  ctx.sessionProjections.register(turnBoundaryProjectionDefinition)
-  if (presets !== undefined) ctx.sessionProjections.register(agentPresetProjectionDefinition)
+  void ctx.sessionProjections.register(turnBoundaryProjectionDefinition)
+  if (presets !== undefined) void ctx.sessionProjections.register(agentPresetProjectionDefinition)
   const presetOf = (id: SessionId): string | null | undefined => {
     const session = ctx.sessions.get(id)
     return session === undefined ? undefined : ctx.sessionProjections.stateOf(session, 'agentPreset')

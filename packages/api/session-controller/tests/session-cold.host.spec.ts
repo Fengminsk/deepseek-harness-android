@@ -563,7 +563,7 @@ describe('subagent ownership fence', () => {
     })
     const resume = vi.spyOn(ctx.agents, 'resume')
     const remote = createSessionTestRemote(ctx, { defaultModelSelection: () => ({ provider: 'p', model: 'm' }), cwd: '/tmp' })
-    ctx.sessionProjections.register(subagentIdentityProjectionDefinition)
+    void ctx.sessionProjections.register(subagentIdentityProjectionDefinition)
 
     const history = await new SessionHistoryController(
       ctx,

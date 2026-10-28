@@ -49,8 +49,8 @@ async function harness(withPersistence = true) {
   await ctx.plugin(SessionStore)
   await ctx.plugin(AgentRegistry)
   await ctx.plugin(SessionProjectionRegistry)
-  ctx.sessionProjections.register(subagentCatalogProjectionDefinition)
-  ctx.sessionProjections.register(titleProjectionDefinition)
+  void ctx.sessionProjections.register(subagentCatalogProjectionDefinition)
+  void ctx.sessionProjections.register(titleProjectionDefinition)
   if (withPersistence) {
     await ctx.plugin(JsonlSessionPersistence, { root: join(root, 'logs'), compression: 'none' })
     const list = vi.spyOn(ctx.sessionPersistence, 'list').mockRejectedValue(new Error('unexpected corpus listing'))

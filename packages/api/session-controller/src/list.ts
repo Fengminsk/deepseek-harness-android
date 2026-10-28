@@ -81,7 +81,7 @@ export class ApiSessionList {
    * @param workSliceMs - Resolved positive integral list-work budget in milliseconds.
    */
   constructor(private readonly ctx: Context, private readonly workSliceMs: number) {
-    ctx.sessionProjections.register<'sessionListMetadata', SessionListMetadata>({
+    void ctx.sessionProjections.register<'sessionListMetadata', SessionListMetadata>({
       key: 'sessionListMetadata',
       stateSchema: sessionListMetadataSchema,
       init: () => ({ blank: true, lastPromptAt: null }),
@@ -90,7 +90,7 @@ export class ApiSessionList {
       stateVersion: 1,
     })
     ctx.inject(['attachments'], (attachmentCtx) => {
-      ctx.sessionProjections.register<'imageLimits', null>({
+      void ctx.sessionProjections.register<'imageLimits', null>({
         key: 'imageLimits',
         stateSchema: z.null(),
         init: () => null,

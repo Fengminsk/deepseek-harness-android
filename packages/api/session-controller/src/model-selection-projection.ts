@@ -79,5 +79,5 @@ function sameSelection(left: ModelSelection | null, right: ModelSelection | null
  * @param ctx - Session Controller context.
  */
 export function installModelSelectionProjection(ctx: Context): void {
-  ctx.sessionProjections.register(modelSelectionProjection)
+  void ctx.sessionProjections.register(modelSelectionProjection)
 }
