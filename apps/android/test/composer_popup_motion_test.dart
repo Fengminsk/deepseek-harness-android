@@ -404,7 +404,15 @@ void main() {
         final returning = _returningContent(tester);
         expect(returning.width, inExclusiveRange(0, menu.width));
         expect(returning.height, inExclusiveRange(0, menu.height));
-        expect(returning.center.dy, greaterThan(menu.center.dy));
+        await tester.pump(const Duration(milliseconds: 40));
+        final later = _returningContent(tester);
+        // The menu returns into its control: shrinking as it nears the anchor.
+        expect(later.width, lessThan(returning.width));
+        expect(later.height, lessThan(returning.height));
+        expect(
+          (later.center - anchor.center).distance,
+          lessThan((returning.center - anchor.center).distance),
+        );
         expect(_sourceOpacity(tester), 0);
         await settleUi(tester);
         expect(find.byType(ComposerCommands), findsNothing);

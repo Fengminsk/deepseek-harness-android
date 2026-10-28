@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Adapted from FlClash v0.9.1; see licenses/flclash-source.json.
+// Adapted from FlClash v0.9.2; see licenses/flclash-source.json.
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';

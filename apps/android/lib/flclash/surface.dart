@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Adapted from FlClash v0.9.1; see licenses/flclash-source.json.
+// Adapted from FlClash v0.9.2; see licenses/flclash-source.json.
 import 'package:dsh_android/flclash/color.dart';
 import 'package:material_ui/material_ui.dart';
 
@@ -75,19 +75,19 @@ extension ElevatedSurfaceExt on ColorScheme {
     if (brightness != Brightness.dark) {
       return this;
     }
-    final lift =
-        SurfaceLevel.card.colorOf(this).tone -
-        SurfaceLevel.page.colorOf(this).tone;
+    final lift = surfaceContainer.tone - surface.tone;
     Color raise(Color color) => color.shiftTone(lift);
     return copyWith(
-      surface: raise(surface),
+      surface: surfaceContainer,
       surfaceDim: raise(surfaceDim),
       surfaceBright: raise(surfaceBright),
       surfaceContainerLowest: raise(surfaceContainerLowest),
       surfaceContainerLow: raise(surfaceContainerLow),
-      surfaceContainer: raise(surfaceContainer),
-      surfaceContainerHigh: raise(surfaceContainerHigh),
-      surfaceContainerHighest: raise(surfaceContainerHighest),
+      surfaceContainer: surfaceContainerHigh,
+      surfaceContainerHigh: surfaceContainerHighest,
+      surfaceContainerHighest: surfaceContainerHighest.shiftTone(
+        surfaceContainerHighest.tone - surfaceContainerHigh.tone,
+      ),
     );
   }
 }

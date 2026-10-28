@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Adapted from FlClash v0.9.1 lib/ui/sheet_header.dart; see licenses/flclash-source.json.
+// Adapted from FlClash v0.9.2 lib/ui/sheet_header.dart; see licenses/flclash-source.json.
 import 'package:material_ui/material_ui.dart';
 
 /// A floating header's surface dissolves into the content below it. Its

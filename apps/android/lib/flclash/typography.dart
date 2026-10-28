@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Adapted from FlClash v0.9.1; see licenses/flclash-source.json.
+// Adapted from FlClash v0.9.2; see licenses/flclash-source.json.
 import 'package:material_ui/material_ui.dart';
 
 /// Apple's iOS Dynamic Type scale at its default size, a dp per point, with

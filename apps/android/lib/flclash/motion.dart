@@ -1,4 +1,6 @@
-// Adapted from FlClash v0.9.1; see licenses/flclash-source.json.
+// Adapted from FlClash v0.9.2; see licenses/flclash-source.json.
+import 'dart:math' as math;
+
 import 'package:flutter/animation.dart';
 import 'package:flutter/physics.dart';
 
@@ -19,4 +21,19 @@ class SpringCurve extends Curve {
   @override
   double transformInternal(double t) =>
       _simulation.x(t * seconds) + _residual * t;
+}
+
+final dropletSpring = SpringDescription.withDampingRatio(
+  mass: 1,
+  stiffness: 165,
+  ratio: 0.8,
+);
+
+/// Rises to 1 at [peak] and back, as iOS 27's droplets overshoot and swell.
+double riseAndFall(double time, double peak, double sharpness) {
+  if (time <= 0) {
+    return 0;
+  }
+  final x = time / peak;
+  return math.pow(x, sharpness) * math.exp(sharpness * (1 - x));
 }

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Adapted from FlClash v0.9.1; see licenses/flclash-source.json.
+// Adapted from FlClash v0.9.2; see licenses/flclash-source.json.
 import 'package:dsh_android/flclash/drag_back.dart';
 import 'package:dsh_android/flclash/surface.dart';
 import 'package:flutter/rendering.dart';

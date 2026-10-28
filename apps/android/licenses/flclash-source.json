@@ -1,8 +1,8 @@
 {
   "project": "FlClash",
   "repository": "https://github.com/chen08209/FlClash",
-  "revision": "8d4f9744948751f1273fe871e1d05276fac09b0e",
-  "tag": "v0.9.1",
+  "revision": "7fd417fb9a9a277c6a9339a8ac87f907df7c25f7",
+  "tag": "v0.9.2",
   "license": "GPL-3.0-only",
   "files": [
     "lib/ui/liquid_glass.dart",
@@ -15,12 +15,19 @@
     "lib/ui/popup.dart",
     "lib/ui/motion.dart",
     "lib/ui/drag_back.dart",
+    "lib/ui/navigation_dock.dart",
+    "lib/ui/button.dart",
+    "lib/ui/segmented_control.dart",
+    "lib/ui/sheet_header.dart",
+    "lib/ui/input.dart",
+    "lib/ui/switch.dart",
     "shaders/liquid_glass.frag",
     "lib/ui/navigation_dock.dart (ElasticPress and spring/paint helpers)",
     "lib/ui/button.dart (TonalButtonTheme and TonalButtonGroup)",
     "lib/ui/segmented_control.dart",
     "lib/ui/sheet_header.dart (FloatingHeader and eased edge surface fade)",
     "lib/ui/input.dart (FilledInputTheme)",
+    "lib/ui/goo.dart (gooPairOutline, gooPairDepth and their geometry helpers)",
     "lib/views/dashboard/widgets/card.dart (DashboardSwitch and mobile DashboardCard)",
     "lib/views/dashboard/style.dart (DashboardShadows and mobile card metrics)"
   ],
@@ -34,8 +41,11 @@
     "Standalone round icon controls retain circular geometry under drag; text capsules keep directional press stretch.",
     "FloatingHeader's scrim also supports bottom-edge chrome on pages and the chat sidebar, without shrinking the scroll viewport.",
     "LiquidGlass exposes its existing analytic corner renderer through borderRadius so long composer panels avoid 64-ray outline interpolation artifacts.",
-    "Popup glyphs and text use the app's existing Flutter icons and platform fonts; menu rows accept DSH section labels, descriptions and in-place retry actions.",
+    "Popup glyphs and text use the app's existing Flutter icons and platform fonts; menu rows keep DSH section labels, descriptions and in-place retry actions instead of FlClash's typed section titles, and the droplet morph keeps its glass outline without the GooSurface pills.",
     "Popup routes and carried presses honor reduced motion, and cancelled row gestures release their pointer even after winning the gesture arena.",
-    "DSH daylight surfaces add fixed micrograin and directional highlights to dashboard cards; regular and pill glass use softer saturation and thicker frost. Press glow also renders in the software fallback with glow-aware picture caching."
+    "GooSurface, ElasticPress pointer hover marks and the docked search button size are not extracted; the popup uses only the goo pair geometry its droplet returns through.",
+    "Drag-back routes restore the focus they held before the gesture instead of answering currentResult through a pageResult callback.",
+    "DSH daylight surfaces add fixed micrograin and directional highlights to dashboard cards; regular and pill glass use softer saturation and thicker frost. Press glow also renders in the software fallback with glow-aware picture caching.",
+    "Regular glass keeps its reduced dark tint alpha while taking FlClash's tint lifted from the card tone."
   ]
 }
