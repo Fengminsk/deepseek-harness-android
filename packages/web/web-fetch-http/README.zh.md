@@ -63,6 +63,8 @@ const page = await ctx.web.fetch({ url: 'https://example.com' })
 
 提供方保持请求匿名且有界：只接受不含内嵌凭据且不超过 2,048 个字符的 `http:` 与 `https:` URL。它只解析一次主机名；只要结果中有任何 IPv4 或 IPv6 地址不是公共单播地址，就拒绝整个结果，并把连接固定到已校验的地址集合。IPv6 检查会发现活动 DNS64 前缀，并拒绝指向非公开 IPv4 的转换地址。每次同源重定向都会重复解析与固定；跨源重定向会失败并要求重新调用。提供方还强制执行字节、字符、跳数和时间上限，拒绝不支持的内容类型，并发送显式产品 `User-Agent`。
 
+由逗号或空白拼接的畸形 charset 声明只要包含 UTF-8 标签（例如 `charset=utf-8,gbk`），就按严格 UTF-8 解码。非法 UTF-8 会以 `WEB_UNSUPPORTED_CONTENT_TYPE` 失败，提供方不会尝试其他编码。字节上限截断字符时，恢复会省略不完整后缀并返回 `truncated: true`；完整响应必须通过 EOF 校验。合法的单标签声明保持原有解码行为。
+
 ### 失败与恢复
 
 失败会抛出 `WebError`，其中包含可供程序路由的错误码：`WEB_INVALID_URL`、`WEB_BLOCKED_URL`、`WEB_FETCH_TOO_LARGE`、`WEB_FETCH_TIMEOUT`、`WEB_REDIRECT_BLOCKED`、`WEB_UNSUPPORTED_CONTENT_TYPE`、`WEB_ABORTED` 或 `WEB_PROVIDER_ERROR`。直接调用方可以按错误码路由；面向模型的 `web_fetch` 工具会在自己的错误包装层内把失败文本呈现给模型。
@@ -95,7 +97,7 @@ const page = await ctx.web.fetch({ url: 'https://example.com' })
 
 ### 读取路径
 
-抓取先校验 URL，只解析一次主机名，结果中只要有非公开地址就拒绝，并把连接固定到已接受地址。每次同源重定向都重复该检查；跨源重定向或非公开目标在接收响应字节前失败。最终响应按 `Content-Type` 分类、依声明的 charset 解码，并在字节上限内读取；解码后的文本再截断到字符上限。
+抓取先校验 URL，只解析一次主机名，结果中只要有非公开地址就拒绝，并把连接固定到已接受地址。每次同源重定向都重复该检查；跨源重定向或非公开目标在接收响应字节前失败。最终响应按 `Content-Type` 分类、依声明的 charset 解码（含 UTF-8 的畸形声明使用严格 UTF-8 恢复），并在字节上限内读取；解码后的文本再截断到字符上限。
 
 </details>
 
@@ -132,7 +134,8 @@ const page = await ctx.web.fetch({ url: 'https://example.com' })
 这些限制说明提供方何时不安全或不合适。它们是当前包约束。
 
 - **只解码文本内容**——包括 html/xhtml 与 `text/*` 加 JSON/XML 家族；缺少 `Content-Type` 或任何二进制类型都会抛出 `WEB_UNSUPPORTED_CONTENT_TYPE`，可提取文本的 PDF 解码属于明确的延期工作。
-- **charset 只来自 `Content-Type` 标头**（默认 UTF-8）——HTML `<meta charset>` 声明会被忽略；声明但无法识别的 charset 标签会抛出异常，而非回退。
+- **charset 只来自 `Content-Type` 标头**（默认 UTF-8）——HTML `<meta charset>` 声明会被忽略；不含 UTF-8 恢复标签的不受支持声明会抛出异常。
+- **UTF-8 恢复是偏好，不是编码探测**——同一段字节既可能是合法 UTF-8、也可能是另一种编码，长响应亦然。遇到这种情况恢复会选择 UTF-8；不含 UTF-8 标签的畸形声明仍不受支持。
 
 <a id="dev-note"></a>
 ### 开发备注
