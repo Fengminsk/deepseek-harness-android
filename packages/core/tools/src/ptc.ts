@@ -24,7 +24,7 @@ import type { ApprovalService } from '@deepseek-ai/dsh-user-approval'
 import { deepFreeze, snapshotJsonValue, type JsonValue } from '@deepseek-ai/dsh-util-values'
 import { defineTool, parameterSchemaSpecToJsonSchema } from './schema.ts'
 import { PtcCalls } from './ptc-calls.ts'
-import { TOOL_RUNTIME_SCHEDULER } from './index.ts'
+import { TOOL_ABORTED, TOOL_RUNTIME_SCHEDULER } from './index.ts'
 import type { PtcDispatchLog, ToolDefinition, ToolExecutionResult, ToolRuntime, ToolRunContext } from './index.ts'
 import type {} from './types.ts'
 
@@ -160,7 +160,8 @@ function resolveFlavor(peekRuntime: () => PtcRuntime | undefined): RunCodeFlavor
 
 /**
  * Thrown by `run_code` when the program run itself failed — a program
- * exception, a budget expiry, an abort, or substrate death. Extends
+ * exception, a budget expiry, a runtime-local abort, or substrate death. Caller
+ * cancellation uses the shared `AbortError` / `ABORTED` tool outcome. Extends
  * {@link HarnessError} (`code: 'CODE_RUN_FAILED'`); the registry's execution
  * pipeline converts it into a structured `isError` result whose text carries
  * the failure kind plus the captured logs, so the model can self-correct.
@@ -734,6 +735,11 @@ export function createRunCodeTool(registry: ToolRuntime, options: RunCodeBridgeO
           }
 
           if (result.error) {
+            if (result.error.kind === 'abort' && exec.signal.aborted) {
+              const error = new HarnessError('tool call aborted', TOOL_ABORTED)
+              error.name = 'AbortError'
+              throw error
+            }
             const logsText = result.logs.length > 0 ? `\nCaptured output:\n${result.logs.join('\n')}` : ''
             const sandboxText = result.sandbox === undefined ? ''
               : `\nFile sandbox: ${result.sandbox.mode}${result.sandbox.enforcement === undefined ? '' : `; enforcement: ${result.sandbox.enforcement}`}${result.sandbox.denied ? '; operation denied' : ''}.`

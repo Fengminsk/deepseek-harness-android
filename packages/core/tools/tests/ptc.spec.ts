@@ -10,9 +10,9 @@ import type { Scope } from '@deepseek-ai/dsh-scope'
 import SystemPrompt, { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { PtcRuntime } from '@deepseek-ai/dsh-ptc-runtime'
 import type { PtcRunRequest, PtcRunResult } from '@deepseek-ai/dsh-ptc-runtime'
-import ToolRuntime, { CodeRunFailedError, RUN_CODE_NAME, TOOL_ABORTED_BEFORE_DISPATCH, defineContentToolFixture, defineTool } from '@deepseek-ai/dsh-tools'
+import ToolRuntime, { CodeRunFailedError, RUN_CODE_NAME, TOOL_ABORTED, TOOL_ABORTED_BEFORE_DISPATCH, defineContentToolFixture, defineTool } from '@deepseek-ai/dsh-tools'
 import type { Config, JsonSchemaNode, PostToolDecision, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
-import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { Agent, AgentCancelCause } from '@deepseek-ai/dsh-agent'
 import SessionStore, { Session, SessionId } from '@deepseek-ai/dsh-session'
 import ApprovalService, { type ApprovalOutcome, type ApprovalRequest } from '@deepseek-ai/dsh-user-approval'
 import type { SessionEventMap } from '@deepseek-ai/dsh-session'
@@ -1528,7 +1528,9 @@ describe('the run_code dispatch bridge', () => {
 
   it('aborting the outer signal aborts the in-flight sub-dispatch and abandons queued ones', async () => {
     const { ctx, runtime } = await setup({ mode: 'ptc' })
+    onTestFinished(async () => { await ctx.fiber.dispose() })
     const seen: string[] = []
+    const entered = Promise.withResolvers<undefined>()
     let sawAbort = false
     ctx.tools.register(defineContentToolFixture({
       name: 'slow',
@@ -1537,8 +1539,8 @@ describe('the run_code dispatch bridge', () => {
       async execute(args, exec) {
         seen.push(args.id)
         await new Promise<void>((resolve) => {
-          const timer = setTimeout(resolve, 500)
-          exec.signal.addEventListener('abort', () => { sawAbort = true; clearTimeout(timer); resolve() }, { once: true })
+          exec.signal.addEventListener('abort', () => { sawAbort = true; resolve() }, { once: true })
+          entered.resolve(undefined)
         })
         return [{ type: 'text' as const, text: args.id }]
       },
@@ -1547,7 +1549,8 @@ describe('the run_code dispatch bridge', () => {
     runtime.behavior = async (request) => {
       const tools = request.bindings[0]!.functions
       const calls = [tools.slow!({ id: 'first' }).catch(() => 'rejected'), tools.slow!({ id: 'second' }).catch(() => 'rejected')]
-      setTimeout(() => { controller.abort('user-cancel') }, 50)
+      await entered.promise
+      controller.abort('user-cancel')
       await Promise.all(calls)
       // A real runtime would be terminated by the abort; the fake honors the
       // contract by reporting the abort as the run failure.
@@ -1555,9 +1558,57 @@ describe('the run_code dispatch bridge', () => {
     }
     const result = await runCode(ctx, 'program', { signal: controller.signal })
     expect(result.isError).toBe(true)
-    expect((result.content[0] as { text: string }).text).toContain('code run failed (abort)')
+    expect(result.error).toEqual({ message: 'tool call aborted', info: { name: 'AbortError', code: TOOL_ABORTED } })
     expect(seen).toEqual(['first'])
     expect(sawAbort).toBe(true)
+  })
+
+  it.each<AgentCancelCause>([
+    { kind: 'user' },
+    { kind: 'parent' },
+    { kind: 'hook', reason: 'policy stopped the turn' },
+    { kind: 'disposed' },
+  ])('maps a $kind caller cancellation to the native tool abort result', async (cause) => {
+    const { ctx, runtime } = await setup({ mode: 'ptc' })
+    onTestFinished(async () => { await ctx.fiber.dispose() })
+    const controller = new AbortController()
+    runtime.behavior = async (request) => {
+      controller.abort(cause)
+      expect(request.signal?.reason).toBe(cause)
+      return { logs: [], error: { kind: 'abort', message: '[object Object]' } }
+    }
+
+    const result = await runCode(ctx, 'program', { signal: controller.signal })
+
+    expect(result).toEqual({
+      content: [{ type: 'text', text: 'Error: tool call aborted' }],
+      isError: true,
+      error: {
+        message: 'tool call aborted',
+        info: { name: 'AbortError', code: TOOL_ABORTED },
+      },
+    })
+  })
+
+  it.each<[boolean, { kind: 'abort' | 'worker-exit' | 'timeout'; message: string }]>([
+    [false, { kind: 'abort', message: 'sandbox mode changed' }],
+    [true, { kind: 'worker-exit', message: 'managed process cleanup failed' }],
+    [true, { kind: 'timeout', message: 'execution deadline reached' }],
+  ])('keeps runtime failure details with caller cancellation %s: %j', async (cancelled, failure) => {
+    const { ctx, runtime } = await setup({ mode: 'ptc' })
+    onTestFinished(async () => { await ctx.fiber.dispose() })
+    const controller = new AbortController()
+    runtime.behavior = async () => {
+      if (cancelled) controller.abort({ kind: 'user' })
+      return { logs: ['got this far'], error: failure }
+    }
+
+    const result = await runCode(ctx, 'program', { signal: controller.signal })
+
+    expect(result.error).toEqual({
+      message: `code run failed (${failure.kind}): ${failure.message}\nCaptured output:\ngot this far`,
+      info: { name: 'CodeRunFailedError', code: 'CODE_RUN_FAILED' },
+    })
   })
 
   it('a runtime that starts a binding call and then REJECTS still reaches quiescence before returning', async () => {
