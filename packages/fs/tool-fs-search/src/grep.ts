@@ -373,7 +373,7 @@ export function applyGrepTool(ctx: Context, caps: GrepToolCaps): void {
   const owner = new GrepDefinitionOwner(definitionKey, ctx.tools)
   const owned = Object.freeze(Object.assign(owner, tool))
   ctx.tools.register(owned)
-  ctx.effect(() => () => owner.retire())
+  ctx.effect(() => () => { owner.retire() })
 
   ctx.on('tools/post-execute', async (exec, result, next) => {
     const decision = await next()

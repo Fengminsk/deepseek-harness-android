@@ -10,9 +10,9 @@
  */
 
 import { provideWorkingDirectoryFixture } from '@deepseek-ai/dsh-agent-loop-testkit'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, rm, utimes, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, symlink, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
@@ -71,6 +71,7 @@ describe('search tools over the real subprocess service + the packaged rg', () =
   })
 
   afterEach(async () => {
+    vi.restoreAllMocks()
     await rm(dir, { recursive: true, force: true })
   })
 
@@ -93,6 +94,66 @@ describe('search tools over the real subprocess service + the packaged rg', () =
 
     it('reports zero discoveries as No files found', async () => {
       expect(text(await call('glob', { pattern: '*.nomatch' }, agent()))).toBe('No files found')
+    })
+
+    it('prunes unrelated directories and preserves workspace-relative results', async () => {
+      await mkdir(join(dir, 'packages', 'core', 'src', 'nested'), { recursive: true })
+      await writeFile(join(dir, 'packages', 'core', 'src', 'old.ts'), '')
+      await writeFile(join(dir, 'packages', 'core', 'src', '.hidden.ts'), '')
+      await writeFile(join(dir, 'packages', 'core', 'src', 'nested', 'other.ts'), '')
+      await mkdir(join(dir, 'packages', 'src', 'core'), { recursive: true })
+      await writeFile(join(dir, 'packages', 'src', 'core', 'other.ts'), '')
+      await writeFile(join(dir, '.gitignore'), 'packages/\n')
+      await utimes(join(dir, 'packages', 'core', 'src', 'old.ts'), new Date(2000, 0, 1), new Date(2000, 0, 1))
+      const spawn = vi.spyOn(ctx.subprocess, 'spawn')
+      const ensure = vi.spyOn(ctx.workingDirectory, 'ensure')
+      const result = await call('glob', { pattern: 'packages/core/src/*.ts' }, agent())
+      expect(ensure).toHaveBeenCalledTimes(1)
+      expect(result.isError).toBe(false)
+      if (result.isError) throw new Error('expected glob success')
+      expect(result.value).toEqual({ root: '.', paths: [
+        join('packages', 'core', 'src', 'old.ts'),
+        join('packages', 'core', 'src', '.hidden.ts'),
+      ] })
+      expect(spawn.mock.calls[0]?.[0].argv.slice(3, 6)).toEqual([
+        '--glob=!**', '--glob={packages,core,src}/', '--glob=packages/core/src/*.ts',
+      ])
+      expect(spawn.mock.calls[0]?.[0].argv).not.toContain('--')
+    })
+
+    it.each(['*.ts', '**/*.ts', 'src/**/*.ts', '!src/*.ts', './src/*.ts', 'src/../src/*.ts', '.git/*.ts'])(
+      'keeps the original traversal for %s', async (pattern) => {
+        const spawn = vi.spyOn(ctx.subprocess, 'spawn')
+        const result = await call('glob', { pattern }, agent())
+        expect(result.isError).toBe(false)
+        expect(spawn.mock.calls[0]?.[0].argv).not.toContain('--glob=!**')
+      },
+    )
+
+    it.each([[1, 8170, 8192], [1, 8171, 0], [1500, 1, 23], [16, 240, 262]])('keeps %i directories of length %i searchable through Native execution', async (depth, length, pruningBytes) => {
+      const pattern = `${Array.from({ length: depth }, () => 'a'.repeat(length)).join('/')}/*.ts`
+      const spawn = vi.spyOn(ctx.subprocess, 'spawn')
+      const result = await call('glob', { pattern }, agent())
+      expect(result.isError).toBe(false)
+      expect(text(result)).toBe('No files found')
+      const argv = spawn.mock.calls[0]?.[0].argv ?? []
+      const pruning = argv.slice(3, argv.indexOf(`--glob=${pattern}`))
+      expect(pruning.reduce((bytes, arg) => bytes + Buffer.byteLength(arg) + 1, 0)).toBe(pruningBytes)
+    })
+
+    it('preserves case-sensitive matching while pruning directories', async () => {
+      const spawn = vi.spyOn(ctx.subprocess, 'spawn')
+      expect(text(await call('glob', { pattern: 'SRC/*.ts' }, agent()))).toBe('No files found')
+      expect(spawn.mock.calls[0]?.[0].argv).toContain('--glob={SRC}/')
+    })
+
+    it('prunes without adding a search root or following a directory link', async () => {
+      await mkdir(join(dir, 'src', 'nested'))
+      await writeFile(join(dir, 'src', 'nested', 'file.ts'), '')
+      await symlink(join(dir, 'src'), join(dir, 'linked'), 'junction')
+      const spawn = vi.spyOn(ctx.subprocess, 'spawn')
+      expect(text(await call('glob', { pattern: 'linked/nested/*.ts' }, agent()))).toBe('No files found')
+      expect(spawn.mock.calls[0]?.[0].argv).not.toContain('--')
     })
 
     it('excludes VCS internals even when the search root IS the VCS directory', async () => {

@@ -107,6 +107,8 @@ Node 部署在受支持的 macOS、Linux 与 Windows 目标上获得 `@vscode/ri
 
 ### 搜索如何运行
 
+未显式给出 `path` 时，对于 `packages/core/src/*.ts` 这类模式，只要每个目录分量都是 VCS 元数据之外的普通相对名称，`glob` 就会剪掉无关子树。有序的 ripgrep glob 先排除整棵树、再放行名称出现在前缀中的目录，最后应用原始文件模式。其他位置的同名目录也可能被遍历，但只有原始模式能放行文件。新增参数上限 8 KiB；超出时回退到原始遍历。搜索根、路径分隔符、符号链接处理、匹配与修改时间排序均保持不变；其他模式仍按原始方式遍历。
+
 每次调用解析打包二进制（`@vscode/ripgrep`，或 pkg 单文件运行时中可执行程序的 `-rg` 伴随文件），前置 `--no-config`，使宿主的 `RIPGREP_CONFIG_PATH` 无法向不受约束的 spawn 注入 `--pre` 预处理器，并把每个模型控制的值作为普通 argv 元素传入——不存在 shell 层，因此不涉及 shell 引号处理。collect 模式预算限制完整 stdout 与 stderr 尾部；lossy stdout 读取以 `SEARCH_RAW_OUTPUT_OVERFLOW` 失败，而不是解析静默不完整的流。工具从不读取原始 spill 路径。
 
 ### 两类预算、两类产物
