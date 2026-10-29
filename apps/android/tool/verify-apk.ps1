@@ -2,6 +2,9 @@
 <##
 Read-only delivery gate. Manifest metadata comes from aapt2, not Gradle outputs.
 Example: ./verify-apk.ps1 -ApkPath app.apk -ExpectedVersionName 0.1.0 -ExpectedVersionCode 19
+Flutter payload shape is checked independently of the APK filename and debuggable flag.
+ExpectedFlutterBuildMode optionally selects debug or the profile/release AOT contract;
+the payload alone cannot distinguish profile from release or certify runtime execution.
 ##>
 [CmdletBinding()]
 param(
@@ -9,6 +12,7 @@ param(
     [Parameter(Mandatory)][string]$ExpectedVersionName,
     [Parameter(Mandatory)][long]$ExpectedVersionCode,
     [string[]]$ExpectedAbi = @('arm64-v8a'),
+    [string]$ExpectedFlutterBuildMode = '',
     [string]$ExpectedPackageName = 'com.minnnng.dsh_android',
     [string]$ExpectedRuntimeSha256 = '',
     [string]$ExpectedPackagedLinuxUtilitySha256 = '',
@@ -36,6 +40,7 @@ $result = [ordered]@{
     manifest = $null
     abi = [ordered]@{ expected = @($ExpectedAbi); actual = @(); requiredLibraries = $requiredLibraries; libraries = @{} }
     runtime = $null
+    flutterDartPayload = $null
     linuxGuestPayload = [ordered]@{ present = $false; entries = @() }
     linuxVmCandidate = $null
     aapt2 = $null
@@ -140,7 +145,54 @@ function Get-BoundedStreamSha256([IO.Stream]$Stream, [long]$ExpectedBytes) {
     } finally { $hasher.Dispose() }
 }
 
+function Test-FlutterDartPayload($Entries, [string[]]$ActualAbi) {
+    $errors = [Collections.Generic.List[string]]::new()
+    $debugAssets = @(
+        foreach ($name in @('kernel_blob.bin', 'vm_snapshot_data', 'isolate_snapshot_data')) {
+            $entryName = "assets/flutter_assets/$name"
+            $present = $Entries.ContainsKey($entryName)
+            [ordered]@{ path = $entryName; present = $present; bytes = $(if ($present) { $Entries[$entryName].Length } else { $null }) }
+        }
+    )
+    $aotNames = @($Entries.Keys | Where-Object { $_ -cmatch '^lib/[^/]+/libapp\.so$' })
+    $hasDebug = @($debugAssets | Where-Object { $_.present }).Count -gt 0
+    $hasAot = $aotNames.Count -gt 0
+    $kind = if ($hasDebug -and $hasAot) { 'mixed' } elseif ($hasDebug) { 'debug' } elseif ($hasAot) { 'aot' } else { 'missing' }
+    $expectedKind = if (-not $ExpectedFlutterBuildMode) { $null } elseif ($ExpectedFlutterBuildMode -ceq 'debug') { 'debug' } else { 'aot' }
+    if ($kind -ceq 'missing') { $errors.Add('Flutter Dart payload is missing: neither Debug snapshots nor AOT libapp.so is present.') }
+    if ($kind -ceq 'mixed') { $errors.Add('Flutter Dart payload mixes Debug snapshots and AOT libapp.so.') }
+    if ($expectedKind -and $kind -cne $expectedKind) {
+        $errors.Add("Flutter Dart payload mode mismatch: expected $ExpectedFlutterBuildMode ($expectedKind), observed $kind.")
+    }
+    if ($hasDebug -or $expectedKind -ceq 'debug') {
+        foreach ($asset in $debugAssets) {
+            if (-not $asset.present) { $errors.Add("Required Flutter Debug asset missing: $($asset.path)") }
+            # The pinned SDK's vm_isolate_snapshot.bin and the working Build 111
+            # vm_snapshot_data are legitimately empty; the entry must still exist.
+            elseif ($asset.bytes -eq 0 -and $asset.path -cne 'assets/flutter_assets/vm_snapshot_data') {
+                $errors.Add("Required Flutter Debug asset empty: $($asset.path)")
+            }
+        }
+    }
+    $aotLibraries = @(
+        foreach ($abi in @(@($ExpectedAbi) + @($ActualAbi) | Sort-Object -Unique)) {
+            $entryName = "lib/$abi/libapp.so"
+            $present = $Entries.ContainsKey($entryName)
+            $bytes = if ($present) { $Entries[$entryName].Length } else { $null }
+            if (($hasAot -or $expectedKind -ceq 'aot') -and (-not $present -or $bytes -eq 0)) {
+                $errors.Add("Required Flutter AOT library missing or empty: $entryName")
+            }
+            [ordered]@{ abi = $abi; path = $entryName; present = $present; bytes = $bytes }
+        }
+    )
+    return [ordered]@{ expectedBuildMode = $(if ($ExpectedFlutterBuildMode) { $ExpectedFlutterBuildMode } else { $null }); kind = $kind;
+        complete = $errors.Count -eq 0; debugAssets = $debugAssets; aotLibraries = $aotLibraries; errors = @($errors.ToArray()) }
+}
+
 try {
+    if ($ExpectedFlutterBuildMode -and $ExpectedFlutterBuildMode -cnotin @('debug', 'profile', 'release')) {
+        throw 'ExpectedFlutterBuildMode must be debug, profile or release when supplied.'
+    }
     if ($ExpectedLinuxCandidate) {
         if ($ExpectedLinuxCandidateSha256 -cnotmatch '^[a-f0-9]{64}$' -or -not $ExpectedLinuxNativeLibrary) {
             throw 'An Alpine candidate requires its selected SHA256 and the build stripped native library.'
@@ -171,6 +223,10 @@ try {
             foreach ($entry in $zip.Entries) {
                 if (-not $entries.TryAdd($entry.FullName, $entry)) { $failures.Add("Duplicate ZIP entry: $($entry.FullName)") }
             }
+            $nativeEntries = @($zip.Entries | Where-Object { $_.FullName -cmatch '^lib/[^/]+/' })
+            $actualAbi = @($nativeEntries | ForEach-Object { ($_.FullName -split '/')[1] } | Sort-Object -Unique)
+            $result.flutterDartPayload = Test-FlutterDartPayload $entries $actualAbi
+            foreach ($failure in $result.flutterDartPayload.errors) { $failures.Add($failure) }
             # Guest execution has separate distribution and device gates.
             # Detect known names plus the two pinned ELF digests under any name.
             # Only entries with the exact small ELF lengths are inflated.
@@ -209,8 +265,6 @@ try {
                 $failures.Add('Linux VM assets or provider require an explicit verified Alpine candidate.')
             }
             if (-not $entries.ContainsKey('AndroidManifest.xml')) { $failures.Add('AndroidManifest.xml is missing.') }
-            $nativeEntries = @($zip.Entries | Where-Object { $_.FullName -cmatch '^lib/[^/]+/' })
-            $actualAbi = @($nativeEntries | ForEach-Object { ($_.FullName -split '/')[1] } | Sort-Object -Unique)
             $result.abi.actual = $actualAbi
             foreach ($abi in $actualAbi) {
                 if ($ExpectedAbi -cnotcontains $abi) { $failures.Add("Unexpected ABI: $abi") }

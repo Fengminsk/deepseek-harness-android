@@ -5,14 +5,15 @@ allprojects {
     }
 }
 
-val newBuildDir: Directory =
-    rootProject.layout.buildDirectory
-        .dir("../../build")
-        .get()
-rootProject.layout.buildDirectory.value(newBuildDir)
+// Flutter resolves declared snapshot paths but retains asset depfile paths.
+// Both must use the same physical directory when build/ is a Windows junction.
+val requestedBuildDir = rootProject.layout.buildDirectory.dir("../../build").get().asFile
+requestedBuildDir.mkdirs()
+val physicalBuildDir = requestedBuildDir.toPath().toRealPath().toFile()
+rootProject.layout.buildDirectory.fileValue(physicalBuildDir)
 
 subprojects {
-    val newSubprojectBuildDir: Directory = newBuildDir.dir(project.name)
+    val newSubprojectBuildDir = rootProject.layout.buildDirectory.dir(project.name)
     project.layout.buildDirectory.value(newSubprojectBuildDir)
 }
 subprojects {

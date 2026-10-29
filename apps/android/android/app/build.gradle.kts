@@ -1,5 +1,10 @@
 import java.security.MessageDigest
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.Path
+import java.util.zip.ZipFile
+import groovy.json.JsonSlurper
+import com.flutter.gradle.tasks.FlutterTask
 
 plugins {
     id("com.android.application")
@@ -194,4 +199,72 @@ flutter {
 dependencies {
     implementation("androidx.browser:browser:1.10.0")
     implementation("androidx.webkit:webkit:1.15.0")
+}
+
+// Invalidate only the shared-output cleanup marker when an earlier Flutter
+// build recorded aliases of the same files. Otherwise its cleanup can delete
+// newly generated snapshots or assets while reporting a successful build.
+fun physicalOutputPath(path: Path): Path {
+    val absolute = path.toAbsolutePath().normalize()
+    var existing = absolute
+    while (!Files.exists(existing)) {
+        existing = existing.parent ?: return absolute
+    }
+    return existing.toRealPath().resolve(existing.relativize(absolute)).normalize()
+}
+
+tasks.withType<FlutterTask>().configureEach {
+    doFirst {
+        val marker = requireNotNull(intermediateDir).resolve(".last_build_id")
+        if (marker.isFile) {
+            val buildId = marker.readText().trim()
+            require(buildId.matches(Regex("[a-f0-9]{32}"))) { "Invalid Flutter build marker: $marker" }
+            val outputs = requireNotNull(sourceDir).resolve(".dart_tool/flutter_build/$buildId/outputs.json")
+            if (outputs.isFile) {
+                val recorded = JsonSlurper().parse(outputs) as? List<*>
+                    ?: error("Invalid Flutter output inventory: $outputs")
+                val hasAlias = recorded.any { value ->
+                    val path = Path.of(value as? String ?: error("Invalid Flutter output path"))
+                    path.toAbsolutePath().normalize() != physicalOutputPath(path)
+                }
+                if (hasAlias) {
+                    val backup = marker.resolveSibling(".last_build_id.before-path-normalization-$buildId")
+                    if (!backup.exists()) marker.copyTo(backup)
+                    check(marker.delete()) { "Cannot reset Flutter shared-output marker: $marker" }
+                    logger.lifecycle("Reset Flutter output cleanup marker after resolving directory aliases")
+                }
+            }
+        }
+    }
+}
+
+// Assembly must not succeed with only the Flutter engine and static assets.
+// Keep this check independent of debuggable flags and the APK filename.
+for (mode in listOf("debug", "profile", "release")) {
+    val variant = mode.replaceFirstChar { it.uppercaseChar() }
+    val apk = layout.buildDirectory.file("outputs/apk/$mode/app-$mode.apk")
+    val verifyPayload = tasks.register("verifyFlutter${variant}Payload") {
+        dependsOn("package$variant")
+        inputs.file(apk)
+        doLast {
+            ZipFile(apk.get().asFile).use { zip ->
+                val required = mutableListOf("assets/flutter_assets/AssetManifest.bin")
+                required += if (mode == "debug") {
+                    listOf("kernel_blob.bin", "vm_snapshot_data", "isolate_snapshot_data")
+                        .map { "assets/flutter_assets/$it" }
+                } else {
+                    listOf("lib/arm64-v8a/libapp.so")
+                }
+                for (name in required) {
+                    val entry = zip.getEntry(name)
+                    // The pinned debug engine uses a valid empty VM snapshot.
+                    check(entry != null && (entry.size > 0L || name.endsWith("/vm_snapshot_data"))) {
+                        "Flutter $mode APK has no application payload at $name: ${apk.get().asFile}"
+                    }
+                }
+            }
+            logger.lifecycle("Verified Flutter $mode application payload: ${apk.get().asFile}")
+        }
+    }
+    tasks.matching { it.name == "assemble$variant" }.configureEach { dependsOn(verifyPayload) }
 }

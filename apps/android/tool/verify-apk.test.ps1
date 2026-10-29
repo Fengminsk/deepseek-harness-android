@@ -10,7 +10,10 @@ param(
     [Parameter(Mandatory)][string]$ExpectedVersionName,
     [Parameter(Mandatory)][long]$ExpectedVersionCode,
     [string]$Aapt2Path = '',
-    [string]$CandidateDir = ''
+    [string]$CandidateDir = '',
+    [string]$WorkingDebugApkPath = '',
+    [string]$WorkingAotApkPath = '',
+    [string]$BrokenFlutterApkPath = ''
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -25,7 +28,7 @@ $owner = [IO.File]::Open((Join-Path $testRoot '.owner'), [IO.FileMode]::CreateNe
 $owner.Dispose()
 $cases = [Collections.Generic.List[object]]::new()
 
-function Invoke-Verifier([string]$Path, [string]$VersionName = $ExpectedVersionName, [long]$VersionCode = $ExpectedVersionCode, [string]$RuntimeSha256 = '') {
+function Invoke-Verifier([string]$Path, [string]$VersionName = $ExpectedVersionName, [long]$VersionCode = $ExpectedVersionCode, [string]$RuntimeSha256 = '', [string]$FlutterMode = '') {
     $start = [Diagnostics.ProcessStartInfo]::new((Get-Process -Id $PID).Path)
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
@@ -36,6 +39,7 @@ function Invoke-Verifier([string]$Path, [string]$VersionName = $ExpectedVersionN
     }
     if ($Aapt2Path) { $start.ArgumentList.Add('-Aapt2Path'); $start.ArgumentList.Add($Aapt2Path) }
     if ($RuntimeSha256) { $start.ArgumentList.Add('-ExpectedRuntimeSha256'); $start.ArgumentList.Add($RuntimeSha256) }
+    if ($FlutterMode) { $start.ArgumentList.Add('-ExpectedFlutterBuildMode'); $start.ArgumentList.Add($FlutterMode) }
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $start
     try {
@@ -70,8 +74,22 @@ function New-Fixture([string]$Name, [string]$Mutation = '') {
         Write-ZipEntry $zip 'assets/runtime/runtime.zip' $runtimeBytes
         $checksum = if ($Mutation -eq 'checksum') { '0' * 64 } else { $runtimeHash }
         Write-ZipEntry $zip 'assets/runtime/runtime.sha256' ([Text.Encoding]::UTF8.GetBytes("$checksum`n"))
-        $abis = if ($Mutation -eq 'extra-abi') { @('arm64-v8a', 'x86_64') } else { @('arm64-v8a') }
+        $debug = $Mutation -notin @('no-flutter', 'aot', 'empty-aot', 'multi-abi-missing-aot')
+        $aot = $Mutation -in @('aot', 'empty-aot', 'mixed-flutter', 'multi-abi-missing-aot')
+        if ($debug) {
+            foreach ($asset in @('kernel_blob.bin', 'vm_snapshot_data', 'isolate_snapshot_data')) {
+                if ($Mutation -ceq "missing-$asset") { continue }
+                $bytes = [byte[]]@(if ($asset -cne 'vm_snapshot_data' -and $Mutation -cne "empty-$asset") { 1; 2; 3; 4 })
+                Write-ZipEntry $zip "assets/flutter_assets/$asset" $bytes
+            }
+        }
+        $abis = if ($Mutation -in @('extra-abi', 'multi-abi-missing-aot')) { @('arm64-v8a', 'x86_64') } else { @('arm64-v8a') }
         foreach ($abi in $abis) {
+            if ($aot -and -not ($Mutation -ceq 'multi-abi-missing-aot' -and $abi -ceq 'x86_64')) {
+                $bytes = [byte[]]@(if ($Mutation -cne 'empty-aot') { 127; 69; 76; 70 })
+                Write-ZipEntry $zip "lib/$abi/libapp.so" $bytes
+            }
+            if ($abi -cne 'arm64-v8a') { Write-ZipEntry $zip "lib/$abi/libpocket_ripgrep.so" ([byte[]]@(127, 69, 76, 70)) }
             foreach ($library in @('libflutter.so', 'libnode.so', 'libc++_shared.so', 'libdsh_runtime.so', 'libdsh_system.so', 'libpocket_file_publish.so', 'libpocket_ptc_script.so', 'libpocket_node_cli.so', 'libpocket_terminal_helper.so', 'libpocket_shell_supervisor.so', 'libpocket_require_builtin.so')) {
                 if ($Mutation -eq 'missing-library' -and $library -eq 'libflutter.so') { continue }
                 if ($Mutation -eq 'missing-terminal-helper' -and $library -eq 'libpocket_terminal_helper.so') { continue }
@@ -155,8 +173,39 @@ try {
     if ($outcome.exitCode -ne 0 -or -not $outcome.report.success) { throw "Valid fixture rejected: $($outcome.report.errors -join '; ')" }
     if ($outcome.report.manifest.versionCode -ne $ExpectedVersionCode -or $outcome.report.manifest.versionName -cne $ExpectedVersionName -or -not $outcome.report.manifest.label) { throw 'Manifest evidence is incomplete.' }
     if ($outcome.report.runtime.sha256 -cne $runtimeHash) { throw 'Runtime hash did not identify the nested ZIP bytes.' }
+    if (-not $outcome.report.flutterDartPayload.complete -or $outcome.report.flutterDartPayload.kind -cne 'debug') { throw 'Debug payload was not recognized.' }
+    $vm = @($outcome.report.flutterDartPayload.debugAssets | Where-Object { $_.path -ceq 'assets/flutter_assets/vm_snapshot_data' })
+    if ($vm.Count -ne 1 -or -not $vm[0].present -or $vm[0].bytes -ne 0) { throw 'Legitimate empty VM snapshot was not retained.' }
     if ((Get-FileHash -LiteralPath $baseline -Algorithm SHA256).Hash -cne $beforeHash) { throw 'Verifier changed its input APK.' }
     $cases.Add(@{ name = 'valid APK with actual compiled Manifest and unchanged input'; passed = $true })
+    foreach ($mode in @('debug')) {
+        $selected = Invoke-Verifier $baseline -FlutterMode $mode
+        if ($selected.exitCode -ne 0 -or -not $selected.report.success -or $selected.report.flutterDartPayload.expectedBuildMode -cne $mode) { throw 'Explicit Debug mode was rejected.' }
+        $cases.Add(@{ name = 'explicit Debug accepts present empty VM snapshot'; passed = $true })
+    }
+    $aotFixture = New-Fixture 'misleading-debug-name' 'aot'
+    foreach ($mode in @('', 'profile', 'release')) {
+        $selected = Invoke-Verifier $aotFixture -FlutterMode $mode
+        if ($selected.exitCode -ne 0 -or -not $selected.report.success -or $selected.report.flutterDartPayload.kind -cne 'aot') { throw "AOT payload rejected for '$mode': $($selected.report.errors -join '; ')" }
+        $cases.Add(@{ name = "AOT payload accepted with optional mode '$mode' regardless of filename"; passed = $true })
+    }
+    Assert-Rejected 'Debug payload cannot satisfy Release mode' (Invoke-Verifier $baseline -FlutterMode 'release') 'Flutter Dart payload mode mismatch'
+    Assert-Rejected 'Debug payload cannot satisfy Profile mode' (Invoke-Verifier $baseline -FlutterMode 'profile') 'Flutter Dart payload mode mismatch'
+    Assert-Rejected 'AOT payload cannot satisfy Debug mode' (Invoke-Verifier $aotFixture -FlutterMode 'debug') 'Flutter Dart payload mode mismatch'
+    Assert-Rejected 'invalid explicit Flutter mode' (Invoke-Verifier $baseline -FlutterMode 'production') 'ExpectedFlutterBuildMode must be'
+    $noFlutter = New-Fixture 'no-flutter' 'no-flutter'
+    Assert-Rejected 'no Dart payload fails automatic mode' (Invoke-Verifier $noFlutter) 'Flutter Dart payload is missing'
+    Assert-Rejected 'no Dart payload fails Debug mode' (Invoke-Verifier $noFlutter -FlutterMode 'debug') 'Required Flutter Debug asset missing'
+    Assert-Rejected 'Release requires libapp.so' (Invoke-Verifier $noFlutter -FlutterMode 'release') 'Required Flutter AOT library missing or empty'
+    foreach ($asset in @('kernel_blob.bin', 'vm_snapshot_data', 'isolate_snapshot_data')) {
+        Assert-Rejected "missing $asset" (Invoke-Verifier (New-Fixture "missing-$asset" "missing-$asset")) "Required Flutter Debug asset missing: assets/flutter_assets/$([regex]::Escape($asset))"
+    }
+    foreach ($asset in @('kernel_blob.bin', 'isolate_snapshot_data')) {
+        Assert-Rejected "empty $asset" (Invoke-Verifier (New-Fixture "empty-$asset" "empty-$asset")) "Required Flutter Debug asset empty: assets/flutter_assets/$([regex]::Escape($asset))"
+    }
+    Assert-Rejected 'empty AOT image' (Invoke-Verifier (New-Fixture 'empty-aot' 'empty-aot')) 'Required Flutter AOT library missing or empty'
+    Assert-Rejected 'AOT must cover every packaged ABI' (Invoke-Verifier (New-Fixture 'partial-aot' 'multi-abi-missing-aot')) 'Required Flutter AOT library missing or empty: lib/x86_64/libapp.so'
+    Assert-Rejected 'mixed Debug and AOT payloads' (Invoke-Verifier (New-Fixture 'mixed-flutter' 'mixed-flutter')) 'Flutter Dart payload mixes Debug snapshots and AOT'
     Assert-Rejected 'runtime checksum mismatch' (Invoke-Verifier (New-Fixture 'bad-checksum' 'checksum')) 'Embedded runtime SHA256 mismatch'
     Assert-Rejected 'missing Flutter engine' (Invoke-Verifier (New-Fixture 'missing-library' 'missing-library')) 'Required native library.*libflutter\.so'
     Assert-Rejected 'missing terminal helper' (Invoke-Verifier (New-Fixture 'missing-terminal-helper' 'missing-terminal-helper')) 'Required native library.*libpocket_terminal_helper\.so'
@@ -178,7 +227,26 @@ try {
     if ($trusted.exitCode -ne 0 -or -not $trusted.report.success) { throw 'Matching trusted runtime digest was rejected.' }
     $cases.Add(@{ name = 'trusted runtime digest matches packaged runtime'; passed = $true })
     Assert-Rejected 'trusted runtime digest mismatch' (Invoke-Verifier $baseline $ExpectedVersionName $ExpectedVersionCode ('0' * 64)) 'Embedded runtime differs from the trusted build archive'
-    @{ success = $true; cases = $cases.ToArray() } | ConvertTo-Json -Depth 5
+    # Real artifacts are read intact. Their independent version/Linux candidate
+    # failures are reported separately and never reclassified as Flutter failures.
+    foreach ($artifact in @(
+        @{ path = $WorkingDebugApkPath; mode = 'debug'; kind = 'debug' },
+        @{ path = $WorkingAotApkPath; mode = 'release'; kind = 'aot' }
+    )) {
+        if (-not $artifact.path) { continue }
+        $actual = Invoke-Verifier $artifact.path -FlutterMode $artifact.mode
+        if (-not $actual.report.flutterDartPayload.complete -or $actual.report.flutterDartPayload.kind -cne $artifact.kind) {
+            throw "Actual $($artifact.kind) APK failed Flutter verification: $($actual.report.flutterDartPayload.errors -join '; ')"
+        }
+        $cases.Add(@{ name = "actual $($artifact.kind) APK Flutter payload"; passed = $true; apkSha256 = $actual.report.apk.sha256;
+            flutterDartPayload = $actual.report.flutterDartPayload; fullApkAccepted = $actual.report.success; otherErrors = @($actual.report.errors) })
+    }
+    if ($BrokenFlutterApkPath) {
+        $actual = Invoke-Verifier $BrokenFlutterApkPath
+        Assert-Rejected 'actual missing-Dart APK fails' $actual 'Flutter Dart payload is missing'
+        if ($actual.report.flutterDartPayload.complete -or $actual.report.flutterDartPayload.kind -cne 'missing') { throw 'Actual broken APK did not report its missing Dart payload.' }
+    }
+    @{ success = $true; cases = $cases.ToArray() } | ConvertTo-Json -Depth 8
 } finally {
     # Only remove this invocation's uniquely owned fixture directory.
     $resolvedRoot = [IO.Path]::GetFullPath($testRoot)
