@@ -59,7 +59,7 @@ export interface Config {
 
 ## `@deepseek-ai/dsh-agent-instructions`
 
-- `inject`: `sessionProjections` · `workingDirectory`
+- `inject`: `agents` · `workingDirectory`
 - `source`: [`packages/context/agent-instructions/src/config.ts:18`](../packages/context/agent-instructions/src/config.ts)
 
 ```ts config-catalog
@@ -92,7 +92,7 @@ export interface Config {
 
 - `inject`: `agents` · `sessions` · `llm` · `tools` · `systemPrompt` · `sessionProjections`
 - `refs`: [`AgentOptions`](subsystems/core.md) · [`SessionId`](subsystems/core.md) · `Volatile` (`@deepseek-ai/cosmokit`)
-- `source`: [`packages/core/agent-loop/src/index.ts:303`](../packages/core/agent-loop/src/index.ts)
+- `source`: [`packages/core/agent-loop/src/index.ts:249`](../packages/core/agent-loop/src/index.ts)
 
 ```ts config-catalog
 /** Agent-loop plugin configuration. */
@@ -1478,7 +1478,7 @@ export interface HmrConfig extends ChokidarOptions {
 
 ## `@deepseek-ai/dsh-hooks-claude-code`
 
-- `inject`: `shell` · `sessionProjections` · `workingDirectory`
+- `inject`: `shell` · `workingDirectory`
 - `source`: [`packages/experimental/hooks-claude-code/src/index.ts:51`](../packages/experimental/hooks-claude-code/src/index.ts)
 
 ```ts config-catalog
@@ -1517,7 +1517,7 @@ export interface Config {
 
 ## `@deepseek-ai/dsh-hooks-codex`
 
-- `inject`: `shell` · `sessionProjections` · `workingDirectory`
+- `inject`: `shell` · `workingDirectory`
 - `source`: [`packages/experimental/hooks-codex/src/index.ts:50`](../packages/experimental/hooks-codex/src/index.ts)
 
 ```ts config-catalog
@@ -2407,7 +2407,7 @@ export interface Config {
 
 ## `@deepseek-ai/dsh-plan-mode`
 
-- `inject`: `tools` · `systemPrompt` · `sessionProjections`
+- `inject`: `tools` · `systemPrompt` · `sessionProjections` · `agents`
 - `source`: [`packages/plan/plan-mode/src/index.ts:69`](../packages/plan/plan-mode/src/index.ts)
 
 ```ts config-catalog
@@ -3901,7 +3901,7 @@ export interface Config {
 
 ## `@deepseek-ai/dsh-tool-present`
 
-- `inject`: `tools` · `fs` · `sessionProjections` · `workingDirectory`
+- `inject`: `tools` · `fs` · `agents` · `workingDirectory`
 - `source`: [`packages/deliverables/tool-present/src/index.ts:16`](../packages/deliverables/tool-present/src/index.ts)
 
 ```ts config-catalog
@@ -3994,7 +3994,7 @@ export interface Config {
 
 ## `@deepseek-ai/dsh-tool-session-query`
 
-- `inject`: `tools` · `systemPrompt` · `sessionQuery` · `sessionProjections`
+- `inject`: `tools` · `systemPrompt` · `sessionQuery` · `agents`
 - `source`: [`packages/experimental/tool-session-query/src/index.ts:28`](../packages/experimental/tool-session-query/src/index.ts)
 
 ```ts config-catalog

@@ -301,6 +301,35 @@ The cause is a TypeScript-enforced same-process input. An active cancellation ho
 
 The [event taxonomy](../architecture.md#events) owns the `agent/*` lifecycle, checkpoint, and waterfall contracts. Turn and step boundaries are durable session events rather than agent emits.
 
+## Turn and step boundaries
+
+While a Session projection registry is composed, `ctx.agents` owns the host `turnBoundary` projection and serves it through `ctx.agents.turnBoundaryOf(session)`. One unit folds every committed boundary event, so the state answers between turns and after all Agents unload; without a projection registry the accessor returns `undefined`, which readers treat as capability absence.
+
+Source: [`packages/core/agent/src/types.ts`](../../packages/core/agent/src/types.ts)
+
+```ts type-equiv
+/**
+ * Turn and step boundaries folded from one agent session log.
+ *
+ * Reader contract: `ctx.agents.turnBoundaryOf(session)` serves this state while
+ * a Session projection registry is composed, and returns `undefined` otherwise.
+ * Without agent-loop no turn events exist, so readers treat an absent state as
+ * "no open turn / no boundaries" — capability absence, not a corrupt state. A
+ * reader whose behavior has no safe fallback for that absence (the step-open
+ * decision, for example) may fail loud instead.
+ */
+interface TurnBoundaryProjection {
+  /** Seq of the open turn's `turn/start`, or null between turns. */
+  readonly openTurnStartSeq: OptionalSessionSeq
+  /** Seq of the latest `step/start` event, or null before the first step. */
+  readonly lastStepStartSeq: OptionalSessionSeq
+  /** The latest step boundary (`step/start` or `step/end`) and its seq, or null before the first step boundary. */
+  readonly lastStepBoundary: { readonly kind: 'start' | 'end'; readonly seq: SessionSeq } | null
+  /** Turn number of the latest `turn/start`; 0 before the first turn. */
+  readonly lastTurn: number
+}
+```
+
 ## Initiating Agent
 
 The process-local initiator carried by `ctx.agents` is the exact `Agent` above, not a separate frame or copied identity. Ambient presence is neither liveness proof nor authorization; the [initiator-scope decision](../../.agents/notes/implemented/architecture/2026-07-15-agent-initiator-scope.md) defines its lifetime and scope rules.
@@ -733,6 +762,14 @@ async announce(agent: Agent, source: SessionStartSource, signal?: AbortSignal): 
 get(id: SessionId): Agent | undefined
 
 /**
+ * Read the turn and step boundaries folded from one Agent Session log.
+ * @param session - Session whose committed events are folded.
+ * @returns the boundary state; `undefined` while no Session projection
+ *   registry is composed or its registration handoff is still pending.
+ */
+turnBoundaryOf(session: Session): TurnBoundaryProjection | undefined
+
+/**
  * Test whether a live agent was created through one exact parent agent's
  * scoped context. Runtime ownership is independent of durable session
  * lineage and remains unambiguous when unrelated providers reuse an id.
@@ -756,6 +793,8 @@ list(): Agent[]
  */
 roots(): Agent[]
 ```
+
+Types: [Session](session.md)
 
 Source: [`packages/core/agent/src/index.ts`](../../packages/core/agent/src/index.ts)
 

@@ -305,6 +305,37 @@ cause 是由 TypeScript 强制约束的同进程输入。活跃的取消持有�
 
 [事件分类](../architecture.zh.md#events)负责 `agent/*` 生命周期、检查点与 waterfall（瀑布式事件）约定。轮次和步骤边界是持久会话事件，而不是 agent emit。
 
+<a id="turn-and-step-boundaries"></a>
+
+## 轮次与步骤边界
+
+当组合了 Session 投影注册表时，`ctx.agents` 拥有 host 投影 `turnBoundary`，并通过 `ctx.agents.turnBoundaryOf(session)` 提供。单个单元折叠每个已提交的边界事件，因此在轮次之间、以及在所有 Agent 卸载之后仍能回答；未组合投影注册表时该访问器返回 `undefined`，读取方将其视为能力缺失。
+
+源码：[`packages/core/agent/src/types.ts`](../../packages/core/agent/src/types.ts)
+
+```ts type-equiv
+/**
+ * Turn and step boundaries folded from one agent session log.
+ *
+ * Reader contract: `ctx.agents.turnBoundaryOf(session)` serves this state while
+ * a Session projection registry is composed, and returns `undefined` otherwise.
+ * Without agent-loop no turn events exist, so readers treat an absent state as
+ * "no open turn / no boundaries" — capability absence, not a corrupt state. A
+ * reader whose behavior has no safe fallback for that absence (the step-open
+ * decision, for example) may fail loud instead.
+ */
+interface TurnBoundaryProjection {
+  /** Seq of the open turn's `turn/start`, or null between turns. */
+  readonly openTurnStartSeq: OptionalSessionSeq
+  /** Seq of the latest `step/start` event, or null before the first step. */
+  readonly lastStepStartSeq: OptionalSessionSeq
+  /** The latest step boundary (`step/start` or `step/end`) and its seq, or null before the first step boundary. */
+  readonly lastStepBoundary: { readonly kind: 'start' | 'end'; readonly seq: SessionSeq } | null
+  /** Turn number of the latest `turn/start`; 0 before the first turn. */
+  readonly lastTurn: number
+}
+```
+
 <a id="initiating-agent"></a>
 
 ## 发起 Agent
@@ -745,6 +776,14 @@ async announce(agent: Agent, source: SessionStartSource, signal?: AbortSignal): 
 get(id: SessionId): Agent | undefined
 
 /**
+ * Read the turn and step boundaries folded from one Agent Session log.
+ * @param session - Session whose committed events are folded.
+ * @returns the boundary state; `undefined` while no Session projection
+ *   registry is composed or its registration handoff is still pending.
+ */
+turnBoundaryOf(session: Session): TurnBoundaryProjection | undefined
+
+/**
  * Test whether a live agent was created through one exact parent agent's
  * scoped context. Runtime ownership is independent of durable session
  * lineage and remains unambiguous when unrelated providers reuse an id.
@@ -768,6 +807,8 @@ list(): Agent[]
  */
 roots(): Agent[]
 ```
+
+Types: [Session](session.zh.md)
 
 Source: [`packages/core/agent/src/index.ts`](../../packages/core/agent/src/index.ts)
 

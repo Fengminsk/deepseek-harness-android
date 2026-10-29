@@ -185,7 +185,7 @@ Sources: [`packages/core/session/src/types.ts:432`](../packages/core/session/src
 }
 ```
 
-Source: [`packages/core/agent/src/types.ts:96`](../packages/core/agent/src/types.ts)
+Source: [`packages/core/agent/src/types.ts:97`](../packages/core/agent/src/types.ts)
 
 ### `agent-preset/*`
 
@@ -6386,7 +6386,7 @@ Sources: [`packages/core/session/src/types.ts:428`](../packages/core/session/src
 
 SHA-256: `3d498ac2f0821d2eb5bc0704445fae7e705b675de54589cf6f9e3f7ac1a78554`
 
-Sources: [`packages/core/agent/src/types.ts:96`](../packages/core/agent/src/types.ts)
+Sources: [`packages/core/agent/src/types.ts:97`](../packages/core/agent/src/types.ts)
 
 | Property | Presence | Type |
 |---|---|---|

@@ -187,7 +187,7 @@ export type SessionEvent<T extends SessionEventType = SessionEventType> = {
 }
 ```
 
-来源：[`packages/core/agent/src/types.ts:96`](../packages/core/agent/src/types.ts)
+来源：[`packages/core/agent/src/types.ts:97`](../packages/core/agent/src/types.ts)
 
 ### `agent-preset/*`
 
@@ -6388,7 +6388,7 @@ SHA-256: `17d1afb770d9941936130996da00dc86782cfef731d8d6526162c301256a4ac3`
 
 SHA-256: `3d498ac2f0821d2eb5bc0704445fae7e705b675de54589cf6f9e3f7ac1a78554`
 
-来源：[`packages/core/agent/src/types.ts:96`](../packages/core/agent/src/types.ts)
+来源：[`packages/core/agent/src/types.ts:97`](../packages/core/agent/src/types.ts)
 
 | 属性 | 存在性 | 类型 |
 |---|---|---|
