@@ -12,7 +12,7 @@ import type {} from '@deepseek-ai/dsh-working-directory'
 import { readFileSync } from 'node:fs'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import type { Agent, PreStepDecision, TurnBoundaryProjection } from '@deepseek-ai/dsh-agent'
+import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-session-projection'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { ContextFormed } from '@deepseek-ai/dsh-llm'
@@ -43,9 +43,9 @@ import type { SubagentRunId } from '@deepseek-ai/dsh-subagent'
 import { parseClaudeCodeConfig, type ClaudeCodeHookConfig } from './config.ts'
 
 export const name = 'hooks-claude-code'
-// `shell` runs hooks and `sessionProjections` supplies turn numbers; the rest
-// are read opportunistically via ctx.get so a deployment can omit them.
-export const inject = ['shell', 'sessionProjections', 'workingDirectory']
+// `shell` runs hooks; the Agent registry, Session projections, and subagent
+// services are read opportunistically via ctx.get so a deployment can omit them.
+export const inject = ['shell', 'workingDirectory']
 
 /** Plugin config: where the CC hook config lives + substitution roots. */
 export interface Config {
@@ -317,8 +317,7 @@ const SUBAGENT_TYPE = 'general-purpose'
 /** The last open turn number in the agent's log, or 0 without an agent. */
 function lastTurn(ctx: Context, agent: Agent | undefined): number {
   if (!agent) return 0
-  const boundary = ctx.sessionProjections.stateOf(agent.session, 'turnBoundary') as TurnBoundaryProjection
-  return boundary.lastTurn
+  return ctx.get('agents')?.turnBoundaryOf(agent.session)?.lastTurn ?? 0
 }
 
 /** Flatten content blocks to the text a hook payload carries (the common case). */

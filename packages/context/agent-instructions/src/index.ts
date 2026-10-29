@@ -33,7 +33,7 @@ import { instructionCandidateGroup, instructionScopeKey, scopeForDisplayPath, ty
 
 export { Config, name }
 /** Services required by workspace instruction projection. */
-export const inject = ['sessionProjections', 'workingDirectory']
+export const inject = ['agents', 'workingDirectory']
 export {
   discoverBaselineInstructionFiles,
   loadBaselineInstructions,
@@ -303,7 +303,7 @@ export function apply(ctx: Context, config: Config): void {
   }
 
   const stepIsOpen = (session: Session): boolean => {
-    const boundary = ctx.sessionProjections.stateOf(session, 'turnBoundary')
+    const boundary = ctx.agents.turnBoundaryOf(session)
     if (boundary === undefined) {
       throw new Error('agent-instructions requires the turnBoundary session projection')
     }

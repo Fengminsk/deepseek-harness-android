@@ -549,7 +549,7 @@ export class SessionTitleService extends Service {
     const state = session === undefined ? undefined : this.work.get(session)
     const pending = state?.pending
     if (session === undefined || state === undefined || pending === undefined) return
-    const boundary = this.ctx.sessionProjections.stateOf(session, 'turnBoundary')?.lastStepBoundary
+    const boundary = this.ctx.get('agents')?.turnBoundaryOf(session)?.lastStepBoundary
     const route = session.requestHeader()?.config
     if (boundary?.kind !== 'start'
       || route?.provider !== options.provider

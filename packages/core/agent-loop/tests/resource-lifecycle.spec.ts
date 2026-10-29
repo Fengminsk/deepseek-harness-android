@@ -58,7 +58,6 @@ it.each([0, 1, 2])('retains Agent resources until all work exits with %i failed 
     signal.addEventListener('abort', () => { aborted.resolve(undefined) }, { once: true })
     await release.promise
     projectionPresentAtWorkExit = projections.stateOf(agent.session, 'inbox') !== undefined
-      && projections.stateOf(agent.session, 'turnBoundary') !== undefined
     workExited = true
   })
   const disposal = loop.dispose()
@@ -75,7 +74,8 @@ it.each([0, 1, 2])('retains Agent resources until all work exits with %i failed 
   expect(scopeDisposed).toBe(true)
   expect(abortHandled).toBe(1)
   expect(projections.stateOf(agent.session, 'inbox')).toBeUndefined()
-  expect(projections.stateOf(agent.session, 'turnBoundary')).toBeUndefined()
+  // The Agent registry owns the turn boundary; loop teardown leaves it registered.
+  expect(ctx.agents.turnBoundaryOf(agent.session)).toBeDefined()
   expect(ctx.agents.get(agent.id)).toBeUndefined()
   expect(ctx.sessions.get(agent.session.id)).toBeUndefined()
 })

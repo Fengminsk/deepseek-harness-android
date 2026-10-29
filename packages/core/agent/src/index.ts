@@ -11,14 +11,16 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { isPromise } from 'node:util/types'
 import { scopeTarget } from '@deepseek-ai/dsh-scope'
 import type { Scoped } from '@deepseek-ai/dsh-scope'
-import type { SessionEvent, SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
+import type { Session, SessionEvent, SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
+import type { ProjectionHandle } from '@deepseek-ai/dsh-session-projection'
 import { installTurnArchiveAdmission } from './archive-admission.ts'
-import type { Agent } from './types.ts'
+import { turnBoundaryProjectionDefinition } from './projection.ts'
+import type { Agent, TurnBoundaryProjection } from './types.ts'
 import type { AgentOptions, SessionStartSource } from './runtime-types.ts'
 
 export * from './runtime-types.ts'
 export * from './types.ts'
-export type * from './projection.ts'
+export * from './projection.ts'
 export * from './consumed-work.ts'
 export * from './model-selection.ts'
 export { agentCarrier, agentEvents, assembleContextFor, emitAgentEvent } from './dispatch.ts'
@@ -251,9 +253,16 @@ export class AgentRegistry extends Service {
   private activeInitiatorRuns = 0
   private initiatorDrain: PromiseWithResolvers<void> | undefined
   private initiatorDisposal: Promise<void> | undefined
+  private turnBoundary: ProjectionHandle<TurnBoundaryProjection> | undefined
 
   constructor(ctx: Context) {
     super(ctx, 'agents')
+    // The projection registry is optional for agent-only compositions; the
+    // accessor then reports the same absence the deprecated keyed read did.
+    ctx.inject(['sessionProjections'], (projectionCtx) => {
+      void projectionCtx.sessionProjections.register(turnBoundaryProjectionDefinition)
+        .then((handle) => { this.turnBoundary = handle })
+    })
     ctx.inject(['typert'], (typeCtx) => {
       typeCtx.typert.lookups.register('agent', {
         parameter: 'agent',
@@ -567,6 +576,16 @@ export class AgentRegistry extends Service {
    */
   get(id: SessionId): Agent | undefined {
     return this.store.get(id)?.agent
+  }
+
+  /**
+   * Read the turn and step boundaries folded from one Agent Session log.
+   * @param session - Session whose committed events are folded.
+   * @returns the boundary state; `undefined` while no Session projection
+   *   registry is composed or its registration handoff is still pending.
+   */
+  turnBoundaryOf(session: Session): TurnBoundaryProjection | undefined {
+    return this.turnBoundary?.stateOf(session)
   }
 
   /**

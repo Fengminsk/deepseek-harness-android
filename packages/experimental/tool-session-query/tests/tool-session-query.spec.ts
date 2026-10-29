@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context, type Fiber } from '@deepseek-ai/cordis'
-import type { Agent } from '@deepseek-ai/dsh-agent'
+import AgentRegistry, { type Agent } from '@deepseek-ai/dsh-agent'
 import { createUserMessage, ToolCallId, HarnessError , createMessage } from '@deepseek-ai/dsh-llm'
 import type { ContextFormed } from '@deepseek-ai/dsh-llm'
 import { MAX_TIMER_DELAY_MS, TimeoutReason } from '@deepseek-ai/dsh-timeout'
@@ -15,7 +15,6 @@ import SessionStore, {
   type SessionId as SessionIdValue,
 } from '@deepseek-ai/dsh-session'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
-import { turnBoundaryProjectionDefinition } from '@deepseek-ai/dsh-agent-loop'
 import SessionQueryEngine, {
   SessionQueryError,
   SessionSearchCursor,
@@ -207,8 +206,8 @@ interface Mounted {
   call(name: string, args: unknown, options?: { agent?: Agent; signal?: AbortSignal }): Promise<ToolExecutionResult>
 }
 
-function registerTurnBoundary(ctx: Context): void {
-  void ctx.sessionProjections.register(turnBoundaryProjectionDefinition)
+async function mountAgentRegistry(ctx: Context): Promise<void> {
+  await ctx.plugin(AgentRegistry)
 }
 
 async function mount(
@@ -220,7 +219,7 @@ async function mount(
   activeContexts.push(ctx)
   await ctx.plugin(SessionStore)
   await ctx.plugin(SessionProjectionRegistry)
-  registerTurnBoundary(ctx)
+  await mountAgentRegistry(ctx)
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(ToolRuntime)
   if (enforceTimeout) await ctx.plugin(TimeoutPolicy)
@@ -1656,7 +1655,8 @@ describe('search paging, prior-history bounds, titles, and cancellation', () => 
     const ctx = new Context()
     activeContexts.push(ctx)
     await ctx.plugin(SessionStore)
-    await ctx.plugin(SessionProjectionRegistry)
+    // The Agent registry serves the fold; without a projection registry it has none.
+    await ctx.plugin(AgentRegistry)
     await ctx.plugin(SystemPrompt)
     await ctx.plugin(ToolRuntime)
     await ctx.plugin(FakeQuery)

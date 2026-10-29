@@ -411,7 +411,7 @@ export function createHostOps(options: HostOpsOptions): OpTable<AgentBinding> {
     },
     'session.turns': (_input, context) => {
       const agent = requireAgent(context, 'session.turns')
-      const boundary = projection(agent.session, 'turnBoundary')
+      const boundary = ctx.get('agents')?.turnBoundaryOf(agent.session)
       if (boundary === undefined) throw new Error('$.session.turns needs the turnBoundary projection, which this deployment did not compose')
       return boundary.lastTurn
     },

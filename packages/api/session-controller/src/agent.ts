@@ -542,7 +542,7 @@ export class ApiSessionAgentController {
 
   /** Whether no turn has started, by the predicate the preset registry's `select` enforces. */
   private isBlank(session: Session): boolean {
-    const boundary = this.ctx.sessionProjections.stateOf(session, 'turnBoundary')
+    const boundary = this.ctx.agents.turnBoundaryOf(session)
     return boundary === undefined || (boundary.openTurnStartSeq === null && boundary.lastTurn === 0)
   }
 

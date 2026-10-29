@@ -311,6 +311,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'the agent, or undefined when no live agent has that id.',
       },
       {
+        signature: 'turnBoundaryOf(session: Session): TurnBoundaryProjection | undefined',
+        description: 'Read the turn and step boundaries folded from one Agent Session log.',
+        parameters: [{ name: 'session', description: 'Session whose committed events are folded.' }],
+        returns: 'the boundary state; `undefined` while no Session projection registry is composed or its registration handoff is still pending.',
+      },
+      {
         signature: 'isOwnedBy(id: SessionId, owner: Agent): boolean',
         description: 'Test whether a live agent was created through one exact parent agent\'s scoped context. Runtime ownership is independent of durable session lineage and remains unambiguous when unrelated providers reuse an id.',
         parameters: [{ name: 'id', description: 'the candidate child agent\'s shared agent/session id.' }, { name: 'owner', description: 'the expected runtime creator agent.' }],
@@ -8460,6 +8466,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'TranslationSpec',
     declaration: 'export type TranslationSpec = AnonymousTranslationSpec | PaidTranslationSpec;',
+  },
+  {
+    name: 'TurnBoundaryProjection',
+    declaration: 'export interface TurnBoundaryProjection {\n    readonly openTurnStartSeq: OptionalSessionSeq;\n    readonly lastStepStartSeq: OptionalSessionSeq;\n    readonly lastStepBoundary: {\n        readonly kind: \'start\' | \'end\';\n        readonly seq: SessionSeq;\n    } | null;\n    readonly lastTurn: number;\n}',
   },
   {
     name: 'TurnCompleteInput',

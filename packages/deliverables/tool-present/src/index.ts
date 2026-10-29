@@ -24,7 +24,7 @@ export const Config: z<Config> = z.object({
 })
 
 /** Services used by the scoped delivery tool. */
-export const inject = ['tools', 'fs', 'sessionProjections', 'workingDirectory']
+export const inject = ['tools', 'fs', 'agents', 'workingDirectory']
 
 /**
  * Register present with durable file references in its tool result.
@@ -76,7 +76,7 @@ export function apply(ctx: Context, config: Config): void {
     },
     async execute(args, exec) {
       if (exec.agent === undefined) throw new Error('present requires an agent Session')
-      const boundary = ctx.sessionProjections.stateOf(exec.agent.session, 'turnBoundary')
+      const boundary = ctx.agents.turnBoundaryOf(exec.agent.session)
       if (boundary === undefined || boundary.openTurnStartSeq === null) throw new Error('present requires an open turn')
       if (args.files.length === 0 || args.files.length > config.maxFiles) throw new Error(`present accepts 1 to ${config.maxFiles} files`)
       const cwd = await ctx.workingDirectory.ensure(exec.agent, exec.signal)

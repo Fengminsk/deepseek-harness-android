@@ -69,11 +69,12 @@ declare module '@deepseek-ai/dsh-session-projection/types' {
 /**
  * Turn and step boundaries folded from one agent session log.
  *
- * Reader contract: the key is registered by `dsh-agent-loop` and absent
- * otherwise. Without agent-loop no turn events exist, so readers treat an
- * absent key as "no open turn / no boundaries" — capability absence, not a
- * corrupt state. A reader whose behavior has no safe fallback for that
- * absence (the step-open decision, for example) may fail loud instead.
+ * Reader contract: `ctx.agents.turnBoundaryOf(session)` serves this state while
+ * a Session projection registry is composed, and returns `undefined` otherwise.
+ * Without agent-loop no turn events exist, so readers treat an absent state as
+ * "no open turn / no boundaries" — capability absence, not a corrupt state. A
+ * reader whose behavior has no safe fallback for that absence (the step-open
+ * decision, for example) may fail loud instead.
  */
 export interface TurnBoundaryProjection {
   /** Seq of the open turn's `turn/start`, or null between turns. */

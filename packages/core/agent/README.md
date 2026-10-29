@@ -66,6 +66,10 @@ await handle.agent.whenIdle()
 
 The `agent/*` events let plugins act on live work without depending on the loop package. `agent/pre-step` can reject a proposed step or replace the messages entering it; `agent/request-error` lets a listener retry a failed model request; `agent/turn-stopping` runs before an otherwise completed turn closes and can steer to keep it open. `agent/assistant-stream` carries one process-local Assistant attempt's ordered start, transient chunk, and end frames. Start names the attempt's turn and step, chunk indexes are dense from zero, and `end.index` is the next chunk position. The loop commits the complete compact stream as one `assistant/message` or `assistant/attempt` before a committed end frame, so the live event remains presentation data rather than the replay source. `agent/status`, `agent/created`, and `agent/disposed` drive UI and coordination state, and the per-message `agent/inbox/*` notifications keep inbox projections in sync. Exact signatures, dispatch modes, and payload contracts live in the generated region of the [core subsystem page](../../../docs/subsystems/core.md#cordis-surface).
 
+### Read turn and step boundaries
+
+While a Session projection registry is composed, the registry owns the host `turnBoundary` projection: one unit folds `turn/start`, `turn/end`, `step/start`, and `step/end` for every Session. Read it with `ctx.agents.turnBoundaryOf(session)` rather than a registry-level keyed read. It returns `undefined` when no projection registry is composed, which callers treat as "no open turn and no boundaries"; without the loop no turn events exist, so an idle fold is the only observable state.
+
 -----
 
 <a id="understand-the-implementation"></a>
