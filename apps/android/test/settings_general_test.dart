@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:dsh_android/auto_review_settings.dart';
 import 'package:dsh_android/configuration_edits.dart';
 import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/settings_general.dart';
@@ -9,27 +10,47 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
-Json settingsDescriptor({bool enabled = true}) => {
-  'ns': 'ui-settings',
+Json settingsDescriptor({
+  bool enabled = true,
+  String ns = 'ui-settings',
+  bool envelope = false,
+}) => {
+  'ns': ns,
   'revision': 1,
   'value': {'enabled': enabled},
   'base': {'enabled': true},
   'user': {'enabled': enabled},
-  'schema': {
-    'type': 'object',
-    'dict': {
-      'enabled': {'type': 'boolean'},
-    },
-  },
+  'schema': envelope
+      ? {
+          'uid': 2,
+          'refs': {
+            '1': {
+              'type': 'boolean',
+              'meta': {'default': false},
+            },
+            '2': {
+              'type': 'object',
+              'dict': {'enabled': 1},
+            },
+          },
+        }
+      : {
+          'type': 'object',
+          'dict': {
+            'enabled': {'type': 'boolean'},
+          },
+        },
   'secrets': <Json>[],
 };
 
 class GeneralRuntime extends RuntimeController {
-  GeneralRuntime() {
+  GeneralRuntime({this.namespace = 'ui-settings', bool envelope = false}) {
     phase = 'ready';
+    remote = settingsDescriptor(ns: namespace, envelope: envelope);
   }
 
-  Json remote = settingsDescriptor();
+  final String namespace;
+  late Json remote;
   int generation = 0, reads = 0;
   final writes = <Json>[];
   Future<dynamic> Function()? onRead;
@@ -291,5 +312,96 @@ void main() {
     await tester.pump();
     expect(runtime.defaultWrites, 1);
     expect(owner.defaultReconciler.uncertain, isTrue);
+  });
+
+  test('auto review writes the accepted value to the Android entry', () async {
+    final runtime = GeneralRuntime(namespace: 'android-auto-review');
+    final preference = AutoReviewPreference(runtime);
+    addTearDown(() {
+      preference.dispose();
+      runtime.dispose();
+    });
+    await preference.start();
+    expect(preference.confirmed, isTrue);
+    expect(preference.enabled, isTrue);
+    expect(preference.canChange, isTrue);
+
+    expect(await preference.setEnabled(false), isTrue);
+    expect(preference.enabled, isFalse);
+    expect(runtime.writes.single, {
+      'ns': 'android-auto-review',
+      'expectedRevision': 1,
+      'ops': [
+        {
+          'op': 'set',
+          'path': ['enabled'],
+          'value': false,
+        },
+      ],
+    });
+  });
+
+  test('resolves a schemastery uid/refs schema envelope', () async {
+    final runtime = GeneralRuntime(
+      namespace: 'android-auto-review',
+      envelope: true,
+    );
+    final preference = AutoReviewPreference(runtime);
+    addTearDown(() {
+      preference.dispose();
+      runtime.dispose();
+    });
+    await preference.start();
+    expect(preference.confirmed, isTrue);
+    expect(preference.canChange, isTrue);
+    expect(await preference.setEnabled(false), isTrue);
+  });
+
+  testWidgets('auto review page renders its switch and introduction', (
+    tester,
+  ) async {
+    final runtime = GeneralRuntime(namespace: 'android-auto-review');
+    addTearDown(runtime.dispose);
+    tester.view.physicalSize = const Size(1000, 2000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: pocketTheme(Brightness.dark),
+        home: AutoReviewSettingsPage(runtime: runtime),
+      ),
+    );
+    await tester.pump();
+    expect(find.text('自动审批'), findsWidgets);
+    expect(find.text('简介'), findsOneWidget);
+    expect(find.textContaining('实验性功能'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('auto-review-switch')),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('an unavailable auto review setting offers a refresh', (
+    tester,
+  ) async {
+    final runtime = GeneralRuntime(namespace: 'android-auto-review');
+    runtime.onRead = () async =>
+        throw PlatformException(code: 'disconnected');
+    addTearDown(runtime.dispose);
+    tester.view.physicalSize = const Size(1000, 2000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: pocketTheme(Brightness.dark),
+        home: AutoReviewSettingsPage(runtime: runtime),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('设置暂不可用，请刷新后重试'), findsOneWidget);
+    expect(find.byKey(const ValueKey('auto-review-refresh')), findsOneWidget);
   });
 }

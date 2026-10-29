@@ -26,6 +26,7 @@ import 'background_settings.dart';
 import 'credentials.dart';
 import 'recovery.dart';
 import 'agent_presets.dart';
+import 'auto_review_settings.dart';
 import 'subagent_model_settings.dart';
 import 'web_search_settings.dart';
 import 'permission_policy.dart';
@@ -90,12 +91,23 @@ class SettingsPage extends StatelessWidget {
                       (form) => form['ns'] == 'session-log-deepseek',
                     ))
                   SessionLogUploadSettingsRow(runtime: runtime),
-                const _InstalledVersionRow(),
               ],
             ),
             PocketSection(
               title: '你的 Agent',
               children: [
+                if (runtime.ready &&
+                    runtime.forms.any(
+                      (form) => form['ns'] == 'android-auto-review',
+                    ))
+                  PocketRow(
+                    key: const ValueKey('auto-review-settings'),
+                    icon: Icons.fact_check_outlined,
+                    title: '自动审批',
+                    subtitle: '实验性：需要审批的工具调用先由当前模型评审',
+                    onTap: () =>
+                        open(AutoReviewSettingsPage(runtime: runtime)),
+                  ),
                 PocketRow(
                   icon: Icons.hub_outlined,
                   title: '模型与连接',
@@ -215,6 +227,7 @@ class SettingsPage extends StatelessWidget {
                   subtitle: '原始配置、备份与启动故障处理',
                   onTap: () => open(RecoveryPage(controller: runtime.recovery)),
                 ),
+                const _InstalledVersionRow(),
               ],
             ),
           ],
@@ -278,6 +291,9 @@ class ConfigurationListPage extends StatelessWidget {
     'web-search-deepseek',
     'web-deepseek-api',
   }.contains(namespace);
+  // Entry ids with a dedicated native page; the generic form list omits them.
+  static bool _dedicatedPage(String namespace) =>
+      namespace == 'android-auto-review';
   // Exact bundled entry IDs keep original Web-only preferences separate from
   // native App behavior. Unknown plugin forms stay reachable in their own group.
   static String _group(String ns) => switch (ns) {
@@ -356,7 +372,9 @@ class ConfigurationListPage extends StatelessWidget {
                 ),
               ),
               for (final form in runtime.forms.where(
-                (form) => _group('${form['ns']}') == 'Agent',
+                (form) =>
+                    !_dedicatedPage('${form['ns']}') &&
+                    _group('${form['ns']}') == 'Agent',
               ))
                 _entry(context, form),
             ],
@@ -373,6 +391,7 @@ class ConfigurationListPage extends StatelessWidget {
             if (runtime.forms.any(
               (form) =>
                   form['ns'] != 'agent-preset-registry' &&
+                  !_dedicatedPage('${form['ns']}') &&
                   _group('${form['ns']}') == group,
             ))
               PocketSection(
@@ -400,6 +419,7 @@ class ConfigurationListPage extends StatelessWidget {
                     (form) =>
                         form['ns'] != 'agent-preset-registry' &&
                         !_sharedSearch('${form['ns']}') &&
+                        !_dedicatedPage('${form['ns']}') &&
                         _group('${form['ns']}') == group,
                   ))
                     _entry(context, form),

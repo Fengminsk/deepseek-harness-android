@@ -3,10 +3,11 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { createConnection, createServer } from 'node:net'
 import { join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
+import { load } from 'js-yaml'
 import { ANDROID_BUNDLES } from '../runtime/host-guard.mjs'
 
 const root = resolve(import.meta.dirname, '../../..')
@@ -90,7 +91,7 @@ test('real bootstrap rejects an enabled PTC worker before the native carrier sta
   } finally { clearTimeout(deadline) }
 })
 
-test('real profile keeps ordinary host settings and original credential reference RPCs', { timeout: 60000 }, async t => {
+test('real profile keeps ordinary host settings and original credential reference RPCs', { timeout: 180000 }, async t => {
   const home = await mkdtemp(join(root, '.cache/android/guard-ready-'))
   const profile = join(home, 'profiles/android')
   await mkdir(profile, { recursive: true })
@@ -158,6 +159,25 @@ test('real profile keeps ordinary host settings and original credential referenc
       assert.equal((await request('web.status')).phase, 'disabled')
       const settings = await request('settings.describe')
       assert.equal(settings.find(item => item.ns === 'android-runtime').value.shellOutputLimit, 8192)
+      // Auto review is part of the shipped profile and its switch is a live setting.
+      const autoReview = settings.find(item => item.ns === 'android-auto-review')
+      assert.ok(autoReview, 'The Android profile must expose Auto review settings')
+      assert.equal(autoReview.value?.enabled, false, JSON.stringify(autoReview))
+      const root = autoReview.schema.refs[autoReview.schema.uid]
+      assert.equal(autoReview.schema.refs[root.dict.enabled].type, 'boolean')
+      const enabled = await request('api.call', { namespace: 'settings', method: 'mutate', args: {
+        ns: 'android-auto-review', expectedRevision: autoReview.revision,
+        ops: [{ op: 'set', path: ['enabled'], value: true }],
+      } })
+      assert.equal(enabled.value.enabled, true)
+      const reread = await request('settings.describe')
+      assert.equal(reread.find(item => item.ns === 'android-auto-review').value.enabled, true)
+      // The persisted row must keep the packaged specifier; an anchored file URL
+      // would pin this runtime generation and disappear from the next upgrade.
+      const written = await readFile(join(profile, 'cordis.patch.yml'), 'utf8')
+      const row = load(written).find(item => item.id === 'android-auto-review')
+      assert.equal(row?.name, '@minnnng/dsh-android-runtime/auto-review.mjs', written)
+      assert.equal(row.config.enabled, true)
       const credential = (method, args) => request('api.call', { namespace: 'credentials', method, args })
       const ref = 'POCKET_GUARD_TEST_REFERENCE'
       const initial = await credential('describe', { refs: [ref] })
@@ -166,6 +186,6 @@ test('real profile keeps ordinary host settings and original credential referenc
       assert.equal((await credential('describe', { refs: [ref] }))[ref].configured, true)
       assert.equal(await credential('unset', { ref }), undefined)
       assert.equal((await credential('describe', { refs: [ref] }))[ref].configured, false)
-    })(), new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('Ready profile timed out')), 45000) })])
+    })(), new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('Ready profile timed out')), 120000) })])
   } finally { clearTimeout(deadline) }
 })

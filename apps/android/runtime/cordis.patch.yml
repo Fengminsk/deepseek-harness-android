@@ -107,6 +107,12 @@
       name: '@deepseek-ai/dsh-host-directory-picker-browse'
     - id: android-runtime
       name: '@minnnng/dsh-android-runtime'
+    # Default off. The App Settings page writes `enabled` through the settings
+    # service; standard tool approvals then ask this model reviewer first. The
+    # package subpath is stable across runtime generations, unlike the resolved
+    # file URL a relative entry name becomes in the persisted profile patch.
+    - id: android-auto-review
+      name: '@minnnng/dsh-android-runtime/auto-review.mjs'
     - id: preset-android
       name: '@deepseek-ai/dsh-agent-preset'
       config:

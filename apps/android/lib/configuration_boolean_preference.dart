@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 
+import 'configuration_edits.dart';
 import 'configuration_state.dart';
 import 'runtime.dart';
 
@@ -26,15 +27,18 @@ class ConfigurationBooleanPreference extends ChangeNotifier {
 
   bool get confirmed {
     final accepted = _form.accepted?['value'];
-    final schema = _form.accepted?['schema'];
-    final fields = schema is Map ? schema['dict'] : null;
-    final fieldSchema = fields is Map ? fields[field] : null;
-    return _form.fresh &&
-        _form.runtime.ready &&
-        accepted is Map &&
-        accepted[field] is bool &&
-        fieldSchema is Map &&
-        fieldSchema['type'] == 'boolean';
+    if (!_form.fresh ||
+        !_form.runtime.ready ||
+        accepted is! Map ||
+        accepted[field] is! bool) {
+      return false;
+    }
+    // Schemastery serializes a form schema as a uid/refs envelope; resolve it
+    // before reading the field's declared type.
+    final schema = ConfigurationSchema(_form.accepted?['schema']);
+    final fields = schema.root['dict'];
+    if (fields is! Map) return false;
+    return schema.resolve(fields[field])['type'] == 'boolean';
   }
 
   bool get busy => _form.busy || _form.loading;

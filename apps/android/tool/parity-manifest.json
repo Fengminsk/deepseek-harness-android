@@ -1713,7 +1713,7 @@
     {
       "key": "standardPreset/delegation",
       "plugin": "cordis:group",
-      "sourceDigest": "517b39d52792ef8c22919437ca870f22345995c83218297b56febf0c580bc409",
+      "sourceDigest": "b7913098ffc6c39b8875fe454036b0d148468947ffe12e2403509f17e7bbe208",
       "sources": [
         "packages/bundle/web-app/presets/standard.patch.yml"
       ],
@@ -1919,7 +1919,7 @@
     {
       "key": "standardDelegation/tool-subagent",
       "plugin": "@deepseek-ai/dsh-tool-subagent",
-      "sourceDigest": "82fbc4f2c16612a6c58ae1bd1b34b9c01fdde33aa484d890a7bcdafd218c98b2",
+      "sourceDigest": "263cb9f98fc3f439414b8c57f6c414e2938e41ed1b24b5e1238a43c7e4debe99",
       "sources": [
         "packages/bundle/web-app/presets/standard.patch.yml"
       ],
@@ -8643,7 +8643,7 @@
   "reviewInputs": [
     {
       "path": "apps/android/runtime/bootstrap.mjs",
-      "sha256": "7ef8abbd39fa15a3604769ed9105379fe6749a7ea6580c1d890ebe483bf921d8"
+      "sha256": "6a322b75c12743c7bd0b1a672ce1e1edef3c219e0fe7a3609fb3c004cbcb845b"
     },
     {
       "path": "apps/android/runtime/host-guard.mjs",
@@ -8655,7 +8655,7 @@
     },
     {
       "path": "apps/android/runtime/cordis.patch.yml",
-      "sha256": "2ded7e28f45ecb7a499d22fce0cd0a332984ea39ac784b4701fd16613e312e9b"
+      "sha256": "e3c45b940bd29e1301fd2ab94ff06c8108f999ecada65bf456430e0a054b7660"
     },
     {
       "path": "apps/android/tool/stage-preset.mjs",

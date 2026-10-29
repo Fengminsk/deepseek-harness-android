@@ -95,7 +95,7 @@ await stagePreset(root, plugin)
 await stageRipgrep({ repositoryRoot: root, staging })
 await writeFile(join(plugin, 'package.json'), JSON.stringify({
   name: '@minnnng/dsh-android-runtime', version: manifest.version, type: 'module', main: './index.mjs',
-  exports: { '.': './index.mjs', './package.json': './package.json' },
+  exports: { '.': './index.mjs', './auto-review.mjs': './auto-review.mjs', './package.json': './package.json' },
   license: 'MIT', dsh: { bundle: { patch: './cordis.patch.yml' } }, dependencies: manifest.dependencies,
 }, null, 2) + '\n')
 await copyFile(join(root, 'apps/android/runtime/bootstrap.mjs'), join(staging, 'bootstrap.mjs'))

@@ -12,6 +12,9 @@ registerHooks({
     if (specifier === '@minnnng/dsh-android-runtime') {
       return { url: new URL('./node_modules/@minnnng/dsh-android-runtime/index.mjs', import.meta.url).href, shortCircuit: true }
     }
+    if (specifier.startsWith('@minnnng/dsh-android-runtime/')) {
+      return nextResolve(specifier, { ...context, parentURL: import.meta.url })
+    }
     if (specifier === '@vscode/ripgrep' && process.platform === 'android') {
       return { url: new URL('./node_modules/@minnnng/dsh-android-runtime/android-ripgrep.mjs', import.meta.url).href, shortCircuit: true }
     }
