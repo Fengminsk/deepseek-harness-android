@@ -6,7 +6,7 @@ nor Alpine minirootfs is inside the APK. The separate source-lock and APK scan
 can be run with:
 
 ```powershell
-python apps/android/tool/linux-proot-candidate/verify-distribution.py --apk .cache/android/pocket-harness-0.1.0+84-arm64-debug.apk
+python apps/android/tool/linux-proot-candidate/verify-distribution.py --apk .cache/android/pocket-harness-0.1.0+96-arm64-debug.apk
 python -m unittest discover -s apps/android/tool/linux-proot-candidate -p 'test_*.py'
 ```
 

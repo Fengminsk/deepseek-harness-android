@@ -3,7 +3,7 @@
 只在候选 APK 已通过 `verify-apk.ps1`、并已记录 SHA-256 后运行：
 
 ```powershell
-node apps/android/tool/device-readiness.mjs --apk .cache/android/pocket-harness-0.1.0+37-arm64-debug.apk --sha256 <已记录的-sha256>
+node apps/android/tool/device-readiness.mjs --apk .cache/android/pocket-harness-0.1.0+96-arm64-debug.apk --sha256 <已记录的-sha256>
 ```
 
 命令以有界内存计算 APK 哈希，然后查询 `adb devices -l`。只有恰好一台设备已连接且授权时，才读取 Android API 等级、ABI、已安装包版本、悬浮窗 AppOp、当前窗口标题与 Agent 进程 ID。所有设备查询均为只读；此命令不会安装、启动、授予权限或保持屏幕亮起。

@@ -4,7 +4,7 @@
 本次核对时，PRoot 候选二进制和 Alpine minirootfs 均未进入 APK。可运行：
 
 ```powershell
-python apps/android/tool/linux-proot-candidate/verify-distribution.py --apk .cache/android/pocket-harness-0.1.0+84-arm64-debug.apk
+python apps/android/tool/linux-proot-candidate/verify-distribution.py --apk .cache/android/pocket-harness-0.1.0+96-arm64-debug.apk
 python -m unittest discover -s apps/android/tool/linux-proot-candidate -p 'test_*.py'
 ```
 

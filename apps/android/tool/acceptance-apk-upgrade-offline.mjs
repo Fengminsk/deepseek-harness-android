@@ -12,7 +12,7 @@ import { RecoveryFixturePlatform, launchRecoveryFixture } from './account-recove
 const root = resolve(import.meta.dirname, '../../..')
 const retainHome = process.argv.includes('--retain-home')
 const [previousApkArg, currentApkArg] = process.argv.slice(2).filter(arg => arg !== '--retain-home')
-const previousApk = resolve(previousApkArg ?? join(root, '.cache/android/pocket-harness-0.1.0+54-arm64-debug.apk'))
+const previousApk = resolve(previousApkArg ?? join(root, '.cache/android/pocket-harness-0.1.0+96-arm64-debug.apk'))
 const currentApk = resolve(currentApkArg ?? join(root, 'apps/android/build/app/outputs/flutter-apk/app-debug.apk'))
 for (const apk of [previousApk, currentApk]) {
   if (!existsSync(apk)) throw new Error(`Required versioned APK is missing: ${apk}`)

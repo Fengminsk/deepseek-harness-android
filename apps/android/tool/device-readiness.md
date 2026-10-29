@@ -4,7 +4,7 @@ Run this only after a candidate APK has already passed `verify-apk.ps1` and its
 SHA-256 has been recorded:
 
 ```powershell
-node apps/android/tool/device-readiness.mjs --apk .cache/android/pocket-harness-0.1.0+37-arm64-debug.apk --sha256 <recorded-sha256>
+node apps/android/tool/device-readiness.mjs --apk .cache/android/pocket-harness-0.1.0+96-arm64-debug.apk --sha256 <recorded-sha256>
 ```
 
 The command hashes the APK in bounded memory, then queries `adb devices -l`.

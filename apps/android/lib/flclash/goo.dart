@@ -241,10 +241,7 @@ List<Offset> _douglasPeucker(List<Offset> points, double tolerance) {
   }
 
   split(0, points.length - 1);
-  return [
-    for (final (index, point) in points.indexed)
-      if (kept[index]) point,
-  ];
+  return [for (final (index, point) in points.indexed) if (kept[index]) point];
 }
 
 double _smoothMin(double a, double b, double blend) {
