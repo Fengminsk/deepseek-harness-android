@@ -33,6 +33,14 @@ interface ProjectionHandle<S> {
 }
 ```
 
+```ts type-equiv
+/**
+ * The awaitable registration result. Awaiting yields the retained reader; calling
+ * the value disposes this registration, which is the pre-handle synchronous API.
+ */
+type ProjectionRegistration<S> = Promise<ProjectionHandle<S>> & (() => Promise<void>)
+```
+
 The [compatibility rules](../../packages/session/session-projection/README.md#deprecated-plugin-compatibility) define legacy disposal, keyed reads, and their once-per-key deprecation warnings.
 
 `ProjectionHandle.readerFor(session)` returns a `() => S` callback for one exact Session. Calling it reads the original unit and preserves borrowed state, readiness requirements and synchronous failures. Owners can compose several readers in a typed object; domain services keep them private. See [binding several states](../../packages/session/session-projection/README.md#bind-several-states-to-one-session).
@@ -251,7 +259,7 @@ The persisted projection cache service. Opens the `session_projcache` domain at 
  * @returns the viewed block, or `undefined` when no usable row exists for
  *   this lifecycle at the current Session format.
  */
-cachedSnapshot( meta: SessionHeader, keys?: ProjectionKeySelection, ): ProjectionSnapshot | undefined
+cachedSnapshot( meta: SessionHeader, keys?: readonly Extract<keyof SessionProjectionMap, string>[], ): ProjectionSnapshot | undefined
 
 /**
  * Read only a predecessor checkpoint's title as a zero-I/O listing hint.
@@ -327,7 +335,7 @@ Source: [`packages/session/session-projection-cache/src/index.ts`](../../package
  * @param definition - key, state schema, pure unit functions, and stateVersion.
  * @returns an awaitable yielding a ready handle; the callable runtime value is deprecated.
  */
-register<K extends keyof SessionProjectionMap, S>( definition: Omit<ProjectionDefinition<K, S>, 'wire'> & { wire: NonNullable<ProjectionDefinition<K, S>['wire']> }, ): Promise<ProjectionHandle<S>>
+register<K extends keyof SessionProjectionMap, S>( definition: Omit<ProjectionDefinition<K, S>, 'wire'> & { wire: NonNullable<ProjectionDefinition<K, S>['wire']> }, ): ProjectionRegistration<S>
 
 /**
  * Register one host-only unit. Its state is omitted from client snapshots
@@ -336,7 +344,28 @@ register<K extends keyof SessionProjectionMap, S>( definition: Omit<ProjectionDe
  * @param definition - key, state schema, pure unit functions, and stateVersion.
  * @returns an awaitable yielding a ready handle; the callable runtime value is deprecated.
  */
-register<K extends string, S>( definition: ProjectionDefinition<K, S> & { key: Exclude<K, keyof SessionProjectionMap> }, ): Promise<ProjectionHandle<S>>
+register<K extends string, S>( definition: ProjectionDefinition<K, S> & { key: Exclude<K, keyof SessionProjectionMap> }, ): ProjectionRegistration<S>
+
+/**
+ * Read a currently registered unit after materializing every registered
+ * unit at the Session cursor. Unrelated wire views are not produced.
+ * The returned state is live; do not mutate it. A released key has no value.
+ * The first read of each key logs one deprecation warning per registry.
+ * @param session - Session whose committed events are folded.
+ * @param key - key of the registered projection.
+ * @returns the current state, or `undefined` when the unit is not registered.
+ * Prefer an awaited registration's `handle.stateOf(session)` or the owning domain service.
+ */
+stateOf<K extends keyof SessionProjectionStateMap>(session: Session, key: K): SessionProjectionStateMap[K] | undefined
+
+/**
+ * Untyped form of the previous signature for a caller that only holds a key
+ * string; the state is not narrowed to the merged state map.
+ * @param session - Session whose committed events are folded.
+ * @param key - key of the registered projection.
+ * @returns the current state, or `undefined` when the unit is not registered.
+ */
+stateOf(session: Session, key: string): unknown
 
 /**
  * Subscribe to the change feed. The registration is an effect on the

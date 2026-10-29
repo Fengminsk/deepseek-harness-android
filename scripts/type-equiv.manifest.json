@@ -2198,6 +2198,11 @@
     },
     {
       "doc": "docs/subsystems/session-projection.md",
+      "symbol": "ProjectionRegistration",
+      "source": "packages/session/session-projection/src/index.ts"
+    },
+    {
+      "doc": "docs/subsystems/session-projection.md",
       "symbol": "SessionProjectionSummaryExcluded",
       "source": "packages/session/session-projection/src/types.ts"
     },

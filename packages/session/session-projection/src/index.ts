@@ -437,6 +437,13 @@ export class SessionProjectionRegistry extends Service {
    * Prefer an awaited registration's `handle.stateOf(session)` or the owning domain service.
    */
   stateOf<K extends keyof SessionProjectionStateMap>(session: Session, key: K): SessionProjectionStateMap[K] | undefined
+  /**
+   * Untyped form of the previous signature for a caller that only holds a key
+   * string; the state is not narrowed to the merged state map.
+   * @param session - Session whose committed events are folded.
+   * @param key - key of the registered projection.
+   * @returns the current state, or `undefined` when the unit is not registered.
+   */
   stateOf(session: Session, key: string): unknown
   stateOf(session: Session, key: string): unknown {
     if (!this.deprecatedStateOfKeys.has(key)) {
