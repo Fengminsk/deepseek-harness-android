@@ -62,7 +62,7 @@ async function setup() {
   await ctx.plugin(AgentRegistry)
   await ctx.plugin(LocalFileSystem, { cwd: root })
   await ctx.plugin(SessionProjectionRegistry)
-  ctx.sessionProjections.register(turnBoundaryProjectionDefinition)
+  void ctx.sessionProjections.register(turnBoundaryProjectionDefinition)
   const fiber = ctx.plugin(Present, { maxFiles: 2 })
   await fiber
   const owner = await agent(ctx, root)

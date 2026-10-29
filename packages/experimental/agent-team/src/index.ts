@@ -101,7 +101,7 @@ export class TeamService extends Service {
         try {
           await this.disposeRuntime()
         } finally {
-          disposeProjection()
+          void disposeProjection()
         }
       }
     }, 'agentTeams.runtimeLifecycle()')

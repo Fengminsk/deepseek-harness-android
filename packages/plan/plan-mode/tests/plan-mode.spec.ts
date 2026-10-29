@@ -89,7 +89,7 @@ function foldPlanMode(events: readonly SessionEvent[], end = events.length): boo
 
 async function mountProjectionSeam(ctx: Context): Promise<void> {
   await ctx.plugin(SessionProjectionRegistry)
-  ctx.sessionProjections.register(turnBoundaryProjectionDefinition)
+  void ctx.sessionProjections.register(turnBoundaryProjectionDefinition)
 }
 
 async function setup(config: PlanModeConfig = PLAN_CONFIG): Promise<Context> {

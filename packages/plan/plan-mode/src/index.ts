@@ -223,7 +223,7 @@ export class PlanModeController extends Service {
       },
     })
 
-    ctx.sessionProjections.register(planProjectionDefinition)
+    void ctx.sessionProjections.register(planProjectionDefinition)
 
     // The command child activates only when a command registry is composed.
     ctx.inject(['commands'], (commandCtx) => {

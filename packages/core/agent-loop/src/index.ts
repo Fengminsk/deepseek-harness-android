@@ -381,8 +381,8 @@ export class AgentLoop extends Service implements AgentFactory {
       yield unregisterInbox
       // Cordis skips later disposers after a rejection; finally still releases projections.
       yield () => ownership.dispose().finally(() => {
-        unregisterInbox()
-        unregisterTurnBoundary()
+        void unregisterInbox()
+        void unregisterTurnBoundary()
       })
     }, 'agentLoop.transactions()')
     ctx.effect(() => ctx.agents.setFactory(this), 'agentLoop.setFactory()')

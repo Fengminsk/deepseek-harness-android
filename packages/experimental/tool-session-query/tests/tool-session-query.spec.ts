@@ -208,7 +208,7 @@ interface Mounted {
 }
 
 function registerTurnBoundary(ctx: Context): void {
-  ctx.sessionProjections.register(turnBoundaryProjectionDefinition)
+  void ctx.sessionProjections.register(turnBoundaryProjectionDefinition)
 }
 
 async function mount(

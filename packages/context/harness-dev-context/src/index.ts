@@ -126,7 +126,7 @@ const ADMITS_NOTHING: LegacyPrompt = { source: null, web: null }
  * @param ctx - plugin context with every {@link inject} service.
  */
 export function apply(ctx: Context): void {
-  ctx.sessionProjections.register({
+  void ctx.sessionProjections.register({
     key: LEGACY_PROMPT,
     stateVersion: 1,
     stateSchema: legacyPromptSchema,

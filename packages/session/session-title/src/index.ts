@@ -341,9 +341,9 @@ export class SessionTitleService extends Service {
       this.work.clear()
     }, 'sessionTitle lifecycle')
 
-    ctx.sessionProjections.register(titleProjectionDefinition)
+    void ctx.sessionProjections.register(titleProjectionDefinition)
 
-    ctx.sessionProjections.register<'titleInput', TitleInputState>({
+    void ctx.sessionProjections.register<'titleInput', TitleInputState>({
       key: 'titleInput',
       stateVersion: 3,
       stateSchema: titleInputStateSchema,

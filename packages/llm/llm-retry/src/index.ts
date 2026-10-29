@@ -122,7 +122,7 @@ declare module '@deepseek-ai/dsh-session-projection/types' {
 
 export function apply(ctx: Context, config: Config = {}, internals: RetryInternals = {}): void {
   validateConfig(config)
-  ctx.sessionProjections.register({
+  void ctx.sessionProjections.register({
     key: 'llmRetry',
     stateVersion: 1,
     stateSchema: llmRetryStateSchema,

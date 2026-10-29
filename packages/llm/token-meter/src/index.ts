@@ -111,9 +111,9 @@ export class TokenMeter extends Service {
     super(ctx, 'tokenMeter')
     validateConfigKeys(config)
 
-    ctx.sessionProjections.register(tokenUsageProjectionDefinition)
-    ctx.sessionProjections.register(contextPressureProjectionDefinition)
-    ctx.sessionProjections.register(contextBreakdownProjectionDefinition)
+    void ctx.sessionProjections.register(tokenUsageProjectionDefinition)
+    void ctx.sessionProjections.register(contextPressureProjectionDefinition)
+    void ctx.sessionProjections.register(contextBreakdownProjectionDefinition)
 
     // Readers catch up independently, while eager observation bounds ordinary
     // read latency without creating state for sessions no consumer has read.

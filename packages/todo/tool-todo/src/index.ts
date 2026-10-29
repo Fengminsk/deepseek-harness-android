@@ -120,7 +120,7 @@ export function apply(ctx: Context, config: Config): void {
   // turn/start (turn/end keeps the finished checklist visible); null before the
   // first write or after a later turn begins; every other event returns the
   // same state reference.
-  ctx.sessionProjections.register<'todos', TodoItem[] | null>({
+  void ctx.sessionProjections.register<'todos', TodoItem[] | null>({
     key: 'todos',
     stateSchema: todosProjectionSchema,
     init: () => null,

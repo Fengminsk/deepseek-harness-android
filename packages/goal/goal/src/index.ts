@@ -255,7 +255,7 @@ export class GoalService extends TypertRemoteService {
     ctx.on('agent/created', ({ agent }) => {
       this.setActivation(agent.session, 'disarmed')
     })
-    ctx.sessionProjections.register(goalProjectionDefinition)
+    void ctx.sessionProjections.register(goalProjectionDefinition)
     ctx.on('session/event', (session, event) => {
       if (event.type !== 'goal/change') return
       const runtime = this.runtimeState(session)

@@ -863,7 +863,7 @@ describe('sandbox escalation API (write/edit)', () => {
     await ctx.plugin(SystemPrompt)
     await ctx.plugin(ToolRuntime)
     await ctx.plugin(SessionProjectionRegistry)
-    ctx.sessionProjections.register(turnBoundaryProjectionDefinition)
+    void ctx.sessionProjections.register(turnBoundaryProjectionDefinition)
     await ctx.plugin(SandboxPolicyService, { mode: 'workspace-write' })
     await ctx.plugin(SandboxingFakeFs)
     await ctx.plugin(FsPolicy)

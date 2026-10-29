@@ -104,7 +104,7 @@ async function harness(config: toolGoal.Config = {}) {
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(AgentRegistry)
   await ctx.plugin(ToolRuntime)
-  ctx.sessionProjections.register(turnBoundaryProjectionDefinition)
+  void ctx.sessionProjections.register(turnBoundaryProjectionDefinition)
   await ctx.plugin(GoalService)
   const fiber = await ctx.plugin(toolGoal, config)
   const root = stubAgent(`goal-tool-root-${Math.random()}`, undefined, ctx)

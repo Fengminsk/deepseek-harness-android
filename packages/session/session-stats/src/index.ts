@@ -25,5 +25,5 @@ export const inject = ['sessionProjections']
  * @param ctx - registrant context carrying the projection registry.
  */
 export function apply(ctx: Context): void {
-  ctx.sessionProjections.register(sessionStatsProjectionDefinition)
+  void ctx.sessionProjections.register(sessionStatsProjectionDefinition)
 }

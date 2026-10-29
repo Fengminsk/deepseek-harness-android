@@ -239,7 +239,7 @@ class BlockingReadFileSystem extends RecordingFileSystem {
 async function mountAgentInstructionsPlugin(ctx: Context, config: AgentInstructions.Config): Promise<Awaited<ReturnType<Context['plugin']>>> {
   if (ctx.get('workingDirectory') === undefined) provideWorkingDirectoryFixture(ctx)
   if (ctx.get('sessionProjections') === undefined) await ctx.plugin(SessionProjectionRegistry)
-  ctx.sessionProjections.register(turnBoundaryProjectionDefinition)
+  void ctx.sessionProjections.register(turnBoundaryProjectionDefinition)
   return ctx.plugin(AgentInstructions, config)
 }
 

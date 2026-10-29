@@ -227,7 +227,7 @@ export function apply(ctx: Context, config: Config): void {
   const refreshIntervalMs = config.refreshIntervalMs
   validateRefreshInterval(refreshIntervalMs)
 
-  ctx.sessionProjections.register({
+  void ctx.sessionProjections.register({
     key: 'tmuxContext',
     stateVersion: 1,
     stateSchema: tmuxContextStateSchema,

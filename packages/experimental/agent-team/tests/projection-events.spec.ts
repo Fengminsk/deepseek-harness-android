@@ -359,7 +359,7 @@ describe('Agent Teams projection events', () => {
     const registry = ctx.plugin(SessionProjectionRegistry)
     try {
       await registry
-      ctx.sessionProjections.register(teamProjectionDefinition)
+      void ctx.sessionProjections.register(teamProjectionDefinition)
       const extension = JSON.parse('{"type":"plugin/custom","__proto__":{"saved":true}}') as ContentBlock
       const queued = event('team/message/queued', {
         version: 2, teamId: TEAM, message: message({ content: [extension] }),

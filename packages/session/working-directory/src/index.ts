@@ -79,7 +79,7 @@ export class WorkingDirectoryService extends Service {
     this.defaultDirectory = directory
 
     const directorySchema = zod.string().min(1).refine(isAbsolute).nullable()
-    ctx.sessionProjections.register({
+    void ctx.sessionProjections.register({
       key: 'workingDirectory',
       stateVersion: 1,
       stateSchema: directorySchema,

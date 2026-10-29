@@ -234,7 +234,7 @@ export class PermissionPresetService extends TypertRemoteService {
     const selectionSchema = zod.object({
       currentValue: zod.string().min(1),
     }) as zod.ZodType<PermissionSelection>
-    ctx.sessionProjections.register({
+    void ctx.sessionProjections.register({
       key: 'permissions',
       stateVersion: 2,
       stateSchema: permissionStateSchema,

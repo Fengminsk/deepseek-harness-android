@@ -49,7 +49,7 @@ async function inboxAgent(rawId: string): Promise<{
   onTestFinished(() => ctx.fiber.dispose())
   await ctx.plugin(SessionStore)
   await ctx.plugin(SessionProjectionRegistry)
-  ctx.sessionProjections.register(inboxProjectionDefinition)
+  void ctx.sessionProjections.register(inboxProjectionDefinition)
   const session = ctx.sessions.create(SessionId(rawId))
   const agent = stubAgent(rawId, { ctx, session })
   const inbox = new ReactLoopInbox(ctx.sessionProjections, session, agentEvents(ctx, agent))
@@ -67,7 +67,7 @@ async function reconstructPersistedInbox(
   const session = ctx.sessions.create(SessionId(rawId))
   populate(session)
   await ctx.plugin(SessionProjectionRegistry)
-  ctx.sessionProjections.register(inboxProjectionDefinition)
+  void ctx.sessionProjections.register(inboxProjectionDefinition)
   const agent = stubAgent(rawId, { ctx, session })
   const inbox = new ReactLoopInbox(ctx.sessionProjections, session, agentEvents(ctx, agent))
   try {
@@ -106,7 +106,7 @@ describe('ReactLoopInbox', () => {
       'next-step': [],
     })
 
-    unregister()
+    void unregister()
     expect(ctx.sessionProjections.stateOf(session, 'inbox')).toBeUndefined()
     expect(() => first.nextTurn).toThrow('its projection registration is not active')
   })
@@ -141,7 +141,7 @@ describe('ReactLoopInbox', () => {
     onTestFinished(() => ctx.fiber.dispose())
     await ctx.plugin(SessionStore)
     await ctx.plugin(SessionProjectionRegistry)
-    ctx.sessionProjections.register(inboxProjectionDefinition)
+    void ctx.sessionProjections.register(inboxProjectionDefinition)
     const parent = ctx.sessions.create(SessionId('inbox-fork-parent'))
     const parentAgent = stubAgent('inbox-fork-parent', { ctx, session: parent })
     const parentInbox = new ReactLoopInbox(ctx.sessionProjections, parent, agentEvents(ctx, parentAgent))

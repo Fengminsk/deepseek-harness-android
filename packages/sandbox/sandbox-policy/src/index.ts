@@ -130,7 +130,7 @@ export class SandboxPolicyService extends Service {
     this.defaultMode = config.mode as SandboxMode
     this.workspaceRoot = resolveWorkspaceRoot(config.workspaceRoot ?? process.cwd())
 
-    ctx.sessionProjections.register({
+    void ctx.sessionProjections.register({
       key: 'sandboxMode',
       stateVersion: 1,
       stateSchema: sandboxModeStateSchema,

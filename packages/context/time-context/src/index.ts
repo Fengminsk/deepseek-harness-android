@@ -154,7 +154,7 @@ export function apply(ctx: Context, config: Config): void {
     return created
   }
 
-  ctx.sessionProjections.register({
+  void ctx.sessionProjections.register({
     key: 'timeContext',
     stateVersion: 2,
     stateSchema: timeContextStateSchema,

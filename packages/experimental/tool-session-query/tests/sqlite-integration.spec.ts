@@ -34,7 +34,7 @@ function fakeAgent(session: Session): Agent {
 }
 
 function registerTurnBoundary(ctx: Context): void {
-  ctx.sessionProjections.register(turnBoundaryProjectionDefinition)
+  void ctx.sessionProjections.register(turnBoundaryProjectionDefinition)
 }
 
 describe('tool-session-query with the real SQLite provider', () => {

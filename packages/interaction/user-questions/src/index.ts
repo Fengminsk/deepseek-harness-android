@@ -84,7 +84,7 @@ export class UserQuestionService extends TypertRemoteService {
   constructor(ctx: Context) {
     super(ctx, 'userQuestions')
     ctx.inject(['sessionProjections'], (projectionCtx) => {
-      projectionCtx.sessionProjections.register(userQuestionProjectionDefinition)
+      void projectionCtx.sessionProjections.register(userQuestionProjectionDefinition)
     })
     ctx.effect(() => () => {
       for (const calls of this.waits.values()) {
