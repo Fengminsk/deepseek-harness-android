@@ -1230,11 +1230,12 @@ export class SubagentManager {
     try {
       await (externalDisposal ?? releaseHandle())
     } catch (error: unknown) {
-      failures.push(new SubagentError(
+      const disposalFailure = new SubagentError(
         `subagent "${childId}" activation handle disposal failed: ${detail(error)}`,
         'ACTIVATION_TEARDOWN_FAILED',
         { cause: error },
-      ))
+      )
+      failures.push(disposalFailure)
       if (activation.kind === 'local' && this.ctx.agents.get(childId) !== activation.handle.agent) {
         finalize()
         return
@@ -1243,7 +1244,7 @@ export class SubagentManager {
         await releaseHandle()
         finalize()
       } })
-      throw combinedFailure()
+      throw combinedFailure() ?? disposalFailure
     }
     finalize()
   }

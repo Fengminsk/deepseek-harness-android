@@ -202,5 +202,5 @@ export function applyEditTool(ctx: Context, sandbox: FsSandboxController): void 
   const owner = new EditDefinitionOwner(definitionKey, ctx.tools)
   const owned = Object.freeze(Object.assign(owner, definition))
   ctx.tools.register(owned)
-  ctx.effect(() => () => owner.retire())
+  ctx.effect(() => () => { owner.retire() })
 }

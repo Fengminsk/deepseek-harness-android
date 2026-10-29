@@ -186,5 +186,5 @@ export function applyWriteTool(ctx: Context, sandbox: FsSandboxController): void
   const owner = new WriteDefinitionOwner(definitionKey, ctx.tools)
   const owned = Object.freeze(Object.assign(owner, definition))
   ctx.tools.register(owned)
-  ctx.effect(() => () => owner.retire())
+  ctx.effect(() => () => { owner.retire() })
 }

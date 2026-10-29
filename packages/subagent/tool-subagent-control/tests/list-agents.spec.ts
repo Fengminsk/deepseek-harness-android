@@ -161,7 +161,7 @@ describe('dsh-tool-subagent-control/list-agents', () => {
     expect(definition).toBeDefined()
     expect(tool.isFirstPartyListAgentsDefinition(definition!, parent)).toBe(true)
     expect(tool.isFirstPartyListAgentsDefinition({ ...definition! }, parent)).toBe(false)
-    expect(tool.isFirstPartyListAgentsDefinition(definition!, Object.create(parent))).toBe(false)
+    expect(tool.isFirstPartyListAgentsDefinition(definition!, Object.create(parent) as typeof parent)).toBe(false)
   })
 
   it('renders the empty result as (no subagents)', async () => {

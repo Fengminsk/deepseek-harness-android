@@ -101,7 +101,7 @@ export async function convertInSubprocess(
   let exitSignal: NodeJS.Signals | null
   try {
     [exitCode, exitSignal] = await new Promise((resolve) => {
-      child.once('close', (code, signalName) => resolve([code, signalName]))
+      child.once('close', (code, signalName) => { resolve([code, signalName]) })
     })
   } finally {
     clearTimeout(deadline)
@@ -110,8 +110,10 @@ export async function convertInSubprocess(
   const stdout = Buffer.concat(stdoutChunks).toString('utf8')
   const stderr = Buffer.concat(stderrChunks).toString('utf8')
   signal.throwIfAborted()
+  // oxlint-disable-next-line typescript/no-unnecessary-condition -- the deadline timer sets it while the child is awaited.
   if (timedOut) throw new OfficeToPdfError('timeout', 'LibreOffice conversion timed out.')
   if (spawnError !== undefined) throw new OfficeToPdfError('unavailable', 'LibreOffice child could not start.', { cause: spawnError })
+  // oxlint-disable-next-line typescript/no-unnecessary-condition -- the stdout/stderr listeners set it while the child is awaited.
   if (overflow) throw new OfficeToPdfError('failed', 'LibreOffice child exceeded its diagnostic limit.')
   if (exitCode !== 0 || exitSignal !== null) {
     throw new OfficeToPdfError(codeFromFailure(stderr), 'LibreOffice child conversion failed.', { cause: new Error(stderr || `exit ${exitCode ?? exitSignal}`) })

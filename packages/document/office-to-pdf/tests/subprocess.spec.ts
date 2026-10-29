@@ -120,6 +120,7 @@ it('kills and joins the child when the last conversion reader cancels', async ()
   const work = convertInSubprocess('/source.docx', '/converted.pdf', { timeoutMs: 1000 }, controller.signal)
   controller.abort(reason)
   await expect(work).rejects.toBe(reason)
+  // oxlint-disable-next-line typescript/unbound-method -- fakeChild replaces the prototype method with a spy that never uses `this`.
   expect(child.kill).toHaveBeenCalledExactlyOnceWith('SIGKILL')
 })
 
@@ -131,5 +132,6 @@ it('hard-stops a child that does not settle before the configured deadline', asy
   const rejected = expect(work).rejects.toMatchObject({ code: 'timeout' })
   await vi.advanceTimersByTimeAsync(5)
   await rejected
+  // oxlint-disable-next-line typescript/unbound-method -- fakeChild replaces the prototype method with a spy that never uses `this`.
   expect(child.kill).toHaveBeenCalledExactlyOnceWith('SIGKILL')
 })

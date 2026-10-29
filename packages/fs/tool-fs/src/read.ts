@@ -243,5 +243,5 @@ export function applyReadTool(ctx: Context, caps: ReadToolCaps): void {
   const owner = new ReadDefinitionOwner(definitionKey, ctx.tools)
   const owned = Object.freeze(Object.assign(owner, definition))
   ctx.tools.register(owned)
-  ctx.effect(() => () => owner.retire())
+  ctx.effect(() => () => { owner.retire() })
 }

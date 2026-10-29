@@ -410,5 +410,5 @@ export function applyWebSearchTool(
   const owner = new WebSearchDefinitionOwner(definitionKey, ctx.tools)
   const owned = Object.freeze(Object.assign(owner, definition))
   ctx.tools.register(owned)
-  ctx.effect(() => () => owner.retire())
+  ctx.effect(() => () => { owner.retire() })
 }

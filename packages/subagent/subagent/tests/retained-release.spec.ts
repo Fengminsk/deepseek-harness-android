@@ -31,6 +31,7 @@ async function setup(disposeFailures = 1) {
   const create = ctx.agents.create.bind(ctx.agents)
   let disposeAttempts = 0
   vi.spyOn(managerState(ctx).ownerCtx.agents, 'create').mockImplementation(async (options) => {
+    // oxlint-disable-next-line typescript/no-unnecessary-type-assertion -- spy args are unknown; the cast restores the caller type.
     const handle = await create(options as CreateAgentOptions)
     if (handle.agent.id !== childId) return handle
     const realDispose = handle.dispose.bind(handle)
@@ -75,7 +76,7 @@ describe('failed child release after materialization', () => {
     const append = parent.session.append.bind(parent.session)
     vi.spyOn(parent.session, 'append').mockImplementation((...args) => {
       if (args[0] === 'subagent/catalog') throw new Error('catalog rejected')
-      return Reflect.apply(append, parent.session, args)
+      return Reflect.apply(append, parent.session, args) as ReturnType<typeof append>
     })
     await expect(ctx.subagents.startActivation(spec)).rejects.toThrow('catalog rejected')
     expect(attempts()).toBe(1)
