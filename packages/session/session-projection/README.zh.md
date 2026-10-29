@@ -78,7 +78,7 @@ const todo = projections.todo()
 
 每个读取函数保存确切的 Session，并将读取委托给原句柄的 `stateOf(session)`，保留就绪要求、null 和 undefined 值、状态引用及同步失败。创建读取函数不读取状态、不准备 Session、不执行存储 I/O，也不创建状态缓存。读取函数不拥有注册或释放职责。原句柄仍负责释放；注销或版本替换后，读取函数仍读取原有单元。同一句柄可为多个 Session 独立创建读取函数。注册和 Session 准备仍由原所有者完成；客户端快照保持独立。
 
-持有投影状态的领域将 `sessionProjections` 声明为 Cordis 服务依赖，并在内部保留句柄。消费方注入该领域服务并使用其方法，例如 `ctx.agents.turnBoundaryOf(session)`，无需导入定义或保留投影读取句柄。可选贡献方可以在 `ctx.inject(['sessionProjections'], …)` 下注册。载体使用 `ctx.get('sessionProjections')`，注册表缺席时省略自己的块或帧。
+持有投影状态的领域将 `sessionProjections` 声明为 Cordis 服务依赖，并在内部保留句柄。消费方注入该领域服务并使用其方法，例如 `ctx.agents.turnBoundaryOf(session)`，无需导入定义或保留投影读取句柄。在异步交接完成前就发布读取的领域使用 `stateOfRetained(handle, session, owner)`：它通过保留的句柄读取，并在交接尚未完成时抛出以 `owner` 命名的就绪错误，而不是用其他值顶替。可选贡献方可以在 `ctx.inject(['sessionProjections'], …)` 下注册。载体使用 `ctx.get('sessionProjections')`，注册表缺席时省略自己的块或帧。
 
 <a id="deprecated-plugin-compatibility"></a>
 ### 已弃用的插件兼容接口

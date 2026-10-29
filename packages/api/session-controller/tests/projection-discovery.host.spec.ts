@@ -58,7 +58,7 @@ async function harness(withPersistence = true) {
       expect(list).not.toHaveBeenCalled()
     })
   }
-  const controller = createSessionTestController(ctx, {
+  const controller = await createSessionTestController(ctx, {
     defaultModelSelection: () => ({ provider: 'test', model: 'test' }),
     cwd: root,
   })

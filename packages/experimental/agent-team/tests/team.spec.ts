@@ -17,6 +17,7 @@ import { MockAdapter, textResponse } from '../../../core/agent-loop/tests/mock-a
 import { mountWorkingDirectoryFixture } from '../../../subagent/subagent/tests/working-directory-fixture.ts'
 import TeamService, { TeamError, TeamId, TeamMessageId, TeamTaskId } from '../src/index.ts'
 import { TeamRuntimeLifecycle } from '../src/lifecycle.ts'
+import { TeamJournal } from '../src/journal.ts'
 import { teamProjectionDefinition } from '../src/projection.ts'
 import type { TeamMemberSnapshot, TeamMessageSnapshot, TeamTaskSnapshot } from '../src/index.ts'
 import { TestSessionQuery } from './test-session-query.ts'
@@ -94,9 +95,7 @@ interface TeamServiceInternals {
     recoverFor(agent: Agent, signal: AbortSignal): Promise<void>
     liveChildrenByRoot(): Map<Agent, SessionId[]>
   }
-  readonly journal: {
-    state(root: Agent): unknown
-  }
+  readonly journal: TeamJournal
   disposeRuntime(): Promise<void>
   scheduleRecovery(agent: Agent): void
 }
@@ -144,16 +143,12 @@ describe('Team identity and provisioning', () => {
   it('rejects missing and failed authoritative Team projections', async () => {
     const first = await setup([])
     const journal = teamInternals(first.ctx).journal
-    const stateOf = first.ctx.sessionProjections.stateOf.bind(first.ctx.sessionProjections)
-    const stateOfSpy = vi.spyOn(first.ctx.sessionProjections, 'stateOf').mockImplementation((session, key) => (
-      key === 'agentTeam' ? undefined : stateOf(session, key)
-    ))
-    expect(() => journal.state(first.lead)).toThrow('Agent Teams projection is not registered')
-    stateOfSpy.mockImplementation((session, key) => key === 'agentTeam'
-      ? { ...teamProjectionDefinition.init(session.header), failure: 'failed Team projection' }
-      : stateOf(session, key))
+    const bare = new TeamJournal(first.ctx, () => {})
+    expect(() => bare.state(first.lead)).toThrow('agent-teams: the projection registration handoff has not completed')
+    journal.attachProjection({
+      stateOf: () => ({ ...teamProjectionDefinition.init(first.lead.session.header), failure: 'failed Team projection' }),
+    })
     expect(() => journal.state(first.lead)).toThrow('failed Team projection')
-    stateOfSpy.mockRestore()
   })
 
   it('rejects deployment limits that are not positive safe integers', async () => {
@@ -182,6 +177,7 @@ describe('Team identity and provisioning', () => {
     await ctx.plugin(SubagentService)
     const lead = await ctx.agentLoop.create(SessionId('preexisting-lead'), {})
     const service = new TeamService(ctx)
+    await new Promise(resolve => setImmediate(resolve))
 
     expect(service.listMembers(lead)).toEqual([expect.objectContaining({
       name: 'lead',

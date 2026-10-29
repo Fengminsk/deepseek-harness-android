@@ -12,6 +12,8 @@ import type {} from '@deepseek-ai/dsh-fs'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-projection'
+import { stateOfRetained } from '@deepseek-ai/dsh-session-projection'
+import type { ProjectionHandle } from '@deepseek-ai/dsh-session-projection'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 
 declare module '@deepseek-ai/cordis' {
@@ -68,6 +70,7 @@ export class WorkingDirectoryService extends Service {
 
   /** Absolute deployment fallback for Sessions with no recorded original directory. */
   readonly defaultDirectory: string
+  private directoryUnit: ProjectionHandle<string | null> | undefined
   private readonly pending = new WeakMap<Session, Promise<void>>()
   private readonly operations = new Set<Promise<unknown>>()
   private readonly lifecycle = new AbortController()
@@ -78,15 +81,6 @@ export class WorkingDirectoryService extends Service {
     if (!isAbsolute(directory)) throw new Error('working-directory: defaultDirectory must be absolute')
     this.defaultDirectory = directory
 
-    const directorySchema = zod.string().min(1).refine(isAbsolute).nullable()
-    void ctx.sessionProjections.register({
-      key: 'workingDirectory',
-      stateVersion: 1,
-      stateSchema: directorySchema,
-      init: header => header.cwd ?? null,
-      apply: (state, event) => event.type === 'working-directory/change' ? event.data.cwd : state,
-      wire: { viewSchema: directorySchema, view: state => state },
-    })
     ctx.systemPrompt.context({
       name: 'working-directory:current',
       order: ctx.systemPrompt.getContextOrder('WORKING_DIRECTORY'),
@@ -114,13 +108,26 @@ export class WorkingDirectoryService extends Service {
     })
   }
 
+  /** Install the `workingDirectory` unit and retain its reader before serving reads. */
+  protected async [Service.init](): Promise<void> {
+    const directorySchema = zod.string().min(1).refine(isAbsolute).nullable()
+    this.directoryUnit = await this.ctx.sessionProjections.register({
+      key: 'workingDirectory',
+      stateVersion: 1,
+      stateSchema: directorySchema,
+      init: header => header.cwd ?? null,
+      apply: (state, event) => event.type === 'working-directory/change' ? event.data.cwd : state,
+      wire: { viewSchema: directorySchema, view: state => state },
+    })
+  }
+
   /**
    * Read the committed directory without filesystem I/O.
    * @param session - Session whose directory is requested.
    * @returns its effective absolute directory.
    */
   get(session: Session): string {
-    return this.ctx.sessionProjections.stateOf(session, 'workingDirectory') ?? this.defaultDirectory
+    return stateOfRetained(this.directoryUnit, session, 'working-directory') ?? this.defaultDirectory
   }
 
   /**
@@ -139,7 +146,7 @@ export class WorkingDirectoryService extends Service {
       control.throwIfAborted()
       agent.ctx.fiber.assertActive()
       if (info?.type === 'directory') {
-        if (this.ctx.sessionProjections.stateOf(agent.session, 'workingDirectory') === null) {
+        if (stateOfRetained(this.directoryUnit, agent.session, 'working-directory') === null) {
           agent.session.append('working-directory/change', { cwd: current })
         }
         return current

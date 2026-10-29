@@ -69,6 +69,13 @@ Replay owner for one service-wide estimator and isolated per-session folds.
 
 ```ts cordis-catalog
 /**
+ * Read the newest request pressure and route capacity folded from one Session.
+ * @param session - Session whose committed events are folded.
+ * @returns the pressure figures; both are absent before a provider reports usage.
+ */
+contextPressure(session: Session): Readonly<Pick<ContextPressureState, 'pressureTokens' | 'contextWindow'>>
+
+/**
  * Measure current request pressure and surface through the durable tail.
  *
  * The effective envelope's routed provider/model selects the request-image

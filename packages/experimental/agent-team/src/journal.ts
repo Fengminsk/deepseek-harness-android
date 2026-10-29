@@ -3,7 +3,9 @@
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { Context } from '@deepseek-ai/cordis'
 import type { SessionEventMap, SessionId } from '@deepseek-ai/dsh-session'
-import type { TeamEventType, TeamState } from './projection.ts'
+import type { ProjectionHandle } from '@deepseek-ai/dsh-session-projection'
+import { stateOfRetained } from '@deepseek-ai/dsh-session-projection'
+import type { TeamEventType, TeamProjectionState, TeamState } from './projection.ts'
 
 type AppendTeamEvent = <T extends TeamEventType>(type: T, data: SessionEventMap[T]) => void
 type MutableTeamEventType = 'team/member' | 'team/task'
@@ -11,6 +13,7 @@ type MutableTeamEventType = 'team/member' | 'team/task'
 /** Owns per-Lead transaction order and committed Team event publication. */
 export class TeamJournal {
   private readonly tails = new Map<SessionId, Promise<void>>()
+  private projection: Pick<ProjectionHandle<TeamProjectionState>, 'stateOf'> | undefined
 
   /**
    * @param ctx - Team service context with the injected Session service.
@@ -22,13 +25,20 @@ export class TeamJournal {
   ) {}
 
   /**
+   * Attach the reader retained by the runtime that registered the Team unit.
+   * @param projection - reader handed over after the awaited registration.
+   */
+  attachProjection(projection: Pick<ProjectionHandle<TeamProjectionState>, 'stateOf'>): void {
+    this.projection = projection
+  }
+
+  /**
    * Read authoritative Team state for one exact live Lead.
    * @param root - exact live Team Lead.
    * @returns current projected state selected by the Lead Team id.
    */
   state(root: Agent): TeamState {
-    const projection = this.ctx.sessionProjections.stateOf(root.session, 'agentTeam')
-    if (projection === undefined) throw new Error('Agent Teams projection is not registered')
+    const projection = stateOfRetained(this.projection, root.session, 'agent-teams')
     if (projection.failure !== undefined) throw new Error(projection.failure)
     return projection
   }

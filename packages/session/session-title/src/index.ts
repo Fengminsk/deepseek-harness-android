@@ -17,7 +17,8 @@ import type {
 } from '@deepseek-ai/dsh-session'
 import { SessionSeq } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-projection'
-import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection'
+import { stateOfRetained } from '@deepseek-ai/dsh-session-projection'
+import type { ProjectionDefinition, ProjectionHandle } from '@deepseek-ai/dsh-session-projection'
 import type {} from '@deepseek-ai/dsh-agent'
 export type {
   SessionTitleEventData,
@@ -312,6 +313,7 @@ export class SessionTitleService extends Service {
   private readonly work = new Map<Session, SessionTitleWorkState>()
   private readonly lifetime = new AbortController()
   private readonly inFlight = new Set<Promise<unknown>>()
+  private titleInput: ProjectionHandle<TitleInputState> | undefined
 
   constructor(ctx: Context, config: Config) {
     super(ctx, 'sessionTitle')
@@ -341,24 +343,6 @@ export class SessionTitleService extends Service {
       this.work.clear()
     }, 'sessionTitle lifecycle')
 
-    void ctx.sessionProjections.register(titleProjectionDefinition)
-
-    void ctx.sessionProjections.register<'titleInput', TitleInputState>({
-      key: 'titleInput',
-      stateVersion: 3,
-      stateSchema: titleInputStateSchema,
-      init: () => EMPTY_TITLE_INPUT,
-      apply: (state, event) => {
-        const message = sessionTitleUserMessageOf(event)
-        if (message === undefined) return state
-        return {
-          first: state.first ?? message,
-          count: state.count + 1,
-          lastSeq: message.seq,
-        }
-      },
-    })
-
     ctx.on('session/event', (session, event) => {
       switch (event.type) {
         case 'user/message':
@@ -380,6 +364,26 @@ export class SessionTitleService extends Service {
       if (state === undefined) return
       state.active?.controller.abort(new Error('session disposed during title generation'))
       this.work.delete(session)
+    })
+  }
+
+  /** Install both title units and retain the input reader before serving reads. */
+  protected async [Service.init](): Promise<void> {
+    await this.ctx.sessionProjections.register(titleProjectionDefinition)
+    this.titleInput = await this.ctx.sessionProjections.register<'titleInput', TitleInputState>({
+      key: 'titleInput',
+      stateVersion: 3,
+      stateSchema: titleInputStateSchema,
+      init: () => EMPTY_TITLE_INPUT,
+      apply: (state, event) => {
+        const message = sessionTitleUserMessageOf(event)
+        if (message === undefined) return state
+        return {
+          first: state.first ?? message,
+          count: state.count + 1,
+          lastSeq: message.seq,
+        }
+      },
     })
   }
 
@@ -730,7 +734,7 @@ export class SessionTitleService extends Service {
   }
 
   private titleInputOf(session: Session): TitleInputState {
-    return this.ctx.sessionProjections.stateOf(session, 'titleInput') as TitleInputState
+    return stateOfRetained(this.titleInput, session, 'session-title')
   }
 
   /** Queue detached service work and retain it through service disposal. */

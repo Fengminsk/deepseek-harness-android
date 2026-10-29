@@ -96,12 +96,13 @@ export class TeamService extends Service {
       if (membership !== undefined) this.activity.notify(membership.id)
     })
     ctx.effect(() => {
-      const disposeProjection = ctx.root.sessionProjections.register(teamProjectionDefinition)
+      const registration = ctx.root.sessionProjections.register(teamProjectionDefinition)
+      void registration.then((handle) => { this.journal.attachProjection(handle) })
       return async () => {
         try {
           await this.disposeRuntime()
         } finally {
-          void disposeProjection()
+          void registration()
         }
       }
     }, 'agentTeams.runtimeLifecycle()')

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import SessionStore, {
   Session,
@@ -83,13 +83,6 @@ describe('PermissionPresetService', () => {
   it('does not activate without the required projection registry', async () => {
     const ctx = await mounted({ projection: false })
     expect(ctx.get('permissionPresets')).toBeUndefined()
-  })
-
-  it('fails when the permissions projection key is absent', async () => {
-    const ctx = await mounted()
-    vi.spyOn(ctx.sessionProjections, 'stateOf').mockReturnValue(undefined)
-    expect(() => ctx.permissionPresets.current(freshSession('missing-permission-projection-key')))
-      .toThrow('permission: permissions session projection is not registered')
   })
 
   it('advertises the preset table in declaration order and resolves bundles', async () => {

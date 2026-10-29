@@ -16,7 +16,9 @@ import type { SessionInspection } from '@deepseek-ai/dsh-session-persistence'
 import { SessionQueryError, type SessionObservation } from '@deepseek-ai/dsh-session-query'
 import { RemoteError, remoteErrorOf } from '@deepseek-ai/dsh-typert-protocol'
 import type {} from '@deepseek-ai/dsh-typert-registry'
-import type { ModelSelection } from './types.ts'
+import type { ModelSelection, ModelSelectionProjectionState } from './types.ts'
+import { stateOfRetained } from '@deepseek-ai/dsh-session-projection'
+import type { ProjectionHandle } from '@deepseek-ai/dsh-session-projection'
 
 /** Cold Session identity absent from persistence. */
 export class ApiSessionNotFound extends Error {}
@@ -172,6 +174,15 @@ export class ApiSessionAgentController {
   private readonly claims = new Map<SessionId, Promise<void>>()
   private readonly selections = new WeakMap<Agent, InstalledSelection>()
   private readonly imageAdmissionChains = new WeakMap<Agent, Promise<void>>()
+  private modelSelection: ProjectionHandle<ModelSelectionProjectionState> | undefined
+
+  /**
+   * Attach the retained reader for the Session model-selection unit.
+   * @param handle - handle returned by the controller's awaited registration.
+   */
+  attachModelSelection(handle: ProjectionHandle<ModelSelectionProjectionState>): void {
+    this.modelSelection = handle
+  }
 
   /** @param ctx - Host context carrying Agent, model, persistence, and Typert services. */
   constructor(private readonly ctx: Context) {
@@ -289,10 +300,7 @@ export class ApiSessionAgentController {
   selectionFor(agent: Agent): InstalledSelection {
     const installed = this.selections.get(agent)
     if (installed !== undefined) return installed
-    const projectionState = this.ctx.sessionProjections.stateOf(agent.session, 'modelSelection')
-    if (projectionState === undefined) {
-      throw new Error('api-session: required modelSelection projection is not registered')
-    }
+    const projectionState = stateOfRetained(this.modelSelection, agent.session, 'api-session')
     let picked = projectionState.pending === null
       ? undefined
       : agentModelSelection(projectionState.pending)
@@ -359,12 +367,12 @@ export class ApiSessionAgentController {
   }
 
   /**
-   * Read the current Agent preset from the Session projection.
+   * Read the current Agent preset through the preset registry that owns it.
    * @param session - live Session whose projection state is available.
    * @returns the current preset, or undefined when the capability is absent.
    */
   presetForSession(session: Session): string | undefined {
-    return this.ctx.sessionProjections.stateOf(session, 'agentPreset') ?? undefined
+    return this.ctx.get('agentPresets')?.presetForSession(session)
   }
 
   /**

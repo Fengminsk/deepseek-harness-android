@@ -169,15 +169,14 @@ describe('GoalService creation and replay', () => {
     expect(ctx.goals.create(agent, { objective: 'x' }).maxGoalRounds).toBe(256)
   })
 
-  it('also resolves the default when constructed directly without Cordis config normalization', async () => {
+  it('resolves the default when mounted without Cordis config normalization', async () => {
     const ctx = new Context()
     await ctx.plugin(AgentRegistry)
     await ctx.plugin(SessionProjectionRegistry)
     const stub = stubAgent('goal-direct-construction')
     await ctx.agents.register(stub.agent)
-    const goals = new GoalService(ctx)
-    await new Promise(resolve => setImmediate(resolve))
-    expect(goals.create(stub.agent, { objective: 'direct' })).toMatchObject({
+    await ctx.plugin(GoalService)
+    expect(ctx.goals.create(stub.agent, { objective: 'direct' })).toMatchObject({
       objective: 'direct', maxGoalRounds: 256,
     })
   })
@@ -289,7 +288,8 @@ describe('GoalService creation and replay', () => {
     await fiber.dispose()
     expect(ctx.get('goals')).toBeUndefined()
     expect(ctx.sessionProjections.stateOf(stub.session, 'goal')).toBeUndefined()
-    expect(() => first.get(stub.agent)).toThrow('goal projection is not registered')
+    // The detached instance keeps its retained unit reader after unregistration.
+    expect(first.get(stub.agent)).toMatchObject({ id: goal.id })
 
     await ctx.plugin(GoalService)
     expect(ctx.goals).not.toBe(first)

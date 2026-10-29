@@ -129,7 +129,7 @@ function validateRefreshInterval(refreshIntervalMs: number): void {
  * @param config - time zone and durable refresh scheduling configuration.
  * @throws when the refresh interval is invalid or the configured or process time zone cannot be resolved.
  */
-export function apply(ctx: Context, config: Config): void {
+export async function apply(ctx: Context, config: Config): Promise<void> {
   const timeZone = config.timeZone
   const refreshIntervalMs = config.refreshIntervalMs ?? 600_000
   validateRefreshInterval(refreshIntervalMs)
@@ -154,7 +154,7 @@ export function apply(ctx: Context, config: Config): void {
     return created
   }
 
-  void ctx.sessionProjections.register({
+  const unit = await ctx.sessionProjections.register({
     key: 'timeContext',
     stateVersion: 2,
     stateSchema: timeContextStateSchema,
@@ -189,7 +189,7 @@ export function apply(ctx: Context, config: Config): void {
     const decision = await next()
     if (decision.kind === 'reject' || signal.aborted) return decision
     const now = Date.now()
-    const state = ctx.sessionProjections.stateOf(agent.session, 'timeContext') as TimeContextProjection
+    const state = unit.stateOf(agent.session)
     if (refreshIntervalMs > 0) {
       const lastInjection = state.lastInjectionTime
       if (lastInjection != null

@@ -22996,7 +22996,7 @@
       "digest": "2235d957bf4b7c6cf959231d480f0ba1f3a6d72d82981493fb6c7c963021d3d5",
       "names": [],
       "sources": [
-        "packages/session/working-directory/src/index.ts:29"
+        "packages/session/working-directory/src/index.ts:31"
       ]
     },
     {
@@ -23629,7 +23629,7 @@
         "packages/llm/llm/src/brand.ts:43",
         "packages/llm/llm/src/brand.ts:67",
         "packages/schedule/schedule/src/types.ts:14",
-        "packages/session/session-title/src/index.ts:42",
+        "packages/session/session-title/src/index.ts:43",
         "packages/session/session-title/src/types.ts:17",
         "packages/workflow/workflow/src/types.ts:13"
       ]
@@ -24568,7 +24568,7 @@
       "digest": "8a9c990773f798eac10ca8878e6bcc531ee080bc589cac956730e462cc6a09ad",
       "names": [],
       "sources": [
-        "packages/interaction/permission-presets/src/index.ts:59"
+        "packages/interaction/permission-presets/src/index.ts:61"
       ]
     },
     {
@@ -25694,7 +25694,7 @@
       "digest": "da60ed58a8fa23d7aa4920ab5c1f4e3d28109cb0797ef9e5c8b125721b847582",
       "names": [],
       "sources": [
-        "packages/session/working-directory/src/index.ts:36"
+        "packages/session/working-directory/src/index.ts:38"
       ]
     },
     {

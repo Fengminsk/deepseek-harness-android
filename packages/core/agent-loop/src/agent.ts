@@ -11,6 +11,7 @@ import type {
   AgentOptions,
   AgentStatus,
   CancelOptions,
+  InboxState,
   InboxTarget,
   PreStepDecision,
   RequestErrorAction,
@@ -124,12 +125,13 @@ export class ReactLoopAgent implements Agent {
     public readonly id: SessionId,
     public readonly options: AgentOptions,
     public readonly session: Session,
+    inboxState: (session: Session) => InboxState,
   ) {
     this.requestSurfaceGeneration = session.surface.contentGeneration
     this.dispatch = agentEvents(loopCtx, this)
     this.scope = createScope(loopCtx, this)
     this.ctx = this.scope.ctx
-    this.inbox = new ReactLoopInbox(this.ctx.sessionProjections, session, this.dispatch)
+    this.inbox = new ReactLoopInbox(inboxState, session, this.dispatch)
     /* v8 ignore next -- the loop runs under a live Agent registry, which owns this projection */
     const lastTurn = this.loopCtx.agents.turnBoundaryOf(session)?.lastTurn ?? 0
     this.phase = { kind: 'idle', lastTurn }

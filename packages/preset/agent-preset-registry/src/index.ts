@@ -1,5 +1,5 @@
 /** Declarative Agent capability sets, activation and session binding. */
-import { Context } from '@deepseek-ai/cordis'
+import { Context, Service } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { Remote, RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import { bindScopeParent, createScope, scopeOf, scopeParentOf, type Scope, type ScopeKey, type ScopeParentBinding } from '@deepseek-ai/dsh-scope'
@@ -13,6 +13,9 @@ import type { AgentPresetDocument, AgentPresetRoster } from './types.ts'
 import { entryListProblem, type PresetDefinition } from './definition.ts'
 import type { AgentPreset, Config } from './preset.ts'
 import { agentPresetProjectionDefinition } from './session.ts'
+import type { Session } from '@deepseek-ai/dsh-session'
+import { stateOfRetained } from '@deepseek-ai/dsh-session-projection'
+import type { ProjectionHandle } from '@deepseek-ai/dsh-session-projection'
 import { auditRows, leakedServices, mountPreset, serviceForMount, type PresetMount } from './mount.ts'
 import { activeCompositionModules, definitionComposition, mountedCompositionRows, type AgentPresetComposition, type AgentPresetInspection } from './composition-inventory.ts'
 
@@ -60,15 +63,29 @@ export class AgentPresetRegistry extends TypertRemoteService {
   private readonly generations = new Map<ScopeKey, Generation>()
   private readonly bindings = new WeakMap<ScopeKey, Binding>()
   private readonly switches = new Map<string, Promise<unknown>>()
+  private agentPresetUnit: ProjectionHandle<string | null> | undefined
 
   constructor(ctx: Context, public config: Config) {
     super(ctx, 'agentPresets')
     this.owner = ctx
-    void ctx.sessionProjections.register(agentPresetProjectionDefinition)
     ctx.inject(['settings'], (child) => { child.effect(() => child.settings.configure({ auto: false }, ctx.fiber)) })
     ctx.on('session/event', (session, event) => {
       if (event.type === 'agent-preset/selected') ctx.emit('agent-preset/selected', session.id, event.data.agentPreset)
     })
+  }
+
+  /** Install the `agentPreset` unit and retain its reader before serving reads. */
+  protected async [Service.init](): Promise<void> {
+    this.agentPresetUnit = await this.ctx.sessionProjections.register(agentPresetProjectionDefinition)
+  }
+
+  /**
+   * Read the Agent preset one Session recorded.
+   * @param session - Session whose committed events are folded.
+   * @returns the recorded preset, or `undefined` when none was logged.
+   */
+  presetForSession(session: Session): string | undefined {
+    return stateOfRetained(this.agentPresetUnit, session, 'agent-preset-registry') ?? undefined
   }
 
   /** Default preset for a subsequently created session. */
@@ -354,7 +371,7 @@ export class AgentPresetRegistry extends TypertRemoteService {
       }
       const current = this.definitions.get(agentPreset)?.generation
       if (current !== undefined && this.generationFor(agent.ctx) === current
-        && this.owner.sessionProjections.stateOf(agent.session, 'agentPreset') === agentPreset) return agentPreset
+        && this.presetForSession(agent.session) === agentPreset) return agentPreset
       const preset = await this.recompose(agent.ctx, agentPreset)
       agent.session.append('agent-preset/selected', { agentPreset: preset.id })
       return preset.id

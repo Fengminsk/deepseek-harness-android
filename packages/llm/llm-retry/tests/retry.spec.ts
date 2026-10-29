@@ -114,9 +114,10 @@ async function harness(
   await ctx.plugin(AgentRegistry)
   beforeRetry?.(ctx)
   adapter.configureRetryPolicies(policies)
-  const retryFiber = await ctx.plugin(Object.assign((inner: Context) => {
-    retry.apply(inner, {}, internals)
-  }, { inject: retry.inject }))
+  const retryFiber = await ctx.plugin(Object.assign(
+    (inner: Context) => retry.apply(inner, {}, internals),
+    { inject: retry.inject },
+  ))
   await ctx.plugin(AgentLoop, { agents: [] })
   const disposeAdapter = ctx.llm.registerAdapter(['mock', 'other'], adapter)
   return { ctx, retryFiber, disposeAdapter }
@@ -1047,23 +1048,21 @@ describe('provider-routed retry policy', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
-  it('rejects retry policy configured on the executor instead of a provider', () => {
+  it('rejects retry policy configured on the executor instead of a provider', async () => {
     expectTypeOf<{}>().toExtend<retry.Config>()
     expectTypeOf<{ retryPolicy: { mode: 'always' } }>().not.toExtend<retry.Config>()
     const ctx = new Context()
     // `apply` registers its projection unit first; the registry is a required
     // injection, so the direct-apply path must carry it too.
     new SessionProjectionRegistry(ctx)
-    expect(() => {
-      retry.apply(ctx, { retryPolicy: { mode: 'always' } } as unknown as retry.Config)
-    }).toThrow(/retryPolicy belongs under each provider/)
+    await expect(retry.apply(ctx, { retryPolicy: { mode: 'always' } } as unknown as retry.Config))
+      .rejects.toThrow(/retryPolicy belongs under each provider/)
   })
 
-  it('rejects unknown executor config', () => {
+  it('rejects unknown executor config', async () => {
     const ctx = new Context()
     new SessionProjectionRegistry(ctx)
-    expect(() => {
-      retry.apply(ctx, { retryPolciy: {} } as unknown as retry.Config)
-    }).toThrow(/unknown key "retryPolciy"/)
+    await expect(retry.apply(ctx, { retryPolciy: {} } as unknown as retry.Config))
+      .rejects.toThrow(/unknown key "retryPolciy"/)
   })
 })

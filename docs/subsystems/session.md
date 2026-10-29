@@ -825,6 +825,14 @@ Host service backing the generated `ctx.remote.session` namespace.
 
 ```ts cordis-catalog
 /**
+ * Hand over the retained model-selection reader. `[Service.init]` calls this
+ * after its awaited registration; a direct constructor that bypasses the
+ * Cordis lifecycle calls it before serving model-selection reads.
+ * @param handle - reader for the `modelSelection` unit.
+ */
+attachModelSelection(handle: ProjectionHandle<ModelSelectionProjectionState>): void
+
+/**
  * Resolve or resume one ordinary Session for another Host API domain.
  * @param sessionId - Session identity whose Agent owns the operation.
  * @returns the live Agent or the stable Session-domain failure.
@@ -991,7 +999,7 @@ workspaceDesktop(): { name: string; available: boolean; fileManager: 'finder' | 
 @Remote({ mode: 'stream' }) async *control(signal: AbortSignal): AsyncIterable<SessionControlFrame>
 ```
 
-Types: [SessionId](core.md) · [SessionInspection](persistence.md) · [SessionSearchRequest](session-query.md)
+Types: [ProjectionHandle](session-projection.md) · [SessionId](core.md) · [SessionInspection](persistence.md) · [SessionSearchRequest](session-query.md)
 
 Source: [`packages/api/session-controller/src/index.ts`](../../packages/api/session-controller/src/index.ts)
 

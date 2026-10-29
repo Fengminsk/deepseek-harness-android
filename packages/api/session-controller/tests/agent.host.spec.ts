@@ -17,7 +17,7 @@ import {
   ApiSessionNotFound,
   inspectApiSession,
 } from '../src/agent.ts'
-import { installModelSelectionProjection } from '../src/model-selection-projection.ts'
+import { modelSelectionProjection } from '../src/model-selection-projection.ts'
 import { installSessionReadTestServices, testSessionPersistence } from './test-remote.ts'
 
 const roots: Context[] = []
@@ -30,7 +30,7 @@ afterEach(async () => {
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
 
-async function harness(): Promise<{ ctx: Context; agents: ApiSessionAgentController }> {
+async function harness(attachModelSelection = true): Promise<{ ctx: Context; agents: ApiSessionAgentController }> {
   const ctx = new Context()
   roots.push(ctx)
   await ctx.plugin(TypertRegistry)
@@ -38,12 +38,14 @@ async function harness(): Promise<{ ctx: Context; agents: ApiSessionAgentControl
   await ctx.plugin(AgentRegistry)
   installSessionReadTestServices(ctx)
   void ctx.sessionProjections.register(agentPresetProjectionDefinition)
-  installModelSelectionProjection(ctx)
+  const modelSelection = await ctx.sessionProjections.register(modelSelectionProjection)
   ctx.provide('agentDefaultModel', {
     currentSelection: () => ({ provider: 'fixture', model: 'fixture-model' }),
     saveSelection: () => Promise.resolve(),
   } as never)
-  return { ctx, agents: new ApiSessionAgentController(ctx) }
+  const agents = new ApiSessionAgentController(ctx)
+  if (attachModelSelection) agents.attachModelSelection(modelSelection)
+  return { ctx, agents }
 }
 
 function header(id: string, cwd: string | null = '/workspace'): SessionHeader {
@@ -287,12 +289,12 @@ describe('ApiSession Agent lookup and recovery', () => {
 })
 
 describe('ApiSession model selection', () => {
-  it('requires the model-selection projection', async () => {
-    const { ctx, agents } = await harness()
+  it('requires the model-selection projection handoff', async () => {
+    const { ctx, agents } = await harness(false)
     const live = agent(ctx, header('missing-model-projection'))
-    vi.spyOn(ctx.sessionProjections, 'stateOf').mockReturnValue(undefined)
 
-    expect(() => agents.selectionFor(live)).toThrow('required modelSelection projection')
+    expect(() => agents.selectionFor(live))
+      .toThrow('api-session: the projection registration handoff has not completed')
   })
 
   it('reads a reasoning-free request and consumes only the exact pending selection', async () => {

@@ -1,6 +1,9 @@
 import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
+import RemoteAccessService from '@deepseek-ai/dsh-api-remote-access'
+import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SESSION_FORMAT_VERSION, SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
 import type { SessionEvent, SessionHeader } from '@deepseek-ai/dsh-session'
@@ -8,7 +11,7 @@ import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
 import { describe, expect, it, vi } from 'vitest'
 import SessionController from '../src/index.ts'
 import type { ApiSessionAgentController } from '../src/agent.ts'
-import { createSessionTestController, testSessionPersistence } from './test-remote.ts'
+import { createSessionTestController, installSessionReadTestServices, testSessionPersistence } from './test-remote.ts'
 
 const defaults = {
   defaultModelSelection: () => ({ provider: 'fixture', model: 'fixture-model' }),
@@ -18,6 +21,37 @@ const defaults = {
 describe('SessionController facade', () => {
   it('does not require the Tools service', () => {
     expect(SessionController.inject).not.toContain('tools')
+  })
+
+  it('registers its model-selection unit when mounted through Cordis', async () => {
+    const ctx = new Context()
+    await mountAgentLoopTestDependencies(ctx)
+    await ctx.plugin(LocalFileSystem, { cwd: '/tmp' })
+    installSessionReadTestServices(ctx)
+    const dispose = (): void => {}
+    ctx.provide('typert', {
+      lookups: { configure: () => dispose },
+      contexts: { configureHost: () => dispose },
+      resources: { register: () => dispose },
+    } as never)
+    ctx.provide('agentDefaultModel', {
+      currentSelection: () => ({ provider: 'fixture', model: 'fixture-model' }),
+      saveSelection: () => Promise.resolve(),
+    } as never)
+    ctx.provide('attachments', { admitPromptContent: async (parts: unknown) => parts } as never)
+    ctx.provide('fileUploads', {
+      registerAgentResolver: () => () => {},
+      resolve: () => undefined,
+      bindPrompt: () => ({ commit: () => {}, [Symbol.dispose]: () => {} }),
+      retirePrompt: () => {},
+    } as never)
+    ctx.provide('workspaceRegistry', { list: () => [], archivedSessionIds: [] } as never)
+    new RemoteAccessService(ctx)
+    await ctx.plugin(SessionController, { nativeOpen: false })
+
+    const session = ctx.sessions.create(SessionId('mounted-controller'))
+    session.append('model/selection', { provider: 'p', model: 'm' })
+    expect(ctx.sessionProjections.checkpoint(session)).toHaveProperty('modelSelection')
   })
 
   it('owns Host service methods and publishes Agent lifecycle projections', async () => {
@@ -52,7 +86,7 @@ describe('SessionController facade', () => {
       bindPrompt: () => ({ commit: () => {}, [Symbol.dispose]: () => {} }),
       retirePrompt: () => {},
     } as never)
-    const controller = createSessionTestController(ctx, defaults)
+    const controller = await createSessionTestController(ctx, defaults)
     const status = vi.fn()
     const failure = vi.fn()
     const activity = vi.fn()
@@ -157,7 +191,7 @@ describe('SessionController facade', () => {
           events: [],
         }),
       }) as never)
-      const controller = createSessionTestController(ctx, defaults)
+      const controller = await createSessionTestController(ctx, defaults)
       const agents = (controller as unknown as { agents: ApiSessionAgentController }).agents
       const apiError = vi.fn()
       ctx.on('api-session/error', apiError)
@@ -213,7 +247,7 @@ describe('SessionController facade', () => {
         events: [],
       }),
     }) as never)
-    const controller = createSessionTestController(ctx, defaults)
+    const controller = await createSessionTestController(ctx, defaults)
     const agents = (controller as unknown as { agents: ApiSessionAgentController }).agents
     const started = Promise.withResolvers<undefined>()
     const release = Promise.withResolvers<undefined>()

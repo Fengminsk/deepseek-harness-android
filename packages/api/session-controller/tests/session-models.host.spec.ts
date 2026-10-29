@@ -20,6 +20,7 @@ import SessionStore from '@deepseek-ai/dsh-session'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionPromptRequest, SessionRequestId } from '../src/types.ts'
 import { ApiSessionAgentController } from '../src/agent.ts'
+import { modelSelectionProjection } from '../src/model-selection-projection.ts'
 import { buildModelCatalog, hasProviderApiKey } from '../src/catalog.ts'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
@@ -360,7 +361,7 @@ describe('Web session model selection', () => {
       value: { providers: { custom: { apiKeyEnv: 'CUSTOM_API_KEY', models: [] } } },
     }])
     await ctx.agentDefaultModel.saveSelection({ provider: 'removed', model: 'saved' })
-    const controller = createSessionTestController(ctx, {
+    const controller = await createSessionTestController(ctx, {
       defaultModelSelection: () => ctx.agentDefaultModel.currentSelection(), cwd: '/tmp',
     })
     await controller.initializeDefaultModel()
@@ -578,7 +579,9 @@ describe('Web session model selection', () => {
       cwd: '/tmp',
     })
 
-    expect(new ApiSessionAgentController(ctx).selectionFor(agent).current)
+    const direct = new ApiSessionAgentController(ctx)
+    direct.attachModelSelection(await ctx.sessionProjections.register(modelSelectionProjection))
+    expect(direct.selectionFor(agent).current)
       .toEqual({ provider: 'deepseek-official', model: 'deepseek-chat' })
     await ctx.fiber.dispose()
   })
@@ -853,7 +856,7 @@ it('initializes the account model without reasoning metadata and rejects an empt
   const dispose = ctx.llm.registerAdapter(['deepseek-account'], new CatalogAdapter('Account', [
     { provider: 'deepseek-account', id: 'basic', name: 'Basic' },
   ]))
-  const controller = createSessionTestController(ctx, {
+  const controller = await createSessionTestController(ctx, {
     defaultModelSelection: () => ctx.agentDefaultModel.currentSelection(), cwd: '/tmp',
   })
   await controller.initializeDefaultModel()

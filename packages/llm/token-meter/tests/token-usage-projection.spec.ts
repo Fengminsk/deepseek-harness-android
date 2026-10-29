@@ -362,6 +362,9 @@ describe('contextPressure session projection', () => {
   it('serves no pressure or capacity for an empty log', async () => {
     const { ctx, session } = await harness()
     expect(pressure(ctx, session)).toEqual({})
+    const direct = ctx.tokenMeter.contextPressure(session)
+    expect(direct.pressureTokens).toBeUndefined()
+    expect(direct.contextWindow).toBeUndefined()
   })
 
   it('does not synthesize zero pressure before a provider usage sample', async () => {

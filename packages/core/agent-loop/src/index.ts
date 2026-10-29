@@ -17,6 +17,7 @@ import type {
   AgentOptions,
   AgentSetup,
   CreateAgentOptions,
+  InboxState,
   ResumeAgentOptions,
   SessionStartSource,
 } from '@deepseek-ai/dsh-agent'
@@ -26,6 +27,8 @@ import type { Session, SessionHeader, SessionId } from '@deepseek-ai/dsh-session
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-session-projection'
+import { stateOfRetained } from '@deepseek-ai/dsh-session-projection'
+import type { ProjectionHandle, ProjectionRegistration } from '@deepseek-ai/dsh-session-projection'
 import { SessionPersistenceNotFoundError } from '@deepseek-ai/dsh-session-persistence'
 import type { SessionHandle, SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
 import { ReactLoopAgent } from './agent.ts'
@@ -307,6 +310,8 @@ export class AgentLoop extends Service implements AgentFactory {
   private readonly ownership: FactoryOwnership
   /** Plain holder prevents Cordis from re-tracing the factory's dependency context through a caller shadow. */
   private readonly runtime: { ctx: Context }
+  private readonly inboxRegistration: ProjectionRegistration<InboxState>
+  private inboxUnit: ProjectionHandle<InboxState> | undefined
 
   constructor(ctx: Context, config: Config) {
     super(ctx, 'agentLoop')
@@ -320,12 +325,12 @@ export class AgentLoop extends Service implements AgentFactory {
     // rejected constructor leaves no projection unit behind.
     const ownership = this.ownership = new FactoryOwnership(ctx.fiber)
     this.runtime = { ctx }
+    const inboxRegistration = this.inboxRegistration = ctx.sessionProjections.register(inboxProjectionDefinition)
     ctx.effect(function* () {
-      const unregisterInbox = ctx.sessionProjections.register(inboxProjectionDefinition)
-      yield unregisterInbox
+      yield inboxRegistration
       // Cordis skips later disposers after a rejection; finally still releases projections.
       yield () => ownership.dispose().finally(() => {
-        void unregisterInbox()
+        void inboxRegistration()
       })
     }, 'agentLoop.transactions()')
     ctx.effect(() => ctx.agents.setFactory(this), 'agentLoop.setFactory()')
@@ -362,6 +367,11 @@ export class AgentLoop extends Service implements AgentFactory {
         return fiber.dispose
       }, `agentLoop.resume(${id})`)
     }
+  }
+
+  /** Retain the inbox reader before any agent serves an inbox read. */
+  protected async [Service.init](): Promise<void> {
+    this.inboxUnit = await this.inboxRegistration
   }
 
   /** Report a contained declarative-start failure to identity-bound consumers. */
@@ -459,6 +469,7 @@ export class AgentLoop extends Service implements AgentFactory {
         : new Error(`agent "${id}" creation aborted`, { cause: callerSignal.reason })
     }
     const loopCtx = this.runtime.ctx
+    const readInbox = (target: Session): InboxState => stateOfRetained(this.inboxUnit, target, 'agent-loop')
 
     // Deactivation fuses three owners, each with its own reason: the caller's
     // cancellation signal, the owner fiber's unload, and factory teardown.
@@ -544,7 +555,7 @@ export class AgentLoop extends Service implements AgentFactory {
     const untrack = this.ownership.track(dispose)
     try {
       unfollowOwner = ownerCtx.effect(function* () {
-        const created = machine = new ReactLoopAgent(loopCtx, id, options, session)
+        const created = machine = new ReactLoopAgent(loopCtx, id, options, session, readInbox)
         machineReady.resolve()
         // Adopt the scope on its original fiber so it cannot unload before teardown.
         // A loop already unloading during minting owns the provisional scope itself.

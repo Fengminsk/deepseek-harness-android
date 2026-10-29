@@ -85,8 +85,12 @@ async function harness(pricing: (model: string) => LlmImageRequestPricing | unde
   } as never)
   const llm = new LlmRuntime(ctx)
   llm.registerAdapter(['mock'], new PricingAdapter(pricing))
-  const meter = new TokenMeter(ctx)
-  return { ctx, meter, session: Session.create(SessionId('route-priced'), undefined, undefined, undefined, [imageOffloadProjection]) }
+  await ctx.plugin(TokenMeter)
+  return {
+    ctx,
+    meter: ctx.tokenMeter,
+    session: Session.create(SessionId('route-priced'), undefined, undefined, undefined, [imageOffloadProjection]),
+  }
 }
 
 /** Route price of one image-bearing message under the fixed pricing double. */

@@ -3,13 +3,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
-import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { Agent, InboxState } from '@deepseek-ai/dsh-agent'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { createAssistantMessage, createUserMessage, isAgentLoopRequest } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, ToolSchema } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId, SessionLogOffset, SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-session'
 import * as values from '@deepseek-ai/dsh-util-values'
 import { ReactLoopAgent } from '../src/agent.ts'
+import { inboxProjectionDefinition } from '../src/inbox.ts'
 import { MockAdapter, textResponse } from './mock-adapter.ts'
 
 const cleanups: (() => Promise<void>)[] = []
@@ -22,13 +23,18 @@ afterEach(async () => {
   }
 })
 
-async function harness(adapter?: MockAdapter): Promise<{ ctx: Context; loopCtx: Context }> {
+async function harness(adapter?: MockAdapter): Promise<{
+  ctx: Context
+  loopCtx: Context
+  inboxState: (session: Session) => InboxState
+}> {
   const ctx = new Context()
   cleanups.push(() => ctx.fiber.dispose())
   await mountAgentLoopTestDependencies(ctx)
   const loopFiber = await ctx.plugin(AgentLoop, { agents: [] })
   if (adapter) ctx.effect(() => ctx.llm.registerAdapter(['mock'], adapter))
-  return { ctx, loopCtx: loopFiber.ctx }
+  const inbox = await ctx.sessionProjections.register(inboxProjectionDefinition)
+  return { ctx, loopCtx: loopFiber.ctx, inboxState: session => inbox.stateOf(session) }
 }
 
 async function send(agent: Agent, text: string): Promise<void> {
@@ -44,7 +50,7 @@ function expectFrozen(value: unknown): void {
 
 describe('loop-owned request freezing', () => {
   it('adopts restored identities, freezes nested messages at dispatch, and leaves event wrappers mutable', async () => {
-    const { ctx, loopCtx } = await harness(new MockAdapter([textResponse('one'), textResponse('two'), textResponse('three'), textResponse('four')]))
+    const { ctx, loopCtx, inboxState } = await harness(new MockAdapter([textResponse('one'), textResponse('two'), textResponse('three'), textResponse('four')]))
     const id = SessionId('restored-freeze')
     const seed = Session.create(id)
     seed.append('user/message', createUserMessage({
@@ -73,7 +79,7 @@ describe('loop-owned request freezing', () => {
     expect(Object.isFrozen(userEvent.data.content)).toBe(false)
     expect(Object.isFrozen(assistantEvent.data.message)).toBe(false)
     ctx.effect(() => ctx.sessions.enter(session))
-    const agent = new ReactLoopAgent(loopCtx, id, { provider: 'mock', model: 'mock' }, session)
+    const agent = new ReactLoopAgent(loopCtx, id, { provider: 'mock', model: 'mock' }, session, inboxState)
     cleanups.push(async () => {
       agent.cancel({ kind: 'disposed' })
       await agent.whenIdle()
@@ -122,7 +128,7 @@ describe('loop-owned request freezing', () => {
     expect(Object.isFrozen(session.deriveMessages())).toBe(false)
     expect(freeze.mock.calls.filter(([value]) => value === userEvent.data)).toHaveLength(1)
     expect(freeze.mock.calls.filter(([value]) => value === replacement.data)).toHaveLength(1)
-    const resumed = new ReactLoopAgent(loopCtx, id, { provider: 'mock', model: 'mock' }, session)
+    const resumed = new ReactLoopAgent(loopCtx, id, { provider: 'mock', model: 'mock' }, session, inboxState)
     cleanups.push(async () => {
       resumed.cancel({ kind: 'disposed' })
       await resumed.whenIdle()

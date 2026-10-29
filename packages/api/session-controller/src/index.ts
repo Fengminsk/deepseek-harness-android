@@ -4,7 +4,7 @@ import { hostname } from 'node:os'
 import { resolve } from 'node:path'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-fs'
-import { Context } from '@deepseek-ai/cordis'
+import { Context, Service } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { errorChain, ReasoningEffortId, type MessageSource } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-client-file-upload'
@@ -28,7 +28,9 @@ import { SessionHistoryController } from './history.ts'
 import { SessionFileReferences } from './file-references.ts'
 import { ApiSessionList } from './list.ts'
 import { buildModelCatalog, hasProviderApiKey } from './catalog.ts'
-import { installModelSelectionProjection } from './model-selection-projection.ts'
+import { modelSelectionProjection } from './model-selection-projection.ts'
+import type { ModelSelectionProjectionState } from './types.ts'
+import type { ProjectionHandle } from '@deepseek-ai/dsh-session-projection'
 import { SessionSkillCatalog } from './skill-catalog.ts'
 import { SessionMediaReferences } from './media-references.ts'
 import { ArchivedSessionGate } from './archived-session-gate.ts'
@@ -158,7 +160,6 @@ export class SessionController extends TypertRemoteService {
     super(ctx, 'sessionController', { namespace: 'session' })
     ctx.typert.resources.register('session', { field: 'sessionId' })
     const resolved = SessionController.Config(config)
-    installModelSelectionProjection(ctx)
     this.agents = new ApiSessionAgentController(ctx)
     this.commands = new SessionCommandController(ctx, this.agents, process.cwd())
     ctx.effect(() => ctx.fileUploads.registerAgentResolver(async (sessionId) => {
@@ -220,6 +221,21 @@ export class SessionController extends TypertRemoteService {
       if (event.type !== 'user/message' || event.data.source.kind !== 'user') return
       ctx.emit('api-session/activity', session.id, event.time)
     })
+  }
+
+  /** Install the model-selection unit and hand its retained reader to the agent controller. */
+  protected async [Service.init](): Promise<void> {
+    this.attachModelSelection(await this.ctx.sessionProjections.register(modelSelectionProjection))
+  }
+
+  /**
+   * Hand over the retained model-selection reader. `[Service.init]` calls this
+   * after its awaited registration; a direct constructor that bypasses the
+   * Cordis lifecycle calls it before serving model-selection reads.
+   * @param handle - reader for the `modelSelection` unit.
+   */
+  attachModelSelection(handle: ProjectionHandle<ModelSelectionProjectionState>): void {
+    this.agents.attachModelSelection(handle)
   }
 
   private promote(observation: SessionObservation): void {

@@ -33,6 +33,7 @@ import {
 } from '@deepseek-ai/dsh-typert-protocol'
 import RemoteAccessService from '@deepseek-ai/dsh-api-remote-access'
 import SessionController from '../src/index.ts'
+import { modelSelectionProjection } from '../src/model-selection-projection.ts'
 import type {
   ModelCatalog,
   SessionAttachmentRequest,
@@ -316,11 +317,13 @@ function installControllers(
 }
 
 /** Build or return the production Session Controller for a direct unit harness. */
-export function createSessionTestController(
+export async function createSessionTestController(
   ctx: Context,
   defaults: TestSessionRemoteDefaults,
-): SessionController {
-  return installControllers(ctx, defaults)
+): Promise<SessionController> {
+  const controller = installControllers(ctx, defaults)
+  controller.attachModelSelection(await ctx.sessionProjections.register(modelSelectionProjection))
+  return controller
 }
 
 function remoteResult<T>(
@@ -348,41 +351,48 @@ export function createSessionTestRemote(
   ctx: Context,
   defaults: TestSessionRemoteDefaults,
 ): TestSessionRemote {
-  const direct = createSessionTestController(ctx, defaults)
+  const direct = installControllers(ctx, defaults)
+  // The direct controller bypasses `[Service.init]`; hand over the retained unit first.
+  const ready = ctx.sessionProjections.register(modelSelectionProjection)
+    .then((handle) => { direct.attachModelSelection(handle) })
+  const settle = <T>(
+    operation: () => T | Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<RemoteResult<T>> => ready.then(() => remoteResult(operation, signal))
   return {
-    workspacePathApplications: (request, signal = new AbortController().signal) => remoteResult(
+    workspacePathApplications: (request, signal = new AbortController().signal) => settle(
       () => direct.workspacePathApplications(request, signal), signal,
     ),
-    canOpenWorkspacePath: () => remoteResult(() => direct.canOpenWorkspacePath()),
-    list: (request, signal = new AbortController().signal) => remoteResult(
+    canOpenWorkspacePath: () => settle(() => direct.canOpenWorkspacePath()),
+    list: (request, signal = new AbortController().signal) => settle(
       () => direct.list(request, signal),
       signal,
     ),
-    search: (request, signal = new AbortController().signal) => remoteResult(
+    search: (request, signal = new AbortController().signal) => settle(
       () => direct.search(request, signal),
       signal,
     ),
-    create: request => remoteResult(() => direct.create(request)),
-    selectModel: request => remoteResult(() => direct.selectModel(request)),
-    modelCatalog: () => remoteResult(() => direct.modelCatalog()),
-    rename: request => remoteResult(() => direct.rename(request)),
-    fork: request => remoteResult(() => direct.fork(request)),
-    prompt: (request, signal = new AbortController().signal) => remoteResult(
+    create: request => settle(() => direct.create(request)),
+    selectModel: request => settle(() => direct.selectModel(request)),
+    modelCatalog: () => settle(() => direct.modelCatalog()),
+    rename: request => settle(() => direct.rename(request)),
+    fork: request => settle(() => direct.fork(request)),
+    prompt: (request, signal = new AbortController().signal) => settle(
       () => direct.prompt(request, signal),
       signal,
     ),
-    attachment: request => remoteResult(() => direct.attachment(request)),
-    updateQueue: request => remoteResult(() => direct.updateQueue(request)),
-    cancel: request => remoteResult(() => direct.cancel(request)),
-    openWorkspacePath: (request, signal = new AbortController().signal) => remoteResult(
+    attachment: request => settle(() => direct.attachment(request)),
+    updateQueue: request => settle(() => direct.updateQueue(request)),
+    cancel: request => settle(() => direct.cancel(request)),
+    openWorkspacePath: (request, signal = new AbortController().signal) => settle(
       () => direct.openWorkspacePath(request, signal),
       signal,
     ),
-    page: (request, signal = new AbortController().signal) => remoteResult(
+    page: (request, signal = new AbortController().signal) => settle(
       () => direct.page(request, signal),
       signal,
     ),
-    projections: (request, signal = new AbortController().signal) => remoteResult(
+    projections: (request, signal = new AbortController().signal) => settle(
       () => direct.projections(request, signal),
       signal,
     ),

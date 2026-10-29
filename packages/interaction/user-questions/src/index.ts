@@ -15,8 +15,10 @@ import { scopeTarget } from '@deepseek-ai/dsh-scope'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-session-projection'
+import type { ProjectionHandle } from '@deepseek-ai/dsh-session-projection'
 import z from '@deepseek-ai/schemastery'
 import { userQuestionProjectionDefinition } from './projection.ts'
+import type { UserQuestionProjectionState } from './projection.ts'
 import { TimedQuestionWait } from './timed-wait.ts'
 
 declare module '@deepseek-ai/cordis' {
@@ -80,11 +82,13 @@ export class UserQuestionService extends TypertRemoteService {
   static Config = z.object({})
   private readonly waits = new Map<Agent, Map<ToolCallId, TimedQuestionWait>>()
   private readonly queuedReplies = new WeakMap<Session, Map<ToolCallId, QueuedReply>>()
+  private userQuestions: ProjectionHandle<UserQuestionProjectionState> | undefined
 
   constructor(ctx: Context) {
     super(ctx, 'userQuestions')
     ctx.inject(['sessionProjections'], (projectionCtx) => {
       void projectionCtx.sessionProjections.register(userQuestionProjectionDefinition)
+        .then((handle) => { this.userQuestions = handle })
     })
     ctx.effect(() => () => {
       for (const calls of this.waits.values()) {
@@ -144,7 +148,7 @@ export class UserQuestionService extends TypertRemoteService {
   }
 
   private continued(agent: Agent): readonly PendingUserQuestion[] {
-    const state = this.ctx.get('sessionProjections')?.stateOf(agent.session, 'userQuestions')
+    const state = this.userQuestions?.stateOf(agent.session)
     return (state?.questions.active ?? []).filter(question => question.state === 'continued')
   }
 

@@ -1,7 +1,7 @@
 /** Retained readers follow Session events independently of registry participation. */
 import { Context } from '@deepseek-ai/cordis'
 import SessionStore from '@deepseek-ai/dsh-session'
-import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
+import SessionProjectionRegistry, { stateOfRetained } from '@deepseek-ai/dsh-session-projection'
 import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection'
 import { describe, expect, expectTypeOf, it, onTestFinished, vi } from 'vitest'
 import { z } from 'zod'
@@ -209,6 +209,16 @@ describe('retained projection readers', () => {
     expect(handle.stateOf(session)).toBe(1)
     await retained.dispose()
     expect(ctx.sessionProjections.snapshot(session).values).toEqual({})
+  })
+
+  it('reads retained state and reports an incomplete handoff instead of an absent unit', async () => {
+    const { owner, session } = await setup()
+    const handle = await owner.ctx.sessionProjections.register(definition)
+    expect(stateOfRetained(handle, session, 'test-owner')).toBe(0)
+    session.append('turn/start', { turn: 1 })
+    expect(stateOfRetained({ stateOf: handle.stateOf.bind(handle) }, session, 'test-owner')).toBe(1)
+    expect(() => stateOfRetained(undefined, session, 'test-owner'))
+      .toThrow('test-owner: the projection registration handoff has not completed')
   })
 
 })

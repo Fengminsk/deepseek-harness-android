@@ -78,6 +78,28 @@ export interface ProjectionHandle<S> {
 export type ProjectionRegistration<S> = Promise<ProjectionHandle<S>> & (() => Promise<void>)
 
 /**
+ * Read one unit through a handle its owner retained during asynchronous
+ * registration. A synchronous read before that handoff completes is a
+ * readiness defect, not an absent projection, so it is reported instead of
+ * silently standing in another value.
+ * @param handle - the retained reader, or `undefined` before the handoff.
+ * @param session - Session whose committed events are folded.
+ * @param owner - service or plugin name reported in the failure.
+ * @returns the unit's current state.
+ * @throws when the registration handoff has not completed.
+ */
+export function stateOfRetained<S>(
+  handle: Pick<ProjectionHandle<S>, 'stateOf'> | undefined,
+  session: Session,
+  owner: string,
+): S {
+  if (handle === undefined) {
+    throw new Error(`${owner}: the projection registration handoff has not completed`)
+  }
+  return handle.stateOf(session)
+}
+
+/**
  * One domain's state-driven computation unit: a pure synchronous fold plus
  * declarations and an optional client view — never an opaque getter. The framework drives
  * `apply` on every committed session event; the domain holds no

@@ -4,7 +4,7 @@ import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
-import AgentRegistry, { turnBoundaryProjectionDefinition } from '@deepseek-ai/dsh-agent'
+import AgentRegistry from '@deepseek-ai/dsh-agent'
 import type { Agent, AgentFactory } from '@deepseek-ai/dsh-agent'
 import { agentPresetProjectionDefinition } from '@deepseek-ai/dsh-agent-preset-registry'
 import SessionStore, { SESSION_FORMAT_VERSION, SessionId, SessionSeq } from '@deepseek-ai/dsh-session'
@@ -12,7 +12,7 @@ import type { Session, SessionEvent, SessionHeader } from '@deepseek-ai/dsh-sess
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
 import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createSessionTestRemote, testSessionPersistence } from './test-remote.ts'
+import { createSessionTestRemote, installSessionReadTestServices, testSessionPersistence } from './test-remote.ts'
 
 /** Booted contexts and their temp roots, torn down after each test. */
 const contexts: Context[] = []
@@ -64,10 +64,17 @@ async function harness(options: HarnessOptions = {}) {
   contexts.push(ctx)
   await ctx.plugin(SessionStore)
   await ctx.plugin(AgentRegistry)
+  installSessionReadTestServices(ctx)
   const presets = options.presets
   const selections: { sessionId: SessionId; agentPreset: string }[] = []
   const resumed: SessionId[] = []
+  let presetOf: (id: SessionId) => string | null | undefined = () => undefined
   if (presets !== undefined) {
+    const presetUnit = await ctx.sessionProjections.register(agentPresetProjectionDefinition)
+    presetOf = (id) => {
+      const session = ctx.sessions.get(id)
+      return session === undefined ? undefined : presetUnit.stateOf(session)
+    }
     const known = (id?: string): string => {
       const wanted = id ?? presets[0] ?? ''
       if (!presets.includes(wanted)) {
@@ -89,6 +96,7 @@ async function harness(options: HarnessOptions = {}) {
       resolve: (id?: string) => Promise.resolve(id === undefined ? undefined : options.resolving?.get(id))
         .then(() => ({ id: known(id) })),
       mount: (_ctx: Context, id?: string) => Promise.resolve().then(() => ({ id: usable(id) })),
+      presetForSession: (session: Session) => presetUnit.stateOf(session) ?? undefined,
       select: async (agent: Agent, agentPreset: string) => {
         usable(agentPreset)
         if (options.locked?.has(agent.id) === true) {
@@ -164,12 +172,6 @@ async function harness(options: HarnessOptions = {}) {
     defaultModelSelection: () => ({ provider: 'test', model: 'test-model' }),
     cwd,
   })
-  void ctx.sessionProjections.register(turnBoundaryProjectionDefinition)
-  if (presets !== undefined) void ctx.sessionProjections.register(agentPresetProjectionDefinition)
-  const presetOf = (id: SessionId): string | null | undefined => {
-    const session = ctx.sessions.get(id)
-    return session === undefined ? undefined : ctx.sessionProjections.stateOf(session, 'agentPreset')
-  }
   const selectedEvents = (id: SessionId): unknown[] => {
     const session = ctx.sessions.get(id)
     return session === undefined ? [] : session.snapshotEvents()

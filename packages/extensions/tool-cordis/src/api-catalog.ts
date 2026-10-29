@@ -149,6 +149,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     description: 'Registry of YAML-declared presets and the revisions live Agents retain.',
     methods: [
       {
+        signature: 'presetForSession(session: Session): string | undefined',
+        description: 'Read the Agent preset one Session recorded.',
+        parameters: [{ name: 'session', description: 'Session whose committed events are folded.' }],
+        returns: 'the recorded preset, or `undefined` when none was logged.',
+      },
+      {
         signature: 'async register(definition: PresetDefinition): Promise<() => Promise<void>>',
         description: 'Register and eagerly load a definition; activation failure remains visible in the roster.',
         parameters: [{ name: 'definition', description: 'Parsed configuration supplied by the declaring plugin.' }],
@@ -2101,6 +2107,11 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     description: 'Host service backing the generated `ctx.remote.session` namespace.',
     methods: [
       {
+        signature: 'attachModelSelection(handle: ProjectionHandle<ModelSelectionProjectionState>): void',
+        description: 'Hand over the retained model-selection reader. `[Service.init]` calls this after its awaited registration; a direct constructor that bypasses the Cordis lifecycle calls it before serving model-selection reads.',
+        parameters: [{ name: 'handle', description: 'reader for the `modelSelection` unit.' }],
+      },
+      {
         signature: 'resolveAgent(sessionId: SessionId): Promise<ApiSessionAgentResult>',
         description: 'Resolve or resume one ordinary Session for another Host API domain.',
         parameters: [{ name: 'sessionId', description: 'Session identity whose Agent owns the operation.' }],
@@ -3420,6 +3431,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     summary: 'Replay owner for one service-wide estimator and isolated per-session folds.',
     description: 'Replay owner for one service-wide estimator and isolated per-session folds.',
     methods: [
+      {
+        signature: 'contextPressure(session: Session): Readonly<Pick<ContextPressureState, \'pressureTokens\' | \'contextWindow\'>>',
+        description: 'Read the newest request pressure and route capacity folded from one Session.',
+        parameters: [{ name: 'session', description: 'Session whose committed events are folded.' }],
+        returns: 'the pressure figures; both are absent before a provider reports usage.',
+      },
       {
         signature: 'measure(session: Session, requestHeader?: EpochHeader): TokenMeasurement',
         description: 'Measure current request pressure and surface through the durable tail.\n\nThe effective envelope\'s routed provider/model selects the request-image pricing every node is priced under: a route whose adapter declares image pricing charges each retained image its visual tokens plus its model-visible text, while other routes keep the fixed heuristic. Provider usage is reused only when the latest successful call\'s canonical request envelope matches `requestHeader` and its total is no lower than that call\'s full route-priced anchor; otherwise the complete envelope and surface are repriced. The anchor includes all surface nodes immediately before the assistant message, including inputs admitted after step/start.\n\n`requestHeader` replaces the latest logged envelope for pressure and node pricing; the node set always describes the current session surface. Every call clones those positional nodes, so measurement is O(surface).',
@@ -5244,6 +5261,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export type ContentBlockType = keyof ContentBlockMap;',
   },
   {
+    name: 'ContextPressureState',
+    declaration: 'export type ContextPressureState = z.infer<typeof contextPressureStateSchema>;',
+  },
+  {
     name: 'ContinuableCreateRequest',
     declaration: 'export interface ContinuableCreateRequest {\n    readonly cwd: string;\n    readonly sessionId: SessionId;\n    readonly parent: Agent;\n    readonly signal: AbortSignal;\n}',
   },
@@ -6334,6 +6355,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'ModelReasoningEffort',
     declaration: 'export interface ModelReasoningEffort {\n    readonly id: string;\n    readonly name: string;\n    readonly description?: string;\n}',
+  },
+  {
+    name: 'ModelSelectionProjectionState',
+    declaration: 'export interface ModelSelectionProjectionState {\n    readonly lastUsed: ModelSelection | null;\n    readonly pending: ModelSelection | null;\n}',
   },
   {
     name: 'ModEvents',

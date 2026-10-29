@@ -1,6 +1,5 @@
 /** Durable model-selection intent and request-use projection. */
 
-import type { Context } from '@deepseek-ai/cordis'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection'
 import { z } from 'zod'
@@ -55,7 +54,8 @@ function applyModelSelectionProjection(
     : { lastUsed, pending }
 }
 
-const modelSelectionProjection = {
+/** Durable model-selection intent folded from one Session log. */
+export const modelSelectionProjection = {
   key: 'modelSelection',
   stateSchema: modelSelectionProjectionStateSchema,
   init: () => ({ lastUsed: null, pending: null }),
@@ -72,12 +72,4 @@ function sameSelection(left: ModelSelection | null, right: ModelSelection | null
     && left.provider === right.provider
     && left.model === right.model
     && left.reasoningEffort === right.reasoningEffort)
-}
-
-/**
- * Register the durable model-selection projection when the registry is present.
- * @param ctx - Session Controller context.
- */
-export function installModelSelectionProjection(ctx: Context): void {
-  void ctx.sessionProjections.register(modelSelectionProjection)
 }

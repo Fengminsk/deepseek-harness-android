@@ -120,9 +120,9 @@ declare module '@deepseek-ai/dsh-session-projection/types' {
   }
 }
 
-export function apply(ctx: Context, config: Config = {}, internals: RetryInternals = {}): void {
+export async function apply(ctx: Context, config: Config = {}, internals: RetryInternals = {}): Promise<void> {
   validateConfig(config)
-  void ctx.sessionProjections.register({
+  const unit = await ctx.sessionProjections.register({
     key: 'llmRetry',
     stateVersion: 1,
     stateSchema: llmRetryStateSchema,
@@ -217,7 +217,7 @@ export function apply(ctx: Context, config: Config = {}, internals: RetryInterna
     }
 
     const policyKey = retryPolicyKey(policy)
-    const retryState = ctx.sessionProjections.stateOf(agent.session, 'llmRetry') as LlmRetryState
+    const retryState = unit.stateOf(agent.session)
     const previous = retryState[retryStateKey(provider, policyKey)]
     const previousRetry = previous?.retry ?? 0
     if (policy.mode === 'normal' && previousRetry >= policy.maxRetries) return next()
