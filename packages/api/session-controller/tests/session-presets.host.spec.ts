@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
+import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import type { Agent, AgentFactory } from '@deepseek-ai/dsh-agent'
 import { agentPresetProjectionDefinition } from '@deepseek-ai/dsh-agent-preset-registry'
 import SessionStore, { SESSION_FORMAT_VERSION, SessionId, SessionSeq } from '@deepseek-ai/dsh-session'
@@ -12,7 +13,7 @@ import type { Session, SessionEvent, SessionHeader } from '@deepseek-ai/dsh-sess
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
 import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createSessionTestRemote, installSessionReadTestServices, testSessionPersistence } from './test-remote.ts'
+import { createSessionTestRemote, testSessionPersistence } from './test-remote.ts'
 
 /** Booted contexts and their temp roots, torn down after each test. */
 const contexts: Context[] = []
@@ -63,18 +64,13 @@ async function harness(options: HarnessOptions = {}) {
   const ctx = new Context()
   contexts.push(ctx)
   await ctx.plugin(SessionStore)
+  await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(AgentRegistry)
-  installSessionReadTestServices(ctx)
+  const preset = await ctx.sessionProjections.register(agentPresetProjectionDefinition)
   const presets = options.presets
   const selections: { sessionId: SessionId; agentPreset: string }[] = []
   const resumed: SessionId[] = []
-  let presetOf: (id: SessionId) => string | null | undefined = () => undefined
   if (presets !== undefined) {
-    const presetUnit = await ctx.sessionProjections.register(agentPresetProjectionDefinition)
-    presetOf = (id) => {
-      const session = ctx.sessions.get(id)
-      return session === undefined ? undefined : presetUnit.stateOf(session)
-    }
     const known = (id?: string): string => {
       const wanted = id ?? presets[0] ?? ''
       if (!presets.includes(wanted)) {
@@ -93,10 +89,10 @@ async function harness(options: HarnessOptions = {}) {
     }
     ctx.provide('agentPresets', {
       defaultId: presets[0],
+      presetForSession: (session: Session) => preset.stateOf(session),
       resolve: (id?: string) => Promise.resolve(id === undefined ? undefined : options.resolving?.get(id))
         .then(() => ({ id: known(id) })),
       mount: (_ctx: Context, id?: string) => Promise.resolve().then(() => ({ id: usable(id) })),
-      presetForSession: (session: Session) => presetUnit.stateOf(session) ?? undefined,
       select: async (agent: Agent, agentPreset: string) => {
         usable(agentPreset)
         if (options.locked?.has(agent.id) === true) {
@@ -126,20 +122,24 @@ async function harness(options: HarnessOptions = {}) {
     archivedSessionIds: archived,
   } as never)
 
-  /** Run setup on the unpublished Session, then publish it and its Agent, as the Agent factory does. */
+  /** Enter the Session for setup, then announce creation as the Agent factory does. */
   const publish = async (
     session: Session,
     setup: Parameters<AgentFactory['createAgent']>[1]['setup'],
   ): Promise<{ agent: Agent; dispose: () => Promise<void> }> => {
     const agent = stubAgent(session)
     ;(agent as { ctx?: Context }).ctx = ctx
-    await setup?.(ctx, agent)
-    ctx.effect(function* () {
-      yield ctx.sessions.enter(session)
+    const detach = ctx.effect(() => ctx.sessions.enter(session))
+    try {
       ctx.sessions.announce(session)
-    }, 'test: published Session')
-    const unregister = await ctx.agents.register(agent)
-    return { agent, dispose: async () => { await unregister() } }
+      const commit = await setup?.(ctx, agent)
+      commit?.commit()
+      const unregister = await ctx.agents.register(agent)
+      return { agent, dispose: async () => { await unregister(); await detach() } }
+    } catch (error) {
+      await detach()
+      throw error
+    }
   }
   const factory: AgentFactory = {
     async createAgent(_ownerCtx, create) {
@@ -168,10 +168,14 @@ async function harness(options: HarnessOptions = {}) {
     },
   }
   ctx.agents.setFactory(factory)
-  const remote = createSessionTestRemote(ctx, {
+  const remote = await createSessionTestRemote(ctx, {
     defaultModelSelection: () => ({ provider: 'test', model: 'test-model' }),
     cwd,
   })
+  const presetOf = (id: SessionId): string | null | undefined => {
+    const session = ctx.sessions.get(id)
+    return session === undefined ? undefined : preset.stateOf(session)
+  }
   const selectedEvents = (id: SessionId): unknown[] => {
     const session = ctx.sessions.get(id)
     return session === undefined ? [] : session.snapshotEvents()

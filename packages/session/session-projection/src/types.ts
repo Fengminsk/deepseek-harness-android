@@ -71,9 +71,3 @@ export type SessionProjectionSummaryExcludedKey = {
  */
 export type SessionProjectionSummaryValues =
   Omit<SessionProjectionViewValues, SessionProjectionSummaryExcludedKey>
-
-/**
- * The merge-extensible host fold-state table. Domain packages merge the state they fold here;
- * the deprecated two-argument stateOf read keeps these entry types.
- */
-export interface SessionProjectionStateMap {}

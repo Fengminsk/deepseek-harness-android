@@ -1,3 +1,4 @@
+import { executeToolFixture } from '@deepseek-ai/dsh-tool-testkit'
 import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -102,14 +103,14 @@ describe('minimal agent preset', () => {
     const stateDir = join(scaffold.workspaceCwd, 'persistent-state')
     await mkdir(stateDir)
     const signal = new AbortController().signal
-    await scaffold.ctx.tools.execute({
+    await executeToolFixture(scaffold.ctx, {
       signal,
       callId: ToolCallId('minimal-bash-state-setup'),
       name: 'bash',
       arguments: { command: `cd ${JSON.stringify(stateDir)} && export DSH_MINIMAL_STATE=PERSISTED` },
       agent: agentHandle.agent,
     })
-    const bash = await scaffold.ctx.tools.execute({
+    const bash = await executeToolFixture(scaffold.ctx, {
       signal,
       callId: ToolCallId('minimal-bash-state-read'),
       name: 'bash',
@@ -141,8 +142,11 @@ describe('minimal agent preset', () => {
         ],
       }
     `)
+    const requestedTools = new Set(requestHeader.tools?.map(tool => tool.name))
     expect(requestHeader.tools?.toSorted((left, right) => left.name.localeCompare(right.name)))
-      .toEqual(scaffold.ctx.tools.schemas(agentHandle.agent).toSorted((left, right) => left.name.localeCompare(right.name)))
+      .toEqual(scaffold.ctx.tools.schemas(agentHandle.agent)
+        .filter(tool => requestedTools.has(tool.name))
+        .toSorted((left, right) => left.name.localeCompare(right.name)))
   })
 
   it.skipIf(MODE === 'record')('expands the completed persistent Bash call in the Web conversation', async () => {

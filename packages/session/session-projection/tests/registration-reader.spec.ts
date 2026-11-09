@@ -1,7 +1,7 @@
 /** Retained readers follow Session events independently of registry participation. */
 import { Context } from '@deepseek-ai/cordis'
 import SessionStore from '@deepseek-ai/dsh-session'
-import SessionProjectionRegistry, { stateOfRetained } from '@deepseek-ai/dsh-session-projection'
+import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection'
 import { describe, expect, expectTypeOf, it, onTestFinished, vi } from 'vitest'
 import { z } from 'zod'
@@ -154,7 +154,8 @@ describe('retained projection readers', () => {
     expect(apply).toHaveBeenCalledTimes(2)
     expect(changed).toHaveBeenCalledOnce()
     expect(ctx.sessionProjections.snapshot(session).values).toEqual({})
-    expect(ctx.sessionProjections.checkpoint(session)).toEqual({})
+    // The checkpoint carries the released unit's cell as the retained reader last advanced it.
+    expect(ctx.sessionProjections.checkpoint(session)).toEqual({ 'test/reader': { ver: 1, seq: 1, val: 2 } })
     const later = ctx.sessions.create()
     later.append('turn/start', { turn: 1 })
     expect(handle.stateOf(later)).toBe(1)
@@ -209,16 +210,6 @@ describe('retained projection readers', () => {
     expect(handle.stateOf(session)).toBe(1)
     await retained.dispose()
     expect(ctx.sessionProjections.snapshot(session).values).toEqual({})
-  })
-
-  it('reads retained state and reports an incomplete handoff instead of an absent unit', async () => {
-    const { owner, session } = await setup()
-    const handle = await owner.ctx.sessionProjections.register(definition)
-    expect(stateOfRetained(handle, session, 'test-owner')).toBe(0)
-    session.append('turn/start', { turn: 1 })
-    expect(stateOfRetained({ stateOf: handle.stateOf.bind(handle) }, session, 'test-owner')).toBe(1)
-    expect(() => stateOfRetained(undefined, session, 'test-owner'))
-      .toThrow('test-owner: the projection registration handoff has not completed')
   })
 
 })

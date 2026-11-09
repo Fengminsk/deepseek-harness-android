@@ -1,4 +1,5 @@
 /** Third-party-style projection plugin using synchronous registration and keyed reads. */
+/* oxlint-disable typescript/no-deprecated -- this fixture intentionally keeps the legacy plugin API. */
 import type { Context } from '@deepseek-ai/cordis'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection'

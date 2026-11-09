@@ -36,11 +36,11 @@ python/sdk-runtime/src/deepseek_harness_runtime/runtime/
 python/**/__pycache__/
 python/**/.pytest_cache/
 packages/**/__pycache__/
-apps/**/__pycache__/
 apps/web/dist/
 .artifacts/
 .dsh-build/
 .dsh-report/
+.ui-review/
 .playwright-mcp/
 .orig
 .worktrees/
@@ -49,22 +49,5 @@ worktrees/
 .typert-*/
 native/system/test/bin/
 
-# Android and Flutter local build state
-.dart_tool/
-.flutter-plugins
-.flutter-plugins-dependencies
-.gradle/
-.kotlin/
-**/android/**/build/
-**/android/captures/
-**/android/local.properties
-**/android/key.properties
-*.jks
-*.keystore
-
-# Local credentials and device authorization
-.env.*
-!.env.example
-!.env.sample
-adbkey
-adbkey.pub
+# Generated company-signed CUA release record.
+/packages/experimental/cua-macos/cua-helper.json

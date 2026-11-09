@@ -17,14 +17,13 @@ import type {
   SessionRecord,
 } from '@deepseek-ai/dsh-session-query'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
-import type {} from '@deepseek-ai/dsh-session-projection'
 import { serviceBoundary } from './service-boundary.ts'
 
 interface Caller {
   readonly id: SessionIdValue
   readonly header: SessionHeader
   /** The caller's own-session boundary fold (the `turnBoundary` projection). */
-  readonly boundary: TurnBoundaryProjection | undefined
+  readonly boundary: TurnBoundaryProjection
 }
 
 interface TitleView {

@@ -15,7 +15,6 @@ import { isDeepStrictEqual } from 'node:util'
 import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { Session, UserMessage } from '@deepseek-ai/dsh-session'
-import type {} from '@deepseek-ai/dsh-session-projection'
 import type { ToolExecution, ToolExecutionResult, ToolExecutionToken } from '@deepseek-ai/dsh-tools'
 import { Config, resolveConfig, workspaceBaselineIdentity, type ResolvedConfig } from './config.ts'
 import { findProjectRoot, loadBaselineInstructionSet } from './files.ts'
@@ -304,9 +303,6 @@ export function apply(ctx: Context, config: Config): void {
 
   const stepIsOpen = (session: Session): boolean => {
     const boundary = ctx.agents.turnBoundaryOf(session)
-    if (boundary === undefined) {
-      throw new Error('agent-instructions requires the turnBoundary session projection')
-    }
     return boundary.openTurnStartSeq !== null
       && boundary.lastStepBoundary?.kind === 'start'
       && boundary.lastStepBoundary.seq > boundary.openTurnStartSeq

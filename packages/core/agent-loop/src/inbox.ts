@@ -66,30 +66,30 @@ export const inboxProjectionDefinition = {
 /**
  * Driver-owned durable Inbox implementation used by ReactLoopAgent and focused
  * provider tests.
- * @param read - reader for the standard Inbox projection retained by AgentLoop.
+ * @param readState - reader for the live Inbox projection state.
  * @param session - session whose durable events store pending input.
  * @param dispatch - agent-scoped notifications for Inbox lifecycle events.
  */
 export class ReactLoopInbox implements InboxContract {
   constructor(
-    private readonly read: (session: Session) => InboxState,
+    private readonly readState: () => InboxState,
     private readonly session: Session,
     private readonly dispatch: AgentEventDispatch,
   ) {}
 
   /** Prompts awaiting individual turns. */
   get nextTurn(): readonly UserMessage[] {
-    return this.current()['next-turn']
+    return this.readState()['next-turn']
   }
 
   /** Input awaiting the next step boundary. */
   get nextStep(): readonly UserMessage[] {
-    return this.current()['next-step']
+    return this.readState()['next-step']
   }
 
   /** Whether either pending-message list contains work. */
   get hasPending(): boolean {
-    const state = this.current()
+    const state = this.readState()
     return state['next-turn'].length > 0 || state['next-step'].length > 0
   }
 
@@ -118,7 +118,7 @@ export class ReactLoopInbox implements InboxContract {
    * @param message - message to append.
    */
   append(target: InboxTarget, message: UserMessage): void {
-    this.splice(target, this.current()[target].length, 0, [message])
+    this.splice(target, this.readState()[target].length, 0, [message])
   }
 
   /**
@@ -174,17 +174,12 @@ export class ReactLoopInbox implements InboxContract {
 
   /** Locate one pending identity across both owned lists. */
   private locate(messageId: MessageId): { target: InboxTarget; index: number } | undefined {
-    const state = this.current()
+    const state = this.readState()
     for (const target of ['next-turn', 'next-step'] as const) {
       const index = state[target].findIndex(message => message.id === messageId)
       if (index >= 0) return { target, index }
     }
     return undefined
-  }
-
-  /** Read the current durable projection state. */
-  private current(): InboxState {
-    return this.read(this.session)
   }
 
   /** Commit one normalized mutation and publish its live events. */
@@ -195,7 +190,7 @@ export class ReactLoopInbox implements InboxContract {
     inserted: UserMessage[],
     discardRemoved: boolean,
   ): UserMessage[] {
-    const state = this.current()
+    const state = this.readState()
     const inbox = state[target]
     const truncatedStart = Math.trunc(start)
     const offset = Number.isNaN(truncatedStart) ? 0 : truncatedStart

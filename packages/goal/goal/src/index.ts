@@ -14,9 +14,8 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import { SessionSeq } from '@deepseek-ai/dsh-session'
 import type { Session, SessionEvent, SessionLogOffset } from '@deepseek-ai/dsh-session'
 import { TypertRemoteService, Remote } from '@deepseek-ai/dsh-typert-protocol'
-import type {} from '@deepseek-ai/dsh-session-projection'
-import { stateOfRetained } from '@deepseek-ai/dsh-session-projection'
-import type { ProjectionDefinition, ProjectionHandle } from '@deepseek-ai/dsh-session-projection'
+import type { ProjectionHandle } from '@deepseek-ai/dsh-session-projection'
+import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection'
 import {
   applyGoalEvent,
   goalChangeRef,
@@ -48,10 +47,6 @@ import type {
   GoalSnapshotChangeMeta,
 } from './domain.ts'
 
-// The pure payload outlet (./types.ts, ONE home of the `goal` projection-key
-// declaration) re-exported onto the package root keeps the module edge in
-// the emitted index.d.ts, so aggregate programs consuming the declarations
-// still receive the SessionProjectionStateMap merge.
 export type * from './types.ts'
 export type * from './domain.ts'
 export { GOAL_CHANGE_VERSION, GoalError, GoalId } from './runtime.ts'
@@ -247,13 +242,19 @@ export class GoalService extends TypertRemoteService {
 
   private readonly resolved: ResolvedConfig
   private readonly runtimeStates = new WeakMap<Session, GoalRuntimeState>()
-  private goalUnit: ProjectionHandle<GoalProjectionState> | undefined
+
+  private goalProjectionHandle!: ProjectionHandle<GoalProjectionState>
 
   constructor(ctx: Context, config: Config = {}) {
     super(ctx, 'goals')
     this.resolved = {
       defaultMaxGoalRounds: resolveMaxGoalRounds(config.defaultMaxGoalRounds ?? 256),
     }
+  }
+
+  protected async [Service.init](): Promise<void> {
+    const ctx = this.ctx
+    this.goalProjectionHandle = await ctx.sessionProjections.register(goalProjectionDefinition)
     ctx.on('agent/created', ({ agent }) => {
       this.setActivation(agent.session, 'disarmed')
     })
@@ -266,11 +267,6 @@ export class GoalService extends TypertRemoteService {
         : 'disarmed'
       this.setActivation(session, activation)
     })
-  }
-
-  /** Install the `goal` unit and retain its reader before serving reads. */
-  protected async [Service.init](): Promise<void> {
-    this.goalUnit = await this.ctx.sessionProjections.register(goalProjectionDefinition)
   }
 
   /**
@@ -480,7 +476,7 @@ export class GoalService extends TypertRemoteService {
 
   /** Read the current durable projection maintained by the registry. */
   private state(session: Session): GoalProjection | null {
-    const state = stateOfRetained(this.goalUnit, session, 'goal')
+    const state = this.goalProjectionHandle.stateOf(session)
     if (state.failure !== null) throw new Error(state.failure)
     return state.current
   }
@@ -502,7 +498,7 @@ export class GoalService extends TypertRemoteService {
     const runtime = this.runtimeState(session)
     if (runtime.activation === activation) return
     runtime.activation = activation
-    const state = stateOfRetained(this.goalUnit, session, 'goal')
+    const state = this.goalProjectionHandle.stateOf(session)
     if (state.failure !== null) return
     const goal = this.view(state.current, runtime)
     this.ctx.emit('goal/activation-changed', {

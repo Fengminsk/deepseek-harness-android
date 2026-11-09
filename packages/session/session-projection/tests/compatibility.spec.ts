@@ -1,4 +1,5 @@
 /** Legacy projection calls keep their effect ownership while new callers await retained readers. */
+/* oxlint-disable typescript/no-deprecated -- exercise the public compatibility API. */
 import { setImmediate } from 'node:timers/promises'
 import { Context, FiberState } from '@deepseek-ai/cordis'
 import SessionStore from '@deepseek-ai/dsh-session'
@@ -128,11 +129,13 @@ describe('projection registration compatibility', () => {
       apply: definition.apply,
     })
     expect(ctx.sessionProjections.stateOf(session, 'test/missing-legacy')).toBeUndefined()
+    // oxlint-disable-next-line typescript/no-deprecated -- Only the deprecated cached face observes cells without computing them.
     expect(ctx.sessionProjections.cachedSnapshot(session)).toBeUndefined()
     expect(hostInit).not.toHaveBeenCalled()
 
     expect(ctx.sessionProjections.stateOf(session, 'test/legacy')).toBe(2)
     expect(unrelatedView).not.toHaveBeenCalled()
+    // oxlint-disable-next-line typescript/no-deprecated -- Only the deprecated cached face observes cells without computing them.
     expect(ctx.sessionProjections.cachedSnapshot(session)).toEqual({
       asOfSeq: 1,
       values: { 'test/legacy': 2, 'test/legacy-unread-wire': 2 },

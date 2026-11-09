@@ -4,7 +4,6 @@ import { execFileSync } from 'node:child_process'
 import { lstatSync, readFileSync, readlinkSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { parse as parseToml, TomlError } from 'smol-toml'
 import { canonicalReferenceText } from './verify-public-repository-links.ts'
 
 const root = resolve(import.meta.dirname, '..')
@@ -12,7 +11,8 @@ const organization = ['deepseek', 'harness'].join('-')
 const organizationUrl = new RegExp(`\\bgithub\\.com/${organization}(?![a-z0-9-])`)
 // The independent kit repository owns the engine source and documentation.
 const kitRepositoryUrl = new RegExp(`\\bgithub\\.com/${organization}/libreoffice-kit(?:\\.git)?(?=/|[^a-zA-Z0-9_.-]|$)`, 'g')
-const commitCandidate = /(?<![a-z0-9])[\da-f]{7,40}(?![a-z0-9])/gi
+// Decimal-only tokens collide with sizes, counts, and version components; see docs/AGENTS.md#repository-references.
+const commitCandidate = /(?<![a-z0-9])(?=[\da-f]{0,39}[a-f])[\da-f]{7,40}(?![a-z0-9])/gi
 const excludedPrefixes = ['vendor/', '.agents/notes/archived/']
 const gitOutputLimit = 64 * 1024 * 1024
 // One 41-byte line per object; 1.2 million objects produce about 49 MiB.
@@ -32,40 +32,13 @@ function isMaintained(file: string): boolean {
   return !excludedPrefixes.some(prefix => file.startsWith(prefix))
 }
 
-/** Locate literal decimal size values only in valid TOML metadata; never suppress a whole line. */
-function metadataSizeOffsets(file: string, source: string): ReadonlySet<number> {
-  const offsets = new Set<number>()
-  if (!file.endsWith('.toml') && !/(?:^|\/)uv\.lock$/.test(file)) return offsets
-  try { parseToml(source, { integersAsBigInt: true }) }
-  catch (error) {
-    if (error instanceof TomlError) return offsets
-    throw error
-  }
-  // Mask TOML strings and comments without changing source offsets. A literal
-  // quoted size key is retained; quoted values and multiline prose are not.
-  const metadata = source.replace(
-    /"""(?:\\[\s\S]|(?!""")[\s\S])*"{3,5}|'''[\s\S]*?'{3,5}|"(?:\\[^\r\n]|[^"\\\r\n])*"|'[^'\r\n]*'|#[^\r\n]*/g,
-    (token: string, offset: number) => {
-      if ((token === '"size"' || token === "'size'") && /^[ \t]*=/.test(source.slice(offset + token.length))) {
-        return ' size '
-      }
-      return token.replace(/[^\r\n]/g, ' ')
-    })
-  for (const match of metadata.matchAll(/(?:^|[,{.\n])[ \t]*size[ \t]*=[ \t]*(0|[1-9]\d*)(?=[ \t]*(?:[,}\]\r\n]|$))/g)) {
-    const digits = match[1]
-    // Full hashes and out-of-range integers remain candidates, including purely
-    // numeric hashes. This exception describes a count, not numeric SHA syntax.
-    if (digits !== undefined && Number.isSafeInteger(Number(digits))) offsets.add(match.index + match[0].length - digits.length)
-  }
-  return offsets
-}
-
 /**
  * Inspect a maintained source file against known commit identifiers.
  * @param file - Repository-relative path used in diagnostics and exclusions.
  * @param source - File text or a symlink's stored target.
  * @param commits - Lowercase, unambiguous full or abbreviated commit identifiers.
- * @returns One finding per line and reference kind; TOML safe decimal size integers, digests and other Git object types are accepted.
+ * @returns One finding per line and reference kind; digests and other Git object types are accepted.
+ * Decimal-only tokens are ignored, including actual commit identifiers.
  */
 export function findRepositoryReferences(
   file: string,
@@ -74,17 +47,13 @@ export function findRepositoryReferences(
 ): RepositoryReference[] {
   if (!isMaintained(file)) return []
   const references: RepositoryReference[] = []
-  const sizeOffsets = metadataSizeOffsets(file, source)
-  let lineOffset = 0
   for (const [index, line] of source.split('\n').entries()) {
     if (organizationUrl.test(canonicalReferenceText(line).replace(kitRepositoryUrl, ''))) {
       references.push({ file, line: index + 1, kind: 'organization-url' })
     }
-    if ([...line.matchAll(commitCandidate)].some(match => commits.has(match[0].toLowerCase())
-      && !sizeOffsets.has(lineOffset + match.index))) {
+    if ([...line.matchAll(commitCandidate)].some(match => commits.has(match[0].toLowerCase()))) {
       references.push({ file, line: index + 1, kind: 'commit-hash' })
     }
-    lineOffset += line.length + 1
   }
   return references
 }
@@ -140,7 +109,7 @@ export function uniquePrefixMatch(objects: readonly string[], prefix: string): s
  * Resolve commit-identifier candidates in maintained sources against the local object database.
  * @param repoRoot - Working tree whose Git objects are inspected.
  * @param sources - File texts or symlink targets to extract candidates from.
- * @returns Lowercase candidates that name exactly one available object, which is a commit.
+ * @returns Lowercase candidates containing a hexadecimal letter that name exactly one available object, which is a commit.
  */
 export function repositoryCommits(repoRoot: string, sources: Iterable<string>): Set<string> {
   const candidates = [...new Set([...sources].flatMap(source =>
@@ -179,7 +148,7 @@ const invokedPath = process.argv[1]
 if (invokedPath !== undefined && import.meta.url === pathToFileURL(resolve(invokedPath)).href) {
   const references = scanRepositoryReferences(root)
   if (references.length === 0) {
-    console.log('verify-repository-references: maintained files contain no repository commit identifiers or disallowed organization URLs.')
+    console.log('verify-repository-references: maintained files contain no prohibited references (decimal-only tokens are ignored).')
   } else {
     console.error('verify-repository-references: use release tags or maintained repository links:')
     for (const { file, line, kind } of references) console.error(`  ${file}:${String(line)} ${kind}`)
