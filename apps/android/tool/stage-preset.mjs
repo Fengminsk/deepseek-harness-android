@@ -57,7 +57,7 @@ export async function stagePreset(root, destination) {
   // The in-process spawn/fork providers already belong to the shared host.
   // Select their original tools, retaining configuration and group isolation;
   // workflow-ptc/tool-workflow require the disabled Android PTC runtime.
-  const tools = ['tool-subagent-control', 'tool-subagent-list-agents', 'tool-subagent', 'tool-subagent-fork']
+  const tools = ['tool-subagent-control', 'tool-subagent', 'tool-subagent-fork']
     .map(id => {
       const entries = delegation.config.filter(item => item.id === id)
       if (entries.length !== 1) throw new Error(`Original delegation must contain exactly one ${id}`)

@@ -37,6 +37,24 @@ function project(
 }
 
 /**
+ * Definitions this module registered live. Object identity is the only evidence
+ * that a caller's visible `list_agents` is the first-party registration.
+ */
+const firstPartyListAgentsDefinitions = new WeakSet<ToolDefinition>()
+
+/**
+ * Identify this package's live, unmodified `list_agents` registration.
+ * A name, schema, copied object, or retired registration cannot establish identity.
+ * @param definition - exact definition selected by the caller's ToolRuntime.
+ * @param _scope - caller scope used for visibility; identity is process-wide, so the
+ *   argument only mirrors the `ctx.tools.get` call sites that resolve the definition.
+ * @returns whether this package registered the exact definition object.
+ */
+export function isFirstPartyListAgentsDefinition(definition: ToolDefinition, _scope?: unknown): boolean {
+  return firstPartyListAgentsDefinitions.has(definition)
+}
+
+/**
  * Register the `list_agents` tool.
  * @param ctx - context carrying the tool registry, subagent service, and live Agent registry.
  * @returns the registered definition for scoped availability checks.
@@ -90,6 +108,7 @@ export function registerListAgents(ctx: Context): ToolDefinition {
       ]
     },
   })
+  firstPartyListAgentsDefinitions.add(definition)
   ctx.tools.register(definition)
   return definition
 }

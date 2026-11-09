@@ -1,4 +1,5 @@
-import { CodeRunFailedError, defineTool } from '@deepseek-ai/dsh-tools'
+import { defineTool } from '@deepseek-ai/dsh-tools'
+import { CodeRunFailedError } from '@deepseek-ai/dsh-tool-executor-ptc'
 import { IsolatedExecutionContractError } from './isolated-execution-contract.mjs'
 import { requireAppOwnedPtcOwner } from './model-ptc-reviewed-owner.mjs'
 import { PTC_TOOLS } from './model-ptc-review.mjs'

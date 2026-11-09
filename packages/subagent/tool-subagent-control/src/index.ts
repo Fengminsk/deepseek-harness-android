@@ -17,6 +17,8 @@ import type {} from '@deepseek-ai/dsh-system-prompt'
 import { registerListAgents } from './list-agents.ts'
 import { registerWaitAgent } from './wait-agent.ts'
 
+export { isFirstPartyListAgentsDefinition } from './list-agents.ts'
+
 export const name = 'tool-subagent-control'
 export const inject = ['tools', 'subagents', 'agents', 'systemPrompt']
 

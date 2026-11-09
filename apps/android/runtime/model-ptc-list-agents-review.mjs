@@ -1,4 +1,4 @@
-import { isFirstPartyListAgentsDefinition } from '@deepseek-ai/dsh-tool-subagent-control/list-agents'
+import { isFirstPartyListAgentsDefinition } from '@deepseek-ai/dsh-tool-subagent-control'
 import { createAppOwnedModelPtcCallerForExecution } from './model-ptc-caller-binding.mjs'
 import { projectIsolatedSandboxPolicy } from './isolated-sandbox-policy.mjs'
 

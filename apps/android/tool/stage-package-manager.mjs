@@ -76,14 +76,26 @@ export function publishableCoreManifest(metadata, versions, unsupportedOptional 
 async function unsupportedNativePackages(repositoryRoot) {
   const directory = join(repositoryRoot, 'native/system/packages')
   const unsupported = new Set()
+  const permits = (values, target) => values === undefined ||
+    (!values.includes(`!${target}`) && (!values.some(value => !value.startsWith('!')) || values.includes(target)))
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue
     const raw = await optionalFile(join(directory, entry.name, 'package.json'))
     if (!raw) continue
     const metadata = JSON.parse(raw)
-    const permits = (values, target) => values === undefined ||
-      (!values.includes(`!${target}`) && (!values.some(value => !value.startsWith('!')) || values.includes(target)))
     if (!permits(metadata.os, 'android') || !permits(metadata.cpu, 'arm64')) unsupported.add(metadata.name)
+  }
+  // Workspace packages can be platform-restricted too; a bundle that names one
+  // as an optional dependency drops it on Android instead of failing staging.
+  for (const group of await readdir(join(repositoryRoot, 'packages'), { withFileTypes: true })) {
+    if (!group.isDirectory()) continue
+    for (const entry of await readdir(join(repositoryRoot, 'packages', group.name), { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue
+      const raw = await optionalFile(join(repositoryRoot, 'packages', group.name, entry.name, 'package.json'))
+      if (!raw) continue
+      const metadata = JSON.parse(raw)
+      if (!permits(metadata.os, 'android') || !permits(metadata.cpu, 'arm64')) unsupported.add(metadata.name)
+    }
   }
   return unsupported
 }
