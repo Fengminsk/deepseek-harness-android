@@ -12,7 +12,7 @@ import { assertSupportedJsonSchema } from './json-schema.ts'
 import { RUN_CODE_NAME, ToolActivationError } from './contracts.ts'
 import type {
   ToolDefinition, ToolRestriction, ToolExecution, ToolGuard,
-  ResolvedToolSet, ToolActivationContext, ToolRegistrationOptions,
+  ResolvedToolSet, ToolActivationContext, ToolRegistrationOptions, ToolRunContext,
 } from './contracts.ts'
 
 declare module '@deepseek-ai/dsh-system-prompt' {
@@ -107,6 +107,10 @@ export class ToolsService extends Service {
   private readonly scoped = new WeakMap<ScopeKey, Registration>()
   private root: Registration | undefined
   private readonly guards = new ScopedLayers(() => new GuardLayer(), () => {})
+  /** One frozen token per live registration, so replacing even the same definition object is observable. */
+  private readonly registrationIdentities = new WeakMap<ToolRegistration, object>()
+  /** Executions currently running their tool body; dispatch revalidation reads this set. */
+  private readonly activeExecutions = new WeakSet<ToolExecution>()
 
   constructor(ctx: Context) {
     super(ctx, 'tools')
@@ -238,6 +242,55 @@ export class ToolsService extends Service {
    */
   get(name: string, scope?: ScopeKey, toolSet?: ResolvedToolSet): ToolDefinition | undefined {
     return toolSet === undefined ? this.view(scope).visible.get(name) : toolSet.view(scope).get(name)
+  }
+
+  /**
+   * Return an opaque identity for the registration one scope resolves.
+   * Re-registering even the same definition object yields a new identity;
+   * restriction, shadowing, or disposal makes the former identity absent.
+   * This is a same-process comparison token, not authority to execute a tool:
+   * callers revalidate it at their own dispatch boundary.
+   * @param name - the tool name as registered.
+   * @param scope - the viewing scope; omitted selects the global view.
+   * @returns the identity of the visible registration, or undefined when none is visible.
+   */
+  registrationIdentity(name: string, scope?: ScopeKey): object | undefined {
+    const registration = this.view(scope).registrations.get(name)
+    if (registration === undefined) return undefined
+    let identity = this.registrationIdentities.get(registration)
+    if (identity === undefined) {
+      identity = Object.freeze(Object.create(null)) as object
+      this.registrationIdentities.set(registration, identity)
+    }
+    return identity
+  }
+
+  /**
+   * Record that an execution entered its tool body. Pipeline-internal: callers
+   * outside the execution pipeline must not mint body activity.
+   * @param exec - the accepted execution about to run its tool body.
+   */
+  beginExecution(exec: ToolExecution): void {
+    this.activeExecutions.add(exec)
+  }
+
+  /**
+   * Record that an execution left its tool body. Pipeline-internal.
+   * @param exec - the settled execution.
+   */
+  endExecution(exec: ToolExecution): void {
+    this.activeExecutions.delete(exec)
+  }
+
+  /**
+   * Whether this registry is currently awaiting the body of this exact execution.
+   * Approval, workflow, and isolated-run dispatchers revalidate a live caller
+   * with this before starting work on its behalf.
+   * @param exec - the exact run context handed to a tool body.
+   * @returns whether that execution's tool body is still running.
+   */
+  isActiveExecution(exec: ToolRunContext): boolean {
+    return this.activeExecutions.has(exec)
   }
 
   /**

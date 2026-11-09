@@ -171,7 +171,9 @@ export class WorkflowChildTools extends Service {
 export function applyWorkflowChildTools(ctx, { structured = false } = {}) {
   const owner = ctx.get('androidWorkflowChildTools')
   if (!(owner instanceof WorkflowChildTools)) throw new Error('Workflow child tool owner is missing')
-  ctx.tools.presentAs('native')
+  // The Android profile selects the native tool executor for every scope, so a
+  // child preset needs no presentation override; its attached tools are the
+  // whole visible set below.
   ctx.tools.restrict({ allow: [] })
   ctx.on('agent/created', ({ agent }) => { owner.attach(agent, structured) })
   // Scope-local tools bypass visibility filters. The final guard still rejects

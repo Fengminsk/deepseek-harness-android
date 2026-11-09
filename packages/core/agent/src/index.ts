@@ -589,6 +589,33 @@ export class AgentRegistry extends Service {
     return [...this.store.values()].map(entry => entry.agent)
   }
 
+  /**
+   * Whether a live agent's durable delegation lineage names this owner as its
+   * direct parent. This derives from the recorded session header, not from
+   * mutable registry state, so a resumed child keeps the relation.
+   * It proves lineage only; callers that need authority must also check liveness.
+   * @param id - the candidate child agent's shared agent/session id.
+   * @param owner - the expected parent agent.
+   * @returns true only while the live child's header names that parent.
+   */
+  isOwnedBy(id: SessionId, owner: Agent): boolean {
+    const child = this.store.get(id)?.agent
+    if (child === undefined || child === owner) return false
+    return child.session.header.parentSession === owner.id
+  }
+
+  /**
+   * All live top-level agents in registration order. A top-level agent has no
+   * recorded delegation parent; durable lineage does not affect the runtime
+   * relation, so a resumed fork may still be a root.
+   * @returns a fresh array; mutating it does not affect the registry.
+   */
+  roots(): Agent[] {
+    return [...this.store.values()]
+      .filter(entry => entry.agent.session.header.parentSession === undefined)
+      .map(entry => entry.agent)
+  }
+
   /** Reject new initiator boundaries while inherited continuations drain. */
   private closeInitiators(): void {
     if (this.initiatorState === 'active') this.initiatorState = 'closing'

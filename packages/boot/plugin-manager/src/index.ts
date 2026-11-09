@@ -331,6 +331,12 @@ export class PluginManager extends TypertRemoteService {
   /** Management bundles remain protected if their files become unreadable. */
   private readonly managementBundles = new Set<string>()
   /**
+   * Exact loader module names the embedding host owns for this manager's
+   * lifetime. The Android profile reserves the reviewers and executors it
+   * starts disabled so a package operation cannot replace or remove them.
+   */
+  private readonly hostModules = new Set<string>()
+  /**
    * The registry each package was last installed from by this manager in this process. pnpm verifies lockfile tarball
    * URLs against its default registry unless they belong to a named registry, so a later removal names it again.
    */
@@ -458,6 +464,20 @@ export class PluginManager extends TypertRemoteService {
     }), { stage: 'enable', target: packageVersion, enabled }, 'bundle', exemptionOperationIdentity(packageVersion, runtimeVersion))
   }
 
+  /**
+   * Reserve platform-owned loader module names before serving clients.
+   * Reservations are additive for this manager's lifetime; a reserved module
+   * lists as management-required and cannot be removed through a package
+   * operation. Not Remote: the embedding host calls it during boot.
+   * @param modules - exact loader module names, including platform-controlled disabled entries.
+   */
+  protectModules(modules: readonly string[]): void {
+    if (modules.some(name => typeof name !== 'string' || name.trim() === '')) {
+      throw new TypeError('Module names must be nonempty strings')
+    }
+    for (const name of modules) this.hostModules.add(name)
+  }
+
   /** Read current plugins, including why a row cannot be changed through the profile patch.
    * @returns Current runtime entries with persistent patch targets.
    */
@@ -469,7 +489,8 @@ export class PluginManager extends TypertRemoteService {
       const actual = [...this.ctx.loader.entries()].find(row => row.id === entry.entryId)
       const candidates = rows.filter(row => row.id === actual?.options.id)
       const candidate = candidates[0]
-      if (PROTECTED_PLUGINS.has(entry.moduleName) || entry.entryId === this.ownerEntryId) {
+      if (PROTECTED_PLUGINS.has(entry.moduleName) || this.hostModules.has(entry.moduleName)
+        || entry.entryId === this.ownerEntryId) {
         return { ...entry, readOnlyReason: 'management-required' as const }
       }
       if (candidate === undefined || candidates.length > 1 || candidate.name !== entry.moduleName
@@ -1196,7 +1217,7 @@ export class PluginManager extends TypertRemoteService {
   }
 
   private protectsManager(name: string): boolean {
-    if (this.managementBundles.has(name)) return true
+    if (this.managementBundles.has(name) || this.hostModules.has(name)) return true
     let rows: EntryOptions[]
     try { rows = this.bundleRows(name) } catch (_error) {
       // Unreadable bundles contribute no new rows; listBundles reports their diagnostics.

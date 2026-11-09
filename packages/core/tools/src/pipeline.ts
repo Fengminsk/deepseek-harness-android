@@ -272,7 +272,13 @@ export class ToolExecutionPipeline {
       const tool = this.resolveExecution(exec.name, exec.agent, exec.parent !== undefined, exec.toolSet)
       if (!tool) throw new ToolNotFoundError(exec.name)
       state.bodyInvoked = true
-      const returned = await tool.execute(exec.arguments, exec)
+      this.tools.beginExecution(exec)
+      let returned: unknown
+      try {
+        returned = await tool.execute(exec.arguments, exec)
+      } finally {
+        this.tools.endExecution(exec)
+      }
       const result = this.createSuccessResult(exec, tool, returned)
       return isAborted(signal)
         ? toolAbortedResult(result)
