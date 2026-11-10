@@ -89,8 +89,13 @@ export function createAppOwnedModelPtcCaller({ bridge, callbacks, runtime, revie
       const boundRuntime = Object.freeze({
         get(name, agent) { return exact(name, agent) ? runtime.get(name, agent) : undefined },
         execute(input) {
-          if (input.agent !== parent.agent || input.parent !== parent.token
-            || !exact(input.name, input.agent)) {
+          // The merged runtime dispatches call batches; every call must still
+          // resolve to the registration this review captured.
+          if (input === null || typeof input !== 'object'
+            || !Array.isArray(input.calls) || input.calls.length === 0
+            || input.agent !== parent.agent
+            || input.calls.some(call => typeof call?.name !== 'string'
+              || !exact(call.name, input.agent))) {
             throw new TypeError('Reviewed Android PTC tool registration changed')
           }
           return runtime.execute(input)

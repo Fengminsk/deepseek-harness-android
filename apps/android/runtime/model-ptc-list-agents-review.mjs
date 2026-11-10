@@ -15,19 +15,20 @@ function exactPolicyRequest(value) {
   }) && keys.every(key => ['sessionId', 'agent', 'signal'].includes(key))
 }
 
-function childScopeOnly(value) {
+/**
+ * The reviewed tool takes no arguments: the first-party implementation always
+ * lists the caller's whole tree, so any supplied argument is unreviewed input.
+ * @param value - model-supplied tool arguments.
+ * @returns whether the call supplies no arguments at all.
+ */
+function emptyArguments(value) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)
     || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) return false
-  const keys = Reflect.ownKeys(value)
-  if (keys.length === 0) return true
-  if (keys.length !== 1 || keys[0] !== 'scope') return false
-  const scope = Object.getOwnPropertyDescriptor(value, 'scope')
-  return scope !== undefined && Object.hasOwn(scope, 'value')
-    && scope.value === 'children'
+  return Reflect.ownKeys(value).length === 0
 }
 
 /**
- * Review the original direct-child listing for one live Agent. The trusted
+ * Review the original whole-tree listing for one live Agent. The trusted
  * App must supply the first-party definition it registered; discovery by name
  * alone cannot attest which plugin owns a ToolRuntime registration. This entry
  * does not publish or enable the model-facing PTC tool.
@@ -54,7 +55,7 @@ export function reviewListAgentsForModelPtc({ runtime, agent, definition, servic
     async authorizeArguments(args, input) {
       if (input?.agent !== agent || !(input.signal instanceof AbortSignal)) return false
       input.signal.throwIfAborted()
-      return childScopeOnly(args)
+      return emptyArguments(args)
     },
   })
 }
@@ -106,3 +107,4 @@ export function createAppOwnedListAgentsPtcPolicyIssuer({ agents } = {}) {
     close() { closed = true },
   })
 }
+

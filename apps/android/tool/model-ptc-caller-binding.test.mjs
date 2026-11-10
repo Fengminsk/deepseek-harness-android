@@ -16,6 +16,7 @@ import {
 import { prepareModelPtcGuestSdk } from '../runtime/model-ptc-guest-sdk.mjs'
 import { prepareModelIsolatedScript } from '../runtime/model-isolated-script.mjs'
 import { projectIsolatedSandboxPolicy, requireIsolatedSandboxPolicy } from '../runtime/isolated-sandbox-policy.mjs'
+import { executeToolCall } from './tool-batch-fixture.mjs'
 import { createNativeIsolatedExecutionBridge } from '../runtime/native-isolated-execution-bridge.mjs'
 import { NativeIsolatedToolCallbacks } from '../runtime/native-isolated-tool-callbacks.mjs'
 import { IsolatedToolCallJournal } from '../runtime/isolated-tool-call-journal.mjs'
@@ -40,22 +41,34 @@ test('guest tools SDK accepts only reviewed JavaScript identifiers as data', asy
   }) }), { code: 'ANDROID_TOOL_NOT_GRANTED', message: 'review revoked' })
 })
 
+/**
+ * The first-party list_agents registration behind a one-method plugin. The
+ * source module is shared with the runtime under test so registration identity
+ * is the same WeakSet instance.
+ */
+async function firstPartyListAgents() {
+  const module = await import(new URL(
+    '../../../packages/subagent/tool-subagent-control/src/list-agents.ts', import.meta.url))
+  return { apply: ctx => module.registerListAgents(ctx) }
+}
+
 async function setup(t, options = {}) {
   const [
     { Context }, { default: LlmRuntime }, { default: SessionStore, SessionId },
     { default: SessionProjections }, { default: SystemPrompt },
     { default: ToolRuntime, defineTool }, { default: AgentRegistry },
-    { default: AgentLoop },
+    { default: AgentLoop }, NativeToolExecutor,
   ] = await Promise.all([
     staged('@deepseek-ai/cordis'), staged('@deepseek-ai/dsh-llm'),
     staged('@deepseek-ai/dsh-session'), staged('@deepseek-ai/dsh-session-projection'),
     staged('@deepseek-ai/dsh-system-prompt'), staged('@deepseek-ai/dsh-tools'),
     staged('@deepseek-ai/dsh-agent'), staged('@deepseek-ai/dsh-agent-loop'),
+    staged('@deepseek-ai/dsh-tool-executor-native'),
   ])
   const ctx = new Context()
   t.after(() => ctx.fiber.dispose())
   for (const plugin of [LlmRuntime, SessionStore, SessionProjections, SystemPrompt,
-    ToolRuntime, AgentRegistry]) await ctx.plugin(plugin)
+    ToolRuntime, NativeToolExecutor, AgentRegistry]) await ctx.plugin(plugin)
   await ctx.plugin(AgentLoop, { agents: [] })
   const agent = await ctx.agentLoop.create(SessionId(`android-${randomUUID()}`))
   const calls = []
@@ -165,15 +178,15 @@ test('App-owned list_agents policy issues a fresh zero-grant lease only for a li
 
 test('App lifecycle binds model-style input to a live parent, zero-grant lease and first-party callback', async t => {
   const { ctx, agent, bridge, callbacks, defineTool, calls } = await setup(t)
-  const original = await import('@deepseek-ai/dsh-tool-subagent-control/list-agents')
+  const original = await firstPartyListAgents()
   const childQueries = []
   const services = { agents: ctx.agents, subagents: {
-    async listChildren(id, signal) {
+    rootOf(caller) { return caller },
+    async listDescendants(id, signal) {
       signal.throwIfAborted()
       childQueries.push(id)
-      return [{ id: 'child-1', mode: 'continuable', label: 'First child' }]
+      return [{ id: 'child-1', path: 'child-1', mode: 'continuable', kind: 'child', label: 'First child' }]
     },
-    async listDescendants() { throw new Error('recursive catalog must stay hidden') },
   } }
   original.apply({ ...services, tools: ctx.tools })
   const owner = createAppOwnedListAgentsPtcOwner({
@@ -186,7 +199,7 @@ test('App lifecycle binds model-style input to a live parent, zero-grant lease a
       render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] },
     async execute(_args, parent) {
       activeParent = parent
-      const modelInput = { code: 'return await tools.list_agents({ scope: "children" })',
+      const modelInput = { code: 'return await tools.list_agents({})',
         description: 'List direct children', language: 'typescript-function-body' }
       assert.throws(() => owner.start(modelInput, { ...parent }),
         /current ToolRuntime parent/)
@@ -200,12 +213,14 @@ test('App lifecycle binds model-style input to a live parent, zero-grant lease a
       return receipt.value
     },
   }))
-  const result = await ctx.tools.execute({ callId: 'outer-owner-integration',
+  const result = await executeToolCall(ctx.tools, { callId: 'outer-owner-integration',
     name: 'app_ptc_owner_probe', arguments: {}, agent,
     signal: new AbortController().signal })
   assert.equal(result.isError, false, JSON.stringify(result.error))
-  assert.deepEqual(JSON.parse(JSON.stringify(result.value)), [{ kind: 'child', id: 'child-1',
-    label: 'First child', status: 'inactive' }])
+  assert.deepEqual(JSON.parse(JSON.stringify(result.value)), [
+    { name: 'lead', status: 'inactive', description: 'root agent' },
+    { name: 'child-1', status: 'inactive', description: 'First child' },
+  ])
   assert.deepEqual(childQueries, [agent.id])
   assert.deepEqual(calls, ['native.isolated.admit', 'native.isolated.bindTools',
     'native.isolated.execute', 'native.isolated.settle', 'native.isolated.release'])
@@ -217,17 +232,17 @@ test('App lifecycle binds model-style input to a live parent, zero-grant lease a
   assert.throws(() => owner.start({}, activeParent), /App owner is closed/)
 })
 
-test('first-party list_agents review admits only the current parent direct-child query', async t => {
+test('first-party list_agents review admits only an argument-free whole-tree query', async t => {
   const { ctx, agent, bridge, callbacks, defineTool, draft } = await setup(t)
-  const original = await import('@deepseek-ai/dsh-tool-subagent-control/list-agents')
+  const original = await firstPartyListAgents()
   const lookedUp = []
   const subagents = {
-    async listChildren(id, signal) {
+    rootOf(caller) { return caller },
+    async listDescendants(id, signal) {
       signal.throwIfAborted()
       lookedUp.push(id)
       return [{ id: 'first-party-child', mode: 'continuable', label: 'Direct child' }]
     },
-    async listDescendants() { throw new Error('A descendant catalog must not be read') },
   }
   const services = { subagents, agents: ctx.agents }
   original.apply({ tools: ctx.tools, ...services })
@@ -236,8 +251,7 @@ test('first-party list_agents review admits only the current parent direct-child
   const review = reviewListAgentsForModelPtc({ runtime: ctx.tools, agent, definition, services })
   const signal = new AbortController().signal
   assert.equal(await review.authorizeArguments({}, { agent, signal }), true)
-  assert.equal(await review.authorizeArguments({ scope: 'children' }, { agent, signal }), true)
-  for (const args of [{ scope: 'descendants' }, { scope: 'children', extra: true },
+  for (const args of [{ scope: 'children' }, { scope: 'descendants' }, { scope: 'children', extra: true },
     [], Object.create({ scope: 'children' }),
     Object.defineProperty({}, 'scope', { get() { throw new Error('getter ran') } })]) {
     assert.equal(await review.authorizeArguments(args, { agent, signal }), false)
@@ -265,12 +279,14 @@ test('first-party list_agents review admits only the current parent direct-child
       return (await caller.start(prepared, execution).result).value
     },
   }))
-  const result = await ctx.tools.execute({ callId: 'outer-list', name: 'app_ptc_probe',
+  const result = await executeToolCall(ctx.tools, { callId: 'outer-list', name: 'app_ptc_probe',
     arguments: {}, agent, signal: new AbortController().signal })
   assert.equal(result.isError, false, JSON.stringify(result.error))
   assert.deepEqual(JSON.parse(JSON.stringify(result.value)), {
-    children: [{ kind: 'child', id: 'first-party-child',
-      label: 'Direct child', status: 'inactive' }],
+    children: [
+      { name: 'lead', status: 'inactive', description: 'root agent' },
+      { name: 'first-party-child', status: 'inactive', description: 'Direct child' },
+    ],
     denied: 'ANDROID_TOOL_NOT_GRANTED',
   })
   assert.deepEqual(lookedUp, [agent.id])
@@ -280,10 +296,10 @@ test('first-party list_agents review admits only the current parent direct-child
 
 test('production list_agents caller rejects a replacement registration and closes with its owner', async t => {
   const { ctx, agent, bridge, callbacks, defineTool, draft, calls } = await setup(t)
-  const original = await import('@deepseek-ai/dsh-tool-subagent-control/list-agents')
+  const original = await firstPartyListAgents()
   const services = { agents: ctx.agents, subagents: {
-    async listChildren() { return [] },
-    async listDescendants() { throw new Error('descendants must stay hidden') },
+    rootOf(caller) { return caller },
+    async listDescendants() { return [] },
   } }
   let unregister
   original.apply({ ...services, tools: {
@@ -311,10 +327,10 @@ test('production list_agents caller rejects a replacement registration and close
       return first.value
     },
   }))
-  const result = await ctx.tools.execute({ callId: 'outer-replacement', name: 'app_ptc_probe',
+  const result = await executeToolCall(ctx.tools, { callId: 'outer-replacement', name: 'app_ptc_probe',
     arguments: {}, agent, signal: new AbortController().signal })
   assert.equal(result.isError, false, JSON.stringify(result.error))
-  assert.deepEqual(result.value, [])
+  assert.deepEqual(result.value, [{ name: 'lead', status: 'inactive', description: 'root agent' }])
   assert.deepEqual(calls, ['native.isolated.admit', 'native.isolated.bindTools',
     'native.isolated.execute', 'native.isolated.settle', 'native.isolated.release'])
   caller.close()
@@ -323,10 +339,10 @@ test('production list_agents caller rejects a replacement registration and close
 
 test('closing the App owner cancels an admitted pending PTC start', async t => {
   const { ctx, agent, bridge, callbacks, defineTool, draft, calls } = await setup(t)
-  const original = await import('@deepseek-ai/dsh-tool-subagent-control/list-agents')
+  const original = await firstPartyListAgents()
   const services = { agents: ctx.agents, subagents: {
-    async listChildren() { return [] },
-    async listDescendants() { throw new Error('descendants must stay hidden') },
+    rootOf(caller) { return caller },
+    async listDescendants() { return [] },
   } }
   original.apply({ ...services, tools: ctx.tools })
   const caller = createAppOwnedListAgentsPtcCaller({
@@ -344,7 +360,7 @@ test('closing the App owner cancels an admitted pending PTC start', async t => {
       return 'cancelled'
     },
   }))
-  const result = await ctx.tools.execute({ callId: 'outer-owner-close', name: 'app_ptc_probe',
+  const result = await executeToolCall(ctx.tools, { callId: 'outer-owner-close', name: 'app_ptc_probe',
     arguments: {}, agent, signal: new AbortController().signal })
   assert.equal(result.isError, false, JSON.stringify(result.error))
   assert.equal(result.value, 'cancelled')
@@ -355,10 +371,11 @@ test('App owner close joins an in-flight first-party child query before transpor
   const entered = Promise.withResolvers()
   const release = Promise.withResolvers()
   const { ctx, agent, bridge, callbacks, defineTool, draft, calls } = await setup(t)
-  const original = await import('@deepseek-ai/dsh-tool-subagent-control/list-agents')
+  const original = await firstPartyListAgents()
   let childQueries = 0
   const services = { agents: ctx.agents, subagents: {
-    async listChildren(id, signal) {
+    rootOf(caller) { return caller },
+    async listDescendants(id, signal) {
       assert.equal(id, agent.id)
       childQueries++
       entered.resolve()
@@ -366,7 +383,6 @@ test('App owner close joins an in-flight first-party child query before transpor
       signal.throwIfAborted()
       return []
     },
-    async listDescendants() { throw new Error('descendants must stay hidden') },
   } }
   original.apply({ ...services, tools: ctx.tools })
   const caller = createAppOwnedListAgentsPtcCaller({
@@ -382,7 +398,7 @@ test('App owner close joins an in-flight first-party child query before transpor
       return (await caller.start(draft('return await tools.list_agents({})'), execution).result).value
     },
   }))
-  const outer = ctx.tools.execute({ callId: 'outer-close-join', name: 'app_ptc_probe',
+  const outer = executeToolCall(ctx.tools, { callId: 'outer-close-join', name: 'app_ptc_probe',
     arguments: {}, agent, signal: new AbortController().signal })
   await entered.promise
   const close = caller.close()
@@ -409,10 +425,10 @@ test('App owner teardown reports an unconfirmed native retirement', async t => {
     onCancel: () => release.resolve(),
     failRelease: true,
   })
-  const original = await import('@deepseek-ai/dsh-tool-subagent-control/list-agents')
+  const original = await firstPartyListAgents()
   const services = { agents: ctx.agents, subagents: {
-    async listChildren() { return [] },
-    async listDescendants() { throw new Error('descendants must stay hidden') },
+    rootOf(caller) { return caller },
+    async listDescendants() { return [] },
   } }
   original.apply({ ...services, tools: ctx.tools })
   const caller = createAppOwnedListAgentsPtcCaller({
@@ -426,7 +442,7 @@ test('App owner teardown reports an unconfirmed native retirement', async t => {
       return (await caller.start(draft('return await tools.list_agents({})'), execution).result).value
     },
   }))
-  const outer = ctx.tools.execute({ callId: 'outer-retirement-fail', name: 'app_ptc_probe',
+  const outer = executeToolCall(ctx.tools, { callId: 'outer-retirement-fail', name: 'app_ptc_probe',
     arguments: {}, agent, signal: new AbortController().signal })
   await executing.promise
   const closing = caller.close()
@@ -465,7 +481,7 @@ test('real Agent and ToolRuntime own the parent token for an isolated tool callb
       return (await caller.start(prepared, execution).result).value
     },
   }))
-  const result = await ctx.tools.execute({ callId: 'outer', name: 'app_ptc_probe',
+  const result = await executeToolCall(ctx.tools, { callId: 'outer', name: 'app_ptc_probe',
     arguments: {}, agent, signal: new AbortController().signal })
   assert.equal(result.isError, false, JSON.stringify(result.error))
   assert.deepEqual(JSON.parse(JSON.stringify(result.value)),
@@ -590,7 +606,7 @@ test('mixed attachment review selects effects per call and flushes only material
       `), exec).result).value
     },
   }))
-  const result = await ctx.tools.execute({ callId: 'outer', name: 'app_ptc_probe', arguments: {},
+  const result = await executeToolCall(ctx.tools, { callId: 'outer', name: 'app_ptc_probe', arguments: {},
     agent, signal: new AbortController().signal })
   assert.equal(result.isError, false, JSON.stringify(result.error))
   assert.deepEqual(performed, ['read', 'materialize'])
@@ -626,7 +642,7 @@ test('an unreviewed plugin is absent and an uncertain read approval stops the gu
       return (await caller.start(prepared, execution).result).value
     },
   }))
-  const result = await ctx.tools.execute({ callId: 'outer-approval', name: 'app_ptc_probe',
+  const result = await executeToolCall(ctx.tools, { callId: 'outer-approval', name: 'app_ptc_probe',
     arguments: {}, agent, signal: new AbortController().signal })
   assert.equal(result.isError, true)
   assert.equal(pluginCalls, 0)
@@ -676,7 +692,7 @@ test('reviewed registration identity and owner scope deny same-object re-registr
       return value
     },
   }))
-  const result = await ctx.tools.execute({ callId: 'outer', name: 'app_ptc_probe',
+  const result = await executeToolCall(ctx.tools, { callId: 'outer', name: 'app_ptc_probe',
     arguments: {}, agent, signal: new AbortController().signal })
   assert.equal(result.isError, false, JSON.stringify(result.error))
   assert.deepEqual(JSON.parse(JSON.stringify(result.value)), { ok: true, visible: 'undefined' })
@@ -690,7 +706,8 @@ test('production model registration stays absent under the source-controlled clo
   const { ctx, agent, calls, bridge, callbacks } = await setup(t)
   const owner = createAppOwnedListAgentsPtcOwner({ bridge, callbacks, runtime: ctx.tools,
     services: { agents: ctx.agents, subagents: {
-      async listChildren() { throw new Error('closed gate reached list_agents') },
+      rootOf(caller) { return caller },
+    async listDescendants() { throw new Error('closed gate reached list_agents') },
     } },
   })
   const before = ctx.tools.schemas(agent).map(tool => tool.name)
@@ -702,15 +719,15 @@ test('production model registration stays absent under the source-controlled clo
 
 test('accepted model tool uses a real parent, first-party child review and durable result', async t => {
   const { ctx, agent, calls, bridge, callbacks } = await setup(t)
-  const original = await import('@deepseek-ai/dsh-tool-subagent-control/list-agents')
+  const original = await firstPartyListAgents()
   const lookedUp = []
   const services = { agents: ctx.agents, subagents: {
-    async listChildren(id, signal) {
+    rootOf(caller) { return caller },
+    async listDescendants(id, signal) {
       signal.throwIfAborted()
       lookedUp.push(id)
       return [{ id: 'child-1', mode: 'continuable', label: 'First child' }]
     },
-    async listDescendants() { throw new Error('recursive catalog is forbidden') },
   } }
   original.apply({ ...services, tools: ctx.tools })
   const owner = createAppOwnedListAgentsPtcOwner({ bridge, callbacks, runtime: ctx.tools, services })
@@ -719,27 +736,28 @@ test('accepted model tool uses a real parent, first-party child review and durab
   assert(ctx.tools.schemas(agent).some(schema => schema.name === 'android_ptc'))
   const tool = createAndroidPtcToolDefinition({ owner, available: () => accepted })
   assert.deepEqual(Object.keys(tool.parameters.properties), ['code', 'description'])
-  const input = { code: 'return await tools.list_agents({ scope: "children" })',
+  const input = { code: 'return await tools.list_agents({})',
     description: 'List direct children' }
-  const result = await ctx.tools.execute({ callId: 'outer-model-tool', name: 'android_ptc',
+  const result = await executeToolCall(ctx.tools, { callId: 'outer-model-tool', name: 'android_ptc',
     arguments: input, agent, signal: new AbortController().signal })
   assert.equal(result.isError, false, JSON.stringify(result.error))
-  assert.deepEqual(JSON.parse(JSON.stringify(result.value)), { logs: [], result: [{
-    kind: 'child', id: 'child-1', label: 'First child', status: 'inactive',
-  }] })
+  assert.deepEqual(JSON.parse(JSON.stringify(result.value)), { logs: [], result: [
+    { name: 'lead', status: 'inactive', description: 'root agent' },
+    { name: 'child-1', status: 'inactive', description: 'First child' },
+  ] })
   assert.deepEqual(lookedUp, [agent.id])
   assert.deepEqual(calls, ['native.isolated.admit', 'native.isolated.bindTools',
     'native.isolated.execute', 'native.isolated.settle', 'native.isolated.release'])
   for (const extra of [{ language: 'python' }, { runId: randomUUID() },
     { writablePaths: ['/'] }, { networkMode: 'allow' }]) {
-    const blocked = await ctx.tools.execute({ callId: `forged-${Object.keys(extra)[0]}`,
+    const blocked = await executeToolCall(ctx.tools, { callId: `forged-${Object.keys(extra)[0]}`,
       name: 'android_ptc', arguments: { ...input, ...extra }, agent,
       signal: new AbortController().signal })
     assert.equal(blocked.isError, true)
   }
   assert.equal(calls.filter(call => call === 'native.isolated.admit').length, 1)
   accepted = false
-  const denied = await ctx.tools.execute({ callId: 'revoked-model-tool',
+  const denied = await executeToolCall(ctx.tools, { callId: 'revoked-model-tool',
     name: 'android_ptc', arguments: input, agent,
     signal: new AbortController().signal })
   assert.equal(denied.isError, true)
@@ -752,14 +770,15 @@ test('model PTC withholds output if the build gate closes during a native run', 
   const { ctx, agent, calls, bridge, callbacks } = await setup(t, {
     beforeExecute() { accepted = false },
   })
-  const original = await import('@deepseek-ai/dsh-tool-subagent-control/list-agents')
+  const original = await firstPartyListAgents()
   const services = { agents: ctx.agents, subagents: {
-    async listChildren() { return [] },
+    rootOf(caller) { return caller },
+    async listDescendants() { return [] },
   } }
   original.apply({ ...services, tools: ctx.tools })
   const owner = createAppOwnedListAgentsPtcOwner({ bridge, callbacks, runtime: ctx.tools, services })
   assert.equal(registerAndroidPtcTool(ctx, { owner, available: () => accepted }), true)
-  const result = await ctx.tools.execute({ callId: 'revoked-during-native-run',
+  const result = await executeToolCall(ctx.tools, { callId: 'revoked-during-native-run',
     name: 'android_ptc', arguments: { code: 'return 7', description: 'Return a number' },
     agent, signal: new AbortController().signal })
   assert.equal(result.isError, true)
@@ -777,15 +796,16 @@ test('cancelled model PTC never publishes a late native result and joins retirem
   const { ctx, agent, calls, bridge, callbacks } = await setup(t, {
     beforeExecute() { entered(); return hold },
   })
-  const original = await import('@deepseek-ai/dsh-tool-subagent-control/list-agents')
+  const original = await firstPartyListAgents()
   const services = { agents: ctx.agents, subagents: {
-    async listChildren() { return [] },
+    rootOf(caller) { return caller },
+    async listDescendants() { return [] },
   } }
   original.apply({ ...services, tools: ctx.tools })
   const owner = createAppOwnedListAgentsPtcOwner({ bridge, callbacks, runtime: ctx.tools, services })
   assert.equal(registerAndroidPtcTool(ctx, { owner, available: () => true }), true)
   const controller = new AbortController()
-  const result = ctx.tools.execute({ callId: 'cancelled-model-ptc', name: 'android_ptc',
+  const result = executeToolCall(ctx.tools, { callId: 'cancelled-model-ptc', name: 'android_ptc',
     arguments: { code: 'return 7', description: 'Return a number' },
     agent, signal: controller.signal })
   await waiting
@@ -808,14 +828,15 @@ test('unloading the model PTC owner cancels and joins a pending model tool', asy
     beforeExecute() { entered(); return hold },
     onCancel() { unblock() },
   })
-  const original = await import('@deepseek-ai/dsh-tool-subagent-control/list-agents')
+  const original = await firstPartyListAgents()
   const services = { agents: ctx.agents, subagents: {
-    async listChildren() { return [] },
+    rootOf(caller) { return caller },
+    async listDescendants() { return [] },
   } }
   original.apply({ ...services, tools: ctx.tools })
   const owner = createAppOwnedListAgentsPtcOwner({ bridge, callbacks, runtime: ctx.tools, services })
   assert.equal(registerAndroidPtcTool(ctx, { owner, available: () => true }), true)
-  const pending = ctx.tools.execute({ callId: 'model-ptc-unload', name: 'android_ptc',
+  const pending = executeToolCall(ctx.tools, { callId: 'model-ptc-unload', name: 'android_ptc',
     arguments: { code: 'return 7', description: 'Return a number' }, agent,
     signal: new AbortController().signal })
   await waiting
@@ -851,7 +872,7 @@ test('same definition re-registered during argument review cannot dispatch', asy
       return (await caller.start(prepared, execution).result).value
     },
   }))
-  const result = await ctx.tools.execute({ callId: 'outer-race', name: 'app_ptc_probe',
+  const result = await executeToolCall(ctx.tools, { callId: 'outer-race', name: 'app_ptc_probe',
     arguments: {}, agent, signal: new AbortController().signal })
   assert.equal(result.isError, false, JSON.stringify(result.error))
   assert.deepEqual(JSON.parse(JSON.stringify(result.value)), { denied: 'ANDROID_TOOL_NOT_GRANTED' })
@@ -891,7 +912,7 @@ test('parent cancellation retires the guest before a second reviewed tool callba
     },
   }))
   const controller = new AbortController()
-  const outer = ctx.tools.execute({ callId: 'outer-cancel', name: 'app_ptc_probe',
+  const outer = executeToolCall(ctx.tools, { callId: 'outer-cancel', name: 'app_ptc_probe',
     arguments: {}, agent, signal: controller.signal })
   await entered.promise
   controller.abort(new Error('stop'))
@@ -902,3 +923,8 @@ test('parent cancellation retires the guest before a second reviewed tool callba
   assert.equal(receipt === undefined || !Object.hasOwn(receipt, 'value'), true)
   assert.ok(calls.includes('native.isolated.cancel'))
 })
+
+
+
+
+
