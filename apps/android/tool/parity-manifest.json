@@ -8447,19 +8447,21 @@
         "packages/bundle/web-app/cordis.patch.yml",
         "packages/client/ui-file-actions/README.md"
       ],
-      "status": "not-migrated",
+      "status": "partial",
       "android": [
+        "apps/android/lib/external_file_action.dart",
         "apps/android/lib/workspace_files.dart",
-        "apps/android/lib/image_preview.dart",
-        "apps/android/lib/external_file_action.dart"
+        "apps/android/android/app/src/main/kotlin/com/minnnng/dsh_android/ExternalFileOpening.kt",
+        "apps/android/android/app/src/main/kotlin/com/minnnng/dsh_android/MainActivity.kt",
+        "apps/android/test/external_file_action_test.dart"
       ],
       "evidence": {
-        "core": "not-applicable",
+        "core": "partial",
         "ui": "partial",
         "behavior": "partial",
         "device": "unverified"
       },
-      "note": "Saving or copying a workspace or session file from its menu is not implemented. Existing entries open a file in another App, save attachment copies and export sessions; copy-image needs a native clipboard path that keeps the clipboard URI readable.",
+      "note": "Workspace entries stage the original file through the existing FileProvider copy and then save it through the system picker or, for images, put that copy on the clipboard. Session working-directory files share the same staging path; chat attachment images are not wired because their bytes come from the attachment service. Widget tests cover the picker outcome, cancellation, clipboard success and native failures; saving and clipboard delivery remain unverified on a device.",
       "capability": "files",
       "notApplicable": {
         "core": "The Web row is client-only; Android file actions would call the existing workspace-files remotes."
