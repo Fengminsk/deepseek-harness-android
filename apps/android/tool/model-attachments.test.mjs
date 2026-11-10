@@ -1,4 +1,5 @@
 import test from 'node:test'
+import { executeToolCall } from './tool-batch-fixture.mjs'
 import assert from 'node:assert/strict'
 import { chmod, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -22,10 +23,11 @@ const { modelAttachmentProjection, registerAndroidAttachmentsTool, isFirstPartyA
 const { registerAndroidFilesTool, isFirstPartyAndroidFilesDefinition } = await import('../runtime/tool-android-files.mjs')
 const { default: AndroidFileSystem } = await import('../runtime/android-filesystem.mjs')
 resolver.deregister()
-const [{ Context }, projections, { Session, SessionId }, llm, policy, attachments, prompt, tools] = await Promise.all([
+const [{ Context }, projections, { Session, SessionId }, llm, policy, attachments, prompt, tools, executor] = await Promise.all([
   load('@deepseek-ai/cordis'), load('@deepseek-ai/dsh-session-projection'), load('@deepseek-ai/dsh-session'),
   load('@deepseek-ai/dsh-llm'), load('@deepseek-ai/dsh-sandbox-policy'), load('@deepseek-ai/dsh-attachment-local'),
   load('@deepseek-ai/dsh-system-prompt'), load('@deepseek-ai/dsh-tools'),
+  load('@deepseek-ai/dsh-tool-executor-native'),
 ])
 const { zipSync } = requireStaged('fflate')
 
@@ -36,6 +38,7 @@ async function fixture(t) {
   t.after(async () => { await ctx.fiber.dispose(); await rm(home, { recursive: true, force: true }) })
   await ctx.plugin(prompt.default)
   await ctx.plugin(tools.default)
+  await ctx.plugin(executor)
   await ctx.plugin(projections.default)
   await ctx.plugin(policy.default, { mode: 'workspace-write', workspaceRoot: workspace })
   await ctx.plugin(AndroidFileSystem, { cwd: workspace })
@@ -99,7 +102,7 @@ test('binary pages and verified workspace materialization preserve bytes and cur
   f.session.append('sandbox/mode', { mode: 'read-only' })
   await assert.rejects(f.call({ ...args, action: 'materialize' }), { code: 'FS_SANDBOX_DENIED' })
   assert.equal((await f.call({ ...args, action: 'read', encoding: 'hex' })).verified, true)
-  const outcome = await f.ctx.tools.execute({ name: 'android_attachments', arguments: { action: 'list' }, ...f.execution() })
+  const outcome = await executeToolCall(f.ctx.tools, { name: 'android_attachments', arguments: { action: 'list' }, ...f.execution() })
   assert.equal(outcome.isError, false, JSON.stringify(outcome))
   assert.match(JSON.stringify(outcome.content), /image\.png/)
   const definition = f.ctx.tools.get('android_attachments')
@@ -148,7 +151,7 @@ test('built-in APK inspection uses the live ToolRuntime, honors session policy a
   const args = { action: 'inspect_apk', attachmentId: ref.attachmentId, name: ref.name }
   f.session.append('sandbox/mode', { mode: 'read-only' })
   const call = async extra => {
-    const outcome = await f.ctx.tools.execute({ name: 'android_attachments', arguments: { ...args, ...extra }, ...f.execution() })
+    const outcome = await executeToolCall(f.ctx.tools, { name: 'android_attachments', arguments: { ...args, ...extra }, ...f.execution() })
     assert.equal(outcome.isError, false, JSON.stringify(outcome))
     return JSON.parse(outcome.content.map(part => part.text ?? '').join(''))
   }
@@ -179,7 +182,7 @@ test('APK golden Manifest and minimal ELF survive real tool JSON output and pagi
   const ref = await f.upload('golden.apk', zipSync({ 'AndroidManifest.xml': Buffer.from(golden.base64, 'base64'),
     'lib/arm64-v8a/one.so': elf, 'lib/arm64-v8a/two.so': elf }))
   const call = async extra => {
-    const outcome = await f.ctx.tools.execute({ name: 'android_attachments', arguments: {
+    const outcome = await executeToolCall(f.ctx.tools, { name: 'android_attachments', arguments: {
       action: 'inspect_apk', attachmentId: ref.attachmentId, name: ref.name, ...extra }, ...f.execution() })
     assert.equal(outcome.isError, false, JSON.stringify(outcome))
     return JSON.parse(outcome.content.map(part => part.text ?? '').join(''))
@@ -200,7 +203,7 @@ test('APK golden Manifest and minimal ELF survive real tool JSON output and pagi
 })
 
 async function apkDeviceCall(f, args) {
-  const outcome = await f.ctx.tools.execute({ name: 'android_attachments', arguments: args, ...f.execution() })
+  const outcome = await executeToolCall(f.ctx.tools, { name: 'android_attachments', arguments: args, ...f.execution() })
   const text = outcome.content.map(part => part.text ?? '').join('')
   if (outcome.isError) throw new Error(text)
   return JSON.parse(text)
@@ -321,7 +324,7 @@ test('SAF tool explains root ids and relative paths before calling document prov
     if (method === 'native.documents.list') return [{ name: 'report.txt' }]
     assert.fail(`unexpected request ${method}`)
   } }, { run() { assert.fail('unexpected search') } })
-  const call = args => f.ctx.tools.execute({ name: 'android_files', arguments: args, ...f.execution() })
+  const call = args => executeToolCall(f.ctx.tools, { name: 'android_files', arguments: args, ...f.execution() })
   const definition = f.ctx.tools.get('android_files')
   assert.equal(isFirstPartyAndroidFilesDefinition(definition, f.agent), true)
   assert.equal(isFirstPartyAndroidFilesDefinition({ ...definition }, f.agent), false)
@@ -336,3 +339,4 @@ test('SAF tool explains root ids and relative paths before calling document prov
   const revoked = await call({ action: 'list', root: 'b'.repeat(64) })
   assert.match(JSON.stringify(revoked.content), /不在当前授权/)
 })
+
