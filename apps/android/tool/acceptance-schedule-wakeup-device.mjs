@@ -397,10 +397,11 @@ function deviceIo(adb, serial) {
   }
 }
 
-async function main() {
-  const args = process.argv.slice(2), values = new Map()
+/** Keep the display override opt-in explicit; omitted options retain normal cleanup. */
+export function parseScheduleWakeArguments(args) {
+  const values = new Map()
   for (let i = 0; i < args.length; i += 2) {
-    check(['--adb', '--serial', '--report', '--mode', '--case-id', '--accept-real-account-request'].includes(args[i]) &&
+    check(['--adb', '--serial', '--report', '--mode', '--case-id', '--accept-real-account-request', '--keep-display-off'].includes(args[i]) &&
       !values.has(args[i]) && args[i + 1], 'INVALID_ARGUMENTS')
     values.set(args[i], args[i + 1])
   }
@@ -409,6 +410,20 @@ async function main() {
   const mode = values.get('--mode') ?? 'status', caseId = values.get('--case-id') ?? randomUUID()
   check(['status', 'run', 'cleanup'].includes(mode) && UUID.test(caseId), 'INVALID_MODE')
   check(mode !== 'run' || values.get('--accept-real-account-request') === 'true', 'REAL_ACCOUNT_NOT_ADMITTED')
+  check(!values.has('--keep-display-off') || values.get('--keep-display-off') === 'true', 'INVALID_KEEP_DISPLAY_OFF')
+  return { adb, serial, report, mode, caseId, keepDisplayOff: values.has('--keep-display-off') }
+}
+
+/** The natural-wake owner keeps its original main process even when retaining physical panel Off. */
+export function runProtectedScheduleWakeAcceptance(io, { mode, caseId, keepDisplayOff = false, signal }) {
+  return withScreenProtection(io, async scope => {
+    if (mode === 'run') return runNaturalWakeAcceptance(io, { caseId, signal: scope, acceptRealAccountRequest: true })
+    return runScheduleWakePhaseAcceptance(io, { phase: mode, caseId, signal: scope })
+  }, { timeoutMs: mode === 'run' ? 660_000 : 200_000, restoreDisplayPower: !keepDisplayOff, signal })
+}
+
+async function main() {
+  const { adb, serial, report, mode, caseId, keepDisplayOff } = parseScheduleWakeArguments(process.argv.slice(2))
   const handle = await open(resolve(report), 'wx')
   const controller = new AbortController()
   const interrupt = () => controller.abort(Object.assign(new Error('HOST_INTERRUPTED'), { code: 'HOST_INTERRUPTED' }))
@@ -416,14 +431,11 @@ async function main() {
   const io = deviceIo(resolve(adb), serial)
   let result, failure
   try {
-    result = await withScreenProtection(io, async signal => {
-      if (mode === 'run') return runNaturalWakeAcceptance(io, { caseId, signal, acceptRealAccountRequest: true })
-      return runScheduleWakePhaseAcceptance(io, { phase: mode, caseId, signal })
-    }, { timeoutMs: mode === 'run' ? 660_000 : 200_000, signal: controller.signal })
+    result = await runProtectedScheduleWakeAcceptance(io, { mode, caseId, keepDisplayOff, signal: controller.signal })
   } catch (error) { failure = error; result = scheduleWakeFailureReport(error) }
   finally {
     process.off('SIGINT', interrupt); process.off('SIGTERM', interrupt)
-    await handle.writeFile(JSON.stringify({ schema: 1, serial, mode, caseId, ...result }, null, 2) + '\n')
+    await handle.writeFile(JSON.stringify({ schema: 1, serial, mode, caseId, keepDisplayOff, ...result }, null, 2) + '\n')
     await handle.close()
   }
   if (failure) throw new Error('Schedule acceptance failed; inspect the reserved report')

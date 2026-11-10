@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { load } from 'js-yaml'
 import { c as createTar } from 'tar'
-import { imageRuntimeArchive, imageRuntimePackages, stageImageRuntime } from './stage-image-runtime.mjs'
+import { imageRuntimeArchive, imageRuntimePackages, publishImageRuntimePackage, stageImageRuntime } from './stage-image-runtime.mjs'
 
 const integrityOf = bytes => `sha512-${createHash('sha512').update(bytes).digest('base64')}`
 
@@ -27,6 +27,85 @@ async function fixture(run) {
   try { await run(root) }
   finally { await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 30 }) }
 }
+
+const fsError = code => Object.assign(new Error(code), { code })
+const absent = async () => { throw fsError('ENOENT') }
+
+test('Windows package publication recovers transient rename errors with bounded backoff', async () => {
+  const waits = [], inspected = [], failures = ['EPERM', 'EBUSY', 'EACCES']
+  let attempts = 0
+  const retries = await publishImageRuntimePackage('source', 'target', {
+    platform: 'win32',
+    inspect: async path => { inspected.push(path); await absent() },
+    move: async (source, target) => {
+      assert.equal(source, 'source')
+      assert.equal(target, 'target')
+      if (attempts++ < failures.length) throw fsError(failures[attempts - 1])
+    },
+    pause: async ms => { waits.push(ms) },
+  })
+  assert.equal(retries, 3)
+  assert.equal(attempts, 4)
+  assert.deepEqual(inspected, ['target', 'target', 'target', 'target'])
+  assert.deepEqual(waits, [25, 50, 100])
+})
+
+test('persistent Windows rename failures stop after seven attempts and retain the original error', async () => {
+  const waits = [], failure = fsError('EPERM')
+  let attempts = 0
+  await assert.rejects(publishImageRuntimePackage('source', 'target', {
+    platform: 'win32', inspect: absent,
+    move: async () => { attempts++; throw failure },
+    pause: async ms => { waits.push(ms) },
+  }), error => error === failure)
+  assert.equal(attempts, 7)
+  assert.deepEqual(waits, [25, 50, 100, 200, 400, 800])
+  assert.equal(waits.reduce((sum, ms) => sum + ms, 0), 1575)
+})
+
+test('non-Windows and non-transient rename failures are not retried', async () => {
+  for (const [platform, code] of [['linux', 'EPERM'], ['darwin', 'EBUSY'], ['win32', 'ENOENT'], ['win32', 'EXDEV']]) {
+    const failure = fsError(code)
+    let attempts = 0
+    await assert.rejects(publishImageRuntimePackage('source', 'target', {
+      platform, inspect: absent,
+      move: async () => { attempts++; throw failure },
+      pause: async () => { assert.fail('unexpected retry') },
+    }), error => error === failure)
+    assert.equal(attempts, 1)
+  }
+})
+
+test('publication preserves a target that reappears during rename backoff', async () => {
+  await fixture(async root => {
+    const temporary = join(root, 'temporary'), destination = join(root, 'target')
+    await mkdir(temporary)
+    await writeFile(join(temporary, 'package.json'), 'candidate')
+    let attempts = 0
+    await assert.rejects(publishImageRuntimePackage(temporary, destination, {
+      platform: 'win32',
+      move: async () => { attempts++; throw fsError('EPERM') },
+      pause: async () => {
+        await mkdir(destination)
+        await writeFile(join(destination, 'package.json'), 'existing valid package')
+      },
+    }), { code: 'EEXIST' })
+    assert.equal(attempts, 1)
+    assert.equal(await readFile(join(destination, 'package.json'), 'utf8'), 'existing valid package')
+    assert.equal(await readFile(join(temporary, 'package.json'), 'utf8'), 'candidate')
+    await assert.rejects(publishImageRuntimePackage(temporary, destination), { code: 'EEXIST' })
+    assert.equal(await readFile(join(destination, 'package.json'), 'utf8'), 'existing valid package')
+  })
+})
+
+test('an unreadable publication target fails before rename without retry', async () => {
+  const failure = fsError('EACCES')
+  await assert.rejects(publishImageRuntimePackage('source', 'target', {
+    platform: 'win32', inspect: async () => { throw failure },
+    move: async () => { assert.fail('unverified destination must not be replaced') },
+    pause: async () => { assert.fail('inspection errors must not be retried') },
+  }), error => error === failure)
+})
 
 test('cached bytes are checked before archive extraction', async () => {
   await fixture(async root => {

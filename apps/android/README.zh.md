@@ -65,6 +65,8 @@ node apps/android/tool/smoke-runtime.mjs
 
 原生准备脚本默认使用 `http://127.0.0.1:7897`；可通过 `-Proxy` 指定其他代理。脚本校验 Node 压缩包的哈希，以及 Android require-builtin 插件的源码版本。暂存运行时冒烟测试在电脑上执行，不代表 Android 兼容性已通过。
 
+暂存目录同一时间只允许一个写入者。图像运行时压缩包校验通过、旧暂存包移除后，Windows 目录发布仅对重命名的 `EPERM`、`EBUSY` 和 `EACCES` 错误重试，最多六次，退避等待合计 1,575 毫秒。每次尝试都确认目标仍不存在；目标重新出现或发生其他错误时立即停止暂存。重试恢复成功会写入日志。压缩包哈希和包身份校验失败不重试。暂存目录不完整时不得打包：必须先重新暂存并通过冒烟测试。
+
 在 `apps/android` 执行以下命令。APK 输出到 `build/app/outputs/flutter-apk/app-debug.apk`，使用开发签名。如果本地网络需要代理，请配置 Gradle 的 HTTP/HTTPS 代理。
 
 ```powershell

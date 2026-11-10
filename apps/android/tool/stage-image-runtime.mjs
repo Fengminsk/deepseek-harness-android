@@ -1,7 +1,8 @@
 /** Package Sharp's official WASM fallback from the repository's exact dependency lock. */
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { load } from 'js-yaml'
 import { satisfies } from 'semver'
@@ -10,6 +11,7 @@ import { x as extractTar } from 'tar'
 const packageName = /^(?:@[a-z0-9._~-]+\/)?[a-z0-9._~-]+$/
 const versionPattern = /^\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?$/
 const integrityOf = bytes => `sha512-${createHash('sha512').update(bytes).digest('base64')}`
+const renameRetryDelays = [25, 50, 100, 200, 400, 800]
 
 function contained(parent, child) {
   const path = relative(resolve(parent), resolve(child))
@@ -73,6 +75,43 @@ export async function imageRuntimeArchive(item, cacheDirectory) {
   return file
 }
 
+/**
+ * Publish a verified package into an absent target in exclusively owned staging.
+ * Windows may briefly retain directory handles after removal. Retry only those
+ * rename errors, with at most 1,575 ms of backoff; never remove a reappearing target.
+ * Return the retry count so an actual recovery is visible in the staging log.
+ * @param {string} temporary - Verified package directory owned by this staging run.
+ * @param {string} destination - Absent package target within the same private staging directory.
+ * @param {object} options - Instance-local platform and filesystem adapters for deterministic tests.
+ * @param {string} [options.platform] - Host platform; retry applies only to Windows.
+ * @param {Function} [options.move] - Directory rename operation.
+ * @param {Function} [options.inspect] - Target lstat operation, including dangling links.
+ * @param {Function} [options.pause] - Awaited backoff in milliseconds.
+ * @returns {Promise<number>} Number of retries before a successful publication.
+ */
+export async function publishImageRuntimePackage(temporary, destination, {
+  platform = process.platform, move = rename, inspect = lstat, pause = delay,
+} = {}) {
+  for (let attempt = 0; ; attempt++) {
+    let absent = false
+    try { await inspect(destination) } catch (error) {
+      if (error.code !== 'ENOENT') throw error
+      absent = true
+    }
+    if (!absent) {
+      throw Object.assign(new Error('Image runtime staging target already exists'), { code: 'EEXIST' })
+    }
+    try {
+      await move(temporary, destination)
+      return attempt
+    } catch (error) {
+      if (platform !== 'win32' || !['EPERM', 'EBUSY', 'EACCES'].includes(error.code)
+        || attempt >= renameRetryDelays.length) throw error
+      await pause(renameRetryDelays[attempt])
+    }
+  }
+}
+
 /** Stage original packages, including licenses and worker/WASM files; no install scripts or source patches. */
 export async function stageImageRuntime({ repositoryRoot, staging,
   cacheDirectory = join(repositoryRoot, '.cache/android/image-archives') }) {
@@ -99,7 +138,8 @@ export async function stageImageRuntime({ repositoryRoot, staging,
       // Both targets are resolved children of the private staging node_modules.
       await mkdir(resolve(destination, '..'), { recursive: true })
       await rm(destination, { recursive: true, force: true })
-      await rename(temporary, destination)
+      const retries = await publishImageRuntimePackage(temporary, destination)
+      if (retries) console.warn(`Image runtime directory rename recovered after ${retries} retries: ${item.name}`)
     } finally { await rm(temporary, { recursive: true, force: true }) }
   }
   const android = join(resolve(staging), 'android')

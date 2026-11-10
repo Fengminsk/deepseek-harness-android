@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { resolve } from 'node:path'
 import { bindAcceptanceArguments, parseAcceptanceProcesses, parseNonInteractivePowerState,
-  parseInternalDisplays, resolveScreenProtectionTiming, runAcceptanceChild,
+  parseInternalDisplays, resolveScreenProtectionTiming, resolveScreenProtectionRestoration, runAcceptanceChild,
   runScreenOnlyProbe, runProtectedAcceptance, withScreenProtection } from './device-screen-protection.mjs'
 
 const ids = '0\n2\n'
@@ -58,6 +58,8 @@ test('both panels are off before work and controls restore only after sleep', as
   }, { timeoutMs: 1000, pollMs: 10 })
   assert.equal(evidence.result, 7)
   assert.equal(evidence.protection.samples.length, 2)
+  assert.equal(evidence.protection.restoredWhileNonInteractive, true)
+  assert.equal(evidence.protection.retainedWhileNonInteractive, false)
   assert.deepEqual(io.events, ['inspect', 'off:0', 'off:2', 'inspect', 'run', 'inspect', 'sleep', 'asleep',
     'asleep', 'reset:0', 'asleep', 'reset:2', 'inspect', 'asleep'])
 })
@@ -232,6 +234,134 @@ test('Dozing reset requires retirement and a physical Off result', async () => {
     if (state === 'unretired') assert.equal(io.events.some(event => event.startsWith('reset:')), false)
     if (state === 'lit-after-reset') assert.deepEqual(io.events.slice(-2), ['off:0', 'off:2'])
   }
+})
+
+test('keep-display-off retains both physical overrides in Dozing without resetting them', async () => {
+  const io = fixture()
+  io.nonInteractive = async () => parseNonInteractivePowerState('mWakefulness=Dozing\n')
+  io.powerReset = async id => { io.events.push(`reset:${id}`); io.illuminate() }
+  const report = await withScreenProtection(io, async () => ({ retirement: { confirmed: true } }),
+    { timeoutMs: 1000, pollMs: 10, restoreDisplayPower: false })
+  assert.equal(io.events.some(event => event.startsWith('reset:')), false)
+  assert.equal(report.protection.restoredWhileNonInteractive, false)
+  assert.equal(report.protection.retainedWhileNonInteractive, true)
+  assert.equal(report.protection.finalDisplayState, 'off')
+  assert.deepEqual(io.events.filter(event => event.startsWith('off:')), ['off:0', 'off:2'])
+})
+
+test('display restoration stays the default and the keep-display-off CLI flag is explicit', async () => {
+  assert.equal(resolveScreenProtectionRestoration(['--seconds', '12']), true)
+  assert.equal(resolveScreenProtectionRestoration(['--keep-display-off', '--seconds', '12']), false)
+  assert.equal(resolveScreenProtectionRestoration(['--seconds', '12', '--keep-display-off']), false)
+  assert.throws(() => resolveScreenProtectionRestoration(['--keep-display-off', '--keep-display-off']), /Duplicate/)
+  assert.throws(() => resolveScreenProtectionRestoration(['--keep-display-off=false']), /without a value/)
+  for (const value of ['', ' ', 'false', 'true']) {
+    assert.throws(() => resolveScreenProtectionRestoration(['--keep-display-off', value]), /without a value/)
+  }
+  for (const restoreDisplayPower of ['false', 0, null]) {
+    const io = fixture()
+    await assert.rejects(withScreenProtection(io, async () => assert.fail('must not run'),
+      { timeoutMs: 1000, pollMs: 10, restoreDisplayPower }), /must be boolean/)
+    assert.deepEqual(io.events, [])
+  }
+})
+
+test('keep-display-off accepts a completed screen-only probe without inventing child retirement', async () => {
+  const io = fixture()
+  const report = await withScreenProtection(io, signal => runScreenOnlyProbe(signal, 1000),
+    { timeoutMs: 5000, pollMs: 10, restoreDisplayPower: false })
+  assert.equal(report.result.appTestsRun, false)
+  assert.equal(report.result.retirement, undefined)
+  assert.equal(report.protection.restoredWhileNonInteractive, false)
+  assert.equal(report.protection.retainedWhileNonInteractive, true)
+  assert.equal(report.protection.finalDisplayState, 'off')
+  assert.equal(io.events.some(event => event.startsWith('reset:')), false)
+})
+
+test('keep-display-off requires confirmed acceptance retirement and never resets on failure', async () => {
+  for (const retirement of [undefined, {}, { confirmed: false }]) {
+    const io = fixture()
+    await assert.rejects(withScreenProtection(io, async () => ({ retirement }),
+      { timeoutMs: 1000, pollMs: 10, restoreDisplayPower: false }), error => {
+      assert.equal(error.protection.restoredWhileNonInteractive, false)
+      assert.equal(error.protection.retainedWhileNonInteractive, false)
+      assert.equal(error.protection.finalDisplayState, 'unknown')
+      assert.ok(error.errors.some(cause => /retirement is unconfirmed/.test(cause.message)))
+      return true
+    })
+    assert.equal(io.events.some(event => event.startsWith('reset:')), false)
+    assert.deepEqual(io.events.slice(-2), ['off:0', 'off:2'])
+  }
+})
+
+test('keep-display-off fails cleanup on lit, unreadable or changed physical panels and reapplies overrides', async () => {
+  for (const state of ['lit', 'unreadable', 'changed', 'interactive']) {
+    const io = fixture(), inspect = io.inspect
+    let calls = 0
+    io.inspect = async () => {
+      if (++calls === 4) {
+        if (state === 'unreadable') throw new Error('USB lost')
+        if (state === 'changed') return [{ id: '3', physicalId: 'new-panel', powerMode: 'Off' }]
+        if (state === 'lit') io.illuminate()
+      }
+      return inspect()
+    }
+    if (state === 'interactive') io.nonInteractive = async () => false
+    await assert.rejects(withScreenProtection(io, async () => ({ retirement: { confirmed: true } }),
+      { timeoutMs: 1000, pollMs: 10, restoreDisplayPower: false }), error => {
+      assert.equal(error.protection.restoredWhileNonInteractive, false)
+      assert.equal(error.protection.retainedWhileNonInteractive, false)
+      assert.equal(error.protection.finalDisplayState, 'unknown')
+      return true
+    })
+    assert.equal(io.events.some(event => event.startsWith('reset:')), false)
+    assert.ok(io.events.filter(event => event === 'off:0').length >= 2)
+    assert.ok(io.events.filter(event => event === 'off:2').length >= 2)
+    if (state === 'changed') assert.ok(io.events.includes('off:3'))
+  }
+})
+
+test('keep-display-off preserves test failure while reporting verified final Off separately', async () => {
+  const io = fixture()
+  const failure = Object.assign(new Error('fixture failed'), { retirement: { confirmed: true } })
+  await assert.rejects(withScreenProtection(io, async () => { throw failure },
+    { timeoutMs: 1000, pollMs: 10, restoreDisplayPower: false }), error => {
+    assert.equal(error, failure)
+    assert.equal(error.retirement.confirmed, true)
+    assert.equal(error.protection.restoredWhileNonInteractive, false)
+    assert.equal(error.protection.retainedWhileNonInteractive, true)
+    assert.equal(error.protection.finalDisplayState, 'off')
+    return true
+  })
+  assert.equal(io.events.some(event => event.startsWith('reset:')), false)
+  assert.equal(io.events.filter(event => event === 'off:0').length, 2)
+})
+
+test('keep-display-off waits for abort retirement and retains overrides without converting cancellation to success', async () => {
+  const io = fixture(), controller = new AbortController(), started = Promise.withResolvers(), retired = Promise.withResolvers()
+  const run = withScreenProtection(io, async signal => {
+    const aborted = new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }))
+    started.resolve()
+    await aborted
+    await retired.promise
+    io.events.push('abort-retired')
+    return { retirement: { confirmed: true } }
+  }, { timeoutMs: 1000, pollMs: 10, restoreDisplayPower: false, signal: controller.signal })
+  await started.promise
+  controller.abort(new Error('SIGTERM'))
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(io.events.includes('sleep'), false)
+  retired.resolve()
+  await assert.rejects(run, error => {
+    assert.match(error.message, /SIGTERM/)
+    assert.equal(error.retirement.confirmed, true)
+    assert.equal(error.protection.restoredWhileNonInteractive, false)
+    assert.equal(error.protection.retainedWhileNonInteractive, true)
+    assert.equal(error.protection.finalDisplayState, 'off')
+    return true
+  })
+  assert.equal(io.events.some(event => event.startsWith('reset:')), false)
+  assert.ok(io.events.indexOf('abort-retired') < io.events.indexOf('sleep'))
 })
 
 test('only reviewed entries accept the exact protected device and ADB path', () => {

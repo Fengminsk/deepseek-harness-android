@@ -53,11 +53,22 @@ function requireOff(panels, original) {
     JSON.stringify(original.map(p => [p.id, p.physicalId])), 'Internal display topology changed during testing')
 }
 
-/** The run owner must join bounded retirement, reporting unknown retirement explicitly on failure. */
-export async function withScreenProtection(io, run, { timeoutMs, pollMs = 2000, signal }) {
+/**
+ * The run owner must join bounded retirement, reporting unknown retirement explicitly on failure.
+ * @param {object} io - Device operations owned by the caller.
+ * @param {Function} run - Bounded workload that joins retirement before settling.
+ * @param {object} options - Deadline, observation and cleanup policy.
+ * @param {number} options.timeoutMs - Complete protected-work deadline in milliseconds.
+ * @param {number} [options.pollMs] - Physical panel observation interval.
+ * @param {AbortSignal} [options.signal] - Cancellation still awaits workload retirement and cleanup.
+ * @param {boolean} [options.restoreDisplayPower] - Reset overrides by default; false retains them until explicit release.
+ * @returns {Promise<object>} Work result and distinct restoration or retention evidence.
+ */
+export async function withScreenProtection(io, run, { timeoutMs, pollMs = 2000, signal, restoreDisplayPower = true }) {
   check(Number.isSafeInteger(timeoutMs) && timeoutMs >= 1000 && timeoutMs <= 3660000,
     'Screen protection requires a bounded deadline of at most 61 minutes')
   check(Number.isSafeInteger(pollMs) && pollMs >= 10 && pollMs <= 5000, 'Invalid polling interval')
+  check(typeof restoreDisplayPower === 'boolean', 'Display restoration policy must be boolean')
   const controller = new AbortController()
   const samples = []
   let original = null
@@ -72,6 +83,7 @@ export async function withScreenProtection(io, run, { timeoutMs, pollMs = 2000, 
   let blackout
   let blackoutFailure
   let restored = false
+  let retained = false
   const known = new Set()
   const remember = panels => { for (const panel of panels) known.add(panel.id) }
   const forceOff = async () => {
@@ -144,17 +156,21 @@ export async function withScreenProtection(io, run, { timeoutMs, pollMs = 2000, 
         // Never restore normal display power while Android is interactive.
         await operation(io.sleep(cleanup.signal))
         check(await operation(io.nonInteractive(cleanup.signal)), 'Phone did not sleep; leave panel power overrides in place')
-        check(retirement?.confirmed !== false,
+        const screenOnly = result?.kind === 'screen-only-probe' && result.appTestsRun === false
+        check(restoreDisplayPower ? retirement?.confirmed !== false : retirement?.confirmed === true || screenOnly,
           'Acceptance retirement is unconfirmed; leave panel power overrides in place')
-        for (const panel of original) {
-          check(await operation(io.nonInteractive(cleanup.signal)), 'Phone left sleep; leave panel power overrides in place')
-          await operation(io.powerReset(panel.id, cleanup.signal))
+        if (restoreDisplayPower) {
+          for (const panel of original) {
+            check(await operation(io.nonInteractive(cleanup.signal)), 'Phone left sleep; leave panel power overrides in place')
+            await operation(io.powerReset(panel.id, cleanup.signal))
+          }
         }
         const panels = await operation(io.inspect(cleanup.signal))
         remember(panels)
         requireOff(panels, original)
         check(await operation(io.nonInteractive(cleanup.signal)), 'Phone left sleep during display cleanup')
-        restored = true
+        restored = restoreDisplayPower
+        retained = !restoreDisplayPower
       } catch (cleanup) {
         // A failed reset or unreadable topology still leaves the original IDs known.
         // Do not rely on one more successful dumpsys to reapply their overrides.
@@ -168,11 +184,12 @@ export async function withScreenProtection(io, run, { timeoutMs, pollMs = 2000, 
     if (retirement) failure.retirement = retirement
     if (recovery) failure.recovery = recovery
     if (completion) failure.completion = completion
-    failure.protection = { samples, restoredWhileNonInteractive: restored,
-      finalDisplayState: restored ? 'off' : 'unknown', powerOffAttempted: known.size > 0 }
+    failure.protection = { samples, restoredWhileNonInteractive: restored, retainedWhileNonInteractive: retained,
+      finalDisplayState: restored || retained ? 'off' : 'unknown', powerOffAttempted: known.size > 0 }
     throw failure
   }
-  return { result, protection: { samples, restoredWhileNonInteractive: true } }
+  return { result, protection: { samples, restoredWhileNonInteractive: restored, retainedWhileNonInteractive: retained,
+    finalDisplayState: restored || retained ? 'off' : 'unknown', powerOffAttempted: known.size > 0 } }
 }
 
 function adapter(adb, serial) {
@@ -237,6 +254,21 @@ export function resolveScreenProtectionTiming(seconds, screenOnly) {
   const requestedMs = seconds * 1000
   return { observationMs: screenOnly ? requestedMs : null,
     timeoutMs: requestedMs + (screenOnly ? 60000 : 0) }
+}
+
+/**
+ * Parse the wrapper's explicit display-retention flag, before the child argument separator.
+ * @param {string[]} options - Wrapper arguments only, excluding the child entry and its flags.
+ * @returns {boolean} Whether cleanup should restore normal display control.
+ */
+export function resolveScreenProtectionRestoration(options) {
+  check(!options.some(arg => arg.startsWith('--keep-display-off=')), 'Use --keep-display-off without a value')
+  const count = options.filter(arg => arg === '--keep-display-off').length
+  check(count <= 1, 'Duplicate --keep-display-off')
+  const index = options.indexOf('--keep-display-off')
+  check(index < 0 || index === options.length - 1 || options[index + 1].startsWith('--'),
+    'Use --keep-display-off without a value')
+  return count === 0
 }
 
 /** Observe for the full requested duration after protection has been established. */
@@ -385,6 +417,7 @@ export async function runProtectedAcceptance(args, signal, io,
 async function main(args) {
   const separator = args.indexOf('--')
   const options = separator < 0 ? args : args.slice(0, separator)
+  const restoreDisplayPower = resolveScreenProtectionRestoration(options)
   const get = key => {
     const at = options.indexOf(key)
     check(at >= 0 && options[at + 1], `Missing ${key}`)
@@ -416,7 +449,8 @@ async function main(args) {
   const run = probe ? signal => runScreenOnlyProbe(signal, timing.observationMs)
     : signal => runProtectedAcceptance(childArgs, signal, io)
   try {
-    const result = await withScreenProtection(io, run, { timeoutMs: timing.timeoutMs, signal: controller.signal })
+    const result = await withScreenProtection(io, run,
+      { timeoutMs: timing.timeoutMs, signal: controller.signal, restoreDisplayPower })
     await writeFile(report, JSON.stringify({ schema: 2, serial, passed: true, ...result }, null, 2) + '\n')
     process.stdout.write(`Screen protection verified; report: ${report}\n`)
   } catch (error) {
@@ -424,7 +458,9 @@ async function main(args) {
       error: error.message, protection: error.protection, retirement: error.retirement, recovery: error.recovery,
       completion: error.completion,
       deviceOutcome: error.protection?.finalDisplayState === 'off' && error.retirement?.confirmed !== false
-        ? 'Test failed; final panels Off and display control restored while noninteractive'
+        ? error.protection.retainedWhileNonInteractive
+          ? 'Test failed; final panels Off while noninteractive; power-off overrides retained until explicit release'
+          : 'Test failed; final panels Off and display control restored while noninteractive'
         : 'Unknown until display and process retirement are verified; keep power-off overrides' }, null, 2) + '\n')
     throw error
   } finally {

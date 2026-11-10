@@ -19,6 +19,14 @@ Keep `apps/android/build` as a real directory inside the project. On Windows, ch
 
 Gradle resolves the build directory to its physical path. When an earlier Flutter output inventory contains directory aliases, the compile task backs up and removes only its `.last_build_id` marker before compilation. It preserves the old output files and dependency caches; Flutter then records the current output inventory without deleting files through stale aliases.
 
+## Diagnose a stalled Windows build
+
+Use `--console=plain --info` when running the Gradle wrapper. The last printed task does not identify the wait: `mergeReleaseNativeLibs` can be resolving the Flutter engine JAR over HTTPS. Capture `jcmd <pid> Thread.print` for the build's own client and daemon before stopping them; distinguish a download socket read from a lock cycle. Do not stop unrelated IDE daemons.
+
+A Kotlin `AccessDeniedException` for the user-profile daemon marker is a separate filesystem-access failure. Retry with the required host permissions before changing compiler settings. Quote dotted PowerShell arguments, such as `'-Pkotlin.compiler.execution.strategy=in-process'`; a task-not-found error for `.compiler.execution.strategy=in-process` means the setting never reached the compiler.
+
+Configure the build's HTTP/HTTPS proxy when direct downloads stall. If Java reports a TLS handshake failure, retain certificate checking and verify the same official artifact through the configured proxy. A local Maven repository must preserve the original POM/module metadata, verify upstream checksums, and filter exact dependency versions. `--offline` succeeds only when all required artifacts and metadata are available; copying a JAR into Gradle's file store alone does not register its cache metadata.
+
 ## Check the APK
 
 The `assembleDebug`, `assembleProfile` and `assembleRelease` tasks require a packaged Dart application. Debug requires `kernel_blob.bin`, `isolate_snapshot_data` and `vm_snapshot_data`; the pinned engine permits an empty VM snapshot. Profile and Release require `lib/arm64-v8a/libapp.so`. All modes require `AssetManifest.bin`. A missing required entry fails assembly.

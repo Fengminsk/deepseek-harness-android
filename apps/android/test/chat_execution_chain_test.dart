@@ -232,6 +232,65 @@ void main() {
     },
   );
 
+  for (final manuallyFolded in [false, true]) {
+    testWidgets(
+      'unconfirmed calls retain the visible chain until resolved (manual=$manuallyFolded)',
+      (tester) async {
+        final events = <Json>[
+          fixture.event(0, 'turn/start', {'turn': 1}),
+          tool.callEvent(1, id: 'unconfirmed-call'),
+          fixture.assistant(2, '回复仍然可见'),
+        ];
+        final projection = ChatProjection();
+        final scroll = ScrollController();
+        addTearDown(scroll.dispose);
+        Widget view() => host(
+          ChatTimeline(
+            sessionId: 'unconfirmed-completion',
+            projection: projection..reconcile(events),
+            events: events,
+            controller: scroll,
+            running: !events.any((event) => event['type'] == 'turn/end'),
+          ),
+        );
+        ChatExecutionHeader header() => tester.widget<ChatExecutionHeader>(
+          find.byType(ChatExecutionHeader),
+        );
+
+        await tester.pumpWidget(view());
+        await tester.pumpAndSettle();
+        expect(header().expanded, isTrue);
+        expect(find.byType(ChatExecutionStep), findsOneWidget);
+        if (manuallyFolded) {
+          await tester.tap(find.byType(ChatExecutionHeader));
+          await tester.pumpAndSettle();
+        }
+
+        events.add(end(3, 'completed'));
+        await tester.pumpWidget(view());
+        await tester.pumpAndSettle();
+        expect(header().chain.completed, isFalse);
+        expect(header().expanded, !manuallyFolded);
+        expect(
+          find.byType(ChatExecutionStep),
+          manuallyFolded ? findsNothing : findsOneWidget,
+        );
+        expect(find.text('已完成'), findsNothing);
+        expect(find.text('回复仍然可见', findRichText: true), findsOneWidget);
+
+        events.add(tool.resultEvent(4, id: 'unconfirmed-call'));
+        await tester.pumpWidget(view());
+        await tester.pumpAndSettle();
+        expect(header().chain.completed, isTrue);
+        expect(header().expanded, isFalse);
+        expect(find.byType(ChatExecutionStep), findsNothing);
+        expect(find.text('已完成'), findsOneWidget);
+        expect(find.text('回复仍然可见', findRichText: true), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
   testWidgets(
     'submitted plan folds into the chain and opens its original document',
     (tester) async {

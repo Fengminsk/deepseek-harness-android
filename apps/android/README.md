@@ -57,6 +57,8 @@ node apps/android/tool/smoke-runtime.mjs
 
 The native preparation script uses `http://127.0.0.1:7897` by default; supply `-Proxy` to select a different proxy. It verifies the Node archive checksum and the source revision used for the Android require-builtin addon. The staging smoke runs on the host and does not establish Android compatibility.
 
+Keep one writer for the staging directory. After verifying an image runtime archive and removing its previous staged package, Windows directory publication retries only `EPERM`, `EBUSY` and `EACCES` rename errors, at most six times with 1,575 ms of total backoff. Each attempt checks that the target is still absent; a reappearing target or other failure stops staging. A recovered rename is logged. Archive checksums and package identities are never retried. Do not pack an incomplete staging directory: rerun staging and its smoke successfully first.
+
 Run these commands from `apps/android`. The APK is written to `build/app/outputs/flutter-apk/app-debug.apk`; it uses the development signing key. Configure Gradle's HTTP/HTTPS proxy if the local network requires one.
 
 ```powershell

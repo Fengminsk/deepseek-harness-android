@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'package:dsh_android/chat_execution_chain.dart';
 import 'package:dsh_android/chat_messages.dart';
 import 'package:dsh_android/chat_progress.dart';
 import 'package:dsh_android/chat_projection.dart';
@@ -241,8 +242,24 @@ void main() {
       events.add(tools.callEvent(1, id: 'real-call'));
       await tester.pumpWidget(view(stream: live));
       await tester.pumpAndSettle();
-      expect(find.byType(ChatProgressLine), findsOneWidget);
-      expect(find.text('正在运行命令'), findsOneWidget);
+      expect(find.byType(ChatProgressLine), findsNothing);
+      final header = tester.widget<ChatExecutionHeader>(
+        find.byType(ChatExecutionHeader),
+      );
+      expect(header.expanded, isTrue);
+      expect(header.chain.active, isTrue);
+      expect(header.chain.completed, isFalse);
+      final step = find.byType(ChatExecutionStep);
+      expect(step, findsOneWidget);
+      expect(
+        tester.widget<ChatExecutionStep>(step).entry.tool!.callId,
+        'real-call',
+      );
+      expect(
+        find.descendant(of: step, matching: find.text('pwd')),
+        findsOneWidget,
+      );
+      expect(find.textContaining('An answer is appearing.'), findsOneWidget);
       expect(
         chatHasPendingActivity(
           projection.entries.where((e) => e.tool != null).map((e) => e.tool!),

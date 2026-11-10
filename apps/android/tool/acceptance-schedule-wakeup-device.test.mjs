@@ -4,7 +4,8 @@ import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { scheduleWakeInstrumentationArguments, parseScheduleWakePhase, naturalWakeServiceEvidence,
   runNaturalWakeAcceptance, scheduleWakeInstrumentationIdle, runScheduleWakePhaseAcceptance,
-  scheduleWakeFailureDiagnostics, scheduleWakeFailureReport, parseScheduleWakeProgress } from './acceptance-schedule-wakeup-device.mjs'
+  scheduleWakeFailureDiagnostics, scheduleWakeFailureReport, parseScheduleWakeProgress,
+  parseScheduleWakeArguments, runProtectedScheduleWakeAcceptance } from './acceptance-schedule-wakeup-device.mjs'
 import { withScreenProtection } from './device-screen-protection.mjs'
 
 const caseId = '42b1d2e3-1234-4567-8abc-123456789012', mainPid = 101, oldPid = 102, newPid = 103
@@ -30,6 +31,56 @@ const output = value => `INSTRUMENTATION_RESULT: result=${JSON.stringify(value)}
 const progress = (phase, stage, elapsedMs, extra = {}) => `INSTRUMENTATION_STATUS: scheduleWakeProgress=${JSON.stringify({
   schema: 1, phase, caseId, stage, elapsedMs, ...extra })}\n`
 const dump = pid => `ACTIVITY MANAGER SERVICES\n  * ServiceRecord{abc u0 com.minnnng.dsh_android/.AgentService}\n    intent={act=com.minnnng.dsh_android.SCHEDULE_WAKE cmp=com.minnnng.dsh_android/.AgentService}\n    app=ProcessRecord{123 ${pid}:com.minnnng.dsh_android:agent/u0a496}\n`
+
+test('CLI requires an explicit true value to retain display power overrides', () => {
+  const args = ['--adb', 'adb.exe', '--serial', 'DEVICE', '--report', 'report.json', '--case-id', caseId]
+  assert.equal(parseScheduleWakeArguments(args).keepDisplayOff, false)
+  assert.equal(parseScheduleWakeArguments([...args, '--keep-display-off', 'true']).keepDisplayOff, true)
+  for (const invalid of ['false', '1', 'TRUE', '--mode'])
+    assert.throws(() => parseScheduleWakeArguments([...args, '--keep-display-off', invalid]), /INVALID_KEEP_DISPLAY_OFF/)
+  assert.throws(() => parseScheduleWakeArguments([...args, '--keep-display-off']), /INVALID_ARGUMENTS/)
+  assert.throws(() => parseScheduleWakeArguments([...args, '--keep-display-off', 'true', '--keep-display-off', 'true']), /INVALID_ARGUMENTS/)
+})
+
+test('protected status resets by default and keeps panel overrides only when requested', async () => {
+  for (const keepDisplayOff of [undefined, true]) {
+    const { io } = fixture()
+    let resets = 0
+    Object.assign(io, { inspect: async () => [{ id: '0', physicalId: '1', powerMode: 'Off' }],
+      powerOff: async () => {}, powerReset: async () => { resets++ },
+      sleep: async () => {}, nonInteractive: async () => true,
+      delay: () => new Promise(resolve => setImmediate(resolve)) })
+    const result = await runProtectedScheduleWakeAcceptance(io,
+      { mode: 'status', caseId, keepDisplayOff, signal: new AbortController().signal })
+    assert.equal(result.result.passed, true)
+    assert.equal(result.result.retirement.mainPreserved, true)
+    assert.equal(result.result.retirement.wholeAppRetired, false)
+    assert.equal(resets, keepDisplayOff ? 0 : 1)
+    assert.equal(result.protection.restoredWhileNonInteractive, !keepDisplayOff)
+    if (keepDisplayOff) {
+      assert.equal(result.protection.retainedWhileNonInteractive, true)
+      assert.equal(result.protection.finalDisplayState, 'off')
+    }
+  }
+})
+
+test('retaining display overrides does not hide native status failure after scoped retirement', async () => {
+  const { io } = fixture({ phase: async () => output({ ...value('status'), passed: false, failureCode: 'DEVICE_NOT_LOCKED' }) })
+  Object.assign(io, { inspect: async () => [{ id: '0', physicalId: '1', powerMode: 'Off' }],
+    powerOff: async () => {}, powerReset: async () => { assert.fail('Panel override must remain applied') },
+    sleep: async () => {}, nonInteractive: async () => true,
+    delay: () => new Promise(resolve => setImmediate(resolve)) })
+  await assert.rejects(runProtectedScheduleWakeAcceptance(io,
+    { mode: 'status', caseId, keepDisplayOff: true, signal: new AbortController().signal }), error => {
+    assert.equal(error.result.passed, false)
+    assert.equal(error.result.nativeFailureCode, 'DEVICE_NOT_LOCKED')
+    assert.equal(error.retirement.confirmed, true)
+    assert.equal(error.retirement.mainPreserved, true)
+    assert.equal(error.protection.retainedWhileNonInteractive, true)
+    assert.equal(error.protection.restoredWhileNonInteractive, false)
+    return true
+  })
+})
 
 test('all four entry phases use no-restart and never create an Activity or force-stop', () => {
   for (const phase of ['status', 'prepare', 'observe', 'cleanup']) {

@@ -7,7 +7,65 @@ import java.time.Instant
 /** Checks only the UUID-owned reminder and its actual Session events. */
 object ScheduleWakeupAcceptanceEvidence {
     const val DELAY_SECONDS = 180
+    // Compile-time strings keep test-only diagnostics independent of enum helpers stripped from the release App.
+    object PhaseStep {
+        const val PHASE = "PHASE"
+        const val CREATE_SAVE = "CREATE_SAVE"
+        const val CREATE_SEND = "CREATE_SEND"
+        const val CREATE_HISTORY = "CREATE_HISTORY"
+        const val CREATE_IDLE = "CREATE_IDLE"
+        const val CREATE_CATALOG = "CREATE_CATALOG"
+        const val CREATE_RECORD = "CREATE_RECORD"
+        const val CREATE_EVIDENCE = "CREATE_EVIDENCE"
+        const val CREATE_DUE = "CREATE_DUE"
+        const val CREATE_ARM_WAIT = "CREATE_ARM_WAIT"
+        const val CREATE_ARM_CHECK = "CREATE_ARM_CHECK"
+        const val CREATE_ARM_SAVE = "CREATE_ARM_SAVE"
+        const val CREATE_RETIRE_IDLE = "CREATE_RETIRE_IDLE"
+        const val CREATE_RETIRE_RUNTIME = "CREATE_RETIRE_RUNTIME"
+        const val CREATE_RETIRE_DISCONNECT = "CREATE_RETIRE_DISCONNECT"
+        const val CREATE_RETIRE_IDENTITY = "CREATE_RETIRE_IDENTITY"
+        const val CREATE_RETIRE_SAVE = "CREATE_RETIRE_SAVE"
+        const val CREATE_RETIRE_SIGNAL = "CREATE_RETIRE_SIGNAL"
+        const val CREATE_RETIRE_WAIT = "CREATE_RETIRE_WAIT"
+        const val CREATE_RETIRE_WAIT_SAVE = "CREATE_RETIRE_WAIT_SAVE"
+        const val CREATE_RETIRE_RECEIPT = "CREATE_RETIRE_RECEIPT"
+    }
+    /** Fixed codes survive the host driver's redaction; no exception prose or Session content escapes. */
+    fun failureCode(error: Throwable, step: String): String {
+        var cause = error
+        repeat(4) {
+            if ((cause is java.util.concurrent.ExecutionException || cause is java.util.concurrent.CompletionException) &&
+                cause.cause != null && cause.cause !== cause) cause = cause.cause!!
+        }
+        if (cause is AgentServiceTaskEvidence.Rejected) return (cause as AgentServiceTaskEvidence.Rejected).code
+        val kind = when (cause) {
+            is org.json.JSONException -> "JSON_INVALID"
+            is java.util.concurrent.TimeoutException -> "TIMEOUT"
+            is InterruptedException -> "INTERRUPTED"
+            is SecurityException -> "SECURITY_DENIED"
+            is java.io.IOException -> "IO_FAILED"
+            is IllegalArgumentException -> "ARGUMENT_INVALID"
+            is IllegalStateException -> "STATE_INVALID"
+            else -> "UNEXPECTED"
+        }
+        return "SCHEDULE_${step}_$kind"
+    }
     fun demand(value: Boolean, code: String) = AgentServiceTaskEvidence.demand(value, code)
+    /** Require the same live App-owned process in both framework inventories before signalling it. */
+    fun retirementTarget(processes: JSONArray, service: JSONObject, pid: Int, uid: Int, processName: String,
+        originalEndpointAlive: Boolean) {
+        val matching = (0 until processes.length()).map { processes.getJSONObject(it) }.filter { it.getInt("pid") == pid }
+        demand(originalEndpointAlive && pid > 0 && uid >= 0 && matching.size == 1 && matching.single().getInt("uid") == uid &&
+            matching.single().getString("processName") == processName && service.getInt("pid") == pid &&
+            service.getInt("uid") == uid && service.getString("processName") == processName, "KILL_TARGET_CHANGED")
+    }
+    /** Only ESRCH establishes absence; permission denial or another failed probe remains unconfirmed. */
+    fun signalProbeGone(errno: Int?, noSuchProcess: Int): Boolean {
+        if (errno == null) return false
+        demand(errno == noSuchProcess, "OLD_AGENT_SIGNAL_PROBE_FAILED")
+        return true
+    }
     fun session(caseId: String) = "android-schedule-acceptance-$caseId"
     fun marker(caseId: String) = "schedule-delivered-$caseId"
     fun title(caseId: String) = "schedule-acceptance-$caseId"

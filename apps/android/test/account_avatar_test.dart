@@ -17,7 +17,7 @@ final _png = base64Decode(
 
 Future<Uint8List> _fetchAvatar(String url) => fetchAccountAvatar(
   url,
-  readRoute: () async => const NetworkProxyRoute(mode: 'direct'),
+  readRoute: () async => const NetworkProxyRoute(mode: 'system'),
 );
 
 class _Headers extends Fake implements HttpHeaders {
@@ -133,7 +133,7 @@ void main() {
                 ),
               )
               ..onRequest = () =>
-                  selected = const NetworkProxyRoute(mode: 'direct');
+                  selected = const NetworkProxyRoute(mode: 'system');
         await HttpOverrides.runZoned(
           () => fetchAccountAvatar(
             'https://example.test/avatar',

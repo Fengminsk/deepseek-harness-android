@@ -55,6 +55,7 @@ class ScheduleWakeupAcceptanceInstrumentation : Instrumentation() {
         val cancelled = AtomicBoolean(false)
         var finishing = false
         var receiverRegistered = false
+        var failureStep = ScheduleWakeupAcceptanceEvidence.PhaseStep.PHASE
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) { cancelled.set(true) }
         }
@@ -203,46 +204,78 @@ class ScheduleWakeupAcceptanceInstrumentation : Instrumentation() {
                     val saved = record!!.put("created", true).put("model", model).put("generation", generation).put("oldAgentPid", originalPid)
                     save(saved)
                     progress("schedule-create-request")
+                    failureStep = ScheduleWakeupAcceptanceEvidence.PhaseStep.CREATE_SAVE
                     save(saved.put("submitted", true))
+                    failureStep = ScheduleWakeupAcceptanceEvidence.PhaseStep.CREATE_SEND
                     call("session.send", JSONObject().put("sessionId", sessionId).put("requestId", "schedule-create-$caseId")
                         .put("provider", "deepseek-account").put("model", model).put("selectModel", false)
                         .put("text", ScheduleWakeupAcceptanceEvidence.prompt(caseId)))
                     var history: JSONArray
                     val turnBy = minOf(deadline, SystemClock.elapsedRealtime() + 120_000)
+                    failureStep = ScheduleWakeupAcceptanceEvidence.PhaseStep.CREATE_HISTORY
                     while (true) {
                         history = events()
                         if (ScheduleWakeupAcceptanceEvidence.rows(history).any { it.getString("type") == "turn/end" }) break
                         demand(SystemClock.elapsedRealtime() < turnBy, "CREATE_TURN_TIMEOUT"); Thread.sleep(500)
                     }
+                    failureStep = ScheduleWakeupAcceptanceEvidence.PhaseStep.CREATE_IDLE
                     idle()
+                    failureStep = ScheduleWakeupAcceptanceEvidence.PhaseStep.CREATE_CATALOG
                     val records = owned(catalog())
+                    failureStep = ScheduleWakeupAcceptanceEvidence.PhaseStep.CREATE_RECORD
                     demand(records.size == 1 && records.single().getString("status") == "active", "REMINDER_NOT_CREATED")
                     val reminder = records.single()
+                    failureStep = ScheduleWakeupAcceptanceEvidence.PhaseStep.CREATE_EVIDENCE
                     val creation = ScheduleWakeupAcceptanceEvidence.created(history, reminder, caseId, model)
+                    failureStep = ScheduleWakeupAcceptanceEvidence.PhaseStep.CREATE_DUE
                     val due = ScheduleWakeupAcceptanceEvidence.ownRecord(reminder, caseId)
                     val armedBy = SystemClock.elapsedRealtime() + 10_000
                     var armed: JSONObject
+                    failureStep = ScheduleWakeupAcceptanceEvidence.PhaseStep.CREATE_ARM_WAIT
                     while (true) {
                         armed = call("runtime.scheduleWake.status")
                         if (armed.optString("alarmState") == "scheduled" && armed.optLong("nextDueAtMs") == due) break
                         demand(SystemClock.elapsedRealtime() < armedBy, "ALARM_NOT_ARMED"); Thread.sleep(100)
                     }
+                    failureStep = ScheduleWakeupAcceptanceEvidence.PhaseStep.CREATE_ARM_CHECK
                     ScheduleWakeupAcceptanceEvidence.armed(armed, due, System.currentTimeMillis())
+                    failureStep = ScheduleWakeupAcceptanceEvidence.PhaseStep.CREATE_ARM_SAVE
                     for (key in creation.keys()) saved.put(key, creation.get(key))
                     save(saved.put("reminderId", reminder.getString("id")).put("dueAtMs", due).put("stage", "armed"))
                     // Recheck idle and exact identity immediately before removing our binding and killing only this PID.
+                    failureStep = ScheduleWakeupAcceptanceEvidence.PhaseStep.CREATE_RETIRE_IDLE
                     idle(); state()
+                    failureStep = ScheduleWakeupAcceptanceEvidence.PhaseStep.CREATE_RETIRE_RUNTIME
                     demand(call("runtime.status").getString("generation") == generation && service()?.pid == originalPid, "SERVICE_CHANGED")
+                    failureStep = ScheduleWakeupAcceptanceEvidence.PhaseStep.CREATE_RETIRE_DISCONNECT
+                    val originalEndpoint = remote!!.binder
                     disconnect()
-                    val command = File("/proc/$originalPid/cmdline").readBytes().toString(Charsets.UTF_8).substringBefore('\u0000')
-                    demand(command == "${app.packageName}:agent" && service()?.pid == originalPid, "KILL_TARGET_CHANGED")
+                    failureStep = ScheduleWakeupAcceptanceEvidence.PhaseStep.CREATE_RETIRE_SAVE
                     save(saved.put("stage", "kill-requested"))
+                    failureStep = ScheduleWakeupAcceptanceEvidence.PhaseStep.CREATE_RETIRE_IDENTITY
+                    // Keep the original Binder identity after unbinding; a restarted service cannot satisfy this probe.
+                    val originalEndpointAlive = originalEndpoint.pingBinder()
+                    val processRows = app.getSystemService(ActivityManager::class.java).runningAppProcesses
+                    val currentService = service()
+                    demand(processRows != null && currentService != null, "KILL_TARGET_CHANGED")
+                    ScheduleWakeupAcceptanceEvidence.retirementTarget(JSONArray(processRows!!.map {
+                        JSONObject().put("pid", it.pid).put("uid", it.uid).put("processName", it.processName)
+                    }), JSONObject().put("pid", currentService!!.pid).put("uid", currentService.uid)
+                        .put("processName", currentService.process), originalPid, android.os.Process.myUid(),
+                        "${app.packageName}:agent", originalEndpointAlive)
+                    failureStep = ScheduleWakeupAcceptanceEvidence.PhaseStep.CREATE_RETIRE_SIGNAL
                     android.os.Process.killProcess(originalPid)
+                    failureStep = ScheduleWakeupAcceptanceEvidence.PhaseStep.CREATE_RETIRE_WAIT
                     val goneBy = SystemClock.elapsedRealtime() + 10_000
-                    while (File("/proc/$originalPid").exists()) {
+                    while (true) {
+                        val errno = try { android.system.Os.kill(originalPid, 0); null }
+                            catch (error: android.system.ErrnoException) { error.errno }
+                        if (ScheduleWakeupAcceptanceEvidence.signalProbeGone(errno, android.system.OsConstants.ESRCH)) break
                         demand(SystemClock.elapsedRealtime() < goneBy, "OLD_AGENT_NOT_RETIRED"); Thread.sleep(50)
                     }
+                    failureStep = ScheduleWakeupAcceptanceEvidence.PhaseStep.CREATE_RETIRE_WAIT_SAVE
                     save(saved.put("stage", "waiting"))
+                    failureStep = ScheduleWakeupAcceptanceEvidence.PhaseStep.CREATE_RETIRE_RECEIPT
                     result.put("sessionId", sessionId).put("dueAtMs", due).put("armedAtMs", armed.getLong("armedAtMs"))
                         .put("oldAgentPid", originalPid).put("oldAgentRetired", true).put("bindingReleasedBeforeKill", true)
                         .put("recordSha256", AgentServiceTaskEvidence.hash(file.readBytes()))
@@ -302,7 +335,7 @@ class ScheduleWakeupAcceptanceInstrumentation : Instrumentation() {
             demand(!cancelled.get(), "CANCELLED")
             success = true
         } catch (error: Throwable) {
-            result.put("failureCode", if (error is AgentServiceTaskEvidence.Rejected) error.code else "PHASE_FAILED")
+            result.put("failureCode", ScheduleWakeupAcceptanceEvidence.failureCode(error, failureStep))
                 .put("failureType", error.javaClass.simpleName.take(80))
         } finally {
             finishing = true

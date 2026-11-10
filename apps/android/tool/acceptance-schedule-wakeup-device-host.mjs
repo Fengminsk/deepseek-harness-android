@@ -50,8 +50,8 @@ for (const [name, source] of Object.entries(annotations)) {
 }
 execFileSync('javac', ['--release', '17', '-encoding', 'UTF-8', '-d', output, ...java],
   { stdio: 'inherit', windowsHide: true, timeout: 60000 })
-const sources = ['AgentServiceTaskEvidence', 'AgentServiceProgrammaticEvidence',
-  'ScheduleWakeupAcceptanceEvidence', 'ScheduleWakeupAcceptanceInstrumentation']
+const sources = ['AgentServiceTaskEvidence', 'AgentServiceProgrammaticEvidence', 'AgentServiceChildLinuxEvidence',
+  'AgentServiceProgrammaticDiagnostic', 'ScheduleWakeupAcceptanceEvidence', 'ScheduleWakeupAcceptanceInstrumentation']
   .map(name => join(root, `apps/android/android/app/src/androidTest/kotlin/com/minnnng/dsh_android/${name}.kt`))
 execFileSync('java', ['-cp', compiler, 'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler',
   '-no-stdlib', '-no-reflect', '-jvm-target', '17', '-classpath', [output, compiler, join(sdk, 'platforms/android-36/android.jar')].join(delimiter), '-d', output,
