@@ -9,6 +9,7 @@ import ToolRuntime from '@deepseek-ai/dsh-tools'
 import SessionProjections from '@deepseek-ai/dsh-session-projection'
 import SandboxPolicy from '@deepseek-ai/dsh-sandbox-policy'
 import AttachmentStore from '@deepseek-ai/dsh-attachment-local'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import AndroidFileSystem from '../runtime/android-filesystem.mjs'
@@ -36,6 +37,7 @@ let injected = false
 try {
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(ToolRuntime)
+  await ctx.plugin(NativeToolExecutor)
   await ctx.plugin(SessionProjections)
   await ctx.plugin(SandboxPolicy, { mode: 'workspace-write', workspaceRoot: workspace })
   await ctx.plugin(AndroidFileSystem, { cwd: workspace })
@@ -72,10 +74,12 @@ try {
     return value
   }
   syncBuiltinESMExports()
-  const result = await ctx.tools.execute({ name: 'android_attachments', callId: 'publication-fixture',
-    arguments: { action: 'materialize', attachmentId: ref.attachmentId, name: ref.name },
+  const batch = await ctx.tools.execute({
+    calls: [{ type: 'tool-call', id: 'publication-fixture', name: 'android_attachments',
+      arguments: JSON.stringify({ action: 'materialize', attachmentId: ref.attachmentId, name: ref.name }) }],
     agent, signal: controller.signal })
-  const receipts = (result.additionalContexts ?? []).filter(value => value.source.kind === 'file-mutation-receipt')
+  const result = batch.results[0].result
+  const receipts = (result.additionalContexts ?? batch.additionalContexts ?? []).filter(value => value.source.kind === 'file-mutation-receipt')
     .map(value => JSON.parse(value.content[0].text))
   const [directory] = await readdir(workspace)
   const publishedPath = receipts[0]?.file_path ?? (directory && join(workspace, directory, ref.name))
