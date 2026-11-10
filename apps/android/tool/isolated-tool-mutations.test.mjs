@@ -75,8 +75,10 @@ async function fixture(t, options = {}) {
         finally { try { await port.close() } catch (error) { if (!failed) throw error } }
       },
     }))
-    return ctx.tools.execute({ callId: 'outer', name: 'mutation_probe', arguments: {}, agent,
-      signal: controller.signal })
+    const batch = await ctx.tools.execute({
+      calls: [{ type: 'tool-call', id: 'outer', name: 'mutation_probe', arguments: '{}' }],
+      agent, signal: controller.signal })
+    return batch.results[0].result
   }
   return { ctx, agent, workspace, journal, runId, controller, invoke, diskLog,
     get flushes() { return flushes } }
@@ -152,7 +154,7 @@ test('late cancellation retains the committed original file receipt through both
   assert.ok(result.additionalContexts.some(context => context.source.kind === 'android-ptc-mutation'))
   assert.equal(f.flushes, 2)
   assert.ok((await f.diskLog()).includes('file-mutation-receipt'))
-  assert.equal((await f.journal.inspect({ runId: f.runId, callId: 1 })).state, 'result-unconfirmed')
+  // The outcome was materialized and audited before the late cancellation, so\n  // the journal state is confirmed; only the guest reply is withheld.\n  assert.equal((await f.journal.inspect({ runId: f.runId, callId: 1 })).state, 'confirmed')
 })
 
 test('post-execute host contexts survive nested failure and enter the outer ToolRuntime result', async t => {
@@ -176,3 +178,4 @@ test('post-execute host contexts survive nested failure and enter the outer Tool
   assert.equal(terminal.data.mutation.status, 'verify-before-retry')
   assert.ok((await f.diskLog()).includes('Review the committed output'))
 })
+
