@@ -1055,36 +1055,6 @@
       "capability": "models-account"
     },
     {
-      "key": "webUi/ui-deepseek-model-label-1017",
-      "plugin": "@deepseek-ai/dsh-client-ui-deepseek-model-label-1017",
-      "sourceDigest": "645e9575a941f7786ad92bd42158ce2586e1e16a99d3d407bf9d2d17d4f4efd2",
-      "sources": [
-        "packages/bundle/web-app/cordis.patch.yml",
-        "packages/client/ui-deepseek-model-label-1017/README.md"
-      ],
-      "status": "partial",
-      "android": [
-        "apps/android/lib/main.dart",
-        "apps/android/lib/session_models.dart",
-        "apps/android/lib/models_label.dart"
-      ],
-      "evidence": {
-        "core": "unverified",
-        "ui": "partial",
-        "behavior": "partial",
-        "device": "unverified"
-      },
-      "note": "Native Session and home model labels use the original exact provider, model ID and catalog-name predicate for the presentation-only 1017 badge. The current Loader inventory must confirm the plugin is enabled and active; absent, failed and unconfirmed states omit the badge. Host and widget tests cover the projection; device presentation remains unverified.",
-      "evidenceRefs": {
-        "behavior": [
-          "apps/android/test/models_label_test.dart",
-          "apps/android/test/session_models_test.dart",
-          "apps/android/test/session_model_projection_test.dart"
-        ]
-      },
-      "capability": "models-account"
-    },
-    {
       "key": "webUi/ui-permission",
       "plugin": "@deepseek-ai/dsh-client-ui-permission-presets",
       "sourceDigest": "9f9a3b5e912eb5a2a7b6dcb56d78fb29d13bead31c78d7aeb8d3962cea99f30d",
@@ -1448,7 +1418,7 @@
     {
       "key": "standardPreset/tool-fs",
       "plugin": "@deepseek-ai/dsh-tool-fs",
-      "sourceDigest": "336f2d92bf19b910c7f0bac6a84ed0f543789f02cc2f04b8545418456e5fbdb0",
+      "sourceDigest": "9871ee7652720b1e393f736d85125be30f402c62c5d56da547e8ca7794e2aef3",
       "sources": [
         "packages/bundle/web-app/presets/standard.patch.yml"
       ],
@@ -1713,7 +1683,7 @@
     {
       "key": "standardPreset/delegation",
       "plugin": "cordis:group",
-      "sourceDigest": "b7913098ffc6c39b8875fe454036b0d148468947ffe12e2403509f17e7bbe208",
+      "sourceDigest": "3ece7c9100aa6bafa42fdaf178a6506c99c94549dd94cfdb55ee9147d95fae4d",
       "sources": [
         "packages/bundle/web-app/presets/standard.patch.yml"
       ],
@@ -1839,7 +1809,7 @@
     {
       "key": "standardPreset/tool-plugin-manager",
       "plugin": "@deepseek-ai/dsh-plugin-manager/tools",
-      "sourceDigest": "04b438eb4485aaa07e12cd232996d0215b6e26fdd17d8f590fe1bf488314119b",
+      "sourceDigest": "101950f70e1889951d0af8fc4d1387e14985b53d1636e9a1e8d74007c7b5052e",
       "sources": [
         "packages/bundle/web-app/presets/standard.patch.yml"
       ],
@@ -1880,26 +1850,6 @@
       "key": "standardDelegation/tool-subagent-control",
       "plugin": "@deepseek-ai/dsh-tool-subagent-control",
       "sourceDigest": "8832739314a82ed24959d41a5d2f12f8f7e9428263196a4d124d73686ddad7d0",
-      "sources": [
-        "packages/bundle/web-app/presets/standard.patch.yml"
-      ],
-      "status": "partial",
-      "android": [
-        "apps/android/tool/stage-preset.mjs"
-      ],
-      "evidence": {
-        "core": "partial",
-        "ui": "unverified",
-        "behavior": "unverified",
-        "device": "unverified"
-      },
-      "note": "Original local delegation declaration is copied; provider-specific control/history and device behavior require separate acceptance.",
-      "capability": "delegation"
-    },
-    {
-      "key": "standardDelegation/tool-subagent-list-agents",
-      "plugin": "@deepseek-ai/dsh-tool-subagent-control/list-agents",
-      "sourceDigest": "9f033a8bec397c608a6abe1b2d3bc7b46df579cc65911ca41c3b05eed1964e0f",
       "sources": [
         "packages/bundle/web-app/presets/standard.patch.yml"
       ],
@@ -5206,7 +5156,7 @@
     {
       "key": "optionalBundle/base/insert/fs-observation-policy",
       "plugin": "@deepseek-ai/dsh-fs-observation-policy",
-      "sourceDigest": "98e574bad8f9ee1fe0a544ca0f72573826dc3b6aa303fc521bd468eb01f53319",
+      "sourceDigest": "7ee44934e5c4641ae4cbe025eec482b6b078476896d6589b3537b6c47a9d1a16",
       "sources": [
         "packages/bundle/base/cordis.patch.yml",
         "packages/bundle/web-app/cordis.patch.yml",
@@ -5242,7 +5192,7 @@
     {
       "key": "optionalBundle/base/insert/tool-fs",
       "plugin": "@deepseek-ai/dsh-tool-fs",
-      "sourceDigest": "336f2d92bf19b910c7f0bac6a84ed0f543789f02cc2f04b8545418456e5fbdb0",
+      "sourceDigest": "9871ee7652720b1e393f736d85125be30f402c62c5d56da547e8ca7794e2aef3",
       "sources": [
         "packages/bundle/base/cordis.patch.yml",
         "packages/bundle/web-app/cordis.patch.yml",
@@ -5900,40 +5850,6 @@
       }
     },
     {
-      "key": "optionalBundle/base/insert/tool-subagent-list-agents",
-      "plugin": "@deepseek-ai/dsh-tool-subagent-control/list-agents",
-      "sourceDigest": "9f033a8bec397c608a6abe1b2d3bc7b46df579cc65911ca41c3b05eed1964e0f",
-      "sources": [
-        "packages/bundle/base/cordis.patch.yml",
-        "packages/bundle/web-app/cordis.patch.yml",
-        "apps/android/runtime/cordis.patch.yml"
-      ],
-      "status": "partial",
-      "android": [
-        "apps/android/runtime/bootstrap.mjs",
-        "apps/android/runtime/host-guard.mjs",
-        "apps/android/runtime/cordis.patch.yml",
-        "apps/android/tool/stage-preset.mjs",
-        "apps/android/runtime/subagents.mjs",
-        "apps/android/lib/subagents.dart"
-      ],
-      "evidence": {
-        "core": "unverified",
-        "ui": "unverified",
-        "behavior": "unverified",
-        "device": "unverified"
-      },
-      "note": "Web disables this host tool-subagent-list-agents row; stage-preset composes the original tool or policy under the Android Agent preset. Original source is reused, but native behavior and device equivalence are not certified.",
-      "capability": "delegation",
-      "assessment": {
-        "composition": "preset",
-        "entryPoint": "model-tool",
-        "relatedDeclarations": [
-          "standardDelegation/tool-subagent-list-agents"
-        ]
-      }
-    },
-    {
       "key": "optionalBundle/base/insert/tool-subagent",
       "plugin": "@deepseek-ai/dsh-tool-subagent",
       "sourceDigest": "f057e5eebfdff9e078d67cea6f77e26d5ee02a2259869859dc27b3eba06dec51",
@@ -6452,7 +6368,7 @@
     {
       "key": "optionalBundle/base/insert/web",
       "plugin": "@deepseek-ai/dsh-web",
-      "sourceDigest": "7b7494e975843832f196c3e03131378a63978aefaa9c17708fe6ea39247d3164",
+      "sourceDigest": "bffac4207bead18b5db1b055c5777f2fa8f87068e802381bb45ce419ce0edf85",
       "sources": [
         "packages/bundle/base/cordis.patch.yml",
         "packages/bundle/web-app/cordis.patch.yml",
@@ -6520,7 +6436,7 @@
     {
       "key": "optionalBundle/base/insert/web-deepseek-api",
       "plugin": "@deepseek-ai/dsh-web-deepseek-api",
-      "sourceDigest": "8e255fc295c1353298c06e2b5da09f924ff37f659bf4be43ac9728f876dfab63",
+      "sourceDigest": "fb150ae61a87130bd281c72436dea242f4d5d8faa9e8532f851a490e48c3a4e6",
       "sources": [
         "packages/bundle/base/cordis.patch.yml",
         "packages/bundle/web-app/cordis.patch.yml",
@@ -6890,34 +6806,6 @@
         "entryPoint": "alternate-entrypoint",
         "relatedDeclarations": [
           "optionalBundle/base/insert/system-prompt"
-        ]
-      },
-      "notApplicableReason": "Android starts the native carrier over base and web-app, not headless; this declaration's alternative launch configuration is outside the native entrypoint contract."
-    },
-    {
-      "key": "optionalBundle/headless/override/tools",
-      "plugin": null,
-      "sourceDigest": "44c829b47b1efac7b3085ef0e8282945063192a217e074ffedc7b7ed080638f7",
-      "sources": [
-        "packages/bundle/headless/cordis.patch.yml",
-        "packages/bundle/web-app/cordis.patch.yml",
-        "apps/android/runtime/cordis.patch.yml"
-      ],
-      "status": "not-applicable",
-      "android": [],
-      "evidence": {
-        "core": "unverified",
-        "ui": "unverified",
-        "behavior": "unverified",
-        "device": "unverified"
-      },
-      "note": "The headless declaration is not in ANDROID_BUNDLES. It configures the tools service for that alternative application; its exact launch/configuration contract is not an Android native entrypoint. Related declarations track any shared Android capability independently.",
-      "capability": "conversation",
-      "assessment": {
-        "composition": "alternate-profile",
-        "entryPoint": "alternate-entrypoint",
-        "relatedDeclarations": [
-          "optionalBundle/base/insert/tools"
         ]
       },
       "notApplicableReason": "Android starts the native carrier over base and web-app, not headless; this declaration's alternative launch configuration is outside the native entrypoint contract."
@@ -8373,6 +8261,567 @@
         ]
       },
       "notApplicableReason": "Android starts the native carrier over base and web-app, not acp-app; this declaration's alternative launch configuration is outside the native entrypoint contract."
+    },
+    {
+      "key": "webUi/ui-agent-team",
+      "plugin": "@deepseek-ai/dsh-client-ui-agent-team",
+      "sourceDigest": "bcc1c736caaf19c230161db723a61d1cfb939a510e0d613cdf6c71f8d9f8c8b0",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-agent-team/README.md"
+      ],
+      "status": "adapted",
+      "android": [
+        "apps/android/lib/team_board.dart",
+        "apps/android/lib/subagents.dart",
+        "apps/android/test/team_board_test.dart"
+      ],
+      "evidence": {
+        "core": "partial",
+        "ui": "partial",
+        "behavior": "partial",
+        "device": "unverified"
+      },
+      "note": "The subagent page reads the inherited agentTeam projection and renders per-status counts, owner, blocked state and write-scope warnings. Its switch calls the inherited agentTeams/setEnabled and confirms before hiding recorded tasks; teammate conversations stay in the subagent catalog. Widget tests cover projection parsing, the switch RPC and failure states; device behavior is unverified.",
+      "capability": "delegation"
+    },
+    {
+      "key": "webService/mcp-manager",
+      "plugin": "@deepseek-ai/dsh-mcp-manager",
+      "sourceDigest": "e583b4f91a8c54dc44c594fd2641fa712b89333b4df79710c3e53849a2dc5c8b",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/mcp/mcp-manager/README.md"
+      ],
+      "status": "adapted",
+      "android": [
+        "apps/android/lib/mcp_servers.dart",
+        "apps/android/lib/settings.dart",
+        "apps/android/test/mcp_servers_test.dart"
+      ],
+      "evidence": {
+        "core": "partial",
+        "ui": "partial",
+        "behavior": "partial",
+        "device": "unverified"
+      },
+      "note": "The manager row is inherited from the Web bundle. The App streams mcpManager/watch for status and tool counts, restarts or probes one server through the original remotes, and links to the owning settings form for server edits; configuration writing stays with that form. Widget tests cover stream decoding, both actions and failure states.",
+      "capability": "plugins-settings"
+    },
+    {
+      "key": "webService/message-quotes",
+      "plugin": "@deepseek-ai/dsh-message-quotes",
+      "sourceDigest": "6a089b97dcacba693390afd277907785239d67816164708185be47f12a497316",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/session/message-quotes/README.md"
+      ],
+      "status": "adapted",
+      "android": [
+        "apps/android/lib/chat_quotes.dart",
+        "apps/android/lib/chat_message_actions.dart",
+        "apps/android/lib/main.dart",
+        "apps/android/test/chat_quotes_test.dart"
+      ],
+      "evidence": {
+        "core": "not-applicable",
+        "ui": "partial",
+        "behavior": "partial",
+        "device": "unverified"
+      },
+      "note": "A long-press message action inserts the authored text as a Markdown blockquote with one prefix per line and keeps the composer draft and caret. Assistant blockquotes use the shared Markdown style. The Web floating selection action and user-text quote chips are not implemented.",
+      "capability": "conversation",
+      "notApplicable": {
+        "core": "The Web row is client-only; Android quoting edits composer text and registers no host service."
+      }
+    },
+    {
+      "key": "webUi/ui-context-menu",
+      "plugin": "@deepseek-ai/dsh-client-ui-context-menu",
+      "sourceDigest": "b6881044845c1eb96d64b537217e8facc16eb50cdeb11d8d9cb49fde11eac91f",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-context-menu/README.md"
+      ],
+      "status": "adapted",
+      "android": [
+        "apps/android/lib/chat_message_actions.dart",
+        "apps/android/lib/chat_sidebar.dart",
+        "apps/android/lib/workspace_files.dart",
+        "apps/android/lib/file_browser_chrome.dart",
+        "apps/android/lib/chat_messages.dart"
+      ],
+      "evidence": {
+        "core": "not-applicable",
+        "ui": "partial",
+        "behavior": "partial",
+        "device": "unverified"
+      },
+      "note": "Long-press menus carry the session, file, directory, link and image actions on their owning surfaces. The App exposes no client contribution registry because its pages are Flutter widgets rather than Web slots, so third-party menu contributions have no Android seat.",
+      "capability": "presentation",
+      "notApplicable": {
+        "core": "The Web row is client-only; Android menus are native widgets with no host counterpart."
+      }
+    },
+    {
+      "key": "webUi/ui-file-drag",
+      "plugin": "@deepseek-ai/dsh-client-ui-file-drag",
+      "sourceDigest": "029684e63386792071869984e648f9bc71b5daa60b4d19a32d4b18388acb4c62",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-file-drag/README.md"
+      ],
+      "status": "not-applicable",
+      "notApplicableReason": "The touch platform has no pointer-drag transfer between applications; attachment intake uses the system document picker and outbound sharing uses the existing share actions.",
+      "android": [
+        "apps/android/lib/attachments.dart",
+        "apps/android/lib/chat_turn_extras.dart"
+      ],
+      "evidence": {
+        "core": "not-applicable",
+        "ui": "not-applicable",
+        "behavior": "not-applicable",
+        "device": "not-applicable"
+      },
+      "note": "No Android drag implementation exists, and the App keeps the picker and share entry points instead.",
+      "capability": "files",
+      "notApplicable": {
+        "core": "The touch platform has no cross-application drag transfer.",
+        "ui": "There is no drag surface; attachment intake uses the system document picker and outbound sharing uses the share actions.",
+        "behavior": "No drag behavior exists to verify on Android.",
+        "device": "No Android drag behavior is implemented."
+      }
+    },
+    {
+      "key": "webService/deliverable-file-references",
+      "plugin": "@deepseek-ai/dsh-deliverable-file-references",
+      "sourceDigest": "db2f1ebc28016b886e1f1f7cabec408679340815b8ef6c55267296525531ae3a",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/deliverables/deliverable-file-references/README.md"
+      ],
+      "status": "adapted",
+      "android": [
+        "apps/android/lib/chat_deliverables.dart",
+        "apps/android/lib/chat_messages.dart"
+      ],
+      "evidence": {
+        "core": "partial",
+        "ui": "partial",
+        "behavior": "partial",
+        "device": "unverified"
+      },
+      "note": "The inherited row keeps the file-link and delivery paragraph in the Android profile because the Android persona does not suppress other sections. Links, inline images and present cards render through the existing reader and deliverable surfaces; no Android-specific code was added.",
+      "capability": "conversation"
+    },
+    {
+      "key": "webService/entry-customization",
+      "plugin": "@deepseek-ai/dsh-client-ui-entry-customization",
+      "sourceDigest": "67857c04f7fdf666de94c1e095435aa8b78f6638c077417488d8ea88b18690c8",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-entry-customization/README.md"
+      ],
+      "status": "partial",
+      "android": [
+        "apps/android/lib/plugins.dart",
+        "apps/android/lib/settings.dart"
+      ],
+      "evidence": {
+        "core": "not-applicable",
+        "ui": "partial",
+        "behavior": "partial",
+        "device": "unverified"
+      },
+      "note": "Plugin browsing and management already live in the plugin manager page. The Web navigation-region menu and Creator draft are not offered because the Android profile does not compose the cordis agent preset.",
+      "capability": "plugins-settings",
+      "notApplicable": {
+        "core": "The plugin navigation service is a Web client service with no Android host counterpart."
+      }
+    },
+    {
+      "key": "webUi/ui-file-actions",
+      "plugin": "@deepseek-ai/dsh-client-ui-file-actions",
+      "sourceDigest": "4734baebcc1a88b0a7c4981c9db1e92eed9dbc9cbf12c791d35bac41db16e138",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml",
+        "packages/client/ui-file-actions/README.md"
+      ],
+      "status": "not-migrated",
+      "android": [
+        "apps/android/lib/workspace_files.dart",
+        "apps/android/lib/image_preview.dart",
+        "apps/android/lib/external_file_action.dart"
+      ],
+      "evidence": {
+        "core": "not-applicable",
+        "ui": "partial",
+        "behavior": "partial",
+        "device": "unverified"
+      },
+      "note": "Saving or copying a workspace or session file from its menu is not implemented. Existing entries open a file in another App, save attachment copies and export sessions; copy-image needs a native clipboard path that keeps the clipboard URI readable.",
+      "capability": "files",
+      "notApplicable": {
+        "core": "The Web row is client-only; Android file actions would call the existing workspace-files remotes."
+      }
+    },
+    {
+      "key": "optionalBundle/base/insert/agent-team",
+      "plugin": "@deepseek-ai/dsh-agent-team",
+      "sourceDigest": "01621f363ee198231b1dc4d499f136131f64e46826cd7656cd3e87ce7f8b224a",
+      "sources": [
+        "packages/bundle/base/cordis.patch.yml"
+      ],
+      "status": "adapted",
+      "assessment": {
+        "composition": "inherited",
+        "entryPoint": "shared-service",
+        "relatedDeclarations": [
+          "webUi/ui-agent-team"
+        ]
+      },
+      "android": [
+        "apps/android/lib/team_board.dart"
+      ],
+      "evidence": {
+        "core": "partial",
+        "ui": "partial",
+        "behavior": "partial",
+        "device": "unverified"
+      },
+      "note": "The base row is inherited unchanged; the projection it registers feeds the native Team board.",
+      "capability": "delegation"
+    },
+    {
+      "key": "optionalBundle/base/insert/tool-agent-team",
+      "plugin": "@deepseek-ai/dsh-tool-agent-team",
+      "sourceDigest": "9691b70e46761f1904b014e07511fba718e20b32061e5dc3db78b82a466a9c06",
+      "sources": [
+        "packages/bundle/base/cordis.patch.yml"
+      ],
+      "status": "adapted",
+      "assessment": {
+        "composition": "inherited",
+        "entryPoint": "model-tool",
+        "relatedDeclarations": [
+          "webUi/ui-agent-team"
+        ]
+      },
+      "android": [
+        "apps/android/runtime/host-guard.mjs"
+      ],
+      "evidence": {
+        "core": "partial",
+        "ui": "partial",
+        "behavior": "partial",
+        "device": "unverified"
+      },
+      "note": "The base row is inherited unchanged; team tools reach the model through the shared tool registry like other native tools.",
+      "capability": "delegation"
+    },
+    {
+      "key": "optionalBundle/sdk-app/insert/deliverable-file-references",
+      "plugin": "@deepseek-ai/dsh-deliverable-file-references",
+      "sourceDigest": "db2f1ebc28016b886e1f1f7cabec408679340815b8ef6c55267296525531ae3a",
+      "sources": [
+        "packages/bundle/sdk-app/cordis.patch.yml"
+      ],
+      "status": "not-applicable",
+      "notApplicableReason": "The SDK application profile is not an Android composition; the same prompt section reaches Android through the Web bundle instead.",
+      "assessment": {
+        "composition": "alternate-profile",
+        "entryPoint": "none",
+        "relatedDeclarations": [
+          "webService/deliverable-file-references"
+        ]
+      },
+      "android": [
+        "apps/android/lib/chat_deliverables.dart"
+      ],
+      "evidence": {
+        "core": "not-applicable",
+        "ui": "not-applicable",
+        "behavior": "not-applicable",
+        "device": "not-applicable"
+      },
+      "notApplicable": {
+        "core": "The SDK application profile is not composed on Android.",
+        "ui": "The SDK application profile is not composed on Android.",
+        "behavior": "The SDK application profile is not composed on Android.",
+        "device": "The SDK application profile is not composed on Android."
+      },
+      "note": "The SDK app composition is excluded from the Android bundle set; the Web bundle supplies the same prompt row.",
+      "capability": "conversation"
+    },
+    {
+      "key": "optionalBundle/base/insert/tool-executor-native",
+      "plugin": "@deepseek-ai/dsh-tool-executor-native",
+      "sourceDigest": "edec622186a409a64059a2112a20c47c3dad0f5331778a73d77cfc27790af942",
+      "sources": [
+        "packages/bundle/base/cordis.patch.yml"
+      ],
+      "status": "unassessed",
+      "android": [],
+      "note": "Declared by the 0.2.2 bundles. Android composes the base and Web bundles, so this declaration has no reviewed Android mapping yet.",
+      "capability": "programmatic",
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      }
+    },
+    {
+      "key": "optionalBundle/base/insert/tool-executor-ptc",
+      "plugin": "@deepseek-ai/dsh-tool-executor-ptc",
+      "sourceDigest": "b9ba9cb3dfd59170952a7b9895489565c749b7e47bd3123e25605310ee815275",
+      "sources": [
+        "packages/bundle/base/cordis.patch.yml"
+      ],
+      "status": "unassessed",
+      "android": [],
+      "note": "Declared by the 0.2.2 bundles. Android composes the base and Web bundles, so this declaration has no reviewed Android mapping yet.",
+      "capability": "programmatic",
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      }
+    },
+    {
+      "key": "optionalBundle/headless/override/sandbox-policy",
+      "plugin": null,
+      "sourceDigest": "3a2bbaa7d152029e1a6d966fa893131904f9ce622bf329b7b0941be8d070edd6",
+      "sources": [
+        "packages/bundle/headless/cordis.patch.yml"
+      ],
+      "status": "unassessed",
+      "android": [],
+      "note": "Declared by the 0.2.2 bundles. Android composes the base and Web bundles, so this declaration has no reviewed Android mapping yet.",
+      "capability": "alternate-entrypoints",
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      }
+    },
+    {
+      "key": "optionalBundle/sdk-minimal/insert/tool-executor-native",
+      "plugin": "@deepseek-ai/dsh-tool-executor-native",
+      "sourceDigest": "edec622186a409a64059a2112a20c47c3dad0f5331778a73d77cfc27790af942",
+      "sources": [
+        "packages/bundle/sdk-minimal/cordis.patch.yml"
+      ],
+      "status": "unassessed",
+      "android": [],
+      "note": "Declared by the 0.2.2 bundles. Android composes the base and Web bundles, so this declaration has no reviewed Android mapping yet.",
+      "capability": "programmatic",
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      }
+    },
+    {
+      "key": "optionalBundle/sdk-minimal/insert/session-checkpoint-policy",
+      "plugin": "@deepseek-ai/dsh-session-checkpoint-policy",
+      "sourceDigest": "fc7236f6f2ea356451d50067eaaa5c4c529fa9788dfe2b539d28057073024a19",
+      "sources": [
+        "packages/bundle/sdk-minimal/cordis.patch.yml"
+      ],
+      "status": "unassessed",
+      "android": [],
+      "note": "Declared by the 0.2.2 bundles. Android composes the base and Web bundles, so this declaration has no reviewed Android mapping yet.",
+      "capability": "history",
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      }
+    },
+    {
+      "key": "optionalBundle/sdk-app/override/tool-plugin-manager",
+      "plugin": null,
+      "sourceDigest": "8462199412b12c4036dfd31051dff4edf58aaa5ba9a5063362757edd23666df3",
+      "sources": [
+        "packages/bundle/sdk-app/cordis.patch.yml"
+      ],
+      "status": "unassessed",
+      "android": [],
+      "note": "Declared by the 0.2.2 bundles. Android composes the base and Web bundles, so this declaration has no reviewed Android mapping yet.",
+      "capability": "alternate-entrypoints",
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      }
+    },
+    {
+      "key": "optionalBundle/sdk-app/insert/connection",
+      "plugin": "@deepseek-ai/dsh-client-connection",
+      "sourceDigest": "d207f36485e94aaaef8faacac882b29ebecd928cb16c92f2c93889d0c67a83eb",
+      "sources": [
+        "packages/bundle/sdk-app/cordis.patch.yml"
+      ],
+      "status": "unassessed",
+      "android": [],
+      "note": "Declared by the 0.2.2 bundles. Android composes the base and Web bundles, so this declaration has no reviewed Android mapping yet.",
+      "capability": "alternate-entrypoints",
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      }
+    },
+    {
+      "key": "optionalBundle/sdk-app/insert/file-upload",
+      "plugin": "@deepseek-ai/dsh-client-file-upload",
+      "sourceDigest": "c0d54952c19dff253782fccb950799912b49a4b527c98991fad8eec06fd12042",
+      "sources": [
+        "packages/bundle/sdk-app/cordis.patch.yml"
+      ],
+      "status": "unassessed",
+      "android": [],
+      "note": "Declared by the 0.2.2 bundles. Android composes the base and Web bundles, so this declaration has no reviewed Android mapping yet.",
+      "capability": "alternate-entrypoints",
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      }
+    },
+    {
+      "key": "optionalBundle/sdk-app/insert/workspace",
+      "plugin": "@deepseek-ai/dsh-workspace",
+      "sourceDigest": "90ad489d10311c75f4889e0010c8636296eacb485595d7c52ebe4c139d2f1ed3",
+      "sources": [
+        "packages/bundle/sdk-app/cordis.patch.yml"
+      ],
+      "status": "unassessed",
+      "android": [],
+      "note": "Declared by the 0.2.2 bundles. Android composes the base and Web bundles, so this declaration has no reviewed Android mapping yet.",
+      "capability": "alternate-entrypoints",
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      }
+    },
+    {
+      "key": "optionalBundle/sdk-app/insert/schedule",
+      "plugin": "@deepseek-ai/dsh-schedule",
+      "sourceDigest": "1e88874e339d9c334ff50239623c451ae2dc291430be213b521c00c1eaa6e51f",
+      "sources": [
+        "packages/bundle/sdk-app/cordis.patch.yml"
+      ],
+      "status": "unassessed",
+      "android": [],
+      "note": "Declared by the 0.2.2 bundles. Android composes the base and Web bundles, so this declaration has no reviewed Android mapping yet.",
+      "capability": "alternate-entrypoints",
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      }
+    },
+    {
+      "key": "optionalBundle/sdk-app/insert/time-context",
+      "plugin": "@deepseek-ai/dsh-time-context",
+      "sourceDigest": "8408864e4e57c664825768af5b44652b1ea68ef446dc05036d1a1c127839a252",
+      "sources": [
+        "packages/bundle/sdk-app/cordis.patch.yml"
+      ],
+      "status": "unassessed",
+      "android": [],
+      "note": "Declared by the 0.2.2 bundles. Android composes the base and Web bundles, so this declaration has no reviewed Android mapping yet.",
+      "capability": "alternate-entrypoints",
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      }
+    },
+    {
+      "key": "optionalBundle/sdk-app/insert/tool-schedule",
+      "plugin": "@deepseek-ai/dsh-tool-schedule",
+      "sourceDigest": "3acc15da067517a29170212c7931008e4293faaee612df6686e71468ad865791",
+      "sources": [
+        "packages/bundle/sdk-app/cordis.patch.yml"
+      ],
+      "status": "unassessed",
+      "android": [],
+      "note": "Declared by the 0.2.2 bundles. Android composes the base and Web bundles, so this declaration has no reviewed Android mapping yet.",
+      "capability": "alternate-entrypoints",
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      }
+    },
+    {
+      "key": "optionalBundle/sdk-app/insert/tool-ask-user",
+      "plugin": "@deepseek-ai/dsh-tool-ask-user",
+      "sourceDigest": "08ccb0fd2ea2f7c8352f7e3f271e85cfe269b87f6471d927f8dad097dde6645e",
+      "sources": [
+        "packages/bundle/sdk-app/cordis.patch.yml"
+      ],
+      "status": "unassessed",
+      "android": [],
+      "note": "Declared by the 0.2.2 bundles. Android composes the base and Web bundles, so this declaration has no reviewed Android mapping yet.",
+      "capability": "alternate-entrypoints",
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      }
+    },
+    {
+      "key": "optionalBundle/sdk-app/insert/present",
+      "plugin": "@deepseek-ai/dsh-tool-present",
+      "sourceDigest": "39c978db30d4b955aa03a372d10e74a959f6569cbe3481ade96f238d99748590",
+      "sources": [
+        "packages/bundle/sdk-app/cordis.patch.yml"
+      ],
+      "status": "unassessed",
+      "android": [],
+      "note": "Declared by the 0.2.2 bundles. Android composes the base and Web bundles, so this declaration has no reviewed Android mapping yet.",
+      "capability": "alternate-entrypoints",
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      }
+    },
+    {
+      "key": "optionalBundle/sdk-app/insert/file-reference-local",
+      "plugin": "@deepseek-ai/dsh-file-reference-local",
+      "sourceDigest": "ca2be3651259b18dcf0539b314ff5e010e1ffee4df4955da90af8c055cfcfa80",
+      "sources": [
+        "packages/bundle/sdk-app/cordis.patch.yml"
+      ],
+      "status": "unassessed",
+      "android": [],
+      "note": "Declared by the 0.2.2 bundles. Android composes the base and Web bundles, so this declaration has no reviewed Android mapping yet.",
+      "capability": "alternate-entrypoints",
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      }
     }
   ],
   "sourceDigestPolicy": "SHA256 of the corresponding inert YAML row encoded as sorted object keys, preserved array order and typed scalar values. Comments and YAML key order do not affect the digest; config, disabled expressions and nested declarations do.",
@@ -8659,11 +9108,11 @@
     },
     {
       "path": "apps/android/tool/stage-preset.mjs",
-      "sha256": "b6be3937fea0269fdb8134cb9ca27932115334447c8075372d7d44818d6974b1"
+      "sha256": "2952d220cbe917ed59c97f67cf7983ddd3510cd9c98798f81291ced778c62878"
     },
     {
       "path": "packages/bundle/web-app/cordis.patch.yml",
-      "sha256": "3e1f923309612ed8551141127409d662e78758e2d0d125218a3f70514417e472"
+      "sha256": "746394470e99f57ecb22a95f445d7cdaae1297ce17b8e4799a6c573e93677927"
     }
   ]
 }

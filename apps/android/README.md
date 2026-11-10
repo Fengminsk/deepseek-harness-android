@@ -229,6 +229,16 @@ Pending management receipts and drafts survive page navigation within the App pr
 
 Shell resolves its session's actual working directory before requesting approval, then uses that same directory for both notification details and execution. A later directory selection cannot redirect an already approved invocation. The background-settings page distinguishes Android battery APIs, the temporary CPU wake lock and manufacturer-specific background policy. It cannot read or automatically change the manufacturer's policy and provides a manual settings path.
 
+Long-pressing a visible message offers **Quote**: the message's authored text is inserted into the composer as a Markdown blockquote with one `> ` prefix per line, separated from existing text by one newline and followed by one newline for the caret. The composer keeps the user's draft and caret position; assistant replies render blockquotes with the shared Markdown style. Quoting sends ordinary message text and records no additional event.
+
+The subagent page opens with a read-only **Team** section read from the original `agentTeam` projection: per-status counts, subject, owner, blocked state and recorded write-scope warnings. Its switch calls the original `agentTeams/setEnabled`; disabling a board that already records tasks asks for confirmation and keeps those tasks in the session log. Member listing and teammate conversations remain in the ordinary subagent catalog.
+
+**MCP servers** lists every managed server from the original `mcpManager/watch` stream, including disabled and cleanup-retained entries, with the manager's connection state and tool count. Restart and probe call the original remote methods; a probe reads the tool list without keeping a connection and reports its failure stage. The page links to the owning settings form for adding or removing `servers`, and editing keeps that form's revision checks.
+
+Long-press menus already carry the session, file, directory, link and image actions the Web context menu contributes. The App registers no third-party client menu contributions because its pages are Flutter widgets rather than Web slots. Cross-application file dragging is not offered; attachment intake uses the system document picker, and outbound sharing uses the existing share actions.
+
+"Browse plugins" is served by the plugin manager page rather than a navigation-region menu, and the Creator draft is not offered because the Android profile does not compose the `cordis` agent preset.
+
 <a id="interface"></a>
 ## Interface and themes
 
