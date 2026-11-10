@@ -214,6 +214,8 @@ const DISPOSED_INITIATOR_MESSAGE = 'agent initiator scope is disposed'
 interface AgentEntry {
   readonly id: SessionId
   readonly agent: Agent
+  /** Live parent agent whose initiator run created this entry; absent for a runtime root. */
+  readonly owner: Agent | undefined
   readonly carrier: Scoped<Agent>
   announced: boolean
   announcing: boolean
@@ -313,6 +315,17 @@ export class AgentRegistry extends Service {
    */
   currentInitiator(): Agent | undefined {
     this.assertInitiatorsReadable()
+    return this.initiators.getStore()
+  }
+
+  /**
+   * Optional initiator read for ownership capture during registration.
+   * A closing or disposed registry rejects initiator reads, and a registration
+   * then has no runtime owner rather than a stale one.
+   * @returns the inherited Agent, or `undefined` outside an initiator boundary.
+   */
+  private ambientInitiator(): Agent | undefined {
+    if (this.initiatorState !== 'active') return undefined
     return this.initiators.getStore()
   }
 
@@ -466,23 +479,27 @@ export class AgentRegistry extends Service {
    * returned detach closure into its pre-installed composite teardown before
    * calling {@link announce}. Ordinary callers use {@link register}.
    * @param agent - the prepared, unpublished agent.
+   * @param owner - live parent agent for runtime ownership; omitted derives it from
+   *   the ambient initiator, so a top-level creation stays a runtime root.
    * @returns an idempotent closure that removes this exact entry and emits
    *   `agent/disposed` with listener failures contained. When called from a
    *   `agent/created` listener, removal and disposal wait until the serial
    *   creation dispatch settles.
    */
-  enter(agent: Agent): () => void {
+  enter(agent: Agent, owner?: Agent): () => void {
     const id = agent.id
     if (id !== agent.session.id) {
       throw new Error(`agent id "${id}" does not match session id "${agent.session.id}"`)
     }
     const carrier = scopeTarget(agent, agent)
+    const runtimeOwner = owner ?? this.ambientInitiator()
     // This is the authoritative collision boundary. Concurrent create/resume
     // operations may both prepare, but only one exact entry can publish.
     if (this.store.has(id)) throw new Error(`agent "${id}" is already registered`)
     const entry: AgentEntry = {
       id,
       agent,
+      owner: runtimeOwner === agent ? undefined : runtimeOwner,
       carrier,
       announced: false,
       announcing: false,
@@ -590,29 +607,28 @@ export class AgentRegistry extends Service {
   }
 
   /**
-   * Whether a live agent's durable delegation lineage names this owner as its
-   * direct parent. This derives from the recorded session header, not from
-   * mutable registry state, so a resumed child keeps the relation.
-   * It proves lineage only; callers that need authority must also check liveness.
+   * Whether a live agent was registered under this exact owner agent's
+   * initiator run. Runtime ownership is independent of durable session lineage
+   * and stays unambiguous when unrelated providers reuse an id.
    * @param id - the candidate child agent's shared agent/session id.
-   * @param owner - the expected parent agent.
-   * @returns true only while the live child's header names that parent.
+   * @param owner - the expected runtime creator agent.
+   * @returns true only while the exact child entry is live under that owner.
    */
   isOwnedBy(id: SessionId, owner: Agent): boolean {
-    const child = this.store.get(id)?.agent
-    if (child === undefined || child === owner) return false
-    return child.session.header.parentSession === owner.id
+    const entry = this.store.get(id)
+    if (entry === undefined || entry.agent === owner) return false
+    return entry.owner === owner && this.store.get(owner.id)?.agent === owner
   }
 
   /**
-   * All live top-level agents in registration order. A top-level agent has no
-   * recorded delegation parent; durable lineage does not affect the runtime
-   * relation, so a resumed fork may still be a root.
+   * All live top-level agents in registration order. A top-level agent was
+   * registered outside an agent initiator run; durable session lineage does not
+   * affect this runtime relation, so a resumed fork may still be a root.
    * @returns a fresh array; mutating it does not affect the registry.
    */
   roots(): Agent[] {
     return [...this.store.values()]
-      .filter(entry => entry.agent.session.header.parentSession === undefined)
+      .filter(entry => entry.owner === undefined)
       .map(entry => entry.agent)
   }
 

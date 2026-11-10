@@ -534,19 +534,6 @@ export class SessionController extends TypertRemoteService {
   }
 
   /**
-   * Read every recorded event of one Session without activating it.
-   * The Android runtime keeps a whole-history compatibility read for callers
-   * that still page by offset instead of by message-aligned window.
-   * @param sessionId - durable Session identity.
-   * @param signal - read cancellation; omission performs an uncancellable read.
-   * @returns the recorded events in log order.
-   */
-  async inspect(sessionId: SessionId, signal: AbortSignal = new AbortController().signal): Promise<{ events: SessionObservation['events'] }> {
-    return this.historyController.usingObservation({ sessionId, projection: false }, signal,
-      observation => ({ events: observation.events }))
-  }
-
-  /**
    * Read one cold-safe, message-aligned Session history page.
    * @param request - durable address, optional fixed cut, backward cursor, and page budget.
    * @param signal - cancellation for persistence reads.

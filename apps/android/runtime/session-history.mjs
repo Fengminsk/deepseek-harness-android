@@ -3,6 +3,7 @@ import { SessionId } from '@deepseek-ai/dsh-session'
 import { presentSessionEvent } from './live-state.mjs'
 
 const PAGE_SIZE = 200
+const MAX_WHOLE_LOG_PAGES = 200
 const DEFAULT_LEASE_MS = 120_000
 const DEFAULT_RETAINED_BYTES = 128 * 1024 * 1024
 const WINDOW_MESSAGES = 80
@@ -199,14 +200,50 @@ export class AppSessionHistory {
       return { events, ...(events.length === PAGE_SIZE ? { snapshot } : {}) }
     }
 
-    const inspection = await this.controller.inspect(SessionId(sessionId))
+    const events = await this.readWholeLog(sessionId)
     if (this.#closed) throw historyError('SESSION_HISTORY_UNAVAILABLE', 'Session history reader has closed.')
-    const events = inspection.events.slice()
     const visible = page(events, offset)
     // Offset-only reads remain compatible with diagnostic callers. Only an
     // opening page needs a lease; short histories release immediately.
     if (offset !== 0 || visible.length < PAGE_SIZE) return { events: visible }
     return { events: visible, snapshot: this.#retain(sessionId, events) }
+  }
+
+  /**
+   * Read every recorded event at one projection cut through the original
+   * message-aligned page service. Backward pages pin the same `throughSeq`, so
+   * concurrent appends cannot shift the cut between requests.
+   * @param {string} sessionId - durable Session identity.
+   * @returns {Promise<object[]>} the recorded events in log order.
+   */
+  async readWholeLog(sessionId) {
+    const signal = new AbortController().signal
+    const address = { kind: 'session', sessionId: SessionId(sessionId) }
+    const baseline = await this.controller.projections({ sessionId: SessionId(sessionId) }, signal)
+    if (baseline?.kind !== 'sequenced') {
+      throw historyError('SESSION_HISTORY_PROJECTION_UNAVAILABLE', 'An exact Session history cursor is unavailable.')
+    }
+    const collected = []
+    let beforeSeq
+    for (let pages = 0; pages < MAX_WHOLE_LOG_PAGES; pages += 1) {
+      const result = await this.controller.events({
+        address,
+        throughSeq: baseline.asOfSeq,
+        ...(beforeSeq === undefined ? {} : { beforeSeq }),
+        maxMessages: PAGE_SIZE,
+      }, signal)
+      const records = result?.records ?? []
+      if (records.length === 0) break
+      collected.unshift(...records.map(record => record.event))
+      if (!result.hasMore) return collected
+      const oldest = records[0].event.seq
+      if (beforeSeq !== undefined && oldest >= beforeSeq) {
+        throw historyError('SESSION_HISTORY_INVALID_PAGE', 'An older Session page did not move backward.')
+      }
+      beforeSeq = oldest
+    }
+    if (collected.length === 0) return collected
+    throw historyError('SESSION_HISTORY_TOO_LARGE', 'Session history exceeds the complete-read page budget.')
   }
 
   /** Exact original whole-session projection, without scanning the event log. */
@@ -272,6 +309,11 @@ export class AppSessionHistory {
 /** Compatibility helper for one-page callers and narrow incident tests. */
 export async function readSessionHistory(controller, params) {
   const { sessionId, offset } = validateAddress(params)
-  const inspection = await controller.inspect(SessionId(sessionId))
-  return { events: page(inspection.events, offset) }
+  const history = new AppSessionHistory(controller)
+  try {
+    const events = await history.readWholeLog(sessionId)
+    return { events: page(events, offset) }
+  } finally {
+    history.close()
+  }
 }

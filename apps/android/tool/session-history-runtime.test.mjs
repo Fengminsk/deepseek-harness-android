@@ -4,46 +4,68 @@ import test from 'node:test'
 const staged = new URL('../../../.cache/android/runtime-bundle/node_modules/', import.meta.url)
 const { AppSessionHistory, readSessionHistory } = await import(new URL('@minnnng/dsh-android-runtime/session-history.mjs', staged))
 
+/** Original-controller fake over one event array; records every page request. */
+function controllerFor(events, { onEvents } = {}) {
+  const calls = []
+  return {
+    calls,
+    async projections(request) {
+      calls.push(['projections', request.sessionId])
+      return { kind: 'sequenced', asOfSeq: events.length - 1, values: {} }
+    },
+    async events(request) {
+      calls.push(['events', request.beforeSeq ?? null])
+      onEvents?.(request)
+      const end = request.beforeSeq === undefined ? events.length : request.beforeSeq
+      const start = Math.max(0, end - 200)
+      return { cursor: end - 1, records: events.slice(start, end).map(event => ({ type: 'event', event })), hasMore: start > 0 }
+    },
+  }
+}
+
 test('history pages preserve original interrupted tool outcomes and turn closure', async () => {
   const events = [
     ...Array.from({ length: 200 }, (_, seq) => ({ seq, type: 'session/title', data: { title: 'fixture' } })),
     { seq: 200, type: 'tool/result', data: { message: { toolCallId: 'one', isError: true }, error: { code: 'TOOL_OUTCOME_UNKNOWN' } } },
     { seq: 201, type: 'turn/end', data: { turn: 1, reason: { kind: 'interrupted' } } },
   ]
-  const calls = []
-  const controller = { async inspect(id) { calls.push(id); return { events } } }
+  const controller = controllerFor(events)
   const first = await readSessionHistory(controller, { sessionId: 'one' })
   const second = await readSessionHistory(controller, { sessionId: 'one', offset: 200 })
   assert.equal(first.events.length, 200)
   assert.deepEqual(second.events, events.slice(200))
-  assert.deepEqual(calls, ['one', 'one'])
+  assert.deepEqual(controller.calls.filter(([kind]) => kind === 'projections').length, 2)
   assert.deepEqual((await readSessionHistory(controller, { sessionId: 'one', offset: 202 })).events, [])
 })
 
 test('invalid page addresses do not reach the original history reader', async () => {
-  const controller = { inspect() { assert.fail('invalid input reached the controller') } }
+  const controller = {
+    projections() { assert.fail('invalid input reached the controller') },
+    events() { assert.fail('invalid input reached the controller') },
+  }
   for (const params of [{}, { sessionId: ' ' }, { sessionId: 's', offset: -1 }, { sessionId: 's', offset: 0.5 }]) {
     await assert.rejects(readSessionHistory(controller, params), TypeError)
   }
 })
 
-test('an unavailable original observation stays a failure instead of reading a raw fallback', async () => {
+test('an unavailable projection stays a failure instead of reading a raw fallback', async () => {
   const failure = Object.assign(new Error('unavailable'), { code: 'session/projections-unavailable' })
-  await assert.rejects(readSessionHistory({ inspect: async () => { throw failure } }, { sessionId: 'one' }),
-    error => error === failure)
+  const controller = {
+    async projections() { throw failure },
+    events() { assert.fail('a failed projection must stop the read') },
+  }
+  await assert.rejects(readSessionHistory(controller, { sessionId: 'one' }), error => error === failure)
 })
 
-test('a long read inspects once, holds a stable prefix through concurrent append, and releases on final page', async () => {
+test('a long read pages once, holds a stable prefix through concurrent append, and releases on final page', async () => {
   const events = Array.from({ length: 403 }, (_, seq) => ({ seq, type: 'session/title', data: { title: `event-${seq}` } }))
-  let inspections = 0
-  const history = new AppSessionHistory({ async inspect() {
-    inspections++
-    return { events }
-  } })
+  const controller = controllerFor(events)
+  const history = new AppSessionHistory(controller)
   try {
     const first = await history.read({ sessionId: 'one' })
     assert.equal(first.events.length, 200)
     assert.equal(typeof first.snapshot, 'string')
+    const readsAfterOpen = controller.calls.length
     events.push({ seq: 403, type: 'session/title', data: { title: 'appended-later' } })
     const second = await history.read({ sessionId: 'one', offset: 200, snapshot: first.snapshot })
     assert.equal(second.events.length, 200)
@@ -52,7 +74,7 @@ test('a long read inspects once, holds a stable prefix through concurrent append
     assert.equal(last.events.length, 3)
     assert.equal(last.events.at(-1).seq, 402)
     assert.equal(last.snapshot, undefined)
-    assert.equal(inspections, 1, 'the original controller must not reread the entire log per page')
+    assert.equal(controller.calls.length, readsAfterOpen, 'retained pages must not reread the log')
     await assert.rejects(history.read({ sessionId: 'one', offset: 403, snapshot: first.snapshot }),
       error => error.code === 'SESSION_HISTORY_SNAPSHOT_EXPIRED')
     assert.equal(events.length, 404, 'reading must not rewrite the original event log')
@@ -61,7 +83,7 @@ test('a long read inspects once, holds a stable prefix through concurrent append
 
 test('concurrent readers keep independent cuts and cannot borrow another session token', async () => {
   const events = Array.from({ length: 201 }, (_, seq) => ({ seq, type: 'session/title', data: { title: `${seq}` } }))
-  const history = new AppSessionHistory({ async inspect() { return { events } } })
+  const history = new AppSessionHistory(controllerFor(events))
   try {
     const first = await history.read({ sessionId: 'one' })
     events.push({ seq: 201, type: 'session/title', data: { title: 'new' } })
@@ -77,7 +99,7 @@ test('concurrent readers keep independent cuts and cannot borrow another session
 test('abandoned leases expire, explicit release and disconnect cleanup drop retained pages', async () => {
   const events = Array.from({ length: 201 }, (_, seq) => ({ seq, type: 'session/title', data: { title: `${seq}` } }))
   let now = 0
-  const history = new AppSessionHistory({ async inspect() { return { events } } }, { leaseMs: 1000, now: () => now })
+  const history = new AppSessionHistory(controllerFor(events), { leaseMs: 1000, now: () => now })
   try {
     const first = await history.read({ sessionId: 'one' })
     assert.deepEqual(history.release({ sessionId: 'two', snapshot: first.snapshot }), { released: false })
@@ -97,17 +119,17 @@ test('abandoned leases expire, explicit release and disconnect cleanup drop reta
 
 test('retention budget is bounded and fails visibly instead of silently changing snapshots', async () => {
   const events = Array.from({ length: 201 }, (_, seq) => ({ seq, type: 'session/title', data: { title: 'x'.repeat(100) } }))
-  const history = new AppSessionHistory({ async inspect() { return { events } } }, { maxRetainedBytes: 1000 })
+  const history = new AppSessionHistory(controllerFor(events), { maxRetainedBytes: 1000 })
   try {
     await assert.rejects(history.read({ sessionId: 'one' }), error => error.code === 'SESSION_HISTORY_TOO_LARGE')
   } finally { history.close() }
 })
 
-test('native turn window uses original projection cursor and cold-safe page, never full inspect', async () => {
+test('native turn window uses original projection cursor and cold-safe page, never full history paging', async () => {
   const calls = []
   const events = Array.from({ length: 600 }, (_, seq) => ({ seq, type: 'session/title', data: { title: `${seq}` } }))
   const history = new AppSessionHistory({
-    inspect() { assert.fail('bounded navigation must not inspect the complete history') },
+    events() { assert.fail('bounded navigation must not page the complete history') },
     async projections(request) {
       calls.push(['projections', request.sessionId])
       return { kind: 'sequenced', asOfSeq: 599, values: { turnOutline: [
