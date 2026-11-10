@@ -62,6 +62,8 @@ class _Runtime extends fixture.SubagentsRuntime {
       case 'subagents.send':
         if (failSend) throw TimeoutException('lost acknowledgement');
         return {'messageId': 'accepted'};
+      case 'api.call':
+        return {'kind': 'sequenced', 'values': {}};
       default:
         throw StateError('Unexpected $method');
     }
@@ -231,12 +233,19 @@ void main() {
       expect(find.text('queued input'), findsOneWidget);
       await tap(tester, find.text('查看其下级子 Agent'));
       expect(find.text('此会话尚无子 Agent'), findsOneWidget);
-      expect(runtime.calls.last.$2['parentSessionId'], 'child');
       expect(
-        runtime.calls.every(
-          (call) =>
-              ['subagents.catalog', 'subagents.inspect'].contains(call.$1),
-        ),
+        runtime.calls
+            .lastWhere((call) => call.$1.startsWith('subagents.'))
+            .$2['parentSessionId'],
+        'child',
+      );
+      expect(
+        runtime.calls
+            .where((call) => call.$1 != 'api.call')
+            .every(
+              (call) =>
+                  ['subagents.catalog', 'subagents.inspect'].contains(call.$1),
+            ),
         isTrue,
       );
       expect(tester.takeException(), isNull);
@@ -342,7 +351,9 @@ void main() {
       expect(find.byKey(const Key('subagent-stop')), findsNothing);
       await close(tester);
       expect(
-        runtime.calls.every((call) => call.$1 == 'subagents.inspect'),
+        runtime.calls
+            .where((call) => call.$1 != 'api.call')
+            .every((call) => call.$1 == 'subagents.inspect'),
         isTrue,
       );
     },

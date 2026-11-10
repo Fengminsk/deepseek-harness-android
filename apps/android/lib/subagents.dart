@@ -8,6 +8,7 @@ import 'models.dart';
 import 'runtime.dart';
 import 'subagents_data.dart';
 import 'tasks.dart';
+import 'team_board.dart';
 import 'ui.dart';
 
 export 'subagents_data.dart' show SubagentAddress;
@@ -41,6 +42,7 @@ class _SubagentsPageState extends State<SubagentsPage>
   late int connectionGeneration;
   late String phase;
   Object? epoch;
+  final _teamKey = GlobalKey<TeamBoardSectionState>();
 
   @override
   void initState() {
@@ -135,6 +137,7 @@ class _SubagentsPageState extends State<SubagentsPage>
         current = true;
         error = null;
       });
+      unawaited(_teamKey.currentState?.reload() ?? Future<void>.value());
     } catch (failure) {
       if (mounted && attempt == generation) {
         setState(() {
@@ -238,6 +241,11 @@ class _SubagentsPageState extends State<SubagentsPage>
             _SubagentNote(widget.parentSessionId),
             const _SubagentNote('列出此会话直接委派的子 Agent。查看列表与记录不会恢复执行。'),
           ],
+        ),
+        TeamBoardSection(
+          key: _teamKey,
+          runtime: widget.runtime,
+          sessionId: widget.parentSessionId,
         ),
         if (error != null) _notice(context, error!),
         if (!widget.runtime.ready) _notice(context, '服务尚未就绪；已有列表仅供参考。'),

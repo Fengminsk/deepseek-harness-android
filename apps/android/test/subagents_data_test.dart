@@ -85,6 +85,7 @@ class SubagentsRuntime extends RuntimeController {
       'subagents.page' => older,
       'subagents.send' => {'messageId': 'accepted-message'},
       'subagents.interrupt' => {'accepted': true},
+      'api.call' => {'kind': 'sequenced', 'values': {}},
       _ => throw StateError('Unexpected $method'),
     };
   }

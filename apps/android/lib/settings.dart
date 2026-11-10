@@ -16,6 +16,7 @@ import 'configuration_model_destination.dart';
 import 'configuration_value_row.dart';
 import 'configuration_transfer.dart';
 import 'metadata_artwork.dart';
+import 'mcp_servers.dart';
 import 'models.dart';
 import 'diagnostics.dart';
 import 'approvals.dart';
@@ -150,6 +151,13 @@ class SettingsPage extends StatelessWidget {
                   title: '插件管理',
                   subtitle: '目录、启用、安装与移除',
                   onTap: () => open(PluginsPage(runtime: runtime)),
+                ),
+                PocketRow(
+                  key: const ValueKey('mcp-servers-settings'),
+                  icon: Icons.dns_outlined,
+                  title: 'MCP 服务器',
+                  subtitle: '连接状态、重启与探测',
+                  onTap: () => open(McpServersPage(runtime: runtime)),
                 ),
                 PocketRow(
                   icon: Icons.import_export_rounded,

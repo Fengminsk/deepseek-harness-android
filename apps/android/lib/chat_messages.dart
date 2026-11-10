@@ -145,6 +145,7 @@ class ChatTimeline extends StatefulWidget {
     this.onOpenImage,
     this.onBranch,
     this.onOpenWorkflowChild,
+    this.onQuote,
     this.showTurnNavigation = true,
     this.historyHeader,
     this.submittedAfterSeq,
@@ -173,6 +174,9 @@ class ChatTimeline extends StatefulWidget {
   final Future<String?> Function(int atSeq)? onBranch;
   final Future<void> Function(SubagentAddress address, String label)?
   onOpenWorkflowChild;
+
+  /// Inserts one message as a Markdown blockquote into the active composer.
+  final ValueChanged<String>? onQuote;
 
   @override
   State<ChatTimeline> createState() => _ChatTimelineState();
@@ -473,21 +477,23 @@ class _ChatTimelineState extends State<ChatTimeline>
         if (saved is bool) _expanded[group.key] = saved;
       }
       final previous = previousChains[group.key];
-      if (previous != null &&
-          previous.end == null &&
-          group.reason == 'completed') {
+      if (previous != null && !previous.completed && group.completed) {
         _expanded[group.key] = false;
         PageStorage.maybeOf(context)?.writeState(
           context,
           false,
           identifier: '${widget.sessionId}:${group.key}',
         );
+      } else if (previous?.active == true && !group.active) {
+        // An ended Turn can still contain unresolved or failed calls. Keep its
+        // current visibility until confirmed completion or an explicit toggle.
+        _expanded.putIfAbsent(group.key, () => previousExpanded[group.key]!);
       }
       final wasExpanded = previousExpanded[group.key];
       final nowExpanded = _isExpanded(group);
       if (wasExpanded != null && wasExpanded != nowExpanded) {
         final motion = _chainMotion(group.key, wasExpanded);
-        if (wasExpanded && !nowExpanded && group.reason == 'completed') {
+        if (wasExpanded && !nowExpanded && group.completed) {
           final replyKeys = <Key>{
             for (final row in _display)
               if (row.parent == null &&
@@ -892,6 +898,7 @@ class _ChatTimelineState extends State<ChatTimeline>
             onOpenSkill: widget.onOpenSkill,
             skillNames: _references.namesFor(row.seq),
             sessionLabels: _references.sessionLabelsFor(row.seq),
+            onQuote: widget.onQuote,
           );
           return KeyedSubtree(
             key: ValueKey((sessionId, _displayKeys[item.key] ?? item.key)),
@@ -968,6 +975,7 @@ class ChatMessage extends StatelessWidget {
     this.onOpenSkill,
     this.skillNames = const [],
     this.sessionLabels = const [],
+    this.onQuote,
     super.key,
   });
   final ChatEntry entry;
@@ -983,6 +991,7 @@ class ChatMessage extends StatelessWidget {
   final ValueListenable<ToolActivity?>? activitySource;
   final Future<void> Function(String name)? onOpenSkill;
   final List<String> skillNames, sessionLabels;
+  final ValueChanged<String>? onQuote;
 
   @override
   Widget build(BuildContext context) {
@@ -1090,6 +1099,7 @@ class ChatMessage extends StatelessWidget {
                 : null,
             child: ChatMessageActions(
               text: chatMessageText(reply),
+              onQuote: onQuote,
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,

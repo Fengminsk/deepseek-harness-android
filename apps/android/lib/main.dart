@@ -30,6 +30,7 @@ import 'settings.dart';
 import 'flclash/popup.dart';
 import 'automations.dart';
 import 'chat_projection.dart';
+import 'chat_quotes.dart';
 import 'chat_messages.dart';
 import 'chat_turn_navigation.dart';
 import 'chat_sidebar.dart';
@@ -576,6 +577,19 @@ class _ChatPageState extends State<ChatPage> {
       final next = insertSessionSkill(draft, skill.name);
       drafts[id] = next;
       commandDrafts.remove(id);
+      if (id == sessionId) input.value = next;
+    });
+    if (id == sessionId) inputFocus.requestFocus();
+  }
+
+  /// Insert one transcript message as a Markdown blockquote in the composer.
+  void quoteMessage(String text) {
+    final id = sessionId;
+    setState(() {
+      final draft = drafts[id] ?? input.value;
+      final next = insertMessageQuote(draft, text);
+      if (identical(next, draft)) return;
+      drafts[id] = next;
       if (id == sessionId) input.value = next;
     });
     if (id == sessionId) inputFocus.requestFocus();
@@ -1213,6 +1227,7 @@ class _ChatPageState extends State<ChatPage> {
                   running: running,
                   onOpenSkill: (name) =>
                       openSkillReference(viewedSessionId, name),
+                  onQuote: sessionId == viewedSessionId ? quoteMessage : null,
                   onBranch: (atSeq) => forkConversationAt(
                     viewedSessionId,
                     atSeq,

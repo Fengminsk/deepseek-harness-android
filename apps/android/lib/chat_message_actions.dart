@@ -171,16 +171,21 @@ Future<void> showChatMessageSelection(BuildContext context, String text) =>
       PocketRoute(builder: (_) => _MessageSelectionPage(text: text)),
     );
 
-enum _MessageAction { copy, select }
+enum _MessageAction { copy, select, quote }
 
 class ChatMessageActions extends StatefulWidget {
   const ChatMessageActions({
     required this.text,
     required this.child,
+    this.onQuote,
     super.key,
   });
   final String text;
   final Widget child;
+
+  /// Inserts this message as a Markdown blockquote into the composer. Absent
+  /// when the transcript cannot reach the composer, which hides the action.
+  final ValueChanged<String>? onQuote;
   @override
   State<ChatMessageActions> createState() => _ChatMessageActionsState();
 }
@@ -245,6 +250,12 @@ class _ChatMessageActionsState extends State<ChatMessageActions> {
             glyph: Icons.copy_rounded,
             onPressed: () => action = _MessageAction.copy,
           ),
+          if (widget.onQuote != null)
+            CommonPopupMenuItem(
+              label: '引用',
+              glyph: Icons.format_quote_rounded,
+              onPressed: () => action = _MessageAction.quote,
+            ),
           CommonPopupMenuItem(
             label: '选择文本',
             glyph: Icons.text_fields_rounded,
@@ -270,6 +281,9 @@ class _ChatMessageActionsState extends State<ChatMessageActions> {
         await navigator.push<void>(
           PocketRoute(builder: (_) => _MessageSelectionPage(text: text)),
         );
+      } else if (action == _MessageAction.quote) {
+        widget.onQuote!(text);
+        if (mounted) setState(() => _status = '已引用');
       }
     } finally {
       _menuRoute = null;
@@ -283,7 +297,7 @@ class _ChatMessageActionsState extends State<ChatMessageActions> {
     if (widget.text.isEmpty) return widget.child;
     return Semantics(
       onLongPress: _menu,
-      hint: '长按复制或选择文本',
+      hint: widget.onQuote == null ? '长按复制或选择文本' : '长按复制、引用或选择文本',
       child: GestureDetector(
         behavior: HitTestBehavior.translucent,
         excludeFromSemantics: true,
