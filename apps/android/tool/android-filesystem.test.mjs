@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { join, relative, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { createCopiedFilePublisher, publishImmutableFile } from '../runtime/immutable-file-publisher.mjs'
+import { executeToolCall } from './tool-batch-fixture.mjs'
 
 const root = resolve(import.meta.dirname, '../../..')
 const source = new URL('../runtime/android-filesystem.mjs', import.meta.url).href
@@ -212,13 +213,10 @@ test('real model-facing file tools obey the protected-path provider boundary', a
     snapshotEvents() { return [] }, append() {},
   } }
   let serial = 0
-  const call = async (name, args) => {
-    const batch = await ctx.tools.execute({
-      calls: [{ type: 'tool-call', id: `protected-${++serial}`, name, arguments: JSON.stringify(args) }],
-      agent, signal: new AbortController().signal,
-    })
-    return batch.results[0].result
-  }
+  const call = (name, args) => executeToolCall(ctx.tools, {
+    callId: `protected-${++serial}`, name, arguments: args,
+    agent, signal: new AbortController().signal,
+  })
   const read = await call('read', { file_path: '.agents/instructions.md' })
   assert.equal(read.isError, false, JSON.stringify(read))
   const blockedWrite = await call('write', { file_path: '.codex/config.json', content: '{}' })
@@ -234,3 +232,4 @@ test('real model-facing file tools obey the protected-path provider boundary', a
   assert.equal(regular.isError, false, JSON.stringify(regular))
   assert.equal(await readFile(join(workspace, 'task.txt'), 'utf8'), 'allowed')
 })
+
