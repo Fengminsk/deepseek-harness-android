@@ -34,6 +34,8 @@ const [
   { default: ApprovalService, setApprovalPolicy },
   { Session, SessionId },
   { registerAndroidShell },
+  NativeToolExecutor,
+  { default: SessionProjections },
 ] = await Promise.all([
   load('@deepseek-ai/dsh-app-boot'),
   load('@deepseek-ai/dsh-system-prompt'),
@@ -41,6 +43,8 @@ const [
   load('@deepseek-ai/dsh-user-approval'),
   load('@deepseek-ai/dsh-session'),
   import(toolSource.href),
+  load('@deepseek-ai/dsh-tool-executor-native'),
+  load('@deepseek-ai/dsh-session-projection'),
 ])
 resolver.deregister()
 
@@ -53,6 +57,8 @@ async function fixture(t, { approval = true, policy = 'ask', timeoutMs = 60000, 
   const rows = [
     { id: 'prompt', name: 'cordis:prompt' },
     { id: 'tools', name: 'cordis:tools' },
+    { id: 'projections', name: 'cordis:projections' },
+    { id: 'tool-executor', name: 'cordis:tool-executor' },
     ...(approval ? [{ id: 'approval', name: 'cordis:approval', config: { policy } }] : []),
     { id: 'android-shell', name: 'cordis:android-shell' },
   ]
@@ -96,6 +102,8 @@ async function fixture(t, { approval = true, policy = 'ask', timeoutMs = 60000, 
   ctx = await boot('android-shell-test', configPath, [], (context) => {
     context.loader.builtins.prompt = SystemPrompt
     context.loader.builtins.tools = ToolRuntime
+    context.loader.builtins['tool-executor'] = NativeToolExecutor
+    context.loader.builtins.projections = SessionProjections
     context.loader.builtins.approval = ApprovalService
     context.loader.builtins['android-shell'] = {
       name: 'android-shell-test',
@@ -114,10 +122,18 @@ async function fixture(t, { approval = true, policy = 'ask', timeoutMs = 60000, 
   // The approval service reads this Agent's real Session; no model is involved.
   const agent = { session }
   let serial = 0
-  const execute = (signal = new AbortController().signal, extra = {}) => ctx.tools.execute({
-    name: 'android_shell', callId: `shell-${++serial}`, arguments: { command: 'printf approved' },
-    agent, signal, ...extra,
-  })
+  const execute = async (signal = new AbortController().signal, extra = {}) => {
+    const batch = await ctx.tools.execute({
+      calls: [{
+        type: 'tool-call', id: `shell-${++serial}`,
+        name: extra.name ?? 'android_shell',
+        arguments: JSON.stringify(extra.arguments ?? { command: 'printf approved' }),
+      }],
+      ...(Object.hasOwn(extra, 'agent') ? { agent: extra.agent } : { agent }),
+      signal,
+    })
+    return batch.results[0].result
+  }
   const outcomes = () => session.snapshotEvents().filter(event => event.type === 'approval/decided')
     .map(event => event.data.outcome)
   return { ctx, session, agent, execute, spawned, outcomes, kill, started: started.promise,
@@ -368,3 +384,4 @@ test('disposing the owning plugin removes both the tool and its request rule', a
   assert.equal((await f.execute(undefined, { arguments: {} })).isError, false)
   assert.equal(prompts, 0)
 })
+
