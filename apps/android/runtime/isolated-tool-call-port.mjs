@@ -325,20 +325,29 @@ export class IsolatedToolCallPort {
     await this.#journal.dispatch({ runId: this.#runId, callId: number })
     this.#unconfirmed = true
     let result
+    let batchContexts = []
     try {
-      result = await this.#runtime.execute({
-        callId: subCallId,
-        rootCallId: audit.rootCallId,
-        name, arguments: args,
-        agent: this.#parent.agent,
-        parent: this.#parent.token,
+      // The merged ToolRuntime dispatches complete batches; one guest sub-call
+      // is a one-call batch. Omitting `log` keeps root call/result events out of
+      // the parent Session because this dispatch is already audited by the port.
+      const batch = await this.#runtime.execute({
+        calls: [{
+          type: 'tool-call',
+          id: subCallId,
+          name,
+          arguments: typeof args === 'string' ? args : JSON.stringify(args),
+        }],
         signal: this.#controller.signal,
+        ...(this.#parent.agent === undefined ? {} : { agent: this.#parent.agent }),
       })
-    } catch {
+      result = batch?.results?.[0]?.result
+      batchContexts = Array.isArray(batch?.additionalContexts) ? batch.additionalContexts : []
+    } catch (error) {
       // ToolRuntime normally materializes failures; a thrown failure means
       // the pipeline or its audit is uncertain. Do not fabricate a settle.
       if (mutating) await deferMutationReceipt(this.#parent, mutationReceipt(name, args, {}, false))
-      throw denied('ANDROID_TOOL_DISPATCH_UNCONFIRMED', 'Tool dispatch did not settle')
+      throw denied('ANDROID_TOOL_DISPATCH_UNCONFIRMED',
+        `Tool dispatch did not settle: ${error?.message ?? String(error)}`)
     }
     if (!plain(result) || typeof result.isError !== 'boolean'
       || !Array.isArray(result.content)) {
@@ -353,7 +362,7 @@ export class IsolatedToolCallPort {
     let projectionFailure = null
     // Host contexts never enter guest JSON. Preserve their original identity
     // and semantics, including receipts retained by an aborted tool body.
-    const contexts = result.additionalContexts ?? []
+    const contexts = result.additionalContexts ?? batchContexts
     if (!Array.isArray(contexts) || contexts.length && typeof this.#parent.deferContext !== 'function') {
       throw denied('ANDROID_TOOL_DISPATCH_UNCONFIRMED', 'Tool contexts have no parent owner')
     }

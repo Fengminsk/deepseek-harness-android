@@ -39,11 +39,21 @@ function setup(options = {}) {
   const parentController = new AbortController()
   const runtime = {
     get(name) { return visible.has(name) ? definitions.get(name) : undefined },
-    async execute(input) {
-      inputs.push(input)
-      return options.execute?.(input) ?? {
+    async execute(batch) {
+      inputs.push(batch)
+      const block = batch.calls[0]
+      const single = {
+        callId: block.id, name: block.name,
+        arguments: JSON.parse(block.arguments),
+        agent: batch.agent, signal: batch.signal,
+      }
+      const result = await (options.execute?.(single) ?? {
         isError: false, content: [{ type: 'text', text: 'ok' }],
-        value: { echo: input.arguments },
+        value: { echo: single.arguments },
+      })
+      return {
+        results: [{ callId: block.id, result }],
+        additionalContexts: [], concluded: false,
       }
     },
   }
@@ -94,9 +104,9 @@ test('dispatch is parent owned, policy routed, serial and audited before guest o
     'tool/ptc-dispatch-start', 'tool/ptc-dispatch',
     'tool/ptc-dispatch-start', 'tool/ptc-dispatch',
   ])
-  assert.equal(inputs[0].parent, inputs[1].parent)
-  assert.equal(inputs[0].rootCallId, 'root')
-  assert.equal(inputs[1].callId, 'outer:ptc:2')
+  assert.equal(inputs[0].agent, inputs[1].agent)
+  assert.equal(inputs[0].calls[0].id, 'outer:ptc:1')
+  assert.equal(inputs[1].calls[0].id, 'outer:ptc:2')
   await port.close()
 })
 
@@ -395,7 +405,7 @@ test('replayed and skipped guest call IDs cannot repeat an effect', async () => 
   assert.throws(() => port.call(call('safe_echo', {}, 4)), { code: 'ANDROID_TOOL_REPLAY' })
   await port.call(call('safe_echo', { text: 'next' }, 4))
   assert.equal(inputs.length, 2)
-  assert.equal(inputs[1].callId, 'outer:ptc:4')
+  assert.equal(inputs[1].calls[0].id, 'outer:ptc:4')
   await port.close()
 })
 
@@ -414,15 +424,19 @@ test('materialized tool failure is audited and can be recovered by guest code', 
 test('production ToolRuntime validates schema and routes the admitted callback through its pipeline', async t => {
   const requireStaged = createRequire(new URL('../../../.cache/android/runtime-bundle/package.json', import.meta.url))
   const staged = specifier => import(pathToFileURL(requireStaged.resolve(specifier)).href)
-  const [{ Context }, { default: SystemPrompt }, { default: ToolRuntime, defineTool }] =
+  const [{ Context }, { default: SystemPrompt }, { default: ToolRuntime, defineTool }, nativeExecutor] =
     await Promise.all([
       staged('@deepseek-ai/cordis'),
       staged('@deepseek-ai/dsh-system-prompt'),
       staged('@deepseek-ai/dsh-tools'),
+      staged('@deepseek-ai/dsh-tool-executor-native'),
     ])
   const ctx = new Context()
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(ToolRuntime)
+  // The merged ToolRuntime dispatches through a mounted executor; production
+  // composes the native executor, so this fixture does too.
+  await ctx.plugin(nativeExecutor)
   t.after(() => ctx.fiber.dispose())
   const remove = ctx.tools.register(defineTool({
     name: 'safe_echo', description: 'A real registry tool',
@@ -465,15 +479,19 @@ test('production ToolRuntime validates schema and routes the admitted callback t
 test('production ToolRuntime rejects a same-name swap during Android callback policy', async t => {
   const requireStaged = createRequire(new URL('../../../.cache/android/runtime-bundle/package.json', import.meta.url))
   const staged = specifier => import(pathToFileURL(requireStaged.resolve(specifier)).href)
-  const [{ Context }, { default: SystemPrompt }, { default: ToolRuntime, defineTool }] =
+  const [{ Context }, { default: SystemPrompt }, { default: ToolRuntime, defineTool }, nativeExecutor] =
     await Promise.all([
       staged('@deepseek-ai/cordis'),
       staged('@deepseek-ai/dsh-system-prompt'),
       staged('@deepseek-ai/dsh-tools'),
+      staged('@deepseek-ai/dsh-tool-executor-native'),
     ])
   const ctx = new Context()
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(ToolRuntime)
+  // The merged ToolRuntime dispatches through a mounted executor; production
+  // composes the native executor, so this fixture does too.
+  await ctx.plugin(nativeExecutor)
   t.after(() => ctx.fiber.dispose())
   const entered = deferred()
   const release = deferred()
@@ -652,3 +670,4 @@ test('cancelled mutation preserves its returned receipt and durable terminal aud
   assert.deepEqual(await callJournal.inspect({ runId: RUN_ID, callId: 1 }),
     { runId: RUN_ID, callId: 1, state: 'confirmed', outcome: 'tool-error' })
 })
+
