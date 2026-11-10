@@ -10,6 +10,7 @@ import {
 } from '../runtime/model-workflow-admission.mjs'
 import { createNativeWorkflowPrivateOwner } from '../runtime/native-workflow-private-owner.mjs'
 import { projectIsolatedSandboxPolicy } from '../runtime/isolated-sandbox-policy.mjs'
+import { executeToolCall } from './tool-batch-fixture.mjs'
 
 const stagedRequire = createRequire(new URL('../../../.cache/android/runtime-bundle/package.json', import.meta.url))
 const staged = name => import(pathToFileURL(stagedRequire.resolve(name)).href)
@@ -18,16 +19,17 @@ async function setup(t) {
   const [{ Context }, { default: LlmRuntime }, { default: SessionStore, SessionId },
     { default: SessionProjections }, { default: SystemPrompt },
     { default: ToolRuntime, defineTool }, { default: AgentRegistry },
-    { default: AgentLoop }] = await Promise.all([
+    { default: AgentLoop }, NativeToolExecutor] = await Promise.all([
     staged('@deepseek-ai/cordis'), staged('@deepseek-ai/dsh-llm'),
     staged('@deepseek-ai/dsh-session'), staged('@deepseek-ai/dsh-session-projection'),
     staged('@deepseek-ai/dsh-system-prompt'), staged('@deepseek-ai/dsh-tools'),
     staged('@deepseek-ai/dsh-agent'), staged('@deepseek-ai/dsh-agent-loop'),
+    staged('@deepseek-ai/dsh-tool-executor-native'),
   ])
   const ctx = new Context()
   t.after(() => ctx.fiber.dispose())
   for (const plugin of [LlmRuntime, SessionStore, SessionProjections, SystemPrompt,
-    ToolRuntime, AgentRegistry]) await ctx.plugin(plugin)
+    ToolRuntime, NativeToolExecutor, AgentRegistry]) await ctx.plugin(plugin)
   await ctx.plugin(AgentLoop, { agents: [] })
   const agent = await ctx.agentLoop.create(SessionId(randomUUID()))
   const policy = projectIsolatedSandboxPolicy({ approvedScope: {
@@ -84,7 +86,7 @@ test('a real Agent and ToolRuntime bind model workflow data to the App policy', 
   assert.equal(requireAppOwnedModelWorkflowAdmission(admission), admission)
   assert.throws(() => requireAppOwnedModelWorkflowAdmission({ ...admission }),
     /App-owned model workflow admission/)
-  const result = await ctx.tools.execute({ callId: 'workflow-model', name: 'workflow',
+  const result = await executeToolCall(ctx.tools, { callId: 'workflow-model', name: 'workflow',
     arguments: model, agent, signal: new AbortController().signal })
   assert.equal(result.isError, false, JSON.stringify(result.error))
   assert.equal(result.value.prepared, true)
@@ -123,7 +125,7 @@ test('a reviewed workflow ticket carries only App policy to one private native r
       return Promise.resolve('private-receipt')
     },
   })
-  const result = await ctx.tools.execute({ callId: 'workflow-private', name: 'workflow',
+  const result = await executeToolCall(ctx.tools, { callId: 'workflow-private', name: 'workflow',
     arguments: model, agent, signal: new AbortController().signal })
   assert.equal(result.isError, false, JSON.stringify(result.error))
   assert.equal(starts, 1)
@@ -164,7 +166,7 @@ test('native admission failure consumes the reviewed workflow ticket', async t =
     issueHost: () => host,
     async runPrepared() { starts += 1; throw new Error('admission refused') },
   })
-  const result = await ctx.tools.execute({ callId: 'workflow-refused', name: 'workflow',
+  const result = await executeToolCall(ctx.tools, { callId: 'workflow-refused', name: 'workflow',
     arguments: model, agent, signal: new AbortController().signal })
   assert.equal(result.isError, false)
   assert.equal(starts, 1)
@@ -188,7 +190,7 @@ test('cancellation after preparation prevents private workflow admission', async
     issueHost: () => host,
     runPrepared() { starts += 1 },
   })
-  await ctx.tools.execute({ callId: 'workflow-cancel-after-prep', name: 'workflow',
+  await executeToolCall(ctx.tools, { callId: 'workflow-cancel-after-prep', name: 'workflow',
     arguments: model, agent, signal: controller.signal })
   assert.equal(starts, 0)
 })
@@ -217,7 +219,7 @@ test('definition replacement or owner teardown invalidates an already prepared w
     issueHost: () => host, isAvailable: () => available,
     runPrepared() { starts += 1 },
   })
-  const result = await ctx.tools.execute({ callId: 'workflow-replaced-after-prep',
+  const result = await executeToolCall(ctx.tools, { callId: 'workflow-replaced-after-prep',
     name: 'workflow', arguments: model, agent, signal: new AbortController().signal })
   assert.equal(result.isError, false)
   assert.equal(starts, 0)
@@ -241,7 +243,7 @@ test('private owner disposal between preparation and execution rejects without n
     issueHost: () => host, isAvailable: () => available,
     runPrepared() { starts += 1 },
   })
-  const result = await ctx.tools.execute({ callId: 'workflow-owner-retired', name: 'workflow',
+  const result = await executeToolCall(ctx.tools, { callId: 'workflow-owner-retired', name: 'workflow',
     arguments: model, agent, signal: new AbortController().signal })
   assert.equal(result.isError, false)
   assert.equal(starts, 0)
@@ -261,7 +263,7 @@ test('re-registration during App approval revokes the old workflow definition', 
     registrationIdentity: ctx.tools.registrationIdentity('workflow', agent),
     async issueHost() { issueStarted(); await approval; return host },
   })
-  const result = ctx.tools.execute({ callId: 'workflow-replaced', name: 'workflow',
+  const result = executeToolCall(ctx.tools, { callId: 'workflow-replaced', name: 'workflow',
     arguments: model, agent, signal: new AbortController().signal })
   await issued
   unregister()
@@ -292,7 +294,7 @@ test('model arguments cannot select another Session, background owner or capabil
     registrationIdentity: ctx.tools.registrationIdentity('workflow', agent),
     issueHost: () => host,
   })
-  const result = await ctx.tools.execute({ callId: 'workflow-authority', name: 'workflow',
+  const result = await executeToolCall(ctx.tools, { callId: 'workflow-authority', name: 'workflow',
     arguments: model, agent, signal: new AbortController().signal })
   assert.equal(result.isError, false, JSON.stringify(result.error))
   assert.equal(result.value.rejected, true)
@@ -333,7 +335,7 @@ test('a cancelled policy decision cannot prepare a workflow for its former paren
     registrationIdentity: ctx.tools.registrationIdentity('workflow', agent),
     issueHost() { controller.abort(new Error('user cancelled')); return host },
   })
-  const result = await ctx.tools.execute({ callId: 'workflow-cancelled', name: 'workflow',
+  const result = await executeToolCall(ctx.tools, { callId: 'workflow-cancelled', name: 'workflow',
     arguments: model, agent, signal: controller.signal })
   assert.equal(result.isError, true)
 })
@@ -353,8 +355,10 @@ test('the App cannot issue a workflow scope for a different durable Session', as
     registrationIdentity: ctx.tools.registrationIdentity('workflow', agent),
     issueHost: () => ({ ...host, sandboxPolicy: foreignPolicy }),
   })
-  const result = await ctx.tools.execute({ callId: 'workflow-foreign-scope', name: 'workflow',
+  const result = await executeToolCall(ctx.tools, { callId: 'workflow-foreign-scope', name: 'workflow',
     arguments: model, agent, signal: new AbortController().signal })
   assert.equal(result.isError, true)
   assert.match(result.content[0].text, /scope\/session deadline/)
 })
+
+
