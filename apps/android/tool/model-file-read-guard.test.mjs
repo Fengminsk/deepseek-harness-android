@@ -1,3 +1,4 @@
+import { executeToolCall } from './tool-batch-fixture.mjs'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync, renameSync, readFileSync } from 'node:fs'
@@ -171,7 +172,7 @@ test('real ToolRuntime guards original file, search, delivery and editor tools a
   writeFileSync(join(workspace, 'view-swap'), 'safe file')
   mkdirSync(join(workspace, 'view-target'))
   symlinkSync(home, join(workspace, 'view-target', 'secret-link'), process.platform === 'win32' ? 'junction' : 'dir')
-  const [cordis, policy, projections, prompt, tools, toolFs, search, editor, present] = await Promise.all([
+  const [cordis, policy, projections, prompt, tools, toolFs, search, editor, present, executor] = await Promise.all([
     loadStaged('@deepseek-ai/cordis'),
     loadStaged('@deepseek-ai/dsh-sandbox-policy'),
     loadStaged('@deepseek-ai/dsh-session-projection'),
@@ -181,6 +182,7 @@ test('real ToolRuntime guards original file, search, delivery and editor tools a
     loadStaged('@deepseek-ai/dsh-tool-fs-search'),
     loadStaged('@deepseek-ai/dsh-tool-str-replace-editor'),
     loadStaged('@deepseek-ai/dsh-tool-present'),
+    loadStaged('@deepseek-ai/dsh-tool-executor-native'),
   ])
   ctx = new cordis.Context()
   let cwd = workspace
@@ -188,6 +190,8 @@ test('real ToolRuntime guards original file, search, delivery and editor tools a
   let swapBeforeBody = false
   let swapViewBeforeBody = false
   ctx.provide('workingDirectory', { async ensure() { return cwd } })
+  // present injects the live Agent registry; this fixture drives a synthetic Session.
+  ctx.provide('agents', { get: () => undefined, turnBoundaryOf: () => ({ openTurnStartSeq: null }) })
   const spawns = []
   let runSearches = false
   // Production providers extend Service: each ctx.subprocess.spawn read is a
@@ -225,6 +229,7 @@ test('real ToolRuntime guards original file, search, delivery and editor tools a
   assert.notEqual(ctx.subprocess.spawn, ctx.subprocess.spawn)
   await ctx.plugin(prompt.default)
   await ctx.plugin(tools.default)
+  await ctx.plugin(executor)
   await ctx.plugin(projections.default)
   await ctx.plugin(policy.default, { mode: 'workspace-write', workspaceRoot: workspace })
   await ctx.plugin(AndroidFileSystem, { cwd: workspace })
@@ -235,7 +240,7 @@ test('real ToolRuntime guards original file, search, delivery and editor tools a
   const agent = { session: { header: { id: 'guard-integration', cwd: workspace }, inheritedEventCount: 0,
     seq: 0, append() {}, snapshotEvents() { return [] } } }
   let serial = 0
-  const call = (name, args) => ctx.tools.execute({
+  const call = (name, args) => executeToolCall(ctx.tools, {
     name, arguments: args, agent, callId: `guard-${++serial}`, signal: new AbortController().signal,
   })
   const originalDirectory = await call('str_replace_editor', { command: 'view', path: workspace })
@@ -456,3 +461,5 @@ test('real ToolRuntime guards original file, search, delivery and editor tools a
   assert.equal((await call('glob', { pattern: '*.txt', path: workspace })).isError, true,
     'a Session moved outside the App workspace cannot use ordinary model file tools')
 })
+
+
