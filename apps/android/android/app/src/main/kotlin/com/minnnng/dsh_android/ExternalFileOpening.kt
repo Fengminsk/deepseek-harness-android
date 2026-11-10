@@ -3,6 +3,8 @@ package com.minnnng.dsh_android
 import android.app.Activity
 import android.content.ActivityNotFoundException
 import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.CancellationSignal
@@ -43,6 +45,13 @@ class ExternalFileOpening(
         var prepared = false
     }
     @Volatile private var active: Opening? = null // Mutated only on the main thread.
+    private class SaveRequest(
+        val opening: Opening,
+        val source: File,
+        val filename: String,
+        val reply: MethodChannel.Result,
+    )
+    @Volatile private var pendingSave: SaveRequest? = null // Mutated only on the main thread.
     private var closed = false
     private val maintenance = object : Runnable {
         override fun run() {
@@ -119,6 +128,115 @@ class ExternalFileOpening(
         } catch (_: Exception) {
             cleanup(opening)
             result.error("file-open/launch", "无法交给其他应用打开，请重试", null)
+        }
+    }
+
+    /**
+     * Save the prepared copy through the system file picker instead of opening it.
+     * The picker result settles this request; the staged copy is released only
+     * after the destination stream closes.
+     */
+    fun savePrepared(id: String, result: MethodChannel.Result) {
+        val opening = active
+        val stage = opening?.staged
+        if (closed || opening?.id != id || !opening.prepared || opening.cancelled.get() || stage == null) {
+            result.error("file-open/cancelled", "文件保存请求已取消", null)
+            return
+        }
+        if (pendingSave != null) {
+            result.error("file-open/busy", "已有文件正在保存，请稍后重试", null)
+            return
+        }
+        val save = SaveRequest(opening, stage, stage.name, result)
+        pendingSave = save
+        try {
+            activity.startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT)
+                .addCategory(Intent.CATEGORY_OPENABLE).setType("application/octet-stream")
+                .putExtra(Intent.EXTRA_TITLE, save.filename), SAVE_REQUEST)
+        } catch (_: Exception) {
+            pendingSave = null
+            result.error("file-open/save", "无法打开保存位置，请重试", null)
+        }
+    }
+
+    /** Settle a pending save picker; other request codes stay with their owners. */
+    fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?): Boolean {
+        if (requestCode != SAVE_REQUEST) return false
+        val save = pendingSave ?: return true
+        pendingSave = null
+        val opening = save.opening
+        val target = data?.data
+        if (resultCode != Activity.RESULT_OK || target == null) {
+            active = null
+            cleanup(opening)
+            save.reply.success(JSONObject().put("status", "cancelled").toString())
+            return true
+        }
+        worker.execute {
+            var copied = 0L
+            try {
+                activity.contentResolver.openOutputStream(target, "wt").use { output ->
+                    checkNotNull(output) { "destination unavailable" }
+                    FileInputStream(save.source).use { input ->
+                        val buffer = ByteArray(64 * 1024)
+                        while (true) {
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            output.write(buffer, 0, count)
+                            copied += count
+                        }
+                    }
+                    output.flush()
+                }
+                check(copied == save.source.length()) { "saved byte count differs" }
+                main.post {
+                    if (active === opening) active = null
+                    cleanup(opening)
+                    save.reply.success(JSONObject()
+                        .put("status", "saved")
+                        .put("filename", save.filename)
+                        .put("bytes", copied).toString())
+                }
+            } catch (_: Exception) {
+                main.post {
+                    if (active === opening) active = null
+                    cleanup(opening)
+                    save.reply.error("file-open/save",
+                        "保存未完成，请检查所选位置；可能留下不完整的文件", null)
+                }
+            }
+        }
+        return true
+    }
+
+    /**
+     * Copy the prepared image as clipboard content. The receiving app reads the
+     * staged FileProvider URI later, so periodic cache maintenance owns that copy.
+     */
+    fun copyPrepared(id: String, result: MethodChannel.Result) {
+        val opening = active
+        if (closed || opening?.id != id || !opening.prepared || opening.cancelled.get()) {
+            result.error("file-open/cancelled", "文件复制请求已取消", null)
+            return
+        }
+        try {
+            val uri = checkNotNull(opening.uri)
+            val mime = checkNotNull(opening.mime)
+            require(mime.startsWith("image/")) { "not an image" }
+            val clipboard = activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            val label = opening.staged?.name ?: "图片"
+            clipboard.setPrimaryClip(ClipData.newUri(activity.contentResolver, label, uri))
+            opening.staged = null
+            active = null
+            result.success(null)
+        } catch (_: IllegalArgumentException) {
+            active = null
+            cleanup(opening)
+            result.error("file-open/not-image", "只有图片可以复制为剪贴板内容", null)
+        } catch (_: Exception) {
+            active = null
+            cleanup(opening)
+            result.error("file-open/copy", "无法复制图片，请重试", null)
         }
     }
 
@@ -326,6 +444,11 @@ class ExternalFileOpening(
     override fun close() {
         main.removeCallbacks(maintenance)
         closed = true
+        pendingSave?.let { save ->
+            pendingSave = null
+            cleanup(save.opening)
+            save.reply.error("file-open/cancelled", "文件保存请求已取消", null)
+        }
         active?.let { opening -> cancel(opening.id, object : MethodChannel.Result {
             override fun success(result: Any?) {}
             override fun error(code: String, message: String?, details: Any?) {}
@@ -337,6 +460,7 @@ class ExternalFileOpening(
     companion object {
         private const val MAX_OPEN_BYTES = 256L * 1024 * 1024
         private const val MAINTENANCE_INTERVAL_MS = 6L * 60 * 60 * 1000
+        private const val SAVE_REQUEST = 0x5A1E
         private val UUID_PATTERN = Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
     }
 }

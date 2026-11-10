@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math';
 
 import 'package:flutter/services.dart';
@@ -45,7 +46,107 @@ class ExternalFileOpenController with WidgetsBindingObserver {
     required String path,
   }) async {
     assert(root == null || sessionId == null);
-    if (_disposed || ModalRoute.of(context)?.isCurrent != true) return;
+    final id = await _prepare(context, root: root, sessionId: sessionId, path: path);
+    if (id == null) return;
+    try {
+      await RuntimeController.channel.invokeMethod<void>(
+        'file.launchPrepared',
+        {'requestId': id},
+      );
+    } catch (failure) {
+      if (!context.mounted) {
+        cancel();
+        return;
+      }
+      if (!_owns(context, id)) {
+        cancel();
+        return;
+      }
+      final message = failure is PlatformException
+          ? failure.message ?? '无法交给其他应用打开，请重试。'
+          : '无法交给其他应用打开，请重试。';
+      _notify(context, message);
+    } finally {
+      if (_active == id) _active = null;
+    }
+  }
+
+  /// Save the addressed file through the system picker without changing its bytes.
+  ///
+  /// @returns `saved`, `cancelled`, or `unconfirmed` when the native outcome is
+  ///   unknown; a failure message is shown before returning `unconfirmed`.
+  Future<String> save(
+    BuildContext context, {
+    String? root,
+    String? sessionId,
+    required String path,
+  }) async {
+    assert(root == null || sessionId == null);
+    final id = await _prepare(context, root: root, sessionId: sessionId, path: path);
+    if (id == null) return 'cancelled';
+    try {
+      final raw = await RuntimeController.channel.invokeMethod<String>(
+        'file.savePrepared',
+        {'requestId': id},
+      );
+      final decoded = raw == null ? null : jsonDecode(raw);
+      if (decoded is! Json || decoded['status'] is! String) {
+        throw const FormatException('保存结果尚未确认');
+      }
+      return decoded['status'] as String;
+    } on PlatformException catch (failure) {
+      if (!context.mounted) return 'unconfirmed';
+      _notify(context, failure.message ?? '保存未完成，请检查所选位置。');
+      return 'unconfirmed';
+    } catch (_) {
+      if (!context.mounted) return 'unconfirmed';
+      _notify(context, '保存结果尚未确认，请检查所选位置是否留下了不完整文件。');
+      return 'unconfirmed';
+    } finally {
+      if (_active == id) _active = null;
+    }
+  }
+
+  /// Put the addressed image on the clipboard.
+  ///
+  /// @returns true when the clipboard accepted it; a message is shown on failure.
+  Future<bool> copyImage(
+    BuildContext context, {
+    String? root,
+    String? sessionId,
+    required String path,
+  }) async {
+    assert(root == null || sessionId == null);
+    final id = await _prepare(context, root: root, sessionId: sessionId, path: path);
+    if (id == null) return false;
+    try {
+      await RuntimeController.channel.invokeMethod<void>(
+        'file.copyPrepared',
+        {'requestId': id},
+      );
+      return true;
+    } on PlatformException catch (failure) {
+      if (!context.mounted) return false;
+      _notify(context, failure.message ?? '无法复制图片，请重试。');
+      return false;
+    } catch (_) {
+      if (!context.mounted) return false;
+      _notify(context, '无法复制图片，请重试。');
+      return false;
+    } finally {
+      if (_active == id) _active = null;
+    }
+  }
+
+  /// Stage the addressed file and return its request id, or null when this
+  /// route no longer owns the request.
+  Future<String?> _prepare(
+    BuildContext context, {
+    String? root,
+    String? sessionId,
+    required String path,
+  }) async {
+    if (_disposed || ModalRoute.of(context)?.isCurrent != true) return null;
     cancel();
     final id = _requestId();
     _active = id;
@@ -61,34 +162,43 @@ class ExternalFileOpenController with WidgetsBindingObserver {
             : 'file.openDocument',
         arguments,
       );
-      if (_active != id ||
-          _disposed ||
-          !context.mounted ||
-          ModalRoute.of(context)?.isCurrent != true) {
-        cancel();
-        return;
-      }
-      await RuntimeController.channel.invokeMethod<void>(
-        'file.launchPrepared',
-        {'requestId': id},
-      );
     } catch (failure) {
-      if (_active != id ||
-          _disposed ||
-          !context.mounted ||
-          ModalRoute.of(context)?.isCurrent != true) {
+      if (!context.mounted) {
         cancel();
-        return;
+        return null;
+      }
+      if (!_owns(context, id)) {
+        cancel();
+        return null;
       }
       final message = failure is PlatformException
-          ? failure.message ?? '无法交给其他应用打开，请重试。'
-          : '无法交给其他应用打开，请重试。';
-      ScaffoldMessenger.of(context)
-        ..hideCurrentSnackBar()
-        ..showSnackBar(SnackBar(content: Text(message)));
-    } finally {
+          ? failure.message ?? '无法准备文件，请重试。'
+          : '无法准备文件，请重试。';
+      _notify(context, message);
       if (_active == id) _active = null;
+      return null;
     }
+    if (!context.mounted) {
+      cancel();
+      return null;
+    }
+    if (!_owns(context, id)) {
+      cancel();
+      return null;
+    }
+    return id;
+  }
+
+  bool _owns(BuildContext context, String id) =>
+      _active == id &&
+      !_disposed &&
+      context.mounted &&
+      ModalRoute.of(context)?.isCurrent == true;
+
+  void _notify(BuildContext context, String message) {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
   }
 
   void cancel() {

@@ -503,6 +503,8 @@ class MainActivity : FlutterActivity() {
                 "file.openSession" -> externalFiles.session(call.argument<String>("requestId") ?: "",
                     call.argument<String>("sessionId") ?: "", call.argument<String>("path") ?: "", result)
                 "file.launchPrepared" -> externalFiles.launchPrepared(call.argument<String>("requestId") ?: "", result)
+                "file.savePrepared" -> externalFiles.savePrepared(call.argument<String>("requestId") ?: "", result)
+                "file.copyPrepared" -> externalFiles.copyPrepared(call.argument<String>("requestId") ?: "", result)
                 "file.cancelOpen" -> externalFiles.cancel(call.argument<String>("requestId") ?: "", result)
                 "shareText" -> {
                     val text = call.arguments as? String
@@ -914,6 +916,7 @@ class MainActivity : FlutterActivity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (exports.onActivityResult(requestCode, resultCode, data)) return
+        if (externalFiles.onActivityResult(requestCode, resultCode, data)) return
         if (attachmentFiles.onActivityResult(requestCode, resultCode, data)) return
         if (attachments.onActivityResult(requestCode, resultCode, data)) return
         if (configurationTransfers.onActivityResult(requestCode, resultCode, data)) return

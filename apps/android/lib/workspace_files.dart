@@ -306,10 +306,20 @@ class _WorkspaceFilesPageState extends State<WorkspaceFilesPage>
         fileLikelyText('${row['name']}', mimeType: row['mediaType'] as String?);
     final previewFile =
         !directory && privateWorkspacePreviewSupported('${row['name']}');
+    final imageFile =
+        !directory &&
+        ((row['mediaType'] is String &&
+                (row['mediaType'] as String).startsWith('image/')) ||
+            RegExp(
+              r'\.(png|jpe?g|webp|gif)$',
+              caseSensitive: false,
+            ).hasMatch('${row['name']}'));
     final actions = <_WorkspaceEntryAction>[
       if (!blocked) _WorkspaceEntryAction.open,
       if (!blocked && (textFile || previewFile))
         _WorkspaceEntryAction.openExternal,
+      if (!blocked) _WorkspaceEntryAction.save,
+      if (!blocked && imageFile) _WorkspaceEntryAction.copyImage,
       if (!blocked && (directory || textFile)) _WorkspaceEntryAction.search,
       _WorkspaceEntryAction.copyPath,
       _WorkspaceEntryAction.info,
@@ -333,6 +343,16 @@ class _WorkspaceFilesPageState extends State<WorkspaceFilesPage>
           _WorkspaceEntryAction.openExternal => CommonPopupMenuItem(
             label: '在其他应用中打开',
             glyph: Icons.open_in_new_rounded,
+            onPressed: () {},
+          ),
+          _WorkspaceEntryAction.save => CommonPopupMenuItem(
+            label: '保存原文件',
+            glyph: Icons.download_rounded,
+            onPressed: () {},
+          ),
+          _WorkspaceEntryAction.copyImage => CommonPopupMenuItem(
+            label: '复制图片',
+            glyph: Icons.content_copy_rounded,
             onPressed: () {},
           ),
           _WorkspaceEntryAction.search => CommonPopupMenuItem(
@@ -375,6 +395,28 @@ class _WorkspaceFilesPageState extends State<WorkspaceFilesPage>
           await open(row);
         case _WorkspaceEntryAction.openExternal:
           await externalOpen.open(context, path: target);
+        case _WorkspaceEntryAction.save:
+          if (!mounted) return;
+          final outcome = await externalOpen.save(context, path: target);
+          if (!mounted) return;
+          final message = switch (outcome) {
+            'saved' => '已保存 ${row['name'] ?? target}',
+            'cancelled' => '已取消保存。',
+            _ => '保存结果尚未确认，请检查所选位置。',
+          };
+          if (outcome != 'unconfirmed') {
+            ScaffoldMessenger.of(context)
+              ..hideCurrentSnackBar()
+              ..showSnackBar(SnackBar(content: Text(message)));
+          }
+        case _WorkspaceEntryAction.copyImage:
+          if (!mounted) return;
+          final copied = await externalOpen.copyImage(context, path: target);
+          if (copied && mounted) {
+            ScaffoldMessenger.of(context)
+              ..hideCurrentSnackBar()
+              ..showSnackBar(const SnackBar(content: Text('图片已复制到剪贴板')));
+          }
         case _WorkspaceEntryAction.search:
           await Navigator.push<void>(
             context,
@@ -537,7 +579,7 @@ class _WorkspaceFilesPageState extends State<WorkspaceFilesPage>
   );
 }
 
-enum _WorkspaceEntryAction { open, openExternal, search, copyPath, info }
+enum _WorkspaceEntryAction { open, openExternal, save, copyImage, search, copyPath, info }
 
 class _WorkspaceEntryInfo extends StatelessWidget {
   const _WorkspaceEntryInfo({required this.row});
