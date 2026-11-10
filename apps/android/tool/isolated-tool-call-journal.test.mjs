@@ -30,7 +30,13 @@ async function owner(journal, execute, append = () => {}) {
   const callbacks = new NativeIsolatedToolCallbacks(transport, journal)
   const definition = { name: 'safe_echo' }
   await callbacks.bind({ prepared, admission: { runId, token },
-    runtime: { get: name => name === 'safe_echo' ? definition : undefined, execute },
+    runtime: { get: name => name === 'safe_echo' ? definition : undefined,
+      async execute(batch) {
+        const block = batch.calls[0]
+        const result = await execute({ callId: block.id, name: block.name,
+          arguments: JSON.parse(block.arguments) })
+        return { results: [{ callId: block.id, result }], additionalContexts: [], concluded: false }
+      } },
     parent: { token: Symbol('parent'), callId: 'outer', signal: new AbortController().signal,
       agent: { session: { id: runId, append } } },
     allowedToolNames: ['safe_echo'], authorizeTool: async input => ({ effect: 'pure', definition: input.definition }) })
