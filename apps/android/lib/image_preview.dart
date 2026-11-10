@@ -1,10 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart' show compute;
+import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'runtime.dart';
@@ -45,10 +45,15 @@ class PocketImageSource {
     required this.name,
     required this.load,
     this.identity,
+    this.attachmentId,
   });
   final String name;
   final Future<PocketImagePayload> Function() load;
   final String? identity;
+
+  /// Attachment identity when this image came from the session attachment
+  /// service; only such images can be copied through the verified cache.
+  final String? attachmentId;
 
   factory PocketImageSource.session(
     RuntimeController runtime,
@@ -61,6 +66,7 @@ class PocketImageSource {
         : '图片附件';
     return PocketImageSource(
       name: name,
+      attachmentId: attachmentId is String ? attachmentId : null,
       load: () async {
         if (sessionId.isEmpty ||
             attachmentId is! String ||
@@ -106,6 +112,7 @@ class PocketImageSource {
     String name,
   ) => PocketImageSource(
     name: name,
+    attachmentId: id,
     load: () async {
       if (sessionId.isEmpty || id.isEmpty) {
         throw const FormatException('图片草稿不可用。');
@@ -391,6 +398,26 @@ class PocketImagePreview extends StatefulWidget {
   State<PocketImagePreview> createState() => _PocketImagePreviewState();
 }
 
+/// Copy one attachment image through the verified native cache.
+///
+/// @returns null on success, or a user-facing message when the copy failed.
+Future<String?> copyAttachmentImage(String attachmentId) async {
+  try {
+    await RuntimeController.channel.invokeMethod<void>(
+      'attachmentFile.copyImage',
+      {'id': attachmentId},
+    );
+    return null;
+  } on PlatformException catch (failure) {
+    // Only this channel's own failure codes carry a message meant for users.
+    return failure.code.startsWith('attachment-')
+        ? failure.message ?? '无法复制图片，请重试。'
+        : '无法复制图片，请重试。';
+  } catch (_) {
+    return '无法复制图片，请重试。';
+  }
+}
+
 class _PocketImagePreviewState extends State<PocketImagePreview>
     with SingleTickerProviderStateMixin {
   final transform = TransformationController();
@@ -406,6 +433,22 @@ class _PocketImagePreviewState extends State<PocketImagePreview>
   _PreparedImage? image;
   String? error;
   int epoch = 0;
+  bool copying = false;
+
+  /// Copy this attachment through the verified cache and report the outcome.
+  Future<void> _copy() async {
+    final id = widget.source.attachmentId;
+    if (id == null || copying) return;
+    setState(() => copying = true);
+    final failure = await copyAttachmentImage(id);
+    if (!mounted) return;
+    setState(() => copying = false);
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(content: Text(failure ?? '图片已复制到剪贴板')),
+      );
+  }
 
   @override
   void initState() {
@@ -513,10 +556,25 @@ class _PocketImagePreviewState extends State<PocketImagePreview>
       ),
       trailing: loaded == null
           ? null
-          : GlassButton(
-              icon: Icons.fit_screen_rounded,
-              label: '还原图片大小',
-              onPressed: () => animateTo(Matrix4.identity()),
+          : Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (widget.source.attachmentId != null) ...[
+                  GlassButton(
+                    icon: copying
+                        ? Icons.sync_rounded
+                        : Icons.content_copy_rounded,
+                    label: '复制图片',
+                    onPressed: copying ? null : _copy,
+                  ),
+                  const SizedBox(width: 8),
+                ],
+                GlassButton(
+                  icon: Icons.fit_screen_rounded,
+                  label: '还原图片大小',
+                  onPressed: () => animateTo(Matrix4.identity()),
+                ),
+              ],
             ),
       bottom: loaded == null
           ? null

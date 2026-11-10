@@ -1,13 +1,18 @@
 package com.minnnng.dsh_android
 
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.os.Handler
 import android.os.Looper
+import androidx.core.content.FileProvider
 import io.flutter.plugin.common.MethodChannel
 import org.json.JSONObject
 import java.io.File
+import java.io.FileOutputStream
+import java.util.Locale
 import java.util.concurrent.Executors
 
 /** System Save As for a file whose original reference and complete bytes the current runtime verified. */
@@ -30,6 +35,8 @@ class AttachmentFileSaves(
     private val worker = Executors.newSingleThreadExecutor()
     private val canceller = Executors.newSingleThreadExecutor()
     private var pending: Save? = null
+    private class CopyImageRequest(val id: String, val result: MethodChannel.Result)
+    @Volatile private var pendingCopy: CopyImageRequest? = null
     private var pickerOutstanding = false
     private var closed = false
 
@@ -113,6 +120,94 @@ class AttachmentFileSaves(
         return true
     }
 
+    /**
+     * Copy one verified image attachment to the clipboard.
+     *
+     * The runtime authorizes the attachment and provides its bounded cache
+     * copy; this copies those bytes into the FileProvider staging cache because
+     * the clipboard receiver must read them after this request settles.
+     */
+    fun copyImage(id: String, result: MethodChannel.Result) {
+        if (closed || pending != null || pendingCopy != null) {
+            result.error("attachment-copy-busy", "已有附件操作正在进行，请稍后重试", null)
+            return
+        }
+        try {
+            AttachmentFileCache.validateId(id)
+        } catch (_: Exception) {
+            result.error("attachment-copy-invalid", "附件复制请求无效，请重新打开附件", null)
+            return
+        }
+        val request = CopyImageRequest(id, result)
+        pendingCopy = request
+        authorize(id) { information, error ->
+            if (pendingCopy !== request || closed) return@authorize
+            if (information == null || error != null) {
+                pendingCopy = null
+                result.error("attachment-copy-unavailable", error ?: "附件副本已失效，请重新打开", null)
+                return@authorize
+            }
+            val filename = try { information.getString("filename") } catch (_: Exception) { null }
+            if (filename == null || !imageFilename(filename)) {
+                pendingCopy = null
+                result.error("attachment-copy-kind", "只有图片附件可以复制为剪贴板内容", null)
+                return@authorize
+            }
+            worker.execute {
+                var lease: AttachmentCacheLease? = null
+                var staged: File? = null
+                try {
+                    val bytes = information.getLong("size")
+                    val attachmentId = information.getString("attachmentId")
+                    lease = AttachmentCacheLease.acquire(directory(activity), information.getString("cacheInstance"))
+                    val source = AttachmentFileCache.source(lease.directory(), id, bytes)
+                    val root = ExternalStageCache.root(activity.cacheDir)
+                    ExternalStageCache.prune(root, System.currentTimeMillis(), null)
+                    staged = ExternalStageCache.create(root, filename)
+                    val output = staged
+                    val copied = FileOutputStream(output).use { stream ->
+                        AttachmentFileCache.copy(source, bytes, attachmentId, stream) { false }
+                    }
+                    check(copied == bytes) { "copied byte count differs" }
+                    val uri = FileProvider.getUriForFile(activity, "${activity.packageName}.selectedfiles", output)
+                    val current = lease
+                    main.post {
+                        if (pendingCopy !== request) {
+                            try { ExternalStageCache.delete(root, output) } catch (_: Exception) { /* Cache maintenance retries. */ }
+                            return@post
+                        }
+                        pendingCopy = null
+                        try {
+                            val clipboard = activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            clipboard.setPrimaryClip(ClipData.newUri(activity.contentResolver, filename, uri))
+                            result.success(null)
+                        } catch (_: Exception) {
+                            try { ExternalStageCache.delete(root, output) } catch (_: Exception) { /* Cache maintenance retries. */ }
+                            result.error("attachment-copy-failed", "无法复制图片，请重试", null)
+                        } finally {
+                            try { current?.close() } catch (_: Exception) { /* Lease expiry owns late cleanup. */ }
+                        }
+                    }
+                } catch (_: Exception) {
+                    try { lease?.close() } catch (_: Exception) { /* Lease expiry owns late cleanup. */ }
+                    main.post {
+                        if (staged != null) {
+                            try { ExternalStageCache.delete(ExternalStageCache.root(activity.cacheDir), staged) }
+                            catch (_: Exception) { /* Cache maintenance retries. */ }
+                        }
+                        if (pendingCopy === request) pendingCopy = null
+                        result.error("attachment-copy-failed", "无法复制图片，请重试", null)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun imageFilename(name: String): Boolean {
+        val extension = name.substringAfterLast('.', "").lowercase(Locale.ROOT)
+        return extension in setOf("png", "jpg", "jpeg", "webp", "gif")
+    }
+
     private fun finish(save: Save, value: JSONObject?, error: String?) {
         if (pending !== save) return
         pending = null
@@ -141,6 +236,10 @@ class AttachmentFileSaves(
 
     override fun close() {
         closed = true
+        pendingCopy?.let { request ->
+            pendingCopy = null
+            request.result.error("attachment-copy-cancelled", "附件复制请求已取消", null)
+        }
         cancelCurrent()
         worker.shutdown()
         canceller.shutdown()

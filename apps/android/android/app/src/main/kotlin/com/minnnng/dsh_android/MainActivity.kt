@@ -350,6 +350,7 @@ class MainActivity : FlutterActivity() {
                 }
                 "attachmentFile.save" -> attachmentFiles.save(call.argument<String>("id") ?: "",
                     call.argument<String>("filename") ?: "", result)
+                "attachmentFile.copyImage" -> attachmentFiles.copyImage(call.argument<String>("id") ?: "", result)
                 "attachmentFile.cancelSave" -> attachmentFiles.cancel(call.argument<String>("id") ?: "") {
                     result.success(null)
                 }
