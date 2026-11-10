@@ -11,8 +11,10 @@ async function harness(t, options = {}) {
   const ctx = new Context()
   await ctx.plugin(Sessions)
   await ctx.plugin(Projections)
-  await ctx.plugin(Titles, { fallbackMaxWords: 8, fallbackMaxBytes: 64, maxTitleBytes: 256 })
   const agents = new Map(), notices = [], requests = [], calls = []
+  // The session-title service injects the live Agent registry.
+  ctx.provide('agents', { get: id => agents.get(id), list: () => [...agents.values()] })
+  await ctx.plugin(Titles, { fallbackMaxWords: 8, fallbackMaxBytes: 64, maxTitleBytes: 256 })
   const controller = {
     cancel(params) { calls.push(['cancel', params]); return { accepted: true } },
     updateQueue(params) { calls.push(['updateQueue', params]); return Promise.resolve({ accepted: true }) },
@@ -44,11 +46,11 @@ test('task lists and details follow the original scalar title projection and liv
   const list = () => h.tasks.list()
   const snapshot = () => h.ctx.sessionProjections.snapshot(session, ['pocketTasks', 'inbox', 'title'])
   assert.equal((await list()).sessions[0].title, 'named-task', 'untitled sessions retain their identity')
-  h.ctx.sessionTitle.rename(session, 'Background review')
+  h.ctx.get('sessionTitle').rename(session, 'Background review')
   assert.equal(snapshot().values.title, 'Background review')
   assert.equal((await list()).sessions[0].title, 'Background review')
   const revision = h.notices.at(-1).data.revision
-  h.ctx.sessionTitle.rename(session, 'Renamed background review')
+  h.ctx.get('sessionTitle').rename(session, 'Renamed background review')
   assert.ok(h.notices.at(-1).data.revision > revision)
   assert.equal((await list()).sessions[0].title, 'Renamed background review')
   assert.equal(h.tasks.project(String(session.id), snapshot(), 'live').title, 'Renamed background review')
@@ -58,12 +60,12 @@ test('task lists and details follow the original scalar title projection and liv
 test('cached and cold task titles preserve original checkpoints without activating or replaying an Agent', async t => {
   const first = await harness(t)
   const session = first.ctx.sessions.create(SessionId('cold-named-task'))
-  first.ctx.sessionTitle.rename(session, 'Checkpoint title')
+  first.ctx.get('sessionTitle').rename(session, 'Checkpoint title')
   session.append('turn/start', { turn: 1 })
   session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
   const checkpoint = first.ctx.sessionProjections.checkpoint(session)
   const cachedThrough = session.seq - 1
-  first.ctx.sessionTitle.rename(session, 'Later durable title')
+  first.ctx.get('sessionTitle').rename(session, 'Later durable title')
   const restored = await harness(t)
   const replayed = restored.ctx.sessions.create(session.id, { seed: session.snapshotEvents() })
   const recovered = restored.ctx.sessionProjections.snapshot(replayed, ['pocketTasks', 'inbox', 'title'])
@@ -263,3 +265,5 @@ test('original plugin operation snapshots and events update an independent packa
   assert.notEqual(replacement.tasks.summary().epoch, started.epoch)
   assert.equal(replacement.tasks.summary().summary.packageOperations, 0)
 })
+
+
