@@ -432,6 +432,10 @@ export function applyWebSearchTool(
     presentCall: presentSearchCall,
     presentResult: (args, result) => presentSearchResult(args, result),
   })
+  Object.freeze(definition)
   firstPartySearchDefinitions.add(definition)
+  ctx.effect(() => () => firstPartySearchDefinitions.delete(definition))
   ctx.tools.register(definition, { when: ({ modelSelection }) => ctx.web.searchReady(modelSelection.provider) })
 }
+
+

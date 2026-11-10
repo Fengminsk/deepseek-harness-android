@@ -534,6 +534,10 @@ export function applyWebFetchTool(ctx: Context, timeoutMs: number, maxOutputChar
     presentCall: presentFetchCall,
     presentResult: (args, result) => presentFetchResult(args, result),
   })
+  Object.freeze(definition)
   firstPartyFetchDefinitions.add(definition)
+  ctx.effect(() => () => firstPartyFetchDefinitions.delete(definition))
   ctx.tools.register(definition, { when: ({ modelSelection }) => ctx.web.fetchReady(modelSelection.provider) })
 }
+
+
