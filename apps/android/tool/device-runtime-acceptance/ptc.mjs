@@ -5,7 +5,7 @@ import { mkdir, writeFile, unlink, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import * as FsTools from '@deepseek-ai/dsh-tool-fs'
 import * as SearchTools from '@deepseek-ai/dsh-tool-fs-search'
-import * as ListAgents from '@deepseek-ai/dsh-tool-subagent-control/list-agents'
+import { registerListAgents } from '../../../../packages/subagent/tool-subagent-control/src/list-agents.ts'
 import Web from '@deepseek-ai/dsh-web'
 import * as WebFetch from '@deepseek-ai/dsh-web-fetch-http'
 import * as WebTools from '@deepseek-ai/dsh-tool-web'
@@ -120,7 +120,10 @@ async function runPtcChecks({ ctx, transport, agent, workspace, callbackRouting,
     registerModelFileReadGuard(ctx, workspace)
     if (!ctx.tools.get('read', agent)) await ctx.plugin(FsTools, { readImage: false })
     if (!ctx.tools.get('glob', agent)) await ctx.plugin(SearchTools, { sampleOverCapGlobResults: false })
-    if (!ctx.tools.get('list_agents', agent)) await ctx.plugin(ListAgents)
+    if (!ctx.tools.get('list_agents', agent)) await ctx.plugin({
+    name: 'list-agents-fixture', inject: ['tools', 'subagents', 'agents', 'systemPrompt'],
+    apply: scope => { registerListAgents(scope) },
+  })
     if (!ctx.tools.get('android_files', agent)) registerAndroidFilesTool(ctx, transport, {
       run() { throw new Error('SAF search is outside this acceptance profile') },
     }, reads)
@@ -329,3 +332,5 @@ async function runPtcChecks({ ctx, transport, agent, workspace, callbackRouting,
     await unlink(file)
   }
 }
+
+
