@@ -19,6 +19,7 @@ import * as Spawn from '@deepseek-ai/dsh-subagent-spawn-in-process'
 import { MockAdapter, textResponse, toolCallResponse } from '../../../packages/core/agent-loop/tests/mock-adapter.ts'
 import { TestSessionQuery } from '../../../packages/subagent/subagent/tests/test-session-query.ts'
 import { mountWorkingDirectoryFixture } from '../../../packages/subagent/subagent/tests/working-directory-fixture.ts'
+import { executeToolCall } from './tool-batch-fixture.mjs'
 import { createWorkflowSubagentBackend, installWorkflowSubagentPreset } from '../runtime/workflow-subagent-backend.mjs'
 import { WorkflowGuestHostPort } from '../runtime/workflow-guest-host-port.mjs'
 import { NativeWorkflowGuestCallbacks } from '../runtime/native-workflow-guest-callbacks.mjs'
@@ -185,7 +186,7 @@ test('real child uses isolated preset, durable lineage and cold resume', async t
     [{ type: 'text', text: 'Continue after release' }],
     { signal: new AbortController().signal })
   assert.equal(typeof receipt, 'string')
-  await ctx.subagents.waitForChildren(parent)
+  await ctx.subagents.waitForTreeWork(parent)
   assert.equal(adapter.requests.length, 2)
   assert.deepEqual(adapter.requests[1]?.tools ?? [], [])
   afterRestart.close()
@@ -288,7 +289,7 @@ test('a running structured child rejects every late non-result scoped tool', asy
       execute: async () => { executed = true; return 'x' },
     })
     try {
-      const result = await ctx.tools.execute({ signal: new AbortController().signal,
+      const result = await executeToolCall(ctx.tools, { signal: new AbortController().signal,
         callId: 'late-structured-call', name: 'late_local_shell', arguments: {}, agent: child })
       assert.equal(result.isError, true)
       assert.equal(executed, false)
@@ -432,7 +433,7 @@ test('a late child-local tool cannot execute without an exact child grant', asyn
     execute: async () => { executed = true; return 'x' },
   })
   try {
-    const result = await ctx.tools.execute({ signal: new AbortController().signal,
+    const result = await executeToolCall(ctx.tools, { signal: new AbortController().signal,
       callId: 'late-local-call', name: 'late_local_shell', arguments: {}, agent: child })
     assert.equal(executed, false)
     assert.equal(result.isError, true)
@@ -837,3 +838,5 @@ test('private DSL owner cancels and releases a confirmed execution failure', asy
     'native.workflow.release'])
   await owner.dispose()
 })
+
+
