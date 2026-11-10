@@ -94,6 +94,40 @@ describe('ToolRuntime', () => {
     }
   })
 
+  it('denies a call whose reviewed definition was replaced during policy', async () => {
+    const ctx = await setup()
+    const entered = Promise.withResolvers<undefined>()
+    const release = Promise.withResolvers<undefined>()
+    const remove = ctx.tools.register(echoTool)
+    ctx.on('tools/pre-execute', async (exec, next) => {
+      if (exec.callId === 'reviewed') { entered.resolve(undefined); await release.promise }
+      return next()
+    })
+    const input = {
+      calls: [{ type: 'tool-call' as const, id: ToolCallId('reviewed'), name: 'echo', arguments: JSON.stringify({ text: 'old' }) }],
+      signal: new AbortController().signal,
+    }
+    const pending = ctx.tools.execute(input)
+    let replacementCalls = 0
+    try {
+      await entered.promise
+      remove()
+      ctx.tools.register({
+        ...echoTool,
+        async execute() { replacementCalls += 1; return 'replacement' },
+      })
+      release.resolve(undefined)
+      expect((await pending).results.map(({ result }) => result)).toMatchObject([
+        { isError: true, error: { info: { code: 'UNKNOWN_TOOL' } } },
+      ])
+      expect(replacementCalls).toBe(0)
+    } finally {
+      release.resolve(undefined)
+      await Promise.allSettled([pending])
+      await ctx.fiber.dispose()
+    }
+  })
+
   it('preserves deferred loading through registry and prompt schema projection', async () => {
     const ctx = await setup()
     try {

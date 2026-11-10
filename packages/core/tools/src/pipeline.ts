@@ -96,6 +96,12 @@ export class ToolExecutionPipeline {
   private contentProjectors = new WeakMap<ToolRunContext, ToolDefinition['projectContent']>()
 
   /**
+   * Definition visible when the call entered policy. A later same-name
+   * registration must not receive a call reviewed against the earlier body.
+   */
+  private preparedDefinitions = new WeakMap<ToolRunContext, ToolDefinition>()
+
+  /**
    * Classify a pending call through the caller's visible tool definition. Only
    * an exact `true` is parallel; unknown, hidden, undeclared, invalid, or
    * throwing classifiers are exclusive.
@@ -155,6 +161,7 @@ export class ToolExecutionPipeline {
         throw new TypeError('tool execution arguments must be losslessly JSON-serializable')
       }
       const execution: MutableToolRunContext = { ...base, arguments: deepFreeze(detached) }
+      if (visible !== undefined) this.preparedDefinitions.set(execution, visible)
       this.deferredContexts.set(execution, deferredContexts)
       this.contentFinalizers.set(execution, finalizerFor())
       if (!rejected) this.contentProjectors.set(execution, capturedProjector)
@@ -271,6 +278,10 @@ export class ToolExecutionPipeline {
     try {
       const tool = this.resolveExecution(exec.name, exec.agent, exec.parent !== undefined, exec.toolSet)
       if (!tool) throw new ToolNotFoundError(exec.name)
+      // Policy and approval reviewed the prepared definition; a same-name
+      // registration installed meanwhile must not receive this call.
+      const prepared = this.preparedDefinitions.get(exec)
+      if (prepared !== undefined && prepared !== tool) throw new ToolNotFoundError(exec.name)
       state.bodyInvoked = true
       this.tools.beginExecution(exec)
       let returned: unknown
