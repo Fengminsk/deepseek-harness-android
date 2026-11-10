@@ -8565,15 +8565,22 @@
       "sources": [
         "packages/bundle/base/cordis.patch.yml"
       ],
-      "status": "unassessed",
-      "android": [],
-      "note": "Declared by the 0.2.2 bundles. Android composes the base and Web bundles, so this declaration has no reviewed Android mapping yet.",
+      "status": "adapted",
+      "android": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "note": "Android composes the base bundle, so every ToolRuntime dispatch selects this executor. Host tests exercise its pipeline and approval contracts; device execution stays unverified.",
       "capability": "programmatic",
       "evidence": {
-        "core": "unverified",
+        "core": "partial",
         "ui": "unverified",
-        "behavior": "unverified",
+        "behavior": "partial",
         "device": "unverified"
+      },
+      "assessment": {
+        "composition": "preset",
+        "entryPoint": "shared-service",
+        "relatedDeclarations": []
       }
     },
     {
@@ -8583,15 +8590,20 @@
       "sources": [
         "packages/bundle/base/cordis.patch.yml"
       ],
-      "status": "unassessed",
+      "status": "not-migrated",
       "android": [],
-      "note": "Declared by the 0.2.2 bundles. Android composes the base and Web bundles, so this declaration has no reviewed Android mapping yet.",
+      "note": "The Android profile disables ptc-runtime; reviewed android_ptc uses its own isolated port, so this executor is never selected on the phone.",
       "capability": "programmatic",
       "evidence": {
         "core": "unverified",
         "ui": "unverified",
         "behavior": "unverified",
         "device": "unverified"
+      },
+      "assessment": {
+        "composition": "disabled",
+        "entryPoint": "none",
+        "relatedDeclarations": []
       }
     },
     {
@@ -8601,16 +8613,22 @@
       "sources": [
         "packages/bundle/headless/cordis.patch.yml"
       ],
-      "status": "unassessed",
+      "status": "not-applicable",
       "android": [],
-      "note": "Declared by the 0.2.2 bundles. Android composes the base and Web bundles, so this declaration has no reviewed Android mapping yet.",
+      "note": "Android starts the native carrier over base and web-app, not this optional bundle; the declaration configures an alternative application launch.",
       "capability": "alternate-entrypoints",
       "evidence": {
         "core": "unverified",
         "ui": "unverified",
         "behavior": "unverified",
         "device": "unverified"
-      }
+      },
+      "assessment": {
+        "composition": "alternate-profile",
+        "entryPoint": "alternate-entrypoint",
+        "relatedDeclarations": []
+      },
+      "notApplicableReason": "This optional bundle is not part of ANDROID_BUNDLES."
     },
     {
       "key": "optionalBundle/sdk-minimal/insert/tool-executor-native",
@@ -8619,16 +8637,22 @@
       "sources": [
         "packages/bundle/sdk-minimal/cordis.patch.yml"
       ],
-      "status": "unassessed",
+      "status": "not-applicable",
       "android": [],
-      "note": "Declared by the 0.2.2 bundles. Android composes the base and Web bundles, so this declaration has no reviewed Android mapping yet.",
+      "note": "Android starts the native carrier over base and web-app, not this optional bundle; the declaration configures an alternative application launch.",
       "capability": "programmatic",
       "evidence": {
         "core": "unverified",
         "ui": "unverified",
         "behavior": "unverified",
         "device": "unverified"
-      }
+      },
+      "assessment": {
+        "composition": "alternate-profile",
+        "entryPoint": "alternate-entrypoint",
+        "relatedDeclarations": []
+      },
+      "notApplicableReason": "This optional bundle is not part of ANDROID_BUNDLES."
     },
     {
       "key": "optionalBundle/sdk-minimal/insert/session-checkpoint-policy",
@@ -8637,16 +8661,22 @@
       "sources": [
         "packages/bundle/sdk-minimal/cordis.patch.yml"
       ],
-      "status": "unassessed",
+      "status": "not-applicable",
       "android": [],
-      "note": "Declared by the 0.2.2 bundles. Android composes the base and Web bundles, so this declaration has no reviewed Android mapping yet.",
+      "note": "Android starts the native carrier over base and web-app, not this optional bundle; the declaration configures an alternative application launch.",
       "capability": "history",
       "evidence": {
         "core": "unverified",
         "ui": "unverified",
         "behavior": "unverified",
         "device": "unverified"
-      }
+      },
+      "assessment": {
+        "composition": "alternate-profile",
+        "entryPoint": "alternate-entrypoint",
+        "relatedDeclarations": []
+      },
+      "notApplicableReason": "This optional bundle is not part of ANDROID_BUNDLES."
     },
     {
       "key": "optionalBundle/sdk-app/override/tool-plugin-manager",
@@ -8655,16 +8685,22 @@
       "sources": [
         "packages/bundle/sdk-app/cordis.patch.yml"
       ],
-      "status": "unassessed",
+      "status": "not-applicable",
       "android": [],
-      "note": "Declared by the 0.2.2 bundles. Android composes the base and Web bundles, so this declaration has no reviewed Android mapping yet.",
+      "note": "Android starts the native carrier over base and web-app, not this optional bundle; the declaration configures an alternative application launch.",
       "capability": "alternate-entrypoints",
       "evidence": {
         "core": "unverified",
         "ui": "unverified",
         "behavior": "unverified",
         "device": "unverified"
-      }
+      },
+      "assessment": {
+        "composition": "alternate-profile",
+        "entryPoint": "alternate-entrypoint",
+        "relatedDeclarations": []
+      },
+      "notApplicableReason": "This optional bundle is not part of ANDROID_BUNDLES."
     },
     {
       "key": "optionalBundle/sdk-app/insert/connection",
@@ -8673,16 +8709,22 @@
       "sources": [
         "packages/bundle/sdk-app/cordis.patch.yml"
       ],
-      "status": "unassessed",
+      "status": "not-applicable",
       "android": [],
-      "note": "Declared by the 0.2.2 bundles. Android composes the base and Web bundles, so this declaration has no reviewed Android mapping yet.",
+      "note": "Android starts the native carrier over base and web-app, not this optional bundle; the declaration configures an alternative application launch.",
       "capability": "alternate-entrypoints",
       "evidence": {
         "core": "unverified",
         "ui": "unverified",
         "behavior": "unverified",
         "device": "unverified"
-      }
+      },
+      "assessment": {
+        "composition": "alternate-profile",
+        "entryPoint": "alternate-entrypoint",
+        "relatedDeclarations": []
+      },
+      "notApplicableReason": "This optional bundle is not part of ANDROID_BUNDLES."
     },
     {
       "key": "optionalBundle/sdk-app/insert/file-upload",
@@ -8691,16 +8733,22 @@
       "sources": [
         "packages/bundle/sdk-app/cordis.patch.yml"
       ],
-      "status": "unassessed",
+      "status": "not-applicable",
       "android": [],
-      "note": "Declared by the 0.2.2 bundles. Android composes the base and Web bundles, so this declaration has no reviewed Android mapping yet.",
+      "note": "Android starts the native carrier over base and web-app, not this optional bundle; the declaration configures an alternative application launch.",
       "capability": "alternate-entrypoints",
       "evidence": {
         "core": "unverified",
         "ui": "unverified",
         "behavior": "unverified",
         "device": "unverified"
-      }
+      },
+      "assessment": {
+        "composition": "alternate-profile",
+        "entryPoint": "alternate-entrypoint",
+        "relatedDeclarations": []
+      },
+      "notApplicableReason": "This optional bundle is not part of ANDROID_BUNDLES."
     },
     {
       "key": "optionalBundle/sdk-app/insert/workspace",
@@ -8709,16 +8757,22 @@
       "sources": [
         "packages/bundle/sdk-app/cordis.patch.yml"
       ],
-      "status": "unassessed",
+      "status": "not-applicable",
       "android": [],
-      "note": "Declared by the 0.2.2 bundles. Android composes the base and Web bundles, so this declaration has no reviewed Android mapping yet.",
+      "note": "Android starts the native carrier over base and web-app, not this optional bundle; the declaration configures an alternative application launch.",
       "capability": "alternate-entrypoints",
       "evidence": {
         "core": "unverified",
         "ui": "unverified",
         "behavior": "unverified",
         "device": "unverified"
-      }
+      },
+      "assessment": {
+        "composition": "alternate-profile",
+        "entryPoint": "alternate-entrypoint",
+        "relatedDeclarations": []
+      },
+      "notApplicableReason": "This optional bundle is not part of ANDROID_BUNDLES."
     },
     {
       "key": "optionalBundle/sdk-app/insert/schedule",
@@ -8727,16 +8781,22 @@
       "sources": [
         "packages/bundle/sdk-app/cordis.patch.yml"
       ],
-      "status": "unassessed",
+      "status": "not-applicable",
       "android": [],
-      "note": "Declared by the 0.2.2 bundles. Android composes the base and Web bundles, so this declaration has no reviewed Android mapping yet.",
+      "note": "Android starts the native carrier over base and web-app, not this optional bundle; the declaration configures an alternative application launch.",
       "capability": "alternate-entrypoints",
       "evidence": {
         "core": "unverified",
         "ui": "unverified",
         "behavior": "unverified",
         "device": "unverified"
-      }
+      },
+      "assessment": {
+        "composition": "alternate-profile",
+        "entryPoint": "alternate-entrypoint",
+        "relatedDeclarations": []
+      },
+      "notApplicableReason": "This optional bundle is not part of ANDROID_BUNDLES."
     },
     {
       "key": "optionalBundle/sdk-app/insert/time-context",
@@ -8745,16 +8805,22 @@
       "sources": [
         "packages/bundle/sdk-app/cordis.patch.yml"
       ],
-      "status": "unassessed",
+      "status": "not-applicable",
       "android": [],
-      "note": "Declared by the 0.2.2 bundles. Android composes the base and Web bundles, so this declaration has no reviewed Android mapping yet.",
+      "note": "Android starts the native carrier over base and web-app, not this optional bundle; the declaration configures an alternative application launch.",
       "capability": "alternate-entrypoints",
       "evidence": {
         "core": "unverified",
         "ui": "unverified",
         "behavior": "unverified",
         "device": "unverified"
-      }
+      },
+      "assessment": {
+        "composition": "alternate-profile",
+        "entryPoint": "alternate-entrypoint",
+        "relatedDeclarations": []
+      },
+      "notApplicableReason": "This optional bundle is not part of ANDROID_BUNDLES."
     },
     {
       "key": "optionalBundle/sdk-app/insert/tool-schedule",
@@ -8763,16 +8829,22 @@
       "sources": [
         "packages/bundle/sdk-app/cordis.patch.yml"
       ],
-      "status": "unassessed",
+      "status": "not-applicable",
       "android": [],
-      "note": "Declared by the 0.2.2 bundles. Android composes the base and Web bundles, so this declaration has no reviewed Android mapping yet.",
+      "note": "Android starts the native carrier over base and web-app, not this optional bundle; the declaration configures an alternative application launch.",
       "capability": "alternate-entrypoints",
       "evidence": {
         "core": "unverified",
         "ui": "unverified",
         "behavior": "unverified",
         "device": "unverified"
-      }
+      },
+      "assessment": {
+        "composition": "alternate-profile",
+        "entryPoint": "alternate-entrypoint",
+        "relatedDeclarations": []
+      },
+      "notApplicableReason": "This optional bundle is not part of ANDROID_BUNDLES."
     },
     {
       "key": "optionalBundle/sdk-app/insert/tool-ask-user",
@@ -8781,16 +8853,22 @@
       "sources": [
         "packages/bundle/sdk-app/cordis.patch.yml"
       ],
-      "status": "unassessed",
+      "status": "not-applicable",
       "android": [],
-      "note": "Declared by the 0.2.2 bundles. Android composes the base and Web bundles, so this declaration has no reviewed Android mapping yet.",
+      "note": "Android starts the native carrier over base and web-app, not this optional bundle; the declaration configures an alternative application launch.",
       "capability": "alternate-entrypoints",
       "evidence": {
         "core": "unverified",
         "ui": "unverified",
         "behavior": "unverified",
         "device": "unverified"
-      }
+      },
+      "assessment": {
+        "composition": "alternate-profile",
+        "entryPoint": "alternate-entrypoint",
+        "relatedDeclarations": []
+      },
+      "notApplicableReason": "This optional bundle is not part of ANDROID_BUNDLES."
     },
     {
       "key": "optionalBundle/sdk-app/insert/present",
@@ -8799,16 +8877,22 @@
       "sources": [
         "packages/bundle/sdk-app/cordis.patch.yml"
       ],
-      "status": "unassessed",
+      "status": "not-applicable",
       "android": [],
-      "note": "Declared by the 0.2.2 bundles. Android composes the base and Web bundles, so this declaration has no reviewed Android mapping yet.",
+      "note": "Android starts the native carrier over base and web-app, not this optional bundle; the declaration configures an alternative application launch.",
       "capability": "alternate-entrypoints",
       "evidence": {
         "core": "unverified",
         "ui": "unverified",
         "behavior": "unverified",
         "device": "unverified"
-      }
+      },
+      "assessment": {
+        "composition": "alternate-profile",
+        "entryPoint": "alternate-entrypoint",
+        "relatedDeclarations": []
+      },
+      "notApplicableReason": "This optional bundle is not part of ANDROID_BUNDLES."
     },
     {
       "key": "optionalBundle/sdk-app/insert/file-reference-local",
@@ -8817,16 +8901,22 @@
       "sources": [
         "packages/bundle/sdk-app/cordis.patch.yml"
       ],
-      "status": "unassessed",
+      "status": "not-applicable",
       "android": [],
-      "note": "Declared by the 0.2.2 bundles. Android composes the base and Web bundles, so this declaration has no reviewed Android mapping yet.",
+      "note": "Android starts the native carrier over base and web-app, not this optional bundle; the declaration configures an alternative application launch.",
       "capability": "alternate-entrypoints",
       "evidence": {
         "core": "unverified",
         "ui": "unverified",
         "behavior": "unverified",
         "device": "unverified"
-      }
+      },
+      "assessment": {
+        "composition": "alternate-profile",
+        "entryPoint": "alternate-entrypoint",
+        "relatedDeclarations": []
+      },
+      "notApplicableReason": "This optional bundle is not part of ANDROID_BUNDLES."
     }
   ],
   "sourceDigestPolicy": "SHA256 of the corresponding inert YAML row encoded as sorted object keys, preserved array order and typed scalar values. Comments and YAML key order do not affect the digest; config, disabled expressions and nested declarations do.",

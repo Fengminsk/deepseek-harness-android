@@ -22,7 +22,7 @@ const readPatch = async path => load(await readFile(path, 'utf8'), { schema })
 const plugins = (patch, id) => patch.flatMap(row => row.insert ?? [])
   .find(entry => entry.id === id).config.plugins
 const delegationIds = [
-  'tool-subagent-control', 'tool-subagent-list-agents', 'tool-subagent', 'tool-subagent-fork',
+  'tool-subagent-control', 'tool-subagent', 'tool-subagent-fork',
 ]
 const portableIds = ['agent-instructions', 'time-context', 'tool-fs-search', 'tool-jobs',
   'skill-filesystem', 'tool-skill', 'tool-todo', 'present',
@@ -185,3 +185,4 @@ for (const id of ['ptc-runtime', 'workflow-ptc', 'tool-workflow']) {
     })
   }
 }
+

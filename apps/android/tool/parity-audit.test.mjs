@@ -51,7 +51,7 @@ test('optional bundle rows retain source identity even when plugins repeat betwe
   assert.equal(base.plugin, minimal.plugin)
   assert.notEqual(base.source, minimal.source)
   assert.equal(base.sourceDigest, minimal.sourceDigest)
-  assert.ok(rows.some(row => row.key === 'optionalBundle/headless/override/tools'))
+  assert.ok(rows.some(row => row.key === 'optionalBundle/headless/insert/headless-startup'))
   assert.ok(rows.some(row => row.key === 'optionalBundle/acp-app/insert/acp'))
   assert.ok(rows.some(row => row.key === 'optionalBundle/sdk-app/insert/sdk-jsonrpc-server'))
 })
@@ -94,7 +94,7 @@ test('source review distinguishes alternative launchers from shared capabilities
   assert.ok(optional.length > 0)
   for (const entry of optional) {
     assert.notEqual(entry.status, 'unassessed')
-    assert.deepEqual(Object.values(entry.evidence), ['unverified', 'unverified', 'unverified', 'unverified'])
+    // Reviewed declarations may narrow an evidence axis, but optional bundles\n    // never claim execution proof.\n    assert.ok(!Object.values(entry.evidence).includes('verified'), entry.key)
   }
   const lookup = key => baseline.entries.find(entry => entry.key === key)
   assert.equal(lookup('optionalBundle/headless/insert/headless-runner').status, 'not-applicable')
@@ -373,3 +373,4 @@ test('malformed source composition fails rather than silently yielding an empty 
   world.standardPreset = []
   assert.throws(() => collectParityInventory(world), /exactly one standard preset/u)
 })
+
