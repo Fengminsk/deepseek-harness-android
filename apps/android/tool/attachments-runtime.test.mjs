@@ -61,7 +61,7 @@ test('native selected bytes produce a real DSH receipt and unchanged persistent 
     const id = await selected(bytes)
     const receipt = await bridge.prepare({ sessionId: 'one', id })
     assert.equal(receipt.file.attachmentId, `sha256:${createHash('sha256').update(bytes).digest('hex')}`)
-    assert.deepEqual(uploads.resolve(agents.get('one'), receipt.receiptId), receipt.file)
+    assert.deepEqual(uploads.resolve(agents.get('one'), receipt.receiptId), { type: 'file', attachment: receipt.file })
     assert.deepEqual(await readFile(store.fileHostPath(receipt.file)), bytes)
     assert.deepEqual(await bridge.content('one', [id]), [{ type: 'file', receiptId: receipt.receiptId }])
     assert.deepEqual(await bridge.commandContent('one', [id]), await bridge.content('one', [id]))
@@ -169,8 +169,9 @@ test('mixed image/file command and prompt content preserves attachment order and
     assert.deepEqual(parts.map(part => part.type), ['file', 'image', 'file'])
     assert.equal(parts[0].receiptId, file.receiptId)
     assert.deepEqual(await bridge.commandContent('one', [fileId, imageId, fileId]), parts)
+    // resolve() already returns the content block the wire expects.
     const admitted = await store.admitPromptContent(parts.map(part => part.type === 'file'
-      ? { type: 'file', attachment: uploads.resolve(agents.get('one'), part.receiptId) } : part))
+      ? uploads.resolve(agents.get('one'), part.receiptId) : part))
     assert.deepEqual(admitted.map(part => part.type), ['file', 'image', 'file'])
     assert.deepEqual(admitted[0].attachment, file.file)
   })
@@ -422,3 +423,5 @@ test('remove aborts an active stream and does not leave a sendable receipt', asy
     await assert.rejects(readFile(join(root, `${id}.bin`)), { code: 'ENOENT' })
   })
 })
+
+
