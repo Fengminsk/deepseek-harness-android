@@ -15,6 +15,7 @@ import { join } from 'node:path'
 import { registerLinuxVmTool, registerLinuxImportTool, registerLinuxExportTool, registerLinuxInspectTool } from '../runtime/tool-linux-vm.mjs'
 import AndroidFileSystem from '../runtime/android-filesystem.mjs'
 import { NativeLinuxVm } from '../runtime/native-linux-vm.mjs'
+import { executeToolCall } from './tool-batch-fixture.mjs'
 import { MockAdapter, textResponse, toolCallResponse } from '../../../packages/core/agent-loop/tests/mock-adapter.ts'
 
 const expected = JSON.parse(await readFile(new URL('./expected/linux-vm-tools.expected.json', import.meta.url), 'utf8'))
@@ -54,7 +55,7 @@ async function setup(t, { mode = 'workspace-write', policy = true, android = fal
         bytes: 3, sha256: 'a'.repeat(64), diskCommitted: false, filePublished: true }
     },
   }
-  const execute = (name, args, target = agent) => ctx.tools.execute({ agent: target,
+  const execute = (name, args, target = agent) => executeToolCall(ctx.tools, { agent: target,
     signal: new AbortController().signal, callId: `linux-${calls.length}`, name, arguments: args })
   return { ctx, agent, owner, calls, root, workspace, execute }
 }
@@ -178,7 +179,7 @@ test('cancelled ToolRuntime execution retains a completed disk commit and native
   } })
   t.after(() => owner.dispose())
   registerLinuxVmTool(ctx, owner, true)
-  const result = await ctx.tools.execute({ agent, signal: abort.signal, callId: 'commit-wins', name: 'linux_exec',
+  const result = await executeToolCall(ctx.tools, { agent, signal: abort.signal, callId: 'commit-wins', name: 'linux_exec',
     arguments: { command: 'echo persisted > state' } })
   assert.equal(result.error.info.code, TOOL_ABORTED)
   assert.deepEqual(contextReceipt(result), { version: 1, tool: 'linux_exec', callId: 'commit-wins',
@@ -198,7 +199,7 @@ test('cancelled export retains host publication without claiming a guest disk co
   } })
   t.after(() => owner.dispose())
   registerLinuxExportTool(ctx, owner, true, root)
-  const result = await ctx.tools.execute({ agent, signal: abort.signal, callId: 'export-wins', name: 'linux_export',
+  const result = await executeToolCall(ctx.tools, { agent, signal: abort.signal, callId: 'export-wins', name: 'linux_export',
     arguments: { source: 'report', destination: 'report' } })
   assert.equal(result.error.info.code, TOOL_ABORTED)
   const audit = contextReceipt(result)
@@ -245,7 +246,7 @@ test('lost final receipt after caller cancellation remains unknown despite settl
   } })
   t.after(() => owner.dispose())
   registerLinuxVmTool(ctx, owner, true)
-  const result = await ctx.tools.execute({ agent, signal: abort.signal, callId: 'receipt-lost', name: 'linux_exec',
+  const result = await executeToolCall(ctx.tools, { agent, signal: abort.signal, callId: 'receipt-lost', name: 'linux_exec',
     arguments: { command: 'echo data > state' } })
   assert.equal(result.error.info.code, 'linux-vm/outcome-uncertain')
   const audit = contextReceipt(result)
@@ -309,7 +310,7 @@ test('real ToolRuntime executes a guest script with its registered Agent identit
   const { ctx, agent, owner, calls } = await setup(t)
   registerLinuxVmTool(ctx, owner, true)
   const signal = new AbortController().signal
-  const result = await ctx.tools.execute({ agent, signal, callId: 'linux-1', name: 'linux_exec',
+  const result = await executeToolCall(ctx.tools, { agent, signal, callId: 'linux-1', name: 'linux_exec',
     arguments: { command: 'uname -sm', timeoutMs: 30000 } })
   assert.equal(result.isError, false, JSON.stringify(result))
   assert.equal(calls.length, 1)
@@ -323,7 +324,7 @@ test('tool validation rejects a model-selected session or Android working direct
   const { ctx, agent, owner, calls } = await setup(t)
   registerLinuxVmTool(ctx, owner, true)
   for (const extra of [{ sessionId: 'another-conversation' }, { cwd: '/data/user/0/com.minnnng.dsh_android' }, { persistChanges: true }]) {
-    const result = await ctx.tools.execute({ agent, signal: new AbortController().signal,
+    const result = await executeToolCall(ctx.tools, { agent, signal: new AbortController().signal,
       callId: 'linux-reject', name: 'linux_exec', arguments: { command: 'id', ...extra } })
     assert.equal(result.isError, true)
   }
@@ -481,3 +482,4 @@ test('export rejects a destination alias outside the current session workspace',
   assert.equal((await execute('linux_export', { source: 'report.txt', destination: 'redirect/report.txt' })).isError, true)
   assert.deepEqual(calls, [])
 })
+
