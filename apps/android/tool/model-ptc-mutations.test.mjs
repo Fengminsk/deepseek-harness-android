@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { executeToolCall } from './tool-batch-fixture.mjs'
 import test from 'node:test'
 import { randomUUID } from 'node:crypto'
 import { mkdtemp, mkdir, readFile, rm, readdir, glob, writeFile } from 'node:fs/promises'
@@ -77,7 +78,7 @@ async function fixture(t, { persistence = true } = {}) {
       sandboxPolicy: ctx.sandboxPolicy } })
   t.after(async () => { await owner.close(); await callbacks.dispose() })
   registerAndroidPtcTool(ctx, { owner, available: () => true })
-  const invoke = code => ctx.tools.execute({ name: 'android_ptc', callId: `parent-${randomUUID()}`,
+  const invoke = code => executeToolCall(ctx.tools, { name: 'android_ptc', callId: `parent-${randomUUID()}`,
     arguments: { description: 'Model PTC mutation acceptance', code }, agent, signal: new AbortController().signal })
   const upload = async () => {
     const ref = await ctx.attachments.saveFile({ name: 'attachment.txt', data: Buffer.from('attachment data\n') })
@@ -138,3 +139,5 @@ test('model PTC cannot start a mutation without a participating Session persiste
   assert.equal(result.isError, true)
   await assert.rejects(readFile(join(f.workspace, 'unlogged.txt')), { code: 'ENOENT' })
 })
+
+

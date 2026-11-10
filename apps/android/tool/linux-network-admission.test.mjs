@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { executeToolCall } from './tool-batch-fixture.mjs'
 import test from 'node:test'
 import { randomUUID } from 'node:crypto'
 import { mkdtemp, rm, readdir, readFile } from 'node:fs/promises'
@@ -62,7 +63,7 @@ async function fixture(t, { persistence = true, policy = 'ask', mode = 'workspac
   const owner = new NativeLinuxVm(transport)
   t.after(() => owner.dispose())
   registerLinuxVmTool(ctx, owner, true, admission)
-  const invoke = (args = input, signal = new AbortController().signal) => ctx.tools.execute({
+  const invoke = (args = input, signal = new AbortController().signal) => executeToolCall(ctx.tools, {
     agent, name: 'linux_exec', arguments: args, callId: randomUUID(), signal })
   return { ctx, agent, root, requests, invoke, bridge, admission, owner }
 }
@@ -256,3 +257,5 @@ test('real AgentLoop records one approval pair and the native correlation withou
   }
   assert.deepEqual(projection, JSON.parse(await readFile(new URL('./expected/linux-network-approval.expected.json', import.meta.url), 'utf8')))
 })
+
+

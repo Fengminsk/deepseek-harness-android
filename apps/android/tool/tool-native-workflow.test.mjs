@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { executeToolCall } from './tool-batch-fixture.mjs'
 import test from 'node:test'
 import { Context } from '@deepseek-ai/cordis'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
@@ -43,7 +44,7 @@ async function setup(t) {
       },
     })
   } }
-  const execute = (arguments_ = args, signal = new AbortController().signal) => ctx.tools.execute({
+  const execute = (arguments_ = args, signal = new AbortController().signal) => executeToolCall(ctx.tools, {
     callId: 'workflow-model', name: 'workflow', arguments: arguments_, agent, signal,
   })
   return { ctx, agent, owner, starts, execute }
@@ -168,3 +169,5 @@ test('closed availability and changed registrations cannot dispatch native work'
   assert.equal((await execute()).isError, true)
   assert.deepEqual(starts, [])
 })
+
+
