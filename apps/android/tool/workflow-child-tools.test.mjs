@@ -28,6 +28,7 @@ import { WorkflowGuestHostPort } from '../runtime/workflow-guest-host-port.mjs'
 import { registerLinuxVmTool, registerLinuxImportTool, registerLinuxExportTool, registerLinuxInspectTool,
   isFirstPartyLinuxDefinition } from '../runtime/tool-linux-vm.mjs'
 import { NativeLinuxVm } from '../runtime/native-linux-vm.mjs'
+import { executeToolCall } from './tool-batch-fixture.mjs'
 
 const NAMES = ['edit', 'glob', 'grep', 'read', 'web_fetch', 'web_search', 'write']
 const schemaNames = request => (request.tools ?? []).map(tool => tool.name).sort()
@@ -217,7 +218,7 @@ test('write and edit identities reject copies, replacement registrations and dis
   // A same-object parent re-registration is a new permission identity.
   const original = f.ctx.tools.get('write', f.parent)
   const remove = f.parent.ctx.tools.register(original)
-  const result = await f.ctx.tools.execute({ name: 'write', callId: 'replaced',
+  const result = await executeToolCall(f.ctx.tools, { name: 'write', callId: 'replaced',
     arguments: { file_path: 'replacement.txt', content: 'bad' }, agent: run.child, signal: new AbortController().signal })
   assert.equal(result.isError, true)
   assert.match(JSON.stringify(result), /not authorized/)
@@ -237,7 +238,7 @@ test('a retired or cold-resumed workflow child has no inherited file permissions
   f.backend.close()
   await f.ctx.subagents.sendMessage(f.parent, SessionId(run.child.id), [{ type: 'text', text: 'Continue' }],
     { signal: new AbortController().signal })
-  await f.ctx.subagents.waitForChildren(f.parent)
+  await f.ctx.subagents.waitForTreeWork(f.parent)
   assert.deepEqual(schemaNames(f.adapter.requests.at(-1)), [])
   assert.match(JSON.stringify(f.adapter.requests.at(-1)), /alpha/)
 })
@@ -257,7 +258,7 @@ test('structured child can read the workspace before submitting its own validate
 test('revocation, parent visibility and changed child directories deny new real ToolRuntime dispatches', async t => {
   const f = await fixture(t, ['hang'])
   const run = await f.start()
-  const call = (name, args) => f.ctx.tools.execute({ name, arguments: args, agent: run.child,
+  const call = (name, args) => executeToolCall(f.ctx.tools, { name, arguments: args, agent: run.child,
     callId: randomUUID(), signal: new AbortController().signal })
   const remove = f.parent.ctx.tools.restrict({ deny: ['web_fetch'] })
   assert.equal((await call('web_fetch', { url: 'https://example.test/page' })).isError, true)
@@ -333,7 +334,7 @@ test('structured output rejects a later same-name registration before its execut
   removeOriginal()
   let executed = false
   run.child.ctx.tools.register({ ...original, execute: async () => { executed = true; return { recorded: true } } })
-  const result = await f.ctx.tools.execute({ name: 'structured_output', arguments: { answer: 'forged' },
+  const result = await executeToolCall(f.ctx.tools, { name: 'structured_output', arguments: { answer: 'forged' },
     agent: run.child, callId: 'replaced-result', signal: new AbortController().signal })
   assert.equal(result.isError, true)
   assert.equal(executed, false)
@@ -485,7 +486,7 @@ test('delegated Linux transfers repeat parent authorization after asynchronous f
     return result
   } })
   try {
-    const result = await f.ctx.tools.execute({ agent: run.child, name: 'linux_import', callId: 'late-revoke',
+    const result = await executeToolCall(f.ctx.tools, { agent: run.child, name: 'linux_import', callId: 'late-revoke',
       arguments: { source: 'input.txt', destination: 'input.txt' }, signal: new AbortController().signal })
     assert.equal(result.isError, true)
     assert.match(JSON.stringify(result), /not authorized/)
@@ -501,7 +502,7 @@ test('Linux factory identity, activation directory and reservation remain live a
   const native = linuxFixture(t)
   const f = await fixture(t, ['hang'], { linux: native.owner, projectDirectory: 'project' })
   const run = await f.start()
-  const execute = (name, args) => f.ctx.tools.execute({ agent: run.child, name, arguments: args,
+  const execute = (name, args) => executeToolCall(f.ctx.tools, { agent: run.child, name, arguments: args,
     callId: randomUUID(), signal: new AbortController().signal })
   const original = f.ctx.tools.get('linux_exec', f.parent)
   assert.equal(isFirstPartyLinuxDefinition(original, run.child), true)
@@ -537,7 +538,7 @@ test('cold-resumed workflow child cannot reconstruct Linux authority from its pe
   f.backend.close()
   await f.ctx.subagents.sendMessage(f.parent, SessionId(run.child.id), [{ type: 'text', text: 'Continue' }],
     { signal: new AbortController().signal })
-  await f.ctx.subagents.waitForChildren(f.parent)
+  await f.ctx.subagents.waitForTreeWork(f.parent)
   assert.deepEqual(schemaNames(f.adapter.requests.at(-1)), [])
   assert.equal(native.calls.length, 1)
   assert.equal(native.inspections.length, 1)
@@ -590,7 +591,7 @@ test('unloading delegated authority during Linux file preparation cannot fall ba
       return result
     } })
     try {
-      const result = await f.ctx.tools.execute({ agent: run.child, name, callId: 'owner-retired',
+      const result = await executeToolCall(f.ctx.tools, { agent: run.child, name, callId: 'owner-retired',
         arguments: { source: 'input.txt', destination: 'output.txt' }, signal: new AbortController().signal })
       assert.equal(f.ctx.get('androidWorkflowChildTools'), undefined)
       assert.equal(isFirstPartyLinuxDefinition(f.ctx.tools.get(name, f.parent), f.parent), true)
@@ -634,7 +635,7 @@ test('Linux checks the final canonical transfer target when both a directory lin
       return result
     } })
     try {
-      const result = await f.ctx.tools.execute({ agent: run.child, name, callId: 'changed-canonical-target',
+      const result = await executeToolCall(f.ctx.tools, { agent: run.child, name, callId: 'changed-canonical-target',
         arguments: name === 'linux_import' ? { source: 'transfer/input.txt', destination: 'input.txt' }
           : { source: 'input.txt', destination: 'transfer/output.txt' }, signal: new AbortController().signal })
       assert.equal(result.isError, true, name)
@@ -647,3 +648,5 @@ test('Linux checks the final canonical transfer target when both a directory lin
     }
   }
 })
+
+

@@ -278,10 +278,14 @@ export class SubagentRuntime extends TypertRemoteService {
     if (spec.outputSchema !== undefined) assertObjectJsonSchema(spec.outputSchema)
     const prepare = provider.prepareContinuable?.bind(provider)
     if (prepare !== undefined) {
-      return manager.startLocal(spec, (request) => {
+      // The declared parent owns the created child even when the caller runs
+      // outside that parent's initiator scope, such as a native host callback.
+      const agents = this.ctx.get('agents')
+      if (agents === undefined) throw new SubagentError('subagent creation requires the Agent registry', 'UNAVAILABLE')
+      return agents.withInitiator(spec.parent, () => manager.startLocal(spec, (request) => {
         this.assertProviderCurrent(provider)
         return prepare(request)
-      })
+      }))
     }
     // oxlint-disable-next-line typescript/no-non-null-assertion -- registerProvider requires start when prepareContinuable is absent.
     const start = provider.start!.bind(provider)
@@ -602,3 +606,4 @@ export class SubagentRuntime extends TypertRemoteService {
 }
 
 export default SubagentRuntime
+

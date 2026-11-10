@@ -173,13 +173,11 @@ export function createWorkflowSubagentBackend({ ctx, parent, runId, authorize })
           delivery: 'caller',
           childId,
           signal,
-          request: {
-            parent,
-            prompt: [{ type: 'text', text: request.prompt }],
-            agentPreset: request.schema === undefined ? PRESET_ID : STRUCTURED_PRESET_ID,
-            agentOptions: route,
-            ...(request.schema === undefined ? {} : { outputSchema: request.schema }),
-          },
+          parent,
+          prompt: [{ type: 'text', text: request.prompt }],
+          agentPreset: request.schema === undefined ? PRESET_ID : STRUCTURED_PRESET_ID,
+          agentOptions: route,
+          ...(request.schema === undefined ? {} : { outputSchema: request.schema }),
         })
       } catch (error) {
         release()
