@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { executeToolCall } from './tool-batch-fixture.mjs'
 import test from 'node:test'
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -193,7 +194,7 @@ test('real parent ToolRuntime dispatches file, search and webpage subcalls with 
   assert.equal(ctx.tools.get('android_ptc', agent), undefined)
   available = true
   assert.equal(registerAndroidPtcTool(ctx, { owner, available: () => available }), true)
-  const outcome = await ctx.tools.execute({ name: 'android_ptc', callId: 'readonly-parent',
+  const outcome = await executeToolCall(ctx.tools, { name: 'android_ptc', callId: 'readonly-parent',
     arguments: { description: 'Aggregate file and web data', code:
       'const r=await tools.read({file_path:"input.txt",limit:2}); const g=await tools.glob({pattern:"*.txt"}); const w=await tools.web_fetch({url:"https://example.test/page"}); return {line:r.lines[0].text,paths:g.paths,web:w.body.content.slice(0,9),truncated:w.truncated}' },
     agent, signal: new AbortController().signal })
@@ -222,7 +223,7 @@ test('real parent ToolRuntime dispatches file, search and webpage subcalls with 
   agent.session.append('user/message', createUserMessage({ content: [{ type: 'file', attachment: ref }],
     source: { kind: 'user' } }), { surfaceOp: 'append' })
   const identity = JSON.stringify({ attachmentId: ref.attachmentId, name: ref.name })
-  const apk = await ctx.tools.execute({ name: 'android_ptc', callId: 'apk-parent',
+  const apk = await executeToolCall(ctx.tools, { name: 'android_ptc', callId: 'apk-parent',
     arguments: { description: 'Read APK declarations', code:
       `const result=await tools.android_attachments({...${identity},action:'inspect_apk',part:'manifest',limit:1});return result` },
     agent, signal: new AbortController().signal })
@@ -242,7 +243,7 @@ test('real parent ToolRuntime dispatches file, search and webpage subcalls with 
   agent.session.append('user/message', createUserMessage({ content: [{ type: 'file', attachment: overflowRef }],
     source: { kind: 'user' } }), { surfaceOp: 'append' })
   const overflowIdentity = JSON.stringify({ attachmentId: overflowRef.attachmentId, name: overflowRef.name })
-  const retry = await ctx.tools.execute({ name: 'android_ptc', callId: 'apk-retry-parent',
+  const retry = await executeToolCall(ctx.tools, { name: 'android_ptc', callId: 'apk-retry-parent',
     arguments: { description: 'Retry a smaller APK page', code:
       `const args={...${overflowIdentity},action:'inspect_apk',part:'manifest'};let recovery;try{await tools.android_attachments({...args,limit:100})}catch(e){recovery=e.message}return {recovery,page:await tools.android_attachments({...args,limit:1})}` },
     agent, signal: new AbortController().signal })
@@ -254,8 +255,9 @@ test('real parent ToolRuntime dispatches file, search and webpage subcalls with 
   assert.equal(retryAudit[1].data.isError, false)
   const callbackCount = delivered.length
   available = false
-  const denied = await ctx.tools.execute({ name: 'android_ptc', callId: 'closed-parent',
+  const denied = await executeToolCall(ctx.tools, { name: 'android_ptc', callId: 'closed-parent',
     arguments: { description: 'Must stay closed', code: 'return 1' }, agent, signal: new AbortController().signal })
   assert.equal(denied.isError, true)
   assert.equal(delivered.length, callbackCount)
 })
+
