@@ -25,6 +25,7 @@ const [
   { default: SessionProjectionRegistry },
   { default: SystemPrompt },
   { default: ToolRuntime },
+  NativeToolExecutor,
   ToolFs,
   { default: AndroidFileSystem },
 ] = await Promise.all([
@@ -33,6 +34,7 @@ const [
   staged('@deepseek-ai/dsh-session-projection'),
   staged('@deepseek-ai/dsh-system-prompt'),
   staged('@deepseek-ai/dsh-tools'),
+  staged('@deepseek-ai/dsh-tool-executor-native'),
   staged('@deepseek-ai/dsh-tool-fs'),
   import(source),
 ])
@@ -201,6 +203,7 @@ test('real model-facing file tools obey the protected-path provider boundary', a
   await ctx.plugin(SandboxPolicyService, { mode: 'workspace-write', workspaceRoot: workspace })
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(ToolRuntime)
+  await ctx.plugin(NativeToolExecutor)
   const provider = await ctx.plugin(AndroidFileSystem, { cwd: workspace })
   const tools = await ctx.plugin(ToolFs, { read: true, readImage: false, write: true, edit: true })
   t.after(async () => { await tools.dispose(); await provider.dispose() })
@@ -209,9 +212,13 @@ test('real model-facing file tools obey the protected-path provider boundary', a
     snapshotEvents() { return [] }, append() {},
   } }
   let serial = 0
-  const call = (name, args) => ctx.tools.execute({
-    name, arguments: args, agent, callId: `protected-${++serial}`, signal: new AbortController().signal,
-  })
+  const call = async (name, args) => {
+    const batch = await ctx.tools.execute({
+      calls: [{ type: 'tool-call', id: `protected-${++serial}`, name, arguments: JSON.stringify(args) }],
+      agent, signal: new AbortController().signal,
+    })
+    return batch.results[0].result
+  }
   const read = await call('read', { file_path: '.agents/instructions.md' })
   assert.equal(read.isError, false, JSON.stringify(read))
   const blockedWrite = await call('write', { file_path: '.codex/config.json', content: '{}' })
