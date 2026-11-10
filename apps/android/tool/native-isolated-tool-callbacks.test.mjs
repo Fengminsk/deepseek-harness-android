@@ -37,10 +37,14 @@ function setup(options = {}) {
   const safeEcho = { name: 'safe_echo' }
   const runtime = {
     get(name) { return name === 'safe_echo' ? safeEcho : undefined },
-    async execute(input) {
-      executions.push(input)
-      if (options.execute) return options.execute(input)
-      return { isError: false, content: [{ type: 'text', text: 'ok' }], value: input.arguments }
+    async execute(batch) {
+      executions.push(batch)
+      const block = batch.calls[0]
+      const single = { callId: block.id, name: block.name,
+        arguments: JSON.parse(block.arguments), agent: batch.agent, signal: batch.signal }
+      const result = await (options.execute?.(single)
+        ?? { isError: false, content: [{ type: 'text', text: 'ok' }], value: single.arguments })
+      return { results: [{ callId: block.id, result }], additionalContexts: [], concluded: false }
     },
   }
   const controller = new AbortController()
@@ -61,8 +65,8 @@ test('native admission binds before a guest callback and host dispatch remains p
   assert.ok(owner.methods[0].signal instanceof AbortSignal)
   assert.deepEqual(JSON.parse(JSON.stringify(await owner.callbacks.call(owner.request()))),
     { runId, callId: 1, value: { text: 'ok' } })
-  assert.equal(owner.executions[0].parent, owner.parent.token)
-  assert.equal(owner.executions[0].callId, 'root-call:ptc:1')
+  assert.equal(owner.executions[0].agent, owner.parent.agent)
+  assert.equal(owner.executions[0].calls[0].id, 'root-call:ptc:1')
   assert.deepEqual(owner.events.map(event => event.type),
     ['tool/ptc-dispatch-start', 'tool/ptc-dispatch'])
   assert.equal(await binding.close(), undefined)
@@ -201,3 +205,5 @@ test('queued and post-close callbacks cannot inherit the running call confirmati
   assert.deepEqual(await closing, { closed: true })
   assert.equal(owner.executions.length, 1)
 })
+
+
