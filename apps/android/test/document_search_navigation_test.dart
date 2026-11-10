@@ -5,6 +5,13 @@ import 'package:dsh_android/ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
+/// Reader teardown may cancel an already-settled read; the opened sequence is
+/// what these tests assert, so repeated cancels are filtered here.
+List<String> _methods(_SearchRuntime runtime) => runtime.calls
+    .map((call) => call.method)
+    .where((method) => method != 'documents.read.cancel')
+    .toList();
+
 class _SearchRuntime extends RuntimeController {
   _SearchRuntime(this.path) {
     phase = 'ready';
@@ -144,11 +151,11 @@ void main() {
       expect(page.root, 'a' * 64);
       expect(page.path, 'notes/中文/说明.txt');
       expect(page.name, '说明.txt');
-      expect(runtime.calls.last.params, {
-        'root': 'a' * 64,
-        'path': 'notes/中文/说明.txt',
-        'offset': 0,
-      });
+      final openParams = runtime.calls.last.params;
+      expect(openParams['root'], 'a' * 64);
+      expect(openParams['path'], 'notes/中文/说明.txt');
+      expect(openParams['offset'], 0);
+      expect(openParams['requestId'], isA<String>());
       expect(find.text('从文件开头读取的当前内容'), findsOneWidget);
 
       await _backToSearch(tester);
@@ -157,7 +164,7 @@ void main() {
         '中文🙂',
       );
       expect(find.text('中文🙂命中片段'), findsOneWidget);
-      expect(runtime.calls.map((call) => call.method), [
+      expect(_methods(runtime), [
         'documents.search',
         'documents.read',
       ]);
@@ -178,12 +185,12 @@ void main() {
     final page = tester.widget<TextFilePage>(find.byType(TextFilePage));
     expect(page.path, '');
     expect(page.name, '单独授权.txt');
-    expect(runtime.calls.last.params, {
-      'root': 'a' * 64,
-      'path': '',
-      'offset': 0,
-    });
-    expect(runtime.calls.map((call) => call.method), [
+    final openParams = runtime.calls.last.params;
+    expect(openParams['root'], 'a' * 64);
+    expect(openParams['path'], '');
+    expect(openParams['offset'], 0);
+    expect(openParams['requestId'], isA<String>());
+    expect(_methods(runtime), [
       'documents.search',
       'documents.read',
     ]);
@@ -213,7 +220,7 @@ void main() {
         await tester.pumpAndSettle();
         expect(find.byType(TextFilePage), findsNothing);
         expect(find.text('中文🙂命中片段'), findsOneWidget);
-        expect(runtime.calls.map((call) => call.method), ['documents.search']);
+        expect(_methods(runtime), ['documents.search']);
         expect(
           tester.widget<TextField>(find.byType(TextField)).controller!.text,
           '中文🙂',
@@ -243,7 +250,7 @@ void main() {
         tester.widget<TextField>(find.byType(TextField)).controller!.text,
         '中文🙂',
       );
-      expect(runtime.calls.map((call) => call.method), [
+      expect(_methods(runtime), [
         'documents.search',
         'documents.read',
       ]);

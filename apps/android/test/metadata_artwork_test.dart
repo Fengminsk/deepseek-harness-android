@@ -33,7 +33,7 @@ void main() {
     'original package SVG artwork is displayed at the requested size',
     (tester) async {
       final bytes = File(
-        '../../packages/experimental/agent-team-profile/icon.svg',
+        '../../packages/experimental/auto-review/icon.svg',
       ).readAsBytesSync();
       await mount(
         tester,

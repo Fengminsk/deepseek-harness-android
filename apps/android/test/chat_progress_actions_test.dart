@@ -1,3 +1,4 @@
+import 'package:dsh_android/chat_execution_chain.dart';
 import 'package:dsh_android/chat_messages.dart';
 import 'package:dsh_android/chat_progress.dart';
 import 'package:dsh_android/chat_projection.dart';
@@ -93,10 +94,20 @@ void main() {
           running: true,
         ),
       );
+      ChatExecutionHeader header() => tester.widget<ChatExecutionHeader>(
+        find.byType(ChatExecutionHeader),
+      );
 
       await tester.pumpWidget(view());
-      expect(find.text('正在读取文件'), findsOneWidget);
-      expect(find.text('正在处理'), findsNothing);
+      await tester.pumpAndSettle();
+      // The root PTC call is the only inline step; the nested dispatch must not
+      // fabricate a second activity label beside the chain.
+      expect(find.text('正在读取文件'), findsNothing);
+      expect(header().chain.active, isTrue);
+      expect(header().expanded, isTrue);
+      final step = find.byType(ChatExecutionStep);
+      expect(step, findsOneWidget);
+      expect(tester.widget<ChatExecutionStep>(step).entry.tool!.callId, 'root');
 
       events.add(
         tools.toolEvent(4, 'tool/ptc-dispatch', {
@@ -111,14 +122,21 @@ void main() {
         }),
       );
       await tester.pumpWidget(view());
+      await tester.pumpAndSettle();
       expect(find.text('正在读取文件'), findsNothing);
-      expect(find.text('正在处理'), findsOneWidget);
+      expect(find.byType(ChatExecutionStep), findsOneWidget);
+      expect(header().chain.active, isTrue);
 
       events.add(tools.resultEvent(5, id: 'root'));
       await tester.pumpWidget(view());
+      await tester.pumpAndSettle();
+      // The turn stays open, so the chain keeps its completed-call state without
+      // reviving a stale child status.
       expect(find.text('正在处理'), findsNothing);
-      expect(find.text('正在思考'), findsOneWidget);
+      expect(find.text('正在思考'), findsNothing);
+      expect(find.byType(ChatExecutionHeader), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );
 }
+

@@ -1,4 +1,5 @@
 import 'package:dsh_android/chat_message_actions.dart';
+import 'package:dsh_android/chat_execution_chain.dart';
 import 'package:dsh_android/chat_messages.dart';
 import 'package:dsh_android/chat_projection.dart';
 import 'package:dsh_android/chat_skills.dart';
@@ -129,12 +130,18 @@ void main() {
     },
   );
 
-  testWidgets('skill tool record uses its specialized row in actual timeline', (
+  testWidgets('skill tool record renders as a chain step in the actual timeline', (
     tester,
   ) async {
     final events = <Json>[
-      callEvent(1, name: 'skill', args: {'name': 'review'}),
-      resultEvent(2, text: 'Follow the recorded review instructions.'),
+      fixture.input(0, '读一下技能'),
+      fixture.event(1, 'turn/start', {'turn': 1}),
+      callEvent(2, name: 'skill', args: {'name': 'review'}),
+      resultEvent(3, text: 'Follow the recorded review instructions.'),
+      fixture.event(4, 'turn/end', {
+        'turn': 1,
+        'reason': {'kind': 'completed'},
+      }),
     ];
     final scroll = ScrollController();
     addTearDown(scroll.dispose);
@@ -149,13 +156,17 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expect(find.byType(ChatSkillToolCard), findsOneWidget);
-    await tester.tap(find.text('加载技能'));
+    // Tool calls fold into the execution chain; the standalone skill card is
+    // replaced by one step that carries the recorded call.
+    expect(find.text('已完成'), findsOneWidget);
+    expect(find.byType(ChatSkillToolCard), findsNothing);
+    await tester.tap(find.byType(ChatExecutionHeader));
     await tester.pumpAndSettle();
-    expect(
-      find.text('Follow the recorded review instructions.'),
-      findsOneWidget,
+    final steps = tester.widgetList<ChatExecutionStep>(
+      find.byType(ChatExecutionStep),
     );
+    expect(steps.map((step) => step.entry.tool?.name), contains('skill'));
+    expect(find.text('使用技能'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -235,3 +246,4 @@ void main() {
     },
   );
 }
+

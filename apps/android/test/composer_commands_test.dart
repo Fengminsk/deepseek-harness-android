@@ -973,6 +973,18 @@ void main() {
     'session model applies its own session without changing the new-chat default',
     (tester) async {
       phone(tester);
+      // The page reads the recorded reasoning preference over the native
+      // channel before its catalog; an unmocked channel keeps that read pending.
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        RuntimeController.channel,
+        (call) async => null,
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          RuntimeController.channel,
+          null,
+        ),
+      );
       final runtime = _Runtime();
       addTearDown(runtime.dispose);
       final defaultModel = runtime.model;
