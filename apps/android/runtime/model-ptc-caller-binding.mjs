@@ -88,7 +88,7 @@ export function createAppOwnedModelPtcCaller({ bridge, callbacks, runtime, revie
       // disposed/re-registered identical definition never inherits review.
       const boundRuntime = Object.freeze({
         get(name, agent) { return exact(name, agent) ? runtime.get(name, agent) : undefined },
-        execute(input) {
+        async execute(input) {
           // The merged runtime dispatches call batches; every call must still
           // resolve to the registration this review captured.
           if (input === null || typeof input !== 'object'
@@ -98,7 +98,17 @@ export function createAppOwnedModelPtcCaller({ bridge, callbacks, runtime, revie
               || !exact(call.name, input.agent))) {
             throw new TypeError('Reviewed Android PTC tool registration changed')
           }
-          return runtime.execute(input)
+          // Conditional registrations are executable only through a resolved
+          // tool set; resolve the parent Agent's conditions for this batch.
+          const selection = parent.agent.model?.current?.() ?? { provider: '', model: '' }
+          const toolSet = await runtime.resolve({
+            agent: parent.agent, modelSelection: selection, signal: input.signal,
+          })
+          try {
+            return await runtime.execute({ ...input, toolSet })
+          } finally {
+            toolSet.dispose()
+          }
         },
       })
       const authorizeTool = async input => {
