@@ -331,7 +331,12 @@ async function recompose(
   // The rows stopped first, which a failure before the generation applies puts back.
   let stopped: StoppedRow[] = []
   try {
+    // The caller may hold a service proxy of the boot context rather than the
+    // exact object that mounted the include; fall back to the live include row.
+    const loader = ctx.get('loader')
     const entry = bootstrapIncludes.get(ctx)
+      ?? (loader === undefined ? undefined
+        : [...loader.entries()].find(candidate => candidate.options.id === 'include'))
     if (entry === undefined) throw new Error(`${binName}: profile reload requires the root Include entry`)
     // Reading the prior state imports nothing, so plugin code does not run before the next resolution publishes.
     const previousFailures = (await inactiveEntries(ctx, false)).map((failure): RecordedFailure => ({
@@ -1264,3 +1269,5 @@ export async function boot(
     await diagnostics.fiber.dispose()
   }
 }
+
+
