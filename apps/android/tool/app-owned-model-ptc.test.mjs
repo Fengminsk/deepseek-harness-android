@@ -73,8 +73,12 @@ function setup(options = {}) {
   const bridge = createNativeIsolatedExecutionBridge(transport)
   const safeEcho = { name: 'safe_echo' }
   const runtime = { get(name) { return name === 'safe_echo' ? safeEcho : undefined },
-    async execute(input) { return { isError: false, content: [{ type: 'text', text: 'ok' }],
-      value: input.arguments } } }
+    async execute(batch) {
+      const block = batch.calls[0]
+      return { results: [{ callId: block.id, result: { isError: false,
+        content: [{ type: 'text', text: 'ok' }], value: JSON.parse(block.arguments) } }],
+      additionalContexts: [], concluded: false }
+    } }
   const parent = { token: Symbol('parent'), callId: 'model-call',
     signal: new AbortController().signal,
     agent: { session: { id: sessionId,
