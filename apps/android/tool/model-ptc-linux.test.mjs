@@ -1,3 +1,4 @@
+import { executeToolCall } from './tool-batch-fixture.mjs'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createHash, randomUUID } from 'node:crypto'
@@ -178,7 +179,7 @@ async function fixture(t, options = {}) {
   return { ...state, services, linux, owner, journal, callbackClosures,
     get flushes() { return flushes },
     invoke(code, signal = new AbortController().signal) {
-      return ctx.tools.execute({ agent, signal, callId: randomUUID(), name: 'android_ptc',
+      return executeToolCall(ctx.tools, { agent, signal, callId: randomUUID(), name: 'android_ptc',
         arguments: { code, description: 'Analyze workspace data through reviewed Linux tools' } })
     },
   }

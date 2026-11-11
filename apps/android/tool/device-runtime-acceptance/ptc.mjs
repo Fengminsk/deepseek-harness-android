@@ -1,3 +1,4 @@
+import { executeToolCall } from '../tool-batch-fixture.mjs'
 import { AppDocumentReads } from '../../runtime/document-reads.mjs'
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
@@ -113,7 +114,7 @@ async function runPtcChecks({ ctx, transport, agent, workspace, callbackRouting,
           ptcRequests.slice(initialRequests), callbackClosures) }, elapsedMs: Date.now() - started }) }
   }
   const reads = new AppDocumentReads(transport, { maxRequests: () => 2, timeoutMs: () => 30000 })
-  const invoke = (code, signal = new AbortController().signal) => ctx.tools.execute({ name: 'android_ptc',
+  const invoke = (code, signal = new AbortController().signal) => executeToolCall(ctx.tools, { name: 'android_ptc',
     callId: `ptc-device-${randomUUID()}`, arguments: { code, description: 'PTC device acceptance' }, agent, signal })
   try {
     setSandboxMode(agent.session, 'read-only')
@@ -332,5 +333,6 @@ async function runPtcChecks({ ctx, transport, agent, workspace, callbackRouting,
     await unlink(file)
   }
 }
+
 
 
