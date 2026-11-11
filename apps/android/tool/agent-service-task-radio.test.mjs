@@ -118,7 +118,8 @@ test('accepts durable single-submission Linux completion without inventing radio
   value.linuxReceipt.diskCommitted = false
   value.retryEventCount = 2
   assert.equal(protocol.result(output(value), checkpoint()).retryEventCount, 2)
-  assert.throws(() => parseAgentServiceTaskResult(output(value)), /invoked a tool/)
+  assert.throws(() => parseAgentServiceTaskResult(output(value), { exercise: 'radio-linux' }),
+    /invoked a tool|exact result evidence/)
 })
 
 test('final durable identity, counts, hashes, ordering and restoration are required', async t => {

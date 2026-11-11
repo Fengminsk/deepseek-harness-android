@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
 const SHA = /^[0-9a-f]{64}$/u
 const demand = (condition, message) => { if (!condition) throw new Error(message) }
-const exercises = new Set(['echo', 'ptc', 'workflow', 'workflow-linux'])
+const exercises = new Set(['echo', 'ptc', 'workflow', 'workflow-linux', 'radio-linux'])
 const exactKeys = (value, expected) => value && typeof value === 'object' && !Array.isArray(value)
   && Object.keys(value).length === expected.length && Object.keys(value).every(key => expected.includes(key))
 
