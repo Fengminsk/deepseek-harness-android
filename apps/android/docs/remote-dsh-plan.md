@@ -512,13 +512,15 @@ PC 侧组合（新 profile，例如 `profiles/remote-host`）：
 | 阶段 | 状态 | 产物 |
 |---|---|---|
 | P0 协议冻结 | 完成 | `docs/remote-dsh/protocol.md`（48 KB，含能力协商、反向请求、窗口流控、错误码、双端接口附录） |
-| P1 PC 宿主 | **完成：真实启动，Node 端到端 20/20** | `apps/remote-host/`：`index.ts`/`server.ts`/`identity.ts`/`tls.ts`/`devices.ts`/`pairing.ts`/`native-desktop.ts`/`cordis.patch.yml`/`scripts/e2e-remote-host.ts`；`dsh --profile remote-host` 出厂 profile |
+| P1 PC 宿主 | **完成：真实启动，Node 端到端 23/23** | `apps/remote-host/`：`index.ts`/`server.ts`/`identity.ts`/`tls.ts`/`devices.ts`/`pairing.ts`/`native-desktop.ts`/`pairing-qr.ts`/`cordis.patch.yml`/`scripts/e2e-remote-host.ts`；`dsh --profile remote-host` 出厂 profile |
+| P5 能力补齐 | **全部完成**：远程审批、会话模型选择、搜索、新建会话、已归档查看/恢复、电脑文件浏览、远程设置、workspace 本次变更、会话页归档、能力三态、模型路由自动兜底、**远程终端**、**附件上行（App/宿主/e2e/真机旁路验收）**、**输入区 `+`/方案模式**、**模型路由前置提示**、**B3 审批预设（真机切换通过）**、首页输入条文案 + goal 行置灰 | 见手册 §3.2.2–§3.2.8 与 §3.3 `p5-*`/`p5b-*`/`p5c-*` 真机截图；[p5-remaining-design.md](remote-dsh/p5-remaining-design.md) |
+| P6 可达性 | **第一批完成**：可达性（反代/隧道/组网）文档、配对终端二维码（自检 16/16）、后台通知取证与设计；待做 App 扫码/PC 配对界面、§8 通知实现、前台服务持 WS | [reachability.md](remote-dsh/reachability.md)、[pairing-qr-design.md](remote-dsh/pairing-qr-design.md)、HANDOFF §4 |
 | P2 App 传输 | 完成，本地零回归 | `lib/runtime_transport.dart`、`lib/remote_transport.dart`（wss + TLS 固定 + 握手 + 退避重连、`a-<uuid v4>` 请求 id）、`runtime.dart` 接缝、`api_streams.dart` 与 `streams.mjs` 窗口化确认（远程会话数据源按握手能力开启） |
 | P4a 共享组件与入口 | 完成 | `lib/remote_dsh_widgets.dart`；侧栏「远程 DSH」入口（`chat_sidebar.dart`），目的地不叠层 |
 | P4b 远程页面 | 完成：真实设备/项目/会话 + 真实会话页（窗口/发送/流式/自动连接/审批/模型选择/本次变更/归档/终端）+ 首页搜索/新建/归档/电脑文件/设置 | `lib/remote_dsh_page.dart`、`remote_dsh_archived_page.dart`、`remote_dsh_conversation.dart`、`remote_workspace_diff_page.dart`、`remote_workspace_files_page.dart`、`remote_dsh_settings_page.dart`、`remote_terminal_page.dart`、`remote_conversation_live_source.dart`、`remote_dsh_live_source.dart` |
 | P3 配对与设备 | **完成：配对闭环打通（真机验证）** | 宿主 `/ca.cer` `/pair` + App `remote_pairing*.dart`；设备表/单次令牌/撤销/窗口重开在冒烟与端到端里覆盖 |
-| P5 能力补齐 | **三批完成**：远程审批、会话模型选择、搜索、新建会话、已归档查看/恢复、电脑文件浏览、远程设置、workspace 本次变更、会话页归档、能力三态、模型路由自动兜底、**远程终端（真机通过）**；进行中：附件上行（宿主侧完成 + 28 项单测，App 侧施工中）；剩余：输入区 `+`/方案模式、审批预设 | 见手册 §3.2.2–§3.2.5 与 §3.3 `p5-*`、`p5b-*`、`p5c-*` 真机截图；[p5-remaining-design.md](remote-dsh/p5-remaining-design.md) |
-| P6 可达性 | **未开始** | 反代/隧道文档、mDNS 发现、后台通知、PC 侧配对界面/二维码 |
+| P5 能力补齐 | **全部完成**：远程审批、会话模型选择、搜索、新建会话、已归档查看/恢复、电脑文件浏览、远程设置、workspace 本次变更、会话页归档、能力三态、模型路由自动兜底、**远程终端**、**附件上行（App/宿主/e2e/真机旁路验收）**、**输入区 `+`/方案模式**、**模型路由前置提示**、**B3 审批预设（真机切换通过）**、首页输入条文案 + goal 行置灰 | 见手册 §3.2.2–§3.2.8 与 §3.3 `p5-*`/`p5b-*`/`p5c-*` 真机截图；[p5-remaining-design.md](remote-dsh/p5-remaining-design.md) |
+| P6 可达性 | **第一批完成**：可达性（反代/隧道/组网）文档、配对终端二维码（自检 16/16）、后台通知取证与设计；待做 App 扫码/PC 配对界面、§8 通知实现、前台服务持 WS | [reachability.md](remote-dsh/reachability.md)、[pairing-qr-design.md](remote-dsh/pairing-qr-design.md)、HANDOFF §4 |
 
 **M1 结论：成立**——真机连 PC、列真实项目与会话、发消息并看到流式回复（见
 [remote-dsh/HANDOFF.md](remote-dsh/HANDOFF.md) §3.3 与 §9 最新记录）。P5 三批同样已在真机验收

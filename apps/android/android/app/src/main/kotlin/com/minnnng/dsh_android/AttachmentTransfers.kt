@@ -8,11 +8,13 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.OpenableColumns
 import android.util.Base64
+import android.webkit.MimeTypeMap
 import io.flutter.plugin.common.MethodChannel
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
+import java.io.InputStream
 import java.nio.file.Files
 import java.nio.file.StandardOpenOption
 import java.util.UUID
@@ -25,15 +27,37 @@ class AttachmentTransfers(private val activity: Activity) : AutoCloseable {
         val lifecycle = AttachmentImportLifecycle()
     }
 
+    /** One picker URI or debug-staged file resolved into a readable source. */
+    private class AttachmentSource(
+        val name: String,
+        val mediaType: String,
+        val open: () -> InputStream,
+    )
+
+    /** A debug-staged file outside the system picker; paths are validated by [stagedFile]. */
+    private class StagedFile(val file: File, val name: String, val mediaType: String)
+
+    /** The pending debug staging result; [pick] consumes it exactly once. */
+    private class StagedSelection(val files: List<StagedFile>, val failures: List<JSONObject>)
+
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
     private val closer = Executors.newSingleThreadExecutor()
     private var pending: Selection? = null
+    private var staged: StagedSelection? = null
     private var closed = false
 
     fun pick(result: MethodChannel.Result) {
         if (closed || pending != null) {
             result.error("attachment-busy", "附件选择或导入尚未结束，请稍后重试", null)
+            return
+        }
+        // 调试构建的暂存挑选优先于系统选择器；release 里 [takeStaged] 恒为 null。
+        val staged = takeStaged()
+        if (staged != null) {
+            val selection = Selection(result)
+            pending = selection
+            importStaged(selection, staged)
             return
         }
         pending = Selection(result)
@@ -65,73 +89,203 @@ class AttachmentTransfers(private val activity: Activity) : AutoCloseable {
             selection.result.error("attachment-selection", "系统未返回可读取文件，请重新选择", null)
             return true
         }
-        worker.execute {
-            val items = JSONArray()
-            val failures = JSONArray()
-            val unpublished = mutableListOf<File>()
-            try {
-                val root = directory(activity)
-                for (uri in uris.distinct()) {
-                    if (selection.lifecycle.isCancelled) break
-                    var name = "附件"
-                    val id = UUID.randomUUID().toString()
-                    val source = File(root, "$id.bin")
-                    val metadata = File(root, "$id.json")
-                    var sourceOwned = false
-                    var metadataOwned = false
-                    try {
-                        activity.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
-                            if (cursor.moveToFirst()) name = cursor.getString(0)?.take(512) ?: name
+        importSources(selection, uris.distinct().map { uri -> contentCandidate(uri) })
+        return true
+    }
+
+    /**
+     * Debug-only: registers the launch Intent's `dshStageAttachment` paths as the next pick.
+     *
+     * 真机验收旁路：ColorOS 的 SAF 选择项全部不可选（HANDOFF §3.2.5），debug 构建可直接
+     * 从 `/sdcard/Download/` 或本包 `files/` 下取文件。路径只在原生侧使用，Flutter 侧仍只
+     * 拿到 `attachment.pick` 的 `{id,name,mediaType,bytes}`；`BuildConfig.DEBUG` 门控使
+     * release 编译期就把本方法折叠为空（release 字节码只剩参数判空），包内没有暂存行为。
+     *
+     * 一次启动 Intent 只登记一次挑选，[pick] 消费后即清空；被拒绝的路径以 `failures`
+     * 返回，不退回系统选择器（本机上那必然卡住）。
+     */
+    fun stage(intent: Intent) {
+        if (!BuildConfig.DEBUG) return
+        val paths = stagedPaths(intent) ?: return
+        intent.removeExtra(EXTRA_STAGED_ATTACHMENT)
+        val files = mutableListOf<StagedFile>()
+        val failures = mutableListOf<JSONObject>()
+        for (path in paths.distinct()) {
+            val file = stagedFile(path)
+            if (file == null) {
+                failures.add(JSONObject().put("name", path.takeLast(80))
+                    .put("message", "暂存附件不可用：路径必须是 /sdcard/Download/ 或本应用 files/ 下的绝对路径。"))
+            } else {
+                files.add(StagedFile(file, file.name.take(512), stagedMediaType(file)))
+            }
+        }
+        if (files.isEmpty() && failures.isEmpty()) return
+        staged = StagedSelection(files, failures)
+    }
+
+    /** Consumes the one-shot staging result; release builds never keep one. */
+    private fun takeStaged(): StagedSelection? {
+        if (!BuildConfig.DEBUG) return null
+        val value = staged
+        staged = null
+        return value
+    }
+
+    private fun importStaged(selection: Selection, staged: StagedSelection) {
+        importSources(selection, staged.files.map { stagedCandidate(it) }, staged.failures)
+    }
+
+    /** Copies every source on the import worker and replies with the `attachment.pick` JSON. */
+    private fun importSources(
+        selection: Selection,
+        candidates: List<() -> AttachmentSource>,
+        rejected: List<JSONObject> = emptyList(),
+    ) {
+        try {
+            worker.execute {
+                val items = JSONArray()
+                val failures = JSONArray()
+                rejected.forEach { failures.put(it) }
+                val unpublished = mutableListOf<File>()
+                try {
+                    val root = directory(activity)
+                    for (candidate in candidates) {
+                        if (selection.lifecycle.isCancelled) break
+                        var name = "附件"
+                        try {
+                            val source = candidate()
+                            name = source.name
+                            items.put(copySource(selection, root, source, unpublished))
+                        } catch (failure: Exception) {
+                            if (!selection.lifecycle.isCancelled) failures.put(JSONObject().put("name", name)
+                                .put("message", "无法读取所选文件，请检查文件提供方并重新选择。"))
                         }
-                        val mediaType = activity.contentResolver.getType(uri) ?: "application/octet-stream"
-                        val input = activity.contentResolver.openInputStream(uri)
-                            ?: throw IllegalStateException("文件提供方不能读取该文件")
-                        val bytes = try {
-                            selection.lifecycle.attach(input)
-                            input.use { stream ->
-                                Files.newOutputStream(source.toPath(), StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE).use { output ->
-                                    sourceOwned = true
-                                    AttachmentCopy.copy(stream, output) { selection.lifecycle.isCancelled }
-                                }
-                            }
-                        } finally {
-                            selection.lifecycle.detach(input)
-                        }
-                        val item = JSONObject().put("id", id).put("name", name)
-                            .put("mediaType", mediaType).put("bytes", bytes)
-                        Files.newOutputStream(metadata.toPath(), StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE).use {
-                            metadataOwned = true
-                            it.write(item.toString().toByteArray(Charsets.UTF_8))
-                        }
-                        unpublished.add(source)
-                        unpublished.add(metadata)
-                        items.put(item)
-                    } catch (failure: Exception) {
-                        if (sourceOwned) source.delete()
-                        if (metadataOwned) metadata.delete()
-                        if (!selection.lifecycle.isCancelled) failures.put(JSONObject().put("name", name)
-                            .put("message", "无法读取所选文件，请检查文件提供方并重新选择。"))
                     }
-                }
-                main.post {
-                    if (selection.lifecycle.isCancelled || pending !== selection) {
-                        unpublished.forEach { it.delete() }
-                    } else {
-                        finish(selection, JSONObject().put("cancelled", false)
-                            .put("items", items).put("failures", failures))
+                    main.post {
+                        if (selection.lifecycle.isCancelled || pending !== selection) {
+                            unpublished.forEach { it.delete() }
+                        } else {
+                            finish(selection, JSONObject().put("cancelled", false)
+                                .put("items", items).put("failures", failures))
+                        }
                     }
-                }
-            } catch (failure: Exception) {
-                unpublished.forEach { it.delete() }
-                main.post {
-                    if (pending === selection) {
-                        pending = null
-                        selection.result.error("attachment-import", "附件导入未完成，请检查可用存储空间后重新选择", null)
+                } catch (failure: Exception) {
+                    unpublished.forEach { it.delete() }
+                    main.post {
+                        if (pending === selection) {
+                            pending = null
+                            selection.result.error("attachment-import", "附件导入未完成，请检查可用存储空间后重新选择", null)
+                        }
                     }
                 }
             }
+        } catch (_: RejectedExecutionException) {
+            selection.result.error("attachment-closed", "附件选择已结束，请重新选择", null)
         }
-        return true
+    }
+
+    /** Copies one readable source into `<cacheDir>/pocket-attachments/<uuid>.bin` + `.json`. */
+    private fun copySource(
+        selection: Selection,
+        root: File,
+        source: AttachmentSource,
+        unpublished: MutableList<File>,
+    ): JSONObject {
+        val id = UUID.randomUUID().toString()
+        val file = File(root, "$id.bin")
+        val metadata = File(root, "$id.json")
+        var fileOwned = false
+        var metadataOwned = false
+        try {
+            val input = source.open()
+            val bytes = try {
+                selection.lifecycle.attach(input)
+                input.use { stream ->
+                    Files.newOutputStream(file.toPath(), StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE).use { output ->
+                        fileOwned = true
+                        AttachmentCopy.copy(stream, output) { selection.lifecycle.isCancelled }
+                    }
+                }
+            } finally {
+                selection.lifecycle.detach(input)
+            }
+            val item = JSONObject().put("id", id).put("name", source.name)
+                .put("mediaType", source.mediaType).put("bytes", bytes)
+            Files.newOutputStream(metadata.toPath(), StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE).use {
+                metadataOwned = true
+                it.write(item.toString().toByteArray(Charsets.UTF_8))
+            }
+            unpublished.add(file)
+            unpublished.add(metadata)
+            return item
+        } catch (failure: Exception) {
+            if (fileOwned) file.delete()
+            if (metadataOwned) metadata.delete()
+            throw failure
+        }
+    }
+
+    /** Resolves one picker URI; runs on the import worker, never on the main thread. */
+    private fun contentSource(uri: Uri): AttachmentSource {
+        var name = "附件"
+        activity.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) name = cursor.getString(0)?.take(512) ?: name
+        }
+        val mediaType = activity.contentResolver.getType(uri) ?: "application/octet-stream"
+        return AttachmentSource(name, mediaType) {
+            activity.contentResolver.openInputStream(uri) ?: throw IllegalStateException("文件提供方不能读取该文件")
+        }
+    }
+
+    private fun contentCandidate(uri: Uri): () -> AttachmentSource = { contentSource(uri) }
+
+    private fun stagedCandidate(file: StagedFile): () -> AttachmentSource = {
+        AttachmentSource(file.name, file.mediaType) { FileInputStream(file.file) }
+    }
+
+    /** Accepts a JSON array or String[] extra; a plain string is one path. */
+    private fun stagedPaths(intent: Intent): List<String>? {
+        val values = intent.getStringArrayExtra(EXTRA_STAGED_ATTACHMENT)
+        if (values != null) {
+            val paths = values.mapNotNull { it?.trim() }.filter { it.isNotEmpty() }
+            if (paths.isNotEmpty()) return paths
+        }
+        val raw = intent.getStringExtra(EXTRA_STAGED_ATTACHMENT)?.trim() ?: return null
+        if (raw.isEmpty()) return null
+        if (!raw.startsWith("[")) return listOf(raw)
+        return try {
+            val array = JSONArray(raw)
+            (0 until array.length()).mapNotNull { index ->
+                array.optString(index).trim().takeIf { it.isNotEmpty() }
+            }
+        } catch (_: Exception) {
+            listOf(raw)
+        }
+    }
+
+    /** Canonical file under an accepted staging root; every other path is rejected. */
+    private fun stagedFile(path: String): File? {
+        val candidate = File(path)
+        if (!candidate.isAbsolute) return null
+        val canonical = try { candidate.canonicalFile } catch (_: Exception) { return null }
+        if (!canonical.isFile) return null
+        val accepted = stagedRoots().any { root ->
+            canonical == root || canonical.path.startsWith(root.path + File.separator)
+        }
+        return canonical.takeIf { accepted }
+    }
+
+    private fun stagedRoots(): List<File> = listOf(
+        File("/sdcard/Download"),
+        File("/storage/emulated/0/Download"),
+        File("/sdcard/Android/data/${activity.packageName}/files"),
+        File("/storage/emulated/0/Android/data/${activity.packageName}/files"),
+    ).mapNotNull { root -> try { root.canonicalFile } catch (_: Exception) { null } }
+
+    private fun stagedMediaType(file: File): String {
+        val extension = file.extension.lowercase()
+        if (extension.isEmpty()) return "application/octet-stream"
+        return MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension) ?: "application/octet-stream"
     }
 
     /**
@@ -256,6 +410,9 @@ class AttachmentTransfers(private val activity: Activity) : AutoCloseable {
 
     companion object {
         private const val ATTACHMENT_REQUEST = 5353
+
+        /** 启动 Intent 的调试暂存参数；只有 debug 构建读取（release 不生效）。 */
+        private const val EXTRA_STAGED_ATTACHMENT = "dshStageAttachment"
 
         /** 远程宿主一页最多拉取的字节数（设计 §3.4.2：base64 后远低于 1 MiB 上行帧）。 */
         private const val READ_PAGE_BYTES = 262144

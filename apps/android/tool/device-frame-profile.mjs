@@ -155,6 +155,16 @@ class Device {
   /** 设备侧毫秒时间戳（与 App 内 `DateTime.now()` 同源）。 */
   nowMs () { return Number(this.sh('date', '+%s%3N').trim()) }
 
+  /**
+   * 读取 Android 热状态（0 none / 1 light / 2 moderate / 3 severe / 4 critical…）。
+   * 机型降频会显著抬高帧耗时，测量前必须记录；>=2 时结果不可用于验收。
+   */
+  thermalStatus () {
+    const dump = this.sh('dumpsys', 'thermalservice')
+    const match = /Thermal Status:\s*(\d+)/u.exec(dump)
+    return match === null ? null : Number(match[1])
+  }
+
   /** 读取当前界面的节点。 */
   nodes () {
     this.sh('uiautomator', 'dump', '/sdcard/dsh-frame-ui.xml')
@@ -482,6 +492,11 @@ async function main (argv) {
   const device = new Device(options.adb, options.device)
   console.log(`device: ${device.adb('shell', 'getprop', 'ro.product.model').trim()} ` +
     `(${device.adb('shell', 'getprop', 'ro.build.version.release').trim()})`)
+  // 降频会让帧耗时整体抬高，测量前先记录；>=2（moderate/severe）的结果不用于验收。
+  const thermalBefore = device.thermalStatus()
+  if (thermalBefore !== null && thermalBefore >= 2) {
+    console.log(`WARN: device thermal status is ${thermalBefore} (>=2) — 结果不可用于验收，请先熄屏冷却`)
+  }
   if (options.install) installApk(device, options)
   const names = options.scenarios ?? Object.keys(SCENARIOS)
   const results = []
@@ -500,15 +515,22 @@ async function main (argv) {
   const stamp = new Date().toISOString().replaceAll(/[:.]/gu, '-')
   const output = options.output ?? resolve(ROOT, `.cache/ui-perf-device/device-frame-profile-${stamp}.json`)
   mkdirSync(dirname(output), { recursive: true })
+  const thermalAfter = device.thermalStatus()
   const report = {
     measuredAt: new Date().toISOString(),
     device: device.adb('shell', 'getprop', 'ro.product.model').trim(),
+    thermalBefore,
+    thermalAfter,
     apk: options.apk,
     budgetMs: options.budgetMs,
     scenarios: results,
   }
   writeFileSync(output, `${JSON.stringify(report, null, 2)}\n`)
   console.log(`\nreport: ${output}`)
+  if (thermalBefore !== null && thermalBefore >= 2) {
+    console.log(`FAIL: 设备热状态 ${thermalBefore} >= 2（降频中），本次测量不作为验收依据；熄屏冷却后重跑`)
+    return 1
+  }
   const failed = results.filter((result) => {
     const scenario = SCENARIOS[result.name]
     return result.summary.frames === 0 ||

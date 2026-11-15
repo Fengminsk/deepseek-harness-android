@@ -260,6 +260,9 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(engine: FlutterEngine) {
         super.configureFlutterEngine(engine)
         externalFiles // Schedule bounded staging-cache cleanup on each Activity start.
+        // 真机附件验收旁路（仅 debug）：把启动 Intent 的 dshStageAttachment 登记为下一次
+        // attachment.pick 的来源；release 编译期该调用与 extra 读取一起被折叠删除。
+        if (BuildConfig.DEBUG) attachments.stage(intent)
         documentPreviews = DocumentPreviewFactory(engine.dartExecutor.binaryMessenger) { frame, result -> sendCall(frame, result); Unit }.also {
             engine.platformViewsController.registry.registerViewFactory("dsh/document-preview", it)
         }
@@ -876,6 +879,8 @@ class MainActivity : FlutterActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        // singleTop 复用同一个 Activity 时，「am start」带来的调试暂存 extra 在这里登记。
+        if (BuildConfig.DEBUG) attachments.stage(intent)
         deliverNavigation()
     }
     private fun deliverNavigation() {

@@ -34,6 +34,7 @@ import z from '@deepseek-ai/schemastery'
 import { DeviceStore, type DeviceAuthorization, type DeviceSummary } from './devices.ts'
 import { Identity } from './identity.ts'
 import { DesktopNativeProvider, type DesktopCredentialPort } from './native-desktop.ts'
+import { encodeQrMatrix, renderTerminalQr } from './pairing-qr.ts'
 import { PairingWindow, pairUrl } from './pairing.ts'
 import {
   describeRemoteError,
@@ -563,6 +564,9 @@ async function startRemoteHost(
           expiresAt: ticket.expiresAt,
         },
       })
+      // 链接里的令牌与指纹合计 107 个字符，手输不现实；在真终端里额外画一张二维码。
+      // 日志被重定向（非 TTY）时只保留上面那条结构化日志，不往日志文件里撒块字符。
+      writePairingQr(ticket.pairUrl)
       return ticket
     }
     openPairingWindow(
@@ -931,3 +935,37 @@ function publicOriginNames(origin: string): readonly string[] {
   return [hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname]
 }
 
+// ───────────────────────────── 终端配对二维码 ─────────────────────────────
+//
+// 配对链接里有 107 个必须原样保留的字符（instance 64 + token 43），手机配对页又只有
+// 「粘贴链接」一个入口。stderr 直接连终端时把链接画成二维码，用户扫码后复制文本再粘贴；
+// 编码与渲染在 `./pairing-qr.ts`，本文件只做「是否 TTY → 打印」这一步接线。
+
+/**
+ * 在真终端里打印配对二维码与明文链接；stderr 被重定向时什么都不写。
+ *
+ * 二维码只是过渡手段：扫码工具把链接当文本复制，再由用户粘进 App。渲染失败只记
+ * 一条 warn，配对链接本身照常可用（它在上面那条结构化日志里）。
+ *
+ * 导出是为了让 `apps/remote-host/scripts/qr-selfcheck.ts` 覆盖「终端 vs 重定向」
+ * 这条分支，验证的就是宿主真正在用的实现。
+ * @param pairUrl - 这次配对窗口的完整链接。
+ */
+export function writePairingQr(pairUrl: string): void {
+  if (!process.stderr.isTTY) return
+  try {
+    const block = renderTerminalQr(encodeQrMatrix(pairUrl))
+    process.stderr.write(
+      '[remote-host] 用手机扫码得到配对链接（链接也可以直接从下面这一行整段复制）：\n'
+      + `${block}\n`
+      + `${pairUrl}\n`,
+    )
+  } catch (error) {
+    writeRemoteLog({
+      level: 'warn',
+      event: 'pairing-qr-failed',
+      message: '终端配对二维码没有画出来，配对链接照常可用。',
+      fields: { error: describeRemoteError(error) },
+    })
+  }
+}

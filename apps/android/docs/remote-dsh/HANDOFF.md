@@ -3,19 +3,20 @@
 > 这份文件是**唯一的入口**：新会话、新 Agent、或工作区被还原之后，先读它再动手。
 > 每完成一轮交付，在 §9 追加一条记录；状态变化就改 §3，不要把过时结论留在正文里。
 >
-> 关键事实（2026-11-16 00:20）：**M1 已在真机成立**（配对 → 列真实项目/会话 → 发消息 → 流式回复 →
-> 冷启动自动重连）。**P5 前三批已在真机通过**：审批、会话模型选择、首页搜索/新建/归档、电脑文件浏览、
-> 远程「设置」、workspace diff、归档动作、能力三态与模型路由自动兜底；**远程终端**（会话页「…」→
-> 终端 → 在 PC 上建 shell → 手机打字执行 `echo`/`dir` → 离开页面后进程继续 → 杀 App 重连后同一终端
-> 屏幕快照恢复 → 关闭后列表清空）已在本轮真机验收。宿主终端适配器有 29 项 Node 单测、附件上行宿主侧
-> 有 28 项单测；真实宿主 e2e 扩到 **20 项全 PASS**（含 `terminal.shells/create/write/read/resize/rename/close`）。
-> 下一步：附件上行 App 侧收尾 + 真机验收、输入区 `+`/方案模式、审批预设、P6，见 §4。
+> 关键事实（2026-11-16 02:20）：**M1 已在真机成立**（配对 → 列真实项目/会话 → 发消息 → 流式回复 →
+> 冷启动自动重连）。**P5 六批全部完成并在真机通过**：审批与模型选择、首页搜索/新建/归档、电脑文件、
+> 远程设置、workspace diff、能力三态、远程终端、附件上行（App/宿主/真实 e2e + **debug 旁路真机验收**）、
+> 输入区 `+`/方案模式、模型路由前置提示（**C3 真机验证：发送前出现不可用提示并可进模型 sheet**）、
+> **B3 审批预设（宿主启用 permission，手机端真实 preset 列表/二次确认，真机切换成功）**、
+> 首页输入条文案与 goal 行置灰。真实宿主 e2e **23/23 PASS**；终端适配器 29 项、附件适配器 33 项 Node 单测。
+> P6 已启动：反代/隧道可达性文档 + 配对终端二维码（`pairing-qr.ts`，自检 16/16）+ 后台通知设计。
+> 下一步见 §4。
 >
-> 最后更新：2026-11-16 00:20（lead）
-> 分支 `android`，HEAD `c20c00cd15`（本功能全部改动仍未提交，在工作区）
+> 最后更新：2026-11-16 02:20（lead）
+> 分支 `android`，最近提交见 `git log --oneline -8`（远程 DSH 功能/文档/性能测量基建已入库）
 > 真机：`8a044bba`（adb 在线，OnePlus6 / Android 11，Wi-Fi 192.168.5.140）
-> 真机 App：2026-11-16 00:06 重新安装（旧 debug keystore 丢失导致必须卸载重装并重新配对；
-> 新 keystore 已备份到 `.cache/android/debug.keystore`）
+> 真机 App：debug APK（含 B3/③/附件验收旁路）；性能测量用 `--target=lib/main_perf.dart` 的 profile 包，
+> 见 [performance.md](../performance.md)
 
 ---
 
@@ -108,8 +109,8 @@ cd apps/android
 | P3 配对与设备 | **完成：真机配对契约 + 单次令牌 + 撤销 + 配对窗口重开** | 宿主 `/ca.cer` `/pair`，冒烟 14/14，端到端 20/20；`remoteHost.pair()` 与撤销后自动重开 |
 | P4a 侧栏入口与组件 | 完成（含重复进入修复与回归测试） | `test/destination_navigation_test.dart` |
 | P4b 远程页面 | 完成：真实设备/项目/会话 + 真实会话页（读窗口/发消息/流式/审批/模型选择/变更/归档/终端入口） + 首页搜索/新建/归档/电脑文件/设置 | `remote_*` 数据源与页面 + 测试；真机证据见 §3.3 |
-| P5 能力补齐 | **五批完成**：审批、模型选择、搜索、新建、归档、电脑文件、远程设置、workspace diff、归档动作、能力三态、模型路由兜底、**远程终端（真机通过）**、**附件上行（App/宿主/真实 e2e）**、**输入区 `+` 弹层/方案模式**、**模型路由前置提示判定**；**剩余**：审批预设（B3）、附件真机验收（被本机 ROM 挡住）、模型路由真机 | §3.3 `p5-*`/`p5b-*`/`p5c-*` 截图；§3.2.2–§3.2.6 |
-| P6 可达性 | 未开始 | 反代/隧道文档、mDNS、后台通知、PC 侧配对界面/二维码 |
+| P5 能力补齐 | **六批完成**：审批与模型选择、搜索、新建、归档、电脑文件、远程设置、workspace diff、归档动作、能力三态、模型路由兜底、远程终端、附件上行（含 debug 旁路真机验收）、输入区 `+`/方案模式、模型路由前置提示（C3 真机）、**B3 审批预设（真机切换通过）**、首页输入条文案 + goal 行置灰 | §3.3 `p5-*`/`p5b-*`/`p5c-*` 截图；§3.2.2–§3.2.8 |
+| P6 可达性 | **启动**：可达性文档（反代/隧道/组网）、配对终端二维码（自检 16/16）、后台通知设计与缺口记录；待做 App 扫码/PC 配对界面、§8 通知实现、前台服务持 WS | `remote-dsh/reachability.md`、`pairing-qr-design.md` |
 
 ### 3.2 已核验的通过项（本轮）
 
@@ -259,6 +260,70 @@ cd apps/android
   `RemoteComposer` 并牵动首页）；首页输入条文案未改；goal 行按「其它宿主指令」处理（D6 延期）；
   审批预设（B3）未做，盾牌仍为旧四项文案。
 
+#### 3.2.7 本批新增能力（P5 第六批：B3 审批预设 + 首页/goal 收尾）
+
+- **宿主**：`apps/remote-host/cordis.patch.yml` 启用 `permission`（`disabled: false` 一行；`auto`
+  仍随 auto-review 单独决定；`ui-permission` 不启用——远程宿主无 Web 前端）。宿主自测（隔离 4779）：
+  `runtime.permissions.presets.available=true`、catalog 3 项（read-only/workspace-write/danger-full-access）、
+  `/permission` 命令成功、`session.projections.permissions.currentValue` 随切换更新。
+- **App**：`composer_commands.dart` 抽出 `PermissionCallSurface`（= `ComposerCommandSurface` 别名）与
+  共用件（`permissionPresetNeedsConfirmation`/`permissionPresetLabel`/`SessionPermissionRiskConfirmation`），
+  本地 `SessionPermissionPage` 行为/文案不变；新增 `remote_permissions.dart`
+  （`RemotePermissionSurface`/`RemotePermissionCatalog.parse`/`RemotePermissionController` 三态 +
+  每次打开重读 + 失败可重试 + `/permission <值>` 写回后重读投影）；`RemoteComposer` 盾牌改为真实
+  preset 列表（当前项打勾、`danger-full-access` 二次确认、未启用/未连接置灰带原因）；删除
+  `RemoteApprovalSheet` 四项 Codex 占位；会话页输入区上方显示「权限预设：<当前值>」。一次性审批卡片
+  不变（预设只影响新请求）。
+- **③ 收尾**：首页输入条三个入口（`+`/权限预设/模型）置灰并给出统一可操作说明
+  「进入会话后可添加附件与指令、切换权限预设与选择模型」（未连接时「连接后可输入消息并新建会话」）；
+  `+` 弹层 `goal` 行置灰「远程会话暂不支持设置长期目标」，不执行也不插草稿；其余宿主指令路径不变。
+- **测试**：`remote_permissions_test.dart` 18 项、会话页 +6 项、首页 +2 项、`+` 弹层 +1 项；
+  受影响面 315 项通过；`flutter analyze` 11 条基线。
+
+#### 3.2.8 真机验收（B3 / C3 / 附件旁路 / ③，2026-11-16 02:05–02:15）
+
+设备：OnePlus6 / Android 11（ColorOS），debug APK（含 B3/③/附件验收旁路），宿主 4777 已加载
+permission patch（`git` 未提交状态）。
+
+| 项 | 操作 | 结果 | 证据 |
+|---|---|---|---|
+| B3-1 | 打开远程会话 | 输入区上方与盾牌均显示「权限预设：工作区内修改」 | `p5c-b1-permission-presets.png` |
+| B3-2 | 点盾牌 | 弹层列出 3 个真实 preset（仅可查看/工作区内修改/完全权限） | 同上 |
+| B3-3 | 选「完全权限」 | 出现风险确认面板；未勾选「我已了解风险」时点「启用」无副作用 | `p5c-b2-permission-risk-confirm.png` |
+| B3-4 | 勾选并启用 | 弹层收起，输入区上方与盾牌变为「权限预设：完全权限」（宿主 `/permission` 受理 + 投影重读） | `p5c-b3-permission-applied.png` |
+| B3-5 | 切回「工作区内修改」 | 回显恢复，无需二次确认（非危险 preset） | — |
+| C3-1 | 打开桌面创建的 `deepseek-official/deepseek-chat` 会话（宿主无该 provider 凭据） | 发送前出现「当前会话绑定的模型在电脑上不可用，发送时会自动改用电脑默认模型」+「选择模型」 | `p5c-c1-model-route-notice.png` |
+| C3-2 | 点「选择模型」 | 打开模型 sheet（DeepSeek Account 目录；当前路由显示 unavailable） | `p5c-c2-model-sheet-from-notice.png` |
+| ③-1 | 远程首页 | 输入条下方显示「进入会话后可添加附件与指令、切换权限预设与选择模型」；+ / 权限 / 模型均置灰不可点；无语音死按钮 | `p5c-c01-home-composer-hint.png` |
+| ③-2 | 会话页 `+` →「目标 goal」 | 置灰并显示「远程会话暂不支持设置长期目标」；点按无副作用；其它指令仍可用 | `p5c-c2-goal-disabled.png` |
+| ②-1 | debug 旁路附件验收脚本（3 MiB PDF 经 `dshStageAttachment` 暂存） | rail「已就绪」→ 发送成功；宿主会话记录 `user/message` 带 `file` 附件（`p5c-a-attachment.pdf`，3145728 B，sha256 attachmentId），模型回复确认收到 | `p5c-a1..a3-*.png`、`.cache/attachment-acceptance.log` |
+
+**附件真机旁路**：系统 SAF picker 在本机 ColorOS 上仍无法选择文件（debug/profile 构建均复现，
+`shouldRestrictStorageAccessFramework=true`）。为完成 App 侧真机取证，新增 **debug-only**
+暂存入口：`MainActivity` 读取启动 Intent 的 `dshStageAttachment`（仅 `/sdcard/Download` 或本包
+`files/` 白名单、canonical 校验、一次性消费），`AttachmentTransfers.pick` 有暂存结果时直接返回
+与 picker 同形的结果，不启动系统 picker。release 字节码验证：`stage()` 方法体为空、`takeStaged()`
+恒 null、MainActivity 无调用点。验收脚本
+`apps/android/tool/acceptance-remote-attachments.mjs`（零新依赖，支持 `--dry-run`）。
+**release/profile 的 SAF 限制仍存在**，产品侧换文件来源（系统文件管理器/相机等）与 App 扫码
+一样留待后续评估。
+
+#### 3.2.9 P6 第一批（可达性文档 + 配对终端二维码 + 通知取证）
+
+- `apps/android/docs/remote-dsh/reachability.md`（390 行）：拓扑/端口/固定 CA 语义；只有「组网直连」
+  与「L4/TCP 直通反代/隧道」可行，**任何终止 TLS 的中间层都会导致固定 CA 校验失败**；给出
+  Tailscale/WireGuard、自有域名+端口转发、frp/nginx stream/HAProxy/socat/netsh 示例；明确
+  Cloudflare Tunnel/HTTPS 反代/Tailscale Serve/ngrok 默认不可用；含换地址/换 CA/撤销设备对照表与安全清单。
+- 新增 `apps/remote-host/src/pairing-qr.ts`（703 行，零依赖 QR 编码器，字节模式/EC M/版本 1–10）+
+  `scripts/qr-selfcheck.ts`（16/16：KAT 与 qr 3.0.2 逐位一致、独立 RS 回读、TTY 分支）；配对日志在
+  **stderr 是 TTY** 时打印字符画二维码 + 明文链接（重定向/CI 不打印）；`index.ts` 只留接线。
+- `pairing-qr-design.md`：App 扫码（推荐长期解，需依赖批准）/PC 配对界面/短码三路线评估。
+- 后台通知取证：宿主当前只发 `remote.deviceRevoked`，§8 的 taskCompleted/approvalPending/sessionChanged
+  未实现；App 通知通道仅本地模式。最小实现 3 步（宿主映射 §8 → 复用 Kotlin 通知 → 前台服务持 WS）
+  记录在 §4。
+- 两个新发现记录在 §4：`publicOrigin` 不能用 443（WHATWG URL 归一化导致链接无端口）、WS 升级
+  缺 per-IP 限速（protocol §2.2 声称的 429 未实现）。
+
 
 `pnpm run hygiene` 在本机仍会失败，但逐条核对后都不是本功能引入的（改动前就存在或来自本机环境）：
 
@@ -396,24 +461,26 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
 
 ## 4. 剩余工作（按优先级；已完成项见 §9）
 
-1. **附件上行（App/宿主/真实 e2e 已完成；真机验收被 ROM 挡住）**：宿主 `attachments-desktop.mjs`
-   + App 反向应答/分页读/rail/`attachmentIds` 全部落地，真实宿主 e2e 3 项附件检查 PASS；
-   剩余只有 A4 真机验收——本机 ColorOS 系统选择器对本 App 的 SAF 选择项全部 disabled
-   （见 §3.2.5 真机阻塞），换 ROM/换来源后再做。
-2. **输入区能力（B1/B2 已完成，B3 待做）**：`+` 弹层数据驱动（`commands/list`）与方案模式已落地
-   （§3.2.6）；剩余审批预设（B3：宿主 `apps/remote-host/cordis.patch.yml` 启用 `permission` +
-   App 盾牌改 preset 列表 + 二次确认），以及首页输入条文案、goal 行处置等收尾。
-   语音与 goal 按 D6/D7 不做。见 p5-remaining-design.md §4.5。
-3. **模型路由前置提示（代码已完成，C3 真机待做）**：`routableProviders` 判定补齐 +
-   `unavailableProviders` 语义，数据源 4 项 + widget 3 项用例通过；C3 真机验收
-   （宿主不配 `DEEPSEEK_API_KEY` 打开 `deepseek-official` 会话，发送前看到提示）待做。
-   见 p5-remaining-design.md §5。
+1. **附件上行（App/宿主/真实 e2e/真机旁路验收全部完成）**：宿主 `attachments-desktop.mjs` + App
+   反向应答/分页读/rail/`attachmentIds` 全部落地；真实 e2e 3 项附件检查 PASS；真机端因本机 ColorOS
+   的 SAF picker 全禁用，用 **debug-only 暂存旁路**完成真机验收（3 MiB PDF → rail 已就绪 → 发送 →
+   宿主会话记录 file 附件，见 §3.2.8）。剩余产品化项：release 包没有旁路，本机 ROM 上仍无法从系统
+   文件选择器选文件——需要换文件来源（自带文件浏览/相机/分享入口）或换 ROM 验证，属产品决策。
+2. **输入区能力（B1/B2/B3 与收尾全部完成）**：`+` 弹层数据驱动、方案模式、B3 审批预设
+   （宿主 `permission` 已启用、手机真实 preset 列表 + 二次确认、真机切换通过，见 §3.2.7/§3.2.8）、
+   首页输入条文案与 goal 行置灰均已完成。语音与 goal 按 D6/D7 不做。
+3. **模型路由前置提示（C3 真机通过）**：`routableProviders` 判定 + `unavailableProviders` 语义；
+   真机打开 `deepseek-official` 会话在发送前出现提示并可进模型 sheet（§3.2.8）。
 4. **反向请求 id 格式**：**已修**——`JsonRpcLineTransport` 增加可选 `requestIdPrefix`（默认不变，
    `packages/sdk/protocol/tests/transport.spec.ts` 3 例覆盖），宿主传 `h-`，App 改 `a-<uuid v4>`；
    协议测试 22/22 通过。
 5. **`remote.status` 超时 15 s**：宿主初始化慢时可能被误判为失败；真机未复现，保留观察。
-6. **配对只有粘贴链接**：没有二维码/扫码，PC 侧也没有配对界面（`remoteHost.pair()` 已可用，
-   留给 PC 端 UI）。P6 可达性一起做。
+6. **配对输入（终端二维码已落地；App 扫码 / PC 配对界面待做）**：宿主在 stderr 是真终端时
+   额外打印字符画二维码 + 明文链接（`apps/remote-host/src/index.ts:568`、`:1645-1662`；
+   日志重定向时不打印，现有日志字段与 e2e 行为未改），手机用能复制原文的扫码工具扫出链接
+   再粘贴。仍缺：① App 内扫码（需批准新增相机/解码依赖，1–2 天）；② PC 侧配对界面
+   （`remoteHost.pair()` 已可用，留给 PC 端 UI，2–3 天）。路线评估、校验证据与真机验收清单见
+   [pairing-qr-design.md](pairing-qr-design.md)，外网接入见 [reachability.md](reachability.md)。
 7. **PC 分发**：`@minnnng/dsh-android-runtime` 仍是 `private`，远程宿主作为产品分发前要决定
    它的发布身份（P6）。
 8. **workspace 变更快照的保留语义**（已知限制）：`workspaceChanges` 只在宿主**当前进程**
@@ -433,6 +500,30 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
     液态玻璃背景捕获（关闭玻璃 p95 17.26→9.61 ms）；流式会话与远程终端的瓶颈在 UI 线程重建
     （build p95 21–45 ms，与栅格无关）；文件列表仍有首帧栅格尖峰。下一步按 performance.md §4
     的收益顺序优化并复跑同一套场景。
+13. **后台通知（本轮只取证 + 设计，未实现）**：取证结论是「宿主确实发 notifications，但不是
+    protocol §8 那四条」——宿主只发 `remote.deviceRevoked`（`apps/remote-host/src/server.ts:1500-1548`）；
+    `task.completed` 与 `interactions.changed` 已经在线上（`apps/android/runtime/task-completion.mjs`
+    的 `transport.notify('task.completed', …)`、`apps/android/runtime/interactions.mjs:277`），
+    但它们属页面投影线（protocol §7.3、§8.1 明确 `remote.*` 是另一条线）。App 侧收到 `remote.*`
+    只处理了 `remote.deviceRevoked`（`apps/android/lib/remote_connection.dart:498-501`）；系统通知
+    通道只在本地模式生效：Kotlin `AgentService` 把本地 runtime 的 `task.completed` /审批帧交给
+    `TaskCompletionNotifications.completed()` / `ApprovalNotifications.sync()`（`apps/android/android/app/src/main/kotlin/com/minnnng/dsh_android/AgentService.kt:821`、`:828`），
+    另有前台服务在 `BackgroundExecution.kt`。远程模式不启动这些通道，也没有把 WS 放进前台服务，
+    App 退后台/被杀连接即断。**最小实现分三步**：(1) 宿主 side 把 `task.completed`/`interactions.changed`
+    映射成 §8 的 `remote.taskCompleted`/`remote.approvalPending`（只加发帧，不改协议、不动方法表，
+    ~0.5–1 天 + e2e 断言）；(2) App 收到 `remote.*` 时经既有 `dsh/runtime` MethodChannel 调 Kotlin
+    既有通知类（复用渠道与点击路由，~1–2 天）；(3) 真后台送达需要把远程连接放进前台服务
+    （Kotlin 服务持 WS，或把 transport 移进 Node runtime，~3–5 天，属架构改动）。建议先做 (1)+(2)
+    覆盖「App 在前台/刚退后台」，(3) 等 App 侧后台架构与产品决定；不要半实现。
+14. **`publicOrigin` 不能用 443（新发现）**：WHATWG URL 会把 wss 的默认端口 443 归一化掉
+    （`new URL('wss://h:443').origin === 'wss://h'`），配对链接因此不带端口，而 App 缺省补 4777
+    （`apps/android/lib/remote_pairing.dart:163`）→ 连到错误端口。修法二选一：`normalizePublicOrigin`
+    保留 443，或 App 按 scheme 补默认端口；在此之前公网入口用 8443 等非 443 端口。详见
+    [reachability.md](reachability.md) §3.5。
+15. **WS 升级鉴权没有 per-IP 限速**：protocol §2.2 写的是「同一源地址 5 秒内最多 5 次尝试，超出
+    HTTP 429」，当前只有 `/pair` 有对端限速（`apps/remote-host/src/pairing.ts:176-195`），升级路径
+    没有限速分支（`apps/remote-host/src/server.ts` 无 429 逻辑）。公网暴露时用网络层兜底；要补的话
+    在 `handleUpgrade` 前加对端计数。43 字符随机令牌下实际不可爆破，属资源占用/日志噪音风险。
 
 ---
 
@@ -538,6 +629,102 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
 ---
 
 ## 9. 变更日志（append-only，最新在最上面）
+
+### 2026-11-16 02:30 · lead（P5 收尾 + P6 第一批：B3 审批预设、真机验收批次、可达性文档与配对二维码）
+
+**B3 审批预设（真机通过）**
+
+- 宿主 `apps/remote-host/cordis.patch.yml` 启用 `permission`（一行；`auto` 仍随 auto-review 单独决定；
+  `ui-permission` 不启用）。真实宿主 e2e 23/23 无回归。
+- App：`composer_commands.dart` 抽出 `PermissionCallSurface` 与共用件（本地行为/文案不变）；
+  新增 `remote_permissions.dart`（真实 catalog 解析、三态、`/permission` 写回 + 投影刷新、失败可重试）；
+  `RemoteComposer` 盾牌改为 DSH 真实 preset 列表（当前项打勾、`danger-full-access` 二次确认、
+  未启用/未连接置灰带原因）；删除 Codex 式四项 `RemoteApprovalSheet`；会话页输入区上方显示
+  「权限预设：<当前值>」。一次性审批卡片不变。
+- 测试：`remote_permissions_test.dart` 18 项、会话页 +6、首页 +2、`+` 弹层 +1；全量 `flutter test`
+  **1815 项全通过**，analyze 11 条基线。
+- 真机：打开会话 → 盾牌 → 3 个真实 preset → 选「完全权限」→ 未勾选风险确认时「启用」无副作用 →
+  勾选启用后回显「权限预设：完全权限」；再切回「工作区内修改」（§3.2.8、`p5c-b*.png`）。
+
+**③ 首页输入条 + goal 行收尾**
+
+- 首页 `+`/权限预设/模型三入口置灰，输入条下方统一说明「进入会话后可添加附件与指令、切换权限预设与
+  选择模型」（未连接时「连接后可输入消息并新建会话」）；无语音死按钮；会话页 `+` 的 `goal` 行置灰
+  「远程会话暂不支持设置长期目标」，不执行/不插草稿。真机截图 `p5c-c01/c2`。
+
+**② 附件真机验收（debug-only 旁路）**
+
+- `AttachmentTransfers.kt` 新增 debug-only 暂存入口（`dshStageAttachment`，白名单 + canonical 校验 +
+  一次性消费，复用 picker 同一条复制/登记实现）；`MainActivity.kt` 仅 `BuildConfig.DEBUG` 读取；
+  release 字节码实测 `stage()` 空体、`takeStaged()` 恒 null、无调用点。Dart 产品代码零改动。
+- 新增验收脚本 `apps/android/tool/acceptance-remote-attachments.mjs`（零依赖，`--dry-run` 9 个选择器通过）。
+  真机验收 PASS：3 MiB PDF → rail「已就绪」→ 发送 → 宿主会话 `user/message` 记录 `file` 附件
+  （`p5c-a-attachment.pdf`、3145728 B、sha256 attachmentId），模型回复确认收到（§3.2.8）。
+
+**P6 第一批**
+
+- 新增 `apps/android/docs/remote-dsh/reachability.md`（可达性/反代/隧道/安全清单，含 `publicOrigin`
+  443 与 WS 限速两个新发现的记录）与 `pairing-qr-design.md`（App 扫码/PC 界面/短码三路线评估）。
+- 新增 `apps/remote-host/src/pairing-qr.ts`（零依赖 QR 编码器）+ `scripts/qr-selfcheck.ts`（16/16）；
+  配对日志在 stderr TTY 时打印字符画二维码 + 明文链接，`index.ts` 只留接线（1662→971 行）。
+- 后台通知：取证结论与三步最小实现写入 §4 第 13 项（宿主只发 `remote.deviceRevoked`）。
+
+**验证（本机全部跑过）**
+
+- `flutter test` → **1815 项全通过**；`flutter analyze` → 11 条既有基线
+- 真实宿主 e2e **23/23 PASS**（B3 patch 后；显式 `--session` 账号会话）
+- 二维码自检 16/16；`tsc -p apps/remote-host` 与 `-p tsconfig.host.json` exit 0；宿主冒烟 14/14
+- Kotlin `compileDebugKotlin` + `compileReleaseKotlin` BUILD SUCCESSFUL（release 旁路已证明折叠）
+- 真机验收证据：`.cache/remote-device/p5c-b*/p5c-c*/p5c-a*`（B3/C3/③/附件）
+
+### 2026-11-16 01:50 · agent-p6（P6 可达性：外网接入文档 + 终端配对二维码 + 通知取证）
+
+**新增文档**
+
+- [reachability.md](reachability.md)（新）：面向用户写清「局域网之外怎么连」。结论先行表 +
+  三档可用做法（Tailscale/WireGuard 组网后直连；自有域名 + 公网 IP/端口转发；自有 L4 直通反代
+  frp/nginx stream/HAProxy/socat）+ 明确不兼容清单（Cloudflare Tunnel、HTTPS 反代、
+  Tailscale Serve/Funnel、ngrok 默认、反代只转发 `/app`）。逐项写清 Origin/Host/SNI/证书链/路径/
+  空闲超时要求，附「换地址 / 换 CA / 撤销设备 / 令牌到期」行为对照表、安全清单（与 protocol §2
+  逐条对照）、已知缺口、排障表，全部带 file:line 证据。两条重要事实：① App 固定 CA 是端到端的，
+  **任何终止 TLS 的中间层都不可用**；② `publicOrigin` 不能用 443（见 §4 第 14 项）。
+- [pairing-qr-design.md](pairing-qr-design.md)（新）：配对输入三条路线评估（① App 内扫码
+  1–2 天、需批准相机/解码依赖；② PC 侧配对界面 2–3 天、依赖 ①；③ 短码手输 3–5 天、改协议且
+  弱化信任模型，不做），推荐顺序；已落地终端二维码的实现/校验/限制；扫码工具兼容性清单与
+  真机验收清单。
+
+**宿主（只改 `apps/remote-host/src/index.ts` 的打印逻辑 + 一个新自检脚本）**
+
+- 配对窗口打开处（启动、撤销后自动重开、`remoteHost.pair()`）在 **stderr 是 TTY** 时额外打印
+  提示 + 字符画二维码 + 明文配对链接（`apps/remote-host/src/index.ts:568`、`:1645-1662`）；
+  日志重定向（日志文件、e2e 捕获）时不打印；原有结构化日志的 `event`/`fields` 与 e2e 行为未改。
+- 纯 Node QR 编码（字节模式、纠错等级 M、版本 1–10）+ 终端渲染，无新增依赖：
+  `pairingQrMatrix()` / `renderPairingQrBlock()` / `writePairingQr()`（`apps/remote-host/src/index.ts:937-1662`）。
+  掩码打分刻意对齐 App 已在用的 `qr 3.0.2`，同一段文本得到逐模块相同的矩阵。
+- 新自检 `apps/remote-host/scripts/qr-selfcheck.ts`：14 组 KAT（版本 1–10 全覆盖 + 三种真实链接形态；
+  期望摘要由 `qr 3.0.2` 生成并逐模块对照，另用 `qrcode@1.5.4` 复核数据区）+ 结构
+  （定位/定时/格式 BCH/版本信息）+ Reed-Solomon 独立回读 + 终端渲染 + TTY 分支，**16/16 PASS**。
+
+**后台通知（只取证 + 记设计，未写代码）**
+
+- 结论：宿主只发 `remote.deviceRevoked`；`task.completed`/`interactions.changed` 已上线但属页面
+  投影线；App 侧 `remote.*` 仅处理 deviceRevoked，系统通知只服务本地模式（Kotlin `AgentService`
+  → `TaskCompletionNotifications`/`ApprovalNotifications`），远程模式没有前台服务持连接。
+  最小实现三步（宿主映射 §8 通知 → App 经 MethodChannel 复用 Kotlin 通知 → 前台服务持 WS）与工期
+  见 §4 第 13 项。
+
+**验证（本机跑过）**
+
+- `node --import tsx/esm apps/remote-host/scripts/qr-selfcheck.ts` → **16/16 PASS**
+- `node <pnpm.mjs> exec tsc -p apps/remote-host/tsconfig.json` → exit 0；`-p tsconfig.host.json` → exit 0
+- `node <pnpm.mjs> exec oxlint apps/remote-host/src/index.ts apps/remote-host/scripts/qr-selfcheck.ts`
+  → 0 warning / 0 error
+- `node <pnpm.mjs> exec tsx apps/remote-host/scripts/smoke-remote-host.ts` → **14/14 PASS**
+  （传输/鉴权/配对/撤销链路未受改动影响）
+- 矩阵交叉验证：14 段文本与 `qr 3.0.2` 矩阵摘要逐位一致；与 `qrcode@1.5.4` 去掩码后数据区一致
+  （仅掩码选择不同，均合法；`HELLO` 这类输入后者会自动分段，属另一种合法编码）
+- **未做**：真机扫码验收（需要人拿手机对终端，清单在 pairing-qr-design.md §4.3）；真实宿主
+  TTY 启动验收（本机命令环境不是 TTY，打印分支由自检脚本伪装 TTY 覆盖）。
 
 ### 2026-11-16 01:00 · lead（P5 第四/五批收尾：附件 App 侧 + 真实 e2e 23/23、输入区 `+`/方案模式、模型路由判定）
 
