@@ -518,7 +518,7 @@ PC 侧组合（新 profile，例如 `profiles/remote-host`）：
 | P4b 远程页面 | 完成：真实设备/项目/会话 + 真实会话页（窗口/发送/流式/自动连接/审批/模型选择/本次变更/归档/终端）+ 首页搜索/新建/归档/电脑文件/设置 | `lib/remote_dsh_page.dart`、`remote_dsh_archived_page.dart`、`remote_dsh_conversation.dart`、`remote_workspace_diff_page.dart`、`remote_workspace_files_page.dart`、`remote_dsh_settings_page.dart`、`remote_terminal_page.dart`、`remote_conversation_live_source.dart`、`remote_dsh_live_source.dart` |
 | P3 配对与设备 | **完成：配对闭环打通（真机验证）** | 宿主 `/ca.cer` `/pair` + App `remote_pairing*.dart`；设备表/单次令牌/撤销/窗口重开在冒烟与端到端里覆盖 |
 | P5 能力补齐 | **全部完成**：远程审批、会话模型选择、搜索、新建会话、已归档查看/恢复、电脑文件浏览、远程设置、workspace 本次变更、会话页归档、能力三态、模型路由自动兜底、**远程终端**、**附件上行（App/宿主/e2e/真机旁路验收）**、**输入区 `+`/方案模式**、**模型路由前置提示**、**B3 审批预设（真机切换通过）**、首页输入条文案 + goal 行置灰 | 见手册 §3.2.2–§3.2.8 与 §3.3 `p5-*`/`p5b-*`/`p5c-*` 真机截图；[p5-remaining-design.md](remote-dsh/p5-remaining-design.md) |
-| P6 可达性 | **第二批完成**：可达性文档、终端二维码、扫码配对（真机解码 PASS）、局域网发现（宿主 UDP 4778 + App 搜索/一键配对；PC 探测 PASS）、USB/adb reverse（真机连接 PASS）、手动地址覆盖、多台电脑管理与切换（真机 PASS）；待做：真机拍照扫码、无隔离网络下的发现直连、§8 后台通知实现、PC 配对界面、PC 分发 | [reachability.md](remote-dsh/reachability.md)、[discovery.md](remote-dsh/discovery.md)、[pairing-qr-design.md](remote-dsh/pairing-qr-design.md)、HANDOFF §3.2.10/§4 |
+| P6 可达性 | **第三批完成**：可达性文档、终端二维码、扫码配对（真机解码 PASS）、局域网发现（宿主 UDP 4778 + App 搜索；PC 探测 PASS）、USB/adb reverse（真机连接 PASS）、手动地址覆盖、多台电脑管理与切换（真机 PASS）、**后台通知步骤 (1)+(2)**（宿主 §8.2/8.3/8.5 发送 + App 系统通知，真机验证 taskCompleted/前台抑制/断开清理）、**PC 配对界面与分发评估**（[pc-pairing-distribution.md](remote-dsh/pc-pairing-distribution.md)）；待做：真机拍照扫码、无隔离网络发现直连、approvalPending 真机链路、通知深链、步骤 (3) 前台服务持 WS、PC 配对页面落地与分发决策 | [reachability.md](remote-dsh/reachability.md)、[discovery.md](remote-dsh/discovery.md)、[pairing-qr-design.md](remote-dsh/pairing-qr-design.md)、[pc-pairing-distribution.md](remote-dsh/pc-pairing-distribution.md)、HANDOFF §3.2.10–§3.2.12 |
 
 **M1 结论：成立**——真机连 PC、列真实项目与会话、发消息并看到流式回复（见
 [remote-dsh/HANDOFF.md](remote-dsh/HANDOFF.md) §3.3 与 §9 最新记录）。P5 六批与 B3/附件/模型路由
@@ -528,13 +528,14 @@ PC 侧组合（新 profile，例如 `profiles/remote-host`）：
 ### 12.3 验收证据（本轮）
 
 - `flutter analyze`：11 条 issue，**全部为改动前既有**（`files.dart`、`acceptance_files_test.dart`）；新增文件零告警。
-- `flutter test`：**1882 项全部通过**（扫码/发现/多方式/多设备新增用例全部在内），本地传输改动零回归。
+- `flutter test`：**1913 项全部通过**（多种连接方式 + 多设备 + 后台通知新增用例全部在内），本地传输改动零回归。
 - `tsc -p apps/remote-host` 与 `tsc -p tsconfig.host.json`：通过（host scripts 已纳入聚合）；`pnpm run build:check` 2/2 gates。
-- 宿主冒烟 14/14、宿主真实端到端 **23/23**、发现自检 11/11、QR 自检 16/16、协议 transport 22/22。
-- 真机「多种连接方式」：扫码解码 PASS（ZXing 解出链接逐字一致、相机 intent 可启动）；USB/adb reverse
-  配对+连接 PASS（host 记录 remoteAddress=127.0.0.1）；手动地址覆盖入口可用；局域网发现空态/回退/重试
-  真机可见（当前 Wi-Fi AP 客户端隔离，发现直连待换网络）；多设备胶囊/切换失败态/移除/冷启动自动连
-  上次设备 PASS。证据 `.cache/remote-device/p6-conn-*.png`、`.cache/remote-device/pairing-scan/`。
+- 宿主冒烟 14/14、宿主真实端到端 **23/23**（send 项含协议 §8.2 严格断言）、发现自检 11/11、
+  QR 自检 16/16、通知自检 11/11、协议 transport 22/22。
+- 真机「多种连接方式」：扫码解码 PASS、USB/adb reverse 配对+连接 PASS、手动地址覆盖入口可用、
+  多设备胶囊/切换失败态/移除/冷启动自动连上次设备 PASS（证据 `.cache/remote-device/p6-conn-*.png`）。
+- 真机「后台通知」：退后台收到 `pocket-remote:taskCompleted:*`（channel `task-completed`）、
+  前台不弹、退出远程页后通知清空；`approvalPending` 真机链路未触发（selfcheck+单测覆盖）。
 - 真机既有证据：M1、P5 各批（`p5-*`/`p5b-*`/`p5c-*`）、B3 权限预设（`p5c-b*`）、C3 模型路由（`p5c-c1/c2`）、
   附件旁路（`p5c-a*`）、③ 首页/goal（`p5c-c01/c2-goal-disabled`）。
 - `verify-translation-pairing`：新增文档已排除；仅余 6 条改动前既有的 `packages/*/README.i18n.yaml` 漂移。

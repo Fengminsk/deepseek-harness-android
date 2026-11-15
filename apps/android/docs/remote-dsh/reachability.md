@@ -333,6 +333,8 @@ wss://192.168.5.21:4777#instance=…&token=…
 
 日志被重定向（写文件、被 e2e 脚本捕获）时**不会**打印二维码块，只会保留原有结构化日志行，字段不变（`apps/remote-host/src/index.ts:568`、`apps/remote-host/src/index.ts:1645-1662`）。扫码由 App 内「扫码配对」入口完成（原生相机 intent + ZXing 解码，见 [pairing-qr-design.md](pairing-qr-design.md) 与 §11），扫码得到的文本与终端里那行明文链接是同一条。
 
+PC 侧配对界面（在电脑上重开配对窗口、显示二维码、管理/撤销已配对设备）的评估与推荐方案见 [pc-pairing-distribution.md](pc-pairing-distribution.md) §1；本轮未实现，PC 侧目前仍以终端输出为准。
+
 ---
 
 ## 8. 本机环境相关的坑

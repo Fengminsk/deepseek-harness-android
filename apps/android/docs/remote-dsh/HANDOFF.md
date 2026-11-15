@@ -380,7 +380,91 @@ permission patch（`git` 未提交状态）。
 本轮新增的包 / profile 引起的 `constraints`、`verify-product-use`、`verify-default-product-isolation`
 三条失败已经通过 §3.4 的几处门禁支持改掉（现在这三条在本机只剩上表的既有噪声）。
 
-### 3.3 真机验收（M1）
+#### 3.2.11 P6 后台通知①：宿主按协议 §8 发送 `remote.*` 系统通知线
+
+**实现**：新 `apps/remote-host/src/notifications.ts`（`RemoteNotifications`，每条 ready 连接一个实例）
+在 `createFacadeSink` 的 `notify` 上加一层观察：页面线照旧先写，随后按协议 §8 追加 `remote.*` 帧；
+`index.ts` 在 bind/连接替换、`onClose`、宿主 `stop` 时创建/释放实例，并把门面 `library.catalog` 读到的
+会话标题与所属项目注入。只在 ready 连接发送；发送失败只记一条 `remote-notify-failed` warn，不影响页面线。
+
+**字段映射**（页面线来源 → §8 字段）：
+
+| §8 帧 | 页面线来源 | 映射 |
+|---|---|---|
+| `remote.taskCompleted`（§8.2） | `task.completed {sessionId, turn?, endSeq?, preview?}` | `taskId`=`turn:<sessionId>:<turn>`（无 turn 时 `end-<endSeq>`，按 128 截断）、`sessionId`、`title`=会话标题（`library.catalog` 的 `projections.values.title`/行标题，取不到用 sessionId）、`workspaceId`=workspace 行 `sessionIds` 归属（拿不到就省略）、`status`=`completed`（运行时只在投影判定该轮 completed 时发页面线，失败/取消不发）、`turn`、`completedAt`=宿主时钟、`summary`=preview 压成单段纯文本（512） |
+| `remote.approvalPending`（§8.3） | `interactions.changed {revision, requests[]}` 中新出现的 pending 交互 | `interactionId`=请求 `id`、`sessionId`、`kind`=`approval`/`plan`/`question`（计划审核按 App `planReviewOf` 规则识别）、`title`=工具名/首题首行、`summary`=审批 reason（≤1024；计划正文可能含代码块，不塞 summary）、`toolName`、`createdAt`=首次观察到的宿主时钟 |
+| `remote.sessionChanged`（§8.5） | `session.event` 里 `type === 'session/title'` | `sessionId`、`revision`（每连接每会话从 0 单调 +1）、`title`、`updatedAt`=事件 `time`；`workspaceId`/`archived`/`removed` 不发（见下） |
+
+**截断 / 上限 / 去重 / ready**：字段按 §8 表上限截断（id 128、title 200、summary 512/1024）并置
+`truncated: true`；序列化后仍超帧（8/16/4 KiB）时按可选字段顺序整体丢弃（summary →
+workspaceId/toolName），再逐级缩短 title，仍装不下就丢弃整条（绝不发超限帧）。同一
+`interactionId` 每连接只发一次；未 ready 的观察直接丢弃且不消耗去重集合。**§8.5 为部分实现**：
+标题变化已映射；归档/删除要 `sessions.changed`（无 payload）触发 `library.catalog` diff，
+本批不做，App 仍靠页面线重读。
+
+**验证**（原样摘录）：`notification-selfcheck` **PASS 11/11**（映射/截断/帧上限/去重/ready/降级/§8.5）；
+`tsc -p apps/remote-host/tsconfig.json` 与 `-p tsconfig.host.json` exit 0；`oxlint` 改动 4 文件
+0 error 0 warning；宿主冒烟 **14/14**；隔离宿主（4788 + 临时 DSH_HOME 副本，未动 lead 的 4777/PID 19168）
+真实 e2e **PASS 23/23**，send 项附加断言原文：`remote.taskCompleted matches §8.2 (335 bytes,
+title=4 chars, turn=4, truncated=false); page line task.completed observed`，cleanup 复验
+`remote.* frames observed and validated: remote.taskCompleted×1`。默认首行 session 带 active goal 时
+运行时会抑制 `task.completed`，该断言按设计降级为 SKIP（打印原因）；用 `--session <无 goal 的会话>`
+可获得严格断言。`remote.approvalPending` 的真实审批链路不由 e2e 触发（需要模型发起需审批的工具，
+噪声大、会挂起等待），由 selfcheck 覆盖映射，真机验收由 §4 第 18 条的 App 侧任务负责。
+
+**lead 重启 4777 后的验证命令**（只重启宿主，App 不必参与）：
+
+```powershell
+# 1) 由 lead 停掉当前 4777 宿主（本任务未触碰该进程）
+Stop-Process -Id 19168
+# 2) 用既有覆盖层重启（加载 notifications.ts）
+$env:PATH='C:\Users\JZ_Colin\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\node\bin;'+$env:PATH
+node --import tsx/esm apps/cli/src/bin.ts --profile remote-host --patch .cache/remote-m1-host.overlay.yml --no-open
+# 3) 从新日志取 pairUrl，跑 e2e（send 项含 §8.2 子断言）
+node --import tsx/esm apps/remote-host/scripts/e2e-remote-host.ts --pair-url "<新日志里的 pairUrl>" --send "请只回复：收到" --timeout-ms 240000
+# 若首行 session 带 active goal（断言显示 SKIP），换一个无 goal 的会话重跑：
+#   --session <sessionId> 同上
+# 4) 宿主日志应出现：remote-notify-sent {"method":"remote.taskCompleted",...}
+```
+
+#### 3.2.12 P6 后台通知②：App 消费 `remote.*` 并弹系统通知（真机验证）
+
+**实现**：新 `apps/android/lib/remote_notifications.dart`（`RemoteNotification` 解析 + `RemoteNotificationDispatcher`
++ `RemoteNotificationBridge` 抽象）：按 protocol §8.2/§8.3/§8.5 严格解析（必填/类型/枚举/字段上限 + 帧字节
+上限 8/16/4 KiB，坏帧整帧丢弃并 debugPrint）；`truncated` 只在正文来自 `summary` 时补「…」；去重
+（审批按 `interactionId`、完成按 `sessionId+turn`，表上限 256）；**前台抑制在消费处**
+（`WidgetsBinding.instance.lifecycleState == resumed` 时不弹系统通知，页面线照旧更新）；断连/切设备/
+deviceRevoked 全部经 `_closeTransport()` 统一 `clear()`（清去重表 + `cancelAll`）并清 sessionChanged 水位。
+`remote_connection.dart` 增加三条 `remote.*` 分支与 `remoteNotifications` 流、`lastSessionChange`、
+`sessionRevision()` 暴露给页面层。
+
+**Kotlin**：新 `RemoteNotifications.kt`，复用既有渠道 `task-completed`「任务完成」/`agent-requests`
+「任务授权与提问」（IMPORTANCE_HIGH，幂等创建），notification tag = `pocket-remote:<kind>:<协议 id>`、
+id 21/22；`cancelAll()` 只取消 `pocket-remote:` 前缀的项（不误清本地 `pocket-completed:`/`pocket-interaction:`）；
+点击 Intent 打开 `MainActivity`（`pocket.route=remote`、`pocket.sessionId`、`pocket.remoteKind`、`pocket.remoteTag`，
+远程深链路由后续再接）；Android 13+ 未授权/渠道关闭/通知总开关关闭时静默降级，不新增权限弹窗。
+
+**真机验收（OnePlus6 / Android 11，debug APK + 4777 宿主重启后）**：
+
+| 项 | 操作 | 结果 | 证据 |
+|---|---|---|---|
+| N1 完成通知 | 远程会话（session-1bada031）发消息后立即 Home 退后台，等宿主轮次完成 | `dumpsys notification` 出现 `id=21 tag=pocket-remote:taskCompleted:turn:<session>:11 channel=task-completed`（IMPORTANCE 4），宿主日志 `remote-notify-sent {"method":"remote.taskCompleted","bytes":292}` | 终端输出；`.cache/remote-device/notify-dump.txt` 待补 |
+| N2 前台抑制 | 前台再发一轮（OK2），宿主发送 turn 13/14 通知 | 宿主日志有 `remote-notify-sent`，但通知列表**只有** N1 的 tag（前台不弹，页面线正常显示回复） | 同上 |
+| N3 清理 | 返回键退出远程 DSH 页（连接 `client-closed` 关闭） | 所有 `pocket-remote:*` 通知被 `cancelAll()` 清除，tag 列表为空 | 同上 |
+| N4 审批通知 | 需要模型发起真实审批（本轮尝试 read-only/工作区外写入均被沙箱直接拒绝、未产生审批交互） | **未在真机触发**；映射与渲染由宿主 selfcheck（§3.2.11）与 App 单元测试（23 项）覆盖 | — |
+| N5 点击通知 | 点击完成通知 | 打开 App（远程深链未接，Intent 已带 sessionId/tag） | 截图待补 |
+
+**已知边界**：WS 仍由 Flutter 进程持有（未上前台服务），按 Home 后只在进程存活期间能收到并弹通知；
+进程被杀/长时间后台会漏。真正的后台送达需要评估文档 §3 的前台服务架构（
+[pc-pairing-distribution.md](pc-pairing-distribution.md) §3）。
+
+**验证（原样）**：`flutter test` **1913 项全通过**（新增 23 项通知测试 + 连接层 8 项）；
+`flutter analyze` 11 条基线；Kotlin `compileDebugKotlin`/`compileReleaseKotlin` BUILD SUCCESSFUL；
+宿主 e2e **23/23**（send 项严格断言 `remote.taskCompleted matches §8.2 (292 bytes, title=22 chars,
+turn=5, truncated=false); page line task.completed observed`，cleanup 复验 `remote.* frames observed
+and validated: remote.taskCompleted×1`）。
+
+
 
 环境：PC `192.168.5.21`（局域网；默认路由是 VPN，所以配对链接地址用覆盖层显式指定），
 手机 OnePlus6 / Android 11 `192.168.5.140`。
@@ -522,8 +606,12 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
    回环配对链接。仍缺 PC 侧配对界面（`remoteHost.pair()` 已可用，留给 PC 端 UI，2–3 天）；
    真机拍照扫码与「发现→直连配对」需人手持/无隔离网络环境补测。实现与真机证据见 §3.2.10、
    [pairing-qr-design.md](pairing-qr-design.md)、[discovery.md](discovery.md)、[reachability.md](reachability.md)。
+   **PC 侧配对界面评估完成**：推荐宿主本地回环设置页（二维码 + 窗口倒计时 + 设备列表 + 撤销/重开），
+   方案、接口增补、依赖与工期见 [pc-pairing-distribution.md](pc-pairing-distribution.md) §1。
 7. **PC 分发**：`@minnnng/dsh-android-runtime` 仍是 `private`，远程宿主作为产品分发前要决定
-   它的发布身份（P6）。
+   它的发布身份（P6）。**评估完成**：现状（实测 tarball 依赖 `0.0.0`、registry 404、release/Desktop
+   工具链阻断）、三条路线与发布前检查清单见 [pc-pairing-distribution.md](pc-pairing-distribution.md) §2；
+   推荐升为 dsh 发布家族成员（改名 `@deepseek-ai/dsh-android-runtime`、目录不动），包名/受众决策在 §2.4。
 8. **workspace 变更快照的保留语义**（已知限制）：`workspaceChanges` 只在宿主**当前进程**
    保留本轮快照，宿主重启后旧会话的「本次变更」会降级为「不可用」；快照还包含 git 工作区
    里并发的其它改动（并发 agent 同时改文件时会出现在同一份 summary 里）。这是宿主服务语义，
@@ -541,21 +629,20 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
     液态玻璃背景捕获（关闭玻璃 p95 17.26→9.61 ms）；流式会话与远程终端的瓶颈在 UI 线程重建
     （build p95 21–45 ms，与栅格无关）；文件列表仍有首帧栅格尖峰。下一步按 performance.md §4
     的收益顺序优化并复跑同一套场景。
-13. **后台通知（本轮只取证 + 设计，未实现）**：取证结论是「宿主确实发 notifications，但不是
-    protocol §8 那四条」——宿主只发 `remote.deviceRevoked`（`apps/remote-host/src/server.ts:1500-1548`）；
-    `task.completed` 与 `interactions.changed` 已经在线上（`apps/android/runtime/task-completion.mjs`
-    的 `transport.notify('task.completed', …)`、`apps/android/runtime/interactions.mjs:277`），
-    但它们属页面投影线（protocol §7.3、§8.1 明确 `remote.*` 是另一条线）。App 侧收到 `remote.*`
-    只处理了 `remote.deviceRevoked`（`apps/android/lib/remote_connection.dart:498-501`）；系统通知
-    通道只在本地模式生效：Kotlin `AgentService` 把本地 runtime 的 `task.completed` /审批帧交给
-    `TaskCompletionNotifications.completed()` / `ApprovalNotifications.sync()`（`apps/android/android/app/src/main/kotlin/com/minnnng/dsh_android/AgentService.kt:821`、`:828`），
-    另有前台服务在 `BackgroundExecution.kt`。远程模式不启动这些通道，也没有把 WS 放进前台服务，
-    App 退后台/被杀连接即断。**最小实现分三步**：(1) 宿主 side 把 `task.completed`/`interactions.changed`
-    映射成 §8 的 `remote.taskCompleted`/`remote.approvalPending`（只加发帧，不改协议、不动方法表，
-    ~0.5–1 天 + e2e 断言）；(2) App 收到 `remote.*` 时经既有 `dsh/runtime` MethodChannel 调 Kotlin
-    既有通知类（复用渠道与点击路由，~1–2 天）；(3) 真后台送达需要把远程连接放进前台服务
-    （Kotlin 服务持 WS，或把 transport 移进 Node runtime，~3–5 天，属架构改动）。建议先做 (1)+(2)
-    覆盖「App 在前台/刚退后台」，(3) 等 App 侧后台架构与产品决定；不要半实现。
+13. **后台通知（步骤 (1)+(2) 已实现并真机验证；步骤 (3) 待产品决策）**：取证结论是「宿主确实发
+    notifications，但不是 protocol §8 那四条」——宿主原先只发 `remote.deviceRevoked`
+    （`apps/remote-host/src/server.ts`）；`task.completed` 与 `interactions.changed` 已经在线上
+    （`apps/android/runtime/task-completion.mjs` 的 `transport.notify('task.completed', …)`、
+    `apps/android/runtime/interactions.mjs`），属页面投影线。**已落地**：宿主
+    `apps/remote-host/src/notifications.ts` 映射出 §8.2/§8.3/§8.5（标题线）并经 `createFacadeSink`
+    观察发送（§3.2.11）；App `remote_notifications.dart` 严格解析 + 去重 + 前台抑制 +
+    `RemoteNotifications.kt` 系统通知/`cancelAll`（§3.2.12）。**真机验证**：退后台收到
+    `task-completed` 通知（tag `pocket-remote:taskCompleted:turn:<session>:<turn>`）、前台不弹、
+    退出远程页连接关闭后通知清空。**剩余**：(a) `remote.approvalPending` 真机链路未触发（需模型发起
+    真实审批；映射/渲染由 selfcheck+单测覆盖）；(b) 系统通知点击暂无远程会话深链（Intent 已带
+    sessionId/tag）；(c) 真后台送达（进程被杀/长时间后台）需要步骤 (3)：前台服务持 WS 或 transport
+    移出 UI 进程，架构对比与推荐见 [pc-pairing-distribution.md](pc-pairing-distribution.md) §3。
+    (d) §8.5 归档/删除事件未发（需 `library.catalog` diff 与删除/归档歧义判定）。
 14. **`publicOrigin` 不能用 443（新发现）**：WHATWG URL 会把 wss 的默认端口 443 归一化掉
     （`new URL('wss://h:443').origin === 'wss://h'`），配对链接因此不带端口，而 App 缺省补 4777
     （`apps/android/lib/remote_pairing.dart:163`）→ 连到错误端口。修法二选一：`normalizePublicOrigin`
@@ -575,6 +662,11 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
 17. **连接失败可见性（新发现）**：切换到不可达电脑（IP 不通）时页面可停在「正在连接」较长时间
     （TCP 连接超时，未给拨号设 App 侧超时）。建议给 `RemoteRuntimeTransport.connect` 加超时
     （例如 10–15 s）并映射到 `gateway/timeout`，让失败态与「重试/切换设备」更快出现。
+18. **后台通知宿主发送端（本轮已落地，App 侧待真机验收）**：宿主 `apps/remote-host/src/notifications.ts`
+    已按协议 §8 发送 `remote.taskCompleted`（§8.2）、`remote.approvalPending`（§8.3）与
+    `remote.sessionChanged`（§8.5，仅标题变化；归档/删除待目录 diff）；selfcheck 11/11、隔离宿主
+    e2e 23/23（send 项严格校验 §8.2）。App 侧消费（前台不弹 / 退后台弹 / 点击路由）由 task-21
+    落地后需真机验收；系统通知仍只在 App 进程存活时可达（见第 13 条）。详见 §3.2.11 与 §9。
 
 ---
 
@@ -680,6 +772,68 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
 ---
 
 ## 9. 变更日志（append-only，最新在最上面）
+
+### 2026-11-16 04:20 · lead（P6 后台通知落地 + PC 配对/分发评估 + 通知真机验收）
+
+**后台通知（协议 §8，步骤 (1)+(2) 完成）**
+
+- 宿主：`apps/remote-host/src/notifications.ts`（`RemoteNotifications`，每条 ready 连接一个）已在
+  `createFacadeSink` 的 `notify` 上加观察层（§3.2.11）：`task.completed` → `remote.taskCompleted`、
+  `interactions.changed` 新增 pending → `remote.approvalPending`、`session/title` →
+  `remote.sessionChanged`（标题线）；截断/帧上限/去重/ready/告警降级按 §8 实现。
+  `notification-selfcheck` **11/11**；隔离宿主 e2e **23/23**（send 项严格断言 `remote.taskCompleted
+  matches §8.2 (335 bytes, title=4 chars, turn=4)`）。
+- App：`remote_notifications.dart`（严格解析/去重/前台抑制/bridge）+ `RemoteNotifications.kt`
+  （复用 `task-completed`/`agent-requests` 渠道、tag `pocket-remote:*`、点击打开 App、`cancelAll`
+  只清远程项、Android 13+ 静默降级）；`remote_connection.dart` 增加三条 `remote.*` 分支、
+  通知流、sessionChanged 水位；断连/切设备/撤销统一清通知与去重表（§3.2.12）。
+- **真机验收**（debug APK + 重启后的 4777，e2e 同时 PASS 23/23 且 send 项严格断言
+  `remote.taskCompleted matches §8.2 (292 bytes, title=22 chars, turn=5)`）：退后台收到
+  `pocket-remote:taskCompleted:turn:<session>:11`（channel `task-completed`，IMPORTANCE 4）；
+  前台再完成两轮宿主有 `remote-notify-sent` 但不弹；退出远程页连接 `client-closed` 后通知全部清空。
+  `approvalPending` 真机链路未触发（沙箱直接拒绝写入，未产生审批交互），由宿主 selfcheck 与 App
+  23 项单测覆盖；通知点击目前只打开 App（远程深链待接）。
+
+**P6 剩余评估**
+
+- 新增 `apps/android/docs/remote-dsh/pc-pairing-distribution.md`（266 行，结论先行）：
+  PC 配对界面推荐 **A1 宿主内嵌本地回环设置页**（`node:http` 只绑 127.0.0.1；配对按钮 + 倒计时 +
+  SVG 二维码 + USB/`adb reverse` + 已配对设备列表 + 撤销；`pairing-qr.ts` 可直接出 SVG；2–4 天）；
+  PC 分发实测：`pnpm pack` 出的 tarball 依赖写成 `@minnnng/dsh-android-runtime: 0.0.0`，
+  registry 上该包与 `@deepseek-ai/dsh-remote-host` 均 **404**，release family 规则不收该包
+  （只扫 `apps/*` 一层、跳过 private、必须 `@deepseek-ai/` 家族版本）→ 下一轮 release 会带断依赖；
+  推荐改名 `@deepseek-ai/dsh-android-runtime` 并入发布家族（待用户决策 scope/受众/版本策略）。
+- HANDOFF §4 第 6/7/13 项、reachability.md、pairing-qr-design.md 已加指针。
+
+**验证（原样）**：`flutter test` **1913 项全通过**；`flutter analyze` 11 条基线；
+宿主 e2e **23/23**、冒烟 14/14、通知自检 11/11；Kotlin debug/release 编译 BUILD SUCCESSFUL；
+`tsc` 两个工程 exit 0。
+
+### 2026-11-16 03:58 · host-notify（P6 后台通知①：宿主 `remote.*` 发送端）
+
+**实现**
+
+- 新 `apps/remote-host/src/notifications.ts`：`RemoteNotifications` 在门面 sink 的 `notify` 上观察
+  页面线，按 protocol §8 追加 `remote.taskCompleted`（§8.2）、`remote.approvalPending`（§8.3，
+  审批/提问/计划）与 `remote.sessionChanged`（§8.5，仅标题变化）；字段按 §8 上限截断 + `truncated`，
+  序列化超帧时先丢可选字段、再缩 title、装不下丢弃整条；同一 interactionId 每连接只发一次；
+  只在 ready 连接发送，写失败只记一条 `remote-notify-failed` warn（不影响页面线）。
+- `apps/remote-host/src/index.ts`：每条连接创建/释放观察者（连接替换、`onClose`、宿主 `stop`），
+  注入门面 `library.catalog` 的会话标题/所属项目查询；新增日志事件 `remote-notify-sent` /
+  `remote-notify-failed` / `remote-notify-lookup-failed` / `remote-notify-lookup-timeout` /
+  `remote-notify-ignored`，既有启动/连接日志字段不变。
+- 新 `apps/remote-host/scripts/notification-selfcheck.ts`：零依赖，**11/11 PASS**。
+- `apps/remote-host/scripts/e2e-remote-host.ts`：send 项附加 §8.2 观察（页面线 `task.completed` →
+  `remote.taskCompleted` 严格校验），cleanup 复验整轮 `remote.*` 帧；既有 23 项语义/编号不变。
+  顺带修掉本文件 8 条既有 oxlint 风格错误（模板字符串引号、一处缩进），否则「改动文件 0 error」不成立。
+
+**验证**：selfcheck 11/11；`tsc` 两个工程 exit 0；`oxlint` 改动 4 文件 0 error；宿主冒烟 14/14；
+隔离宿主（4788 + 临时 DSH_HOME，未触碰 lead 的 4777/PID 19168）真实 e2e **PASS 23/23**，
+send 项原文 `remote.taskCompleted matches §8.2 (335 bytes, title=4 chars, turn=4, truncated=false);
+page line task.completed observed`。
+
+**边界**：§8.5 只做标题变化（归档/删除需 `sessions.changed` + 目录 diff，延期，见 §3.2.11）；
+App 侧消费由 task-21；真后台送达仍需前台服务（§4 第 13 条）。
 
 ### 2026-11-16 03:30 · lead（P6 第三批收口：多种连接方式 + 多台电脑 + 真机验收）
 
