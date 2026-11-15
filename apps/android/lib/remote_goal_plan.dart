@@ -60,6 +60,12 @@ class RemoteGoalPlanController extends ChangeNotifier
   RemoteConnectionPhase _phase = RemoteConnectionPhase.idle;
   int _epoch = 0, _read = 0, _planSeq = -1;
   StreamSubscription<Json>? _control;
+  Timer? _resubscribe;
+  int _controlEnds = 0;
+
+  /// 控制流在连接重建时会被退役（`onDone`），这不代表计划状态不可信；重连
+  /// ready 后重新订阅，短时间连续结束（例如宿主立即收口）才停止重试，避免空转。
+  static const int _maxControlEnds = 3;
 
   /// 控制器是否仍可用；页面在销毁前不必再检查。
   bool get alive => !_disposed;
@@ -76,16 +82,33 @@ class RemoteGoalPlanController extends ChangeNotifier
   Future<void> start() async {
     if (_started || _disposed) return;
     _started = true;
+    _subscribeControl();
+    await refresh();
+  }
+
+  void _subscribeControl() {
+    if (_disposed || _control != null || source.phase != RemoteConnectionPhase.ready) return;
     _control = source.watchSessionControl().listen(
       _onControl,
       onError: _onControlError,
-      onDone: () {
-        if (!_disposed) {
-          _readFailure(StateError('会话同步已结束，请重新打开会话'));
-        }
-      },
+      onDone: _onControlDone,
     );
-    await refresh();
+  }
+
+  void _onControlDone() {
+    _control = null;
+    if (_disposed || source.phase != RemoteConnectionPhase.ready) return;
+    // 控制流结束通常是连接重建时退役旧订阅；保留最后一次投影并重读一次，
+    // 不把「流结束」当成状态不可信。仅当短时间内反复结束（宿主不提供该流）
+    // 才停止重新订阅，避免空转。
+    if (_controlEnds >= _maxControlEnds) return;
+    _controlEnds += 1;
+    unawaited(refresh());
+    _resubscribe?.cancel();
+    _resubscribe = Timer(const Duration(milliseconds: 300), () {
+      _resubscribe = null;
+      _subscribeControl();
+    });
   }
 
   @override
@@ -187,8 +210,10 @@ class RemoteGoalPlanController extends ChangeNotifier
       _planSeq = -1;
       fresh = false;
       error = null;
+      _controlEnds = 0;
       _publish();
       unawaited(refresh());
+      _subscribeControl();
     }
   }
 
@@ -276,6 +301,8 @@ class RemoteGoalPlanController extends ChangeNotifier
     _disposed = true;
     _epoch++;
     source.removeListener(_sourceChanged);
+    _resubscribe?.cancel();
+    _resubscribe = null;
     final control = _control;
     _control = null;
     if (control != null) unawaited(control.cancel());

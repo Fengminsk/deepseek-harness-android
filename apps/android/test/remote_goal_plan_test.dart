@@ -281,6 +281,21 @@ void main() {
     expect(controller.plan?.target, isTrue);
   });
 
+  test('控制流结束不当作状态不可信，并静默重订阅', () async {
+    final source = _source(
+      projections: _projections(plan: _plan(active: true, pending: false)),
+    );
+    final controller = _controller(source);
+    await controller.start();
+    expect(controller.plan?.target, isTrue);
+
+    // 连接重建会退役旧订阅：流结束是正常生命周期，不是「状态不可信」。
+    await source.closeControl();
+    await Future<void>.delayed(const Duration(milliseconds: 500));
+    expect(controller.error, isNull);
+    expect(controller.plan?.target, isTrue, reason: '保留最后一次已知投影');
+  });
+
   // -------------------------------------------------------- 真实数据源契约
 
   test('readProjections 走 api.call 的 session.projections', () async {
