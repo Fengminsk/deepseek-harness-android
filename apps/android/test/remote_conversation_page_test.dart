@@ -13,6 +13,7 @@ import 'package:dsh_android/remote_connection.dart';
 import 'package:dsh_android/remote_conversation_source.dart';
 import 'package:dsh_android/remote_dsh_conversation.dart';
 import 'package:dsh_android/remote_dsh_widgets.dart';
+import 'package:dsh_android/remote_permissions.dart';
 import 'package:dsh_android/remote_workspace_diff_page.dart';
 import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/runtime_transport.dart';
@@ -166,6 +167,94 @@ void _mockAttachmentPicker(WidgetTester tester) {
       null,
     ),
   );
+}
+
+/// 远程宿主启用了权限预设时的 `runtime.permissions` 应答（桌面形状）。
+Map<String, dynamic> _runtimePermissions({bool available = true}) =>
+    <String, dynamic>{
+      'shell': <String, dynamic>{
+        'tool': 'desktop-host',
+        'available': false,
+        'reason': 'desktop-remote-host',
+        'executionIdentity': null,
+        'approval': 'unavailable',
+        'workspaceConfinement': false,
+      },
+      'fileTools': <String, dynamic>{'sandboxMode': 'workspace-write'},
+      'presets': <String, dynamic>{'available': available},
+    };
+
+/// `permissionPresets.catalog` 的真实形状（`PermissionCatalog`）。
+Map<String, dynamic> _permissionCatalog() => <String, dynamic>{
+  'options': <Map<String, dynamic>>[
+    <String, dynamic>{
+      'value': 'read-only',
+      'name': 'read-only',
+      'description': 'Read-only file access.',
+    },
+    <String, dynamic>{
+      'value': 'workspace-write',
+      'name': 'workspace-write',
+      'description': 'Write inside the workspace.',
+    },
+    <String, dynamic>{
+      'value': 'danger-full-access',
+      'name': 'danger-full-access',
+      'description': 'Full file access without approval prompts.',
+    },
+  ],
+  'defaultPreset': 'workspace-write',
+};
+
+/// 带权限投影的 `session.projections` 返回。
+Map<String, dynamic> _permissionProjections(String currentValue) =>
+    <String, dynamic>{
+      'kind': 'sequenced',
+      'asOfSeq': 2,
+      'values': <String, dynamic>{
+        'permissions': <String, dynamic>{'currentValue': currentValue},
+      },
+    };
+
+/// 以「电脑启用了权限预设」为前提的会话页数据源：探测、目录与切换都走假应答。
+FakeRemoteConversationSource _permissionSource({
+  String current = 'workspace-write',
+  bool available = true,
+  List<RemotePendingInteraction> interactions =
+      const <RemotePendingInteraction>[],
+}) {
+  final source = FakeRemoteConversationSource(
+    window: _window(conversationEvents()),
+    interactions: interactions,
+    supported: <String>{
+      remoteConversationReadMethod,
+      remoteConversationSendMethod,
+      remoteConversationCommandMethod,
+      remoteConversationApiCallMethod,
+      remoteConversationInteractionsListMethod,
+      remoteConversationInteractionsReplyMethod,
+      remotePermissionRuntimeMethod,
+    },
+  );
+  source.answers[remotePermissionRuntimeMethod] = (_) =>
+      _runtimePermissions(available: available);
+  source.answers['api.call'] = (params) {
+    if (params['namespace'] == 'permissionPresets' &&
+        params['method'] == 'catalog') {
+      return _permissionCatalog();
+    }
+    return <String, dynamic>{};
+  };
+  source.answers['session.command'] = (params) {
+    final value = '${params['line']}'.split(' ').last;
+    source.projections = _permissionProjections(value);
+    return <String, dynamic>{
+      'commandId': 'command-1',
+      'result': <String, dynamic>{'kind': 'success', 'text': 'preset $value'},
+    };
+  };
+  source.projections = _permissionProjections(current);
+  return source;
 }
 
 void main() {
@@ -1336,6 +1425,68 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('「+」里的 goal 行置灰写原因，点击不执行也不插入草稿', (tester) async {
+    final source = FakeRemoteConversationSource(
+      window: _window(conversationEvents()),
+    );
+    source.answers['api.call'] = (params) => <Map<String, dynamic>>[
+      <String, dynamic>{
+        'name': 'goal',
+        'definitionId': '@deepseek-ai/dsh-command-goal',
+        'description': '设置或查看长期任务目标',
+        'input': <String, dynamic>{'hint': '<text>'},
+      },
+      <String, dynamic>{
+        'name': 'compact',
+        'definitionId': '@deepseek-ai/dsh-command-compact',
+        'description': '压缩以上对话内容',
+      },
+      <String, dynamic>{
+        'name': 'feedback',
+        'definitionId': '@deepseek-ai/dsh-command-feedback',
+        'description': '发送关于当前会话的反馈',
+        'input': <String, dynamic>{'hint': '<text>'},
+      },
+    ];
+    await tester.pumpWidget(_host(source));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('添加与指令'));
+    await tester.pumpAndSettle();
+    expect(find.text('目标  goal'), findsOneWidget);
+    expect(find.text('远程会话暂不支持设置长期目标'), findsOneWidget);
+
+    await tester.tap(find.text('目标  goal'), warnIfMissed: false);
+    await tester.pumpAndSettle();
+    expect(find.text('添加与指令'), findsOneWidget, reason: '置灰行不回调，弹层保持打开');
+    expect(source.commands, isEmpty, reason: 'goal 行不执行任何宿主指令');
+    expect(
+      tester
+          .widget<TextField>(find.byType(TextField, skipOffstage: false).first)
+          .controller!
+          .text,
+      isEmpty,
+      reason: 'goal 行也不把 /goal 插进草稿',
+    );
+
+    // 同一份目录里其它宿主指令仍然可用：不需要输入的直接执行。
+    await tester.tap(find.text('压缩  compact'));
+    await tester.pumpAndSettle();
+    expect(source.commands, <String>['/compact']);
+
+    // 需要输入的指令插入草稿等待补参数（goal 置灰不改变这条路径）。
+    await tester.tap(find.byTooltip('添加与指令'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('反馈  feedback'));
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<TextField>(find.byType(TextField).first).controller!.text,
+      '/feedback ',
+    );
+    expect(source.commands, <String>['/compact'], reason: '插入草稿不等于执行');
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('计划待生效时计划条显示「将在下一步生效」', (tester) async {
     final source = FakeRemoteConversationSource(
       window: _window(conversationEvents()),
@@ -1507,6 +1658,170 @@ void main() {
     expect(find.byType(ChatPlanDocumentPage), findsOneWidget);
     expect(find.textContaining('先改数据源，再改页面。'), findsWidgets);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('盾牌与回显显示真实当前预设，切换后写 /permission 并重读投影', (tester) async {
+    final source = _permissionSource();
+    await tester.pumpWidget(_host(source));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey('remote-permission-label')),
+      findsOneWidget,
+    );
+    expect(find.text('权限预设：工作区内修改'), findsOneWidget);
+    expect(find.byTooltip('权限预设：工作区内修改'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('remote-permission-label')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('仅可查看'), findsOneWidget);
+    expect(find.text('工作区内修改'), findsWidgets);
+    expect(find.text('完全权限'), findsOneWidget);
+    expect(find.byIcon(Icons.check_rounded), findsOneWidget, reason: '当前项打勾');
+
+    await tester.tap(find.text('仅可查看'));
+    await tester.pumpAndSettle();
+
+    final command = source.requests.singleWhere(
+      (request) => request.method == 'session.command',
+    );
+    expect(command.params, <String, dynamic>{
+      'sessionId': 's-1',
+      'line': '/permission read-only',
+      'attachmentIds': <String>[],
+    });
+    expect(
+      find.byType(RemotePermissionSheet),
+      findsNothing,
+      reason: '成功后退回会话页',
+    );
+    expect(find.text('权限预设：仅可查看'), findsOneWidget, reason: '写回后重读投影');
+  });
+
+  testWidgets('完全权限在会话页弹层里先确认再写 /permission', (tester) async {
+    final source = _permissionSource();
+    await tester.pumpWidget(_host(source));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('remote-permission-label')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('完全权限'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('确认启用完全权限？'), findsOneWidget);
+    expect(
+      source.requests.where((request) => request.method == 'session.command'),
+      isEmpty,
+      reason: '只点选项不提交',
+    );
+
+    await tester.tap(find.text('我已了解风险，并愿意继续'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('启用'));
+    await tester.pumpAndSettle();
+
+    expect(
+      source.requests
+          .singleWhere((request) => request.method == 'session.command')
+          .params['line'],
+      '/permission danger-full-access',
+    );
+    expect(find.text('权限预设：完全权限'), findsOneWidget);
+  });
+
+  testWidgets('电脑未启用权限预设时盾牌置灰并写明原因', (tester) async {
+    final source = _permissionSource(available: false);
+    await tester.pumpWidget(_host(source));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey('remote-permission-unavailable')),
+      findsOneWidget,
+    );
+    expect(find.text('这台电脑未启用权限预设'), findsOneWidget);
+    expect(find.byTooltip('权限预设：这台电脑未启用权限预设'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('权限预设：这台电脑未启用权限预设'), warnIfMissed: false);
+    await tester.pumpAndSettle();
+    expect(find.byType(RemotePermissionSheet), findsNothing);
+    expect(
+      source.requests.where((request) => request.method == 'api.call'),
+      isEmpty,
+      reason: '未启用时不读目录',
+    );
+  });
+
+  testWidgets('未连接时盾牌说明「正在连接电脑…」且不显示回显行', (tester) async {
+    final source = FakeRemoteConversationSource(
+      window: _window(conversationEvents()),
+      phase: RemoteConnectionPhase.connecting,
+    );
+    await tester.pumpWidget(_host(source));
+    await tester.pumpAndSettle();
+
+    expect(find.byTooltip('权限预设：正在连接电脑…'), findsOneWidget);
+    expect(find.byKey(const ValueKey('remote-permission-label')), findsNothing);
+    expect(
+      find.byKey(const ValueKey('remote-permission-unavailable')),
+      findsNothing,
+    );
+    expect(source.requests, isEmpty);
+  });
+
+  testWidgets('目录读取失败在弹层内报错，重试后恢复', (tester) async {
+    final source = _permissionSource();
+    var failing = true;
+    source.answers['api.call'] = (params) {
+      if (failing) throw StateError('目录不可用');
+      return _permissionCatalog();
+    };
+    await tester.pumpWidget(_host(source));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('remote-permission-label')));
+    await tester.pumpAndSettle();
+    expect(find.text('无法读取权限预设'), findsOneWidget);
+
+    failing = false;
+    await tester.tap(find.text('重新读取'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('无法读取权限预设'), findsNothing);
+    expect(find.text('仅可查看'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('remote-permission-label')),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('权限预设与一次性审批卡片共存，预设只影响新请求', (tester) async {
+    final source = _permissionSource(interactions: [_approvalInteraction()]);
+    await tester.pumpWidget(_host(source));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey('remote-permission-label')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('remote-interaction-i-1')),
+      findsOneWidget,
+      reason: '预设入口不影响已挂起的审批卡片',
+    );
+    expect(find.textContaining('需要授权：android_shell'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('remote-permission-label')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('仅可查看'));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey('remote-interaction-i-1')),
+      findsOneWidget,
+      reason: '切换预设不会自动通过已挂起的请求',
+    );
+    expect(source.approvalReplies, isEmpty);
   });
 }
 

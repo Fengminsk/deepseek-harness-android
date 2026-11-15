@@ -120,6 +120,24 @@ class _ReadOnlySource implements RemoteDshDataSource {
   Future<List<RemoteDshProject>> listProjects() async => projects;
 }
 
+/// 还未连上电脑的首页假数据源：输入条应整体不可用并说明先连接。
+class _OfflineSource implements RemoteDshDataSource {
+  @override
+  RemoteDshConnectionState get connection =>
+      RemoteDshConnectionState.notConnected;
+
+  @override
+  String? get hostName => null;
+
+  @override
+  Future<List<RemoteDshDevice>> listDevices() async =>
+      const <RemoteDshDevice>[];
+
+  @override
+  Future<List<RemoteDshProject>> listProjects() async =>
+      const <RemoteDshProject>[];
+}
+
 /// 记录每次推入的路由名。
 class _RouteLog extends NavigatorObserver {
   final List<String?> names = <String?>[];
@@ -497,6 +515,75 @@ void main() {
 
       expect(find.byType(RemoteDshArchivedPage), findsNothing);
       expect(find.textContaining('「已归档任务」暂未开放'), findsOneWidget);
+
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpAndSettle();
+    });
+  });
+
+  group('输入条会话外能力说明', () {
+    /// 输入条里某个按钮的 IconButton 控件；按钮不可点时 `onPressed` 为 null。
+    IconButton circleButton(WidgetTester tester, String tooltip) =>
+        tester.widget<IconButton>(
+          find.ancestor(
+            of: find.byTooltip(tooltip),
+            matching: find.byType(IconButton),
+          ),
+        );
+
+    testWidgets('已连接时加号、权限与模型置灰，并说明进入会话后可用', (tester) async {
+      await _show(tester, _HomeSource(projects: _projects()));
+
+      expect(
+        find.byKey(const ValueKey('remote-composer-hint')),
+        findsOneWidget,
+      );
+      expect(
+        find.text('进入会话后可添加附件与指令、切换权限预设与选择模型'),
+        findsOneWidget,
+        reason: '会话外的不可用能力统一给可操作说明',
+      );
+
+      for (final tooltip in ['添加与指令', '权限预设', '选择模型']) {
+        expect(
+          circleButton(tester, tooltip).onPressed,
+          isNull,
+          reason: '$tooltip 在首页没有数据源，必须置灰',
+        );
+      }
+
+      // 不再是「能点但没用」的入口：点按不弹「暂未开放」提示，也不跳页。
+      for (final tooltip in ['添加与指令', '权限预设', '选择模型']) {
+        await tester.tap(find.byTooltip(tooltip), warnIfMissed: false);
+      }
+      await tester.pumpAndSettle();
+      expect(find.textContaining('暂未开放'), findsNothing);
+      expect(find.textContaining('添加内容'), findsNothing);
+      expect(find.byType(RemoteDshConversationPage), findsNothing);
+
+      // 语音入口已删除（§4.4 语音不做），不能留死按钮。
+      expect(find.byTooltip('语音输入'), findsNothing);
+      expect(find.byIcon(Icons.mic_rounded), findsNothing);
+
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('未连接时输入条整体不可用并说明先连接', (tester) async {
+      await _show(tester, _OfflineSource());
+
+      final composer = tester.widget<RemoteComposer>(
+        find.byType(RemoteComposer).first,
+      );
+      expect(composer.enabled, isFalse);
+      expect(find.text('连接后可输入消息并新建会话'), findsOneWidget, reason: '未连接时说明连接的作用');
+      for (final tooltip in ['添加与指令', '权限预设', '选择模型']) {
+        expect(
+          circleButton(tester, tooltip).onPressed,
+          isNull,
+          reason: '$tooltip 在未连接时不可点',
+        );
+      }
 
       await tester.pumpWidget(const SizedBox());
       await tester.pumpAndSettle();

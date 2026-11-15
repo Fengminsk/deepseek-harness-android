@@ -53,6 +53,14 @@
 // [RemoteSessionTerminalPage] 复用调用方传入的那台电脑的连接面；「归档会话」确认后
 // 写 `library.sessionArchive` 并带着可见结果返回首页。
 //
+// 权限预设：输入条的盾牌与输入区上方的当前预设回显打开真实预设列表
+// （`RemotePermissionController`，目录来自 `permissionPresets.catalog`，当前值来自
+// `session.projections` 的 `values.permissions`）；`danger-full-access` / `auto`
+// 复用本地权限页的二次确认，切换写 `/permission <值>` 后重读投影。电脑没有启用
+// 权限预设时入口置灰并写明原因；目录读取失败只在弹层内报错并可重试，不缓存成
+// 永久不支持。一次性审批卡片（允许一次 / 拒绝）保持不变：预设只影响新请求，不会
+// 自动通过已挂起的审批。
+//
 // 连接阶段来自传入的数据源（它投影 `RemoteConnectionController.phase`）：
 // 连接中 / 就绪 / 失败三态分别给出连接提示、正常会话与带 `lastError` 的失败条；
 // 失败条上的「重新连接」重连同一台电脑，不新建连接。宿主不支持某个门面方法时
@@ -86,6 +94,7 @@ import 'remote_connection.dart';
 import 'remote_conversation_source.dart';
 import 'remote_dsh_widgets.dart';
 import 'remote_goal_plan.dart';
+import 'remote_permissions.dart';
 import 'remote_terminal_page.dart';
 import 'remote_workspace_diff_page.dart';
 import 'runtime.dart';
@@ -229,6 +238,9 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
   /// 计划模式的状态与写入口；未连接时条不显示（见 `remote_goal_plan.dart`）。
   late final RemoteGoalPlanController _goalPlan;
 
+  /// 权限预设的能力三态、当前值与目录；盾牌与预设弹层由它驱动。
+  late final RemotePermissionController _permissions;
+
   RemoteConversationSource get _source => widget.source;
 
   @override
@@ -247,6 +259,10 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     // 计划模式先订阅控制流、再读首屏投影；未连接时它保持静默（条不显示）。
     _goalPlan = RemoteGoalPlanController(source: _source);
     unawaited(_goalPlan.start());
+    // 权限预设：探测宿主能力并读一次当前值；未连接时保持「正在连接电脑…」。
+    _permissions = RemotePermissionController(source: _source);
+    _permissions.addListener(_onPermissionsChanged);
+    unawaited(_permissions.start());
     // 更新流先订阅、再开始读首屏：首屏快照不会落在订阅建立之前。
     unawaited(_source.start());
   }
@@ -269,6 +285,8 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     }
     // 数据源由本页持有：释放它会取消 follow 观察并显式 api.unsubscribe。
     _goalPlan.dispose();
+    _permissions.removeListener(_onPermissionsChanged);
+    _permissions.dispose();
     _source.dispose();
     _attachmentSurface?.dispose();
     _scrolling.dispose();
@@ -300,6 +318,11 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
 
   /// 附件草稿状态（上传中 / 失败 / 移除）变化：发送按钮要看草稿才能决定是否出现。
   void _onDraftsChanged() {
+    if (mounted) setState(() {});
+  }
+
+  /// 权限预设状态变化（能力探测、目录、当前值）：输入区回显与弹层跟随刷新。
+  void _onPermissionsChanged() {
     if (mounted) setState(() {});
   }
 
@@ -395,7 +418,11 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
   static int _bySeq(Json left, Json right) =>
       (left['seq'] as int? ?? 0).compareTo(right['seq'] as int? ?? 0);
 
-  Future<void> _reload() => _source.reload();
+  /// 重新读取窗口与权限状态：读取失败后的「重试」用它。
+  Future<void> _reload() async {
+    await _source.reload();
+    if (mounted) await _permissions.refresh();
+  }
 
   // ------------------------------------------------------------ 滚动
 
@@ -822,6 +849,7 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          if (ready) _permissionStatusRow(context),
           if (ready) _modelLabelRow(context),
           if (ready && !canOpenMenu)
             Padding(
@@ -909,13 +937,13 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
                 : '先连接这台电脑',
             controller: _input,
             focusNode: _focus,
-            approvalLabel: _approvalLabel(_approval),
+            approvalLabel: _permissionShieldLabel,
             modelLabel: _modelLabel,
             enabled: canSend && !_sending,
             onChanged: _onDraftChanged,
             onSubmitted: (value) => unawaited(_submit(value)),
             onAdd: canOpenMenu ? _openAddSheet : null,
-            onApproval: _openApprovalSheet,
+            onApproval: _permissions.presetsReady ? _openPermissionSheet : null,
             onModel: canSelectModel ? () => unawaited(_openModelSheet()) : null,
           ),
         ],
@@ -1363,6 +1391,8 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
   /// - `file` 保持附件上行（[AttachmentDrafts.pick]），附件不可用时置灰写原因；
   /// - `model` 打开既有模型弹层；
   /// - `plan` 进入方案模式（[openChatPlanMode]，状态由 [_goalPlan] 驱动）；
+  /// - `goal` 延期（D6：激活态依赖远程没有的运行时通知），置灰并写原因，不执行、
+  ///   也不把 `/goal ` 插进草稿；
   /// - 其它宿主指令作为 `session.command` 执行；需要输入的指令插进输入框，
   ///   由用户补全参数后按普通指令提交；
   /// - `export` / `skills` 本轮不支持，置灰并写明原因。
@@ -1374,6 +1404,7 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     final disabledReasons = <String, String>{
       'export': '远程会话暂不支持导出到手机，请在电脑上导出',
       'skills': '远程会话暂不支持浏览技能',
+      'goal': '远程会话暂不支持设置长期目标',
       if (!canAttach)
         'file': _capabilityReason(state, '上传附件') ?? '这台电脑暂不支持上传附件',
     };
@@ -1559,22 +1590,130 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     return _capability(remoteAttachmentPrepareMethod);
   }
 
-  void _openApprovalSheet() {
-    unawaited(
-      showRemoteApprovalSheet(
-        context,
-        selected: _approval,
-        onSelected: _selectApproval,
+  // ------------------------------------------------------------ 权限预设
+
+  /// 盾牌按钮的提示文案：可用时是当前预设，否则是置灰原因。
+  ///
+  /// 只作为工具提示/无障碍文案；可见的回显在 [_permissionStatusRow]。
+  String? get _permissionShieldLabel {
+    final permissions = _permissions;
+    switch (permissions.availability) {
+      case RemotePermissionAvailability.available:
+        return permissions.currentLabel;
+      case RemotePermissionAvailability.pending:
+        return permissions.probing ? '正在读取权限预设…' : '正在连接电脑…';
+      case RemotePermissionAvailability.unavailable:
+        return permissions.unavailableReason ?? '这台电脑未启用权限预设';
+    }
+  }
+
+  /// 输入区上方的当前权限预设回显（或置灰原因）。未连接时不显示。
+  ///
+  /// 三态与盾牌一致：可用时是可点入口（点按打开预设列表）；电脑未启用权限预设
+  /// （或暂时无法确认）时是一行带锁的原因，而不是一个点了没反应的按钮。
+  Widget _permissionStatusRow(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final permissions = _permissions;
+    final state = permissions.availability;
+    if (state == RemotePermissionAvailability.available) {
+      final label = permissions.currentLabel;
+      return Align(
+        alignment: Alignment.centerRight,
+        child: TextButton.icon(
+          key: const ValueKey('remote-permission-label'),
+          onPressed: _openPermissionSheet,
+          icon: const Icon(Icons.shield_outlined, size: 16),
+          label: Text(
+            label == null ? '权限预设' : '权限预设：$label',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          style: TextButton.styleFrom(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+            minimumSize: const Size(0, 32),
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            visualDensity: VisualDensity.compact,
+          ),
+        ),
+      );
+    }
+    final reason = state == RemotePermissionAvailability.pending
+        ? (permissions.probing ? '正在读取权限预设…' : '正在连接电脑…')
+        : permissions.unavailableReason ?? '这台电脑未启用权限预设';
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Align(
+        alignment: Alignment.centerRight,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.lock_outline_rounded,
+              size: 14,
+              color: colors.onSurfaceVariant.withValues(alpha: .6),
+            ),
+            const SizedBox(width: 4),
+            Flexible(
+              child: Text(
+                reason,
+                key: const ValueKey('remote-permission-unavailable'),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: AppTextStyle.footnote
+                    .of(context)
+                    .copyWith(
+                      color: colors.onSurfaceVariant.withValues(alpha: .75),
+                    ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
 
-  RemoteApprovalPreset _approval = RemoteApprovalPreset.ask;
+  /// 打开权限预设弹层：每次打开都重新读目录，失败只在弹层内报错并可重试。
+  void _openPermissionSheet() {
+    final permissions = _permissions;
+    if (!permissions.presetsReady) {
+      _showStatus(permissions.unavailableReason ?? '这台电脑暂不可切换权限预设。');
+      return;
+    }
+    _focus.unfocus();
+    unawaited(permissions.loadCatalog());
+    unawaited(
+      showRemotePermissionSheet(
+        context,
+        builder: (_) => ListenableBuilder(
+          listenable: permissions,
+          builder: (context, _) => RemotePermissionSheet(
+            options:
+                permissions.catalog?.options ??
+                const <RemotePermissionOption>[],
+            currentValue: permissions.currentValue,
+            loading: permissions.catalogLoading,
+            error: permissions.catalogError,
+            onRetry: () => unawaited(permissions.loadCatalog()),
+            onApply: _applyPermissionPreset,
+          ),
+        ),
+      ),
+    );
+  }
 
-  void _selectApproval(RemoteApprovalPreset preset) {
-    if (preset == _approval) return;
-    setState(() => _approval = preset);
-    _showStatus('审批策略已改为「${_approvalLabel(preset)}」');
+  /// 提交一次预设切换；返回 null 表示成功（投影已由控制器刷新）。
+  ///
+  /// 需要风险确认的预设由弹层在勾选确认后才走到这里，页面不再重复询问。
+  Future<String?> _applyPermissionPreset(String value) async {
+    final failure = await _permissions.apply(value);
+    if (!mounted) return failure;
+    if (failure != null) return failure;
+    final label = permissionPresetLabel(
+      value,
+      _permissions.catalog?.optionOf(value)?.name,
+    );
+    _showStatus('权限预设已改为「$label」');
+    return null;
   }
 
   // ------------------------------------------------------------ 待处理交互
@@ -2263,14 +2402,6 @@ class _RemoteIconControl extends StatelessWidget {
     );
   }
 }
-
-/// 审批策略的显示名，用于输入区盾牌按钮的回显。
-String _approvalLabel(RemoteApprovalPreset preset) => switch (preset) {
-  RemoteApprovalPreset.ask => '请求批准',
-  RemoteApprovalPreset.auto => '替我批准',
-  RemoteApprovalPreset.fullAccess => '完全访问',
-  RemoteApprovalPreset.custom => '自定义',
-};
 
 /// 输入区上方的待处理交互卡片：审批给「允许一次 / 拒绝」，提问给选项与提交。
 ///

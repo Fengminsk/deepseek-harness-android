@@ -592,6 +592,87 @@ class ComposerCommandChip extends StatelessWidget {
   );
 }
 
+/// 会话权限页对宿主的调用面。
+///
+/// 权限页只需要「连接就绪、恢复会话、透传门面请求」三件事，与
+/// [ComposerCommandSurface] 同形：本地 `RuntimeController` 已经实现后者，远程实现
+/// （`remote_permissions.dart` 的 `RemotePermissionSurface`）也实现它，因此这里用
+/// 命名别名而不是另立接口，本地调用点（`main.dart`）不需要改动。
+typedef PermissionCallSurface = ComposerCommandSurface;
+
+/// 需要勾选风险确认才能提交的预设值：完全权限与实验性的自动审查。
+bool permissionPresetNeedsConfirmation(String value) =>
+    value == 'danger-full-access' || value == 'auto';
+
+/// 权限预设的显示名：内置预设用固定中文说法，其它预设用宿主给的显示名。
+String permissionPresetLabel(String value, [String? name]) => switch (value) {
+  'read-only' => '仅可查看',
+  'workspace-write' => '工作区内修改',
+  'danger-full-access' => '完全权限',
+  'auto' => '自动审查（实验）',
+  _ => name != null && name.trim().isNotEmpty ? name.trim() : value,
+};
+
+/// 权限预设的风险确认面板：本地会话权限页与远程权限预设弹层共用。
+///
+/// `danger-full-access` 与 `auto` 必须先勾选风险确认才能提交（设计文档 §4.5 的
+/// 三道约束之一）；两个入口用同一套文案，远程用户与桌面用户看到的说明一致。
+class SessionPermissionRiskConfirmation extends StatelessWidget {
+  const SessionPermissionRiskConfirmation({
+    super.key,
+    required this.value,
+    required this.acknowledged,
+    required this.onAcknowledged,
+    required this.onCancel,
+    required this.onConfirm,
+  });
+
+  /// 待确认的预设值（`danger-full-access` 或 `auto`）。
+  final String value;
+
+  /// 用户是否已经勾选「我已了解风险，并愿意继续」。
+  final bool acknowledged;
+
+  /// 风险确认勾选变化。
+  final ValueChanged<bool> onAcknowledged;
+
+  /// 取消本次提交，回到预设列表。
+  final VoidCallback onCancel;
+
+  /// 提交回调；为 null 时「启用」按钮不可用（未勾选风险确认）。
+  final VoidCallback? onConfirm;
+
+  @override
+  Widget build(BuildContext context) => PocketSection(
+    title: value == 'auto' ? '确认启用自动审查（实验）？' : '确认启用完全权限？',
+    children: [
+      Padding(
+        padding: const EdgeInsets.all(20),
+        child: Text(
+          value == 'auto'
+              ? '自动审查不使用沙箱。每次原生工具调用和 PTC 内层调用前，都会由与当前 agent 相同的模型进行审查；审查拒绝的调用由你批准或拒绝。此功能仍属实验性，可能误放行或误拒绝，并会消耗额外 token。'
+              : '启用完全权限后，智能体将减少确认步骤，并且可以直接执行更多操作，包括敏感操作、文件修改或外部命令。仅建议在你信任当前任务时使用。',
+        ),
+      ),
+      PocketSwitchRow(
+        title: const Text('我已了解风险，并愿意继续'),
+        value: acknowledged,
+        onChanged: onAcknowledged,
+      ),
+      Padding(
+        padding: const EdgeInsets.all(16),
+        child: Wrap(
+          spacing: 12,
+          children: [
+            PocketButton.tonal(onPressed: onCancel, child: const Text('取消')),
+            PocketButton(onPressed: onConfirm, child: const Text('启用')),
+          ],
+        ),
+      ),
+    ],
+  );
+}
+
 class SessionPermissionPage extends StatefulWidget {
   const SessionPermissionPage({
     super.key,
@@ -599,7 +680,7 @@ class SessionPermissionPage extends StatefulWidget {
     required this.sessionId,
     required this.command,
   });
-  final RuntimeController runtime;
+  final PermissionCallSurface runtime;
   final String sessionId;
   final Json command;
   @override
@@ -649,7 +730,7 @@ class _SessionPermissionPageState extends State<SessionPermissionPage> {
   }
 
   void pick(String value) {
-    if (value == 'danger-full-access' || value == 'auto') {
+    if (permissionPresetNeedsConfirmation(value)) {
       setState(() {
         pending = value;
         acknowledged = false;
@@ -714,13 +795,10 @@ class _SessionPermissionPageState extends State<SessionPermissionPage> {
               for (final option in options!)
                 PocketRow(
                   icon: Icons.verified_user_outlined,
-                  title: switch (option['value']) {
-                    'read-only' => '仅可查看',
-                    'workspace-write' => '工作区内修改',
-                    'danger-full-access' => '完全权限',
-                    'auto' => '自动审查（实验）',
-                    _ => '${option['name']}',
-                  },
+                  title: permissionPresetLabel(
+                    option['value'] as String,
+                    option['name'] as String?,
+                  ),
                   subtitle: option['description'] as String?,
                   trailing: option['value'] == currentValue
                       ? const Icon(Icons.check_rounded)
@@ -729,40 +807,13 @@ class _SessionPermissionPageState extends State<SessionPermissionPage> {
                 ),
             ],
           ),
-        if (pending != null)
-          PocketSection(
-            title: pending == 'auto' ? '确认启用自动审查（实验）？' : '确认启用完全权限？',
-            children: [
-              Padding(
-                padding: const EdgeInsets.all(20),
-                child: Text(
-                  pending == 'auto'
-                      ? '自动审查不使用沙箱。每次原生工具调用和 PTC 内层调用前，都会由与当前 agent 相同的模型进行审查；审查拒绝的调用由你批准或拒绝。此功能仍属实验性，可能误放行或误拒绝，并会消耗额外 token。'
-                      : '启用完全权限后，智能体将减少确认步骤，并且可以直接执行更多操作，包括敏感操作、文件修改或外部命令。仅建议在你信任当前任务时使用。',
-                ),
-              ),
-              PocketSwitchRow(
-                title: const Text('我已了解风险，并愿意继续'),
-                value: acknowledged,
-                onChanged: (value) => setState(() => acknowledged = value),
-              ),
-              Padding(
-                padding: const EdgeInsets.all(16),
-                child: Wrap(
-                  spacing: 12,
-                  children: [
-                    PocketButton.tonal(
-                      onPressed: () => setState(() => pending = null),
-                      child: const Text('取消'),
-                    ),
-                    PocketButton(
-                      onPressed: acknowledged ? () => apply(pending!) : null,
-                      child: const Text('启用'),
-                    ),
-                  ],
-                ),
-              ),
-            ],
+        if (pending case final pendingValue?)
+          SessionPermissionRiskConfirmation(
+            value: pendingValue,
+            acknowledged: acknowledged,
+            onAcknowledged: (value) => setState(() => acknowledged = value),
+            onCancel: () => setState(() => pending = null),
+            onConfirm: acknowledged ? () => apply(pendingValue) : null,
           ),
         for (final text in [error, result])
           if (text != null)

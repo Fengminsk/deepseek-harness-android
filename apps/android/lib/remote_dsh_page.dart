@@ -1039,6 +1039,20 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
     return view.hostName ?? '';
   }
 
+  /// 首页输入条下方的可操作说明。
+  ///
+  /// 首页没有会话 id：加号（附件与指令）、权限预设与模型选择都要进入会话后才有
+  /// 数据源，因此三个按钮一律置灰，这里只写一份「到哪里能用」的说明，不把同一句
+  /// 原因重复挂到每个按钮上，也不留「能点但没用」的入口（设计文档 §4.2 第 4 条）。
+  /// 未连接时先说明连接的作用；新建会话期间由输入框占位文案承担，说明收起。
+  static String? _composerHint({
+    required bool connected,
+    required bool creating,
+  }) {
+    if (creating) return null;
+    return connected ? '进入会话后可添加附件与指令、切换权限预设与选择模型' : '连接后可输入消息并新建会话';
+  }
+
   /// 按当前排序方式重排项目与会话。
   ///
   /// 会话只在项目内重排；[_recentFirst] 决定项目之间是否按最近活动排序。
@@ -1182,10 +1196,16 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
                               placeholder: _creating
                                   ? '正在电脑上新建会话…'
                                   : (connected ? null : '先连接一台电脑'),
+                              hint: _composerHint(
+                                connected: connected,
+                                creating: _creating,
+                              ),
                               onChanged: _onComposerChanged,
-                              onAdd: () => _unavailable('添加内容'),
-                              onApproval: () => _unavailable('审批策略'),
-                              onModel: () => _unavailable('选择模型'),
+                              // 首页没有会话：这几个能力进入会话后才有数据源，
+                              // 回调传 null 即置灰，原因由上面的 hint 统一说明。
+                              onAdd: null,
+                              onApproval: null,
+                              onModel: null,
                               onSubmitted: (_) => unawaited(_createSession()),
                             ),
                           ),

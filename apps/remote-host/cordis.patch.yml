@@ -64,6 +64,15 @@
 - id: ptc-runtime
   disabled: false
 
+# 权限预设（`/permission` 命令 + `permissions` 投影 + `permissionPresets.catalog`）：
+# App 组合在 Android 上禁用了它（手机没有可界定的 Shell 沙箱，App 自己管审批），
+# 远程宿主跑在 PC 上、上面刚恢复了 bash-sandbox/pwsh-sandbox，条件满足，因此恢复
+# 桌面实现。手机端「权限预设」弹层的目录与二次确认都来自这个服务；不启用时
+# `runtime.permissions.presets.available` 为 false，手机端置灰并说明原因。
+# 实验性的 `auto` 预设依赖 auto-review，不随本服务自动出现：catalog 自然少一项。
+- id: permission
+  disabled: false
+
 # ── 关闭只在手机上成立的实现 ─────────────────────────────────────────
 
 # App 通过 SAF/内容 URI 访问“手机上的文件”，桌面宿主没有对应语义。
@@ -118,8 +127,12 @@
 #
 # 1. office-to-pdf：android 层按 LMK 压过的并发/内存参数对桌面并不必要；是否在
 #    远程 profile 恢复 base 默认值待确认。
-# 2. permission / ui-permission：android 层禁用了权限预设（App 自己管审批）。
-#    远程宿主是否启用桌面审批预设，取决于 P2 的审批页方案。
+# 2. permission：**已启用**（见上文「恢复桌面标准 Agent 预设需要的服务」一节的
+#    `permission` 条目）。D5 决策是按「启用桌面审批预设 + 手机端只读/切换」落地，
+#    宿主侧只需要这一行；`auto` 预设是否随 auto-review 一起启用仍待确认——不启用
+#    时 catalog 自然少 `auto` 一项，手机端按 catalog 渲染即可，不需要额外开关。
+#    ui-permission（审批弹层的 Web 客户端插件）不启用：远程宿主没有 Web 前端，
+#    手机端自己渲染审批卡片与预设列表。
 # 3. remote-host 条目的 port / host / pairingTtlMs / publicHost 仍用插件默认值；
 #    绑定地址与端口对局域网开放，配对链接的地址由 default-route IPv4 自动选择，
 #    多网卡机器可用 publicHost 显式指定。

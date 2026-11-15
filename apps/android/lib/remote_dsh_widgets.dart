@@ -1,5 +1,5 @@
 // 远程 DSH 的共享展示组件：设备胶囊与胶囊条、分组标题、会话行、项目分组、
-// 远程首页标题栏、底部输入条，以及审批策略与指令菜单两个底部弹层。
+// 远程首页标题栏、底部输入条，以及权限预设与指令菜单两个底部弹层。
 //
 // 这些组件只负责绘制与回调：不读取运行时、不发起请求、不持有业务状态。
 // 颜色一律取自当前 Theme，排版比例取自 AppTextStyle；玻璃开关、纯黑模式、
@@ -8,9 +8,11 @@
 
 import 'package:material_ui/material_ui.dart';
 
+import 'composer_commands.dart';
 import 'flclash/daylight.dart';
 import 'flclash/surface.dart';
 import 'flclash/typography.dart';
+import 'remote_permissions.dart';
 import 'ui.dart';
 
 /// 设备胶囊上的在线状态，只影响状态点颜色与无障碍文案。
@@ -482,6 +484,10 @@ class RemoteHomeHeader extends StatelessWidget {
 /// 状态、不发请求；输入内容由调用方通过 [controller] 持有，未提供时使用内部
 /// 控制器。进入页面不会自动弹出键盘（不设置 autofocus）。
 ///
+/// 按钮的可用性完全由回调决定：传 null 即置灰且不可点。首页没有会话，
+/// 加号/盾牌/模型都没有数据源，因此由首页传 null 并把可操作说明交给 [hint]，
+/// 不再留「能点但没用」的入口（设计文档 §4.2 第 4 条）。
+///
 /// 语音输入在远程页不做（设计文档 §4.4：手机侧没有录音实现，DSH 的语音是
 /// experimental 组合），因此这里不画麦克风按钮；系统输入法自带语音听写。
 class RemoteComposer extends StatefulWidget {
@@ -493,6 +499,7 @@ class RemoteComposer extends StatefulWidget {
     this.modelLabel,
     this.approvalLabel,
     this.placeholder,
+    this.hint,
     this.enabled = true,
     this.onChanged,
     this.onSubmitted,
@@ -513,11 +520,17 @@ class RemoteComposer extends StatefulWidget {
   /// 当前模型名，作为模型按钮的提示文案。
   final String? modelLabel;
 
-  /// 当前审批策略名，作为盾牌按钮的提示文案。
+  /// 当前权限预设名，作为盾牌按钮的提示文案。
   final String? approvalLabel;
 
   /// 覆盖默认的占位文案。
   final String? placeholder;
+
+  /// 输入条下方的可操作说明；为空时不显示。
+  ///
+  /// 会话页各控件都有数据源，不需要说明；首页用它统一给出「为什么这里用不了、
+  /// 到哪里可以用」，避免把同一句原因重复写到每个按钮上。
+  final String? hint;
 
   /// 为 false 时输入框与全部按钮都不可用。
   final bool enabled;
@@ -531,7 +544,7 @@ class RemoteComposer extends StatefulWidget {
   /// 点按加号：展开数据驱动的会话指令菜单（添加 / 指令 / 技能）。
   final VoidCallback? onAdd;
 
-  /// 点按盾牌：展开审批策略。
+  /// 点按盾牌：展开权限预设列表。
   final VoidCallback? onApproval;
 
   /// 点按模型：选择模型或推理强度。
@@ -561,59 +574,80 @@ class _RemoteComposerState extends State<RemoteComposer> {
         widget.placeholder ?? (device.isEmpty ? '在远程设备上工作' : '在 $device 上工作');
     final model = widget.modelLabel?.trim();
     final approval = widget.approvalLabel?.trim();
+    final hint = widget.hint?.trim();
+    final colors = Theme.of(context).colorScheme;
     return GlassSurface(
       key: const ValueKey('remote-composer'),
       child: Padding(
         padding: const EdgeInsets.all(8),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.center,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            _RemoteCircleButton(
-              icon: Icons.add_rounded,
-              label: '添加与指令',
-              onPressed: enabled ? widget.onAdd : null,
-            ),
-            const SizedBox(width: 4),
-            Expanded(
-              child: TextField(
-                controller: _controller,
-                focusNode: widget.focusNode,
-                enabled: enabled,
-                minLines: 1,
-                maxLines: 4,
-                textInputAction: TextInputAction.newline,
-                textAlignVertical: TextAlignVertical.center,
-                style: AppTextStyle.subheadline.of(context),
-                onChanged: widget.onChanged,
-                onSubmitted: widget.onSubmitted,
-                decoration: InputDecoration(
-                  hintText: placeholder,
-                  hintMaxLines: 1,
-                  filled: false,
-                  border: InputBorder.none,
-                  enabledBorder: InputBorder.none,
-                  focusedBorder: InputBorder.none,
-                  contentPadding: const EdgeInsets.symmetric(
-                    horizontal: 2,
-                    vertical: 12,
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                _RemoteCircleButton(
+                  icon: Icons.add_rounded,
+                  label: '添加与指令',
+                  onPressed: enabled ? widget.onAdd : null,
+                ),
+                const SizedBox(width: 4),
+                Expanded(
+                  child: TextField(
+                    controller: _controller,
+                    focusNode: widget.focusNode,
+                    enabled: enabled,
+                    minLines: 1,
+                    maxLines: 4,
+                    textInputAction: TextInputAction.newline,
+                    textAlignVertical: TextAlignVertical.center,
+                    style: AppTextStyle.subheadline.of(context),
+                    onChanged: widget.onChanged,
+                    onSubmitted: widget.onSubmitted,
+                    decoration: InputDecoration(
+                      hintText: placeholder,
+                      hintMaxLines: 1,
+                      filled: false,
+                      border: InputBorder.none,
+                      enabledBorder: InputBorder.none,
+                      focusedBorder: InputBorder.none,
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 2,
+                        vertical: 12,
+                      ),
+                    ),
                   ),
                 ),
+                const SizedBox(width: 4),
+                _RemoteCircleButton(
+                  icon: Icons.shield_outlined,
+                  label: approval == null || approval.isEmpty
+                      ? '权限预设'
+                      : '权限预设：$approval',
+                  onPressed: enabled ? widget.onApproval : null,
+                ),
+                const SizedBox(width: 2),
+                _RemoteCircleButton(
+                  icon: Icons.auto_awesome_outlined,
+                  label: model == null || model.isEmpty ? '选择模型' : '模型：$model',
+                  onPressed: enabled ? widget.onModel : null,
+                ),
+              ],
+            ),
+            if (hint != null && hint.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(10, 0, 10, 4),
+                child: Text(
+                  hint,
+                  key: const ValueKey('remote-composer-hint'),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: AppTextStyle.caption1
+                      .of(context)
+                      .copyWith(color: colors.onSurfaceVariant),
+                ),
               ),
-            ),
-            const SizedBox(width: 4),
-            _RemoteCircleButton(
-              icon: Icons.shield_outlined,
-              label: approval == null || approval.isEmpty
-                  ? '审批策略'
-                  : '审批策略：$approval',
-              onPressed: enabled ? widget.onApproval : null,
-            ),
-            const SizedBox(width: 2),
-            _RemoteCircleButton(
-              icon: Icons.auto_awesome_outlined,
-              label: model == null || model.isEmpty ? '选择模型' : '模型：$model',
-              onPressed: enabled ? widget.onModel : null,
-            ),
           ],
         ),
       ),
@@ -621,125 +655,297 @@ class _RemoteComposerState extends State<RemoteComposer> {
   }
 }
 
-/// 审批策略的四项选择。
-enum RemoteApprovalPreset { ask, auto, fullAccess, custom }
-
-/// 审批策略底部弹层：请求批准、替我批准、完全访问、自定义，当前项打勾。
+/// 权限预设底部弹层：真实目录、当前项打勾，风险预设走二次确认。
 ///
-/// 只做展示：当前项由 [selected] 决定，点按某一项只回调 [onSelected]；
-/// 完全访问用 Theme 的风险色标出。点按外部收起弹层由
-/// [showRemoteApprovalSheet] 承载的模态路由负责。
-class RemoteApprovalSheet extends StatelessWidget {
-  const RemoteApprovalSheet({
+/// 只做展示与弹层内的确认状态：目录、当前值与加载/失败状态由调用方从
+/// `RemotePermissionController` 投影传入；选中一项后通过 [onApply] 提交。
+/// 需要风险确认的预设（`danger-full-access` / `auto`）先在弹层内勾选确认再提交，
+/// 与本地 `SessionPermissionPage` 用同一个确认面板。提交成功由弹层自己收起；
+/// 失败保留弹层并显示原因，用户可以重试。
+class RemotePermissionSheet extends StatefulWidget {
+  const RemotePermissionSheet({
     super.key,
-    required this.selected,
-    required this.onSelected,
+    required this.options,
+    this.currentValue,
+    this.loading = false,
+    this.error,
+    this.onRetry,
+    this.onApply,
   });
 
-  /// 当前生效的策略；null 表示尚未确定，此时四项都不打勾。
-  final RemoteApprovalPreset? selected;
+  /// 电脑上的预设目录；为空且 [loading] 为 false 时显示空态。
+  final List<RemotePermissionOption> options;
 
-  /// 选中某一项时回调；为 null 时四项都不可点。
-  final ValueChanged<RemoteApprovalPreset>? onSelected;
+  /// 当前生效的预设值；null 表示还没读到投影，此时不打勾。
+  final String? currentValue;
+
+  /// 是否正在读取目录。
+  final bool loading;
+
+  /// 目录读取失败的原因；null 表示没有失败。
+  final String? error;
+
+  /// 目录读取失败后的重试；为 null 时不给重试入口。
+  final VoidCallback? onRetry;
+
+  /// 提交一次预设切换，返回失败原因；null 表示成功，弹层随之收起。
+  final Future<String?> Function(String value)? onApply;
+
+  @override
+  State<RemotePermissionSheet> createState() => _RemotePermissionSheetState();
+}
+
+class _RemotePermissionSheetState extends State<RemotePermissionSheet> {
+  /// 等待风险确认的预设值；null 表示正在展示预设列表。
+  String? _pending;
+  bool _acknowledged = false;
+  bool _applying = false;
+  String? _failure;
+
+  Future<void> _pick(String value) async {
+    if (widget.onApply == null || _applying) return;
+    if (permissionPresetNeedsConfirmation(value)) {
+      setState(() {
+        _pending = value;
+        _acknowledged = false;
+        _failure = null;
+      });
+      return;
+    }
+    await _submit(value);
+  }
+
+  Future<void> _submit(String value) async {
+    final apply = widget.onApply;
+    if (apply == null || _applying) return;
+    setState(() {
+      _applying = true;
+      _failure = null;
+    });
+    final failure = await apply(value);
+    if (!mounted) return;
+    if (failure == null) {
+      // 切换成功：页面已经刷新投影并给出状态提示，这里只负责收起弹层。
+      Navigator.of(context).maybePop();
+      return;
+    }
+    setState(() {
+      _applying = false;
+      _failure = failure;
+      _pending = null;
+      _acknowledged = false;
+    });
+  }
+
+  void _cancelPending() => setState(() {
+    _pending = null;
+    _acknowledged = false;
+  });
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    Widget option(
-      RemoteApprovalPreset preset,
-      IconData icon,
-      String title,
-      String subtitle, {
-      bool risk = false,
-    }) {
-      final tint = risk ? colors.error : null;
-      return PocketTile(
-        contentPadding: const EdgeInsets.symmetric(
-          horizontal: 18,
-          vertical: 12,
-        ),
-        leading: Icon(icon, color: tint),
-        title: Text(
-          title,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: tint == null ? null : TextStyle(color: tint),
-        ),
-        subtitle: Text(subtitle, maxLines: 2, overflow: TextOverflow.ellipsis),
-        trailing: preset == selected ? const Icon(Icons.check_rounded) : null,
-        onTap: onSelected == null ? null : () => onSelected!(preset),
-      );
-    }
-
     return _RemoteSheet(
-      title: '审批策略',
-      closeLabel: '关闭审批策略',
+      title: '权限预设',
+      closeLabel: '关闭权限预设',
       children: [
+        if (_pending case final value?)
+          SessionPermissionRiskConfirmation(
+            value: value,
+            acknowledged: _acknowledged,
+            onAcknowledged: (acknowledged) =>
+                setState(() => _acknowledged = acknowledged),
+            onCancel: _cancelPending,
+            onConfirm: _acknowledged ? () => _submit(value) : null,
+          )
+        else
+          ..._list(context),
+        if (_failure case final failure?)
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: SelectableText(
+              failure,
+              style: AppTextStyle.footnote
+                  .of(context)
+                  .copyWith(color: colors.error),
+            ),
+          ),
+      ],
+    );
+  }
+
+  List<Widget> _list(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final options = widget.options;
+    final error = widget.error;
+    return <Widget>[
+      if (error != null)
         PocketSection(
           children: [
-            option(
-              RemoteApprovalPreset.ask,
-              Icons.pan_tool_outlined,
-              '请求批准',
-              '每次执行工具或命令前都先询问你。',
+            PocketTile(
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 18,
+                vertical: 12,
+              ),
+              leading: Icon(Icons.error_outline_rounded, color: colors.error),
+              title: const Text('无法读取权限预设'),
+              subtitle: Text(
+                error,
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis,
+              ),
             ),
-            option(
-              RemoteApprovalPreset.auto,
-              Icons.auto_awesome_outlined,
-              '替我批准',
-              '低风险操作自动放行，其余仍会向你确认。',
-            ),
-            option(
-              RemoteApprovalPreset.fullAccess,
-              Icons.gpp_maybe_outlined,
-              '完全访问',
-              '不再逐条确认，风险较高；只在你信任当前任务时使用。',
-              risk: true,
-            ),
-            option(
-              RemoteApprovalPreset.custom,
-              Icons.tune_rounded,
-              '自定义',
-              '按电脑上 config.toml 的规则决定。',
+            if (widget.onRetry != null)
+              PocketTile(
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 18,
+                  vertical: 12,
+                ),
+                leading: const Icon(Icons.refresh_rounded),
+                title: const Text('重新读取'),
+                onTap: widget.onRetry,
+              ),
+          ],
+        )
+      else if (options.isEmpty && widget.loading)
+        const PocketSection(
+          children: [
+            PocketTile(
+              contentPadding: EdgeInsets.symmetric(
+                horizontal: 18,
+                vertical: 12,
+              ),
+              leading: Icon(Icons.verified_user_outlined),
+              title: Text('正在读取权限预设…'),
             ),
           ],
+        )
+      else if (options.isEmpty)
+        const PocketSection(
+          children: [
+            PocketTile(
+              contentPadding: EdgeInsets.symmetric(
+                horizontal: 18,
+                vertical: 12,
+              ),
+              leading: Icon(Icons.verified_user_outlined),
+              title: Text('电脑上没有可用的权限预设'),
+            ),
+          ],
+        )
+      else
+        PocketSection(
+          children: [for (final option in options) _option(context, option)],
         ),
-      ],
+      if (widget.currentValue == 'custom')
+        const Padding(
+          padding: EdgeInsets.fromLTRB(18, 4, 18, 0),
+          child: Text('当前使用自定义权限：沙箱模式与审批策略的组合不在预设表里。'),
+        ),
+      if (widget.loading && options.isNotEmpty)
+        Padding(
+          padding: const EdgeInsets.all(16),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const SizedBox(
+                width: 14,
+                height: 14,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                '正在更新权限预设…',
+                style: AppTextStyle.footnote
+                    .of(context)
+                    .copyWith(color: colors.onSurfaceVariant),
+              ),
+            ],
+          ),
+        ),
+      if (_applying)
+        Padding(
+          padding: const EdgeInsets.all(16),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const SizedBox(
+                width: 14,
+                height: 14,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                '正在切换权限预设…',
+                style: AppTextStyle.footnote
+                    .of(context)
+                    .copyWith(color: colors.onSurfaceVariant),
+              ),
+            ],
+          ),
+        ),
+    ];
+  }
+
+  Widget _option(BuildContext context, RemotePermissionOption option) {
+    final colors = Theme.of(context).colorScheme;
+    final risk = permissionPresetNeedsConfirmation(option.value);
+    final tint = risk ? colors.error : null;
+    final selected = option.value == widget.currentValue;
+    return PocketTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+      leading: Icon(_permissionPresetIcon(option.value), color: tint),
+      title: Text(
+        permissionPresetLabel(option.value, option.name),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: tint == null ? null : TextStyle(color: tint),
+      ),
+      subtitle: option.description == null
+          ? null
+          : Text(
+              option.description!,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+      trailing: selected ? const Icon(Icons.check_rounded) : null,
+      onTap: _applying ? null : () => _pick(option.value),
     );
   }
 }
 
-/// 打开审批策略弹层，返回前只回调一次。
+IconData _permissionPresetIcon(String value) => switch (value) {
+  'read-only' => Icons.visibility_outlined,
+  'workspace-write' => Icons.edit_outlined,
+  'danger-full-access' => Icons.gpp_maybe_outlined,
+  'auto' => Icons.auto_awesome_outlined,
+  _ => Icons.verified_user_outlined,
+};
+
+/// 打开权限预设弹层。
 ///
-/// 点按遮罩、返回手势或右上角关闭按钮都会收起弹层且不回调；选中某一项时
-/// 先收起弹层，再回调 [onSelected]。
-Future<void> showRemoteApprovalSheet(
+/// 弹层本体由调用方给出（远程会话页放 `RemotePermissionSheet`，并用
+/// `ListenableBuilder` 跟随 `RemotePermissionController` 刷新）；这里只负责模态
+/// 路由、遮罩与减少动态效果。遮罩、返回手势与关闭按钮都不回调。
+Future<void> showRemotePermissionSheet(
   BuildContext context, {
-  required RemoteApprovalPreset? selected,
-  required ValueChanged<RemoteApprovalPreset> onSelected,
-}) async {
-  final chosen = await showModalBottomSheet<RemoteApprovalPreset>(
-    context: context,
-    isScrollControlled: true,
-    backgroundColor: Colors.transparent,
-    barrierColor: Theme.of(context).colorScheme.scrim.withValues(alpha: .4),
-    // 系统或 App 设置要求减少动态效果时，弹层直接出现与消失。
-    sheetAnimationStyle: MediaQuery.disableAnimationsOf(context)
-        ? AnimationStyle.noAnimation
-        : null,
-    builder: (sheetContext) => RemoteApprovalSheet(
-      selected: selected,
-      onSelected: (preset) => Navigator.of(sheetContext).pop(preset),
-    ),
-  );
-  if (chosen != null) onSelected(chosen);
-}
+  required WidgetBuilder builder,
+}) => showModalBottomSheet<void>(
+  context: context,
+  isScrollControlled: true,
+  backgroundColor: Colors.transparent,
+  barrierColor: Theme.of(context).colorScheme.scrim.withValues(alpha: .4),
+  sheetAnimationStyle: MediaQuery.disableAnimationsOf(context)
+      ? AnimationStyle.noAnimation
+      : null,
+  builder: builder,
+);
 
 /// 打开「+」的会话指令菜单弹层。
 ///
 /// 菜单本体由调用方给出（远程会话页放本地那套数据驱动的 `ComposerCommands`），
-/// 这里只提供与审批策略弹层同一套外壳：超椭圆顶角、标题、关闭按钮、可滚动
-/// 内容与减少动态效果。收起规则与 [showRemoteApprovalSheet] 相同：遮罩、返回
+/// 这里只提供与权限预设弹层同一套外壳：超椭圆顶角、标题、关闭按钮、可滚动
+/// 内容与减少动态效果。收起规则与 [showRemotePermissionSheet] 相同：遮罩、返回
 /// 手势与关闭按钮都不回调，选中某一项由菜单自己的回调处理。
 Future<void> showRemoteCommandsSheet(
   BuildContext context, {
