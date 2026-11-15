@@ -512,49 +512,39 @@ PC 侧组合（新 profile，例如 `profiles/remote-host`）：
 | 阶段 | 状态 | 产物 |
 |---|---|---|
 | P0 协议冻结 | 完成 | `docs/remote-dsh/protocol.md`（48 KB，含能力协商、反向请求、窗口流控、错误码、双端接口附录） |
-| P1 PC 宿主 | **完成：真实启动，Node 端到端 23/23** | `apps/remote-host/`：`index.ts`/`server.ts`/`identity.ts`/`tls.ts`/`devices.ts`/`pairing.ts`/`native-desktop.ts`/`pairing-qr.ts`/`cordis.patch.yml`/`scripts/e2e-remote-host.ts`；`dsh --profile remote-host` 出厂 profile |
-| P5 能力补齐 | **全部完成**：远程审批、会话模型选择、搜索、新建会话、已归档查看/恢复、电脑文件浏览、远程设置、workspace 本次变更、会话页归档、能力三态、模型路由自动兜底、**远程终端**、**附件上行（App/宿主/e2e/真机旁路验收）**、**输入区 `+`/方案模式**、**模型路由前置提示**、**B3 审批预设（真机切换通过）**、首页输入条文案 + goal 行置灰 | 见手册 §3.2.2–§3.2.8 与 §3.3 `p5-*`/`p5b-*`/`p5c-*` 真机截图；[p5-remaining-design.md](remote-dsh/p5-remaining-design.md) |
-| P6 可达性 | **第一批完成**：可达性（反代/隧道/组网）文档、配对终端二维码（自检 16/16）、后台通知取证与设计；待做 App 扫码/PC 配对界面、§8 通知实现、前台服务持 WS | [reachability.md](remote-dsh/reachability.md)、[pairing-qr-design.md](remote-dsh/pairing-qr-design.md)、HANDOFF §4 |
+| P1 PC 宿主 | **完成：真实启动，Node 端到端 23/23** | `apps/remote-host/`：`index.ts`/`server.ts`/`identity.ts`/`tls.ts`/`devices.ts`/`pairing.ts`/`native-desktop.ts`/`pairing-qr.ts`/`discovery.ts`/`cordis.patch.yml`/`scripts/e2e-remote-host.ts`；`dsh --profile remote-host` 出厂 profile |
 | P2 App 传输 | 完成，本地零回归 | `lib/runtime_transport.dart`、`lib/remote_transport.dart`（wss + TLS 固定 + 握手 + 退避重连、`a-<uuid v4>` 请求 id）、`runtime.dart` 接缝、`api_streams.dart` 与 `streams.mjs` 窗口化确认（远程会话数据源按握手能力开启） |
 | P4a 共享组件与入口 | 完成 | `lib/remote_dsh_widgets.dart`；侧栏「远程 DSH」入口（`chat_sidebar.dart`），目的地不叠层 |
 | P4b 远程页面 | 完成：真实设备/项目/会话 + 真实会话页（窗口/发送/流式/自动连接/审批/模型选择/本次变更/归档/终端）+ 首页搜索/新建/归档/电脑文件/设置 | `lib/remote_dsh_page.dart`、`remote_dsh_archived_page.dart`、`remote_dsh_conversation.dart`、`remote_workspace_diff_page.dart`、`remote_workspace_files_page.dart`、`remote_dsh_settings_page.dart`、`remote_terminal_page.dart`、`remote_conversation_live_source.dart`、`remote_dsh_live_source.dart` |
 | P3 配对与设备 | **完成：配对闭环打通（真机验证）** | 宿主 `/ca.cer` `/pair` + App `remote_pairing*.dart`；设备表/单次令牌/撤销/窗口重开在冒烟与端到端里覆盖 |
 | P5 能力补齐 | **全部完成**：远程审批、会话模型选择、搜索、新建会话、已归档查看/恢复、电脑文件浏览、远程设置、workspace 本次变更、会话页归档、能力三态、模型路由自动兜底、**远程终端**、**附件上行（App/宿主/e2e/真机旁路验收）**、**输入区 `+`/方案模式**、**模型路由前置提示**、**B3 审批预设（真机切换通过）**、首页输入条文案 + goal 行置灰 | 见手册 §3.2.2–§3.2.8 与 §3.3 `p5-*`/`p5b-*`/`p5c-*` 真机截图；[p5-remaining-design.md](remote-dsh/p5-remaining-design.md) |
-| P6 可达性 | **第一批完成**：可达性（反代/隧道/组网）文档、配对终端二维码（自检 16/16）、后台通知取证与设计；待做 App 扫码/PC 配对界面、§8 通知实现、前台服务持 WS | [reachability.md](remote-dsh/reachability.md)、[pairing-qr-design.md](remote-dsh/pairing-qr-design.md)、HANDOFF §4 |
+| P6 可达性 | **第二批完成**：可达性文档、终端二维码、扫码配对（真机解码 PASS）、局域网发现（宿主 UDP 4778 + App 搜索/一键配对；PC 探测 PASS）、USB/adb reverse（真机连接 PASS）、手动地址覆盖、多台电脑管理与切换（真机 PASS）；待做：真机拍照扫码、无隔离网络下的发现直连、§8 后台通知实现、PC 配对界面、PC 分发 | [reachability.md](remote-dsh/reachability.md)、[discovery.md](remote-dsh/discovery.md)、[pairing-qr-design.md](remote-dsh/pairing-qr-design.md)、HANDOFF §3.2.10/§4 |
 
 **M1 结论：成立**——真机连 PC、列真实项目与会话、发消息并看到流式回复（见
-[remote-dsh/HANDOFF.md](remote-dsh/HANDOFF.md) §3.3 与 §9 最新记录）。P5 三批同样已在真机验收
-（含远程终端）；附件上行宿主侧完成，App 侧与输入区在途。进度、剩余项与分工以手册为准。
+[remote-dsh/HANDOFF.md](remote-dsh/HANDOFF.md) §3.3 与 §9 最新记录）。P5 六批与 B3/附件/模型路由
+均在真机验收；P6 已支持扫码/局域网发现/USB/手动地址多种连接方式与多台电脑管理。
+进度、剩余项与分工以手册为准。
 
 ### 12.3 验收证据（本轮）
 
 - `flutter analyze`：11 条 issue，**全部为改动前既有**（`files.dart`、`acceptance_files_test.dart`）；新增文件零告警。
-- `flutter test`：**1787 项全部通过**，本地传输改动零回归。
+- `flutter test`：**1882 项全部通过**（扫码/发现/多方式/多设备新增用例全部在内），本地传输改动零回归。
 - `tsc -p apps/remote-host` 与 `tsc -p tsconfig.host.json`：通过（host scripts 已纳入聚合）；`pnpm run build:check` 2/2 gates。
-- 宿主冒烟 14/14、宿主真实端到端 **23/23**（配对 → 握手 → 列表/窗口/follow → 模型目录 →
-  workspace 文件读写 → workspace 变更能力探测 → **终端全链路** → **附件 prepare/错误翻译/send 带附件** →
-  发消息 → assistant/message；native 本机应答，客户端侧只有设计允许的 `native.attachments.read` 反向请求）。
-- `node --test`：终端适配器 29/29、附件适配器 33/33，邻接回归 85/85；协议 transport 22/22。
-- 真机 M1：配对 → 首页列项目/会话 → 会话页历史 → 发送 → 流式回复 → 重启后自动重连（截图
-  `.cache/remote-device/m1-*.png`）。
-- 真机 P5 第一批：审批卡片 → 允许一次 → 命令执行回传；模型切换后在后续发送生效；归档 → 恢复；
-  搜索过滤；首页新建会话 → 首条消息回复（截图 `.cache/remote-device/p5-*.png`）。
-- 真机 P5 第二批：电脑文件浏览与文本查看；远程设置改宿主默认模型（revision 0→1）；
-  发一轮 write 工具对话后「本次变更」显示文件与差异；会话页归档 → 归档页恢复（截图
-  `.cache/remote-device/p5b-*.png`）。
-- 真机 P5 第三批（远程终端）：会话页「…」→ 终端 → 建 PC cmd.exe → `echo`/`dir` 输出渲染 →
-  离开页面进程继续 → 杀 App 冷启动自动重连后同一终端快照恢复 → 关闭后列表清空（截图
-  `.cache/remote-device/p5c-*.png`）。
-- 附件上行真机验收被本机 ROM 阻塞（ColorOS 对 App 的 SAF 选择项全部 disabled，
-  `shouldRestrictStorageAccessFramework = true`）；宿主 e2e（fake App）与 App 单测覆盖已通过。
+- 宿主冒烟 14/14、宿主真实端到端 **23/23**、发现自检 11/11、QR 自检 16/16、协议 transport 22/22。
+- 真机「多种连接方式」：扫码解码 PASS（ZXing 解出链接逐字一致、相机 intent 可启动）；USB/adb reverse
+  配对+连接 PASS（host 记录 remoteAddress=127.0.0.1）；手动地址覆盖入口可用；局域网发现空态/回退/重试
+  真机可见（当前 Wi-Fi AP 客户端隔离，发现直连待换网络）；多设备胶囊/切换失败态/移除/冷启动自动连
+  上次设备 PASS。证据 `.cache/remote-device/p6-conn-*.png`、`.cache/remote-device/pairing-scan/`。
+- 真机既有证据：M1、P5 各批（`p5-*`/`p5b-*`/`p5c-*`）、B3 权限预设（`p5c-b*`）、C3 模型路由（`p5c-c1/c2`）、
+  附件旁路（`p5c-a*`）、③ 首页/goal（`p5c-c01/c2-goal-disabled`）。
 - `verify-translation-pairing`：新增文档已排除；仅余 6 条改动前既有的 `packages/*/README.i18n.yaml` 漂移。
 
 ### 12.4 下一轮必须完成（已按新发现重排）
 
-> 2026-11-16 00:50 更新：终端 M1–M5 真机通过、附件宿主+App+真实 e2e 通过、反向请求 id 收尾。
-> 剩余逐条见 [remote-dsh/HANDOFF.md](remote-dsh/HANDOFF.md) §4：附件真机验收（换 ROM/来源）、
-> 输入区 `+`/方案模式（施工中）与审批预设、模型路由真机、`remote.status` 超时、
-> workspace 快照持久化、按项目暴露文件根、二维码/PC 配对 UI、PC 分发（P6）。
+> 2026-11-16 03:30 更新：P5 六批与 B3/附件/模型路由真机验收全部完成；P6 第二批完成多种连接方式
+> （扫码/发现/USB/手动地址/多台电脑）。剩余逐条见 [remote-dsh/HANDOFF.md](remote-dsh/HANDOFF.md) §4：
+> 真机拍照扫码与无隔离网络下的「发现→直连配对」补测、§8 后台通知实现（宿主映射→App 通知→前台服务）、
+> PC 配对界面、PC 分发与发布身份、连接拨号超时、60fps 冷却后复测与优化（performance.md）。
 
 
 **历史记录（已解决）：把门面插件变成可被 PC 引用的 workspace 包。**

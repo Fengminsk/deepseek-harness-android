@@ -60,6 +60,7 @@ node apps/android/tool/device-frame-profile.mjs --skip-build --skip-install --bu
 | 液态玻璃 = 关闭 | p95 **9.61 ms**，0.9% | p95 21.86 ms，8.9% | p95 31.59 ms（build p95 21.6） | 首页达 60 fps；流式仍被构建拖住 |
 | 液态玻璃 = 标准 | p95 17.84 ms，11.3% | p95 28.35 ms，47.0% | — | 「标准/精细」只改着色细节，不减少背景捕获开销 |
 | B3/③ 后复测（`post-b3-perf.json`，**热状态 3**） | p95 26.37 ms，43.9% | p95 29.90 ms，31.1% | p95 39.00 ms，40.2%（build p95 10.46） | **降频中，不作为验收依据**：设备插 USB 充电 + 长时间亮屏，`Thermal Status: 3`（severe），CPU 59–61°C；需熄屏/断充冷却到 ≤1 后重测 |
+| 多种连接方式后复测（`post-connections-perf.json`，thermalOverride，电池 35.9°C） | p95 16.97 ms，6.0%，activeFps 55.8 | p95 27.78 ms，27.4% | p95 49.32 ms，54.4%（build p95 22.68） | **仅参考**：熄屏冷却 24 min 后 CPU/电池温度已正常（39.8°C / 35.9°C），但该 ROM 的 `Thermal Status` 仍报 3（疑似厂商状态粘滞），用 `--allow-hot` 记录；home/files/terminal 与基线同量级（无新 UI 回归），session-stream p95 波动大（build 成本主导），待冷却到状态 ≤1 的正式测量 |
 
 ## 3. 热点结论
 

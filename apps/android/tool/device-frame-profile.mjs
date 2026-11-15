@@ -44,6 +44,7 @@ function usage () {
     '  --device <serial>       adb 设备序列号（默认唯一在线设备）',
     '  --scenario <names>      逗号分隔场景名，默认全部；见 SCENARIOS',
     '  --budget-ms <ms>        帧预算（默认 16.667，即 60 fps）',
+    '  --allow-hot             热状态 >=2 时仍继续测量（仅用于厂商热状态误报；报告会标注）',
     '  --output <path>         JSON 报告输出路径（默认 .cache/ui-perf-device/device-frame-profile-<time>.json）',
     '  --help                  打印本用法',
     '',
@@ -63,6 +64,7 @@ function parseArgs (argv) {
     device: undefined,
     scenarios: undefined,
     budgetMs: DEFAULT_BUDGET_MS,
+    allowHot: false,
     output: undefined,
   }
   let index = 0
@@ -85,6 +87,7 @@ function parseArgs (argv) {
       case '--device': options.device = take(argument); break
       case '--scenario': options.scenarios = take(argument).split(',').map(name => name.trim()).filter(Boolean); break
       case '--budget-ms': options.budgetMs = Number(take(argument)); break
+      case '--allow-hot': options.allowHot = true; break
       case '--output': options.output = resolve(take(argument)); break
       case '--help': options.help = true; break
       default: throw new Error(`unknown option ${argument}`)
@@ -163,6 +166,16 @@ class Device {
     const dump = this.sh('dumpsys', 'thermalservice')
     const match = /Thermal Status:\s*(\d+)/u.exec(dump)
     return match === null ? null : Number(match[1])
+  }
+
+  /**
+   * 电池温度（摄氏度，一位小数）。部分 ROM 的 Thermal Status 与实测温度不一致，
+   * 报告里同时记录原始温度，便于判断能不能把这次测量当作有效数据。
+   */
+  batteryTemperature () {
+    const dump = this.sh('dumpsys', 'battery')
+    const match = /temperature:\s*(\d+)/u.exec(dump)
+    return match === null ? null : Number(match[1]) / 10
   }
 
   /** 读取当前界面的节点。 */
@@ -492,10 +505,13 @@ async function main (argv) {
   const device = new Device(options.adb, options.device)
   console.log(`device: ${device.adb('shell', 'getprop', 'ro.product.model').trim()} ` +
     `(${device.adb('shell', 'getprop', 'ro.build.version.release').trim()})`)
-  // 降频会让帧耗时整体抬高，测量前先记录；>=2（moderate/severe）的结果不用于验收。
+  // 降频会让帧耗时整体抬高，测量前先记录；>=2（moderate/severe）的结果默认不用于验收，
+  // `--allow-hot` 仅供「厂商热状态误报但实测温度正常」的现场诊断使用。
   const thermalBefore = device.thermalStatus()
-  if (thermalBefore !== null && thermalBefore >= 2) {
-    console.log(`WARN: device thermal status is ${thermalBefore} (>=2) — 结果不可用于验收，请先熄屏冷却`)
+  const batteryTemperatureBefore = device.batteryTemperature()
+  if (thermalBefore !== null && thermalBefore >= 2 && options.allowHot !== true) {
+    console.log(`WARN: device thermal status is ${thermalBefore} (>=2) — 结果不可用于验收，请先熄屏冷却`
+      + '（确认是厂商误报可加 --allow-hot 并人工核对报告里的电池温度）')
   }
   if (options.install) installApk(device, options)
   const names = options.scenarios ?? Object.keys(SCENARIOS)
@@ -516,20 +532,28 @@ async function main (argv) {
   const output = options.output ?? resolve(ROOT, `.cache/ui-perf-device/device-frame-profile-${stamp}.json`)
   mkdirSync(dirname(output), { recursive: true })
   const thermalAfter = device.thermalStatus()
+  const batteryTemperatureAfter = device.batteryTemperature()
   const report = {
     measuredAt: new Date().toISOString(),
     device: device.adb('shell', 'getprop', 'ro.product.model').trim(),
     thermalBefore,
     thermalAfter,
+    batteryTemperatureBefore,
+    batteryTemperatureAfter,
+    thermalOverride: options.allowHot === true,
     apk: options.apk,
     budgetMs: options.budgetMs,
     scenarios: results,
   }
   writeFileSync(output, `${JSON.stringify(report, null, 2)}\n`)
   console.log(`\nreport: ${output}`)
-  if (thermalBefore !== null && thermalBefore >= 2) {
+  if (thermalBefore !== null && thermalBefore >= 2 && options.allowHot !== true) {
     console.log(`FAIL: 设备热状态 ${thermalBefore} >= 2（降频中），本次测量不作为验收依据；熄屏冷却后重跑`)
     return 1
+  }
+  if (options.allowHot === true && thermalBefore !== null && thermalBefore >= 2) {
+    console.log(`WARN: --allow-hot 覆盖了热状态 ${thermalBefore}；电池温度 ${batteryTemperatureBefore}°C，`
+      + '仅在没有其它测量手段时参考')
   }
   const failed = results.filter((result) => {
     const scenario = SCENARIOS[result.name]

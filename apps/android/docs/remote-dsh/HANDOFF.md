@@ -3,20 +3,23 @@
 > 这份文件是**唯一的入口**：新会话、新 Agent、或工作区被还原之后，先读它再动手。
 > 每完成一轮交付，在 §9 追加一条记录；状态变化就改 §3，不要把过时结论留在正文里。
 >
-> 关键事实（2026-11-16 02:20）：**M1 已在真机成立**（配对 → 列真实项目/会话 → 发消息 → 流式回复 →
-> 冷启动自动重连）。**P5 六批全部完成并在真机通过**：审批与模型选择、首页搜索/新建/归档、电脑文件、
-> 远程设置、workspace diff、能力三态、远程终端、附件上行（App/宿主/真实 e2e + **debug 旁路真机验收**）、
-> 输入区 `+`/方案模式、模型路由前置提示（**C3 真机验证：发送前出现不可用提示并可进模型 sheet**）、
-> **B3 审批预设（宿主启用 permission，手机端真实 preset 列表/二次确认，真机切换成功）**、
-> 首页输入条文案与 goal 行置灰。真实宿主 e2e **23/23 PASS**；终端适配器 29 项、附件适配器 33 项 Node 单测。
-> P6 已启动：反代/隧道可达性文档 + 配对终端二维码（`pairing-qr.ts`，自检 16/16）+ 后台通知设计。
+> 关键事实（2026-11-16 03:30）：**支持多种连接 DSH 的方式**已落地并完成真机验收：
+> ① 粘贴配对链接（原有）；② **扫码配对**（系统相机 intent + ZXing 3.5.3 解码，自动填入链接走同一配对流程，
+> 真机解码链路 PASS）；③ **局域网自动发现**（宿主 UDP 4778 广播应答，App「搜索局域网」一键配对；
+> 宿主侧 PC 探测 PASS，真机因当前 Wi-Fi AP 客户端隔离未拿到广播，UI/空态/回退已在真机验证）；
+> ④ **USB/adb reverse**（宿主打印回环配对链接，`adb reverse tcp:4777 tcp:4777` 后经 127.0.0.1 配对并连接，
+> 真机 PASS：host 日志 `peer/remoteAddress=127.0.0.1`）；⑤ **手动地址覆盖**（完整链接 + 可达地址，供反代/USB）。
+> 多台电脑：设备胶囊条显示电脑名与状态、切换失败保留 failed + 重试/切换、冷启动自动连上次成功设备（真机 PASS）、
+> 菜单「移除已配对电脑」（仅本机删除，真机 PASS）。P5 六批与 B3/③/附件真机验收均已通过。
+> P6 进度：可达性文档、终端二维码（自检 16/16）、发现协议文档；后台通知与 PC 配对界面仍待做。
 > 下一步见 §4。
 >
-> 最后更新：2026-11-16 02:20（lead）
-> 分支 `android`，最近提交见 `git log --oneline -8`（远程 DSH 功能/文档/性能测量基建已入库）
-> 真机：`8a044bba`（adb 在线，OnePlus6 / Android 11，Wi-Fi 192.168.5.140）
-> 真机 App：debug APK（含 B3/③/附件验收旁路）；性能测量用 `--target=lib/main_perf.dart` 的 profile 包，
-> 见 [performance.md](../performance.md)
+> 最后更新：2026-11-16 03:30（lead）
+> 分支 `android`，最近提交见 `git log --oneline -10`
+> 真机：`8a044bba`（adb 在线，OnePlus6 / Android 11；当前环境：USB 连接 + adb reverse，
+> 手机 Wi-Fi 192.168.5.140 与 PC 192.168.5.21 之间被 AP 客户端隔离，局域网发现/直连真机验证受阻）
+> 真机 App：debug APK（含扫码/发现/多设备/附件验收旁路）；性能测量用 `--target=lib/main_perf.dart`
+> 的 profile 包，见 [performance.md](../performance.md)
 
 ---
 
@@ -110,7 +113,7 @@ cd apps/android
 | P4a 侧栏入口与组件 | 完成（含重复进入修复与回归测试） | `test/destination_navigation_test.dart` |
 | P4b 远程页面 | 完成：真实设备/项目/会话 + 真实会话页（读窗口/发消息/流式/审批/模型选择/变更/归档/终端入口） + 首页搜索/新建/归档/电脑文件/设置 | `remote_*` 数据源与页面 + 测试；真机证据见 §3.3 |
 | P5 能力补齐 | **六批完成**：审批与模型选择、搜索、新建、归档、电脑文件、远程设置、workspace diff、归档动作、能力三态、模型路由兜底、远程终端、附件上行（含 debug 旁路真机验收）、输入区 `+`/方案模式、模型路由前置提示（C3 真机）、**B3 审批预设（真机切换通过）**、首页输入条文案 + goal 行置灰 | §3.3 `p5-*`/`p5b-*`/`p5c-*` 截图；§3.2.2–§3.2.8 |
-| P6 可达性 | **启动**：可达性文档（反代/隧道/组网）、配对终端二维码（自检 16/16）、后台通知设计与缺口记录；待做 App 扫码/PC 配对界面、§8 通知实现、前台服务持 WS | `remote-dsh/reachability.md`、`pairing-qr-design.md` |
+| P6 可达性 | **第二批完成**：扫码配对（相机+ZXing，真机解码 PASS）、局域网自动发现（宿主 UDP 4778 + App 搜索/一键配对，PC 探测 PASS）、USB/adb reverse（真机连接 PASS）、手动地址覆盖、多台电脑管理与切换（真机 PASS）；可达性文档、终端二维码、后台通知设计/取证 | 待做：App 扫码真机相机拍照验收（需人手持）、§8 通知实现、PC 配对界面、PC 分发。见 §3.2.10、`reachability.md`、`discovery.md` |
 
 ### 3.2 已核验的通过项（本轮）
 
@@ -324,6 +327,45 @@ permission patch（`git` 未提交状态）。
 - 两个新发现记录在 §4：`publicOrigin` 不能用 443（WHATWG URL 归一化导致链接无端口）、WS 升级
   缺 per-IP 限速（protocol §2.2 声称的 429 未实现）。
 
+#### 3.2.10 P6 第二批：多种连接方式（扫码 / 局域网发现 / USB / 手动地址 / 多台电脑，真机验收）
+
+**入口**：远程 DSH →「添加连接」页现在是「连接电脑」三段式（粘贴链接 / 扫码配对 / 搜索局域网）+
+可展开「手动地址与令牌（高级）」；三种方式最终都交给同一条 `RemotePairingFlow`（解析 → 取 CA →
+指纹校验 → `/pair` → 保存设备），协议与信任语义零改动。
+
+- **扫码配对**：系统相机 intent（FileProvider 授权缓存文件）+ ZXing core 3.5.3（Gradle 依赖，
+  按最长边 1600/4096 两轮采样 + 0/90/180/270 旋转尝试，QR-only + TRY_HARDER + ALSO_INVERTED），
+  Kotlin 侧解码后回填链接、由用户点「连接」；相机不可用/解码失败/取消都有可读降级文案。
+  debug-only 图片解码通道（`dshPairingScanImage` 启动 extra + `remote.pairing.scanImage`）用于自动化；
+  release 字节码已证明折叠。**真机验收**：生成的版本 8 QR 图经 debug 通道解码，文本与配对链接逐字一致
+  （`.cache/remote-device/pairing-scan/`）；相机 intent 在 ColorOS 上能正常启动（截图 `p6-conn-scan-camera`），
+  拍照扫码需人手持手机对屏，未自动完成。
+- **局域网自动发现**：宿主新 `apps/remote-host/src/discovery.ts`（UDP 4778，`discoveryEnabled`/
+  `discoveryPort` Config；探测 JSON `{v:1,probe:"DSH-REMOTE-DISCOVER",nonce}` → 单播应答
+  `{kind,name,origin,instanceId,pairing:{open,pairUrl,expiresAt},nonce}`；只有配对窗口打开才带 pairUrl；
+  同源 1s 限速、坏帧静默、端口占用降级 warn 不影响宿主）。App `remote_discovery.dart` 严格校验、
+  instanceId 去重、2.5s 窗口、懒加载（只在搜索时启动）；发现到窗口打开的电脑可一键配对。
+  **验证**：宿主自检 11/11、PC 端 UDP 探测拿到完整应答（含 nonce 回显）；真机「搜索局域网」空态
+  （当前 Wi-Fi 被 AP 客户端隔离，手机到 PC 不通）与回退提示、重新搜索、扫码/粘贴入口均在真机验证；
+  真机发现→一键配对待换到无隔离网络后补测。
+- **USB / adb reverse**：宿主配对日志新增 `usbPairUrl`（`wss://127.0.0.1:<port>#instance=…&token=…`，
+  与局域网链接同一张票据；叶子证书 SAN 恒含 127.0.0.1/localhost，固定 CA 校验不受影响）；TTY 下同时打印
+  `adb reverse` 步骤。App 侧用「粘贴链接」直接粘回环链接即可（本机 ROM 上无需手动地址覆盖）。
+  **真机验收**：`adb reverse tcp:4777 tcp:4777` 后配对成功（host 日志 `peer/remoteAddress=127.0.0.1`）、
+  连接 ready、首页列出 8 个真实会话与项目。证据 `p6-conn-*`。
+- **手动地址覆盖**：完整配对链接 + 可选地址覆盖（只换连接路径，instanceId/token 仍来自链接）；
+  只给 host:port/token 时明确提示需要完整链接（没有 instanceId 无法验证 CA 指纹，不弱化校验）。
+- **多台电脑**：设备胶囊条显示电脑名（连接成功时用 `protocol.hello` 的 host.name 回写）、当前连接高亮、
+  点另一台切换（先彻底关闭旧连接再拨号）、点当前不重连、切换失败停 failed 并给「重试 / 切换设备」不静默回退；
+  冷启动自动连「上次成功连接的电脑」（多台也生效）；菜单「管理 → 移除已配对电脑」仅删本机记录与令牌
+  （不撤销宿主授权，二次确认写明）。**真机验收**：两台（LAN 旧设备 + USB 新设备）胶囊与在线/离线状态、
+  切换失败态、移除旧设备后收敛为单台、冷启动自动连上次设备（USB）均通过；截图 `p6-conn-1/2`。
+- **已知环境限制**：本次真机验收期间手机（192.168.5.140）与 PC（192.168.5.21）Wi-Fi 互 ping 不通
+  （AP 客户端隔离/漫游到隔离 SSID），因此局域网直连与 UDP 发现只在 PC 侧验证到协议正确，
+  真机上的「发现→直连配对」需换网络环境补测；USB 方式完全不受影响，可作为开发机常驻连接方式。
+- **顺带发现**：切换到不可达电脑时「正在连接」持续时间较长（TCP 连接超时，无 App 侧连接超时），
+  已记录为下一批优化项（给 `RemoteRuntimeTransport` 拨号加超时，失败态更快可见）。
+
 
 `pnpm run hygiene` 在本机仍会失败，但逐条核对后都不是本功能引入的（改动前就存在或来自本机环境）：
 
@@ -475,12 +517,11 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
    `packages/sdk/protocol/tests/transport.spec.ts` 3 例覆盖），宿主传 `h-`，App 改 `a-<uuid v4>`；
    协议测试 22/22 通过。
 5. **`remote.status` 超时 15 s**：宿主初始化慢时可能被误判为失败；真机未复现，保留观察。
-6. **配对输入（终端二维码已落地；App 扫码 / PC 配对界面待做）**：宿主在 stderr 是真终端时
-   额外打印字符画二维码 + 明文链接（`apps/remote-host/src/index.ts:568`、`:1645-1662`；
-   日志重定向时不打印，现有日志字段与 e2e 行为未改），手机用能复制原文的扫码工具扫出链接
-   再粘贴。仍缺：① App 内扫码（需批准新增相机/解码依赖，1–2 天）；② PC 侧配对界面
-   （`remoteHost.pair()` 已可用，留给 PC 端 UI，2–3 天）。路线评估、校验证据与真机验收清单见
-   [pairing-qr-design.md](pairing-qr-design.md)，外网接入见 [reachability.md](reachability.md)。
+6. **配对输入（扫码/发现/USB/手动地址已完成，PC 配对界面待做）**：App「添加连接」现支持四种方式
+   （粘贴链接 / 扫码配对 / 搜索局域网 / 手动地址覆盖），宿主在 TTY 下打印二维码 + `adb reverse` 的
+   回环配对链接。仍缺 PC 侧配对界面（`remoteHost.pair()` 已可用，留给 PC 端 UI，2–3 天）；
+   真机拍照扫码与「发现→直连配对」需人手持/无隔离网络环境补测。实现与真机证据见 §3.2.10、
+   [pairing-qr-design.md](pairing-qr-design.md)、[discovery.md](discovery.md)、[reachability.md](reachability.md)。
 7. **PC 分发**：`@minnnng/dsh-android-runtime` 仍是 `private`，远程宿主作为产品分发前要决定
    它的发布身份（P6）。
 8. **workspace 变更快照的保留语义**（已知限制）：`workspaceChanges` 只在宿主**当前进程**
@@ -524,6 +565,16 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
     HTTP 429」，当前只有 `/pair` 有对端限速（`apps/remote-host/src/pairing.ts:176-195`），升级路径
     没有限速分支（`apps/remote-host/src/server.ts` 无 429 逻辑）。公网暴露时用网络层兜底；要补的话
     在 `handleUpgrade` 前加对端计数。43 字符随机令牌下实际不可爆破，属资源占用/日志噪音风险。
+16. **局域网自动发现（App 侧已接，真机广播待换网络验证）**：宿主在 UDP **4778** 上应答同网段手机的探测
+    （`apps/remote-host/src/discovery.ts`，自检 11/11）；配对窗口打开时返回与日志/二维码同一条
+    `pairUrl`，关闭时只回 `{open:false}`；坏帧静默、按来源 1 s 限速、TTL=1。App 侧 `remote_discovery.dart`
+    已接「搜索局域网」入口（严格校验、instanceId 去重、2.5 s 窗口、懒加载）。剩余：① 真机阶段验证广播
+    可达性（Windows 防火墙需放行专用网络 UDP 4778，AP 隔离会拦广播；本次验收环境手机/PC 被 AP 隔离，
+    未能真机发现）；② 发现端口被占用时不自动重试绑定（重启宿主才恢复）。协议与排障见
+    [discovery.md](discovery.md)。
+17. **连接失败可见性（新发现）**：切换到不可达电脑（IP 不通）时页面可停在「正在连接」较长时间
+    （TCP 连接超时，未给拨号设 App 侧超时）。建议给 `RemoteRuntimeTransport.connect` 加超时
+    （例如 10–15 s）并映射到 `gateway/timeout`，让失败态与「重试/切换设备」更快出现。
 
 ---
 
@@ -595,7 +646,7 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
 | 16 | 发完一轮立即打开「本次变更」时读到空窗口（announcement 来自 follow 增量，页面缓存停在发送前） | `remote_conversation_live_source.dart` | 已修（本轮：变更数据源每次先 `session.readWindow` 取权威窗口，缓存仅读失败兜底；真机复验） |
 | 17 | workspace 变更快照只在宿主当前进程保留，且并发工作区改动会混进同一份 summary | 宿主 `workspace-changes` 服务语义 | 已知限制（App 已按「不可用」可见降级；见 §4.8） |
 | 18 | 电脑文件浏览的根是宿主进程 cwd，不是首页选中的项目目录 | `workspace.files.*` 门面 | 已知限制（§4.9；需要宿主按 workspace/project 暴露根） |
-| 19 | 配对只有粘贴链接，没有二维码/扫码与 PC 侧配对界面 | 宿主日志 / 配对页 | 待做（P6；`remoteHost.pair()` 已可用） |
+| 19 | 配对只有粘贴链接，没有二维码/扫码与 PC 侧配对界面 | 宿主日志 / 配对页 | **已修（2026-11-16）**：App 支持扫码（相机+ZXing）、局域网发现（UDP 4778）、USB/adb reverse、手动地址覆盖，宿主终端打印二维码与 USB 链接；仍缺 PC 侧配对界面（P6） |
 | 20 | `detachAll` 同步中止 hold 后，同一 tick 的重连 `read` 复用已中止的 retain，新附件无保留额度 | `terminal-desktop.mjs` | 已修（本轮：hold 已 abort 时重开；单测覆盖） |
 | 21 | `dispose()` 先扫记录后等在途 create，卸载期间落地的 create 会重新注册记录/挂 retain | `terminal-desktop.mjs` | 已修（本轮：先等完在途 create 再按最终记录释放；单测覆盖） |
 | 22 | 连接断开后落地的 create 仍 eager retain，没有页面的终端在连接存续期间无法被空闲回收 | `terminal-desktop.mjs` | 已修（本轮：`detachments` 计数，断连后只缓存记录不挂 retain；单测覆盖） |
@@ -629,6 +680,109 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
 ---
 
 ## 9. 变更日志（append-only，最新在最上面）
+
+### 2026-11-16 03:30 · lead（P6 第三批收口：多种连接方式 + 多台电脑 + 真机验收）
+
+**多种连接方式（真机验收）**
+
+- 扫码配对：Kotlin `PairingQrScan`（系统相机 intent + FileProvider + ZXing 3.5.3 解码，
+  QR-only/TRY_HARDER/ALSO_INVERTED、两轮采样 + 四向旋转、错误码 `pairing/scan-*`）+ Dart
+  `remote_pairing_scan.dart` + 配对页「扫码配对」入口；debug-only 图片解码通道供自动化，
+  release 字节码证明折叠。真机：生成版本 8 QR 图解码文本与配对链接逐字一致；相机 intent 正常启动。
+- 局域网发现：宿主 `discovery.ts`（UDP 4778，配对窗口打开才回 pairUrl，1s 限速、坏帧静默、
+  端口占用降级）+ App `remote_discovery.dart`（严格校验、instanceId 去重、2.5s 窗口、懒加载、
+  空态/失败/回退文案）。PC 侧 UDP 探测 PASS；真机因 AP 客户端隔离未拿到广播，UI 与回退已验证。
+- USB：宿主配对日志新增 `usbPairUrl`（回环地址同一票据）+ TTY 下 `adb reverse` 说明；真机
+  `adb reverse tcp:4777 tcp:4777` 后配对/连接成功（host 日志 peer/remoteAddress=127.0.0.1）。
+- 手动地址覆盖：完整链接 + 可达地址（只换连接路径，instanceId/token 仍来自链接），不弱化 CA 校验。
+- 多台电脑：设备胶囊显示电脑名/在线状态、切换先关旧连接、切换失败停 failed + 重试/切换设备、
+  冷启动自动连上次成功设备（真机 PASS）、菜单「移除已配对电脑」（本机删除 + 二次确认，真机 PASS）。
+
+**验证（本机）**
+
+- `flutter test` → **1882 项全通过**（本批新增扫码 17、发现 13、多方式 14、多设备 17 等）
+- `flutter analyze` → 11 条既有基线；Kotlin debug/release 编译 BUILD SUCCESSFUL；宿主冒烟 14/14、
+  发现自检 11/11、QR 自检 16/16、qr-e2e?（见 task-16 报告）；`tsc` 两个工程 exit 0
+- 真机证据：`.cache/remote-device/p6-conn-*.png` 与 `.cache/remote-device/pairing-scan/`
+- 真机环境限制：本次手机 Wi-Fi 与 PC 互 ping 不通（AP 客户端隔离），局域网直连/发现真机验证留待
+  换网络；USB 方式不受影响，已可作开发机常驻连接
+
+### 2026-11-16 02:50 · app-pair-scan（P6 第三批：App 侧「添加连接」四入口 + 局域网发现 UI）
+
+**四入口（`apps/android/lib/remote_pairing_page.dart` 重构）**
+
+- 添加连接页改为三段式 + 高级入口：**粘贴链接 / 扫码配对 / 搜索局域网**，外加可展开的
+  **手动地址与令牌（高级）**。四种方式都把同一条配对链接交给既有 `RemotePairingFlow`
+  （解析 → `/ca.cer` 校验 instanceId → `/pair` → 设备令牌进 Keystore），协议与信任语义零改动。
+- 扫码：沿用 task-16 的原生相机 + ZXing 通道；扫到链接后校验（既有 `PairingDescriptor.parse`）
+  并回到粘贴视图，覆盖已有内容前先确认；相机不可用/取消/解码失败给可读提示并保留粘贴入口。
+- 局域网发现：首次切到「搜索局域网」或点「重新搜索」才发起，默认 2.5 s 窗口，结束即关闭
+  套接字（不在 `initState` 轮询、页面静置无 UDP 流量）；结果三态：`open=true` 行内「连接」
+  直接用宿主回的 `pairUrl`；`open=false` 提示去电脑重开配对窗口 + 重试；空结果给
+  同网段/防火墙/UDP 4778/AP 隔离说明；失败给中文原因并保留扫码/粘贴回退。
+- 手动地址（高级）：**必须粘贴完整配对链接**，地址只做覆盖（USB adb reverse 填
+  `127.0.0.1:4777`，反代填可达域名:端口）；`instanceId`/token 仍取自链接，不把「从该地址现取
+  的证书」当信任锚。只给 host:port 或 43 字符 token 时明确提示粘贴完整链接（不弱化校验）。
+  宿主叶子 SAN 恒含 `127.0.0.1`/`localhost`，USB adb reverse 的固定 CA 校验可通过。
+
+**新模块与测试**
+
+- 新增 `apps/android/lib/remote_discovery.dart`（零 Flutter 插件依赖，`dart:io` UDP）：
+  广播探测/单播收集、严格解析（`v`/`kind`/`nonce` 回显/`origin`/`instanceId`/`pairUrl` 走
+  `PairingDescriptor.parse` 且 instance 一致）、按 `instanceId` 去重、坏帧静默、绑定/发送失败
+  翻译成可展示原因、`dispose` 结束进行中的窗口。
+- 新增 `apps/android/test/remote_discovery_test.dart`（解析/坏帧/nonce/去重/超时/dispose/
+  绑定失败/重入）与 `apps/android/test/remote_pairing_methods_test.dart`（懒加载、发现三态、
+  手动地址合成与非法输入、扫码入口保留）；`remote_pairing_scan_test.dart` 随三段式入口改为
+  先切「扫码配对」（断言不变）。
+- 文档：`reachability.md` 追加 §11「手机侧连接方式」（四入口、USB adb reverse 步骤、反代地址
+  覆盖、地址变化处理）；`discovery.md` 追加 §11「App 侧实现」。
+
+**验证（本机）**
+
+- `flutter analyze` → **11 条既有基线**（无新增）
+- `flutter test test/remote_discovery_test.dart test/remote_pairing_methods_test.dart
+  test/remote_pairing_test.dart test/remote_pairing_scan_test.dart` → **全绿**
+- 真机验收待 lead：宿主重启后打开配对窗口，手机「添加连接 → 搜索局域网」应发现电脑并可直接
+  配对（UDP 4778 专用网络放行；收不到时用扫码/粘贴回退，不改防火墙配置换用回环自测）
+
+### 2026-11-16 02:32 · host-discovery（P6 第二批：局域网 UDP 自动发现，宿主侧完成）
+
+**新协议与实现（App 侧待接）**
+
+- 新增 [discovery.md](discovery.md)（协议 v1 契约）：UDP **4778**。App 广播
+  `{v:1, probe:"DSH-REMOTE-DISCOVER", nonce}`；宿主单播回
+  `{v, kind:"dsh-remote-host", name, origin, instanceId, pairing:{open:true, pairUrl, expiresAt}|{open:false}, nonce}`。
+  配对窗口关闭只回 `{open:false}`；坏帧静默、按来源 1 s 限速（来源表 256、表满失败关闭）、TTL=1、
+  无应答缓存。发现只是把**现有配对链接**递给手机，不建立信任、不改 protocol/wss/配对语义。
+- 新增 `apps/remote-host/src/discovery.ts`（`DiscoveryResponder` + 可注入 `DiscoverySocket`）：
+  `start()` 把端口占用/权限不足降级成一条 warn（宿主照常启动、不自动重试），`stop()` 幂等，
+  套接字 `unref()` 不阻塞进程退出；日志新增 `discovery-listening` / `discovery-failed` /
+  `discovery-disabled`。
+- `apps/remote-host/src/index.ts`：Config 新增 `discoveryEnabled`（默认 true）与 `discoveryPort`
+  （默认 4778，schemastery 校验）；初始配对窗口打开后再启动发现；`POST /pair` 成功后立即清空当前
+  票据（后续应答不再宣传可配对）；卸载时先停发现、再关窗口与监听。
+- 新增 `apps/remote-host/scripts/discovery-selfcheck.ts`：**11/11 PASS**（真实回环 UDP 协议字段/
+  窗口关闭/坏帧/限速恢复/stop-start + 假套接字 TTL/unref/最坏 802 B 单包 + 端口占用降级）。
+
+**与二维码、反代的关系**
+
+- 发现返回的 `pairUrl` 与 PC 日志、终端二维码里的是**同一条**链接：二维码解决「PC → 手机」的
+  传递，发现解决「手机 → PC」的自动寻址；配对仍走 protocol §2 的一次性令牌。
+- 跨网段/反代/Tailscale 场景发现无用（广播不跨网段），继续扫码或粘贴；可达性结论见
+  [reachability.md](reachability.md)，本次不改 TLS 固定 CA 与协议要求。
+
+**验证（本机全部跑过）**
+
+- `node --import tsx/esm apps/remote-host/scripts/discovery-selfcheck.ts` → **11/11 PASS**
+- `pnpm exec tsc -p apps/remote-host/tsconfig.json` 与 `-p tsconfig.host.json` → 均 exit 0
+- `pnpm exec oxlint` 三个改动文件 → 0 warnings / 0 errors
+- 宿主冒烟 `smoke-remote-host.ts` → **14/14 PASS**（无回归）
+- 真实宿主演练（独立 `DSH_HOME` + 端口 4797 / 发现端口 4798）：回环探测得到的 `pairUrl` 与日志
+  一致；`POST /pair` 成功后同源再探测 → `{open:false}`；100 ms 内两次探测只回 1 帧（限速）；
+  4 种坏帧 0 应答；停止后 TCP/UDP 端口均释放
+- 待 lead：重启 4777 宿主后真机验证广播（Windows 防火墙需放行**专用网络** UDP 4778，AP 隔离会
+  拦广播）；可先按 discovery.md §5.3 跑 PC 侧广播自测确认宿主在应答（该自测证明不了防火墙，不要为自测改防火墙设置；回环自检已覆盖协议结论）
 
 ### 2026-11-16 02:30 · lead（P5 收尾 + P6 第一批：B3 审批预设、真机验收批次、可达性文档与配对二维码）
 
