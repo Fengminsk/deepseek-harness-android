@@ -366,7 +366,10 @@ class ExternalFileOpening(
 
     /** Mirrors AppWorkspaceFiles.withFile: no-follow open, opened inode, ancestors, and final version. */
     private fun copyWorkspace(parts: Array<String>, output: FileOutputStream, opening: Opening) {
-        val root = File(activity.noBackupFilesDir, "dsh/workspace").absoluteFile
+        // Some vendors expose noBackupFilesDir through a symlinked parent
+        // (/data/user/0 vs /data/data), so canonicalize the base once and then
+        // keep every component below it link-free.
+        val root = File(activity.noBackupFilesDir.canonicalFile, "dsh/workspace").absoluteFile
         var cursor = root
         val ancestry = mutableListOf<Ancestor>()
         val rootStat = Os.lstat(root.path)

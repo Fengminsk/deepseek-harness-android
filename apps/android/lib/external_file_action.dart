@@ -13,6 +13,11 @@ class ExternalFileOpenController with WidgetsBindingObserver {
   String? _active;
   bool _disposed = false;
 
+  /// True while a system picker or viewer covers this activity. The lifecycle
+  /// leaves `resumed` for that, but the request must survive until the native
+  /// result arrives; otherwise the staged copy is deleted before it is read.
+  bool _externalActivity = false;
+
   ExternalFileOpenController() {
     WidgetsBinding.instance.addObserver(this);
   }
@@ -26,7 +31,7 @@ class ExternalFileOpenController with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state != AppLifecycleState.resumed) cancel();
+    if (state != AppLifecycleState.resumed && !_externalActivity) cancel();
   }
 
   static String _requestId() {
@@ -48,6 +53,7 @@ class ExternalFileOpenController with WidgetsBindingObserver {
     assert(root == null || sessionId == null);
     final id = await _prepare(context, root: root, sessionId: sessionId, path: path);
     if (id == null) return;
+    _externalActivity = true;
     try {
       await RuntimeController.channel.invokeMethod<void>(
         'file.launchPrepared',
@@ -67,6 +73,7 @@ class ExternalFileOpenController with WidgetsBindingObserver {
           : '无法交给其他应用打开，请重试。';
       _notify(context, message);
     } finally {
+      _externalActivity = false;
       if (_active == id) _active = null;
     }
   }
@@ -84,6 +91,7 @@ class ExternalFileOpenController with WidgetsBindingObserver {
     assert(root == null || sessionId == null);
     final id = await _prepare(context, root: root, sessionId: sessionId, path: path);
     if (id == null) return 'cancelled';
+    _externalActivity = true;
     try {
       final raw = await RuntimeController.channel.invokeMethod<String>(
         'file.savePrepared',
@@ -103,6 +111,7 @@ class ExternalFileOpenController with WidgetsBindingObserver {
       _notify(context, '保存结果尚未确认，请检查所选位置是否留下了不完整文件。');
       return 'unconfirmed';
     } finally {
+      _externalActivity = false;
       if (_active == id) _active = null;
     }
   }
@@ -146,7 +155,13 @@ class ExternalFileOpenController with WidgetsBindingObserver {
     String? sessionId,
     required String path,
   }) async {
-    if (_disposed || ModalRoute.of(context)?.isCurrent != true) return null;
+    if (_disposed) return null;
+    if (ModalRoute.of(context)?.isCurrent != true) {
+      // A menu action pops its own route and runs in the same frame; wait for
+      // that pop so the owning page is current again before preparing a file.
+      await WidgetsBinding.instance.endOfFrame;
+      if (_disposed || !context.mounted || ModalRoute.of(context)?.isCurrent != true) return null;
+    }
     cancel();
     final id = _requestId();
     _active = id;
