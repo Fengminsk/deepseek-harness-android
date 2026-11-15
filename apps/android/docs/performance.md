@@ -42,6 +42,10 @@ node apps/android/tool/device-frame-profile.mjs --skip-build --skip-install --bu
 
 ## 2. 基线（2026-11-16 01:0x，glass = 精细 / 默认）
 
+> 热状态前提：`dumpsys thermalservice` 的 `Thermal Status` 必须 ≤ 1（none/light）；
+> 2（moderate）以上表示设备正在降频，帧耗时整体抬高，测量结果不能用于验收。
+> 驱动脚本会记录 `thermalBefore/thermalAfter`，`thermalBefore ≥ 2` 时直接判失败并提示先冷却。
+
 | 场景 | frames | p50 total | p95 total | build p95 | raster p95 | 掉帧比例 | 结论 |
 |---|---|---|---|---|---|---|---|
 | remote-home | 674 | 14.31 ms | 17.26 ms | 3.02 ms | 7.82 ms | 9.2% | 未达标（栅格/合成） |
@@ -55,6 +59,7 @@ node apps/android/tool/device-frame-profile.mjs --skip-build --skip-install --bu
 |---|---|---|---|---|
 | 液态玻璃 = 关闭 | p95 **9.61 ms**，0.9% | p95 21.86 ms，8.9% | p95 31.59 ms（build p95 21.6） | 首页达 60 fps；流式仍被构建拖住 |
 | 液态玻璃 = 标准 | p95 17.84 ms，11.3% | p95 28.35 ms，47.0% | — | 「标准/精细」只改着色细节，不减少背景捕获开销 |
+| B3/③ 后复测（`post-b3-perf.json`，**热状态 3**） | p95 26.37 ms，43.9% | p95 29.90 ms，31.1% | p95 39.00 ms，40.2%（build p95 10.46） | **降频中，不作为验收依据**：设备插 USB 充电 + 长时间亮屏，`Thermal Status: 3`（severe），CPU 59–61°C；需熄屏/断充冷却到 ≤1 后重测 |
 
 ## 3. 热点结论
 
