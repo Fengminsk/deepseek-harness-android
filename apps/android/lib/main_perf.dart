@@ -7,9 +7,8 @@
 
 import 'dart:async';
 import 'dart:convert';
-import 'dart:ui' show FrameTiming;
 
-import 'package:flutter/foundation.dart';
+import 'package:flutter/rendering.dart' show debugProfileLayoutsEnabled;
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
 
@@ -18,6 +17,12 @@ import 'main.dart' as app;
 /// 测量入口：先装帧统计回调，再启动与生产完全相同的 App。
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  // 诊断开关：`--dart-define=DSH_PROFILE_WIDGETS=true` 时把 widget 构建/布局事件
+  // 写进 timeline（配合 VM service 定位热点）；默认关闭，避免测量本身的开销。
+  if (const bool.fromEnvironment('DSH_PROFILE_WIDGETS')) {
+    debugProfileBuildsEnabled = true;
+    debugProfileLayoutsEnabled = true;
+  }
   _FrameStats.install();
   app.main();
 }
@@ -34,6 +39,7 @@ class _FrameStats {
 
   static final List<FrameTiming> _frames = <FrameTiming>[];
   static Timer? _timer;
+  static bool _metaLogged = false;
 
   /// 安装回调与定时上报；重复调用无副作用。
   static void install() {
@@ -45,6 +51,17 @@ class _FrameStats {
   }
 
   static void _onTimings(List<FrameTiming> batch) {
+    if (!_metaLogged && batch.isNotEmpty) {
+      _metaLogged = true;
+      final view = WidgetsBinding.instance.platformDispatcher.views.first;
+      debugPrint(
+        'DSH_FRAME_META ${jsonEncode(<String, Object>{
+          'refreshRate': view.display.refreshRate,
+          'physicalSize': '${view.physicalSize.width}x${view.physicalSize.height}',
+          'devicePixelRatio': view.devicePixelRatio,
+        })}',
+      );
+    }
     _frames.addAll(batch);
   }
 

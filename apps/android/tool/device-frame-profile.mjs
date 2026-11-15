@@ -258,6 +258,9 @@ async function focusComposer (device) {
 /** 场景：远程首页滚动。 */
 const remoteHomeScenario = {
   description: '远程 DSH 首页：项目/会话列表上下滚动',
+  // 连续滚动场景以「是否跑满 60 fps」判定；消息流式/终端这类按需渲染的场景
+  // 只按帧耗时与掉帧比例判定（静止时本来就不出帧）。
+  requireFps: true,
   async prepare (device) {
     await openRemoteHome(device)
     await sleep(1500)
@@ -279,7 +282,7 @@ const remoteSessionScenario = {
   description: '远程会话：发送消息并测量流式回复渲染',
   async prepare (device) {
     await openRemoteHome(device)
-    await openRemoteSession(device, '只回复两个字')
+    await openRemoteSession(device, 'OK')
     await focusComposer(device)
     device.inputText('Write a 400 word English essay about rendering performance.')
     await sleep(1200)
@@ -295,7 +298,7 @@ const remoteTerminalScenario = {
   description: '远程终端：在 PC shell 连续执行 dir 并测量输出渲染',
   async prepare (device) {
     await openRemoteHome(device)
-    await openRemoteSession(device, '只回复两个字')
+    await openRemoteSession(device, 'OK')
     await device.tapMatch('更多会话操作')
     await device.tapMatch('终端', 10_000)
     await device.wait('新建终端', 30_000, '终端页')
@@ -319,6 +322,7 @@ const remoteTerminalScenario = {
 /** 场景：远程电脑文件浏览滚动。 */
 const remoteFilesScenario = {
   description: '远程电脑文件：从首页菜单进入并滚动文件列表',
+  requireFps: true,
   async prepare (device) {
     await openRemoteHome(device)
     await device.tapMatch('远程 DSH，排序与设置菜单')
@@ -454,7 +458,8 @@ function installApk (device, options) {
 async function runScenario (device, name, scenario, budgetMs) {
   await launchApp(device)
   await scenario.prepare(device)
-  await sleep(500)
+  // 场景准备常伴随导航动画/键盘弹出/首次布局；先静置到稳定再开始计时。
+  await sleep(2000)
   const startedAt = device.nowMs()
   await scenario.run(device)
   await sleep(1200)
@@ -504,17 +509,20 @@ async function main (argv) {
   }
   writeFileSync(output, `${JSON.stringify(report, null, 2)}\n`)
   console.log(`\nreport: ${output}`)
-  const failed = results.filter(result =>
-    result.summary.frames === 0 ||
-    result.summary.totalP95 > options.budgetMs * 1000 ||
-    result.summary.overBudgetRatio > 0.01 ||
-    (result.summary.frames >= 120 && result.summary.activeFps < 55))
+  const failed = results.filter((result) => {
+    const scenario = SCENARIOS[result.name]
+    return result.summary.frames === 0 ||
+      result.summary.totalP95 > options.budgetMs * 1000 ||
+      result.summary.overBudgetRatio > 0.01 ||
+      (scenario.requireFps === true && result.summary.frames >= 120 &&
+        result.summary.activeFps < 55)
+  })
   if (failed.length > 0) {
     console.log(`FAIL: ${failed.map(result => result.name).join(', ')} ` +
-      `(预算 ${options.budgetMs} ms；p95 超预算、掉帧 >1% 或交互帧率 <55 fps 即失败)`)
+      `(预算 ${options.budgetMs} ms；p95 超预算或掉帧 >1%；连续滚动场景还要求交互帧率 ≥55 fps)`)
     return 1
   }
-  console.log(`PASS: 全部场景 p95 ≤ ${options.budgetMs} ms、掉帧 ≤ 1%、交互帧率 ≥55 fps`)
+  console.log(`PASS: 全部场景 p95 ≤ ${options.budgetMs} ms、掉帧 ≤ 1%；滚动场景 ≥55 fps`)
   return 0
 }
 

@@ -92,6 +92,7 @@ cd apps/android
 | App 会话数据源 | `apps/android/lib/remote_conversation_source.dart`、`remote_conversation_live_source.dart` | 会话页只认数据源契约；真实实现走 `session.readWindow` / `session.send` / `session.follow` |
 | App 远程终端 | `apps/android/lib/remote_terminal_page.dart`、`terminal_runtime.dart`、`session_terminal.dart`、`terminal_shells.dart` | 终端页只依赖 `TerminalCallSurface`/`TerminalShellSource` 两个接口；本地与远程共用同一渲染与输入逻辑 |
 | P5 剩余设计 | `apps/android/docs/remote-dsh/p5-remaining-design.md` | 附件上行（方案②反向拉取，D1–D8 已决策）、输入区 `+`/方案模式/审批预设、模型路由前置提示；施工图 |
+| 性能测量 | `apps/android/lib/main_perf.dart`、`apps/android/tool/device-frame-profile.mjs`、`apps/android/docs/performance.md` | 真机 60 fps 目标的测量入口与 adb 驱动；基线、热点与优化计划见 performance.md |
 
 ---
 
@@ -427,6 +428,11 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
     terminal-design.md 与适配器注释里，不阻塞。
 11. **真机 debug 签名**：本机 `~/.android/debug.keystore` 曾丢失，重装后新 keystore 备份在
     `.cache/android/debug.keystore`；换机/清缓存前先确认它还在，否则又要卸载重装并重新配对。
+12. **真机 60 fps 性能目标（新，进行中）**：目标与验收判据、测量方法、当前基线（4 个场景）、
+    热点结论与优化计划见 [performance.md](../performance.md)。现状：首页滚动栅格成本主要来自
+    液态玻璃背景捕获（关闭玻璃 p95 17.26→9.61 ms）；流式会话与远程终端的瓶颈在 UI 线程重建
+    （build p95 21–45 ms，与栅格无关）；文件列表仍有首帧栅格尖峰。下一步按 performance.md §4
+    的收益顺序优化并复跑同一套场景。
 
 ---
 
