@@ -2,10 +2,15 @@
 ///
 /// 分工来自 `docs/remote-dsh-plan.md` §5.4 的存储决定：
 ///
-/// - 设备 id、显示名、地址、端口、`instanceId`、固定的 CA 证书、时间戳存偏好
-///   （沿用 `network_proxy.dart` 用的 `dsh/runtime` 原生偏好通道，不引入新包）；
+/// - 设备 id、显示名、地址、端口、`instanceId`、固定的 CA 证书、时间戳，以及
+///   握手后学到的电脑显示名存偏好（沿用 `network_proxy.dart` 用的 `dsh/runtime`
+///   原生偏好通道，不引入新包）；
 /// - 设备令牌只以 `credentials.set` 写进 Android Keystore，偏好里只有指向它的
 ///   引用 [RemoteDevice.tokenRef]，因此本文件任何返回值都不含明文令牌。
+///
+/// 偏好里另有一项 `lastConnectedDeviceId`，记录上次成功连接的设备，决定冷启动时
+/// 首页自动连接哪一台（见 [RemoteDeviceStore.markConnected]）。它只是连接提示，
+/// 不是信任锚：指向不存在的设备时按「没有记录」处理，并在下一次写入时收敛。
 ///
 /// ## 信任锚在读取路径上复核
 ///
@@ -53,6 +58,13 @@ const int remoteDevicePreferencesMaxBytes = 64 * 1024;
 /// 偏好里设备列表的格式版本。
 const int remoteDeviceStoreVersion = 1;
 
+/// 偏好里「上次成功连接的设备」字段名。
+///
+/// 它与 `version` / `devices` 平级，值是设备 id。旧版本 App 读这张表时忽略这个
+/// 字段（因此不构成数据损坏），写回时会丢掉它——那只会让下次冷启动少一条
+/// 「自动连上次那台」的提示，不会影响设备与令牌本身。
+const String remoteLastConnectedDeviceKey = 'lastConnectedDeviceId';
+
 /// 设备 id 的线上形态：32 位小写十六进制（`apps/remote-host/src/devices.ts`）。
 final RegExp _deviceIdPattern = RegExp(r'^[0-9a-f]{32}$');
 
@@ -95,7 +107,12 @@ class RemoteDeviceStoreException implements Exception {
 /// 一台已配对的电脑。
 ///
 /// 令牌本身不在这里，只有指向本机密钥库的引用 [tokenRef]。所有字段都是非机密的：
-/// 地址、端口、CA 证书与时间戳。
+/// 地址、端口、CA 证书、时间戳，以及握手后学到的电脑显示名（[hostName]）。
+///
+/// [label] 是**配对时上报的手机显示名**（与 `protocol.hello` 的 `deviceLabel`
+/// 同值），不是电脑名：同一台手机配对的电脑会得到相同的 label。电脑名只有握手
+/// （`host.name`）里才有，因此 [hostName] 从第一次连接成功起才存在。展示电脑时
+/// 用 [displayName]。
 class RemoteDevice {
   /// 创建一台已配对电脑的记录。
   ///
@@ -109,12 +126,18 @@ class RemoteDevice {
     required this.caPem,
     required this.createdAt,
     this.lastSeenAt,
-  }) : tokenRef = 'remote-device/$id' {
+    String? hostName,
+  }) : hostName = _normalizedHostName(hostName),
+       tokenRef = 'remote-device/$id' {
     if (!_deviceIdPattern.hasMatch(id)) {
       throw const FormatException('设备标识必须是 32 位小写十六进制。');
     }
     if (!_validLabel(label)) {
       throw const FormatException('设备名必须是 1–120 个非控制字符。');
+    }
+    final name = this.hostName;
+    if (name != null && !_validLabel(name)) {
+      throw const FormatException('电脑名必须是 1–120 个非控制字符。');
     }
     if (host.isEmpty ||
         host.contains('/') ||
@@ -145,6 +168,7 @@ class RemoteDevice {
     final caPem = value['caPem'];
     final createdAt = value['createdAt'];
     final lastSeenAt = value['lastSeenAt'];
+    final hostName = value['hostName'];
     if (id is! String) throw const FormatException('设备记录缺少 id。');
     if (label is! String) throw const FormatException('设备记录缺少显示名。');
     if (host is! String) throw const FormatException('设备记录缺少地址。');
@@ -157,6 +181,9 @@ class RemoteDevice {
     if (lastSeenAt != null && lastSeenAt is! int) {
       throw const FormatException('设备记录的最后在线时间不是整数。');
     }
+    if (hostName != null && hostName is! String) {
+      throw const FormatException('设备记录的电脑名不是字符串。');
+    }
     return RemoteDevice(
       id: id,
       label: label,
@@ -168,6 +195,7 @@ class RemoteDevice {
       lastSeenAt: lastSeenAt is int
           ? DateTime.fromMillisecondsSinceEpoch(lastSeenAt, isUtc: true)
           : null,
+      hostName: hostName is String ? hostName : null,
     );
   }
 
@@ -193,19 +221,42 @@ class RemoteDevice {
   final DateTime createdAt;
 
   /// 最近一次成功配对或连接的时间；从未连接时为 null。
+  ///
+  /// 配对成功会写入一次，之后每次握手进入就绪也会更新（[RemoteDeviceStore.markConnected]）。
   final DateTime? lastSeenAt;
+
+  /// 那台电脑自报的显示名（`protocol.hello` 的 `host.name`）。
+  ///
+  /// 配对链接里没有电脑名，因此它从第一次连接成功起才有值；从未连接过的电脑为
+  /// null。展示时用 [displayName]，不要直接读这个字段。
+  final String? hostName;
 
   /// 本机密钥库里设备令牌的引用（`remote-device/<id>`）。
   ///
   /// 它是**引用**而不是令牌本身：明文只进 Keystore，绝不写进偏好。
   final String tokenRef;
 
+  /// 展示给用户的电脑名。
+  ///
+  /// 电脑自报名优先；从未成功连接过的电脑还不知道它叫什么，退回地址（IP 或主机
+  /// 名）。[label] 是配对时上报的手机名，不能当电脑名用。
+  String get displayName {
+    final name = hostName?.trim() ?? '';
+    return name.isEmpty ? host : name;
+  }
+
   /// `RemoteRuntimeTransport` 使用的端点：`wss://<host>:<port>/app`。
   Uri get appEndpoint =>
       Uri(scheme: 'wss', host: host, port: port, path: '/app');
 
-  /// 更新显示名或最后在线时间后的新记录；[id] 与 CA 不变。
-  RemoteDevice copyWith({String? label, DateTime? lastSeenAt}) => RemoteDevice(
+  /// 更新显示名、最后在线时间或电脑名后的新记录；[id] 与 CA 不变。
+  ///
+  /// [hostName] 传 null 表示保持原值（无法用本方法清空电脑名）。
+  RemoteDevice copyWith({
+    String? label,
+    DateTime? lastSeenAt,
+    String? hostName,
+  }) => RemoteDevice(
     id: id,
     label: label ?? this.label,
     host: host,
@@ -214,6 +265,7 @@ class RemoteDevice {
     caPem: caPem,
     createdAt: createdAt,
     lastSeenAt: lastSeenAt ?? this.lastSeenAt,
+    hostName: hostName ?? this.hostName,
   );
 
   /// 偏好里的持久形态。
@@ -228,7 +280,14 @@ class RemoteDevice {
     'caPem': caPem,
     'createdAt': createdAt.millisecondsSinceEpoch,
     if (lastSeenAt != null) 'lastSeenAt': lastSeenAt!.millisecondsSinceEpoch,
+    if (hostName != null) 'hostName': hostName,
   };
+}
+
+/// 规范化可选电脑名：去掉首尾空白；空串与 null 都表示「还不知道」。
+String? _normalizedHostName(String? hostName) {
+  final trimmed = hostName?.trim();
+  return trimmed == null || trimmed.isEmpty ? null : trimmed;
 }
 
 /// 设备显示名是否满足 PC 侧同一份约束（`devices.ts`）：1–120 个非控制字符。
@@ -236,6 +295,34 @@ bool _validLabel(String label) {
   final trimmed = label.trim();
   if (trimmed.isEmpty || trimmed.runes.length > 120) return false;
   return !_controlCharacterPattern.hasMatch(label);
+}
+
+/// 本机设备表的一次完整读数：已配对电脑与「上次成功连接的设备」。
+///
+/// 两者来自同一份偏好，一次读取同时返回，避免页面先读设备再单独读连接提示时看到
+/// 两份不同代的数据。[lastConnectedDeviceId] 只是自动连接的提示，不是信任锚：
+/// 它指向不存在的设备时按「没有记录」处理（读取时收敛，写入时清掉）。
+class RemoteDeviceTable {
+  const RemoteDeviceTable({
+    this.devices = const <RemoteDevice>[],
+    this.lastConnectedDeviceId,
+  });
+
+  /// 已配对电脑，按配对时间升序。
+  final List<RemoteDevice> devices;
+
+  /// 上次成功连接的设备 id；从未成功连接过（或记录已失效）时为 null。
+  final String? lastConnectedDeviceId;
+
+  /// 上次成功连接的设备；没有记录时为 null。
+  RemoteDevice? get lastConnectedDevice {
+    final id = lastConnectedDeviceId;
+    if (id == null) return null;
+    for (final device in devices) {
+      if (device.id == id) return device;
+    }
+    return null;
+  }
 }
 
 /// 设备令牌在本机的保管口。
@@ -395,15 +482,20 @@ class RemoteDeviceStore {
     return RuntimeCredentialVault(runtime);
   }
 
-  /// 读出全部已配对电脑，按配对时间升序。
+  /// 读出全部已配对电脑与「上次成功连接的设备」，按配对时间升序。
   ///
   /// 每条记录都会重新核对 `SHA-256(CA DER) == instanceId`：两半信任锚不一致时抛
   /// [RemoteDeviceStoreException]（`remote/instance-mismatch`），不把记录交给调用方。
-  /// 偏好为空时返回空列表；内容损坏、版本不认识或存在重复 id 时同样抛异常，
+  /// 偏好为空时返回空表；内容损坏、版本不认识或存在重复 id 时同样抛异常，
   /// 不做任何自动修正或丢弃。
-  Future<List<RemoteDevice>> load() async {
+  ///
+  /// 唯一例外是 [RemoteDeviceTable.lastConnectedDeviceId]：它只是自动连接的提示，
+  /// 指向不存在的设备（或形态不合法）时按「没有记录」返回，不因此拒绝整张设备表。
+  Future<RemoteDeviceTable> loadTable() async {
     final raw = await _readPreferences();
-    if (raw == null || raw.trim().isEmpty) return const <RemoteDevice>[];
+    if (raw == null || raw.trim().isEmpty) {
+      return const RemoteDeviceTable();
+    }
     final Object? decoded;
     try {
       decoded = jsonDecode(raw);
@@ -457,7 +549,54 @@ class RemoteDeviceStore {
       devices.add(device);
     }
     devices.sort((left, right) => left.createdAt.compareTo(right.createdAt));
-    return devices;
+    final lastConnected = decoded[remoteLastConnectedDeviceKey];
+    if (lastConnected != null && lastConnected is! String) {
+      throw const RemoteDeviceStoreException(
+        'remote/preferences-corrupt',
+        '本机保存的「上次连接的电脑」不是设备标识，未做任何改写。',
+      );
+    }
+    return RemoteDeviceTable(
+      devices: devices,
+      lastConnectedDeviceId:
+          lastConnected is String &&
+              _deviceIdPattern.hasMatch(lastConnected) &&
+              seen.contains(lastConnected)
+          ? lastConnected
+          : null,
+    );
+  }
+
+  /// 读出全部已配对电脑（[loadTable] 的列表部分），按配对时间升序。
+  Future<List<RemoteDevice>> load() async => (await loadTable()).devices;
+
+  /// 记录一台电脑刚才连接成功：更新它的电脑名与最近在线时间，并把它记为
+  /// 「上次成功连接的设备」。
+  ///
+  /// 这是下次冷启动自动连接的唯一输入（[RemoteDeviceTable.lastConnectedDevice]）。
+  /// [hostName] 来自握手（`protocol.hello` 的 `host.name`）：配对链接里没有电脑名，
+  /// 因此多台电脑的名字只能在这一步学到。设备不在表里（例如刚被移除）时什么都不写，
+  /// 原样返回当前设备表。
+  ///
+  /// 写偏好失败会抛 [RemoteDeviceStoreException]；调用方必须把记录失败与连接本身
+  /// 分开处理——记录只是便利提示，不能因此判定连接失败。
+  Future<RemoteDeviceTable> markConnected(
+    String deviceId, {
+    String? hostName,
+  }) async {
+    if (!_deviceIdPattern.hasMatch(deviceId)) {
+      throw const FormatException('设备标识必须是 32 位小写十六进制。');
+    }
+    final table = await loadTable();
+    final index = table.devices.indexWhere((device) => device.id == deviceId);
+    if (index < 0) return table;
+    final devices = <RemoteDevice>[...table.devices];
+    devices[index] = table.devices[index].copyWith(
+      lastSeenAt: DateTime.now().toUtc(),
+      hostName: _normalizedHostName(hostName),
+    );
+    await _writePreferences(devices, lastConnectedDeviceId: deviceId);
+    return RemoteDeviceTable(devices: devices, lastConnectedDeviceId: deviceId);
   }
 
   /// 复核一条记录的信任锚：`SHA-256(CA DER)` 必须等于记录里的 `instanceId`。
@@ -491,13 +630,15 @@ class RemoteDeviceStore {
   /// 保存一台设备。
   ///
   /// [deviceToken] 非空时先写进 Keystore 再写偏好；偏好写失败会尝试删掉刚写入的
-  /// 令牌，保证不会留下「列表里没有、密钥库里却有」的孤儿凭证。
+  /// 令牌，保证不会留下「列表里没有、密钥库里却有」的孤儿凭证。已有的
+  /// 「上次成功连接的设备」记录原样保留（配对一台新电脑不应改变自动连接目标）。
   Future<void> save(RemoteDevice device, {String? deviceToken}) async {
     final wroteToken = deviceToken != null;
     if (wroteToken) {
       await _writeToken(device.tokenRef, deviceToken);
     }
-    final devices = <RemoteDevice>[...await load()];
+    final table = await loadTable();
+    final devices = <RemoteDevice>[...table.devices];
     final index = devices.indexWhere((candidate) => candidate.id == device.id);
     if (index < 0) {
       devices.add(device);
@@ -505,7 +646,10 @@ class RemoteDeviceStore {
       devices[index] = device;
     }
     try {
-      await _writePreferences(devices);
+      await _writePreferences(
+        devices,
+        lastConnectedDeviceId: table.lastConnectedDeviceId,
+      );
     } on Object {
       if (wroteToken) {
         // 偏好没写成功就等于这次配对没有落地；回滚密钥库，避免留下孤儿令牌。
@@ -524,11 +668,14 @@ class RemoteDeviceStore {
   ///
   /// 对不在列表里的 [id] 也删一次令牌（幂等）。先删令牌是刻意的：偏好写失败时
   /// 会留下「有记录但没令牌」的可见状态，而不是「没记录却有令牌」的隐藏凭证。
+  /// 被删的正是「上次成功连接的设备」时，那条记录一并清掉，下次冷启动不会再去
+  /// 连一台已经从本机移除的电脑。
   Future<void> remove(String id) async {
     if (!_deviceIdPattern.hasMatch(id)) {
       throw const FormatException('设备标识必须是 32 位小写十六进制。');
     }
-    final devices = <RemoteDevice>[...await load()];
+    final table = await loadTable();
+    final devices = <RemoteDevice>[...table.devices];
     String? tokenRef;
     for (final device in devices) {
       if (device.id == id) {
@@ -538,8 +685,17 @@ class RemoteDeviceStore {
     }
     await _deleteToken(tokenRef ?? 'remote-device/$id');
     final remaining = devices.where((device) => device.id != id).toList();
-    if (remaining.length == devices.length) return;
-    await _writePreferences(remaining);
+    final lastConnectedDeviceId = table.lastConnectedDeviceId == id
+        ? null
+        : table.lastConnectedDeviceId;
+    if (remaining.length == devices.length &&
+        lastConnectedDeviceId == table.lastConnectedDeviceId) {
+      return;
+    }
+    await _writePreferences(
+      remaining,
+      lastConnectedDeviceId: lastConnectedDeviceId,
+    );
   }
 
   /// 这台设备的令牌是否确实保存在本机。
@@ -561,7 +717,7 @@ class RemoteDeviceStore {
     return _tokens.read(device.tokenRef);
   }
 
-  /// 清空所有已配对电脑与其令牌。
+  /// 清空所有已配对电脑、令牌与「上次连接的设备」记录。
   ///
   /// 逐台删除令牌：任一台删除失败都会继续尝试其余设备，最后抛
   /// `remote/credential-delete` 并且**不改写**设备列表。因此失败时会出现
@@ -626,12 +782,19 @@ class RemoteDeviceStore {
   }
 
   /// 把整张设备表写回偏好。
-  Future<void> _writePreferences(List<RemoteDevice> devices) async {
+  ///
+  /// [lastConnectedDeviceId] 与设备列表同一次写入：分成两次写会出现「设备已删、
+  /// 上次连接仍指向它」或反过来的中间态。
+  Future<void> _writePreferences(
+    List<RemoteDevice> devices, {
+    String? lastConnectedDeviceId,
+  }) async {
     final payload = jsonEncode(<String, dynamic>{
       'version': remoteDeviceStoreVersion,
       'devices': <Map<String, dynamic>>[
         for (final device in devices) device.toJson(),
       ],
+      remoteLastConnectedDeviceKey: ?lastConnectedDeviceId,
     });
     if (utf8.encode(payload).length > remoteDevicePreferencesMaxBytes) {
       throw RemoteDeviceStoreException(

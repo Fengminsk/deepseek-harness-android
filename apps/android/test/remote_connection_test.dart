@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:dsh_android/remote_connection.dart';
 import 'package:dsh_android/remote_device_store.dart';
@@ -31,6 +32,33 @@ class _MemoryVault implements RemoteDeviceTokenVault {
   Future<void> write(String tokenRef, String token) async {}
 }
 
+/// 只认识部分设备令牌的保管口：模拟「这台电脑的令牌读不出来」。
+class _PartialVault implements RemoteDeviceTokenVault {
+  _PartialVault(this.token, this.knownRefs);
+
+  final String token;
+  final Set<String> knownRefs;
+
+  @override
+  Future<void> delete(String tokenRef) async {}
+
+  @override
+  Future<bool> isConfigured(String tokenRef) async =>
+      knownRefs.contains(tokenRef);
+
+  @override
+  Future<String> read(String tokenRef) async {
+    if (knownRefs.contains(tokenRef)) return token;
+    throw const RemoteDeviceStoreException(
+      'remote/credential-read',
+      '本机密钥库里没有这台电脑的设备令牌，请重新配对。',
+    );
+  }
+
+  @override
+  Future<void> write(String tokenRef, String token) async {}
+}
+
 /// 不拨号的传输替身：测试自己决定握手与阶段推进的时机。
 class _FakeLink implements RemoteTransportLink {
   final StreamController<Map<String, dynamic>> _inbound =
@@ -58,6 +86,9 @@ class _FakeLink implements RemoteTransportLink {
 
   @override
   bool get isClosed => _closed;
+
+  /// 事件流上是否还有订阅者（切换后旧连接必须取消订阅）。
+  bool get hasListener => _inbound.hasListener;
 
   @override
   Future<dynamic> request(
@@ -138,16 +169,125 @@ RemoteConnectionController _controllerFor(
     tokens: _MemoryVault(_deviceToken),
   ),
   hostStatusTimeout: hostStatusTimeout,
-  createTransport:
-      ({
-        required String endpoint,
-        required String token,
-        required String pinnedCaPem,
-        required String deviceLabel,
-        required String appVersion,
-        required List<String> capabilities,
-      }) => link,
+  createTransport: ({
+    required String endpoint,
+    required String token,
+    required String pinnedCaPem,
+    required String deviceLabel,
+    required String appVersion,
+    required List<String> capabilities,
+  }) => link,
 );
+
+/// 每次建连返回一条新的 [_FakeLink]，并记录端点顺序与「建新的之前旧的是否已关闭」。
+class _LinkFactory {
+  final List<_FakeLink> links = <_FakeLink>[];
+  final List<String> endpoints = <String>[];
+
+  /// 每次创建新连接时，上一条连接是否已经关闭。
+  final List<bool> previousClosedOnCreate = <bool>[];
+
+  _FakeLink call({
+    required String endpoint,
+    required String token,
+    required String pinnedCaPem,
+    required String deviceLabel,
+    required String appVersion,
+    required List<String> capabilities,
+  }) {
+    if (links.isNotEmpty) previousClosedOnCreate.add(links.last.isClosed);
+    final link = _FakeLink();
+    links.add(link);
+    endpoints.add(endpoint);
+    return link;
+  }
+}
+
+/// 第二台电脑（与 [_device] 不同的 id / 地址）。
+RemoteDevice _secondDevice() => RemoteDevice(
+  id: 'fedcba9876543210fedcba9876543210',
+  label: 'Pixel 8',
+  host: '192.168.1.30',
+  port: 4777,
+  instanceId: caCertificateFingerprint(pairingCaPem),
+  caPem: pairingCaPem,
+  createdAt: DateTime.utc(2026, 11, 15, 6, 30),
+);
+
+/// 双设备偏好通道：读写与正式实现同一个协议（`{version, devices, lastConnectedDeviceId}`）。
+class _DevicePreferences {
+  _DevicePreferences(List<RemoteDevice> devices, {this.failSave = false}) {
+    preferences = jsonEncode(<String, dynamic>{
+      'version': remoteDeviceStoreVersion,
+      'devices': <Map<String, dynamic>>[
+        for (final device in devices) device.toJson(),
+      ],
+    });
+    messenger.setMockMethodCallHandler(_channel, (call) async {
+      switch (call.method) {
+        case remoteDevicesReadMethod:
+          return preferences;
+        case remoteDevicesSaveMethod:
+          if (failSave) {
+            throw PlatformException(
+              code: 'remote/preferences',
+              message: '测试：偏好写入失败',
+            );
+          }
+          preferences = call.arguments as String;
+          writes++;
+          return null;
+        default:
+          throw MissingPluginException('未模拟的偏好方法 ${call.method}');
+      }
+    });
+  }
+
+  static const MethodChannel _channel = MethodChannel(
+    'test/remote_connection_devices',
+  );
+  static final TestDefaultBinaryMessenger _messenger =
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+
+  static TestDefaultBinaryMessenger get messenger => _messenger;
+
+  /// 是否让偏好写入失败（模拟记录上次连接失败的场景）。
+  final bool failSave;
+
+  /// 偏好原文。
+  String? preferences;
+
+  /// 偏好写入次数（断言「同一条连接只回写一次」）。
+  int writes = 0;
+
+  /// 新建一个绑定这条偏好通道的存储。
+  RemoteDeviceStore store(RemoteDeviceTokenVault tokens) =>
+      RemoteDeviceStore(channel: _channel, tokens: tokens);
+
+  /// 读回当前偏好里的 JSON。
+  Map<String, dynamic> decode() =>
+      jsonDecode(preferences ?? '{}') as Map<String, dynamic>;
+
+  /// 移除 mock handler。
+  void dispose() => messenger.setMockMethodCallHandler(_channel, null);
+}
+
+RemoteConnectionController _controllerWith(
+  RemoteDeviceStore store,
+  RemoteTransportFactory factory, {
+  Duration hostStatusTimeout =
+      RemoteConnectionController.defaultHostStatusTimeout,
+}) => RemoteConnectionController(
+  store: store,
+  hostStatusTimeout: hostStatusTimeout,
+  createTransport: factory,
+);
+
+/// 让连接走完握手与宿主就绪：链路进入 ready、宿主 runtime.status 报 ready。
+void _completeHandshake(_FakeLink link) {
+  link.handshakeSucceeded(_hostInfo());
+  link.emit('runtime.status', <String, dynamic>{'phase': 'ready'});
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -347,5 +487,192 @@ void main() {
     expect(controller.phase, RemoteConnectionPhase.failed);
     expect(controller.lastErrorCode, 'auth-revoked');
     expect(controller.lastError, contains('重新配对'));
+  });
+
+  group('多台电脑切换', () {
+    test('switchTo 先关闭旧连接再建新连接，阶段不卡在 ready', () async {
+      final devices = _DevicePreferences(<RemoteDevice>[
+        _device(),
+        _secondDevice(),
+      ]);
+      addTearDown(devices.dispose);
+      final store = devices.store(_MemoryVault(_deviceToken));
+      final factory = _LinkFactory();
+      final controller = _controllerWith(store, factory.call);
+      addTearDown(controller.dispose);
+
+      await controller.connect(_device());
+      _completeHandshake(factory.links.single);
+      expect(controller.phase, RemoteConnectionPhase.ready);
+      expect(controller.host?.name, 'Colin 的台式机');
+
+      await controller.switchTo(_secondDevice());
+
+      // 旧连接彻底关闭：不再有事件订阅，也不再是当前传输。
+      expect(factory.links, hasLength(2));
+      expect(factory.links.first.isClosed, isTrue);
+      expect(factory.links.first.hasListener, isFalse);
+      expect(factory.previousClosedOnCreate, <bool>[true], reason: '先关旧的再建新的');
+      expect(controller.activeDevice?.id, _secondDevice().id);
+      expect(controller.transport, same(factory.links.last));
+      expect(controller.phase, RemoteConnectionPhase.connecting);
+      expect(controller.isReady, isFalse);
+      expect(controller.host, isNull, reason: '旧连接的宿主身份不能留给新连接');
+      expect(factory.endpoints, <String>[
+        _device().appEndpoint.toString(),
+        _secondDevice().appEndpoint.toString(),
+      ]);
+
+      _completeHandshake(factory.links.last);
+      expect(controller.phase, RemoteConnectionPhase.ready);
+      expect(controller.host?.name, 'Colin 的台式机');
+    });
+
+    test('点已连接的电脑不会重复连接', () async {
+      final devices = _DevicePreferences(<RemoteDevice>[_device()]);
+      addTearDown(devices.dispose);
+      final store = devices.store(_MemoryVault(_deviceToken));
+      final factory = _LinkFactory();
+      final controller = _controllerWith(store, factory.call);
+      addTearDown(controller.dispose);
+      await controller.connect(_device());
+      _completeHandshake(factory.links.single);
+
+      await controller.switchTo(_device());
+
+      expect(factory.links, hasLength(1), reason: '同一台电脑不新建传输');
+      expect(factory.links.single.isClosed, isFalse);
+      expect(controller.phase, RemoteConnectionPhase.ready);
+      expect(controller.activeDevice?.id, _device().id);
+    });
+
+    test('切换失败时旧连接已关闭，停在 failed 并指向新电脑（不回退旧连接）', () async {
+      final devices = _DevicePreferences(<RemoteDevice>[
+        _device(),
+        _secondDevice(),
+      ]);
+      addTearDown(devices.dispose);
+      final store = devices.store(_MemoryVault(_deviceToken));
+      final factory = _LinkFactory();
+      final controller = _controllerWith(store, factory.call);
+      addTearDown(controller.dispose);
+
+      await controller.connect(_device());
+      _completeHandshake(factory.links.single);
+
+      await controller.switchTo(_secondDevice());
+      // 新电脑不可达：传输报终止性错误（TLS 指纹不匹配）。
+      factory.links.last.lost('remote/tls', '无法验证电脑的 TLS 证书：证书指纹不匹配。');
+      await pumpEventQueue();
+
+      expect(controller.phase, RemoteConnectionPhase.failed);
+      expect(controller.lastErrorCode, 'remote/tls');
+      expect(controller.lastError, contains('TLS'));
+      expect(
+        controller.activeDevice?.id,
+        _secondDevice().id,
+        reason: '失败页要指向那台连不上的电脑',
+      );
+      expect(controller.transport, isNull);
+      expect(factory.links.first.isClosed, isTrue, reason: '旧连接不会因为新连接失败而复活');
+      expect(factory.links.last.isClosed, isTrue);
+
+      // 可恢复：重试新电脑会重新拨号，而不是静默回到旧电脑。
+      await controller.connect(_secondDevice());
+      expect(factory.links, hasLength(3));
+      expect(controller.phase, RemoteConnectionPhase.connecting);
+      expect(controller.activeDevice?.id, _secondDevice().id);
+    });
+
+    test('切换到令牌读不出来的电脑：旧连接已关闭并停在 failed', () async {
+      final devices = _DevicePreferences(<RemoteDevice>[
+        _device(),
+        _secondDevice(),
+      ]);
+      addTearDown(devices.dispose);
+      final store = devices.store(
+        _PartialVault(_deviceToken, <String>{_device().tokenRef}),
+      );
+      final factory = _LinkFactory();
+      final controller = _controllerWith(store, factory.call);
+      addTearDown(controller.dispose);
+      await controller.connect(_device());
+      _completeHandshake(factory.links.single);
+
+      await controller.switchTo(_secondDevice());
+
+      expect(controller.phase, RemoteConnectionPhase.failed);
+      expect(controller.lastErrorCode, 'remote/credential-read');
+      expect(controller.lastError, contains('重新配对'));
+      expect(controller.activeDevice?.id, _secondDevice().id);
+      expect(factory.links, hasLength(1), reason: '令牌都没有读到，不该拨号');
+      expect(factory.links.single.isClosed, isTrue, reason: '旧连接先关闭');
+    });
+
+    test('ready 时把电脑记为上次连接，并回写宿主自报的电脑名', () async {
+      final devices = _DevicePreferences(<RemoteDevice>[
+        _device(),
+        _secondDevice(),
+      ]);
+      addTearDown(devices.dispose);
+      final store = devices.store(_MemoryVault(_deviceToken));
+      final factory = _LinkFactory();
+      final controller = _controllerWith(store, factory.call);
+      addTearDown(controller.dispose);
+
+      await controller.connect(_device());
+      _completeHandshake(factory.links.single);
+      await pumpEventQueue();
+
+      expect(controller.lastConnectedDevice?.id, _device().id);
+      final table = await store.loadTable();
+      expect(table.lastConnectedDeviceId, _device().id);
+      expect(table.lastConnectedDevice?.hostName, 'Colin 的台式机');
+      expect(table.lastConnectedDevice?.displayName, 'Colin 的台式机');
+      expect(devices.decode()[remoteLastConnectedDeviceKey], _device().id);
+    });
+
+    test('重复的 ready 信号不会重复回写上次连接', () async {
+      final devices = _DevicePreferences(<RemoteDevice>[_device()]);
+      addTearDown(devices.dispose);
+      final store = devices.store(_MemoryVault(_deviceToken));
+      final factory = _LinkFactory();
+      final controller = _controllerWith(store, factory.call);
+      addTearDown(controller.dispose);
+
+      await controller.connect(_device());
+      _completeHandshake(factory.links.single);
+      await pumpEventQueue();
+      final writes = devices.writes;
+
+      // 宿主可能既推 runtime.ready 又推 runtime.status(ready)。
+      factory.links.single.emit('runtime.ready', <String, dynamic>{});
+      factory.links.single.emit('runtime.status', <String, dynamic>{
+        'phase': 'ready',
+      });
+      await pumpEventQueue();
+
+      expect(controller.phase, RemoteConnectionPhase.ready);
+      expect(devices.writes, writes, reason: '同一条连接只回写一次偏好');
+    });
+
+    test('记录上次连接的偏好写入失败不影响本次连接就绪', () async {
+      final devices = _DevicePreferences(<RemoteDevice>[
+        _device(),
+      ], failSave: true);
+      addTearDown(devices.dispose);
+      final store = devices.store(_MemoryVault(_deviceToken));
+      final factory = _LinkFactory();
+      final controller = _controllerWith(store, factory.call);
+      addTearDown(controller.dispose);
+
+      await controller.connect(_device());
+      _completeHandshake(factory.links.single);
+      await pumpEventQueue();
+
+      expect(controller.phase, RemoteConnectionPhase.ready);
+      expect(controller.isReady, isTrue);
+      expect(controller.lastError, isNull);
+    });
   });
 }

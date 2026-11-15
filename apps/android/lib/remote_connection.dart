@@ -32,6 +32,19 @@
 /// 终止性失败后本类会主动 close 掉传输：它的 socket 已经关闭，但事件流要等
 /// `close()` 才收敛，留着就是一条泄漏的订阅。
 ///
+/// ## 切换电脑与失败语义
+///
+/// v1 同一时刻只保持一条连接（协议 §11），因此 [switchTo] 的动作是「先把旧连接
+/// 彻底关掉，再连新的」。切换失败（新电脑不可达、令牌读不出来）不会退回旧连接：
+/// 旧传输已经关闭，本类停在 [RemoteConnectionPhase.failed]，[activeDevice] 指向
+/// 新电脑，页面据此显示这台电脑的错误与「重试」。
+///
+/// ## 记住上次成功连接的电脑
+///
+/// 每次进入 [RemoteConnectionPhase.ready] 都把设备与宿主自报的电脑名回写
+/// [store]（[RemoteDeviceStore.markConnected]），供下次冷启动自动连接。回写失败
+/// 只记录原因，不影响本次连接。
+///
 /// ## 设备令牌的读取限制
 ///
 /// [RemoteDeviceStore.readToken] 的冷启动读取受凭据门面限制，失败原因由存储层
@@ -172,6 +185,8 @@ class RemoteConnectionController extends ChangeNotifier {
   String? _lastError;
   String? _lastErrorCode;
   String? _deviceListError;
+  String? _lastConnectedDeviceId;
+  String? _recordedConnectedDeviceId;
   RemoteHostInfo? _host;
   RemoteTransportLink? _transport;
   StreamSubscription<Map<String, dynamic>>? _subscription;
@@ -203,6 +218,19 @@ class RemoteConnectionController extends ChangeNotifier {
 
   /// 已配对电脑；读取失败时保留上一次成功读到的列表。
   List<RemoteDevice> get devices => _devices;
+
+  /// 上次成功连接的电脑；从未成功连接过时为 null。
+  ///
+  /// 记录由 [RemoteDeviceStore] 持久化，冷启动读完设备表后即可用；每次进入
+  /// [RemoteConnectionPhase.ready] 由本类回写。首页用它决定自动连接哪一台。
+  RemoteDevice? get lastConnectedDevice {
+    final id = _lastConnectedDeviceId;
+    if (id == null) return null;
+    for (final device in _devices) {
+      if (device.id == id) return device;
+    }
+    return null;
+  }
 
   /// 当前连接（或最近一次连接）的电脑；[disconnect] 之后为 null。
   RemoteDevice? get activeDevice => _activeDevice;
@@ -265,18 +293,20 @@ class RemoteConnectionController extends ChangeNotifier {
   /// 只来自握手，不能缓存跨连接（协议 §10.1）。
   bool supports(String method) => _host?.supports(method) ?? false;
 
-  /// 重新读取已配对电脑。
+  /// 重新读取已配对电脑与「上次成功连接的设备」。
   ///
   /// 读取失败不降级成空列表：失败会写进 [deviceListError] 并抛出，由调用方决定是
   /// 展示错误，还是把「本机还没有设备表」当成空列表。
   Future<List<RemoteDevice>> loadDevices() async {
     try {
-      final devices = await store.load();
+      final table = await store.loadTable();
       if (_disposed) return _devices;
       // 只有设备表真的变了才通知：页面把本方法当作「刷新」调用，无条件通知会让
       // 监听者再触发一次刷新，形成自我维持的读取循环。
-      final changed = _deviceListError != null || !_sameDeviceTable(devices);
-      _devices = List<RemoteDevice>.unmodifiable(devices);
+      final changed =
+          _deviceListError != null || !_sameDeviceTable(table.devices);
+      _devices = List<RemoteDevice>.unmodifiable(table.devices);
+      _lastConnectedDeviceId = table.lastConnectedDeviceId;
       _deviceListError = null;
       if (changed) _notify();
       return _devices;
@@ -296,17 +326,22 @@ class RemoteConnectionController extends ChangeNotifier {
   ///
   /// 已连接到同一台电脑且连接还在进行中时是空操作；其余情况先干净断开旧连接再连
   /// 新的（协议 §11：一次只连一台）。失败不抛异常：原因写进 [lastError]，阶段推到
-  /// [RemoteConnectionPhase.failed]。
+  /// [RemoteConnectionPhase.failed]；此时 [activeDevice] 是要连的那台电脑，
+  /// [transport] 为 null。
+  ///
+  /// 顺序是刻意的：先作废代际并切到 `connecting`，再关闭旧传输。关闭要等 socket
+  /// 收敛，期间页面不能继续显示 `ready`；代际提前递增还能让旧握手/旧事件在关闭
+  /// 过程中就被丢弃。
   Future<void> connect(RemoteDevice device) async {
     if (_disposed) return;
     if (_activeDevice?.id == device.id && _inFlight) return;
-    await _closeTransport();
-    if (_disposed) return;
     final generation = ++_generation;
     _activeDevice = device;
     _lastError = null;
     _lastErrorCode = null;
     _setPhase(RemoteConnectionPhase.connecting);
+    await _closeTransport();
+    if (_disposed || generation != _generation) return;
 
     final String token;
     try {
@@ -375,7 +410,9 @@ class RemoteConnectionController extends ChangeNotifier {
   /// 切换到另一台电脑：先干净断开当前连接，再连新的。
   ///
   /// 与 [connect] 的实际动作相同（[connect] 已经包含「断开旧连接」），保留独立名字
-  /// 是为了让页面代码读起来是「换一台」而不是「连一台」。
+  /// 是为了让页面代码读起来是「换一台」而不是「连一台」。切换没有回退路径：新电脑
+  /// 连不上时停在 [RemoteConnectionPhase.failed]，[activeDevice] 是新电脑，
+  /// [lastError] 是它的失败原因，页面据此给出「重试 / 切换设备」。
   Future<void> switchTo(RemoteDevice device) => connect(device);
 
   /// 断开当前连接并回到 `idle`。
@@ -434,6 +471,8 @@ class RemoteConnectionController extends ChangeNotifier {
       final right = _devices[index];
       if (left.id != right.id || left.label != right.label) return false;
       if (left.lastSeenAt != right.lastSeenAt) return false;
+      // 电脑名决定胶囊条与副标题上的文字，变化必须让页面重建。
+      if (left.hostName != right.hostName) return false;
     }
     return true;
   }
@@ -451,6 +490,7 @@ class RemoteConnectionController extends ChangeNotifier {
     _hostPhase = null;
     _notificationCounts.clear();
     _lastNotificationMethod = null;
+    _recordedConnectedDeviceId = null;
     final subscription = _subscription;
     _subscription = null;
     final transport = _transport;
@@ -626,7 +666,7 @@ class RemoteConnectionController extends ChangeNotifier {
           : '电脑当前的阶段是「$_hostPhase」';
       _fail(
         '已连上电脑，但 DSH 在 ${hostStatusTimeout.inSeconds} 秒内没有进入就绪状态'
-        '（$observed）。请确认电脑上的 DSH 已启动完成，然后重新连接。',
+            '（$observed）。请确认电脑上的 DSH 已启动完成，然后重新连接。',
         'remote/status-timeout',
       );
     });
@@ -650,6 +690,37 @@ class RemoteConnectionController extends ChangeNotifier {
     if (_phase == phase) return;
     _phase = phase;
     _notify();
+    // 进入 ready 是唯一一次「这台电脑确实连上了」的信号：记下它，供下次冷启动
+    // 自动连接。回写是异步的，失败不会改变本次连接的阶段。
+    if (phase == RemoteConnectionPhase.ready) _rememberConnectedDevice();
+  }
+
+  /// 把当前连接成功的电脑回写进设备表（上次连接 + 电脑名 + 最近在线时间）。
+  ///
+  /// 同一条连接内只回写一次：重连（`lost → reconnecting → ready`）不重复写偏好；
+  /// 换代（[connect] / [disconnect]）会清掉记录标记，切到另一台电脑后重新回写。
+  void _rememberConnectedDevice() {
+    final device = _activeDevice;
+    if (device == null) return;
+    if (_recordedConnectedDeviceId == device.id) return;
+    _recordedConnectedDeviceId = device.id;
+    final hostName = _host?.name;
+    unawaited(_recordConnectedDevice(device.id, hostName));
+  }
+
+  Future<void> _recordConnectedDevice(String deviceId, String? hostName) async {
+    try {
+      final table = await store.markConnected(deviceId, hostName: hostName);
+      if (_disposed) return;
+      _lastConnectedDeviceId = table.lastConnectedDeviceId;
+      if (!_sameDeviceTable(table.devices)) {
+        _devices = List<RemoteDevice>.unmodifiable(table.devices);
+        _notify();
+      }
+    } on Object catch (error) {
+      // 记录「上次连接」只是下次冷启动的便利提示：写偏好失败不影响本次连接。
+      debugPrint('记录上次连接的电脑失败：$error');
+    }
   }
 
   void _notify() {

@@ -20,6 +20,13 @@
 // 接口 [RemoteDshSessionCreator]、[RemoteDshArchiveSource]、[RemoteDshFilesSource]
 // 与 [RemoteDshSettingsSource]：只读数据源没有实现时，对应入口给出可见的
 // 「暂未开放」提示；实现了但电脑声明不可用时，入口置灰并展示原因（协议 §10.2）。
+//
+// 多台电脑：设备胶囊条列出本机全部已配对电脑，标题下的摘要说明当前连接的是哪台
+// （名称来自握手时电脑自报的 `host.name`，见 [RemoteDeviceStore.markConnected]）；
+// 点另一台会先干净关闭旧连接再连新的。冷启动自动连上次成功连接的那台（没有记录
+// 时只在恰好一台的情况下自动连）；失败停在失败态并给出「重试 / 切换设备」，不会
+// 静默退回旧电脑。菜单「管理 → 移除已配对电脑」只删本机记录与令牌，移除当前连接
+// 的电脑前先断开。
 
 import 'dart:async';
 import 'dart:math' as math;
@@ -288,6 +295,7 @@ enum _HomeMenuChoice {
   recentFirst,
   archived,
   files,
+  removeDevice,
   addConnection,
   settings,
 }
@@ -399,8 +407,12 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
   /// 是否把最近有活动的项目排在前面。
   bool _recentFirst = false;
 
-  /// 当前选中的设备；null 表示选中「全部」。
-  String? _deviceId;
+  /// 是否已经尝试过冷启动自动连接。
+  ///
+  /// 每个页面实例只自动连一次：连接失败、移除当前电脑、从会话页返回等后续刷新都
+  /// 不再重新发起连接，避免「失败→重试→再失败」的自动重连风暴。用户随时可以点
+  /// 设备胶囊或失败提示里的「重试 / 切换设备」。
+  bool _autoConnectAttempted = false;
 
   /// 读取数据源失败时的中文说明。
   String? _error;
@@ -413,6 +425,19 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
   /// 连接层对每条入站通知都会发一次变更，而流式回复期间 `session.live` 最多每 50 ms
   /// 一条；不判重就会在会话页盖住首页时以每秒几十次重读设备表与 `sessions.list`。
   ({RemoteConnectionPhase phase, String? hostName})? _loadedConnection;
+
+  /// 上一次重建页面时可见的连接快照。
+  ///
+  /// 只有会改变画面的事实（阶段、宿主名、失败原因、设备表里的展示字段）才
+  /// `setState`：入站通知本身不改变首页，不该让被会话页盖住的首页每来一条帧就重建
+  /// 一次（60 fps 门禁；设备胶囊条不得因通知每帧重建）。
+  ({
+    RemoteConnectionPhase phase,
+    String? hostName,
+    String? lastError,
+    String devices,
+  })?
+  _visibleConnection;
 
   @override
   void initState() {
@@ -458,6 +483,7 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
       phase: _connection.phase,
       hostName: _connection.host?.name,
     );
+    _visibleConnection = _connectionSnapshot();
     unawaited(_load());
   }
 
@@ -481,43 +507,64 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
     return RemoteDshLiveSource(controller: _connection);
   }
 
-  /// 连接阶段变化时刷新：先把空态切到新阶段，再重读设备与项目。
+  /// 连接层状态变化时刷新首页。
   ///
-  /// 只有阶段或宿主身份变化才重读：连接层对每条通知都发一次变更，逐条重读会让
-  /// 流式回复期间首页持续打 `runtime.info` + `sessions.list`。
+  /// 分两步判重：
+  ///
+  /// - 画面要变（阶段、宿主名、失败原因、设备表展示字段）才 `setState`。入站通知
+  ///   本身不改变首页，流式回复期间不应让被会话页盖住的首页每来一条帧就重建一次；
+  /// - 只有阶段或宿主身份变化才重读设备与项目。连接层对每条通知都发一次变更，
+  ///   逐条重读会让首页持续打 `runtime.info` + `sessions.list`。
   void _onConnectionChanged() {
     if (!mounted) return;
-    setState(() {
-      _view = RemoteDshView(
-        connection: _source.connection,
-        hostName: _source.hostName,
-        devices: _view.devices,
-        projects: _view.projects,
-      );
-    });
-    final snapshot = (
-      phase: _connection.phase,
-      hostName: _connection.host?.name,
-    );
-    if (_loadedConnection == snapshot) return;
-    _loadedConnection = snapshot;
+    final snapshot = _connectionSnapshot();
+    if (_visibleConnection != snapshot) {
+      _visibleConnection = snapshot;
+      setState(() {
+        _view = RemoteDshView(
+          connection: _source.connection,
+          hostName: _source.hostName,
+          devices: _view.devices,
+          projects: _view.projects,
+        );
+      });
+    }
+    final loaded = (phase: snapshot.phase, hostName: snapshot.hostName);
+    if (_loadedConnection == loaded) return;
+    _loadedConnection = loaded;
     unawaited(_load());
   }
+
+  /// 会影响首页画面的连接快照；[devices] 是设备表展示字段的拼接。
+  ///
+  /// 设备条数与字段都很少（个位数设备），这里只拼一个小字符串，比每帧重建整棵
+  /// 首页子树便宜得多。
+  ({
+    RemoteConnectionPhase phase,
+    String? hostName,
+    String? lastError,
+    String devices,
+  })
+  _connectionSnapshot() => (
+    phase: _connection.phase,
+    hostName: _connection.host?.name,
+    lastError: _connection.lastError,
+    devices: [
+      for (final device in _connection.devices)
+        '${device.id}|${device.label}|${device.hostName ?? ''}'
+            '|${device.lastSeenAt?.millisecondsSinceEpoch ?? ''}',
+    ].join(','),
+  );
 
   /// 读取设备与项目；失败时保留「未连接」状态并给出可重试的说明。
   Future<void> _load() async {
     try {
       final devices = await _source.listDevices();
-      _autoConnect();
+      _maybeAutoConnect();
       final projects = await _source.listProjects();
       if (!mounted) return;
       setState(() {
         _error = null;
-        // 选中的设备可能已经不在这台电脑上，回落到「全部」。
-        if (_deviceId != null &&
-            !devices.any((device) => device.id == _deviceId)) {
-          _deviceId = null;
-        }
         _view = RemoteDshView(
           connection: _source.connection,
           hostName: _source.hostName,
@@ -535,14 +582,22 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
     }
   }
 
-  /// 只有一台已配对电脑且当前空闲时自动连上。
+  /// 冷启动自动连接：优先上次成功连接的电脑；否则只在恰好一台已配对电脑时连它。
   ///
-  /// 打开远程页的预期是直接看到那台电脑的项目，而不是先点一次设备胶囊。多台时
-  /// 不自动选择（v1 一次只连一台，协议 §11）；失败态也不自动重试，避免重启风暴。
-  void _autoConnect() {
+  /// 超过一台且没有「上次连接」记录时不做猜测（v1 一次只连一台，协议 §11），由
+  /// 用户点设备胶囊选择。每个页面实例只尝试一次：失败后停在失败态并给出「重试 /
+  /// 切换设备」，后续刷新（移除电脑、从会话页返回）不会再次自动连接。
+  void _maybeAutoConnect() {
+    if (_autoConnectAttempted) return;
+    _autoConnectAttempted = true;
     if (_connection.phase != RemoteConnectionPhase.idle) return;
-    if (_connection.devices.length != 1) return;
-    unawaited(_connection.connect(_connection.devices.single));
+    final devices = _connection.devices;
+    if (devices.isEmpty) return;
+    final target =
+        _connection.lastConnectedDevice ??
+        (devices.length == 1 ? devices.single : null);
+    if (target == null) return;
+    unawaited(_connection.connect(target));
   }
 
   /// 提示某个入口还没有接入，避免点按后没有任何反馈。
@@ -671,9 +726,9 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
       barrierLabel: MaterialLocalizations.of(context).modalBarrierDismissLabel,
       reduceMotion: MediaQuery.disableAnimationsOf(context),
       builder: (context) => CommonPopupMenu(
-        // 菜单共八行加两段小标题，默认 7.5 行的上限会把它截成可滚动，
+        // 菜单共九行加两段小标题，默认 7.5 行的上限会把它截成可滚动，
         // 这里放宽到全部可见；屏幕实在放不下时弹层自己再裁到可用高度。
-        maxVisibleItems: 10,
+        maxVisibleItems: 11,
         items: [
           CommonPopupMenuItem(
             label: '优先级',
@@ -713,6 +768,18 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
             capability: _filesSource?.filesCapability,
             choice: _HomeMenuChoice.files,
             onChosen: (choice) => chosen = choice,
+          ),
+          CommonPopupMenuItem(
+            label: '移除已配对电脑',
+            glyph: Icons.delete_outline_rounded,
+            section: '管理',
+            danger: true,
+            description: _connection.devices.isEmpty
+                ? '本机还没有已配对电脑'
+                : '只删除这台手机上的配对记录与令牌',
+            onPressed: _connection.devices.isEmpty
+                ? null
+                : () => chosen = _HomeMenuChoice.removeDevice,
           ),
           CommonPopupMenuItem(
             label: '添加连接',
@@ -756,6 +823,8 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
         unawaited(_openArchived());
       case _HomeMenuChoice.files:
         unawaited(_openFiles());
+      case _HomeMenuChoice.removeDevice:
+        unawaited(_openDeviceManager());
       case _HomeMenuChoice.addConnection:
         unawaited(_addConnection());
       case _HomeMenuChoice.settings:
@@ -763,14 +832,18 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
     }
   }
 
+  /// 点设备胶囊：null 是「全部」（当前这台电脑的全部项目，不切换连接）。
+  ///
+  /// 点已经连上（或正在连）的那台不会重复连接；点另一台走 [RemoteConnectionController.switchTo]，
+  /// 由连接层先关闭旧连接再连新的（协议 §11）。失败态下点当前设备等于重试。
   void _selectDevice(String? id) {
-    if (id == _deviceId) return;
-    setState(() => _deviceId = id);
-    // 「全部」只是清掉项目过滤（v1 就是当前这台电脑的全部项目），不触发连接。
     if (id == null) return;
     final device = _pairedDevice(id);
     if (device == null) return;
-    // 点已连接的设备不会重连；点另一台会先干净断开旧连接（协议 §11）。
+    final active = _connection.activeDevice;
+    if (active?.id == id && _connection.phase != RemoteConnectionPhase.failed) {
+      return;
+    }
     unawaited(_connection.switchTo(device));
   }
 
@@ -785,6 +858,38 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
     return null;
   }
 
+  /// 胶囊条上显示的电脑名。
+  ///
+  /// 数据源给出的 label 在就绪时已经是宿主自报的名字，但离线设备是配对时上报的手机
+  /// 名（[paired.RemoteDevice.label] 的约定），不能当电脑名展示。这里以存储层的
+  /// 电脑名为准：从没连接过的电脑还没有名字，退回地址。
+  String _computerNameOf(RemoteDshDevice device, paired.RemoteDevice? record) {
+    if (record == null) return device.label;
+    final name = record.hostName?.trim() ?? '';
+    if (name.isNotEmpty) return name;
+    if (device.state == RemoteDshDeviceState.online) {
+      // 就绪时数据源已用宿主名替换 label（电脑名可能还没来得及回写存储层）。
+      return device.label;
+    }
+    return record.host;
+  }
+
+  /// 当前连接（或最近一次连接的）电脑显示名；没有电脑时为 null。
+  String? _activeComputerName(RemoteDshView view) {
+    final activeId = _connection.activeDevice?.id;
+    if (activeId != null) {
+      for (final device in view.devices) {
+        if (device.id == activeId) {
+          return _computerNameOf(device, _pairedDevice(activeId));
+        }
+      }
+      final record = _pairedDevice(activeId);
+      if (record != null) return record.displayName;
+    }
+    final hostName = view.hostName?.trim() ?? '';
+    return hostName.isEmpty ? null : hostName;
+  }
+
   /// 终止态下的「重新连接」：重连当前设备；没有当前设备时回到「添加连接」。
   void _retryConnection() {
     final device = _connection.activeDevice;
@@ -793,6 +898,156 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
       return;
     }
     unawaited(_connection.connect(device));
+  }
+
+  /// 弹层里当前那台电脑的状态说明；失败/连接中不能一概写成「当前连接」。
+  String get _currentDeviceSheetLabel {
+    if (_connection.activeDevice == null) return '当前连接';
+    return switch (_connection.phase) {
+      RemoteConnectionPhase.failed => '连接失败',
+      RemoteConnectionPhase.connecting ||
+      RemoteConnectionPhase.handshaking ||
+      RemoteConnectionPhase.reconnecting ||
+      RemoteConnectionPhase.lost => '正在连接',
+      RemoteConnectionPhase.idle || RemoteConnectionPhase.ready => '当前连接',
+    };
+  }
+
+  /// 失败态下的「切换设备」：列出已配对电脑，选一台走 [paired.RemoteDeviceStore]
+  /// 的切换。没有其它电脑可切换时入口退化成「添加连接」（见 [_content]），不会
+  /// 打开一个只有一行的弹层。
+  Future<void> _showSwitchDeviceSheet() async {
+    final devices = _connection.devices;
+    if (devices.isEmpty) {
+      await _addConnection();
+      return;
+    }
+    final target = await showModalBottomSheet<paired.RemoteDevice>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      barrierColor: Theme.of(context).colorScheme.scrim.withValues(alpha: .4),
+      sheetAnimationStyle: MediaQuery.disableAnimationsOf(context)
+          ? AnimationStyle.noAnimation
+          : null,
+      builder: (sheetContext) => _RemoteDeviceSheet(
+        key: const ValueKey('remote-switch-device-sheet'),
+        title: '切换设备',
+        message: '选择要连接的电脑。切换会先断开当前连接，失败时留在失败页并可重试。',
+        children: [
+          for (final device in devices)
+            _RemoteDeviceSheetRow(
+              key: ValueKey('remote-switch-device-${device.id}'),
+              record: device,
+              active: _connection.activeDevice?.id == device.id,
+              activeLabel: _currentDeviceSheetLabel,
+              onPressed: () => Navigator.of(sheetContext).pop(device),
+            ),
+        ],
+      ),
+    );
+    if (!mounted || target == null) return;
+    final active = _connection.activeDevice;
+    if (active?.id == target.id &&
+        _connection.phase != RemoteConnectionPhase.failed) {
+      return;
+    }
+    unawaited(_connection.switchTo(target));
+  }
+
+  /// 「管理」菜单里的「移除已配对电脑」：选择一台，二次确认后只删本机记录与令牌。
+  ///
+  /// 不调用宿主撤销接口：电脑上的授权记录还在，只是这台手机不再持有它的令牌。移除
+  /// 当前连接的电脑时先断开，保证阶段机与界面立刻回到「未连接」。
+  Future<void> _openDeviceManager() async {
+    final devices = _connection.devices;
+    if (devices.isEmpty) {
+      _notice('本机还没有已配对电脑。');
+      return;
+    }
+    final target = await showModalBottomSheet<paired.RemoteDevice>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      barrierColor: Theme.of(context).colorScheme.scrim.withValues(alpha: .4),
+      sheetAnimationStyle: MediaQuery.disableAnimationsOf(context)
+          ? AnimationStyle.noAnimation
+          : null,
+      builder: (sheetContext) => _RemoteDeviceSheet(
+        key: const ValueKey('remote-manage-device-sheet'),
+        title: '管理已配对电脑',
+        message:
+            '选择要从这台手机移除的电脑。只删除本机的配对记录与设备令牌；'
+            '电脑上的授权记录不会自动撤销。',
+        children: [
+          for (final device in devices)
+            _RemoteDeviceSheetRow(
+              key: ValueKey('remote-manage-device-${device.id}'),
+              record: device,
+              active: _connection.activeDevice?.id == device.id,
+              activeLabel: _currentDeviceSheetLabel,
+              trailingLabel: '移除',
+              onPressed: () => Navigator.of(sheetContext).pop(device),
+            ),
+        ],
+      ),
+    );
+    if (!mounted || target == null) return;
+    final name = target.displayName;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialog) => AlertDialog(
+        title: const Text('移除已配对电脑'),
+        content: Text(
+          '移除「$name」？这台手机上会删除它的配对记录与设备令牌，'
+          '电脑上的授权记录不会自动撤销。之后想再用这台电脑需要重新配对。',
+        ),
+        actions: [
+          TextButton(
+            key: const ValueKey('remote-remove-cancel'),
+            onPressed: () => Navigator.of(dialog).pop(false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            key: const ValueKey('remote-remove-confirm'),
+            onPressed: () => Navigator.of(dialog).pop(true),
+            child: const Text('移除'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted || confirmed != true) return;
+    await _removeDevice(target);
+  }
+
+  /// 从本机删除一台已配对电脑：当前连接的先断开，再删令牌与记录，最后重读设备表。
+  Future<void> _removeDevice(paired.RemoteDevice device) async {
+    final name = device.displayName;
+    if (_connection.activeDevice?.id == device.id) {
+      // 先断开：移除后阶段机回到 idle，界面与「没有当前电脑」保持一致。
+      await _connection.disconnect();
+      if (!mounted) return;
+    }
+    try {
+      await _connection.store.remove(device.id);
+    } on Object catch (error) {
+      if (!mounted) return;
+      _notice('移除「$name」失败：${_failureMessage(error)}');
+      // 删除令牌可能已经成功、偏好没写成功：重读让界面显示真实剩余状态。
+      await _load();
+      return;
+    }
+    if (!mounted) return;
+    await _load();
+    if (!mounted) return;
+    _notice('已从这台手机移除「$name」');
+  }
+
+  /// 把存储层/格式类失败转成可直接展示的中文原因。
+  static String _failureMessage(Object error) {
+    if (error is paired.RemoteDeviceStoreException) return error.message;
+    if (error is FormatException) return error.message;
+    return '$error';
   }
 
   /// 打开一个会话。
@@ -990,11 +1245,11 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
     unawaited(_load());
   }
 
-  /// 会话页副标题里的设备名：选中的设备优先，其次当前电脑的显示名。
+  /// 会话页副标题里的电脑名：当前连接的那台，没有时退回「这台电脑」。
   String _conversationDeviceName() {
-    final selected = _composerDeviceLabel(_view).trim();
-    if (selected.isNotEmpty) return selected;
-    return _connection.activeDevice?.label ?? '这台电脑';
+    final name = _composerDeviceLabel(_view).trim();
+    if (name.isNotEmpty) return name;
+    return '这台电脑';
   }
 
   /// 打开配对页；配对成功时刷新设备列表并连上刚配好的电脑。
@@ -1014,11 +1269,14 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
     unawaited(_connection.connect(device));
   }
 
+  /// 设备胶囊条的数据：多台已配对电脑的名称与状态点。
+  ///
+  /// 名称以存储层的电脑名为准（[_computerNameOf]）；数据源只提供状态与顺序。
   List<RemoteDevice> _railDevices(RemoteDshView view) => [
     for (final device in view.devices)
       RemoteDevice(
         id: device.id,
-        label: device.label,
+        label: _computerNameOf(device, _pairedDevice(device.id)),
         icon: Icons.computer_rounded,
         status: switch (device.state) {
           RemoteDshDeviceState.online => RemoteDeviceStatus.online,
@@ -1028,15 +1286,31 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
       ),
   ];
 
-  /// 输入条里的目标设备名：优先取选中的设备，其次取当前电脑的显示名。
-  String _composerDeviceLabel(RemoteDshView view) {
-    final selected = _deviceId;
-    if (selected != null) {
-      for (final device in view.devices) {
-        if (device.id == selected) return device.label;
-      }
+  /// 输入条里的目标电脑名：当前连接的那台；未连接时为空。
+  String _composerDeviceLabel(RemoteDshView view) =>
+      _activeComputerName(view) ?? '';
+
+  /// 首页标题下方的连接摘要：当前电脑名与连接阶段。
+  ///
+  /// 未连接时说明已配对几台、有没有连接过，把「空列表」与「已配对但从未连接」
+  /// 区分开；搜索模式下由搜索框占用这一行，不显示摘要。
+  String _connectionSummary(RemoteDshView view) {
+    final name = _activeComputerName(view);
+    final named = name == null || name.isEmpty ? null : name;
+    switch (view.connection) {
+      case RemoteDshConnectionState.connected:
+        return named == null ? '已连接到电脑' : '已连接「$named」';
+      case RemoteDshConnectionState.connecting:
+        return named == null ? '正在连接电脑…' : '正在连接「$named」…';
+      case RemoteDshConnectionState.failed:
+        return named == null ? '没能连接到这台电脑' : '没能连接到「$named」';
+      case RemoteDshConnectionState.notConnected:
+        if (view.devices.isEmpty) return '还没有配对任何电脑';
+        if (_connection.lastConnectedDevice != null) {
+          return '已配对 ${view.devices.length} 台电脑，当前未连接';
+        }
+        return '已配对 ${view.devices.length} 台电脑，还没有连接过';
     }
-    return view.hostName ?? '';
   }
 
   /// 首页输入条下方的可操作说明。
@@ -1055,16 +1329,11 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
 
   /// 按当前排序方式重排项目与会话。
   ///
-  /// 会话只在项目内重排；[_recentFirst] 决定项目之间是否按最近活动排序。
+  /// v1 一次只连一台电脑（协议 §11），项目列表就是当前这台电脑的全部项目；会话只
+  /// 在项目内重排；[_recentFirst] 决定项目之间是否按最近活动排序。
   List<RemoteDshProject> _orderedProjects(RemoteDshView view) {
-    final visible = _deviceId == null
-        ? view.projects
-        : [
-            for (final project in view.projects)
-              if (project.deviceId == _deviceId) project,
-          ];
     final ordered = [
-      for (final project in visible)
+      for (final project in view.projects)
         RemoteDshProject(
           id: project.id,
           deviceId: project.deviceId,
@@ -1173,10 +1442,31 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
                               searchLabel: '搜索会话',
                             ),
                     ),
-                    const SizedBox(height: 10),
+                    if (!_searching) ...[
+                      const SizedBox(height: 6),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 18),
+                        child: Text(
+                          _connectionSummary(view),
+                          key: const ValueKey('remote-home-connection-summary'),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: AppTextStyle.footnote
+                              .of(context)
+                              .copyWith(
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onSurfaceVariant,
+                              ),
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 8),
                     RemoteDeviceRail(
                       devices: _railDevices(view),
-                      selectedId: _deviceId,
+                      // 选中态就是当前连接的那台电脑：v1 一次只连一台，「全部」只
+                      // 在没有当前连接时选中。点已连接的胶囊不会重复连接。
+                      selectedId: _connection.activeDevice?.id,
                       onSelected: _selectDevice,
                       padding: const EdgeInsets.symmetric(horizontal: 18),
                     ),
@@ -1239,6 +1529,10 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
   }
 
   /// 内容区：读取失败、四种连接状态与项目列表。
+  ///
+  /// 未连接分两种：本机没有任何已配对电脑（先配对）与已配对但当前没有连接
+  /// （点胶囊选一台，或还没连接过）。失败态给出当前这台电脑的错误、重试与切换
+  /// 设备的入口；切换失败不会静默退回旧电脑（旧连接在切换时已经关闭）。
   Widget _content(RemoteDshView view) {
     final error = _error;
     if (error != null) {
@@ -1252,37 +1546,64 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
         ),
       );
     }
+    final name = _activeComputerName(view);
     return switch (view.connection) {
-      RemoteDshConnectionState.notConnected => PocketEmpty(
-        child: _RemoteNotice(
-          icon: Icons.devices_other_rounded,
-          title: '还没有连接任何电脑',
-          message: '在一台电脑上启动远程宿主，再用配对码把这台手机连上去。连接后可以在这里查看那台电脑上的项目和会话。',
-          actionLabel: '添加连接',
-          onAction: () => unawaited(_addConnection()),
-        ),
-      ),
-      RemoteDshConnectionState.connecting => const PocketEmpty(
+      // 两个空态各自返回完整的 PocketEmpty：不要再套一层（滚动视口里不能再放一个
+      // 依赖有限高度的滚动视口）。
+      RemoteDshConnectionState.notConnected =>
+        view.devices.isEmpty ? _pairFirstNotice() : _disconnectedNotice(),
+      RemoteDshConnectionState.connecting => PocketEmpty(
         child: _RemoteNotice(
           icon: Icons.hourglass_top_rounded,
-          title: '正在连接电脑',
+          title: name == null ? '正在连接电脑' : '正在连接「$name」',
           message: '连接完成后，这里会显示那台电脑上的项目与会话。',
         ),
       ),
       RemoteDshConnectionState.connected => _projects(view),
       // 终止态：传输已经停止重连，只有用户动作能恢复。原因直接用连接层的
-      // message（协议 §9.4 已经是可直接展示的中文）。
+      // message（协议 §9.4 已经是可直接展示的中文）；切换失败也停在这里，
+      // 指向的是那台连不上的电脑，而不是退回旧电脑。
       RemoteDshConnectionState.failed => PocketEmpty(
         child: _RemoteNotice(
           icon: Icons.link_off_rounded,
-          title: '没能连接到这台电脑',
+          title: name == null ? '没能连接到这台电脑' : '没能连接到「$name」',
           message: _connection.lastError ?? '请检查手机与电脑是否在同一网络，然后重新连接。',
-          actionLabel: '重新连接',
+          actionLabel: '重试',
           onAction: _retryConnection,
+          secondaryActionLabel: view.devices.length > 1 ? '切换设备' : '添加连接',
+          onSecondaryAction: view.devices.length > 1
+              ? () => unawaited(_showSwitchDeviceSheet())
+              : () => unawaited(_addConnection()),
         ),
       ),
     };
   }
+
+  /// 本机还没有任何已配对电脑时的空态：先配对。
+  Widget _pairFirstNotice() => PocketEmpty(
+    child: _RemoteNotice(
+      icon: Icons.devices_other_rounded,
+      title: '还没有连接任何电脑',
+      message: '在一台电脑上启动远程宿主，再用配对码把这台手机连上去。连接后可以在这里查看那台电脑上的项目和会话。',
+      actionLabel: '添加连接',
+      onAction: () => unawaited(_addConnection()),
+    ),
+  );
+
+  /// 已配对电脑但当前没有连接时的空态：区分「从未连接过」与「以前连过」。
+  Widget _disconnectedNotice() => PocketEmpty(
+    child: _RemoteNotice(
+      icon: Icons.devices_other_rounded,
+      title: _connection.lastConnectedDevice == null
+          ? '还没有连接过任何一台电脑'
+          : '当前没有连接电脑',
+      message: _connection.lastConnectedDevice == null
+          ? '点上方电脑胶囊选择一台开始连接；第一台电脑会在连接成功后记住，之后打开 App 会自动连它。'
+          : '点上方电脑胶囊选择要连接的电脑。',
+      actionLabel: '添加连接',
+      onAction: () => unawaited(_addConnection()),
+    ),
+  );
 
   /// 已连接时的「项目」分组；没有项目时给出独立的空状态。
   ///
@@ -1307,9 +1628,7 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
         child: _RemoteNotice(
           icon: Icons.folder_off_outlined,
           title: '这台电脑上还没有项目',
-          message: _deviceId == null
-              ? '在电脑上创建项目后，它的会话会显示在这里。'
-              : '选中的设备上还没有项目，点「全部」可以查看其它设备。',
+          message: '在电脑上创建项目后，它的会话会显示在这里。',
         ),
       );
     }
@@ -1439,6 +1758,7 @@ class _RemoteSearchHeader extends StatelessWidget {
 
 /// 空状态与读取失败共用的居中提示：图标、标题、说明与可选动作。
 ///
+/// 最多两个动作：失败态用第二个动作给出「切换设备 / 添加连接」的可恢复路径。
 /// 文字按当前字号缩放换行，因此放大字体时仍能完整读到。
 class _RemoteNotice extends StatelessWidget {
   const _RemoteNotice({
@@ -1447,6 +1767,8 @@ class _RemoteNotice extends StatelessWidget {
     required this.message,
     this.actionLabel,
     this.onAction,
+    this.secondaryActionLabel,
+    this.onSecondaryAction,
   });
 
   /// 顶部图标，取自当前主题的前景色。
@@ -1464,11 +1786,20 @@ class _RemoteNotice extends StatelessWidget {
   /// 动作回调；为空时按钮同样不显示。
   final VoidCallback? onAction;
 
+  /// 第二个动作的文案（次要样式）；为空时不显示。
+  final String? secondaryActionLabel;
+
+  /// 第二个动作的回调；为空时不显示。
+  final VoidCallback? onSecondaryAction;
+
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     final actionLabel = this.actionLabel;
     final onAction = this.onAction;
+    final secondaryActionLabel = this.secondaryActionLabel;
+    final onSecondaryAction = this.onSecondaryAction;
+    final secondary = secondaryActionLabel != null && onSecondaryAction != null;
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -1489,9 +1820,139 @@ class _RemoteNotice extends StatelessWidget {
         ),
         if (actionLabel != null && onAction != null) ...[
           const SizedBox(height: 20),
-          PocketButton(onPressed: onAction, child: Text(actionLabel)),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              PocketButton(onPressed: onAction, child: Text(actionLabel)),
+              if (secondary) ...[
+                const SizedBox(width: 8),
+                PocketButton.tonal(
+                  onPressed: onSecondaryAction,
+                  child: Text(secondaryActionLabel),
+                ),
+              ],
+            ],
+          ),
         ],
       ],
+    );
+  }
+}
+
+/// 设备选择弹层的底部面板：标题、说明与若干设备行。
+///
+/// 只做展示：选中的设备由设备行的点击回调查询方决定，面板本身不读连接状态。
+class _RemoteDeviceSheet extends StatelessWidget {
+  const _RemoteDeviceSheet({
+    super.key,
+    required this.title,
+    required this.message,
+    required this.children,
+  });
+
+  /// 弹层标题。
+  final String title;
+
+  /// 标题下的一段说明。
+  final String message;
+
+  /// 设备行。
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    return GlassSurface(
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(18, 18, 18, 12),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Semantics(
+                header: true,
+                child: Text(
+                  title,
+                  style: AppTextStyle.title3.of(context, emphasized: true),
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                message,
+                style: AppTextStyle.footnote
+                    .of(context)
+                    .copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+              ),
+              const SizedBox(height: 10),
+              Flexible(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Column(children: children),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 设备选择弹层里的一台电脑：名称、地址、当前连接标记与可选行尾动作。
+class _RemoteDeviceSheetRow extends StatelessWidget {
+  const _RemoteDeviceSheetRow({
+    super.key,
+    required this.record,
+    required this.active,
+    required this.onPressed,
+    this.trailingLabel,
+    this.activeLabel = '当前连接',
+  });
+
+  /// 已配对电脑记录。
+  final paired.RemoteDevice record;
+
+  /// 是否当前连接的那台。
+  final bool active;
+
+  /// 行尾动作文案；为空时只显示状态/地址。
+  final String? trailingLabel;
+
+  /// 当前连接那台的状态说明。
+  final String activeLabel;
+
+  /// 点按回调（行与行尾动作共用）。
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final trailingLabel = this.trailingLabel;
+    return PocketTile(
+      title: Text(
+        record.displayName,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+      subtitle: Text(
+        active ? activeLabel : record.host,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+      leading: const Icon(Icons.computer_rounded),
+      trailing: trailingLabel == null
+          ? (active
+                ? Icon(Icons.check_rounded, color: colors.primary, size: 20)
+                : null)
+          : TextButton(
+              onPressed: onPressed,
+              style: TextButton.styleFrom(foregroundColor: colors.error),
+              child: Text(trailingLabel),
+            ),
+      onTap: onPressed,
     );
   }
 }
