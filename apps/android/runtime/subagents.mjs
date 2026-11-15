@@ -110,7 +110,11 @@ export class AppSubagents {
     if (!Number.isSafeInteger(offset) || offset < 0) throw badRequest('offset must be a non-negative safe integer')
     const limit = pageSize(params.limit ?? 30)
     return this.read(async signal => {
-      const catalog = await this.ctx.subagents.listChildren(parentSessionId, signal)
+      const descendants = await this.ctx.subagents.listDescendants(parentSessionId, signal)
+      // The runtime exposes the whole tree; this page lists direct children only.
+      const catalog = descendants
+        .filter(entry => entry.depth === 1 && entry.kind !== 'diagnostic')
+        .map(({ parentId, depth, path, ...entry }) => entry)
       return {
         parentSessionId, parentAvailable: !!this.ctx.agents.get(parentSessionId),
         entries: catalog.slice(offset, offset + limit).map(entry => {

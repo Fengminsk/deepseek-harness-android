@@ -17,9 +17,9 @@ function fixture(t, options = {}) {
   let returns = 0
   const state = new AppSubagents({
     agents: { get: id => agents.get(id) },
-    subagents: { listChildren: async (id, signal) => {
+    subagents: { listDescendants: async (id, signal) => {
       catalogReads.push({ id, signal })
-      return options.catalog ?? []
+      return (options.catalog ?? []).map(entry => ({ ...entry, parentId: id, depth: 1 }))
     } },
   }, {
     invoke: async (...args) => {
