@@ -11,9 +11,11 @@
  *    `dispatch`，门面发起的反向请求与通知走这条连接；`native.*` 里语义属于 PC 的方法由
  *    `./native-desktop.ts` 就地应答，不上线；
  * 4. 提供 `remoteHost` 服务（`devices()` / `revokeDevice()` / `pair()`），作为 PC 侧设备管理、
- *    撤销设备与重新打开配对窗口的入口。
+ *    撤销设备与重新打开配对窗口的入口；
+ * 5. 启用 UDP 局域网发现（`./discovery.ts`）：同网段的手机广播一帧探测就能拿到当前配对
+ *    链接，省掉扫码与粘贴。发现端口绑定失败只记 warn，不影响宿主启动。
  *
- * 注册即 effect：插件卸载时关闭配对窗口、断开全部连接并停止监听。
+ * 注册即 effect：插件卸载时关闭配对窗口、断开全部连接、停止发现并停止监听。
  *
  * 与 `./identity.ts`、`./tls.ts`、`./devices.ts`、`./pairing.ts` 的接口约定：
  * `ensureTlsMaterial({ dir, hosts, commonName })` 先跑（新签 CA 时它会把 instanceId 绑定为 CA 指纹），
@@ -32,6 +34,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import z from '@deepseek-ai/schemastery'
 import { DeviceStore, type DeviceAuthorization, type DeviceSummary } from './devices.ts'
+import { DEFAULT_DISCOVERY_PORT, DiscoveryResponder, type DiscoverySnapshot } from './discovery.ts'
 import { Identity } from './identity.ts'
 import { DesktopNativeProvider, type DesktopCredentialPort } from './native-desktop.ts'
 import { encodeQrMatrix, renderTerminalQr } from './pairing-qr.ts'
@@ -116,6 +119,19 @@ export interface Config {
    * 端点，不在这里接受。不允许路径、查询串、片段与账号信息。
    */
   publicOrigin: string
+  /**
+   * 是否启用 UDP 局域网发现；默认开启。
+   *
+   * 开启后宿主在 {@link discoveryPort} 上应答同网段手机的探测，把当前配对链接直接交给
+   * 手机，省掉扫码与粘贴。发现不建立信任、也不改变配对语义；关掉后手机只能扫码或粘贴。
+   */
+  discoveryEnabled: boolean
+  /**
+   * UDP 局域网发现端口；默认 4778。0 表示交给系统分配，只用于本地调试。
+   *
+   * 与 {@link port} 是不同的协议（UDP / TCP），同一台电脑上两者互不冲突。
+   */
+  discoveryPort: number
 }
 
 /** 配置校验：越界值在加载期就失败，不做静默兜底。 */
@@ -127,6 +143,8 @@ export const Config: z<Config> = z.object({
   deviceTtlMs: z.number().step(1).min(60_000).max(3_153_600_000_000).default(180 * 24 * 60 * 60 * 1000),
   publicHost: z.string().default(''),
   publicOrigin: z.transform(z.string(), value => normalizePublicOrigin(value)).default(''),
+  discoveryEnabled: z.boolean().default(true),
+  discoveryPort: z.number().step(1).min(0).max(65535).default(DEFAULT_DISCOVERY_PORT),
 })
 
 /** 服务器叶子证书的 CN；只影响证书展示，SAN 才是连得上与否的判据。 */
@@ -438,7 +456,18 @@ async function startRemoteHost(
     ipv4Addresses: orderedIpv4Addresses,
   })
   const handshake = createHandshake(identity, facade)
-  const pairingSurface = createPairingSurface(tls.caPem, pairing, devices, config.deviceTtlMs)
+  // 发现应答里的配对链接与日志/二维码是同一条：窗口打开期间保留当前票据，配对成功后
+  // 立刻作废，否则发现会在「窗口已被消费但未过期」这段时间里继续宣布可以配对。
+  let currentPairing: RemotePairingTicket | undefined
+  const basePairingSurface = createPairingSurface(tls.caPem, pairing, devices, config.deviceTtlMs)
+  const pairingSurface: RemotePairingSurface = {
+    ...basePairingSurface,
+    redeem: async (request) => {
+      const outcome = await basePairingSurface.redeem(request)
+      if (outcome.ok) currentPairing = undefined
+      return outcome
+    },
+  }
   // 协议 §11：一台 PC 同时只服务一台设备。当前绑定的连接与门面出口成对记录。
   let binding: { readonly connection: RemoteConnection; readonly sink: RemoteFacadeSink } | undefined
   const server = new RemoteHostServer({
@@ -527,6 +556,8 @@ async function startRemoteHost(
     },
     log: writeRemoteLog,
   })
+  // UDP 局域网发现：start() 自己把「端口占用/权限不足」降级成 warn，宿主照常启动。
+  let discovery: DiscoveryResponder | undefined
   try {
     const bound = await server.start()
     // `publicOrigin` 只换对外宣告的地址；监听地址与端口仍是 Config.host / Config.port。
@@ -552,6 +583,12 @@ async function startRemoteHost(
         pairUrl: pairUrl(origin, identity.instanceId, opened.token),
         expiresAt: opened.expiresAt,
       }
+      // USB 连接方式：同一张叶子证书的 SAN 恒包含 127.0.0.1（tls.ts 的 MANDATORY_HOSTS），
+      // 因此用户在电脑上 `adb reverse tcp:<port> tcp:<port>` 后，可以用回环地址的同一张
+      // 配对票据完成配对，不需要手机与电脑同网段。令牌与 instanceId 与原链接完全相同。
+      const usbPairUrl = pairUrl(`wss://127.0.0.1:${bound.port}`, identity.instanceId, opened.token)
+      // 当前配对票据也是发现应答的唯一来源：窗口未开或已消费时快照里没有 pairing。
+      currentPairing = ticket
       writeRemoteLog({
         level: 'info',
         event,
@@ -561,12 +598,13 @@ async function startRemoteHost(
           origin,
           instanceId: identity.instanceId,
           pairUrl: ticket.pairUrl,
+          usbPairUrl,
           expiresAt: ticket.expiresAt,
         },
       })
       // 链接里的令牌与指纹合计 107 个字符，手输不现实；在真终端里额外画一张二维码。
       // 日志被重定向（非 TTY）时只保留上面那条结构化日志，不往日志文件里撒块字符。
-      writePairingQr(ticket.pairUrl)
+      writePairingQr(ticket.pairUrl, usbPairUrl, bound.port)
       return ticket
     }
     openPairingWindow(
@@ -574,8 +612,38 @@ async function startRemoteHost(
       `远程宿主已就绪：${origin}/app。用下面的配对链接在手机上添加这台电脑。`,
       { deviceName: identity.displayName, listen: `${bound.host}:${bound.port}` },
     )
+    // 发现应答只回答「这台电脑是谁、当前配对链接是什么」，所以起点必须在配对窗口打开之后：
+    // 手机发现到宿主时拿到的一定是此刻可用的链接。
+    const discoverySnapshot = (): DiscoverySnapshot => {
+      const snapshot: DiscoverySnapshot = {
+        name: identity.displayName,
+        origin,
+        instanceId: identity.instanceId,
+      }
+      const ticket = currentPairing
+      // 窗口过期后不再宣布可以配对：票据有没有被消费由配对接口自己兜底（403）。
+      if (ticket !== undefined && ticket.expiresAt > Date.now()) {
+        return { ...snapshot, pairing: { pairUrl: ticket.pairUrl, expiresAt: ticket.expiresAt } }
+      }
+      return snapshot
+    }
+    if (config.discoveryEnabled) {
+      discovery = new DiscoveryResponder({
+        port: config.discoveryPort,
+        log: writeRemoteLog,
+        snapshot: discoverySnapshot,
+      })
+      await discovery.start()
+    } else {
+      writeRemoteLog({
+        level: 'info',
+        event: 'discovery-disabled',
+        message: '局域网发现已关闭（Config.discoveryEnabled = false）：手机只能扫码或粘贴配对链接。',
+      })
+    }
     return {
       stop: async () => {
+        if (discovery !== undefined) await discovery.stop()
         pairing.close()
         await server.stop()
       },
@@ -598,6 +666,7 @@ async function startRemoteHost(
       ),
     }
   } catch (error) {
+    if (discovery !== undefined) await discovery.stop()
     pairing.close()
     await server.stop().catch((stopError: unknown) => {
       writeRemoteLog({
@@ -950,8 +1019,10 @@ function publicOriginNames(origin: string): readonly string[] {
  * 导出是为了让 `apps/remote-host/scripts/qr-selfcheck.ts` 覆盖「终端 vs 重定向」
  * 这条分支，验证的就是宿主真正在用的实现。
  * @param pairUrl - 这次配对窗口的完整链接。
+ * @param usbPairUrl - 回环地址（`wss://127.0.0.1:<port>`）的同一张配对票据，供 USB 连接方式使用。
+ * @param port - 监听端口，用于打印 `adb reverse` 命令；缺省时不打印 USB 段落。
  */
-export function writePairingQr(pairUrl: string): void {
+export function writePairingQr(pairUrl: string, usbPairUrl?: string, port?: number): void {
   if (!process.stderr.isTTY) return
   try {
     const block = renderTerminalQr(encodeQrMatrix(pairUrl))
@@ -960,6 +1031,14 @@ export function writePairingQr(pairUrl: string): void {
       + `${block}\n`
       + `${pairUrl}\n`,
     )
+    if (usbPairUrl !== undefined && port !== undefined) {
+      process.stderr.write(
+        '\n[remote-host] USB 连接（手机与电脑不在同一网段时）：在电脑上执行\n'
+        + `  adb reverse tcp:${port} tcp:${port}\n`
+        + '然后在 App 的配对页粘贴这一行（回环地址的同一张配对票据）：\n'
+        + `  ${usbPairUrl}\n`,
+      )
+    }
   } catch (error) {
     writeRemoteLog({
       level: 'warn',
