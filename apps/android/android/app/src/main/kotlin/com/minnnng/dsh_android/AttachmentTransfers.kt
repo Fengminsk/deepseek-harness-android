@@ -7,14 +7,17 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.provider.OpenableColumns
+import android.util.Base64
 import io.flutter.plugin.common.MethodChannel
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.FileInputStream
 import java.nio.file.Files
 import java.nio.file.StandardOpenOption
 import java.util.UUID
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 
 /** One-time user-selected attachment copies; no URI or filesystem path crosses into Flutter. */
 class AttachmentTransfers(private val activity: Activity) : AutoCloseable {
@@ -131,6 +134,105 @@ class AttachmentTransfers(private val activity: Activity) : AutoCloseable {
         return true
     }
 
+    /**
+     * 分页读取一条已选附件的私有副本，供远程宿主通过反向请求 `native.attachments.read` 拉取。
+     *
+     * 只服务 `<cacheDir>/pocket-attachments/<uuid>.bin`：id 先过 uuid 正则，再比较
+     * `canonicalFile` 的父目录，Flutter 侧永远拿不到路径（远程附件上行，设计 §3.4.6）。
+     * 返回 `{data(base64), nextOffset, size, eof}`；`size` 是设备侧 stat 的权威大小。
+     */
+    fun read(id: String?, offset: Number?, length: Number?, result: MethodChannel.Result) {
+        val parsed = id?.takeIf { ATTACHMENT_ID.matches(it) }
+        if (parsed == null) {
+            result.error("attachment-file/invalid-request", "附件标识不正确", null)
+            return
+        }
+        val position = offset?.toLong()
+        val page = length?.toLong()
+        if (position == null || page == null || position < 0 || page < 1 || page > READ_PAGE_BYTES) {
+            result.error("attachment-file/invalid-request", "读取范围不正确", null)
+            return
+        }
+        if (closed) {
+            result.error("attachment-file/cancelled", "设备正在断开连接。", null)
+            return
+        }
+        try {
+            worker.execute {
+                try {
+                    val root = directory(activity)
+                    val source = File(root, "$parsed.bin")
+                    if (!source.isFile || source.canonicalFile.parentFile != root) {
+                        main.post { result.error("attachment-file/not-found", "文件已不在手机上，请重新选择", null) }
+                        return@execute
+                    }
+                    val size = source.length()
+                    if (position > size) {
+                        main.post { result.error("attachment-file/invalid-request", "读取位置已超出文件末尾", null) }
+                        return@execute
+                    }
+                    val wanted = minOf(page, size - position).toInt()
+                    val data = ByteArray(wanted)
+                    FileInputStream(source).use { stream ->
+                        stream.channel.position(position)
+                        var read = 0
+                        while (read < wanted) {
+                            val count = stream.read(data, read, wanted - read)
+                            if (count <= 0) break
+                            read += count
+                        }
+                        if (read != wanted || source.length() != size) {
+                            main.post { result.error("attachment-file/not-found", "文件已变化，请重新选择", null) }
+                            return@execute
+                        }
+                    }
+                    val nextOffset = position + wanted
+                    val reply = JSONObject().put("data", Base64.encodeToString(data, Base64.NO_WRAP))
+                        .put("nextOffset", nextOffset).put("size", size).put("eof", nextOffset >= size)
+                    main.post { result.success(reply.toString()) }
+                } catch (_: Exception) {
+                    // 读取失败时按「文件已不可用」应答：手机上的副本只服务本次上传，
+                    // 重新选择即可恢复（宿主侧对应 attachment-file/not-found）。
+                    main.post { result.error("attachment-file/not-found", "文件已不在手机上，请重新选择", null) }
+                }
+            }
+        } catch (_: RejectedExecutionException) {
+            result.error("attachment-file/cancelled", "设备正在断开连接。", null)
+        }
+    }
+
+    /**
+     * 删除一条附件的私有副本（`.bin` 与 `.json`），幂等。
+     *
+     * 远程宿主 `attachments.release` 受理后由 App 调用：宿主没有副本，手机上的
+     * 一次性缓存到此结束（设计 §3.4.4）。
+     */
+    fun discard(id: String?, result: MethodChannel.Result) {
+        val parsed = id?.takeIf { ATTACHMENT_ID.matches(it) }
+        if (parsed == null) {
+            result.error("attachment-file/invalid-request", "附件标识不正确", null)
+            return
+        }
+        if (closed) {
+            result.success(null)
+            return
+        }
+        try {
+            worker.execute {
+                try {
+                    val root = directory(activity)
+                    File(root, "$parsed.bin").delete()
+                    File(root, "$parsed.json").delete()
+                } catch (_: Exception) {
+                    // 清理是幂等的尽力动作：删除失败（例如目录已清理）不阻塞 release。
+                }
+                main.post { result.success(null) }
+            }
+        } catch (_: RejectedExecutionException) {
+            result.success(null)
+        }
+    }
+
     private fun finish(selection: Selection, value: JSONObject) {
         if (pending !== selection) return
         pending = null
@@ -154,6 +256,14 @@ class AttachmentTransfers(private val activity: Activity) : AutoCloseable {
 
     companion object {
         private const val ATTACHMENT_REQUEST = 5353
+
+        /** 远程宿主一页最多拉取的字节数（设计 §3.4.2：base64 后远低于 1 MiB 上行帧）。 */
+        private const val READ_PAGE_BYTES = 262144
+
+        /** `attachment.pick` 生成的小写 UUID v4；其它 id 一律拒绝。 */
+        private val ATTACHMENT_ID = Regex(
+            "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+        )
 
         /** Native path shared directly with the Agent process, never supplied by an App request. */
         fun directory(context: Context): File {

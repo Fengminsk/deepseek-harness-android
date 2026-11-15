@@ -272,6 +272,18 @@ class MainActivity : FlutterActivity() {
             when (call.method) {
                 "app.metadata" -> result.success(AuthTabs.metadata(this))
                 "attachment.pick" -> attachments.pick(result)
+                // 远程附件上行：宿主通过反向请求 native.attachments.read 分页拉取
+                // 手机上已选附件的私有副本；release 受理后 App 调 discard 清理。
+                "attachment.read" -> attachments.read(
+                    call.argument<String>("id"),
+                    call.argument<Number>("offset"),
+                    call.argument<Number>("length"),
+                    result,
+                )
+                "attachment.discard" -> attachments.discard(
+                    call.argument<String>("id"),
+                    result,
+                )
                 "configurationTransfer.pick" -> configurationTransfers.pick(call.argument<String>("id") ?: "", result)
                 "configurationTransfer.save" -> configurationTransfers.save(
                     call.argument<String>("id") ?: "", call.argument<String>("text") ?: "",
@@ -463,6 +475,28 @@ class MainActivity : FlutterActivity() {
                 }
                 "network.proxy.save" -> LocalPreferenceIo.call(result, "proxy-save") {
                     NetworkProxyPreferences(preferenceContext).save(JSONObject(call.arguments as String)).toString()
+                }
+                // Paired remote computers: non-secret metadata only. The device
+                // token lives in the Keystore through `credentials.*`, never here.
+                "remote.devices.read" -> LocalPreferenceIo.call(result, "remote-devices") {
+                    // Absent means "never paired". Returning a fabricated empty
+                    // list here would make the store's version check run against
+                    // a value it never wrote.
+                    preferenceContext.getSharedPreferences("remote-devices", MODE_PRIVATE)
+                        .getString("devices", null)
+                }
+                "remote.devices.save" -> LocalPreferenceIo.call(result, "remote-devices") {
+                    val raw = call.arguments as String
+                    require(raw.length < 262144) { "Remote device list too large" }
+                    // The store writes {version, devices}; reject anything else
+                    // before it replaces the stored list, because an unparseable
+                    // value would make every later cold start fail.
+                    JSONObject(raw)
+                    check(preferenceContext.getSharedPreferences("remote-devices", MODE_PRIVATE)
+                        .edit().putString("devices", raw).commit()) {
+                        "Remote device list could not be saved"
+                    }
+                    null
                 }
                 "network.proxy.test" -> try {
                     NetworkProxyPreferences.testAsync(preferenceContext, JSONObject(call.arguments as String), result)

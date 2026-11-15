@@ -14,6 +14,7 @@ import 'flclash/daylight.dart';
 import 'flclash/popup.dart';
 import 'library.dart';
 import 'library_data.dart';
+import 'remote_dsh_page.dart';
 import 'runtime.dart';
 import 'settings.dart';
 import 'session_document.dart';
@@ -33,12 +34,25 @@ class ChatSidebar extends StatefulWidget {
     required this.onSelectSession,
     required this.onOpenTasks,
     required this.onOpenAutomations,
+    this.onOpenHome,
+    this.remoteDshSelected = false,
     this.searchRequest = 0,
   });
 
   final RuntimeController runtime;
   final String currentSessionId;
   final VoidCallback onClose, onNewChat, onOpenTasks, onOpenAutomations;
+
+  /// 点击左上角 App 图标回到 Pocket Harness 首页。省略时头部不可点。
+  ///
+  /// 根对话页自己就是首页，所以不传；全屏子页面（如「远程 DSH」）传入后，
+  /// 图标成为回到首页的入口。
+  final VoidCallback? onOpenHome;
+
+  /// 是否高亮「远程 DSH」这一项。
+  ///
+  /// 侧栏在远程页里原地挂出时传 true，用户一眼能看出当前所在位置。
+  final bool remoteDshSelected;
   final ValueChanged<String> onSelectSession;
   final int searchRequest;
 
@@ -123,26 +137,72 @@ class _ChatSidebarState extends State<ChatSidebar> {
     action();
   }
 
-  void _page(Widget page) {
+  /// 收起侧栏，不导航。
+  ///
+  /// 用于「已经站在这个目的地上」的重复选择：再点一次只把侧栏收回去，绝不
+  /// 把同一个页面再压一层。
+  void _closeOnly() {
     if (!mounted) return;
+    _searchFocus.unfocus();
+    widget.onClose();
+  }
+
+  /// 推入一个全屏目的地。
+  ///
+  /// [destination] 必须与该页面里的同名入口用同一个标识：侧栏在目的地页面里
+  /// 原地挂出时，重复选择会命中 [isCurrentDestination]，于是只收起侧栏。
+  /// 这是「不套娃」的唯一出口，新增目的地一律走它，不要直接 `Navigator.push`。
+  void _page(
+    Widget page, {
+    required String destination,
+    bool dragBack = true,
+  }) {
+    if (!mounted) return;
+    if (isCurrentDestination(context, destination)) {
+      _closeOnly();
+      return;
+    }
     final navigator = Navigator.of(context);
     _leave(
       () => unawaited(
-        navigator.push<void>(PocketRoute<void>(builder: (_) => page)),
+        navigator.push<void>(
+          PocketRoute<void>(
+            builder: (_) => page,
+            dragBack: dragBack,
+            settings: RouteSettings(name: destinationRouteName(destination)),
+          ),
+        ),
       ),
     );
   }
 
-  Future<void> _browse(Widget page) async {
+  /// 根对话页拥有的目的地（后台任务、自动化任务）：同样不重复推入。
+  void _shellDestination(String destination, VoidCallback open) {
+    if (!mounted) return;
+    if (isCurrentDestination(context, destination)) {
+      _closeOnly();
+      return;
+    }
+    _leave(open);
+  }
+
+  Future<void> _browse(Widget page, {required String destination}) async {
     if (!mounted) return;
     // Closing a Drawer can unmount its subtree. The selected session belongs to
     // the chat page, so capture its callback before navigating away.
+    if (isCurrentDestination(context, destination)) {
+      _closeOnly();
+      return;
+    }
     final navigator = Navigator.of(context);
     final selected = widget.onSelectSession;
     _searchFocus.unfocus();
     widget.onClose();
     final id = await navigator.push<String>(
-      PocketRoute<String>(builder: (_) => page),
+      PocketRoute<String>(
+        builder: (_) => page,
+        settings: RouteSettings(name: destinationRouteName(destination)),
+      ),
     );
     if (navigator.mounted && id != null) selected(id);
   }
@@ -201,8 +261,12 @@ class _ChatSidebarState extends State<ChatSidebar> {
     });
   }
 
-  void _details(String id) =>
-      unawaited(_browse(LibrarySessionPage(library: _library, sessionId: id)));
+  void _details(String id) => unawaited(
+    _browse(
+      LibrarySessionPage(library: _library, sessionId: id),
+      destination: 'library-session:$id',
+    ),
+  );
 
   void _searchContents() => unawaited(
     _browse(
@@ -210,6 +274,7 @@ class _ChatSidebarState extends State<ChatSidebar> {
         runtime: widget.runtime,
         initialQuery: _search.text.trim(),
       ),
+      destination: 'session-search',
     ),
   );
 
@@ -276,7 +341,10 @@ class _ChatSidebarState extends State<ChatSidebar> {
       case _SessionAction.pin:
         unawaited(_mutate(id, archive: false));
       case _SessionAction.rename:
-        _page(LibraryRenamePage(library: _library, id: id));
+        _page(
+          LibraryRenamePage(library: _library, id: id),
+          destination: 'library-rename:$id',
+        );
       case _SessionAction.archive:
         unawaited(_mutate(id, archive: true));
       case _SessionAction.details:
@@ -288,6 +356,7 @@ class _ChatSidebarState extends State<ChatSidebar> {
             sessionId: id,
             sessionTitle: librarySessionTitle(row),
           ),
+          destination: 'session-export:$id',
         );
     }
   }
@@ -307,12 +376,16 @@ class _ChatSidebarState extends State<ChatSidebar> {
     VoidCallback action, {
     Widget? trailing,
     Key? key,
+    bool selected = false,
   }) => PocketTile(
     key: key,
     contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
     leading: Icon(icon),
     title: Text(title),
     trailing: trailing,
+    selected: selected,
+    // 位置指示用中性高亮，与设计参照图里被选中的「远程 DSH」一致。
+    neutralSelection: true,
     onTap: action,
   );
 
@@ -362,21 +435,32 @@ class _ChatSidebarState extends State<ChatSidebar> {
     children: [
       Expanded(
         child: GlassSurface(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-            child: Row(
-              children: [
-                const PocketMark(size: 23),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    'Pocket Harness',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
+          child: Semantics(
+            button: widget.onOpenHome != null,
+            label: widget.onOpenHome == null ? null : '回到 Pocket Harness 首页',
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: widget.onOpenHome,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 12,
                 ),
-              ],
+                child: Row(
+                  children: [
+                    const PocketMark(size: 23),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        'Pocket Harness',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ),
           ),
         ),
@@ -397,7 +481,10 @@ class _ChatSidebarState extends State<ChatSidebar> {
       PocketButton.tonal(
         key: const ValueKey('sidebar-settings'),
         glass: true,
-        onPressed: () => _page(SettingsPage(runtime: widget.runtime)),
+        onPressed: () => _page(
+          SettingsPage(runtime: widget.runtime),
+          destination: 'settings',
+        ),
         child: const Row(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -421,7 +508,10 @@ class _ChatSidebarState extends State<ChatSidebar> {
             : null,
         onImageError:
             widget.runtime.accountSnapshot?.avatar.renderedImageFailed,
-        onPressed: () => _page(AccountPage(runtime: widget.runtime)),
+        onPressed: () => _page(
+          AccountPage(runtime: widget.runtime),
+          destination: 'account',
+        ),
       ),
     ],
   );
@@ -532,16 +622,32 @@ class _ChatSidebarState extends State<ChatSidebar> {
                     key: const ValueKey('sidebar-search-content'),
                   ),
                 _destination(
+                  '远程 DSH',
+                  Icons.devices_rounded,
+                  () => _page(
+                    RemoteDshPage(runtime: widget.runtime),
+                    destination: RemoteDshPage.routeDestination,
+                    // 「远程 DSH」是首页级页面：不要边缘拖动返回。
+                    dragBack: false,
+                  ),
+                  key: const ValueKey('sidebar-remote-dsh'),
+                  selected: widget.remoteDshSelected,
+                ),
+                _destination(
                   '后台任务',
                   Icons.play_circle_outline_rounded,
-                  () => _leave(widget.onOpenTasks),
+                  () => _shellDestination('tasks', widget.onOpenTasks),
                   trailing: running == 0 ? null : Text('$running'),
                 ),
                 _destination(
                   '工作区与会话',
                   Icons.folder_copy_outlined,
-                  () =>
-                      unawaited(_browse(LibraryPage(runtime: widget.runtime))),
+                  () => unawaited(
+                    _browse(
+                      LibraryPage(runtime: widget.runtime),
+                      destination: 'library',
+                    ),
+                  ),
                 ),
                 if (current != null)
                   _destination(
@@ -553,6 +659,7 @@ class _ChatSidebarState extends State<ChatSidebar> {
                         parentSessionId: widget.currentSessionId,
                         parentTitle: librarySessionTitle(current),
                       ),
+                      destination: 'subagents',
                     ),
                     key: const ValueKey('sidebar-subagents'),
                   ),
@@ -562,19 +669,28 @@ class _ChatSidebarState extends State<ChatSidebar> {
                     _destination(
                       '我的文件',
                       Icons.folder_open_rounded,
-                      () => _page(FilesPage(runtime: widget.runtime)),
+                      () => _page(
+                        FilesPage(runtime: widget.runtime),
+                        destination: 'files',
+                      ),
                       key: const ValueKey('sidebar-more-files'),
                     ),
                     _destination(
                       '自动化任务',
                       Icons.schedule_rounded,
-                      () => _leave(widget.onOpenAutomations),
+                      () => _shellDestination(
+                        'automations',
+                        widget.onOpenAutomations,
+                      ),
                       key: const ValueKey('sidebar-more-automations'),
                     ),
                     _destination(
                       '授权与提问',
                       Icons.pending_actions_rounded,
-                      () => _page(ApprovalsPage(runtime: widget.runtime)),
+                      () => _page(
+                        ApprovalsPage(runtime: widget.runtime),
+                        destination: 'approvals',
+                      ),
                       key: const ValueKey('sidebar-more-approvals'),
                       trailing: widget.runtime.interactions.isEmpty
                           ? null
@@ -600,6 +716,7 @@ class _ChatSidebarState extends State<ChatSidebar> {
                               );
                             },
                           ),
+                          destination: 'session-files:${widget.currentSessionId}',
                         ),
                         key: const ValueKey('sidebar-more-session-files'),
                       ),
@@ -631,6 +748,8 @@ class _ChatSidebarState extends State<ChatSidebar> {
                             library: _library,
                             workspaceId: workspace['workspaceId'] as String,
                           ),
+                          destination:
+                              'library-workspace:${workspace['workspaceId']}',
                         ),
                       ),
                       key: ValueKey(
@@ -642,7 +761,10 @@ class _ChatSidebarState extends State<ChatSidebar> {
                       '全部工作区',
                       Icons.arrow_forward_rounded,
                       () => unawaited(
-                        _browse(LibraryPage(runtime: widget.runtime)),
+                        _browse(
+                          LibraryPage(runtime: widget.runtime),
+                          destination: 'library',
+                        ),
                       ),
                     ),
                 ],

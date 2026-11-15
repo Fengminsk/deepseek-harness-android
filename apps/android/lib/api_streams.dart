@@ -11,10 +11,41 @@ typedef ApiCall = Future<dynamic> Function(String method, ApiJson params);
 class AppApiStreams {
   AppApiStreams(this.call);
 
+  /// 窗口化回执节奏（`docs/remote-dsh/protocol.md` §6.2）：累计收到这么多条，
+  /// 或距上次回执超过这么久，就发一次 `api.ack`，只报最新的连续序号。
+  ///
+  /// §6.2 要求 `min(W, 32)`；服务端窗口宽度 `W = 64`，因此客户端每 32 条确认一次。
+  static const _ackWindowFrames = 32;
+  static const _ackWindowDelay = Duration(milliseconds: 200);
+
+  /// 序号缺口在这个时间内仍未补齐，就重新订阅一次拿自洽基线。
+  static const _gapRecoveryDelay = Duration(seconds: 5);
+
+  /// 缺口缓冲上限。超过它说明缺口不是短暂乱序，直接走重订阅。
+  static const _maxBufferedFrames = 256;
+
   final ApiCall call;
   final Map<String, _Observation> _active = {};
   bool _ready = false;
   bool _closed = false;
+  bool _windowAck = false;
+
+  /// 是否与服务端协商出了窗口化回执（`docs/remote-dsh/protocol.md` §6.4）。
+  ///
+  /// 默认 `false`：本地 loopback 与没有在 `protocol.hello` 里声明 `window-ack` 的
+  /// 宿主都按逐条模式回执——每帧一次 `api.ack`，字段名是 `sequence`。只有握手结果
+  /// 两侧都声明 `window-ack` 时调用方才用 [setWindowAck] 打开：此后回执按累计
+  /// `upTo` 上报，节奏见 [_ackWindowFrames]。
+  bool get windowAck => _windowAck;
+
+  /// 切换回执模式（协议 §6.4）。
+  ///
+  /// 切换不清空进行中的观察：两种模式的确认序号都是累计值，下一次回执按新模式发送
+  /// 即可。关闭后（[close] 返回之后）调用它不会有任何效果。
+  void setWindowAck(bool enabled) {
+    if (_closed || _windowAck == enabled) return;
+    _windowAck = enabled;
+  }
 
   /// A read-only snapshot of active delivery stages. Keep this allowlist
   /// separate from request arguments, frames and transport identifiers.
@@ -59,8 +90,10 @@ class AppApiStreams {
   }
 
   void receive(ApiJson frame) {
+    // 远程连接按协议发 `streamId`，本地 loopback 仍用 `subscriptionId`。
+    final id = frame['subscriptionId'] ?? frame['streamId'];
     for (final observation in _active.values.toList()) {
-      if (observation.deliveryId == frame['subscriptionId']) {
+      if (observation.deliveryId == id) {
         observation.receive(frame);
         return;
       }
@@ -119,7 +152,7 @@ class _Observation {
       onPause: () => paused = true,
       onResume: () {
         paused = false;
-        _ack();
+        _flushAck();
       },
     );
   }
@@ -134,7 +167,16 @@ class _Observation {
   String? deliveryId;
   int sequence = 0;
   int epoch = 0;
-  ApiJson? pendingAck;
+
+  /// 已发回执的连续序号；`sequence` 是已收到（连续）的最大序号。
+  int _acked = 0;
+  int _unacked = 0;
+  DateTime? _lastAck;
+  Timer? _ackTimer;
+  Timer? _gapTimer;
+
+  /// 缺口之后先到的帧。只有补齐后才按序交付，并继续保持确认停在缺口前。
+  final Map<int, ApiJson> _buffered = {};
   bool paused = false;
   bool cancelled = false;
   bool opening = false;
@@ -154,10 +196,14 @@ class _Observation {
     final subscriptionId = '$id-$attempt';
     deliveryId = subscriptionId;
     sequence = 0;
+    _resetAcks();
     controller.add({'type': 'opening'});
     try {
       final response = await owner.call('api.subscribe', {
+        // 远程连接按协议用 `streamId`，本地 loopback 与原生文档预览用
+        // `subscriptionId`；两者同值携带，两侧都不必在别处再映射字段名。
         'subscriptionId': subscriptionId,
+        'streamId': subscriptionId,
         'namespace': namespace,
         'method': method,
         'args': resumeArgs(),
@@ -187,13 +233,62 @@ class _Observation {
     final next = frame['sequence'] as int;
     if (next <= sequence) return;
     if (next != sequence + 1) {
-      controller.addError(const FormatException('Stream notification gap'));
-      unawaited(cancel());
-      unawaited(controller.close());
+      _hold(next, frame);
       return;
     }
+    if (!_deliver(frame)) return;
+    _drainBuffered();
+  }
+
+  /// 序号不连续不再判致命：保留缓冲等补齐，同时确认停在缺口之前，
+  /// 服务端因此不会越过缺口继续推进窗口。
+  void _hold(int next, ApiJson frame) {
+    if (_buffered.length >= AppApiStreams._maxBufferedFrames) {
+      _recoverGap();
+      return;
+    }
+    _buffered[next] = frame;
+    _gapTimer ??= Timer(AppApiStreams._gapRecoveryDelay, () {
+      _gapTimer = null;
+      _recoverGap();
+    });
+  }
+
+  void _drainBuffered() {
+    while (_buffered.isNotEmpty) {
+      final frame = _buffered.remove(sequence + 1);
+      if (frame == null) break;
+      if (!_deliver(frame)) return;
+    }
+    if (_buffered.isEmpty) {
+      _gapTimer?.cancel();
+      _gapTimer = null;
+    }
+  }
+
+  /// 缺口在重试窗口内没有补齐时重新订阅：新 generation 给出自洽基线，
+  /// 已交付的帧保持不动，不会被静默改写。
+  void _recoverGap() {
+    if (cancelled || !owner._ready || _buffered.isEmpty) return;
+    if (opening || _reconnecting) {
+      _gapTimer ??= Timer(AppApiStreams._gapRecoveryDelay, () {
+        _gapTimer = null;
+        _recoverGap();
+      });
+      return;
+    }
+    unawaited(reconnect());
+  }
+
+  /// 按序号交付一帧；返回 false 表示这不是一条可继续的流。
+  bool _deliver(ApiJson frame) {
+    if (cancelled || !owner._ready) return false;
+    final next = frame['sequence'] as int;
+    if (next <= sequence) return true;
     sequence = next;
     if (frame['type'] == 'error') {
+      // 终止帧：先把已收到的连续序号确认掉，再按既有行为失败并关闭。
+      _flushAck(force: true);
       final error = frame['error'] as ApiJson;
       controller.addError(
         PlatformException(
@@ -203,45 +298,99 @@ class _Observation {
       );
       unawaited(cancel());
       unawaited(controller.close());
-      return;
+      return false;
     }
     controller.add(frame);
     if (frame['type'] == 'end') {
+      _flushAck(force: true);
       unawaited(cancel());
       unawaited(controller.close());
-    } else {
-      pendingAck = {
-        'subscriptionId': deliveryId,
-        'generation': incoming,
-        'sequence': sequence,
-      };
-      _ack();
+      return false;
     }
+    _unacked++;
+    _scheduleAck();
+    return true;
   }
 
-  void _ack() {
-    final ack = pendingAck;
-    if (cancelled || paused || ack == null) return;
-    pendingAck = null;
+  bool get _ackDue => sequence > _acked;
+
+  void _scheduleAck() {
+    if (cancelled || paused || !_ackDue) return;
+    if (!owner._windowAck) {
+      // 逐条模式（协议 §6.4）：服务端推一条就等这一条的确认，回执不能攒——
+      // 攒着会让服务端永远等不到窗口推进。
+      _flushAck();
+      return;
+    }
+    if (_unacked >= AppApiStreams._ackWindowFrames || _lastAck == null) {
+      _flushAck();
+      return;
+    }
+    final elapsed = DateTime.now().difference(_lastAck!);
+    if (elapsed >= AppApiStreams._ackWindowDelay) {
+      _flushAck();
+      return;
+    }
+    _ackTimer ??= Timer(AppApiStreams._ackWindowDelay - elapsed, () {
+      _ackTimer = null;
+      _flushAck();
+    });
+  }
+
+  void _flushAck({bool force = false}) {
+    if (cancelled || (!force && paused) || !_ackDue) return;
+    _ackTimer?.cancel();
+    _ackTimer = null;
+    final upTo = sequence;
+    final id = deliveryId;
+    final observedGeneration = generation;
+    _acked = upTo;
+    _unacked = 0;
+    _lastAck = DateTime.now();
+    if (id == null) return;
     final attempt = epoch;
     unawaited(
-      owner.call('api.ack', ack).catchError((Object error) {
-        if (!cancelled && owner._ready && epoch == attempt) {
-          controller.addError(error);
-          unawaited(cancel());
-          unawaited(controller.close());
-        }
-        return null;
-      }),
+      owner
+          .call('api.ack', {
+            // 远程连接按协议取 streamId/upTo；本地 loopback 与原生文档预览仍按
+            // 旧字段名识别订阅，两种名字同帧携带，映射不落第二处。
+            'streamId': id,
+            'subscriptionId': id,
+            // 协议 §6.4：只有双方都声明 window-ack 才用累计 `upTo`；否则退回逐条
+            // 模式，字段名用本地既有的 `sequence`（老宿主只认它）。
+            if (owner._windowAck) 'upTo': upTo else 'sequence': upTo,
+            'generation': ?observedGeneration,
+          })
+          .catchError((Object error) {
+            if (!cancelled && owner._ready && epoch == attempt) {
+              controller.addError(error);
+              unawaited(cancel());
+              unawaited(controller.close());
+            }
+            return null;
+          }),
     );
+  }
+
+  void _resetAcks() {
+    _acked = 0;
+    _unacked = 0;
+    _lastAck = null;
+    _ackTimer?.cancel();
+    _ackTimer = null;
+    _gapTimer?.cancel();
+    _gapTimer = null;
+    _buffered.clear();
   }
 
   void disconnected() {
     // Retain the exact old identity until unsubscribe is confirmed. A transient
     // Binder error must not strand an unacknowledged producer on the service.
-    if (deliveryId != null) {
+    final closingId = deliveryId;
+    if (closingId != null) {
       _closingSubscription ??= {
-        'subscriptionId': deliveryId,
+        'subscriptionId': closingId,
+        'streamId': closingId,
         if (generation != null) 'generation': generation,
       };
     }
@@ -251,8 +400,8 @@ class _Observation {
     opening = false;
     generation = null;
     deliveryId = null;
-    pendingAck = null;
     sequence = 0;
+    _resetAcks();
     if (!cancelled) controller.add({'type': 'disconnected'});
   }
 

@@ -1056,6 +1056,60 @@ void main() {
     },
   );
 
+  test('menu keys keep client actions and first-party identities', () {
+    expect(
+      composerCommandKey({'name': 'file', 'clientAction': 'file'}),
+      'file',
+    );
+    expect(
+      composerCommandKey({
+        'name': 'plan',
+        'definitionId': commandDefinitions['plan'],
+      }),
+      'plan',
+    );
+    expect(
+      composerCommandKey({'name': 'goal', 'definitionId': 'other/plugin'}),
+      'goal',
+    );
+    expect(composerCommandKey({'name': 'plugin-command'}), 'plugin-command');
+  });
+
+  testWidgets('disabled menu rows stay visible, explained and inert', (
+    tester,
+  ) async {
+    phone(tester);
+    final runtime = _Runtime();
+    addTearDown(runtime.dispose);
+    Json? chosen;
+    await tester.pumpWidget(
+      host(
+        Scaffold(
+          body: ComposerCommands(
+            runtime: runtime,
+            sessionId: 'disabled-rows',
+            disabledReasons: const {'export': '本轮暂不支持导出', 'skills': '本轮暂不支持技能'},
+            onPick: (value) => chosen = value,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('下载日志  export'), findsOneWidget);
+    expect(find.text('本轮暂不支持导出'), findsOneWidget);
+    expect(find.text('浏览技能'), findsOneWidget);
+    expect(find.text('本轮暂不支持技能'), findsOneWidget);
+
+    // 置灰行没有 InkWell 回调，点击不会命中任何手势；这里只验证不回调。
+    await tester.tap(find.text('下载日志  export'), warnIfMissed: false);
+    await tester.pumpAndSettle();
+    expect(chosen, isNull, reason: '置灰行不回调');
+    await tester.tap(find.text('计划  plan'));
+    await tester.pumpAndSettle();
+    expect(chosen?['name'], 'plan', reason: '未置灰行行为不变');
+  });
+
   testWidgets(
     'saved file attachments and original command results remain visible in history',
     (tester) async {

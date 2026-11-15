@@ -8,9 +8,42 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 
 import 'runtime.dart';
-import 'terminal_shells.dart';
+import 'terminal_runtime.dart';
 import 'terminal_screen.dart';
 import 'ui.dart';
+
+/// 把宿主终端失败信封（`_pocket_error`）翻译成页面文案。
+///
+/// 错误码与处理方式见 `docs/remote-dsh/terminal-design.md` §2.3。本地 Android 宿主
+/// 目前只给出通用失败（`gateway/internal`），本地页面因此仍走各自的兜底文案；远程
+/// 宿主会给出带归因的码，命中时用这里的说明替换「送达状态未知」这类保守提示。
+///
+/// @param failure 页面捕获到的异常。
+/// @returns 可展示的中文说明；不是已归因的终端失败时为 null。
+String? terminalFailureMessage(Object failure) {
+  if (failure is! PlatformException) return null;
+  Map? envelope;
+  final details = failure.details;
+  if (details is Map) {
+    final nested = details['details'];
+    envelope = nested is Map ? nested : details;
+  }
+  switch (failure.code) {
+    case 'terminal/unavailable':
+      return '终端已不存在，请返回终端列表刷新。';
+    case 'terminal/control-unavailable':
+      return switch (envelope?['reason']) {
+        'read-only' => '终端当前只读（输入由另一条连接持有），输入未发送。',
+        'not-running' => '终端进程已结束，输入未发送。',
+        _ => '终端当前不能接收输入，输入未发送。',
+      };
+    case 'terminal/limit-reached':
+      final limit = envelope?['limit'];
+      return limit is int ? '这台电脑最多同时保留 $limit 个终端。' : '已达到每会话终端数量上限。';
+    default:
+      return null;
+  }
+}
 
 /// The on-screen and hardware arrows must use the same mode selected by the PTY.
 String terminalArrowInput(
@@ -70,22 +103,26 @@ String? terminalSgrMouseInput({
 
 /// Session-scoped PTYs owned by the Android Host. Leaving this page detaches
 /// the viewport; it does not close a running shell.
+///
+/// 宿主依赖只有两个接口：[runtime] 是终端调用面（本地是 [RuntimeController]，
+/// 远程是 `RemoteTerminalRuntime`），[shellSource] 提供 Shell 发现与偏好。
 class SessionTerminalsPage extends StatefulWidget {
   const SessionTerminalsPage({
     super.key,
     required this.runtime,
     required this.sessionId,
+    required this.shellSource,
   });
 
-  final RuntimeController runtime;
+  final TerminalCallSurface runtime;
   final String sessionId;
+  final TerminalShellSource shellSource;
 
   @override
   State<SessionTerminalsPage> createState() => _SessionTerminalsPageState();
 }
 
 class _SessionTerminalsPageState extends State<SessionTerminalsPage> {
-  TerminalShellCatalog get shellCatalog => TerminalShellCatalog(widget.runtime);
   List<Json> terminals = const [];
   bool loading = false;
   String? error;
@@ -168,7 +205,7 @@ class _SessionTerminalsPageState extends State<SessionTerminalsPage> {
     }
   }
 
-  Future<void> create({TerminalShell? shell}) async {
+  Future<void> create({TerminalShellOption? shell}) async {
     if (loading || !widget.runtime.ready) return;
     final runtime = widget.runtime;
     final sessionId = widget.sessionId;
@@ -183,15 +220,17 @@ class _SessionTerminalsPageState extends State<SessionTerminalsPage> {
       error = null;
     });
     try {
-      final preferred = shell ?? await shellCatalog.preferred();
-      final available = await shellCatalog.discover();
+      final preferred = shell ?? await widget.shellSource.preferred();
+      final available = await widget.shellSource.discover();
       if (!mounted ||
           !identical(widget.runtime, runtime) ||
           widget.sessionId != sessionId ||
           runtime.connectionGeneration != connectionAtStart) {
         return;
       }
-      if (!available.contains(preferred)) throw const _ShellUnavailable();
+      if (preferred == null || !available.contains(preferred)) {
+        throw const _ShellUnavailable();
+      }
       await runtime
           .call('terminal.create', {
             'sessionId': sessionId,
@@ -223,7 +262,8 @@ class _SessionTerminalsPageState extends State<SessionTerminalsPage> {
           loading = false;
           error = failure is _ShellUnavailable
               ? '已选 Shell 暂不可用，请从右上角重新选择。'
-              : '无法启动终端。请检查 Shell、会话工作目录与运行环境。';
+              : terminalFailureMessage(failure) ??
+                    '无法启动终端。请检查 Shell、会话工作目录与运行环境。';
         });
       }
     }
@@ -234,9 +274,14 @@ class _SessionTerminalsPageState extends State<SessionTerminalsPage> {
     final runtime = widget.runtime;
     final sessionId = widget.sessionId;
     final connectionAtOpen = runtime.connectionGeneration;
-    TerminalShell preferred;
+    TerminalShellOption preferred;
     try {
-      preferred = await shellCatalog.preferred();
+      final found = await widget.shellSource.preferred();
+      if (found == null) {
+        if (mounted) setState(() => error = '没有可用的 Shell。');
+        return;
+      }
+      preferred = found;
     } catch (_) {
       if (mounted) setState(() => error = '无法读取 Shell 选择，请重试。');
       return;
@@ -247,10 +292,12 @@ class _SessionTerminalsPageState extends State<SessionTerminalsPage> {
         connectionAtOpen != runtime.connectionGeneration) {
       return;
     }
-    final selected = await Navigator.of(context).push<TerminalShell>(
-      PocketRoute<TerminalShell>(
-        builder: (_) =>
-            _TerminalShellPickerPage(runtime: runtime, preferred: preferred),
+    final selected = await Navigator.of(context).push<TerminalShellOption>(
+      PocketRoute<TerminalShellOption>(
+        builder: (_) => _TerminalShellPickerPage(
+          shellSource: widget.shellSource,
+          preferred: preferred,
+        ),
       ),
     );
     if (!mounted ||
@@ -261,7 +308,7 @@ class _SessionTerminalsPageState extends State<SessionTerminalsPage> {
       return;
     }
     try {
-      final available = await shellCatalog.discover();
+      final available = await widget.shellSource.discover();
       if (!available.contains(selected)) throw const _ShellUnavailable();
       if (!mounted ||
           !identical(widget.runtime, runtime) ||
@@ -269,7 +316,7 @@ class _SessionTerminalsPageState extends State<SessionTerminalsPage> {
           connectionAtOpen != runtime.connectionGeneration) {
         return;
       }
-      await shellCatalog.remember(selected);
+      await widget.shellSource.remember(selected);
     } catch (failure) {
       if (mounted) {
         setState(
@@ -316,9 +363,12 @@ class _SessionTerminalsPageState extends State<SessionTerminalsPage> {
       if (mounted && connectionAtOpen == widget.runtime.connectionGeneration) {
         unawaited(refresh());
       }
-    } catch (_) {
+    } catch (failure) {
       if (mounted && connectionAtOpen == widget.runtime.connectionGeneration) {
-        setState(() => error = '无法更改终端名称，请重试。');
+        setState(
+          () => error =
+              terminalFailureMessage(failure) ?? '无法更改终端名称，请重试。',
+        );
       }
     }
   }
@@ -411,11 +461,11 @@ class _ShellUnavailable implements Exception {
 /// Discovery happens on entry and does not start a terminal process.
 class _TerminalShellPickerPage extends StatefulWidget {
   const _TerminalShellPickerPage({
-    required this.runtime,
+    required this.shellSource,
     required this.preferred,
   });
-  final RuntimeController runtime;
-  final TerminalShell preferred;
+  final TerminalShellSource shellSource;
+  final TerminalShellOption preferred;
 
   @override
   State<_TerminalShellPickerPage> createState() =>
@@ -423,7 +473,7 @@ class _TerminalShellPickerPage extends StatefulWidget {
 }
 
 class _TerminalShellPickerPageState extends State<_TerminalShellPickerPage> {
-  List<TerminalShell> shells = const [];
+  List<TerminalShellOption> shells = const [];
   bool loading = false;
   String? error;
   int generation = 0;
@@ -442,7 +492,7 @@ class _TerminalShellPickerPageState extends State<_TerminalShellPickerPage> {
       error = null;
     });
     try {
-      final found = await TerminalShellCatalog(widget.runtime).discover();
+      final found = await widget.shellSource.discover();
       if (!mounted || request != generation) return;
       setState(() {
         shells = found;
@@ -583,7 +633,7 @@ class SessionTerminalView extends StatefulWidget {
     required this.id,
   });
 
-  final RuntimeController runtime;
+  final TerminalCallSurface runtime;
   final String sessionId, id;
 
   @override
@@ -928,11 +978,11 @@ class _SessionTerminalViewState extends State<SessionTerminalView>
           }
         });
       }
-    } catch (_) {
+    } catch (failure) {
       if (mounted && request == epoch) {
         setState(() {
           state = 'unconfirmed';
-          error = '终端暂不可读取，请检查服务连接。';
+          error = terminalFailureMessage(failure) ?? '终端暂不可读取，请检查服务连接。';
         });
       }
     } finally {
@@ -987,12 +1037,16 @@ class _SessionTerminalViewState extends State<SessionTerminalView>
         }
       }
       await read();
-    } catch (_) {
+    } catch (failure) {
       if (mounted &&
           sequence == sendSequence &&
           request == epoch &&
           requestConnection == widget.runtime.connectionGeneration) {
-        setState(() => operationError = '输入送达状态未知，后续按键未发送。先检查终端输出，再决定是否重试。');
+        setState(
+          () => operationError =
+              terminalFailureMessage(failure) ??
+              '输入送达状态未知，后续按键未发送。先检查终端输出，再决定是否重试。',
+        );
         if (clear && interactiveInput) {
           inputDeliveryUncertain = true;
           enterAfterInput = false;
@@ -1087,11 +1141,15 @@ class _SessionTerminalViewState extends State<SessionTerminalView>
           connection == widget.runtime.connectionGeneration) {
         await read();
       }
-    } catch (_) {
+    } catch (failure) {
       if (mounted &&
           request == epoch &&
           connection == widget.runtime.connectionGeneration) {
-        setState(() => operationError = '终端尺寸未能同步，重新进入页面后可重试。');
+        setState(
+          () => operationError =
+              terminalFailureMessage(failure) ??
+              '终端尺寸未能同步，重新进入页面后可重试。',
+        );
       }
     } finally {
       resizing = false;
@@ -1115,11 +1173,11 @@ class _SessionTerminalViewState extends State<SessionTerminalView>
           })
           .timeout(const Duration(seconds: 7));
       if (mounted) Navigator.of(context).pop();
-    } catch (_) {
+    } catch (failure) {
       if (mounted) {
         setState(() {
           closing = false;
-          error = '终端未确认关闭，请重试。';
+          error = terminalFailureMessage(failure) ?? '终端未确认关闭，请重试。';
         });
       }
     }

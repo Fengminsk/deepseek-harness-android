@@ -23,6 +23,18 @@ export const PROFILE_TEMPLATES: Record<string, ProfileTemplate> = {
   'sdk-minimal': {
     bundles: ['@deepseek-ai/dsh-sdk-minimal'],
   },
+  // Remote DSH host: the Web composition, then the App-facing facade, then the
+  // desktop replacements and the host's own listener. The order is fixed by
+  // apps/remote-host/cordis.patch.yml, whose rows override ids the earlier
+  // layers insert; reordering it makes those overrides report "entry not found".
+  'remote-host': {
+    bundles: [
+      '@deepseek-ai/dsh-base',
+      '@deepseek-ai/dsh-web-app',
+      '@minnnng/dsh-android-runtime',
+      '@deepseek-ai/dsh-remote-host',
+    ],
+  },
 }
 
 /**

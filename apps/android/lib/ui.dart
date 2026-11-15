@@ -44,8 +44,18 @@ ThemeData pocketTheme(
 /// The imported FlClash page motion, including interactive drag back.
 class PocketRoute<T> extends PageRoute<T>
     with DragBackRouteMixin<T>, SharedXPageRouteMixin<T> {
-  PocketRoute({required this.builder});
+  PocketRoute({
+    required this.builder,
+    this.dragBack = true,
+    super.settings,
+  });
   final WidgetBuilder builder;
+
+  /// 是否接受边缘拖动返回。首页级全屏页面传 false，手势不能把它带走。
+  final bool dragBack;
+
+  @override
+  bool get dragBackAllowed => dragBack;
   @override
   bool sharesMotionWith(Route<dynamic>? route) =>
       route is PocketRoute || route is MaterialPageRoute;
@@ -69,6 +79,53 @@ class PocketRoute<T> extends PageRoute<T>
     scopesRoute: true,
     explicitChildNodes: true,
     child: PocketReveal(child: builder(context)),
+  );
+}
+
+/// 全屏目的地的路由名。
+///
+/// 每个可从侧栏或页头进入的目的地都有一个稳定标识；推入时把标识写进路由名，
+/// 于是「我是不是已经在这个目的地」只靠栈顶路由就能回答，不需要另存导航状态。
+///
+/// @param destination 目的地标识，例如 `remote-dsh`、`tasks`。
+/// @returns 仅用于 `RouteSettings.name` 的路由名。
+String destinationRouteName(String destination) =>
+    'dsh-destination:$destination';
+
+/// 栈顶是否已经是 [destination]。
+///
+/// 侧栏在目的地页面里原地挂出时，`context` 属于该页面的路由，因此这里读到的就是
+/// 用户眼前的页面。根路由的 `name` 为 null，永远不匹配。
+///
+/// @param context 调用方所在构建上下文。
+/// @param destination 目的地标识。
+/// @returns 已经是该目的地时为 true。
+bool isCurrentDestination(BuildContext context, String destination) =>
+    ModalRoute.of(context)?.settings.name == destinationRouteName(destination);
+
+/// 推入一个全屏目的地，**同一个目的地不会在栈上叠第二层**。
+///
+/// 已经在 [destination] 时直接返回 `null`，不推入任何路由：侧栏与页头的入口点
+/// 因此可以反复点击而不套娃。返回值的语义与 `Navigator.push` 一致。
+///
+/// @param context 调用方所在构建上下文；解析出的 Navigator 就是当前的那一个。
+/// @param destination 目的地标识，必须与页面内的侧栏入口使用同一个值。
+/// @param builder 目的地页面构造器。
+/// @param dragBack 是否接受边缘拖动返回；首页级页面传 false。
+/// @returns 页面关闭时带回的结果；已经在该目的地时不推入并返回 null。
+Future<T?> openDestination<T>(
+  BuildContext context, {
+  required String destination,
+  required WidgetBuilder builder,
+  bool dragBack = true,
+}) {
+  if (isCurrentDestination(context, destination)) return Future<T?>.value();
+  return Navigator.of(context).push<T>(
+    PocketRoute<T>(
+      builder: builder,
+      dragBack: dragBack,
+      settings: RouteSettings(name: destinationRouteName(destination)),
+    ),
   );
 }
 
@@ -1316,6 +1373,7 @@ class PocketTile extends StatelessWidget {
     this.trailing,
     this.onTap,
     this.selected = false,
+    this.neutralSelection = false,
     this.contentPadding = const EdgeInsets.symmetric(
       horizontal: 20,
       vertical: 12,
@@ -1325,6 +1383,10 @@ class PocketTile extends StatelessWidget {
   final Widget? subtitle, leading, trailing;
   final VoidCallback? onTap;
   final bool selected;
+
+  /// 选中时用中性表面而不是主色容器：侧栏「当前所在页面」属于位置指示，
+  /// 不是主操作，用中性高亮才不会抢走强调色。
+  final bool neutralSelection;
   final EdgeInsetsGeometry contentPadding;
   @override
   Widget build(BuildContext context) {
@@ -1335,7 +1397,9 @@ class PocketTile extends StatelessWidget {
         shape: shape,
         child: Material(
           color: selected
-              ? Theme.of(context).colorScheme.primaryContainer
+              ? (neutralSelection
+                    ? Theme.of(context).colorScheme.surfaceContainerHighest
+                    : Theme.of(context).colorScheme.primaryContainer)
               : Colors.transparent,
           shape: shape,
           child: InkWell(
@@ -1584,3 +1648,40 @@ class PocketSwatch extends StatelessWidget {
     ),
   );
 }
+
+/// 根对话页提供的应用级动作。
+///
+/// 「远程 DSH」这类全屏子页面在**原地**挂出同一份侧栏，但侧栏里的「新对话」
+/// 「选择会话」「后台任务」「自动化任务」都由根对话页的状态拥有。子页面因此
+/// 通过这里调用同一条动作，而不是自己复制一份导航逻辑。
+class AppShellActions {
+  /// 记录根对话页的动作集合。
+  const AppShellActions({
+    required this.newChat,
+    required this.openSession,
+    required this.openTasks,
+    required this.openAutomations,
+  });
+
+  /// 新建会话并切过去。
+  final VoidCallback newChat;
+
+  /// 打开一个已有会话。
+  final ValueChanged<String> openSession;
+
+  /// 打开后台任务页。
+  final VoidCallback openTasks;
+
+  /// 打开自动化任务页。
+  final VoidCallback openAutomations;
+}
+
+AppShellActions? _appShellActions;
+
+/// 注册根对话页的应用级动作；传入 null 表示注销。
+void registerAppShellActions(AppShellActions? actions) {
+  _appShellActions = actions;
+}
+
+/// 当前注册的应用级动作；没有根页面时为 null。
+AppShellActions? get appShellActions => _appShellActions;

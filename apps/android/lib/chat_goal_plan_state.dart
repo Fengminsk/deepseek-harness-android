@@ -74,11 +74,51 @@ class ChatPlanState {
   }
 }
 
+/// The plan-only face shared by the local [ChatGoalPlanController] and the
+/// remote `RemoteGoalPlanController` (`remote_goal_plan.dart`).
+///
+/// The plan dock and the plan-mode page render either controller, so the UI does
+/// not know whether `/plan` runs on this device or on a paired computer. Goal
+/// fields stay outside this interface: remote goals need a runtime activation
+/// notification the remote protocol does not carry (design D6).
+abstract interface class ChatPlanSurface implements Listenable {
+  /// The latest plan projection; null before the host published one.
+  ChatPlanState? get plan;
+
+  /// Whether [plan] reflects a successful baseline read.
+  bool get fresh;
+
+  /// Whether a plan mutation may be attempted now.
+  bool get canMutate;
+
+  /// Whether a plan mutation is in flight.
+  bool get busy;
+
+  /// Whether a baseline read is in flight.
+  bool get loading;
+
+  /// Read failure shown by the plan-mode page.
+  String? get error;
+
+  /// Last plan mutation failure shown by the dock.
+  String? get actionError;
+
+  /// Verb of the last attempted mutation; `plan` selects the dock's failure row.
+  String? get actionKind;
+
+  /// Re-read the plan projection.
+  Future<void> refresh();
+
+  /// Enter (`true`) or leave (`false`) plan mode; false means the mutation is
+  /// not confirmed and the caller keeps its draft.
+  Future<bool> setPlan(bool enabled);
+}
+
 /// Session-scoped reads never activate an Agent. Only an explicit mutation can
 /// attach it. The host's projection, CAS and activation remain authoritative.
 /// Disposing/rebinding fences late reads and writes; an uncertain write is never
 /// replayed automatically. Remote calls already sent are owned by the runtime.
-class ChatGoalPlanController extends ChangeNotifier {
+class ChatGoalPlanController extends ChangeNotifier implements ChatPlanSurface {
   ChatGoalPlanController({required this.runtime, required this.sessionId}) {
     _generation = runtime.connectionGeneration;
     _ready = runtime.ready;
@@ -88,15 +128,21 @@ class ChatGoalPlanController extends ChangeNotifier {
   final RuntimeController runtime;
   final String sessionId;
   ChatGoalState? goal;
+  @override
   ChatPlanState? plan;
-  bool goalAvailable = false, fresh = false, loading = false, busy = false;
-  String? activation, error, actionError, actionKind;
+  bool goalAvailable = false;
+  @override
+  bool fresh = false, loading = false, busy = false;
+  String? activation;
+  @override
+  String? error, actionError, actionKind;
   bool _disposed = false, _started = false, _ready = false;
   String? _status;
   int _generation = 0, _epoch = 0, _read = 0, _activationRead = 0;
   int _goalSeq = -1, _planSeq = -1;
   StreamSubscription<Json>? _control, _events;
   bool get alive => !_disposed;
+  @override
   bool get canMutate => !_disposed && runtime.ready && fresh && !busy;
   bool get attached => runtime.ready && runtime.statuses.containsKey(sessionId);
   bool get canPause =>
@@ -165,6 +211,7 @@ class ChatGoalPlanController extends ChangeNotifier {
     }
   }
 
+  @override
   Future<void> refresh() async {
     if (_disposed || !runtime.ready) return;
     final epoch = _epoch, read = ++_read;
@@ -342,6 +389,7 @@ class ChatGoalPlanController extends ChangeNotifier {
       : _mutate('clear', {'ref': (expected ?? goal)!.ref});
 
   // Nonempty input except off becomes a model-visible planning request.
+  @override
   Future<bool> setPlan(bool enabled) =>
       _mutate('plan', {'line': enabled ? '/plan' : '/plan off'});
 

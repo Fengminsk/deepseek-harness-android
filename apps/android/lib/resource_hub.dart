@@ -10,6 +10,7 @@ import 'session_files.dart';
 import 'session_terminal.dart';
 import 'skills.dart';
 import 'tasks.dart';
+import 'terminal_shells.dart';
 import 'ui.dart';
 import 'workspace_changes.dart';
 
@@ -63,6 +64,7 @@ class SessionResourcesPage extends StatelessWidget {
     _ResourceKind.terminal => SessionTerminalsPage(
       runtime: runtime,
       sessionId: sessionId,
+      shellSource: TerminalShellCatalog(runtime),
     ),
   };
 

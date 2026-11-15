@@ -6,15 +6,28 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import 'api_streams.dart';
+import 'attachment_surface.dart';
 import 'approvals_draft.dart';
+import 'composer_commands.dart';
 import 'plugins_data.dart';
 import 'library_data.dart';
 import 'credentials_data.dart';
 import 'recovery_data.dart';
 import 'account_state.dart';
 import 'models_data.dart';
+import 'runtime_transport.dart';
+import 'terminal_runtime.dart';
 
 typedef Json = Map<String, dynamic>;
+
+/// 本地传输的请求执行器：拼出既有 `{'method', 'params'}` 封装并打 MethodChannel。
+///
+/// `payload` 已经是 `params` 的 JSON 文本，直接拼进外层对象，避免再解码一遍。
+Future<String?> _invokeLocal(String method, String payload) =>
+    RuntimeController.channel.invokeMethod<String>(
+      'call',
+      '{"method":${jsonEncode(method)},"params":$payload}',
+    );
 
 /// The native transcript keeps one bounded loaded window and a fixed read cut.
 class SessionHistoryWindow {
@@ -31,11 +44,38 @@ class SessionHistoryWindow {
   bool loading = false;
 }
 
-class RuntimeController extends ChangeNotifier {
+/// 本地运行时同时是终端页、附件草稿与会话指令菜单的调用面：`ready`、`phase`、
+/// `connectionGeneration`、`ensureSession`、`call`、监听器与 `dispose` 已经满足
+/// [TerminalCallSurface]、[AttachmentCallSurface] 与 [ComposerCommandSurface]
+/// （见 terminal_runtime.dart、attachment_surface.dart、composer_commands.dart）。
+class RuntimeController extends ChangeNotifier
+    implements
+        TerminalCallSurface,
+        AttachmentCallSurface,
+        ComposerCommandSurface {
+  /// 构造时可换入远程传输；缺省是包装既有双通道的本地传输。
+  RuntimeController({RuntimeTransport? transport}) {
+    this.transport =
+        transport ??
+        LocalRuntimeTransport(
+          localInvoke: _invokeLocal,
+          events: _inbound.stream,
+        );
+  }
+
   static const configurationReadTimeout = Duration(seconds: 20);
   static const channel = MethodChannel('dsh/runtime');
   static const events = EventChannel('dsh/events');
+
+  /// 本地 EventChannel 帧的注入口：本地传输从这里取入站通知。
+  final StreamController<Json> _inbound = StreamController<Json>();
+
+  /// 本地与远程共用的传输缝：请求走 [RuntimeTransport.request]，分发走
+  /// [RuntimeTransport.events]。
+  late final RuntimeTransport transport;
   StreamSubscription<dynamic>? _subscription;
+  StreamSubscription<Json>? _eventSubscription;
+  @override
   String phase = 'starting';
   String? nativeGeneration, nativeMode;
   String? error;
@@ -101,6 +141,7 @@ class RuntimeController extends ChangeNotifier {
   int _resumeEpoch = 0;
   bool _bindingDisconnected = false;
   int _statusRevision = 0;
+  @override
   int get connectionGeneration => _connectionGeneration;
 
   /// The core retains credentials. This owner retains only its observed view
@@ -217,6 +258,7 @@ class RuntimeController extends ChangeNotifier {
 
   List<Json> get observationDiagnostics => _apiStreams.diagnostics;
 
+  @override
   bool get ready => phase == 'ready';
   void _invalidateWeb() {
     _webRead++;
@@ -311,9 +353,9 @@ class RuntimeController extends ChangeNotifier {
   }
 
   Future<void> start() async {
-    _subscription ??= events.receiveBroadcastStream().listen(
-      (dynamic raw) {
-        final frame = jsonDecode(raw as String) as Json;
+    // 分发只从 transport.events 走：本地与远程共用同一段逻辑。
+    _eventSubscription ??= transport.events.listen(
+      (Json frame) {
         final data = (frame['params'] as Json?) ?? {};
         switch (frame['method']) {
           case 'runtime.status':
@@ -392,8 +434,21 @@ class RuntimeController extends ChangeNotifier {
         if (!_disposed) fail(exception);
       },
     );
-    await channel.invokeMethod<void>('start');
-    _prepareAccount();
+    if (transport is LocalRuntimeTransport) {
+      // 本地 EventChannel 的监听保留：每帧原样泵给本地传输的 events 流。
+      _subscription ??= events.receiveBroadcastStream().listen(
+        (dynamic raw) {
+          final frame = jsonDecode(raw as String) as Json;
+          if (!_inbound.isClosed) _inbound.add(frame);
+        },
+        onError: (Object exception) {
+          if (!_inbound.isClosed) _inbound.addError(exception);
+        },
+      );
+      await channel.invokeMethod<void>('start');
+      // 账号观察依赖本地应用元数据与服务侧账号监听，只有本地服务有这一段。
+      _prepareAccount();
+    }
   }
 
   void _acceptStatus(Json data) {
@@ -605,21 +660,22 @@ class RuntimeController extends ChangeNotifier {
     }
   }
 
+  /// 一次请求。`_pocket_error` 的解码已收敛到传输层，这里不再解第二遍。
+  ///
+  /// 传输层的 [RuntimeTransportFailure] 仍按既有页面约定转回
+  /// [PlatformException]：`code` / `message` / `details` 与改造前逐字段一致，
+  /// 各页面里 `failure is PlatformException` 的分支不需要改。
+  @override
   Future<dynamic> call(String method, [Json params = const {}]) async {
-    final result = await channel.invokeMethod<String>(
-      'call',
-      jsonEncode({'method': method, 'params': params}),
-    );
-    final decoded = result == null ? null : jsonDecode(result);
-    if (decoded is Json && decoded['_pocket_error'] is Json) {
-      final failure = decoded['_pocket_error'] as Json;
+    try {
+      return await transport.request(method, params);
+    } on RuntimeTransportFailure catch (failure) {
       throw PlatformException(
-        code: failure['code'] as String,
-        message: failure['message'] as String,
-        details: failure,
+        code: failure.code,
+        message: failure.message,
+        details: failure.details,
       );
     }
-    return decoded;
   }
 
   Future<void>? _formsRefresh;
@@ -1086,6 +1142,7 @@ class RuntimeController extends ChangeNotifier {
     }
   }
 
+  @override
   Future<Json> ensureSession(String id) async {
     return await call('session.ensure', {'sessionId': id}) as Json;
   }
@@ -1144,9 +1201,13 @@ class RuntimeController extends ChangeNotifier {
     _account?.dispose();
     _models?.dispose();
     unawaited(_subscription?.cancel());
+    unawaited(_eventSubscription?.cancel());
     unawaited(_apiStreams.close());
     unawaited(_remoteEvents.close());
     unawaited(_liveSessionEvents.close());
+    // 事件流先收口，再关传输：仍在途的 api.unsubscribe 不受影响。
+    unawaited(_inbound.close());
+    unawaited(transport.close());
     super.dispose();
   }
 }

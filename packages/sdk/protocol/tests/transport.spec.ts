@@ -307,4 +307,44 @@ describe('JsonRpcLineTransport', () => {
 
     b.close()
   })
+
+  it('keeps the historical req_ request ids when no prefix is configured', async () => {
+    const { aToB, bToA, b } = transportPair()
+    b.start()
+
+    const pending = b.request('legacy-id', {})
+    const requestChunk = (await once(bToA, 'data'))[0] as Buffer | string
+    const request = JSON.parse(String(requestChunk)) as { id: string }
+    expect(request.id).toMatch(/^req_[0-9a-f]{32}$/u)
+
+    // Echoing the wire id settles the request: the pending map is keyed by the
+    // same generated value.
+    aToB.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { ok: true } })}\n`)
+    await expect(pending).resolves.toEqual({ ok: true })
+    b.close()
+  })
+
+  it('emits <prefix><uuid v4> request ids when requestIdPrefix is configured', async () => {
+    const input = new PassThrough()
+    const output = new PassThrough()
+    const transport = new JsonRpcLineTransport(input, output, { requestIdPrefix: 'h-' })
+    transport.start()
+
+    const pending = transport.request('native.documents.roots', {})
+    const requestChunk = (await once(output, 'data'))[0] as Buffer | string
+    const request = JSON.parse(String(requestChunk)) as { id: string }
+    expect(request.id).toMatch(/^h-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u)
+
+    input.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { ok: true } })}\n`)
+    await expect(pending).resolves.toEqual({ ok: true })
+    transport.close()
+  })
+
+  it('rejects request-id prefixes that cannot produce direction-tagged ids', () => {
+    for (const prefix of ['', 'h', 'h h', 'h- ', '9-', 'h--', `${'a'.repeat(20)}-`]) {
+      expect(
+        () => new JsonRpcLineTransport(new PassThrough(), new PassThrough(), { requestIdPrefix: prefix }),
+      ).toThrow(/requestIdPrefix/u)
+    }
+  })
 })

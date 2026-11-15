@@ -20,6 +20,8 @@ describe('Official on-demand catalog', () => {
 })
 
 describe('Shipped profile templates', () => {
+  // The remote host's layer overrides ids the App facade inserts, so the facade
+  // must precede it and the Web composition must precede the facade.
   it('stack each mode bundle on base except the standalone minimal SDK', () => {
     expect(PROFILE_TEMPLATES).toEqual({
       acp: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-acp-app'] },
@@ -27,6 +29,14 @@ describe('Shipped profile templates', () => {
       headless: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-headless'] },
       sdk: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-sdk-app'] },
       'sdk-minimal': { bundles: ['@deepseek-ai/dsh-sdk-minimal'] },
+      'remote-host': {
+        bundles: [
+          '@deepseek-ai/dsh-base',
+          '@deepseek-ai/dsh-web-app',
+          '@minnnng/dsh-android-runtime',
+          '@deepseek-ai/dsh-remote-host',
+        ],
+      },
     })
   })
 })

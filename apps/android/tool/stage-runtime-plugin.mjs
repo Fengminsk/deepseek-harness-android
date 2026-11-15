@@ -17,6 +17,10 @@ async function directory(path, optional = false) {
 async function treeWithoutLinks(path) {
   await directory(path)
   for (const entry of await readdir(path, { withFileTypes: true })) {
+    // A workspace install links dependencies here. They are never part of the
+    // runtime archive — the staged bundle supplies its own hoisted tree — and
+    // their links are exactly what this walk must not follow.
+    if (entry.name === 'node_modules') continue
     const child = join(path, entry.name)
     const info = await lstat(child)
     if (info.isSymbolicLink()) throw new Error(`Runtime staging refuses linked entries: ${child}`)
@@ -62,6 +66,13 @@ export async function stageRuntimePlugin({ repositoryRoot, staging }) {
     await rm(plugin, { recursive: true })
   }
   for (const parent of [...parents, scope]) await directory(parent)
-  await cp(source, plugin, { recursive: true, errorOnExist: true, force: false })
+  // Skip the workspace install tree for the same reason the walk refuses links:
+  // the staged bundle owns dependency resolution.
+  await cp(source, plugin, {
+    recursive: true,
+    errorOnExist: true,
+    force: false,
+    filter: path => relative(source, path).split(sep)[0] !== 'node_modules',
+  })
   return plugin
 }

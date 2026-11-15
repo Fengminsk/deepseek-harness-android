@@ -140,7 +140,7 @@ class ChatPlanProjection {
 
 class ChatPlanDock extends StatelessWidget {
   const ChatPlanDock({required this.controller, super.key});
-  final ChatGoalPlanController controller;
+  final ChatPlanSurface controller;
   @override
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: controller,
@@ -195,14 +195,14 @@ class ChatPlanDock extends StatelessWidget {
 
 Future<void> openChatPlanMode(
   BuildContext context,
-  ChatGoalPlanController controller,
+  ChatPlanSurface controller,
 ) => Navigator.of(context).push<void>(
   PocketRoute(builder: (_) => ChatPlanModePage(controller: controller)),
 );
 
 class ChatPlanModePage extends StatelessWidget {
   const ChatPlanModePage({required this.controller, super.key});
-  final ChatGoalPlanController controller;
+  final ChatPlanSurface controller;
   @override
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: controller,

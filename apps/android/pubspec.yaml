@@ -16,6 +16,9 @@ dependencies:
   flutter_markdown_plus: 1.0.12
   markdown: 7.3.1
   flutter_svg: 2.3.0
+  # CA 指纹 TOFU：配对时要用 SHA-256 比对 /ca.cer 与配对码里的 instance，
+  # Dart 标准库没有摘要算法。用 dart-lang 官方包，不自己实现 DER/哈希。
+  crypto: ^3.0.0
 dev_dependencies:
   flutter_test:
     sdk: flutter

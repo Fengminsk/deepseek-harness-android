@@ -1,0 +1,126 @@
+# 远程 DSH 宿主（PC）的组合补丁。
+#
+# 层序：dsh-base → dsh-web-app → @minnnng/dsh-android-runtime → 本补丁。
+# 同一 id 的行由后写的层覆盖（见 vendor/include/src/patch.ts 的 applyPatches），
+# 因此这里可以把 App 的 Android 组合换成桌面实现，再挂上远程宿主自己的监听器。
+# 门面本身不改：手机仍连同一套 JSON-RPC 方法表。
+#
+# 注意：本补丁必须排在 @minnnng/dsh-android-runtime 之后；否则 android-* 行还不
+# 存在，Loader 只会打印 “patch: entry … not found” 并跳过。
+
+- insert:
+    # 远程宿主插件：wss 监听、实例身份、设备表、反向 native.* 路由。
+    # 包名以 apps/remote-host/package.json 的 name 为准，改名时同步这一行。
+    # 这个 profile 只用于远程宿主，所以默认开监听；端口、绑定地址与配对窗口
+    # 沿用插件默认值（见 apps/remote-host/src/index.ts 的 Config）。
+    - id: remote-host
+      name: '@deepseek-ai/dsh-remote-host'
+      config:
+        enabled: true
+
+# ── 用桌面真实实现替换手机侧替身 ─────────────────────────────────────
+
+# App 组合关掉了真实 terminal-controller（终端在 App 内实现）；远程 profile 保留
+# 桌面终端服务，供宿主侧终端 API 与后续会话级终端使用。
+- id: terminal-controller
+  disabled: false
+
+# 侧栏/项目/会话列表的持久化实体来自桌面 workspace 实现。
+- id: workspace
+  disabled: false
+
+# 会话落盘回到原始 JSONL 实现（App 组合换成了写入 App 私有目录的 android 版本）。
+- id: session-persistence-jsonl
+  disabled: false
+  config:
+    root: !!js dshHomePath('sessions')
+
+# android-filesystem 是 App 的工作区沙箱；关掉它之后必须回到 base 的沙箱文件系统，
+# 否则 ctx.fs 没有提供者，文件工具与 Agent 都起不来。
+- id: fs-sandbox
+  disabled: false
+
+# android-attachment-store 用 Android 的独占发布替换了本地附件存储；桌面要用回 base 实现。
+- id: attachment-local
+  disabled: false
+
+# Android 用 Keystore 提供者顶替 ctx.credentials；桌面模式不注册
+# AndroidCredentials，凭据必须回到 credentials-local（密钥只留在 PC）。
+- id: credentials
+  disabled: false
+
+# ── 恢复桌面标准 Agent 预设需要的服务 ────────────────────────────────
+
+# 会话预设（standard）会在子作用域里挂 tool-pwsh / workflow-ptc / tool-workflow；
+# 它们分别等 `shell` 与 `ptcRuntime` 服务。App 组合因为无法在 Android 上做这些
+# 限制而关掉了提供者，远程宿主是完整桌面，恢复平台对应的实现；否则恢复一个已有
+# 会话时 preset 永远挂不起来（session.send 直接以 resume failed 失败）。
+- id: bash-sandbox
+  disabled: !!js process.platform === 'win32'
+
+- id: pwsh-sandbox
+  disabled: !!js process.platform !== 'win32'
+
+- id: ptc-runtime
+  disabled: false
+
+# ── 关闭只在手机上成立的实现 ─────────────────────────────────────────
+
+# App 通过 SAF/内容 URI 访问“手机上的文件”，桌面宿主没有对应语义。
+- id: android-filesystem
+  disabled: true
+
+# 桌面宿主没有 App 的目录选择 UI；base 的 directory-picker 保持 App 组合里的
+# disabled，远程路径不经过目录选择（手机端也不会弹 PC 的原生选择器）。
+- id: android-directory-picker
+  disabled: true
+
+- id: android-attachment-store
+  disabled: true
+
+- id: android-session-persistence
+  disabled: true
+
+# ── 同一个门面，换成桌面平台 ─────────────────────────────────────────
+
+# platform: desktop 关闭 AndroidShell、AndroidCredentials、跨进程 PTC/workflow 回调、
+# Linux VM 工具等注册；保留 runtime.* / session.* / api.* 等共享门面方法。
+- id: android-runtime
+  config:
+    platform: desktop
+
+# ── 会话预设换回桌面默认 ─────────────────────────────────────────────
+
+# android 层把默认预设改成 android（persona 是“在 Android App 里本地运行”），并停用
+# 其余桌面预设。远程宿主跑在 PC 上，会话应当使用桌面标准的 Agent 预设；否则在手机上
+# 发起的每个会话都会拿到 Android 本地 persona 与工具集。
+- id: agent-preset-registry
+  config:
+    default: standard
+
+- id: preset-standard
+  disabled: false
+
+- id: preset-android
+  disabled: true
+
+# ── 默认模型路由 ─────────────────────────────────────────────────────
+
+# 远程宿主是给手机端使用的桌面宿主：用户在这台电脑上以 DeepSeek 账号登录（与 App
+# 内账号一致），所以默认路由选账号提供者，而不是需要 DEEPSEEK_API_KEY 的官方 API
+# 路由。用户在设置里保存过默认模型时以设置为准（agent-default-model 读取已保存选择）。
+- id: agent-default-model
+  config:
+    provider: deepseek-account
+    model: deepseek-flash
+
+# ── 待确认（先不写死，避免臆造 id 或配置）────────────────────────────
+#
+# 1. office-to-pdf：android 层按 LMK 压过的并发/内存参数对桌面并不必要；是否在
+#    远程 profile 恢复 base 默认值待确认。
+# 2. permission / ui-permission：android 层禁用了权限预设（App 自己管审批）。
+#    远程宿主是否启用桌面审批预设，取决于 P2 的审批页方案。
+# 3. remote-host 条目的 port / host / pairingTtlMs / publicHost 仍用插件默认值；
+#    绑定地址与端口对局域网开放，配对链接的地址由 default-route IPv4 自动选择，
+#    多网卡机器可用 publicHost 显式指定。
+

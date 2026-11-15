@@ -28,9 +28,15 @@ object AuthTabs {
     @Suppress("DEPRECATION")
     fun metadata(activity: Activity): String {
         val info = activity.packageManager.getPackageInfo(activity.packageName, 0)
+        // `model` names this phone in a paired computer's device list; it is
+        // display-only and never used for pairing checks.
         return JSONObject()
             .put("version", requireNotNull(info.versionName))
             .put("build", info.longVersionCode)
+            .put("model", listOf(android.os.Build.MANUFACTURER, android.os.Build.MODEL)
+                .filter { !it.isNullOrBlank() && it != "unknown" }
+                .joinToString(" ")
+                .take(120))
             .toString()
     }
 }

@@ -74,7 +74,7 @@ export function verifyProductUse(
   if (converted.errors.length > 0) throw new Error(converted.errors.map(error => ts.flattenDiagnosticMessageText(error.messageText, '\n')).join('\n'))
   const host: ts.ModuleResolutionHost = { ...ts.sys, getCurrentDirectory: () => root }
   const resolutionCache = ts.createModuleResolutionCache(root, path => path, converted.options)
-  for (const path of globSync(['apps/*/package.json', 'packages/*/*/package.json', 'vendor/*/package.json'], { cwd: root }).map(path => path.replaceAll('\\', '/')).sort()) {
+  for (const path of globSync(['apps/*/package.json', 'apps/android/runtime/package.json', 'packages/*/*/package.json', 'vendor/*/package.json'], { cwd: root }).map(path => path.replaceAll('\\', '/')).sort()) {
     const manifest = JSON.parse(readFileSync(resolve(root, path), 'utf8')) as {
       name: string
       exports?: Record<string, unknown>
@@ -312,3 +312,4 @@ if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(
   if (result.failures.length > 0) process.exitCode = 1
   else console.log(`Product use: ${String(result.defaultPackages.length)} default, ${String(result.optionalPackages.length)} optional packages; ${String(result.sourceCount)} source modules.`)
 }
+

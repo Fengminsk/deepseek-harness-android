@@ -1,0 +1,32 @@
+[
+  {
+    "source": "packages/client/ui-secret-mask/src/client/secret-rule.ts",
+    "sourceSha256": "b936191240b6b5affe1cdd6747d695b785aa8ab5c75295710103e933ee3b80fa",
+    "file": "secret-rule.js",
+    "sha256": "2aeee7792accdf7469bbc4782e65cf0066948df678f4f7b77c9769d10f5d238f"
+  },
+  {
+    "source": "packages/client/ui-secret-mask/src/client/credential-scanner.ts",
+    "sourceSha256": "444952f8ce194ef2278b5b0a618c194d90d453e67273f2801d96ea6dba3a909e",
+    "file": "credential-scanner.js",
+    "sha256": "e82b211ca1a8b1f312cd8206c84577a0d329c927bcd2040b2fac50d73170e3ea"
+  },
+  {
+    "source": "packages/client/ui-secret-mask/src/client/credential-masks.ts",
+    "sourceSha256": "bb9d2e5b7a85621e7e0e163e1d170d4b3a3e5d6f1e30e8c59f12d7b92f7557d1",
+    "file": "credential-masks.js",
+    "sha256": "8a5775bfe5723a53a1c044ca51c45e2ffed1a45f981a51c758e7122fb03f6c00"
+  },
+  {
+    "source": "packages/client/ui-secret-mask/src/client/credential-formats.ts",
+    "sourceSha256": "27c24929500eff3d76b6637076e9757805d80427220b5f72f3744b81f1492821",
+    "file": "credential-formats.js",
+    "sha256": "4711e1d90a9b1f7d76610562f084437933a81641e42e6ae104940dd66b53ae00"
+  },
+  {
+    "source": "packages/client/ui-secret-mask/src/client/format-tables.ts",
+    "sourceSha256": "ab70f20da34381df476b122fbd971b0d90e877bce37a18220a0bac0009a39cb9",
+    "file": "format-tables.js",
+    "sha256": "abc2e9ac214cba4e424e89e991217087d38bcaacd93fae0bfaa0b6de55f29796"
+  }
+]

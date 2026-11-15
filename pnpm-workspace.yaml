@@ -7,6 +7,12 @@ packages:
   - native/system/packages/*
   # Product assemblies over the package tier; apps/cli owns the `dsh` bin.
   - apps/*
+  # Third-party reference checkout studied for the remote-DSH design. It is not
+  # a product assembly, and its own dependencies must stay out of our lockfile.
+  - '!apps/dsh-mobile'
+  # The App-facing RPC facade. It is a workspace package so the PC remote host
+  # can load the same method table the Flutter UI was written against.
+  - apps/android/runtime
   # Private package owning repository-level benchmark dependencies.
   - benchmarks
   - website
@@ -18,6 +24,12 @@ overrides:
   'extract-zip>yauzl': '3.4.0'
   '@deepseek-ai/cosmokit': 'link:vendor/cosmokit'
   '@deepseek-ai/schemastery': 'link:vendor/schemastery'
+  # Two copies of this schema registry break X.509 serialization at runtime:
+  # selfsigned (remote-host TLS) resolves @peculiar/x509's 2.11.1, while
+  # electron-builder's @peculiar/webcrypto resolved 2.9.4. Certificate creation
+  # fails with "Cannot get schema for 'BasicConstraints' target". Unify on the
+  # newer line; both consumers declare the same major.
+  '@peculiar/asn1-schema': '2.11.1'
 
 peerDependencyRules:
   allowedVersions:

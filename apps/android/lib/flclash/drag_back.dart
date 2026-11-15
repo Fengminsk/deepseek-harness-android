@@ -25,6 +25,10 @@ mixin DragBackRouteMixin<T> on ModalRoute<T> {
   /// through the release until the route settles.
   bool get isDragBackActive => _dragBackActive;
 
+  /// Whether the edge drag-back gesture reaches this route. A home-level page
+  /// opts out so the gesture cannot leave it; every other route keeps it.
+  bool get dragBackAllowed => true;
+
   FocusScopeNode? get _focusScope {
     final context = subtreeContext;
     return context == null
@@ -63,6 +67,7 @@ mixin DragBackRouteMixin<T> on ModalRoute<T> {
   // for another drag back to settle, and NavigatorResizable would settle on
   // a pop still running under the drag.
   bool get _canDragBack =>
+      dragBackAllowed &&
       isCurrent &&
       popGestureEnabled &&
       secondaryAnimation!.isDismissed &&

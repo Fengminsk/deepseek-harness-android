@@ -63,7 +63,8 @@ function helperPath() {
   return join(directory, 'libpocket_terminal_helper.so')
 }
 
-function screenFactory(cols, rows) {
+// 桌面终端适配器复用同一套 headless xterm 投影，保证远程与本地 `terminal.read` 的形状一致。
+export function screenFactory(cols, rows) {
   const { Terminal } = require('@xterm/headless')
   const { SerializeAddon } = require('@xterm/addon-serialize')
   const screen = new Terminal({ cols, rows, scrollback: 500, allowProposedApi: true })

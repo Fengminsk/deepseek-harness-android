@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/session_terminal.dart';
 import 'package:dsh_android/terminal_screen.dart';
+import 'package:dsh_android/terminal_shells.dart';
 import 'package:dsh_android/ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter/services.dart';
@@ -176,7 +177,11 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(
           theme: pocketTheme(Brightness.dark),
-          home: SessionTerminalsPage(runtime: runtime, sessionId: 'session-A'),
+          home: SessionTerminalsPage(
+            runtime: runtime,
+            sessionId: 'session-A',
+            shellSource: TerminalShellCatalog(runtime),
+          ),
         ),
       );
       await tester.pumpAndSettle();
@@ -209,7 +214,11 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(
           theme: pocketTheme(Brightness.dark),
-          home: SessionTerminalsPage(runtime: runtime, sessionId: 'session-A'),
+          home: SessionTerminalsPage(
+            runtime: runtime,
+            sessionId: 'session-A',
+            shellSource: TerminalShellCatalog(runtime),
+          ),
         ),
       );
       await tester.pumpAndSettle();
@@ -243,7 +252,11 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(
           theme: pocketTheme(Brightness.dark),
-          home: SessionTerminalsPage(runtime: runtime, sessionId: 'session-A'),
+          home: SessionTerminalsPage(
+            runtime: runtime,
+            sessionId: 'session-A',
+            shellSource: TerminalShellCatalog(runtime),
+          ),
         ),
       );
       await tester.pumpAndSettle();

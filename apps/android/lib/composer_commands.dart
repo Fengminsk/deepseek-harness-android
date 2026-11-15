@@ -16,6 +16,34 @@ const commandDefinitions = {
   'export': '@deepseek-ai/dsh-session-log-export',
 };
 
+/// The composer's command-directory dependency.
+///
+/// `ComposerCommands` and [loadComposerCatalog] only need `ready`, `ensureSession`
+/// and `call`; `RuntimeController` already satisfies them for the local session,
+/// and `RemoteComposerCommandSurface` (`remote_commands.dart`) implements them
+/// over the paired computer's facade. Keeping the dependency here lets the same
+/// data-driven menu render local and remote sessions without a second list.
+abstract interface class ComposerCommandSurface {
+  /// Whether the underlying host is ready to answer requests.
+  bool get ready;
+
+  /// Ensure the session exists on the host (`session.ensure`); idempotent.
+  Future<Json> ensureSession(String id);
+
+  /// Call one facade method. Implementations translate transport failures into
+  /// messages that can be shown directly.
+  Future<dynamic> call(String method, [Json params = const {}]);
+}
+
+/// Stable menu key for one catalog row.
+///
+/// Client actions and first-party commands keep their client identity (the same
+/// rule the local picker dispatches on); other rows fall back to the host name.
+String composerCommandKey(Json descriptor) =>
+    builtinCommand(descriptor) ??
+    descriptor['clientAction'] as String? ??
+    '${descriptor['name']}';
+
 String? builtinCommand(Json descriptor) {
   for (final entry in commandDefinitions.entries) {
     if (descriptor['definitionId'] == entry.value) return entry.key;
@@ -74,7 +102,7 @@ String commandLabel(Json descriptor) =>
 }
 
 Future<List<Json>> loadComposerCatalog(
-  RuntimeController runtime,
+  ComposerCommandSurface runtime,
   String id,
 ) async {
   await runtime.ensureSession(id);
@@ -383,8 +411,9 @@ class ComposerCommands extends StatefulWidget {
     required this.onPick,
     this.maxHeight = 420,
     this.deferActivation = false,
+    this.disabledReasons = const <String, String>{},
   });
-  final RuntimeController runtime;
+  final ComposerCommandSurface runtime;
   final String sessionId;
   final ValueChanged<Json> onPick;
   final double maxHeight;
@@ -392,6 +421,13 @@ class ComposerCommands extends StatefulWidget {
   /// A cold history menu exposes read-only entries before the user explicitly
   /// asks for Agent-scoped commands, whose original API requires activation.
   final bool deferActivation;
+
+  /// Menu keys (see [composerCommandKey]) this surface cannot run.
+  ///
+  /// A disabled row stays visible, greyed out, and shows its reason as the
+  /// description instead of silently disappearing or failing after the tap
+  /// (protocol §10.2). The default keeps every local row unchanged.
+  final Map<String, String> disabledReasons;
   @override
   State<ComposerCommands> createState() => _ComposerCommandsState();
 }
@@ -488,21 +524,8 @@ class _ComposerCommandsState extends State<ComposerCommands> {
                 onPressed: load,
               ),
           ],
-          for (final row in rows ?? <Json>[])
-            CommonPopupMenuItem(
-              label: '${commandLabel(row)}  ${row['name']}',
-              section: row['section'] as String,
-              description: commandDescription(row),
-              glyph: commandIcon(row),
-              onPressed: () => widget.onPick(row),
-            ),
-          CommonPopupMenuItem(
-            label: '浏览技能',
-            section: '技能',
-            description: '选择技能并添加到消息',
-            glyph: Icons.auto_stories_outlined,
-            onPressed: () => widget.onPick({'clientAction': 'skills'}),
-          ),
+          for (final row in rows ?? <Json>[]) _rowItem(row),
+          _skillsItem(),
         ],
       ),
     );
@@ -514,6 +537,32 @@ class _ComposerCommandsState extends State<ComposerCommands> {
             curve: Curves.easeOutCubic,
             child: menu,
           );
+  }
+
+  /// One catalog row; [ComposerCommands.disabledReasons] keeps a row visible as
+  /// its greyed, explained state instead of hiding it or failing after the tap.
+  CommonPopupMenuItem _rowItem(Json row) {
+    final reason = widget.disabledReasons[composerCommandKey(row)];
+    return CommonPopupMenuItem(
+      label: '${commandLabel(row)}  ${row['name']}',
+      section: row['section'] as String,
+      description: reason ?? commandDescription(row),
+      glyph: commandIcon(row),
+      onPressed: reason == null ? () => widget.onPick(row) : null,
+    );
+  }
+
+  CommonPopupMenuItem _skillsItem() {
+    final reason = widget.disabledReasons['skills'];
+    return CommonPopupMenuItem(
+      label: '浏览技能',
+      section: '技能',
+      description: reason ?? '选择技能并添加到消息',
+      glyph: Icons.auto_stories_outlined,
+      onPressed: reason == null
+          ? () => widget.onPick({'clientAction': 'skills'})
+          : null,
+    );
   }
 }
 

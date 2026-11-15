@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:material_ui/material_ui.dart';
 
+import 'attachment_surface.dart';
 import 'image_preview.dart';
 import 'runtime.dart';
 import 'ui.dart';
@@ -26,14 +27,19 @@ class AttachmentDraft {
 }
 
 /// One composer draft owns each native selection, including while a different chat is open.
+///
+/// 调用面是本地运行时或远程连接面；本类只依赖 [AttachmentCallSurface]，因此上传
+/// 状态机、重试与移除语义在本地与远程完全一致（见
+/// `docs/remote-dsh/p5-remaining-design.md` §3.1、§3.4.5）。
 class AttachmentDrafts extends ChangeNotifier {
-  AttachmentDrafts(this.runtime)
-    : _generation = runtime.connectionGeneration,
-      _ready = runtime.ready {
-    runtime.addListener(_connectionChanged);
+  AttachmentDrafts(this.surface)
+    : _generation = surface.connectionGeneration,
+      _ready = surface.ready {
+    surface.addListener(_connectionChanged);
   }
 
-  final RuntimeController runtime;
+  /// 上传与释放请求的出口。
+  final AttachmentCallSurface surface;
   final _drafts = <String, List<AttachmentDraft>>{};
   final _messages = <String, String>{};
   String? pickingSession;
@@ -41,12 +47,18 @@ class AttachmentDrafts extends ChangeNotifier {
   int _generation;
   bool _ready;
 
+  /// 本地运行时（只有本地模式有）：图片预览复用既有的 `attachments.preview`
+  /// 读取链。远程模式没有本地运行时，rail 因此不提供「查看图片」入口——远程
+  /// 预览需要按远端上限单独实现，见设计文档 §3.4.4、§3.6。
+  RuntimeController? get localRuntime =>
+      surface is RuntimeController ? surface as RuntimeController : null;
+
   void _connectionChanged() {
     if (_closed) return;
-    final changed = _generation != runtime.connectionGeneration;
-    final disconnected = _ready && !runtime.ready;
-    _generation = runtime.connectionGeneration;
-    _ready = runtime.ready;
+    final changed = _generation != surface.connectionGeneration;
+    final disconnected = _ready && !surface.ready;
+    _generation = surface.connectionGeneration;
+    _ready = surface.ready;
     if (changed || disconnected) invalidateReceipts();
   }
 
@@ -80,7 +92,7 @@ class AttachmentDrafts extends ChangeNotifier {
       final selections = (result['items'] as List? ?? const []).cast<Json>();
       if (_closed) {
         for (final selection in selections) {
-          await runtime.call('attachments.release', {
+          await surface.call('attachments.release', {
             'sessionId': sessionId,
             'id': selection['id'],
           });
@@ -126,14 +138,22 @@ class AttachmentDrafts extends ChangeNotifier {
     item.status = 'uploading';
     item.error = null;
     _changed();
-    final generation = runtime.connectionGeneration;
+    final generation = surface.connectionGeneration;
+    final params = <String, dynamic>{
+      'sessionId': sessionId,
+      'id': item.id,
+      // 远程宿主没有设备侧缓存，只有这些声明能让它命名收据并对账字节数（§3.4.2）；
+      // 本地运行时直接从设备缓存读，不实现该接口，参数保持原样。
+      if (surface is AttachmentMetadataSurface) ...{
+        'name': item.name,
+        'mediaType': item.mediaType,
+        'bytes': item.bytes,
+      },
+    };
     try {
-      final receipt = await runtime.call('attachments.prepare', {
-        'sessionId': sessionId,
-        'id': item.id,
-      }) as Json;
+      final receipt = await surface.call('attachments.prepare', params) as Json;
       if (!_contains(sessionId, item) || item.removing) return;
-      if (generation != runtime.connectionGeneration || !runtime.ready) {
+      if (generation != surface.connectionGeneration || !surface.ready) {
         throw StateError('运行服务已重启，请重试准备此附件后发送。');
       }
       final kind = receipt['kind'];
@@ -178,7 +198,7 @@ class AttachmentDrafts extends ChangeNotifier {
     item.removing = true;
     _changed();
     try {
-      await runtime.call('attachments.release', {
+      await surface.call('attachments.release', {
         'sessionId': sessionId,
         'id': id,
       });
@@ -202,7 +222,7 @@ class AttachmentDrafts extends ChangeNotifier {
     _changed();
     for (final item in consumed) {
       try {
-        await runtime.call('attachments.release', {
+        await surface.call('attachments.release', {
           'sessionId': sessionId,
           'id': item.id,
         });
@@ -229,11 +249,11 @@ class AttachmentDrafts extends ChangeNotifier {
   @override
   void dispose() {
     _closed = true;
-    runtime.removeListener(_connectionChanged);
+    surface.removeListener(_connectionChanged);
     for (final entry in _drafts.entries) {
       for (final item in entry.value) {
         unawaited(
-          runtime
+          surface
               .call('attachments.release', {
                 'sessionId': entry.key,
                 'id': item.id,
@@ -263,6 +283,9 @@ class PocketAttachmentRail extends StatelessWidget {
     listenable: drafts,
     builder: (context, _) {
       final items = drafts.items(sessionId);
+      // 图片预览复用本地 `attachments.preview` 链路；远程模式没有本地运行时，
+      // 因此不提供这个入口（远程预览上限与缩略图见设计文档 §3.4.4）。
+      final previewRuntime = drafts.localRuntime;
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -331,11 +354,12 @@ class PocketAttachmentRail extends StatelessWidget {
                                   ),
                                 if (item.isImage &&
                                     item.status == 'ready' &&
-                                    !item.removing)
+                                    !item.removing &&
+                                    previewRuntime != null)
                                   PocketButton.tonal(
                                     onPressed: () => showPocketDraftImage(
                                       context,
-                                      drafts.runtime,
+                                      previewRuntime,
                                       sessionId,
                                       item.id,
                                       item.name,

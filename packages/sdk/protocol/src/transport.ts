@@ -14,6 +14,27 @@ type JsonRpcId = string | number
 type RequestHandler = (method: string, params: Record<string, unknown>) => Promise<unknown>
 type NotificationHandler = (method: string, params: Record<string, unknown>) => void
 
+/**
+ * Optional {@link JsonRpcLineTransport} behavior.
+ *
+ * Omitted options preserve the historical ids: outbound request ids stay
+ * `req_<uuid without dashes>`. Existing SDK wire ends rely on that form.
+ */
+export interface JsonRpcLineTransportOptions {
+  /**
+   * Prefix that opts outbound request ids into the protocol form `<prefix><uuid v4>`,
+   * e.g. `h-9c41…` for host-to-device requests.
+   *
+   * Direction-tagged ids keep the two peers of a bidirectional link from colliding;
+   * a remote host passes `h-` because its protocol requires it. The prefix must be
+   * 1–16 ASCII letters or digits followed by `-` or `_`.
+   */
+  requestIdPrefix?: string
+}
+
+/** Prefix accepted by {@link JsonRpcLineTransportOptions.requestIdPrefix}. */
+const REQUEST_ID_PREFIX_PATTERN = /^[A-Za-z][A-Za-z0-9]{0,15}[-_]$/u
+
 /** A JSON-RPC error response, preserving the wire `code` and optional `data`. */
 export class JsonRpcResponseError extends Error {
   /**
@@ -61,20 +82,32 @@ interface PendingRequest {
  * later outbound requests with the first failure; start does not reset that failure.
  * Missing request handlers return `-32601`; handler
  * failures return `-32603`. Notifications without a handler are dropped.
+ *
+ * Outbound request ids are `req_<uuid>` unless {@link JsonRpcLineTransportOptions.requestIdPrefix}
+ * selects direction-tagged ids.
  */
 export class JsonRpcLineTransport implements JsonRpcTransportPeer {
   private buffer = ''
   private failure: Error | undefined
   private readonly decoder = new StringDecoder('utf8')
+  private readonly requestIdPrefix: string | undefined
   private started = false
   private requestHandler: RequestHandler | undefined
   private notificationHandler: NotificationHandler | undefined
   private readonly pending = new Map<JsonRpcId, PendingRequest>()
 
+  /**
+   * @param input - frame source.
+   * @param output - frame sink.
+   * @param options - optional request-id scheme; omitted preserves the historical `req_` ids.
+   */
   constructor(
     private readonly input: Readable,
     private readonly output: Writable,
-  ) {}
+    options: JsonRpcLineTransportOptions = {},
+  ) {
+    this.requestIdPrefix = resolveRequestIdPrefix(options.requestIdPrefix)
+  }
 
   /** Attach the input listeners and begin reading frames. Idempotent. */
   start(): void {
@@ -125,7 +158,7 @@ export class JsonRpcLineTransport implements JsonRpcTransportPeer {
    */
   request(method: string, params: object, signal?: AbortSignal): Promise<unknown> {
     if (this.failure !== undefined) return Promise.reject(this.failure)
-    const id = `req_${randomUUID().replaceAll('-', '')}`
+    const id = this.nextRequestId()
     const message = { jsonrpc: '2.0', id, method, params }
     return new Promise((resolve, reject) => {
       let detach = (): void => {}
@@ -159,6 +192,18 @@ export class JsonRpcLineTransport implements JsonRpcTransportPeer {
         reject(error instanceof Error ? error : new Error(String(error)))
       }
     })
+  }
+
+  /**
+   * Generate the id for one outbound request.
+   *
+   * The pending map is keyed by exactly this value, so an echoed id always settles
+   * the request that produced it.
+   * @returns the legacy compact `req_` id or the configured protocol-form id.
+   */
+  private nextRequestId(): string {
+    if (this.requestIdPrefix === undefined) return `req_${randomUUID().replaceAll('-', '')}`
+    return `${this.requestIdPrefix}${randomUUID()}`
   }
 
   notify(method: string, params?: object): void {
@@ -278,6 +323,22 @@ export class JsonRpcLineTransport implements JsonRpcTransportPeer {
 /** Normalize JSON-RPC `params` to a plain object (arrays and scalars collapse to `{}`). */
 function objectParams(params: unknown): Record<string, unknown> {
   return params && typeof params === 'object' && !Array.isArray(params) ? params as Record<string, unknown> : {}
+}
+
+/**
+ * Validate the optional request-id prefix.
+ * @param prefix - configured prefix; `undefined` keeps the historical ids.
+ * @returns the prefix unchanged, or `undefined` when the option is omitted.
+ * @throws when the prefix could not produce direction-tagged ids.
+ */
+function resolveRequestIdPrefix(prefix: string | undefined): string | undefined {
+  if (prefix === undefined) return undefined
+  if (!REQUEST_ID_PREFIX_PATTERN.test(prefix)) {
+    throw new Error(
+      `requestIdPrefix must be 1–16 ASCII letters or digits followed by "-" or "_", received ${JSON.stringify(prefix)}`,
+    )
+  }
+  return prefix
 }
 
 /** Normalize an abort reason into the rejection Error (a non-Error reason is stringified). */

@@ -13,6 +13,9 @@ analyzer:
   exclude:
     - build/**
     - android/**
+    # The App-facing RPC facade is a Node workspace package. Its installed
+    # dependency tree contains no Dart, but scanning it makes analysis crawl.
+    - runtime/node_modules/**
 
 linter:
   # The lint rules applied to this project can be customized in the

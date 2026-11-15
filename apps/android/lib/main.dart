@@ -23,6 +23,7 @@ import 'session_document.dart';
 import 'session_files.dart';
 import 'session_browser.dart';
 import 'session_terminal.dart';
+import 'terminal_shells.dart';
 import 'models.dart';
 import 'account.dart';
 import 'account_quota_notice.dart';
@@ -212,6 +213,17 @@ class _ChatPageState extends State<ChatPage> {
   @override
   void initState() {
     super.initState();
+    // 全屏子页面（例如「远程 DSH」）原地挂出同一份侧栏，需要根页面的动作。
+    registerAppShellActions(
+      AppShellActions(
+        newChat: newChat,
+        openSession: (id) {
+          if (mounted) unawaited(loadConversation(id));
+        },
+        openTasks: () => unawaited(openTasks()),
+        openAutomations: openAutomations,
+      ),
+    );
     runtime.plugins.attach();
     unawaited(runtime.plugins.load());
     currentModelCatalog = CurrentModelCatalog(runtime);
@@ -261,7 +273,11 @@ class _ChatPageState extends State<ChatPage> {
       openBrowser: () =>
           openSessionResource(SessionBrowserPage(runtime: runtime)),
       openTerminal: () => openSessionResource(
-        SessionTerminalsPage(runtime: runtime, sessionId: sessionId),
+        SessionTerminalsPage(
+          runtime: runtime,
+          sessionId: sessionId,
+          shellSource: TerminalShellCatalog(runtime),
+        ),
       ),
       focusComposer: inputFocus.requestFocus,
       dismiss: () {
@@ -387,6 +403,7 @@ class _ChatPageState extends State<ChatPage> {
 
   @override
   void dispose() {
+    registerAppShellActions(null);
     runtime.plugins.detach();
     currentModelCatalog.dispose();
     keyboardShortcuts.dispose();
@@ -405,11 +422,17 @@ class _ChatPageState extends State<ChatPage> {
     super.dispose();
   }
 
-  void navigate(Widget page) {
+  /// 推入一个全屏目的地。
+  ///
+  /// [destination] 是去重标识：同一个目的地不会在栈上叠第二层（见
+  /// [openDestination]）。缺省用页面类型作标识，因此任何页面被重复推入都会被
+  /// 拦下；需要与侧栏入口共用同一标识时（如后台任务、自动化任务）显式传入。
+  void navigate(Widget page, {String? destination}) {
     unawaited(
-      Navigator.push<void>(
+      openDestination<void>(
         context,
-        PocketRoute<void>(builder: (_) => page),
+        destination: destination ?? page.runtimeType.toString(),
+        builder: (_) => page,
       ).then((_) {
         if (mounted) unawaited(currentModelCatalog.refresh());
       }),
@@ -495,6 +518,24 @@ class _ChatPageState extends State<ChatPage> {
     final id = runtime.newSession();
     localDraftSessions.add(id);
     activateSession(id);
+  }
+
+  /// 打开自动化任务页。全屏子页面经 [AppShellActions] 复用同一条动作。
+  void openAutomations() {
+    navigate(
+      AutomationsPage(
+        runtime: runtime,
+        onNewTask: () {
+          Navigator.of(context).popUntil((route) => route.isFirst);
+          newChat();
+        },
+        onOpenSession: (id) {
+          Navigator.of(context).popUntil((route) => route.isFirst);
+          unawaited(loadConversation(id));
+        },
+      ),
+      destination: 'automations',
+    );
   }
 
   Future<void> prepareSkillDraft(String id) {
@@ -685,11 +726,10 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   Future<void> openTasks() async {
-    final id = await Navigator.push<String>(
+    final id = await openDestination<String>(
       context,
-      PocketRoute<String>(
-        builder: (_) => TasksPage(runtime: runtime, sessionId: sessionId),
-      ),
+      destination: 'tasks',
+      builder: (_) => TasksPage(runtime: runtime, sessionId: sessionId),
     );
     if (!mounted || id == null) return;
     activateSession(id);
@@ -1132,19 +1172,7 @@ class _ChatPageState extends State<ChatPage> {
             if (mounted) unawaited(loadConversation(id));
           },
           onOpenTasks: () => unawaited(openTasks()),
-          onOpenAutomations: () => navigate(
-            AutomationsPage(
-              runtime: runtime,
-              onNewTask: () {
-                Navigator.of(context).popUntil((route) => route.isFirst);
-                newChat();
-              },
-              onOpenSession: (id) {
-                Navigator.of(context).popUntil((route) => route.isFirst);
-                unawaited(loadConversation(id));
-              },
-            ),
-          ),
+          onOpenAutomations: openAutomations,
         ),
         onDrawerChanged: (open) {
           drawerOpen = open;
