@@ -37,6 +37,8 @@ DSH 已有[会话工作目录文件树](../../packages/client/ui-sidebar-files/R
 
 已安装的 Build 118 保留受审查的 [android_ptc 入口](tool/model-ptc-readonly.md)、[带已审核子工具的工作流](tool/tool-native-workflow.md)及四个[离线 Linux 工具](tool/linux-vm-runtime.md)。Linux 注册还要求原生能力与经过验证的 Alpine 镜像；不含客体的安装包不暴露这些工具。[Build 116 r28 正式 profile 检查](tool/production-profile-device.md#build-116-r28)已在 `expectWorkflow=true` 下通过，此前限定范围的 PTC、Linux 和工作流生命周期检查也已通过。首次启动超时与 r32 进程冻结已归因于设备 OEM 冻结器：它在 Android 仍报告未冻结时冻结了 App 的两个进程；工作流挂起来自 Node 对原生执行与子级退役的无上限等待，现已有上限。原版不受限 Node PTC／workflow 插件及客体联网审批仍禁用。完整上游语义、终端剩余 VT／OSC 行为和 Office 创作仍未完成。Root、设备 ADB 控制和离线模型推理仍不属于约定的本期范围。
 
+Build 120 把上游 0.2.2 同步进本叉子。App 获得新的 Web 界面：子 Agent 页的团队任务板、设置页的 MCP 服务器状态与重启、长按消息引用、保存原文件与复制图片、随 Web bundle 继承的交付文件引用，以及记入复刻清单的上下文菜单与入口定制适配。兼容层同时收口：会话历史改用 `events()` 分页，不再依赖已移除的 `inspect()` shim；工具呈现改为显式的 profile 决策而非 `presentAs`；Agent 归属由运行时发起方推导，本地激活的子 Agent 归到其声明的父 Agent。Android host 套件（1235 项）与 Flutter 套件（1517 项）全部通过，构建与类型检查门也通过。本预览内嵌运行时 `d4bba7dd0216ba767d810a9a1870e7bd557e2705e0361c58fb7739b58efc5d62`，APK 为 `961d4df65abc8ccd99c1fee95f474ac929d7325209ef00f977fbc6d737978b7b`（`0.1.0+120`）；四个新交互面的真机验收仍待完成。
+
 [真实账号任务记录](tool/agent-service-task-device.md)覆盖 r33 简单回复、r34 一次跨无线断网恢复的 Linux 调用、r35 简单回复与完成通知，以及 r55 一个经审核的工作流子 Agent 执行一次离线 Linux 文件任务。这些记录不证明登录界面、头像渲染、令牌刷新、重新打开旧会话或点击通知已通过验收。[115→116 升级](tool/upgrade-116-acceptance.md)及后续升级至 118 均保留了记录范围内的 Session 字节和 SAF 授权。117→118 r40 检查保留了 55 个会话文件（共 1,573,622 字节）、全部三项 SAF 授权及合成凭据；记录位于 `.cache/android/upgrade-117-118-r40-20261028.log`。Build 118 还通过了[受控原生文本读取检查](tool/file-tool-parity.md#build-118-device-evidence)。这些针对特定产物的结果不证明每项 App 交互均通过验收。
 
 Build 117 新增[定时唤醒](tool/schedule-wakeup.md)，默认关闭，只有明确开启设置并具备 Android 精确闹钟权限后才启用。它包含开机后凭据加密存储可用时恢复已保存唤醒索引的路径，不会在开机时无条件启动 Agent。自然闹钟触发、权限变更和重启恢复仍需真机验收。
