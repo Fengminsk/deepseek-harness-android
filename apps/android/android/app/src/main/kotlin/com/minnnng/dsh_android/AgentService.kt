@@ -23,8 +23,19 @@ import java.util.concurrent.CompletableFuture
 private const val SUSPENSION_SAMPLE_MILLIS = 1_000L
 /** Ordinary stalls stay below ten seconds; a longer gap means this process did not run. */
 private const val SUSPENSION_THRESHOLD_MILLIS = 10_000L
-/** Matches the acceptance startup watchdog; a longer start is a stall, not a slow device. */
-private const val STARTUP_READY_TIMEOUT_MILLIS = 120_000L
+/**
+ * Startup tolerance measures idle CPU time, not wall time: unpacking the runtime
+ * on slow storage or starting Node on a low-end device may legitimately take
+ * minutes, while a real stall makes no progress at all.
+ */
+private const val STARTUP_STALL_TIMEOUT_MILLIS = 300_000L
+/** Extraction reports per chunk; node start has no progress signal until ready. */
+private const val EXTRACTION_STALL_TIMEOUT_MILLIS = 180_000L
+private const val NODE_START_STALL_TIMEOUT_MILLIS = 600_000L
+/** A periodic check keeps the watchdog independent of any single device's boot speed. */
+private const val STARTUP_STALL_CHECK_INTERVAL_MILLIS = 5_000L
+/** One slow sample or an expiring freeze must not kill a healthy process. */
+private const val STARTUP_STALL_CONFIRMATIONS = 2
 
 /** Owns Node and its IPC endpoint; activity destruction does not terminate tasks. */
 class AgentService : Service() {
@@ -118,8 +129,46 @@ class AgentService : Service() {
     @Volatile private var bootStage = "service-created"
     @Volatile private var workflowRecovery = JSONObject().put("state", "checking")
     private lateinit var suspension: ProcessSuspensionWatch
-    private val startupWatchdog = Runnable {
-        fail("运行时启动超时：${STARTUP_READY_TIMEOUT_MILLIS / 1000} 秒内未就绪（阶段 $bootStage）")
+    private val stallPolicy = StartupStallPolicy(STARTUP_STALL_CONFIRMATIONS)
+    private var lastSuspensionCount = 0L
+    private var lastSuspensionTotalMillis = 0L
+
+    /** Record forward progress so a slow device is never mistaken for a stalled one. */
+    private fun progressBoot() {
+        stallPolicy.recordProgress(SystemClock.uptimeMillis())
+    }
+
+    /** Extraction reports chunk progress; the node start gets its own allowance. */
+    private fun startupStallBudget(): Long = when (bootStage) {
+        "preparing-assets", "preparing-storage" -> EXTRACTION_STALL_TIMEOUT_MILLIS
+        "starting-node" -> NODE_START_STALL_TIMEOUT_MILLIS
+        else -> STARTUP_STALL_TIMEOUT_MILLIS
+    }
+
+    /** OEM freezers stop the sampler thread too; a newly observed suspension is progress, not a stall. */
+    private fun suspensionObserved(): Boolean {
+        if (!::suspension.isInitialized) return false
+        val snapshot = suspension.snapshot()
+        if (snapshot.count() == lastSuspensionCount && snapshot.totalMillis() == lastSuspensionTotalMillis) return false
+        lastSuspensionCount = snapshot.count()
+        lastSuspensionTotalMillis = snapshot.totalMillis()
+        return true
+    }
+
+    private val startupWatchdog = object : Runnable {
+        override fun run() {
+            if (phase == "ready") return
+            if (suspensionObserved()) {
+                progressBoot()
+                main.postDelayed(this, STARTUP_STALL_CHECK_INTERVAL_MILLIS)
+                return
+            }
+            if (stallPolicy.stalled(SystemClock.uptimeMillis(), startupStallBudget())) {
+                fail("运行时启动停滞：${startupStallBudget() / 1000} 秒内没有进展（阶段 $bootStage）")
+                return
+            }
+            main.postDelayed(this, STARTUP_STALL_CHECK_INTERVAL_MILLIS)
+        }
     }
     private var started = false
     private var recoveryBusy = false
@@ -557,7 +606,13 @@ class AgentService : Service() {
                 }
             } else {
                 broadcast(status())
-                main.postDelayed(startupWatchdog, STARTUP_READY_TIMEOUT_MILLIS)
+                progressBoot()
+                if (::suspension.isInitialized) {
+                    val snapshot = suspension.snapshot()
+                    lastSuspensionCount = snapshot.count()
+                    lastSuspensionTotalMillis = snapshot.totalMillis()
+                }
+                main.postDelayed(startupWatchdog, STARTUP_STALL_CHECK_INTERVAL_MILLIS)
                 workers.execute { boot() }
             }
         }
@@ -566,6 +621,7 @@ class AgentService : Service() {
     override fun onBind(intent: Intent?): IBinder = messenger.binder
 
     override fun onTimeout(startId: Int, fgsType: Int) {
+        main.removeCallbacks(startupWatchdog)
         // The current specialUse declaration has no fixed quota. A future
         // service type timeout must stop this dedicated Node process before
         // Android's grace period expires. Detached children need separate
@@ -590,8 +646,10 @@ class AgentService : Service() {
     private fun boot() {
         try {
             bootStage = "preparing-assets"
-            val runtime = RuntimeAssets.prepare(this)
+            progressBoot()
+            val runtime = RuntimeAssets.prepare(this) { progressBoot() }
             bootStage = "preparing-storage"
+            progressBoot()
             attachmentCacheDirectory()
             val home = File(noBackupFilesDir, "dsh").apply { mkdirs() }
             File(home, "workspace").mkdirs()
@@ -607,6 +665,7 @@ class AgentService : Service() {
                     System.currentTimeMillis())
             }
             bootStage = "recovering-workflows"
+            progressBoot()
             workflowRecovery = try {
                 val recovered = workflowRuns.startupRecovery()
                 JSONObject().put("state", when {
@@ -633,6 +692,7 @@ class AgentService : Service() {
                 } catch (exception: Exception) { fail(exception.message ?: "Runtime connection failed") }
             }
             bootStage = "starting-node"
+            progressBoot()
             appliedProxy = NetworkProxyPreferences(this).installEnvironment()
             synchronized(nodeStartLock) {
                 if (!lifecycle.acceptsFrames()) {
@@ -655,6 +715,7 @@ class AgentService : Service() {
     }
     private fun handle(frame: JSONObject) {
         if (!lifecycle.acceptsFrames()) return
+        if (phase != "ready") progressBoot()
         if (frame.has("method") && frame.has("id")) {
             workers.execute {
                 if (!lifecycle.acceptsFrames()) return@execute
@@ -741,6 +802,8 @@ class AgentService : Service() {
             }
             if (frame.optString("method") == "runtime.ready") {
                 bootStage = "ready"
+                main.removeCallbacks(startupWatchdog)
+                progressBoot()
                 phase = "ready"
                 background.phase(phase)
                 main.removeCallbacks(summaryPoll)
@@ -869,6 +932,7 @@ class AgentService : Service() {
     }
     private fun stopForTransition(client: Messenger, token: String) {
         check(Application.getProcessName().endsWith(":agent")) { "Runtime restart requires the dedicated Agent process" }
+        main.removeCallbacks(startupWatchdog)
         if (!lifecycle.closeForProcessExit()) {
             transitionReply(client, token, PackageOperationTransitions.denied(
                 "runtime/transition-unconfirmed", "运行时连接已中断，服务切换结果未确认；重新打开后检查中断记录"))
