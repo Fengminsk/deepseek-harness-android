@@ -8280,9 +8280,9 @@
         "core": "partial",
         "ui": "partial",
         "behavior": "partial",
-        "device": "unverified"
+        "device": "partial"
       },
-      "note": "The subagent page reads the inherited agentTeam projection and renders per-status counts, owner, blocked state and write-scope warnings. Its switch calls the inherited agentTeams/setEnabled and confirms before hiding recorded tasks; teammate conversations stay in the subagent catalog. Widget tests cover projection parsing, the switch RPC and failure states; device behavior is unverified.",
+      "note": "The subagent page reads the inherited agentTeam projection and renders per-status counts, owner, blocked state and write-scope warnings. Its switch calls the inherited agentTeams/setEnabled and confirms before hiding recorded tasks; teammate conversations stay in the subagent catalog. Widget tests cover projection parsing, the switch RPC and failure states; device behavior is unverified. Build 121 rendered the child-Agent page, persisted the 团队模式 switch and loaded an empty shared task board on a OnePlus A6000; no delegated child existed to list.",
       "capability": "delegation"
     },
     {
@@ -8303,9 +8303,9 @@
         "core": "partial",
         "ui": "partial",
         "behavior": "partial",
-        "device": "unverified"
+        "device": "partial"
       },
-      "note": "The manager row is inherited from the Web bundle. The App streams mcpManager/watch for status and tool counts, restarts or probes one server through the original remotes, and links to the owning settings form for server edits; configuration writing stays with that form. Widget tests cover stream decoding, both actions and failure states.",
+      "note": "The manager row is inherited from the Web bundle. The App streams mcpManager/watch for status and tool counts, restarts or probes one server through the original remotes, and links to the owning settings form for server edits; configuration writing stays with that form. Widget tests cover stream decoding, both actions and failure states. Build 121 rendered the MCP server page with its empty state and configuration row on a OnePlus A6000.",
       "capability": "plugins-settings"
     },
     {
@@ -8327,9 +8327,9 @@
         "core": "not-applicable",
         "ui": "partial",
         "behavior": "partial",
-        "device": "unverified"
+        "device": "partial"
       },
-      "note": "A long-press message action inserts the authored text as a Markdown blockquote with one prefix per line and keeps the composer draft and caret. Assistant blockquotes use the shared Markdown style. The Web floating selection action and user-text quote chips are not implemented.",
+      "note": "A long-press message action inserts the authored text as a Markdown blockquote with one prefix per line and keeps the composer draft and caret. Assistant blockquotes use the shared Markdown style. The Web floating selection action and user-text quote chips are not implemented. Build 121 long-pressed a user message, chose 引用, saw the quoted marker and the composer quote bar on a OnePlus A6000.",
       "capability": "conversation",
       "notApplicable": {
         "core": "The Web row is client-only; Android quoting edits composer text and registers no host service."
@@ -8462,9 +8462,9 @@
         "core": "partial",
         "ui": "partial",
         "behavior": "partial",
-        "device": "unverified"
+        "device": "partial"
       },
-      "note": "Workspace entries stage the original file through the existing FileProvider copy and then save it through the system picker or, for images, put that copy on the clipboard. Conversation attachment images can be copied from the image viewer through the attachment service's verified cache; saving an attachment keeps the existing attachment save flow. Widget tests cover the picker outcome, cancellation, clipboard success, native failures and attachment copy messages; saving and clipboard delivery remain unverified on a device.",
+      "note": "Workspace entries stage the original file through the existing FileProvider copy and then save it through the system picker or, for images, put that copy on the clipboard. Conversation attachment images can be copied from the image viewer through the attachment service's verified cache; saving an attachment keeps the existing attachment save flow. Widget tests cover the picker outcome, cancellation, clipboard success, native failures and attachment copy messages; saving and clipboard delivery remain unverified on a device. Build 121 opened the long-press menu, saved the original through the system picker and copied a PNG to the clipboard on a OnePlus A6000; drag stays not-applicable on this platform.",
       "capability": "files",
       "notApplicable": {
         "core": "The Web row is client-only; Android file actions would call the existing workspace-files remotes."
