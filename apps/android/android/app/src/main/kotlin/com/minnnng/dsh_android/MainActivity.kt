@@ -52,6 +52,7 @@ class MainActivity : FlutterActivity() {
         }
     }
     private val attachments by lazy { AttachmentTransfers(this) }
+    private val pairingScan by lazy { PairingQrScan(this) }
     private val externalFiles by lazy { ExternalFileOpening(this) { frame, result -> sendCall(frame, result); Unit } }
     private val configurationTransfers by lazy { ConfigurationTransfers(this) }
     private var bound = false
@@ -263,6 +264,8 @@ class MainActivity : FlutterActivity() {
         // 真机附件验收旁路（仅 debug）：把启动 Intent 的 dshStageAttachment 登记为下一次
         // attachment.pick 的来源；release 编译期该调用与 extra 读取一起被折叠删除。
         if (BuildConfig.DEBUG) attachments.stage(intent)
+        // 扫码配对验收旁路（仅 debug）：启动 Intent 带 dshPairingScanImage 时解码并写 logcat。
+        if (BuildConfig.DEBUG) pairingScan.decodeLaunchImage(intent)
         documentPreviews = DocumentPreviewFactory(engine.dartExecutor.binaryMessenger) { frame, result -> sendCall(frame, result); Unit }.also {
             engine.platformViewsController.registry.registerViewFactory("dsh/document-preview", it)
         }
@@ -287,6 +290,16 @@ class MainActivity : FlutterActivity() {
                     call.argument<String>("id"),
                     result,
                 )
+                // 扫码配对：系统相机拍照 → 原生 ZXing 解码 → 文本回 Dart；配对流程与信任语义不变。
+                "remote.pairing.scan" -> pairingScan.scan(result)
+                // 验收旁路（仅 debug）：从 adb 推送的图片文件解码，证明 ZXing 解码链路。
+                "remote.pairing.scanImage" -> {
+                    if (BuildConfig.DEBUG) {
+                        pairingScan.decodeFile(call.argument<String>("path"), result)
+                    } else {
+                        result.notImplemented()
+                    }
+                }
                 "configurationTransfer.pick" -> configurationTransfers.pick(call.argument<String>("id") ?: "", result)
                 "configurationTransfer.save" -> configurationTransfers.save(
                     call.argument<String>("id") ?: "", call.argument<String>("text") ?: "",
@@ -879,8 +892,11 @@ class MainActivity : FlutterActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        // 新的启动请求会打断未完成的扫码：相机返回后没有页面在等这个 Result。
+        pairingScan.cancelPending()
         // singleTop 复用同一个 Activity 时，「am start」带来的调试暂存 extra 在这里登记。
         if (BuildConfig.DEBUG) attachments.stage(intent)
+        if (BuildConfig.DEBUG) pairingScan.decodeLaunchImage(intent)
         deliverNavigation()
     }
     private fun deliverNavigation() {
@@ -960,6 +976,7 @@ class MainActivity : FlutterActivity() {
         if (attachmentFiles.onActivityResult(requestCode, resultCode, data)) return
         if (attachments.onActivityResult(requestCode, resultCode, data)) return
         if (configurationTransfers.onActivityResult(requestCode, resultCode, data)) return
+        if (pairingScan.onActivityResult(requestCode, resultCode, data)) return
         transfers.onActivityResult(requestCode, resultCode, data)
     }
     override fun onDestroy() {
@@ -976,6 +993,7 @@ class MainActivity : FlutterActivity() {
         attachmentFiles.close()
         externalFiles.close()
         attachments.close()
+        pairingScan.close()
         configurationTransfers.close()
         restarting?.error("closed", "重启期间界面已关闭，请重新打开 App 查看运行时状态", null)
         restarting = null

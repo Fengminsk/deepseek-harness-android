@@ -23,6 +23,16 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/external_open_paths" />
         </provider>
+        <!-- 扫码配对：系统相机往本 App 的私有缓存写一张照片，只授权这一张 URI。 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/remote_pairing_paths" />
+        </provider>
         <service android:name=".AgentService" android:exported="false"
             android:process=":agent" android:stopWithTask="false"
             android:foregroundServiceType="specialUse">
@@ -118,6 +128,10 @@
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
+        </intent>
+        <!-- 扫码配对：相机 intent 的可见性声明（Android 11+ 包可见性）。 -->
+        <intent>
+            <action android:name="android.media.action.IMAGE_CAPTURE" />
         </intent>
     </queries>
 </manifest>

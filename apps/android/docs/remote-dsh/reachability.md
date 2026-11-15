@@ -322,7 +322,7 @@ L4 反代看不到应用层内容，能做的是网络层控制：只放行已�
 
 ## 7. 配对链接与二维码
 
-配对只有「粘贴链接」一个入口（`apps/android/lib/remote_pairing_page.dart:131-194`）。为了不必手抄 107 个字符，宿主进程的 **stderr 直接连终端**时会在配对日志后额外打印一张字符画二维码（实现与校验见 [pairing-qr-design.md](pairing-qr-design.md)）：
+配对入口有四种（App 的「添加连接」页：粘贴链接 / 扫码配对 / 搜索局域网 / 手动地址，见 §11）。为了不必手抄 107 个字符，宿主进程的 **stderr 直接连终端**时会在配对日志后额外打印一张字符画二维码（实现与校验见 [pairing-qr-design.md](pairing-qr-design.md)）：
 
 ```text
 [remote-host] info listening: 远程宿主已就绪：wss://192.168.5.21:4777/app。…
@@ -331,7 +331,7 @@ L4 反代看不到应用层内容，能做的是网络层控制：只放行已�
 wss://192.168.5.21:4777#instance=…&token=…
 ```
 
-日志被重定向（写文件、被 e2e 脚本捕获）时**不会**打印二维码块，只会保留原有结构化日志行，字段不变（`apps/remote-host/src/index.ts:568`、`apps/remote-host/src/index.ts:1645-1662`）。扫码工具兼容性、以及后续「App 内扫码」方案见 [pairing-qr-design.md](pairing-qr-design.md)。
+日志被重定向（写文件、被 e2e 脚本捕获）时**不会**打印二维码块，只会保留原有结构化日志行，字段不变（`apps/remote-host/src/index.ts:568`、`apps/remote-host/src/index.ts:1645-1662`）。扫码由 App 内「扫码配对」入口完成（原生相机 intent + ZXing 解码，见 [pairing-qr-design.md](pairing-qr-design.md) 与 §11），扫码得到的文本与终端里那行明文链接是同一条。
 
 ---
 
@@ -385,6 +385,82 @@ wss://192.168.5.21:4777#instance=…&token=…
 | 配对链接解析：拒绝路径/查询串、默认 4777 | `apps/android/lib/remote_pairing.dart:127-199` |
 | App 设备记录（host/port 固化、无改地址入口） | `apps/android/lib/remote_device_store.dart:99-130`、`:208` |
 | App 收到撤销通知的反应 | `apps/android/lib/remote_connection.dart:498-501` |
-| 配对页只有粘贴入口与「完全信任」提示 | `apps/android/lib/remote_pairing_page.dart:131-194` |
+| 「添加连接」页四入口（粘贴/扫码/发现/手动地址）与「完全信任」提示 | `apps/android/lib/remote_pairing_page.dart`、`apps/android/lib/remote_pairing_scan.dart` |
+| App 侧 UDP 发现（探测/解析/去重/窗口） | `apps/android/lib/remote_discovery.dart`、`apps/android/docs/remote-dsh/discovery.md:321-331` |
 | 可达性阶梯（v1/v2/v3）与不做项 | `apps/android/docs/remote-dsh-plan.md:369-375`、`:436-444` |
+
+---
+
+## 11. 手机侧连接方式
+
+App 的「添加连接」页（`apps/android/lib/remote_pairing_page.dart`）把所有配对入口收拢在
+一处；四种方式最终都把**同一条配对链接**交给既有配对流程（`remote_pairing_flow.dart`：
+解析 → `GET /ca.cer` 校验 instanceId → `POST /pair` → 设备令牌进 Keystore），发现/扫码/
+手动地址都只是「拿到链接」的不同途径，不改变 TLS 固定 CA 与一次性令牌语义。
+
+| 入口 | 适用场景 | 前提 |
+|---|---|---|
+| 粘贴链接 | 任何可达方式（局域网、组网、反代、USB） | 从电脑日志/终端复制完整 `wss://…#instance=…&token=…` |
+| 扫码配对 | 电脑日志直接连终端（打印二维码） | 手机有可用相机；App 不申请 CAMERA 权限，用系统相机 intent |
+| 搜索局域网 | 手机与电脑在同一 Wi-Fi/网段 | 宿主 `discoveryEnabled`（默认开）、UDP 4778 入站放行、无 AP 隔离 |
+| 手动地址（高级） | USB adb reverse、反代/域名与链接地址不一致 | 已有一条完整配对链接；只替换地址，不跳过 instanceId |
+
+### 11.1 粘贴链接
+
+电脑上把日志里的 `wss://…` 整段复制发到手机（或手动输入），粘贴到「粘贴链接」后点「连接」。
+这是所有网络形态的兜底入口：发现被防火墙拦、相机不可用、反代地址变化都回到这里。
+
+### 11.2 扫码配对
+
+宿主 stderr 是终端时会在配对日志后打印字符画二维码（§7）。App 用系统相机
+（`MediaStore.ACTION_IMAGE_CAPTURE` + FileProvider，不申请 CAMERA 权限）拍照，原生
+ZXing 在后台线程解码，把文本填进链接输入框；**扫码不等于配对**，仍需点「连接」走上面
+那条流程。相机不可用（无相机应用、ROM 限制、解码失败）时给出可读原因并保留粘贴入口。
+解码与验收细节见 [pairing-qr-design.md](pairing-qr-design.md)。
+
+### 11.3 搜索局域网（UDP 发现）
+
+协议、端口、字段与安全边界见 [discovery.md](discovery.md)。App 侧行为：
+
+- 只有切到「搜索局域网」或点「重新搜索」才发送一次探测，默认窗口 **2.5 s**，窗口结束
+  立即关闭套接字——不在 `initState` 常驻轮询，页面静置不产生 UDP 流量（60 fps 门禁）。
+- 探测广播到 `255.255.255.255:4778`（另按本机 IPv4 猜 `/24` 子网广播），宿主单播回
+  `{name, origin, instanceId, pairing}`；只接受本轮 nonce 回显，坏帧静默丢弃。
+- `pairing.open=true`：列表里点「连接」直接用宿主给的 `pairUrl`（与二维码/日志同一条），
+  走既有配对流程；`pairing.open=false`：显示「配对窗口未打开，请在电脑上重新打开」并提供
+  重新搜索；空结果给出同网段/防火墙/UDP 4778/AP 隔离说明与扫码、粘贴回退。
+- 发现结果只是提示：伪造应答最多让配对失败（CA 指纹对不上），不会建立信任，也不会写设备表。
+
+### 11.4 手动地址与令牌（高级）
+
+用于「链接里的地址手机不可达，但另有一条网络路径可达」：
+
+- **USB adb reverse**（手机没有 Wi-Fi/跨网段时的调试通道）：
+
+  ```powershell
+  # PC 上执行（USB 已连接、adb 授权）
+  D:\Programs\adb\adb.exe reverse tcp:4777 tcp:4777
+  # 手机：添加连接 → 手动地址与令牌 → 配对链接粘贴电脑日志里的完整链接
+  #       电脑地址填 127.0.0.1:4777 → 用这个地址配对
+  # 结束后：adb reverse --remove-all
+  ```
+
+  宿主叶子证书的 SAN **恒包含 127.0.0.1 与 localhost**（`apps/remote-host/src/tls.ts` 的
+  `MANDATORY_HOSTS`），所以固定 CA + 主机名校验都能通过；这条通道只用一次配对，
+  配对后的连接地址会记成 `127.0.0.1:4777`，拔掉 USB 后该设备需要重新配对/改地址。
+
+- **反代/隧道地址替换**：链接由电脑按 `publicOrigin` 生成（可能是域名:8443），手机在
+  局域网内想直连内网地址时，把手动地址填成 `192.168.x.x:4777`；`instanceId` 与 token 仍取
+  自链接，证书校验照旧，不会降级为「见证书即信任」。
+
+- 手动地址**必须**有完整链接：只给 `host:port` 或只给 43 字符 token 无法配对——首次配对
+  的信任锚是链接里的 `instanceId`（CA 指纹），App 不会用「从该地址现取的证书」当锚点
+  （那会让同网段的中间人可以冒充电脑）。缺少时页面会明确提示粘贴完整链接或改用扫码。
+
+### 11.5 地址变化时怎么办
+
+主动改地址/换 CA/换设备的处理仍按 §5：地址变了（含 USB 改地址）要重新配对；CA 不变时
+已配对设备不受影响，但设备记录里的 host/port 是配对时固化的（`remote_device_store.dart`），
+所以换网络路径后需要重新配对，不能就地改已配对设备的地址。
+
 | 协议端点头/Origin/鉴权/关闭码 | `apps/android/docs/remote-dsh/protocol.md:44-56`、`:121-181`、`:100-113` |

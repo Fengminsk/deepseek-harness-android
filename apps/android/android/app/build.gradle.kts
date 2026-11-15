@@ -199,6 +199,8 @@ flutter {
 dependencies {
     implementation("androidx.browser:browser:1.10.0")
     implementation("androidx.webkit:webkit:1.15.0")
+    // 扫码配对：只用解码器（无相机/无 UI），相片由系统相机 intent 拍。
+    implementation("com.google.zxing:core:3.5.3")
 }
 
 // Invalidate only the shared-output cleanup marker when an earlier Flutter

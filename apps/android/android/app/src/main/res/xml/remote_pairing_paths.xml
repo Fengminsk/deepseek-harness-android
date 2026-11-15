@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 扫码配对用的 FileProvider 路径：只暴露系统相机写照片的一次性缓存目录。 -->
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <cache-path name="pairing-scan" path="pairing-scan/" />
+</paths>
