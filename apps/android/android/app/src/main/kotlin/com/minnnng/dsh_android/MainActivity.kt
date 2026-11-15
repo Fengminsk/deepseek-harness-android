@@ -55,6 +55,7 @@ class MainActivity : FlutterActivity() {
     private val pairingScan by lazy { PairingQrScan(this) }
     private val externalFiles by lazy { ExternalFileOpening(this) { frame, result -> sendCall(frame, result); Unit } }
     private val configurationTransfers by lazy { ConfigurationTransfers(this) }
+    private val remoteNotifications by lazy { RemoteNotifications(this) }
     private var bound = false
     private var connection: ServiceConnection? = null
     private var foreground = false
@@ -411,6 +412,20 @@ class MainActivity : FlutterActivity() {
                             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 43)
                         }
                     } else result.success(null)
+                }
+                // 远程宿主推送（protocol §8.2/§8.3）：Dart 侧只在 App 不在前台时调用，
+                // 渠道与本地通知共用；通知权限关闭时 RemoteNotifications 静默降级，
+                // 复用既有 notifications.request 流程，不新增权限弹窗。
+                "notifications.remote.show" -> result.success(remoteNotifications.show(
+                    call.argument<String>("kind"),
+                    call.argument<String>("title"),
+                    call.argument<String>("body"),
+                    call.argument<String>("tag"),
+                    call.argument<String>("sessionId"),
+                ))
+                "notifications.remote.cancelAll" -> {
+                    remoteNotifications.cancelAll()
+                    result.success(null)
                 }
                 "restart" -> restartRuntime(result)
                 "runtime.ensureBound" -> ensureBinding(result)

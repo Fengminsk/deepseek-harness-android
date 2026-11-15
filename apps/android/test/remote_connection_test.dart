@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:dsh_android/remote_connection.dart';
 import 'package:dsh_android/remote_device_store.dart';
+import 'package:dsh_android/remote_notifications.dart';
 import 'package:dsh_android/remote_pairing.dart';
 import 'package:dsh_android/remote_transport.dart';
 import 'package:flutter/services.dart';
@@ -12,6 +13,57 @@ import 'support/remote_tls_fixture.dart';
 
 /// 设备令牌的线上形态：43 字符 base64url（协议 §2.1）。
 const String _deviceToken = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq';
+
+/// 远程通知设备侧出口的内存替身：记录弹出与清理，供连接层断言。
+class _RecordingNotificationBridge implements RemoteNotificationBridge {
+  final List<RemoteNotification> shown = <RemoteNotification>[];
+  int cancelAllCalls = 0;
+
+  @override
+  Future<void> show(RemoteNotification notification) async {
+    shown.add(notification);
+  }
+
+  @override
+  Future<void> cancelAll() async {
+    cancelAllCalls++;
+  }
+}
+
+Map<String, dynamic> _taskCompletedNotification({
+  String taskId = 'task-1',
+  int turn = 7,
+  String summary = '已改 3 个文件',
+}) => <String, dynamic>{
+  'taskId': taskId,
+  'sessionId': 's-1',
+  'title': '修复登录',
+  'status': 'completed',
+  'turn': turn,
+  'completedAt': 1763000000000,
+  'summary': summary,
+};
+
+Map<String, dynamic> _approvalPendingNotification({
+  String interactionId = 'interaction-1',
+}) => <String, dynamic>{
+  'interactionId': interactionId,
+  'sessionId': 's-1',
+  'kind': 'approval',
+  'title': 'pwsh',
+  'summary': '请求执行 npm test',
+  'createdAt': 1763000000000,
+};
+
+Map<String, dynamic> _sessionChangedNotification({
+  String sessionId = 's-1',
+  int revision = 2,
+}) => <String, dynamic>{
+  'sessionId': sessionId,
+  'revision': revision,
+  'title': '新标题',
+  'updatedAt': 1763000000000,
+};
 
 /// 内存版本的令牌保管口：测试不碰 Keystore，也不读偏好。
 class _MemoryVault implements RemoteDeviceTokenVault {
@@ -163,12 +215,16 @@ RemoteConnectionController _controllerFor(
   _FakeLink link, {
   Duration hostStatusTimeout =
       RemoteConnectionController.defaultHostStatusTimeout,
+  RemoteNotificationBridge? notificationBridge,
+  bool Function()? isAppForeground,
 }) => RemoteConnectionController(
   store: RemoteDeviceStore(
     channel: const MethodChannel('test/remote_connection_unused'),
     tokens: _MemoryVault(_deviceToken),
   ),
   hostStatusTimeout: hostStatusTimeout,
+  notificationBridge: notificationBridge ?? _RecordingNotificationBridge(),
+  isAppForeground: isAppForeground ?? () => false,
   createTransport: ({
     required String endpoint,
     required String token,
@@ -277,9 +333,13 @@ RemoteConnectionController _controllerWith(
   RemoteTransportFactory factory, {
   Duration hostStatusTimeout =
       RemoteConnectionController.defaultHostStatusTimeout,
+  RemoteNotificationBridge? notificationBridge,
+  bool Function()? isAppForeground,
 }) => RemoteConnectionController(
   store: store,
   hostStatusTimeout: hostStatusTimeout,
+  notificationBridge: notificationBridge ?? _RecordingNotificationBridge(),
+  isAppForeground: isAppForeground ?? () => false,
   createTransport: factory,
 );
 
@@ -472,7 +532,8 @@ void main() {
 
   test('remote.deviceRevoked 立即把连接置为已撤销', () async {
     final link = _FakeLink();
-    final controller = _controllerFor(link);
+    final bridge = _RecordingNotificationBridge();
+    final controller = _controllerFor(link, notificationBridge: bridge);
     addTearDown(controller.dispose);
     await controller.connect(_device());
     link.handshakeSucceeded(_hostInfo());
@@ -482,11 +543,244 @@ void main() {
       'reason': 'user-revoked',
       'revokedAt': 1763000000000,
     });
-    await Future<void>.delayed(Duration.zero);
+    await pumpEventQueue();
 
     expect(controller.phase, RemoteConnectionPhase.failed);
     expect(controller.lastErrorCode, 'auth-revoked');
     expect(controller.lastError, contains('重新配对'));
+    expect(
+      bridge.cancelAllCalls,
+      greaterThanOrEqualTo(1),
+      reason: '撤销后连接终止，远程系统通知要一起清掉',
+    );
+  });
+
+  group('远程系统通知（协议 §8）', () {
+    test('remote.taskCompleted 严格解析后计数、广播并弹系统通知', () async {
+      final link = _FakeLink();
+      final bridge = _RecordingNotificationBridge();
+      final controller = _controllerFor(link, notificationBridge: bridge);
+      addTearDown(controller.dispose);
+      await controller.connect(_device());
+      link.handshakeSucceeded(_hostInfo());
+
+      final streamed = <RemoteNotification>[];
+      final subscription = controller.remoteNotifications.listen(streamed.add);
+      addTearDown(subscription.cancel);
+
+      link.emit('remote.taskCompleted', _taskCompletedNotification());
+      await pumpEventQueue();
+
+      expect(controller.notificationCount('remote.taskCompleted'), 1);
+      expect(controller.lastNotificationMethod, 'remote.taskCompleted');
+      expect(streamed, hasLength(1));
+      expect(streamed.single.title, '修复登录');
+      expect(bridge.shown, hasLength(1));
+      expect(bridge.shown.single.body, '已改 3 个文件');
+
+      // 同一 sessionId+turn 的重复帧不再弹第二次。
+      link.emit('remote.taskCompleted', _taskCompletedNotification());
+      await pumpEventQueue();
+      expect(bridge.shown, hasLength(1));
+      expect(controller.notificationCount('remote.taskCompleted'), 1);
+    });
+
+    test('remote.approvalPending 按 interactionId 去重后弹系统通知', () async {
+      final link = _FakeLink();
+      final bridge = _RecordingNotificationBridge();
+      final controller = _controllerFor(link, notificationBridge: bridge);
+      addTearDown(controller.dispose);
+      await controller.connect(_device());
+      link.handshakeSucceeded(_hostInfo());
+
+      link.emit('remote.approvalPending', _approvalPendingNotification());
+      link.emit('remote.approvalPending', _approvalPendingNotification());
+      link.emit(
+        'remote.approvalPending',
+        _approvalPendingNotification(interactionId: 'interaction-2'),
+      );
+      await pumpEventQueue();
+
+      expect(controller.notificationCount('remote.approvalPending'), 2);
+      expect(bridge.shown, hasLength(2));
+    });
+
+    test('缺少必填字段的 remote.* 帧被丢弃且不计入通知计数', () async {
+      final link = _FakeLink();
+      final bridge = _RecordingNotificationBridge();
+      final controller = _controllerFor(link, notificationBridge: bridge);
+      addTearDown(controller.dispose);
+      await controller.connect(_device());
+      link.handshakeSucceeded(_hostInfo());
+
+      link.emit('remote.taskCompleted', <String, dynamic>{
+        'sessionId': 's-1',
+      });
+      link.emit('remote.approvalPending', <String, dynamic>{
+        'interactionId': 'interaction-1',
+      });
+      await pumpEventQueue();
+
+      expect(controller.notificationCount('remote.taskCompleted'), 0);
+      expect(controller.notificationCount('remote.approvalPending'), 0);
+      expect(controller.lastNotificationMethod, isNull);
+      expect(bridge.shown, isEmpty);
+    });
+
+    test('remote.sessionChanged 只更新计数与 revision 水位，不弹通知', () async {
+      final link = _FakeLink();
+      final bridge = _RecordingNotificationBridge();
+      final controller = _controllerFor(link, notificationBridge: bridge);
+      addTearDown(controller.dispose);
+      await controller.connect(_device());
+      link.handshakeSucceeded(_hostInfo());
+
+      link.emit('remote.sessionChanged', _sessionChangedNotification());
+      await pumpEventQueue();
+
+      expect(controller.notificationCount('remote.sessionChanged'), 1);
+      expect(controller.lastSessionChange?.title, '新标题');
+      expect(controller.sessionRevision('s-1'), 2);
+
+      // 同一 sessionId 的 revision 回退帧丢弃（协议 §8.5）。
+      link.emit(
+        'remote.sessionChanged',
+        _sessionChangedNotification(revision: 1),
+      );
+      await pumpEventQueue();
+      expect(controller.notificationCount('remote.sessionChanged'), 1);
+      expect(controller.lastSessionChange?.revision, 2);
+
+      link.emit(
+        'remote.sessionChanged',
+        _sessionChangedNotification(revision: 3),
+      );
+      await pumpEventQueue();
+      expect(controller.notificationCount('remote.sessionChanged'), 2);
+      expect(controller.sessionRevision('s-1'), 3);
+      expect(bridge.shown, isEmpty, reason: '会话变更没有待办动作，不弹系统通知');
+    });
+
+    test('App 在前台时计数照旧但不弹系统通知', () async {
+      final link = _FakeLink();
+      final bridge = _RecordingNotificationBridge();
+      final controller = _controllerFor(
+        link,
+        notificationBridge: bridge,
+        isAppForeground: () => true,
+      );
+      addTearDown(controller.dispose);
+      await controller.connect(_device());
+      link.handshakeSucceeded(_hostInfo());
+
+      final frames = <String>[];
+      final subscription = controller.events.listen(
+        (event) => frames.add(event['method'] as String),
+      );
+      addTearDown(subscription.cancel);
+
+      link.emit('remote.taskCompleted', _taskCompletedNotification());
+      await pumpEventQueue();
+
+      expect(controller.notificationCount('remote.taskCompleted'), 1);
+      expect(frames, contains('remote.taskCompleted'));
+      expect(bridge.shown, isEmpty, reason: '前台由页面线呈现同一事实');
+    });
+
+    test('App 退到后台后新通知照常弹系统通知', () async {
+      final link = _FakeLink();
+      final bridge = _RecordingNotificationBridge();
+      var foreground = true;
+      final controller = _controllerFor(
+        link,
+        notificationBridge: bridge,
+        isAppForeground: () => foreground,
+      );
+      addTearDown(controller.dispose);
+      await controller.connect(_device());
+      link.handshakeSucceeded(_hostInfo());
+
+      link.emit('remote.taskCompleted', _taskCompletedNotification(turn: 7));
+      await pumpEventQueue();
+      expect(bridge.shown, isEmpty);
+
+      foreground = false;
+      link.emit('remote.taskCompleted', _taskCompletedNotification(turn: 8));
+      await pumpEventQueue();
+      expect(bridge.shown, hasLength(1));
+      expect(bridge.shown.single.turn, 8);
+    });
+
+    test('切换电脑时清空去重表并取消远程系统通知', () async {
+      final devices = _DevicePreferences(<RemoteDevice>[
+        _device(),
+        _secondDevice(),
+      ]);
+      addTearDown(devices.dispose);
+      final store = devices.store(_MemoryVault(_deviceToken));
+      final factory = _LinkFactory();
+      final bridge = _RecordingNotificationBridge();
+      final controller = _controllerWith(
+        store,
+        factory.call,
+        notificationBridge: bridge,
+      );
+      addTearDown(controller.dispose);
+
+      await controller.connect(_device());
+      _completeHandshake(factory.links.single);
+      factory.links.single.emit(
+        'remote.approvalPending',
+        _approvalPendingNotification(),
+      );
+      await pumpEventQueue();
+      expect(bridge.shown, hasLength(1));
+      final cancelsBeforeSwitch = bridge.cancelAllCalls;
+
+      await controller.switchTo(_secondDevice());
+      await pumpEventQueue();
+      expect(
+        bridge.cancelAllCalls,
+        greaterThan(cancelsBeforeSwitch),
+        reason: '切换电脑时旧电脑的通知必须清掉',
+      );
+
+      _completeHandshake(factory.links.last);
+      factory.links.last.emit(
+        'remote.approvalPending',
+        _approvalPendingNotification(),
+      );
+      await pumpEventQueue();
+      expect(
+        bridge.shown,
+        hasLength(2),
+        reason: '新连接上的同一 interactionId 是另一台电脑的事实，要重新提醒',
+      );
+    });
+
+    test('断开连接时取消远程系统通知', () async {
+      final link = _FakeLink();
+      final bridge = _RecordingNotificationBridge();
+      final controller = _controllerFor(link, notificationBridge: bridge);
+      addTearDown(controller.dispose);
+      await controller.connect(_device());
+      link.handshakeSucceeded(_hostInfo());
+      link.emit('remote.approvalPending', _approvalPendingNotification());
+      await pumpEventQueue();
+      expect(bridge.shown, hasLength(1));
+      final cancelsBeforeDisconnect = bridge.cancelAllCalls;
+
+      await controller.disconnect();
+      await pumpEventQueue();
+
+      expect(controller.phase, RemoteConnectionPhase.idle);
+      expect(
+        bridge.cancelAllCalls,
+        greaterThan(cancelsBeforeDisconnect),
+        reason: '断开后通知里的会话已经没有可点开的远程上下文',
+      );
+      expect(controller.notificationCounts, isEmpty);
+    });
   });
 
   group('多台电脑切换', () {

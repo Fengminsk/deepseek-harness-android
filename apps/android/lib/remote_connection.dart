@@ -50,6 +50,17 @@
 /// [RemoteDeviceStore.readToken] 的冷启动读取受凭据门面限制，失败原因由存储层
 /// 解释，本类只把它的中文消息原样交给页面，绝不把「读不到令牌」伪装成「未配对」。
 ///
+/// ## 远程系统通知
+///
+/// `remote.taskCompleted` / `remote.approvalPending` 交给
+/// `RemoteNotificationDispatcher`（见 remote_notifications.dart）：严格解析、去重，
+/// 并且**只在 App 不在前台时**弹系统通知——前台由页面线呈现同一事实，避免重复打扰
+/// （协议 §8.1）。`remote.sessionChanged` 只更新本类的通知计数、最后一条变更与
+/// `revision` 水位，不弹系统通知。
+///
+/// 断连、切换电脑、收到 `remote.deviceRevoked` 时清空去重表并取消远程系统通知；
+/// 这些路径都汇合在 [_closeTransport]，页面不需要自己清。
+///
 /// ## 生命周期
 ///
 /// [dispose] 会关闭传输与 [events] 广播；页面持有本类时必须由创建方调用
@@ -62,6 +73,7 @@ import 'package:flutter/foundation.dart';
 
 import 'remote_device_store.dart';
 import 'remote_native_bridge.dart';
+import 'remote_notifications.dart';
 import 'remote_transport.dart';
 import 'runtime_transport.dart';
 
@@ -120,14 +132,23 @@ class RemoteConnectionController extends ChangeNotifier {
   /// [capabilities] 是客户端能力声明，v1 只有 `window-ack`（协议 §10.3）。
   /// [createTransport] 只给测试替换传输实现；[hostStatusTimeout] 是握手完成后等待
   /// 宿主 `runtime.status` 的时限（协议 §3.4）。
+  ///
+  /// [notificationBridge] 与 [isAppForeground] 只给测试替换系统通知出口与前台判定：
+  /// 缺省分别走 `dsh/runtime` 通道与 `WidgetsBinding.instance.lifecycleState`。
   RemoteConnectionController({
     required this.store,
     this.appVersion = defaultRemoteAppVersion,
     List<String> capabilities = const <String>['window-ack'],
     this.hostStatusTimeout = defaultHostStatusTimeout,
     RemoteTransportFactory? createTransport,
+    RemoteNotificationBridge? notificationBridge,
+    bool Function()? isAppForeground,
   }) : _capabilities = List<String>.unmodifiable(capabilities),
-       _createTransport = createTransport ?? _createDefaultTransport {
+       _createTransport = createTransport ?? _createDefaultTransport,
+       _notifications = RemoteNotificationDispatcher(
+         bridge: notificationBridge ?? MethodChannelRemoteNotificationBridge(),
+         isAppForeground: isAppForeground,
+       ) {
     if (hostStatusTimeout <= Duration.zero) {
       throw ArgumentError.value(
         hostStatusTimeout,
@@ -179,6 +200,9 @@ class RemoteConnectionController extends ChangeNotifier {
   final List<String> _capabilities;
   final RemoteTransportFactory _createTransport;
 
+  /// 远程系统通知的解析、去重、前台抑制与设备侧出口（remote_notifications.dart）。
+  final RemoteNotificationDispatcher _notifications;
+
   List<RemoteDevice> _devices = const <RemoteDevice>[];
   RemoteDevice? _activeDevice;
   RemoteConnectionPhase _phase = RemoteConnectionPhase.idle;
@@ -199,6 +223,12 @@ class RemoteConnectionController extends ChangeNotifier {
   final Map<String, int> _notificationCounts = <String, int>{};
   String? _lastNotificationMethod;
   bool _listenerNotifyScheduled = false;
+
+  /// 每个会话最近一次 `remote.sessionChanged` 的 `revision`（协议 §8.5）。
+  ///
+  /// 只保留水位用于丢弃回退帧；跨连接清空，因为重连后宿主可能重新从 1 计数。
+  final Map<String, int> _sessionRevisions = <String, int>{};
+  RemoteSessionChange? _lastSessionChange;
 
   /// 握手是否已完成（等价于传输层的 `ready` 阶段）。
   bool _handshakeComplete = false;
@@ -271,6 +301,22 @@ class RemoteConnectionController extends ChangeNotifier {
   /// 全部非状态通知的方法名与累计次数（不可变快照）。
   Map<String, int> get notificationCounts =>
       Map<String, int>.unmodifiable(_notificationCounts);
+
+  /// 通过严格解析与去重的远程系统通知流（协议 §8.2 / §8.3）。
+  ///
+  /// 页面线已经通过 [events] 拿到同一批原始帧，这个流只给需要「刚刚完成 / 待处理」
+  /// 提示的页面用；前台时仍会广播，只是不弹系统通知（判断在
+  /// [RemoteNotificationDispatcher]）。连接销毁后流结束。
+  Stream<RemoteNotification> get remoteNotifications =>
+      _notifications.notifications;
+
+  /// 最近一条通过校验的 `remote.sessionChanged`（协议 §8.5）；还没收到过时为 null。
+  RemoteSessionChange? get lastSessionChange => _lastSessionChange;
+
+  /// [sessionId] 已接受的最高 `remote.sessionChanged.revision`；未知时为 null。
+  ///
+  /// 同一会话内回退的帧会被丢弃（协议 §8.5），因此这个值只增不减。
+  int? sessionRevision(String sessionId) => _sessionRevisions[sessionId];
 
   /// 宿主最近一次上报的阶段（`runtime.status.params.phase`）；未知时为 null。
   String? get hostPhase => _hostPhase;
@@ -451,6 +497,10 @@ class RemoteConnectionController extends ChangeNotifier {
     final closing = transport?.close();
     if (closing != null) unawaited(closing);
     if (!_events.isClosed) unawaited(_events.close());
+    // 页面离开 = 这条连接不再存在：系统通知里的会话/审批已经没有可点开的远程上下文，
+    // 留着只会把用户带回已关闭的页面，因此随连接一起取消（去重表由 dispatch 清）。
+    _notifications.clear();
+    _notifications.dispose();
     super.dispose();
   }
 
@@ -490,6 +540,12 @@ class RemoteConnectionController extends ChangeNotifier {
     _hostPhase = null;
     _notificationCounts.clear();
     _lastNotificationMethod = null;
+    _sessionRevisions.clear();
+    _lastSessionChange = null;
+    // 远程通知属于上一条连接：清空去重表并取消系统通知。所有断开路径（[connect]
+    // 开头的清场、[disconnect]、[_fail] 含 deviceRevoked）都汇合到这里，页面不必
+    // 自己清；冷启动后的第一次建连也走一次，顺带清掉上一次进程遗留的通知。
+    _notifications.clear();
     _recordedConnectedDeviceId = null;
     final subscription = _subscription;
     _subscription = null;
@@ -535,6 +591,15 @@ class RemoteConnectionController extends ChangeNotifier {
         // 同一门面在初始化完成时发的通知；与 runtime.status.phase == "ready"
         // 是同一个事实，两端口径都要认。
         _markHostReady();
+      case 'remote.taskCompleted':
+      case 'remote.approvalPending':
+        // 协议 §8.2/§8.3：先严格解析（失败即丢弃，不计数），再由分发器去重并决定
+        // 是否弹系统通知；前台抑制的判断在 RemoteNotificationDispatcher 里，因为
+        // 只有它知道「这条帧是否会被页面线重复呈现」。前台时仍然接受该帧（计数 +
+        // 通知流），只是不调系统通知 bridge。
+        if (_notifications.handle(method, payload)) _recordNotification(method);
+      case 'remote.sessionChanged':
+        _recordRemoteSessionChange(method, payload);
       case 'remote.deviceRevoked':
         // 协议 §8.4：收到即把该 PC 置为「已撤销、需重新配对」，忽略随后的关闭原因。
         _recordNotification(method);
@@ -542,6 +607,26 @@ class RemoteConnectionController extends ChangeNotifier {
       default:
         _recordNotification(method);
     }
+  }
+
+  /// 处理 `remote.sessionChanged`（协议 §8.5）：只更新连接层事实，不弹系统通知。
+  ///
+  /// 协议 §8.5 只承诺「同一会话内 revision 单调递增」，因此回退帧丢弃；跨会话无顺序
+  /// 保证，按 `sessionId` 独立记水位。会话变更由页面线通过 [events] 刷新列表，这里
+  /// 不产生系统通知：当前批次没有任何动作等待用户处理，弹了只是打扰。
+  ///
+  /// 宿主本批可能还没有发送这条通知；解析与水位先就位，宿主上线后不需要改 App 侧。
+  void _recordRemoteSessionChange(
+    String method,
+    Map<String, dynamic> params,
+  ) {
+    final change = parseRemoteSessionChanged(params);
+    if (change == null) return;
+    final known = _sessionRevisions[change.sessionId];
+    if (known != null && change.revision <= known) return;
+    _sessionRevisions[change.sessionId] = change.revision;
+    _lastSessionChange = change;
+    _recordNotification(method);
   }
 
   void _recordNotification(String method) {
