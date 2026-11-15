@@ -20,7 +20,14 @@
  * request/response methods against the real `terminal-controller`; cleanup closes any terminal
  * they created on every path. The attachment checks play the App side of the design §3.4 reverse
  * pull (`native.attachments.read`), then reference the receipt from `session.send`; cleanup
- * releases the drafts on every path. The cleanup check runs on every path.
+ * releases the drafts on every path. The send check also observes the protocol §8 system
+ * notification line: once the page-line `task.completed` fires, the mapped `remote.taskCompleted`
+ * must arrive and satisfy §8.2, and cleanup revalidates every observed `remote.*` frame. That
+ * observation degrades to a SKIP note when the runtime suppresses `task.completed` (for example
+ * while a goal is active), so the existing check semantics stay unchanged. The §8.5 title mapping
+ * (`session/title` → `remote.sessionChanged`) is covered keylessly by
+ * `notification-selfcheck.ts`; this E2E validates every `remote.sessionChanged` it does observe.
+ * The cleanup check runs on every path.
  *
  * Usage:
  * `node --import tsx/esm apps/remote-host/scripts/e2e-remote-host.ts --pair-url "<pair-url>"`
@@ -175,6 +182,43 @@ const ACK_REQUEST_CAP_MS = 5_000
 
 /** Observation window for unhandled async failures before the cleanup check reports. */
 const ASYNC_SETTLE_MS = 150
+
+/**
+ * Upper bound for observing the §8 push line after the assistant turn. The page line
+ * `task.completed` is the trigger; once it fires the mapped `remote.taskCompleted` follows within
+ * this window, so a short window keeps the run bounded when the runtime suppresses the trigger.
+ */
+const REMOTE_NOTIFICATION_WAIT_MS = 20_000
+
+/**
+ * Frozen protocol §8 limits, asserted so a host can never send a longer field or frame.
+ * Kept as literals here instead of importing `src/notifications.ts`: the E2E validates the wire
+ * contract (the App's view), not the host implementation that writes it.
+ */
+const REMOTE_FRAME_LIMIT_BYTES: Readonly<Record<string, number>> = {
+  'remote.taskCompleted': 8 * 1024,
+  'remote.approvalPending': 16 * 1024,
+  'remote.deviceRevoked': 1 * 1024,
+  'remote.sessionChanged': 4 * 1024,
+}
+
+/** Protocol §8.2/§8.3 field character limits. */
+const REMOTE_FIELD_LIMITS = {
+  id: 128,
+  title: 200,
+  taskSummary: 512,
+  approvalSummary: 1024,
+} as const
+
+/** Protocol §8.2 `status` enum. */
+const REMOTE_TASK_STATUSES: readonly string[] = ['completed', 'failed', 'cancelled']
+
+/** Protocol §8.3 `kind` enum. */
+const REMOTE_APPROVAL_KINDS: readonly string[] = ['approval', 'question', 'plan']
+
+/** Protocol §8.4 `reason` enum. */
+const REMOTE_REVOKE_REASONS: readonly string[] = ['user-revoked', 'expired']
+
 
 /** Human-readable JSON-RPC/WebSocket values are truncated to this length in failures. */
 const VALUE_PREVIEW_CHARS = 160
@@ -2188,6 +2232,294 @@ async function collectAssistantEvidence(
   }
 }
 
+/** One notification read from the client buffer with its buffer index. */
+interface BufferedNotification {
+  /** Parsed JSON-RPC notification frame. */
+  readonly frame: JsonObject
+  /** Zero-based position in the client's notification buffer. */
+  readonly index: number
+}
+
+/**
+ * Recompute one frame's wire size with the §1.3 counting rule.
+ * @param frame - Parsed frame.
+ * @returns UTF-8 byte count of `JSON.stringify(frame)`, including `jsonrpc`/`method`/`params`.
+ */
+function frameWireBytes(frame: JsonObject): number {
+  return Buffer.byteLength(JSON.stringify(frame), 'utf8')
+}
+
+/**
+ * Read the first buffered notification at or after an index matching a predicate.
+ * @param client - Open connection.
+ * @param fromIndex - First buffer position to consider.
+ * @param predicate - Frame test.
+ * @returns The matching frame and index, or `undefined`.
+ */
+function findBufferedNotification(
+  client: RemoteClient,
+  fromIndex: number,
+  predicate: (frame: JsonObject) => boolean,
+): BufferedNotification | undefined {
+  for (let index = fromIndex; index < client.notificationCount; index += 1) {
+    const frame = client.notificationAt(index)
+    if (frame !== undefined && predicate(frame)) return { frame, index }
+  }
+  return undefined
+}
+
+/**
+ * Wait for the next buffered notification matching a predicate, bounded by its own deadline.
+ *
+ * Unlike {@link RemoteClient.waitForNotification} this reports a timeout as `undefined` instead of
+ * throwing, because the §8 push observation degrades to a SKIP note when its trigger never fires.
+ * @param client - Open connection.
+ * @param fromIndex - First buffer position to consider.
+ * @param timeoutMs - Wait bound.
+ * @param label - Wait description used only in the internal `waitForNotification` call.
+ * @param predicate - Frame test.
+ * @returns The matching frame and index, or `undefined` on timeout.
+ */
+async function waitForBufferedNotification(
+  client: RemoteClient,
+  fromIndex: number,
+  timeoutMs: number,
+  label: string,
+  predicate: (frame: JsonObject) => boolean,
+): Promise<BufferedNotification | undefined> {
+  const deadline = Date.now() + Math.max(0, timeoutMs)
+  let cursor = fromIndex
+  for (;;) {
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) return undefined
+    let next: { readonly frame: JsonObject; readonly index: number }
+    try {
+      next = await client.waitForNotification(cursor, remaining, label)
+    } catch (error) {
+      if (error instanceof E2ETimeoutError) return undefined
+      throw error
+    }
+    cursor = next.index + 1
+    if (predicate(next.frame)) return { frame: next.frame, index: next.index }
+  }
+}
+
+/**
+ * Validate one optional string field of a §8 notification.
+ * @param params - Notification `params`.
+ * @param key - Field name.
+ * @param maxChars - Protocol character limit.
+ * @param required - Whether the field is mandatory.
+ * @param label - Notification method name used in failures.
+ * @param problems - Collector for failure descriptions.
+ */
+function validateRemoteString(
+  params: JsonObject,
+  key: string,
+  maxChars: number,
+  required: boolean,
+  label: string,
+  problems: string[],
+): void {
+  const value = params[key]
+  if (value === undefined) {
+    if (required) problems.push(`${label}: missing required "${key}"`)
+    return
+  }
+  if (typeof value !== 'string' || value.length === 0) {
+    problems.push(`${label}.${key}: expected a non-empty string, received ${describeValue(value)}`)
+    return
+  }
+  const characters = [...value].length
+  if (characters > maxChars) problems.push(`${label}.${key}: ${characters} characters, over the ${maxChars}-character limit`)
+  if (/[\r\n]/u.test(value)) problems.push(`${label}.${key}: must be a single line`)
+}
+
+/**
+ * Validate one optional integer field of a §8 notification.
+ * @param params - Notification `params`.
+ * @param key - Field name.
+ * @param minimum - Smallest accepted value.
+ * @param required - Whether the field is mandatory.
+ * @param label - Notification method name used in failures.
+ * @param problems - Collector for failure descriptions.
+ */
+function validateRemoteInteger(
+  params: JsonObject,
+  key: string,
+  minimum: number,
+  required: boolean,
+  label: string,
+  problems: string[],
+): void {
+  const value = params[key]
+  if (value === undefined) {
+    if (required) problems.push(`${label}: missing required "${key}"`)
+    return
+  }
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum) {
+    problems.push(`${label}.${key}: expected a safe integer >= ${minimum}, received ${describeValue(value)}`)
+  }
+}
+
+/**
+ * Validate one optional boolean field of a §8 notification.
+ * @param params - Notification `params`.
+ * @param key - Field name.
+ * @param label - Notification method name used in failures.
+ * @param problems - Collector for failure descriptions.
+ */
+function validateRemoteBoolean(params: JsonObject, key: string, label: string, problems: string[]): void {
+  const value = params[key]
+  if (value !== undefined && typeof value !== 'boolean') {
+    problems.push(`${label}.${key}: expected a boolean, received ${describeValue(value)}`)
+  }
+}
+
+/**
+ * Validate one inbound `remote.*` notification against the frozen §8 field tables.
+ *
+ * The check mirrors the App's minimum requirements: notification frames carry no `id`; every field
+ * is bounded; enums only take their frozen values; and the whole frame stays inside its §8 byte
+ * limit. Unknown `remote.*` methods fail because v1 lists exactly four (§8.2–§8.5).
+ * @param frame - Buffered notification frame.
+ * @returns Problems; empty when the frame is a valid §8 notification.
+ */
+function validateRemoteNotification(frame: JsonObject): string[] {
+  const problems: string[] = []
+  const method = frame['method']
+  if (typeof method !== 'string') return ['notification frame without a string method']
+  if (frame['jsonrpc'] !== '2.0') problems.push(`${method}: expected jsonrpc "2.0"`)
+  if (frame['id'] !== undefined) problems.push(`${method}: a notification frame must not carry an id (§8.1)`)
+  const params = asObject(frame['params'])
+  if (params === undefined) {
+    problems.push(`${method}: expected an object params`)
+    return problems
+  }
+  const limit = REMOTE_FRAME_LIMIT_BYTES[method]
+  if (limit === undefined) {
+    problems.push(`${method}: not one of the protocol §8 notification methods`)
+    return problems
+  }
+  const bytes = frameWireBytes(frame)
+  if (bytes > limit) problems.push(`${method}: frame is ${bytes} bytes, over the ${limit}-byte limit`)
+  switch (method) {
+    case 'remote.taskCompleted':
+      validateRemoteString(params, 'taskId', REMOTE_FIELD_LIMITS.id, true, method, problems)
+      validateRemoteString(params, 'sessionId', REMOTE_FIELD_LIMITS.id, true, method, problems)
+      validateRemoteString(params, 'workspaceId', REMOTE_FIELD_LIMITS.id, false, method, problems)
+      validateRemoteString(params, 'title', REMOTE_FIELD_LIMITS.title, true, method, problems)
+      validateRemoteString(params, 'summary', REMOTE_FIELD_LIMITS.taskSummary, false, method, problems)
+      validateRemoteInteger(params, 'turn', 0, false, method, problems)
+      validateRemoteInteger(params, 'completedAt', 1, true, method, problems)
+      validateRemoteBoolean(params, 'truncated', method, problems)
+      if (typeof params['status'] !== 'string' || !REMOTE_TASK_STATUSES.includes(params['status'])) {
+        problems.push(`${method}.status: expected one of ${REMOTE_TASK_STATUSES.join('/')}, received ${describeValue(params['status'])}`)
+      }
+      break
+    case 'remote.approvalPending':
+      validateRemoteString(params, 'interactionId', REMOTE_FIELD_LIMITS.id, true, method, problems)
+      validateRemoteString(params, 'sessionId', REMOTE_FIELD_LIMITS.id, true, method, problems)
+      validateRemoteString(params, 'title', REMOTE_FIELD_LIMITS.title, true, method, problems)
+      validateRemoteString(params, 'summary', REMOTE_FIELD_LIMITS.approvalSummary, false, method, problems)
+      validateRemoteString(params, 'toolName', REMOTE_FIELD_LIMITS.id, false, method, problems)
+      validateRemoteInteger(params, 'createdAt', 1, true, method, problems)
+      validateRemoteBoolean(params, 'truncated', method, problems)
+      if (typeof params['kind'] !== 'string' || !REMOTE_APPROVAL_KINDS.includes(params['kind'])) {
+        problems.push(`${method}.kind: expected one of ${REMOTE_APPROVAL_KINDS.join('/')}, received ${describeValue(params['kind'])}`)
+      }
+      break
+    case 'remote.deviceRevoked':
+      validateRemoteString(params, 'deviceId', REMOTE_FIELD_LIMITS.id, true, method, problems)
+      validateRemoteString(params, 'deviceLabel', REMOTE_FIELD_LIMITS.id, false, method, problems)
+      validateRemoteInteger(params, 'revokedAt', 1, true, method, problems)
+      if (typeof params['reason'] !== 'string' || !REMOTE_REVOKE_REASONS.includes(params['reason'])) {
+        problems.push(`${method}.reason: expected one of ${REMOTE_REVOKE_REASONS.join('/')}, received ${describeValue(params['reason'])}`)
+      }
+      break
+    case 'remote.sessionChanged':
+      validateRemoteString(params, 'sessionId', REMOTE_FIELD_LIMITS.id, true, method, problems)
+      validateRemoteString(params, 'workspaceId', REMOTE_FIELD_LIMITS.id, false, method, problems)
+      validateRemoteString(params, 'title', REMOTE_FIELD_LIMITS.title, false, method, problems)
+      validateRemoteInteger(params, 'revision', 0, true, method, problems)
+      validateRemoteInteger(params, 'updatedAt', 1, true, method, problems)
+      validateRemoteBoolean(params, 'archived', method, problems)
+      validateRemoteBoolean(params, 'removed', method, problems)
+      break
+    default:
+      break
+  }
+  return problems
+}
+
+/**
+ * Observe and validate the §8 system-notification line caused by the send check.
+ *
+ * The page line `task.completed` is the trigger for the mapped `remote.taskCompleted`; once it is
+ * observed the mapped frame is required and validated strictly. When the runtime never emits the
+ * trigger (it suppresses completion notices for turns it cannot confirm as completed, for example
+ * while a goal is active) the observation degrades to a SKIP note instead of failing the run;
+ * `§8.2` field mapping itself is covered keylessly by `notification-selfcheck.ts`.
+ * @param client - Open connection.
+ * @param sessionId - Session that was prompted.
+ * @param fromIndex - Notification index captured right before `session.send`.
+ * @param timeoutMs - Observation bound.
+ * @returns One detail line for the check report.
+ */
+async function observeRemoteTaskCompleted(
+  client: RemoteClient,
+  sessionId: string,
+  fromIndex: number,
+  timeoutMs: number,
+): Promise<string> {
+  const isTrigger = (frame: JsonObject): boolean =>
+    frame['method'] === 'task.completed' && asObject(frame['params'])?.['sessionId'] === sessionId
+  const isPush = (frame: JsonObject): boolean =>
+    frame['method'] === 'remote.taskCompleted' && asObject(frame['params'])?.['sessionId'] === sessionId
+  const deadline = Date.now() + Math.max(1_000, timeoutMs)
+  let cursor = fromIndex
+  let triggerSeen = false
+  for (;;) {
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) break
+    const next = await waitForBufferedNotification(
+      client,
+      cursor,
+      remaining,
+      'task.completed / remote.taskCompleted',
+      frame => isTrigger(frame) || isPush(frame),
+    )
+    if (next === undefined) break
+    cursor = next.index + 1
+    if (isTrigger(next.frame)) {
+      triggerSeen = true
+      continue
+    }
+    const problems = validateRemoteNotification(next.frame)
+    if (problems.length > 0) {
+      throw new Error(`remote.taskCompleted violates protocol §8.2: ${problems.join('; ')}`)
+    }
+    if (!triggerSeen && findBufferedNotification(client, fromIndex, isTrigger) === undefined) {
+      throw new Error('remote.taskCompleted arrived without a page-line task.completed trigger')
+    }
+    const params = asObject(next.frame['params']) ?? {}
+    const title = requireString(params['title'], 'remote.taskCompleted.title')
+    const bytes = frameWireBytes(next.frame)
+    const truncated = params['truncated'] === true
+    return `remote.taskCompleted matches §8.2 (${bytes} bytes, title=${[...title].length} chars, `
+      + `turn=${describeValue(params['turn'])}, truncated=${truncated}); page line task.completed observed`
+  }
+  if (triggerSeen) {
+    throw new Error(
+      `page line task.completed was observed but the mapped remote.taskCompleted did not follow within ${timeoutMs} ms`,
+    )
+  }
+  return `SKIP remote.taskCompleted: page line task.completed for session ${sessionId} not observed within ${timeoutMs} ms `
+    + '(the runtime suppresses it for turns it cannot confirm as completed, e.g. an active goal); '
+    + '§8.2 field mapping is covered by notification-selfcheck.ts'
+}
+
+
 /**
  * Run one check, converting failures and blocked prerequisites into a result.
  * @param check - Check definition.
@@ -2764,7 +3096,7 @@ function buildChecks(state: RunState): CheckDefinition[] {
       const code = requireString(pocket['code'], 'terminal.read (missing id) _pocket_error.code')
       if (code !== 'terminal/unavailable') {
         throw new Error(
-          `terminal.read for a missing terminal: expected _pocket_error.code terminal/unavailable, `
+          'terminal.read for a missing terminal: expected _pocket_error.code terminal/unavailable, '
           + `received ${code} (${describeValue(pocket)})`,
         )
       }
@@ -2997,7 +3329,7 @@ function buildChecks(state: RunState): CheckDefinition[] {
         throw new Error('attachments.prepare: the host never requested native.attachments.read for the draft')
       }
       if (pages.length < 2) {
-        throw new Error(`attachments.prepare: expected multiple native.attachments.read pages for `
+        throw new Error('attachments.prepare: expected multiple native.attachments.read pages for '
           + `${ATTACHMENT_FIXTURE_BYTES} bytes, received ${pages.length}`)
       }
       let expectedOffset = 0
@@ -3060,7 +3392,7 @@ function buildChecks(state: RunState): CheckDefinition[] {
         // `ATTACHMENT_WRITE_FAILED` envelope means the host's paged-read failure was masked by
         // the file-upload store instead of reaching `remoteFailure` with its protocol code.
         throw new Error(
-          `attachments.prepare for a missing draft: expected _pocket_error.code attachment-file/not-found, `
+          'attachments.prepare for a missing draft: expected _pocket_error.code attachment-file/not-found, '
           + `received ${code} (${describeValue(pocket)})`,
         )
       }
@@ -3196,6 +3528,13 @@ function buildChecks(state: RunState): CheckDefinition[] {
       if (tracker.failure !== undefined) {
         throw new Error(`stream acknowledgement failed: ${describeError(tracker.failure)}`)
       }
+      // §8 系统通知线：页面线 task.completed 之后必须跟着映射出的 remote.taskCompleted。
+      const pushDetail = await observeRemoteTaskCompleted(
+        client,
+        sessionId,
+        evidenceIndex,
+        Math.min(REMOTE_NOTIFICATION_WAIT_MS, Math.max(1_000, remainingMs(state) - 1_000)),
+      )
       await tracker.settle()
       return [
         `provider=${route.provider} model=${route.model}`,
@@ -3205,6 +3544,7 @@ function buildChecks(state: RunState): CheckDefinition[] {
         + ` (stream user/message=${evidence.streamUserMessages}, session.event=${evidence.sessionEventNotifications}`
         + `, session.live=${evidence.sessionLiveNotifications})`,
         `ackedThrough=${tracker.ackedThrough}`,
+        pushDetail,
       ].join('; ')
     },
   }
@@ -3248,6 +3588,22 @@ function buildChecks(state: RunState): CheckDefinition[] {
       const parts: string[] = []
       const client = state.client
       const tracker = state.tracker
+      // §8 推送线：整轮观察到的每一帧 remote.* 都必须满足冻结字段表、枚举与帧上限。
+      if (client !== undefined) {
+        const remoteCounts = new Map<string, number>()
+        for (let index = 0; index < client.notificationCount; index += 1) {
+          const frame = client.notificationAt(index)
+          if (frame === undefined) continue
+          const method = frame['method']
+          if (typeof method !== 'string' || !method.startsWith('remote.')) continue
+          remoteCounts.set(method, (remoteCounts.get(method) ?? 0) + 1)
+          for (const problem of validateRemoteNotification(frame)) problems.push(`remote.* violation: ${problem}`)
+        }
+        if (remoteCounts.size > 0) {
+          const summary = [...remoteCounts].map(([method, count]) => `${method}×${count}`).join(', ')
+          parts.push(`remote.* frames observed and validated: ${summary}`)
+        }
+      }
       try {
         // A terminal check may fail after `terminal.create` succeeded; the host terminal process
         // must not outlive the run. `terminal/unavailable` means the controller already dropped it.
@@ -3420,12 +3776,12 @@ function buildJsonReport(results: readonly CheckResult[], state: RunState): Json
     attachment: state.attachment === undefined
       ? null
       : {
-          id: state.attachment.id,
-          receiptId: state.attachment.receiptId,
-          bytes: state.attachment.bytes,
-          pages: state.attachment.pages,
-          released: state.attachmentReleased,
-        },
+        id: state.attachment.id,
+        receiptId: state.attachment.receiptId,
+        bytes: state.attachment.bytes,
+        pages: state.attachment.pages,
+        released: state.attachmentReleased,
+      },
     sendRequested: state.options.sendText !== undefined,
     ackedThrough: state.tracker?.ackedThrough ?? 0,
     reverseRequests: state.client?.reverseRequests ?? 0,

@@ -9,7 +9,8 @@
  *    接到 {@link PairingWindow} 与 {@link DeviceStore} 上；
  * 3. 启动 {@link RemoteHostServer}，并把每条新连接接到运行时门面上：手机发来的方法交给门面的
  *    `dispatch`，门面发起的反向请求与通知走这条连接；`native.*` 里语义属于 PC 的方法由
- *    `./native-desktop.ts` 就地应答，不上线；
+ *    `./native-desktop.ts` 就地应答，不上线；同一条连接上再经 `./notifications.ts` 把页面线的
+ *    `task.completed` / `interactions.changed` / `session/title` 追加成协议 §8 的 `remote.*` 系统通知线；
  * 4. 提供 `remoteHost` 服务（`devices()` / `revokeDevice()` / `pair()`），作为 PC 侧设备管理、
  *    撤销设备与重新打开配对窗口的入口；
  * 5. 启用 UDP 局域网发现（`./discovery.ts`）：同网段的手机广播一帧探测就能拿到当前配对
@@ -37,6 +38,12 @@ import { DeviceStore, type DeviceAuthorization, type DeviceSummary } from './dev
 import { DEFAULT_DISCOVERY_PORT, DiscoveryResponder, type DiscoverySnapshot } from './discovery.ts'
 import { Identity } from './identity.ts'
 import { DesktopNativeProvider, type DesktopCredentialPort } from './native-desktop.ts'
+import {
+  RemoteNotifications,
+  sessionFactsFromCatalog,
+  type RemoteSessionFacts,
+  type RemoteSessionLookup,
+} from './notifications.ts'
 import { encodeQrMatrix, renderTerminalQr } from './pairing-qr.ts'
 import { PairingWindow, pairUrl } from './pairing.ts'
 import {
@@ -48,6 +55,7 @@ import {
   type RemoteConnection,
   type RemoteDeviceRevokeResult,
   type RemoteHandshake,
+  type RemoteLogger,
   type RemoteNativeProvider,
   type RemotePairingSurface,
   type RemotePairOutcome,
@@ -468,8 +476,14 @@ async function startRemoteHost(
       return outcome
     },
   }
-  // 协议 §11：一台 PC 同时只服务一台设备。当前绑定的连接与门面出口成对记录。
-  let binding: { readonly connection: RemoteConnection; readonly sink: RemoteFacadeSink } | undefined
+  // 协议 §11：一台 PC 同时只服务一台设备。当前绑定的连接、门面出口与 §8 通知观察者成对记录。
+  let binding: {
+    readonly connection: RemoteConnection
+    readonly sink: RemoteFacadeSink
+    readonly notifications: RemoteNotifications
+  } | undefined
+  /** 查询会话标题与所属项目的宿主本地读（协议 §8.2 补全字段）。 */
+  const lookupSession = createSessionFactsLookup(facade, writeRemoteLog)
   const server = new RemoteHostServer({
     port: config.port,
     host: config.host,
@@ -493,7 +507,9 @@ async function startRemoteHost(
       const previous = binding
       if (previous !== undefined) {
         // 先摘旧绑定再挂新绑定：旧连接关闭期间，门面的通知不能写到一个正在关闭的 socket 上。
+        // 通知观察者在 unbind 之后 dispose：被替换连接的在途 `remote.*` 构造不再落帧。
         facade.unbind(previous.sink)
+        previous.notifications.dispose()
         writeRemoteLog({
           level: 'warn',
           event: 'connection-replaced',
@@ -514,8 +530,14 @@ async function startRemoteHost(
           })
         })
       }
-      const sink = createFacadeSink(connection, nativeProvider)
-      binding = { connection, sink }
+      // 每条连接一个通知观察者：页面线照旧走门面 sink，`remote.*` 系统通知线追加在同一条连接上。
+      const notifications = new RemoteNotifications({
+        target: connection,
+        log: writeRemoteLog,
+        lookupSession,
+      })
+      const sink = createFacadeSink(connection, nativeProvider, notifications)
+      binding = { connection, sink, notifications }
       facade.bind(sink)
       connection.onRequest((method, params) => facade.dispatch(method, params))
       writeRemoteLog({
@@ -530,6 +552,7 @@ async function startRemoteHost(
       const released = binding !== undefined && binding.connection === connection ? binding : undefined
       if (released !== undefined) {
         binding = undefined
+        released.notifications.dispose()
         try {
           facade?.unbind(released.sink)
         } catch (error) {
@@ -643,6 +666,8 @@ async function startRemoteHost(
     }
     return {
       stop: async () => {
+        // 先停通知观察者：连接关闭过程中门面可能还在收尾，不再追加 `remote.*` 帧。
+        binding?.notifications.dispose()
         if (discovery !== undefined) await discovery.stop()
         pairing.close()
         await server.stop()
@@ -848,13 +873,18 @@ function pendingDispatch(method: string, params: Record<string, unknown>): Promi
 
 /**
  * 为一条连接构造门面出口：宿主本地能应答的 `native.*` 就地应答，其余转发给手机。
+ *
+ * 页面线通知原样写给连接；写成功后再交给 {@link RemoteNotifications} 观察，按协议 §8 追加
+ * `remote.*` 系统通知线。观察发生在页面线之后，所以页面线的时机、内容与抛错语义都不变。
  * @param connection - 已鉴权的远程连接。
  * @param nativeProvider - 宿主本地 `native.*` 应答者。
+ * @param notifications - 这条连接上的 §8 推送通知观察者。
  * @returns 交给 `appRuntimeFacade.bind` 的 sink。
  */
 function createFacadeSink(
   connection: RemoteConnection,
   nativeProvider: RemoteNativeProvider,
+  notifications: RemoteNotifications,
 ): RemoteFacadeSink {
   return {
     // 本地拦截必须优先于转发（协议附录 B 约束 3）：否则手机的 -32601 会盖掉 PC 本来能满足的请求。
@@ -863,7 +893,42 @@ function createFacadeSink(
       : connection.request(method, params),
     notify: (method: string, params?: Record<string, unknown>) => {
       connection.notify(method, params)
+      notifications.observe(method, params)
     },
+  }
+}
+
+/**
+ * 用门面本地读补全会话标题与所属项目（协议 §8.2 的 `title` / `workspaceId`）。
+ *
+ * 数据源是门面的 `library.catalog`（`apps/android/runtime/library.mjs`）：会话行带 `title`
+ * 投影，workspace 行的 `sessionIds` 给出会话归属。读失败只记一条 warn 并返回 `undefined`，
+ * 由通知层用 sessionId 兜底标题——系统通知不是关键路径，不能反过来影响页面线。
+ * @param facade - 运行时门面；`undefined` 时永远查不到（这种情况下也没有绑定的连接）。
+ * @param log - 宿主日志出口。
+ * @returns 会话信息查询函数。
+ */
+function createSessionFactsLookup(
+  facade: AppRuntimeFacade | undefined,
+  log: RemoteLogger,
+): RemoteSessionLookup {
+  if (facade === undefined) return () => undefined
+  let failureReported = false
+  return async (sessionId: string): Promise<RemoteSessionFacts | undefined> => {
+    try {
+      return sessionFactsFromCatalog(await facade.dispatch('library.catalog', {}), sessionId)
+    } catch (error) {
+      if (!failureReported) {
+        failureReported = true
+        log({
+          level: 'warn',
+          event: 'remote-notify-lookup-failed',
+          message: '读取会话标题与所属项目失败，remote.taskCompleted 的标题用 sessionId 兜底。',
+          fields: { sessionId, error: describeRemoteError(error) },
+        })
+      }
+      return undefined
+    }
   }
 }
 
