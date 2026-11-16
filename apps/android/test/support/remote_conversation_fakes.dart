@@ -17,6 +17,7 @@ import 'package:dsh_android/remote_connection.dart';
 import 'package:dsh_android/remote_conversation_live_source.dart';
 import 'package:dsh_android/remote_conversation_source.dart';
 import 'package:dsh_android/remote_dsh_page.dart';
+import 'package:dsh_android/remote_session_insights.dart';
 import 'package:dsh_android/runtime_transport.dart';
 import 'package:dsh_android/workspace_changes.dart';
 import 'package:flutter/foundation.dart';
@@ -60,7 +61,8 @@ class FakeRemoteConversationSource extends RemoteConversationSource {
   /// [start] 推给页面的首屏快照；[interactions] 与 [modelChoice] 在 [start] 时
   /// 作为快照推给页面。[workspaceChanges] 是「本次变更」页的假数据源，只有
   /// [supported] 同时包含摘要与差异方法时 [createWorkspaceChangesSource] 才会
-  /// 返回它。
+  /// 返回它。[insights] 是 [readInsights] 的固定返回，配置后 [start] 会像真实
+  /// 数据源一样推一次 [RemoteConversationInsights]。
   FakeRemoteConversationSource({
     this.sessionId = 's-1',
     Set<String>? supported,
@@ -74,6 +76,7 @@ class FakeRemoteConversationSource extends RemoteConversationSource {
     Set<String> failedModelProviders = const <String>{},
     this.workspaceChanges,
     this.defaultModelRoute,
+    this.insights,
   }) : supportedMethods =
            supported ??
            <String>{
@@ -124,6 +127,19 @@ class FakeRemoteConversationSource extends RemoteConversationSource {
   /// 按门面方法名配置的 [request] 应答；未配置时返回空对象。
   final Map<String, Object? Function(Map<String, dynamic> params)> answers =
       <String, Object? Function(Map<String, dynamic> params)>{};
+
+  /// [readInsights] 的返回；null 表示这次没有会话洞察读数。
+  ///
+  /// 配置后页面/数据源测试可以直接给出一组读数；不配置时按 [projections] 的
+  /// `values` 走真实解析，同一份 `session.projections` 应答可以同时覆盖计划模式
+  /// 与洞察。
+  RemoteSessionInsights? insights;
+
+  /// [readInsights] 抛出的失败；为 null 时正常返回 [insights] 或解析 [projections]。
+  RuntimeTransportFailure? insightsFailure;
+
+  /// [readInsights] 被调用的次数。
+  int insightReads = 0;
 
   /// [readProjections] 的返回；null 表示会话还没有投影（计划条不显示）。
   Map<String, dynamic>? projections;
@@ -280,6 +296,10 @@ class FakeRemoteConversationSource extends RemoteConversationSource {
     if (pendingInteractions.isNotEmpty) {
       emit(RemoteConversationInteractions(pendingInteractions));
     }
+    // 真实数据源在首屏读完后推一次洞察；配置了读数或投影时补上同样的推送。
+    if (insights != null || projections != null) {
+      emit(RemoteConversationInsights(await readInsights()));
+    }
   }
 
   @override
@@ -347,6 +367,16 @@ class FakeRemoteConversationSource extends RemoteConversationSource {
     final failure = projectionsFailure;
     if (failure != null) throw failure;
     return projections;
+  }
+
+  @override
+  Future<RemoteSessionInsights?> readInsights() async {
+    insightReads++;
+    final failure = insightsFailure;
+    if (failure != null) throw failure;
+    final configured = insights;
+    if (configured != null) return configured;
+    return RemoteSessionInsights.fromProjectionValues(projections?['values']);
   }
 
   @override

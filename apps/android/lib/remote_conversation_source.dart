@@ -15,7 +15,11 @@
 // 菜单，见 `remote_commands.dart`）。计划模式读
 // [RemoteConversationSource.readProjections] 与
 // [RemoteConversationSource.watchSessionControl]，写走
-// [RemoteConversationSource.submitPlan]。附件草稿的调用面由
+// [RemoteConversationSource.submitPlan]。会话洞察（待办、统计、token 用量与上下文
+// 占用）来自同一份 `session.projections` 的 `values`：数据源用
+// [RemoteConversationSource.readInsights] 读，并在读完后推
+// [RemoteConversationInsights] 给页面，页面只持有最近一次读数（渲染由后续 UI
+// 接入）。附件草稿的调用面由
 // [RemoteConversationSource.createAttachmentSurface]
 // 提供（设计与线上契约见 `docs/remote-dsh/p5-remaining-design.md` §3.4）；
 // 消息与指令都接受 `attachmentIds`，字节由宿主在准备阶段反向拉取。模型路由的
@@ -45,6 +49,7 @@ import 'package:flutter/foundation.dart';
 
 import 'attachment_surface.dart';
 import 'remote_connection.dart';
+import 'remote_session_insights.dart';
 import 'runtime.dart';
 import 'workspace_changes.dart';
 
@@ -270,6 +275,19 @@ final class RemoteConversationModelAvailability
   /// 页面既有解构名；集合语义已从「目录读取失败」扩展为「当前路由不可用」，
   /// 与 [unavailableProviders] 同值。
   Set<String> get failedProviders => unavailableProviders;
+}
+
+/// 页面角色可用的会话洞察读数的最近一次快照。
+///
+/// [insights] 为 null 表示宿主没有可用的会话投影（会话不存在、没有注册这些投影，
+/// 或本周期还没读到）；数据源在「打开 / 重连 / reload / 一轮开始或结束 / 待办写入」
+/// 之后重新读取并推这个更新，不做定时轮询。页面收到后整体替换旧读数；读数没变时
+/// 数据源不会推。
+final class RemoteConversationInsights extends RemoteConversationUpdate {
+  const RemoteConversationInsights(this.insights);
+
+  /// 最近一次读到的洞察读数；null 表示这一周期没有可用读数。
+  final RemoteSessionInsights? insights;
 }
 
 /// 待处理交互的种类。
@@ -857,6 +875,23 @@ abstract class RemoteConversationSource extends ChangeNotifier {
   /// null（与本地 `ChatGoalPlanController.refresh` 的判据一致）。形状不符时抛
   /// `FormatException`，由调用方按「状态待确认」降级。
   Future<Json?> readProjections();
+
+  /// 读取会话洞察（待办 / 统计 / token 用量 / 上下文占用）。
+  ///
+  /// 默认实现复用 [readProjections]：只有 `kind == 'sequenced'` 的快照才解析
+  /// `values`，其余情况（null、迁移提示、缺 `values`）返回 null；构造
+  /// [RemoteSessionInsights] 的解析对缺失键与坏类型容错，不会抛异常。读取本身失败
+  /// （连接断开、方法不支持）时仍按 [readProjections] 的约定抛出，由调用方决定是否
+  /// 展示——真实数据源刷新洞察时吞掉这类失败并保留上一次读数。
+  ///
+  /// 返回 null 表示这个会话暂时没有洞察读数；[RemoteSessionInsights] 的四个字段
+  /// 仍可能各自为 null（宿主只注册了部分投影）。
+  Future<RemoteSessionInsights?> readInsights() async {
+    final projections = await readProjections();
+    if (projections == null) return null;
+    if (projections['kind'] != 'sequenced') return null;
+    return RemoteSessionInsights.fromProjectionValues(projections['values']);
+  }
 
   /// 订阅会话控制流（`api.subscribe {namespace:'session', method:'control'}`）。
   ///

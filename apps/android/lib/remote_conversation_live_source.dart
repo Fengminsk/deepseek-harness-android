@@ -9,7 +9,7 @@
 // | `session.command` | `{sessionId, line, attachmentIds}` | 在电脑上执行一条会话指令（以 `/` 开头），结果通常是 `{commandId, result:{kind, text}}`，未识别时为 null |
 // | `session.ensure` | `{sessionId}` | `+` 弹层的指令目录与计划模式写操作之前恢复会话（幂等） |
 // | `api.call` | `{namespace:'commands', method:'list', args:{agentId}}` | `+` 弹层的指令目录（与本地 `ComposerCommands` 同一份数据驱动菜单） |
-// | `api.call` | `{namespace:'session', method:'projections', args:{request:{sessionId}}}` | 计划模式状态（`values.plan`）与 `asOfSeq` |
+// | `api.call` | `{namespace:'session', method:'projections', args:{request:{sessionId}}}` | 计划模式状态（`values.plan`）、权限预设（`values.permissions`）与会话洞察（`values.todos/sessionStats/tokenUsage/contextPressure`） |
 // | `api.subscribe` | `{namespace:'session', method:'control'}` | 会话控制流：`session.projections` 的实时增量（计划模式进出） |
 // | `attachments.prepare` / `.release` | `{sessionId, id[, name, mediaType, bytes]}` | 附件草稿的上传准备与释放（`RemoteAttachmentSurface`，字节由宿主通过反向请求 `native.attachments.read` 分页拉取） |
 // | `api.subscribe` | `{streamId, namespace:'session', method:'follow', args:{address}}` | 会话更新流（协议 §6.5、§7.3） |
@@ -61,6 +61,26 @@
 // 不会出现重复消息。这条退路不是静默降级——发送能力是否可用只由
 // `session.send` 决定，读取能力由 `session.readWindow` 决定。
 //
+// ## 会话洞察的刷新时机
+//
+// 待办、会话统计、token 用量与上下文占用读同一份 `session.projections` 的
+// `values`（键与形状见 `remote_session_insights.dart`）。它们不是高频读数，因此
+// 不轮询：数据源只在下面这些已经发生的事件后读一次并推
+// [RemoteConversationInsights]：
+//
+// 1. 首屏（[start] 读完窗口与待处理交互之后）；
+// 2. 重连重建（协议 §7.2：窗口、交互之后再读一次权威投影）；
+// 3. [reload]（页面「重试」）；
+// 4. 会话事件里的 `turn/start`、`turn/end` 与 `todo/write`——前两者是轮次边界
+//    （统计/用量在轮次结束时才是稳定读数，`turn/start` 还会清空待办），后者是
+//    `todo_write` 落盘的整表替换。事件来自 `session.follow` 的增量帧，退路是宿主
+//    的 `session.event` 通知，两条路径都经过同一处判定，不额外订阅控制流。
+//
+// 同一时刻只允许一次在途读取：读取期间的触发合并成一次补读（`_insightsDirty`），
+// 读完再判定，所以一轮里的多个相关事件不会变成连续请求。读取失败（断线、方法不
+// 支持、投影不可用）保留上一次读数、不升级成页面错误：洞察是附加信息，不能把
+// 会话变成「出错了」。
+//
 // ## 重连（协议 §7.2）
 //
 // 连接掉线时 `AppApiStreams.setReady(false)` 会保留旧 `streamId` 并等待确认；
@@ -79,6 +99,7 @@ import 'attachment_surface.dart';
 import 'remote_attachments.dart';
 import 'remote_connection.dart';
 import 'remote_conversation_source.dart';
+import 'remote_session_insights.dart';
 import 'runtime.dart';
 import 'runtime_transport.dart';
 import 'session_model_projection.dart';
@@ -106,6 +127,18 @@ String remoteUuidV4({Random? random}) {
 }
 
 final Random _secureRandom = Random.secure();
+
+/// 触发一次会话洞察重读的会话事件类型。
+///
+/// `turn/start` / `turn/end` 是轮次边界（统计与用量在轮次结束时才是稳定读数，
+/// `turn/start` 还会清空待办投影），`todo/write` 是 `todo_write` 落盘的整表替换。
+/// 三个事件在所有路径上都来自 `session.follow` 的增量帧（退路是 `session.event`
+/// 通知），因此不需要额外的控制流订阅或定时轮询。
+const Set<String> remoteInsightsRefreshEventTypes = <String>{
+  'turn/start',
+  'turn/end',
+  'todo/write',
+};
 
 /// 会话数据源访问一条远程连接所需的只读面。
 ///
@@ -253,6 +286,18 @@ class RemoteConversationLiveSource extends RemoteConversationSource {
   /// 正在进行的可用性判定，用来合并同一时刻的重复请求。
   Future<void>? _availabilityCheck;
 
+  /// 最近一次推给页面的会话洞察；用来跳过内容没变的更新。
+  RemoteSessionInsights? _lastInsights;
+
+  /// 是否已经推过一次洞察：区分「本周期还没读到」与「读到了空快照」。
+  bool _insightsKnown = false;
+
+  /// 在途的洞察读取；同一时刻只跑一次。
+  Future<void>? _insightsRefresh;
+
+  /// 在途读取期间又被触发：本次读完后补读一次。
+  bool _insightsDirty = false;
+
   bool _ready = false;
   bool _disposed = false;
   int _readGeneration = 0;
@@ -276,6 +321,8 @@ class RemoteConversationLiveSource extends RemoteConversationSource {
   Future<void> reload() async {
     final generation = ++_readGeneration;
     await _readWindow(generation);
+    if (_disposed || generation != _readGeneration) return;
+    await _refreshInsights();
     if (_disposed || generation != _readGeneration) return;
     _streams.setWindowAck(connection.windowAck);
     _streams.setReady(connection.phase == RemoteConnectionPhase.ready);
@@ -542,6 +589,9 @@ class RemoteConversationLiveSource extends RemoteConversationSource {
     if (_disposed) return;
     await _loadInteractions();
     if (_disposed) return;
+    // 首屏洞察：窗口与交互之后读一次权威投影；失败保留空读数，不阻塞首屏。
+    await _refreshInsights();
+    if (_disposed) return;
     _ready = connection.phase == RemoteConnectionPhase.ready;
     // 协议 §6.4：双方都声明 window-ack 才切窗口模式；本类只跑远程链路，
     // 本地链路的观察层仍是逐条模式。
@@ -590,6 +640,10 @@ class RemoteConversationLiveSource extends RemoteConversationSource {
     if (_disposed || generation != _readGeneration) return;
     _streams.setWindowAck(connection.windowAck);
     _streams.setReady(true);
+    // 重连后洞察跟着窗口与交互一起重建；放在流恢复之后，与目录预读同序，不让
+    // 附加读数拖慢重连。失败保留上一次读数。
+    await _refreshInsights();
+    if (_disposed || generation != _readGeneration) return;
     await _checkModelAvailability();
   }
 
@@ -700,6 +754,73 @@ class RemoteConversationLiveSource extends RemoteConversationSource {
     return true;
   }
 
+  // ------------------------------------------------------------ 会话洞察
+
+  /// 重新读取并推送一次会话洞察（刷新时机见文件头「会话洞察的刷新时机」）。
+  ///
+  /// 同一时刻只跑一次：在途时新的触发合并成一次补读，因此一轮里的多个相关事件
+  /// 不会变成连续请求。读取失败保留上一次读数，不推失败、不打断会话。
+  Future<void> _refreshInsights() {
+    if (!_insightsAvailable()) return Future<void>.value();
+    final pending = _insightsRefresh;
+    if (pending != null) {
+      _insightsDirty = true;
+      return pending;
+    }
+    late final Future<void> operation;
+    operation = _refreshInsightsNow().whenComplete(() {
+      if (!identical(_insightsRefresh, operation)) return;
+      _insightsRefresh = null;
+      if (_disposed || !_insightsDirty) return;
+      _insightsDirty = false;
+      unawaited(_refreshInsights());
+    });
+    return _insightsRefresh = operation;
+  }
+
+  /// 洞察读取是否可能成功：连接就绪且宿主声明了 `api.call`。
+  ///
+  /// 尚未 ready 时跳过，等重连重建再读；宿主没有 `api.call` 时本来就没有投影读取
+  /// 入口，同样不再发请求。
+  bool _insightsAvailable() =>
+      !_disposed &&
+      connection.phase == RemoteConnectionPhase.ready &&
+      connection.supports(remoteConversationApiCallMethod);
+
+  Future<void> _refreshInsightsNow() async {
+    final generation = _readGeneration;
+    RemoteSessionInsights? insights;
+    try {
+      insights = await readInsights();
+    } on Object {
+      // 连不上、方法不支持或投影暂时不可用都只算「这次没读到」：保留上一次读数，
+      // 洞察是附加信息，不能把会话页面变成错误态。
+      return;
+    }
+    if (_disposed || generation != _readGeneration) return;
+    _emitInsights(insights);
+  }
+
+  /// 推送洞察读数；内容没变时不推，避免页面无意义重建。
+  void _emitInsights(RemoteSessionInsights? insights) {
+    if (_insightsKnown && _lastInsights == insights) return;
+    _insightsKnown = true;
+    _lastInsights = insights;
+    _emit(RemoteConversationInsights(insights));
+  }
+
+  /// 会话事件里与洞察有关的读法：轮次边界与待办写入后补读一次。
+  ///
+  /// `session.follow` 的增量与 `session.event` 通知都经过这里，两条路径不会各自
+  /// 维护一套触发规则。
+  void _noteInsightEvent(Json event) {
+    final type = event['type'];
+    if (type is! String || !remoteInsightsRefreshEventTypes.contains(type)) {
+      return;
+    }
+    unawaited(_refreshInsights());
+  }
+
   // ------------------------------------------------------------ 更新帧
 
   void _onInbound(Map<String, dynamic> frame) {
@@ -750,6 +871,7 @@ class RemoteConversationLiveSource extends RemoteConversationSource {
     _modelProjection.reconcile(_events);
     _emitModelSelection();
     _emit(RemoteConversationEvents([event]));
+    _noteInsightEvent(event);
   }
 
   void _onInboundError(Object error) {
@@ -791,6 +913,7 @@ class RemoteConversationLiveSource extends RemoteConversationSource {
         _modelProjection.reconcile(_events);
         _emitModelSelection();
         _emit(RemoteConversationEvents([event]));
+        _noteInsightEvent(event);
       default:
         // assistant-stream 由 session.live 通知覆盖（见文件头注释）。
         break;

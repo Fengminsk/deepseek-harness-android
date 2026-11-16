@@ -1510,7 +1510,19 @@ void main() {
 
     await source.send('仍然能发');
     expect(transport.paramsOf('session.send').single['text'], '仍然能发');
-    expect(transport.paramsOf('api.call'), hasLength(1), reason: '失败也只读一次');
+    // 首屏的 api.call 有两次：一次目录预读、一次会话洞察投影。两次都失败，
+    // 但都只读一次，不重试也不变成页面错误（上面已断言没有失败更新）。
+    final apiCalls = transport.paramsOf('api.call');
+    expect(
+      apiCalls.where((params) => params['method'] == 'modelCatalog'),
+      hasLength(1),
+      reason: '失败的目录读取只读一次',
+    );
+    expect(
+      apiCalls.where((params) => params['method'] == 'projections'),
+      hasLength(1),
+      reason: '洞察投影只读一次，失败也不重试',
+    );
   });
 
   // ------------------------------------------------ 模型路由可用性的第二路信号

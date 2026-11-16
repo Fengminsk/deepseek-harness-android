@@ -95,6 +95,7 @@ import 'remote_conversation_source.dart';
 import 'remote_dsh_widgets.dart';
 import 'remote_goal_plan.dart';
 import 'remote_permissions.dart';
+import 'remote_session_insights.dart';
 import 'remote_terminal_page.dart';
 import 'remote_workspace_diff_page.dart';
 import 'runtime.dart';
@@ -219,6 +220,13 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
   ///
   /// 当前路由的 provider 命中时，发送前给出「会自动改用电脑默认模型」的提示。
   Set<String> _failedModelProviders = const <String>{};
+
+  /// 会话洞察的最近一次读数：待办、会话统计、token 用量与上下文占用。
+  ///
+  /// 数据源在首屏、重连、手动重试（`reload`）与轮次边界 / 待办写入后重新读取，
+  /// 用 [RemoteConversationInsights] 推送；本页只按整体替换持有状态，不渲染读数
+  /// （悬浮任务卡片与底部统计条由后续 UI 接入）。null 表示这一周期没有可用读数。
+  RemoteSessionInsights? _insights;
 
   /// 已经用一次成功发送确认过的路由；同一条路由不再显示发送前提示。
   RemoteModelChoice? _routeConfirmed;
@@ -388,6 +396,9 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
       case RemoteConversationModelAvailability(:final failedProviders):
         if (_sameProviders(_failedModelProviders, failedProviders)) return;
         setState(() => _failedModelProviders = Set<String>.of(failedProviders));
+      case RemoteConversationInsights(:final insights):
+        if (_insights == insights) return;
+        setState(() => _insights = insights);
     }
   }
 

@@ -10,10 +10,12 @@ import 'dart:convert';
 import 'package:dsh_android/chat_plan.dart';
 import 'package:dsh_android/remote_attachments.dart';
 import 'package:dsh_android/remote_connection.dart';
+import 'package:dsh_android/remote_conversation_live_source.dart';
 import 'package:dsh_android/remote_conversation_source.dart';
 import 'package:dsh_android/remote_dsh_conversation.dart';
 import 'package:dsh_android/remote_dsh_widgets.dart';
 import 'package:dsh_android/remote_permissions.dart';
+import 'package:dsh_android/remote_session_insights.dart';
 import 'package:dsh_android/remote_workspace_diff_page.dart';
 import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/runtime_transport.dart';
@@ -373,6 +375,131 @@ void main() {
       find.byKey(const ValueKey('remote-conversation-connecting')),
       findsNothing,
     );
+  });
+
+  testWidgets('页面加载、一轮结束与重连后都会刷新会话洞察', (tester) async {
+    // 用真实数据源把页面生命周期接到假传输上：洞察由数据源自己决定刷新时机，
+    // 页面只负责持有状态，因此这里断言的是「页面驱动下真的发生了重读」。
+    final transport = FakeRemoteTransport();
+    var projectionReads = 0;
+    transport.answers['session.readWindow'] = (_) => <String, dynamic>{
+      'events': <Map<String, dynamic>>[
+        fixture.header(0),
+        fixture.input(1, '你好'),
+      ],
+      'throughSeq': 1,
+      'firstSeq': 0,
+      'hasMore': false,
+    };
+    transport.answers['api.subscribe'] = (params) => <String, dynamic>{
+      'streamId': params['streamId'],
+      'generation': 'generation-${params['streamId']}',
+    };
+    transport.answers['interactions.list'] = (_) => <String, dynamic>{
+      'revision': 1,
+      'requests': <Object?>[],
+    };
+    transport.answers['api.call'] = (params) {
+      if (params['method'] == 'projections') {
+        projectionReads++;
+        return <String, dynamic>{
+          'kind': 'sequenced',
+          'asOfSeq': projectionReads,
+          'values': <String, dynamic>{
+            'sessionStats': <String, dynamic>{'turns': 1, 'steps': 1},
+            'tokenUsage': <String, dynamic>{
+              'uncachedInputTokens': 10,
+              'cacheReadTokens': 90,
+              'cacheWriteTokens': 0,
+              'outputTokens': 5,
+            },
+            'contextPressure': <String, dynamic>{
+              'pressureTokens': 100,
+              'contextWindow': 1000,
+            },
+          },
+        };
+      }
+      if (params['method'] == 'modelCatalog') {
+        return <String, dynamic>{'groups': <Object?>[]};
+      }
+      return <String, dynamic>{};
+    };
+    final events = StreamController<Map<String, dynamic>>.broadcast(sync: true);
+    addTearDown(events.close);
+    final connection = FakeRemoteConnection(
+      transport: transport,
+      windowAck: true,
+      supported: <String>{
+        remoteConversationReadMethod,
+        remoteConversationSendMethod,
+        remoteConversationInteractionsListMethod,
+        remoteConversationApiCallMethod,
+      },
+    );
+    final source = RemoteConversationLiveSource(
+      connection: connection,
+      sessionId: 's-1',
+      events: events.stream,
+    );
+
+    await tester.pumpWidget(_host(source));
+    await tester.pumpAndSettle();
+    final afterLoad = projectionReads;
+    expect(afterLoad, greaterThanOrEqualTo(1), reason: '首屏要读一次会话洞察');
+    expect(tester.takeException(), isNull);
+
+    // 一轮结束：follow 的增量在测试里由 `session.event` 通知代替，数据源据此重读。
+    events.add(<String, dynamic>{
+      'method': 'session.event',
+      'params': <String, dynamic>{
+        'sessionId': 's-1',
+        'event': fixture.event(2, 'turn/end', <String, dynamic>{'turn': 1}),
+      },
+    });
+    await tester.pumpAndSettle();
+    expect(projectionReads, greaterThan(afterLoad), reason: '一轮结束后重读洞察');
+
+    // 重连：阶段回到 ready 时数据源按协议 §7.2 重建，并重读洞察。
+    final beforeReconnect = projectionReads;
+    connection.setPhase(RemoteConnectionPhase.reconnecting);
+    await tester.pump();
+    connection.setPhase(RemoteConnectionPhase.ready);
+    await tester.pumpAndSettle();
+    expect(
+      projectionReads,
+      greaterThan(beforeReconnect),
+      reason: '重连后重读洞察',
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('数据源推会话洞察更新时页面持有状态且不影响消息区', (tester) async {
+    final source = FakeRemoteConversationSource(
+      window: _window(conversationEvents()),
+      insights: RemoteSessionInsights.fromProjectionValues(
+        <String, dynamic>{
+          'todos': <Map<String, dynamic>>[
+            <String, dynamic>{'content': '检查构建', 'status': 'in_progress'},
+          ],
+          'sessionStats': <String, dynamic>{'turns': 2, 'steps': 3},
+        },
+      ),
+    );
+    await tester.pumpWidget(_host(source));
+    await tester.pumpAndSettle();
+
+    // 假数据源在 start() 里按数据源契约读了洞察（页面持有它但先不渲染）；
+    // UI 任务接入读数前，这里的推送与整体替换只要求不打扰会话内容。
+    expect(source.insightReads, 1);
+    expect(find.text('你好'), findsOneWidget);
+
+    source.emit(
+      const RemoteConversationInsights(RemoteSessionInsights.none),
+    );
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+    expect(find.text('你好'), findsOneWidget);
   });
 
   test('会话目的地标识带 remote-session:<id> 前缀', () {
