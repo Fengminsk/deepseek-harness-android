@@ -46,6 +46,7 @@ import 'remote_device_store.dart' as paired;
 import 'remote_dsh_live_source.dart';
 import 'remote_dsh_settings_page.dart';
 import 'remote_dsh_widgets.dart';
+import 'remote_notification_navigation.dart';
 import 'remote_pairing_page.dart';
 import 'remote_terminal_page.dart';
 import 'remote_workspace_files_page.dart';
@@ -258,6 +259,7 @@ class RemoteDshPage extends StatefulWidget {
     this.source,
     this.connection,
     this.archivedSource,
+    this.notificationLaunch,
   });
 
   /// 本页作为全屏目的地的标识（见 [openDestination]）。
@@ -282,6 +284,13 @@ class RemoteDshPage extends StatefulWidget {
   ///
   /// 只读的测试替身没有实现该接口时，「已归档任务」入口给出可见提示。
   final RemoteDshArchiveSource? archivedSource;
+
+  /// 点击系统通知带来的待打开会话；null 表示普通进入。
+  ///
+  /// 页面在连接就绪、项目列表读完后只处理一次：会话在列表里就直接打开；不在列表
+  /// （已归档/已删除/属于另一台电脑）或连接失败时留在远程首页，并用可见提示说明
+  /// 原因，不把用户留在 loading。来源设备的限制见 [RemoteNotificationLaunch]。
+  final RemoteNotificationLaunch? notificationLaunch;
 
   @override
   State<RemoteDshPage> createState() => _RemoteDshPageState();
@@ -414,6 +423,22 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
   /// 设备胶囊或失败提示里的「重试 / 切换设备」。
   bool _autoConnectAttempted = false;
 
+  /// 通知点击带来的待打开会话；处理一次后清空（见 [_resolvePendingLaunch]）。
+  ///
+  /// 只有成功打开、明确不存在（已归档/删除/属于别的电脑）或页面销毁时才清空：
+  /// 连接失败会保留它，用户重试成功后仍应打开这条通知对应的会话。
+  RemoteNotificationLaunch? _pendingLaunch;
+
+  /// 上次已经就 pending 未打开给过提示的原因键；同一原因只弹一次。
+  String? _pendingLaunchFailure;
+
+  /// 本地运行时是否已经就绪。
+  ///
+  /// 远程连接读设备令牌走本机凭据服务（`credentials.read`），服务在 `runtime.ready`
+  /// 之前会直接拒绝（「运行时正在启动」）。冷启动由通知拉起时本页会先于
+  /// `runtime.start()` 完成而挂载，因此自动连接必须等这个标记为 true。
+  bool _localRuntimeReady = false;
+
   /// 读取数据源失败时的中文说明。
   String? _error;
 
@@ -475,6 +500,8 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
       _catalogSource = catalog;
     }
     _connection.addListener(_onConnectionChanged);
+    widget.runtime.addListener(_onRuntimeChanged);
+    _localRuntimeReady = widget.runtime.ready;
     _view = RemoteDshView(
       connection: _source.connection,
       hostName: _source.hostName,
@@ -484,12 +511,14 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
       hostName: _connection.host?.name,
     );
     _visibleConnection = _connectionSnapshot();
+    _pendingLaunch = widget.notificationLaunch;
     unawaited(_load());
   }
 
   @override
   void dispose() {
     _connection.removeListener(_onConnectionChanged);
+    widget.runtime.removeListener(_onRuntimeChanged);
     if (_ownsConnection) _connection.dispose();
     _composer.dispose();
     _composerFocus.dispose();
@@ -556,6 +585,19 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
     ].join(','),
   );
 
+  /// 本地运行时（`runtime.start()`）就绪状态变化。
+  ///
+  /// 冷启动由系统通知拉起时本页会先于运行时就绪而挂载；设备令牌只能在本机凭据服务
+  /// 就绪后读取（否则 `credentials.read` 被拒绝为「运行时正在启动」），因此
+  /// [_maybeAutoConnect] 在运行时就绪前不发起连接，就绪后在这里补一次 [_load]
+  /// 完成自动连接与通知深链的后续步骤。
+  void _onRuntimeChanged() {
+    if (!mounted || _localRuntimeReady == widget.runtime.ready) return;
+    _localRuntimeReady = widget.runtime.ready;
+    if (!_localRuntimeReady) return;
+    unawaited(_load());
+  }
+
   /// 读取设备与项目；失败时保留「未连接」状态并给出可重试的说明。
   Future<void> _load() async {
     try {
@@ -572,6 +614,7 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
           projects: projects,
         );
       });
+      _resolvePendingLaunch();
     } catch (error) {
       if (!mounted) return;
       // 门面失败一律是 PlatformException，message 已是可直接展示的中文。
@@ -579,7 +622,92 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
       setState(() {
         _error = detail == null || detail.trim().isEmpty ? '请检查连接后重试。' : detail;
       });
+      _notifyPendingLaunchFailure('load:$detail', '通知里的会话没能打开：读取会话列表失败。');
     }
+  }
+
+  /// 通知深链：连接就绪后按会话标识打开会话；打不开时留在首页并给出可见原因。
+  ///
+  /// 设备归属无法从通知判断（协议 §8.2/§8.3 不带 deviceId），因此只等首页既有的
+  /// 自动连接（上次成功连接的电脑优先；没有记录时恰好一台才连），不为了猜测切换
+  /// 电脑。
+  ///
+  /// pending 的生命周期按要求收敛为：**成功打开**、**明确不存在**（已归档/删除/
+  /// 属于别的电脑）或**页面销毁**时才清空；连接失败、本地运行时就绪前、读取失败都
+  /// 保留，用户重试成功后仍会打开这条通知对应的会话。失败原因用 SnackBar 提示一次
+  /// （同一原因不重复弹），首页既有失败态/空态与「重试 / 切换设备」入口同时可见。
+  void _resolvePendingLaunch() {
+    final launch = _pendingLaunch;
+    if (launch == null) return;
+    switch (_view.connection) {
+      case RemoteDshConnectionState.connected:
+        _pendingLaunch = null;
+        _pendingLaunchFailure = null;
+        final located = _locateSession(launch.sessionId);
+        if (located == null) {
+          // 已归档、已删除或属于另一台电脑：留在远程首页，用户可以从列表继续找。
+          _notice('会话已归档或不在该电脑上。');
+          return;
+        }
+        _openSession(located.project, located.session);
+      case RemoteDshConnectionState.connecting:
+        // 自动化/用户重试已经开始连接：清掉上一次的失败提示，等 ready 后再消费。
+        _pendingLaunchFailure = null;
+        if (_connection.phase == RemoteConnectionPhase.lost) {
+          _notifyPendingLaunchFailure('lost', '通知里的会话没能打开：与电脑的连接已断开，可以重试。');
+        }
+      case RemoteDshConnectionState.failed:
+        // 连接失败保留 pending：用户点「重试」连上后仍应打开通知里的会话。
+        _notifyPendingLaunchFailure(
+          'failed:${_connection.lastErrorCode}:${_connection.lastError}',
+          '通知里的会话没能打开：连接电脑失败，可以重试。',
+        );
+      case RemoteDshConnectionState.notConnected:
+        // 本地运行时未就绪：设备令牌在本机凭据服务里，服务就绪前连接会被拒绝。
+        // 这里什么都不做，[_onRuntimeChanged] 会在就绪后重试自动连接；
+        // 运行时不就绪或启动失败时给一次可见提示。
+        if (!widget.runtime.ready) {
+          if (!_localRuntimeReady && widget.runtime.phase == 'failed') {
+            _notifyPendingLaunchFailure(
+              'runtime-failed',
+              '通知里的会话没能打开：本地服务启动失败。',
+            );
+          }
+          return;
+        }
+        if (_error != null) {
+          _notifyPendingLaunchFailure(
+            'devices:$_error',
+            '通知里的会话没能打开：读取本机已配对电脑失败。',
+          );
+          return;
+        }
+        if (_connection.devices.isEmpty) {
+          _notifyPendingLaunchFailure('no-devices', '通知里的会话没能打开：本机还没有配对电脑。');
+          return;
+        }
+        if (_connection.lastConnectedDevice == null) {
+          // 多台电脑且没有「上次连接」记录：不猜测设备，等用户自己选一台。
+          _notifyPendingLaunchFailure('no-target', '无法确定通知来自哪台电脑，请先在上方选择一台电脑。');
+        }
+    }
+  }
+
+  /// 给「通知里的会话还没打开」的可见提示；同一原因只弹一次，避免刷新时刷屏。
+  void _notifyPendingLaunchFailure(String key, String message) {
+    if (_pendingLaunch == null || _pendingLaunchFailure == key) return;
+    _pendingLaunchFailure = key;
+    _notice(message);
+  }
+
+  /// 本地运行时未就绪时不允许发起远程连接（设备令牌要经本机凭据服务读取）。
+  ///
+  /// 用户主动发起的连接（设备胶囊、失败页「重试」、「添加连接」）在服务启动期间
+  /// 给出可见提示而不是让连接层报「凭据服务拒绝了这次操作」。
+  bool _canStartRemoteConnection() {
+    if (widget.runtime.ready) return true;
+    _notice('本地服务还在启动，请稍后再连接。');
+    return false;
   }
 
   /// 冷启动自动连接：优先上次成功连接的电脑；否则只在恰好一台已配对电脑时连它。
@@ -587,8 +715,11 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
   /// 超过一台且没有「上次连接」记录时不做猜测（v1 一次只连一台，协议 §11），由
   /// 用户点设备胶囊选择。每个页面实例只尝试一次：失败后停在失败态并给出「重试 /
   /// 切换设备」，后续刷新（移除电脑、从会话页返回）不会再次自动连接。
+  ///
+  /// 本地运行时未就绪时不发起连接、也不消耗这一次尝试：设备令牌要经本机凭据服务
+  /// 读取，服务就绪前连接必然失败（见 [_onRuntimeChanged]）。
   void _maybeAutoConnect() {
-    if (_autoConnectAttempted) return;
+    if (_autoConnectAttempted || !widget.runtime.ready) return;
     _autoConnectAttempted = true;
     if (_connection.phase != RemoteConnectionPhase.idle) return;
     final devices = _connection.devices;
@@ -844,6 +975,7 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
     if (active?.id == id && _connection.phase != RemoteConnectionPhase.failed) {
       return;
     }
+    if (!_canStartRemoteConnection()) return;
     unawaited(_connection.switchTo(device));
   }
 
@@ -897,6 +1029,7 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
       unawaited(_addConnection());
       return;
     }
+    if (!_canStartRemoteConnection()) return;
     unawaited(_connection.connect(device));
   }
 
@@ -952,6 +1085,7 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
         _connection.phase != RemoteConnectionPhase.failed) {
       return;
     }
+    if (!_canStartRemoteConnection()) return;
     unawaited(_connection.switchTo(target));
   }
 
@@ -1263,9 +1397,11 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
     );
     if (!mounted || device == null) return;
     // 配对已经把设备写进本机存储：先重读设备表让胶囊条出现这台电脑，再连上它。
-    // 读取失败由 [_load] 收进页面的可重试提示，连接仍然尝试。
+    // 读取失败由 [_load] 收进页面的可重试提示，连接仍然尝试；本机运行时未就绪时
+    // 连接层读不到设备令牌（[_canStartRemoteConnection] 会先给可见提示）。
     await _load();
     if (!mounted) return;
+    if (!_canStartRemoteConnection()) return;
     unawaited(_connection.connect(device));
   }
 

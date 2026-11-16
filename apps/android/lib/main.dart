@@ -4,6 +4,8 @@ import 'package:material_ui/material_ui.dart';
 import 'package:dynamic_color/dynamic_color.dart';
 
 import 'runtime.dart';
+import 'remote_dsh_page.dart';
+import 'remote_notification_navigation.dart';
 import 'runtime_selection.dart';
 import 'files.dart';
 import 'ui.dart';
@@ -66,6 +68,20 @@ class _PocketHarnessAppState extends State<PocketHarnessApp>
   final runtime = RuntimeController();
   final appearance = AppearanceController();
   final rootNavigator = GlobalKey<NavigatorState>();
+
+  /// 根对话页的 state；通知深链的导航统一交给它（它拥有侧栏与目的地栈）。
+  final chatKey = GlobalKey<_ChatPageState>();
+
+  /// 远程通知点击深链：平台层 take 一次即清空；根页面还没挂载时保留重试。
+  late final notificationNavigation = RemoteNotificationNavigation(
+    source: const MethodChannelRemoteNotificationLaunchSource(),
+    open: (launch) {
+      final chat = chatKey.currentState;
+      if (chat == null) return false;
+      chat.openRemoteNotification(launch);
+      return true;
+    },
+  );
   late final quotaNotices = AccountQuotaNoticeController(
     runtime.liveSessionEvents,
   );
@@ -75,6 +91,10 @@ class _PocketHarnessAppState extends State<PocketHarnessApp>
     WidgetsBinding.instance.addObserver(this);
     unawaited(appearance.load());
     unawaited(runtime.start().catchError(runtime.fail));
+    // 冷启动由系统通知拉起时，启动 Intent 里的深链在第一帧之后取走。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) unawaited(notificationNavigation.consume());
+    });
   }
 
   @override
@@ -88,7 +108,12 @@ class _PocketHarnessAppState extends State<PocketHarnessApp>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) unawaited(runtime.resume());
+    if (state == AppLifecycleState.resumed) {
+      unawaited(runtime.resume());
+      // App 存活时点通知：MainActivity.onNewIntent 已把 extra 存成 pending，
+      // 回到前台后在这里取走；重复调用由平台侧 take 语义保证只导航一次。
+      unawaited(notificationNavigation.consume());
+    }
   }
 
   @override
@@ -154,7 +179,7 @@ class _PocketHarnessAppState extends State<PocketHarnessApp>
               ),
             ),
           ),
-          home: ChatPage(runtime: runtime),
+          home: ChatPage(key: chatKey, runtime: runtime),
         ),
       ),
     ),
@@ -443,6 +468,24 @@ class _ChatPageState extends State<ChatPage> {
     scaffold.currentState?.closeDrawer();
     inputFocus.unfocus();
     navigate(page);
+  }
+
+  /// 打开通知里的远程会话：回到根对话页，再推入远程首页并在连接就绪后打开会话。
+  ///
+  /// 远程首页是稳定目的地（见 [RemoteDshPage.routeDestination]）；已经压着别的全屏
+  /// 页时先退回根页，避免同一目的地在栈上叠第二层，也保证用户按返回键回到聊天。
+  /// 真正的打开时机与失败提示由远程首页处理（它需要等连接就绪并读会话列表）。
+  void openRemoteNotification(RemoteNotificationLaunch launch) {
+    final chatRoute = ModalRoute.of(context);
+    if (chatRoute == null) return;
+    scaffold.currentState?.closeDrawer();
+    inputFocus.unfocus();
+    Navigator.of(context)
+        .popUntil((route) => route == chatRoute || route.isFirst);
+    navigate(
+      RemoteDshPage(runtime: runtime, notificationLaunch: launch),
+      destination: RemoteDshPage.routeDestination,
+    );
   }
 
   void openSessionFiles() {

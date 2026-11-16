@@ -14,6 +14,8 @@ import 'package:dsh_android/remote_dsh_conversation.dart';
 import 'package:dsh_android/remote_dsh_live_source.dart';
 import 'package:dsh_android/remote_dsh_page.dart';
 import 'package:dsh_android/remote_dsh_widgets.dart';
+import 'package:dsh_android/remote_notification_navigation.dart';
+import 'package:dsh_android/remote_notifications.dart';
 import 'package:dsh_android/remote_pairing.dart';
 import 'package:dsh_android/remote_transport.dart';
 import 'package:dsh_android/ui.dart';
@@ -163,6 +165,9 @@ class _HomeFakeLink implements RemoteTransportLink {
   /// 收到过的门面请求方法名。
   final List<String> requests = <String>[];
 
+  /// `sessions.list` 返回的会话行；默认空列表（多数用例不关心项目列表）。
+  List<Map<String, dynamic>> sessions = const <Map<String, dynamic>>[];
+
   RemoteHostInfo? _host;
   String _phase = 'connecting';
   bool _closed = false;
@@ -195,7 +200,10 @@ class _HomeFakeLink implements RemoteTransportLink {
       case 'runtime.info':
         return <String, dynamic>{'node': 'v24', 'platform': 'win32'};
       case 'sessions.list':
-        return <dynamic>[];
+        return sessions;
+      case 'session.readWindow':
+        // 通知深链用例会真的打开会话页：给一个合法空窗口，让它停在空态而不是错误态。
+        return <String, dynamic>{'events': <dynamic>[], 'throughSeq': 0};
       default:
         return null;
     }
@@ -471,16 +479,28 @@ Future<void> _openSearch(WidgetTester tester) async {
 }
 
 /// 用注入的连接控制器打开首页（数据源是真实实时源）。
+///
+/// [launch] 模拟「从系统通知点击进来」的待打开会话；[observer] 记录推入的目的地，
+/// 用来断言通知深链打开的是会话页而不是别的页面。[runtime] 给冷启动用例注入一个
+/// 尚未就绪的本机运行时（缺省是已就绪的 [LibraryRuntime]）。
 Future<void> _showConnection(
   WidgetTester tester,
-  _HomeConnectionHarness harness,
-) async {
-  final runtime = LibraryRuntime();
-  addTearDown(runtime.dispose);
+  _HomeConnectionHarness harness, {
+  NavigatorObserver? observer,
+  RemoteNotificationLaunch? launch,
+  LibraryRuntime? runtime,
+}) async {
+  final controller = runtime ?? LibraryRuntime();
+  if (runtime == null) addTearDown(controller.dispose);
   await tester.pumpWidget(
     MaterialApp(
       theme: pocketTheme(Brightness.light),
-      home: RemoteDshPage(runtime: runtime, connection: harness.controller),
+      navigatorObservers: <NavigatorObserver>[?observer],
+      home: RemoteDshPage(
+        runtime: controller,
+        connection: harness.controller,
+        notificationLaunch: launch,
+      ),
     ),
   );
   await tester.pumpAndSettle();
@@ -1232,6 +1252,280 @@ void main() {
         reason: '入站通知不改变首页，不应重读设备表与 sessions.list',
       );
       expect(harness.saveCalls, savesBefore, reason: '通知不触发设备表回写');
+
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpAndSettle();
+    });
+  });
+
+  group('通知点击深链', () {
+    RemoteNotificationLaunch launch(String sessionId) =>
+        RemoteNotificationLaunch(
+          sessionId: sessionId,
+          kind: RemoteNotificationKind.taskCompleted,
+          tag: 'turn:3',
+        );
+
+    Future<_HomeConnectionHarness> harnessFor(
+      List<paired.RemoteDevice> devices, {
+      String? lastConnectedDeviceId,
+    }) async {
+      final harness = _HomeConnectionHarness(
+        devices: devices,
+        lastConnectedDeviceId: lastConnectedDeviceId,
+      );
+      addTearDown(harness.dispose);
+      harness.authorize(devices);
+      return harness;
+    }
+
+    /// 电脑上的会话行；`sessions.list` 的既有投影形状。
+    List<Map<String, dynamic>> sessionRows(List<String> ids) =>
+        <Map<String, dynamic>>[
+          for (final id in ids)
+            <String, dynamic>{
+              'header': <String, dynamic>{
+                'id': id,
+                'cwd': r'C:\Users\colin\Pocket',
+              },
+              'title': '会话 $id',
+            },
+        ];
+
+    testWidgets('连接就绪后按 sessionId 打开通知里的远程会话', (tester) async {
+      final harness = await harnessFor(<paired.RemoteDevice>[
+        _livingRoom(),
+      ], lastConnectedDeviceId: _livingRoomId);
+      final log = _RouteLog();
+      await _showConnection(
+        tester,
+        harness,
+        observer: log,
+        launch: launch('s-2'),
+      );
+      harness.factory.links.single.sessions = sessionRows(<String>[
+        's-1',
+        's-2',
+      ]);
+
+      expect(
+        find.byType(RemoteDshConversationPage),
+        findsNothing,
+        reason: '连接就绪前不能打开一个没有数据源的会话页',
+      );
+      expect(_summary(tester), '正在连接「客厅的电脑」…');
+
+      _completeHandshake(harness, 0, '客厅的电脑');
+      await _flushConnection(tester);
+
+      expect(
+        log.names,
+        contains(destinationRouteName('remote-session:s-2')),
+        reason: '就绪后打开通知里的会话，而不是只停在远程首页',
+      );
+      expect(find.byType(RemoteDshConversationPage), findsOneWidget);
+      expect(find.text('会话 s-2'), findsOneWidget);
+
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('会话已归档或不在该电脑上：留在首页并给出可见提示', (tester) async {
+      final harness = await harnessFor(<paired.RemoteDevice>[
+        _livingRoom(),
+      ], lastConnectedDeviceId: _livingRoomId);
+      final log = _RouteLog();
+      await _showConnection(
+        tester,
+        harness,
+        observer: log,
+        launch: launch('s-gone'),
+      );
+      harness.factory.links.single.sessions = sessionRows(<String>['s-1']);
+
+      _completeHandshake(harness, 0, '客厅的电脑');
+      await _flushConnection(tester);
+
+      expect(find.byType(RemoteDshConversationPage), findsNothing);
+      expect(
+        log.names,
+        isNot(contains(destinationRouteName('remote-session:s-gone'))),
+      );
+      expect(find.text('会话已归档或不在该电脑上。'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('remote-session-s-1')),
+        findsOneWidget,
+        reason: '首页项目列表保持可用，用户可以从列表继续找',
+      );
+
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('连接失败：停在首页既有失败态并说明会话没打开', (tester) async {
+      final harness = await harnessFor(<paired.RemoteDevice>[
+        _livingRoom(),
+      ], lastConnectedDeviceId: _livingRoomId);
+      await _showConnection(tester, harness, launch: launch('s-1'));
+      final link = harness.factory.links.single;
+      link.lost('auth-failed', '连接被拒绝：设备令牌无效。请在电脑上重新配对这台手机。');
+      await _flushConnection(tester, until: () => link.isClosed);
+
+      expect(find.text('没能连接到「客厅的电脑」'), findsWidgets);
+      expect(find.text('重试'), findsOneWidget);
+      expect(find.textContaining('通知里的会话没能打开'), findsOneWidget);
+      expect(find.byType(RemoteDshConversationPage), findsNothing);
+
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('本机还没有已配对电脑：首页空态 + 可见提示', (tester) async {
+      final harness = await harnessFor(const <paired.RemoteDevice>[]);
+      await _showConnection(tester, harness, launch: launch('s-1'));
+
+      expect(find.text('还没有连接任何电脑'), findsOneWidget);
+      expect(find.textContaining('本机还没有配对电脑'), findsOneWidget);
+      expect(harness.factory.links, isEmpty);
+      expect(find.byType(RemoteDshConversationPage), findsNothing);
+
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('多台电脑且没有上次连接记录：不猜测设备，提示先选择电脑', (tester) async {
+      final harness = await harnessFor(<paired.RemoteDevice>[
+        _livingRoom(connectedBefore: false),
+        _study(connectedBefore: false),
+      ]);
+      await _showConnection(tester, harness, launch: launch('s-1'));
+
+      expect(harness.factory.links, isEmpty, reason: '无法判断通知来源设备时不自动切换/连接任何一台');
+      expect(find.textContaining('无法确定通知来自哪台电脑'), findsOneWidget);
+      expect(find.byType(RemoteDshConversationPage), findsNothing);
+
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('本地运行时未就绪时不抢跑连接，就绪后自动连接并打开 pending 会话', (tester) async {
+      final harness = await harnessFor(<paired.RemoteDevice>[
+        _livingRoom(),
+      ], lastConnectedDeviceId: _livingRoomId);
+      // 冷启动由通知拉起：页面先挂载，runtime.start() 还没完成。
+      final runtime = LibraryRuntime()..phase = 'starting';
+      addTearDown(runtime.dispose);
+      final log = _RouteLog();
+      await _showConnection(
+        tester,
+        harness,
+        runtime: runtime,
+        observer: log,
+        launch: launch('s-2'),
+      );
+
+      expect(
+        harness.factory.links,
+        isEmpty,
+        reason: '本机凭据服务未就绪时读不到设备令牌，连接会被拒绝；必须等 runtime ready',
+      );
+      expect(find.byType(RemoteDshConversationPage), findsNothing);
+
+      // 本机运行时就绪：远程页监听 runtime 变化后补一次自动连接。
+      runtime.changeConnection('ready');
+      await _flushConnection(
+        tester,
+        until: () => harness.factory.links.isNotEmpty,
+      );
+      expect(harness.factory.links, hasLength(1));
+      harness.factory.links.single.sessions = sessionRows(<String>[
+        's-1',
+        's-2',
+      ]);
+      _completeHandshake(harness, 0, '客厅的电脑');
+      await _flushConnection(tester);
+
+      expect(
+        log.names,
+        contains(destinationRouteName('remote-session:s-2')),
+        reason: 'runtime ready → 连接 ready 后应打开通知里的会话',
+      );
+      expect(find.byType(RemoteDshConversationPage), findsOneWidget);
+
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('连接失败不清空 pending，重试成功后打开通知里的会话', (tester) async {
+      final harness = await harnessFor(<paired.RemoteDevice>[
+        _livingRoom(),
+      ], lastConnectedDeviceId: _livingRoomId);
+      final log = _RouteLog();
+      await _showConnection(
+        tester,
+        harness,
+        observer: log,
+        launch: launch('s-2'),
+      );
+      final first = harness.factory.links.single;
+      first.lost('auth-failed', '连接被拒绝：设备令牌无效。请在电脑上重新配对这台手机。');
+      await _flushConnection(tester, until: () => first.isClosed);
+
+      expect(find.byType(RemoteDshConversationPage), findsNothing);
+      expect(find.textContaining('通知里的会话没能打开'), findsOneWidget);
+
+      // 用户点「重试」：第一次失败不能把 pending 消费掉。
+      await tester.tap(find.text('重试'));
+      await _flushConnection(
+        tester,
+        until: () => harness.factory.links.length == 2,
+      );
+      harness.factory.links[1].sessions = sessionRows(<String>['s-1', 's-2']);
+      _completeHandshake(harness, 1, '客厅的电脑');
+      await _flushConnection(tester);
+
+      expect(
+        log.names,
+        contains(destinationRouteName('remote-session:s-2')),
+        reason: '失败只提示、不丢弃 pending；重试连上后仍要打开通知里的会话',
+      );
+      expect(find.byType(RemoteDshConversationPage), findsOneWidget);
+
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('pending 会话只消费一次，返回首页刷新不会重复打开', (tester) async {
+      final harness = await harnessFor(<paired.RemoteDevice>[
+        _livingRoom(),
+      ], lastConnectedDeviceId: _livingRoomId);
+      final log = _RouteLog();
+      await _showConnection(
+        tester,
+        harness,
+        observer: log,
+        launch: launch('s-2'),
+      );
+      harness.factory.links.single.sessions = sessionRows(<String>[
+        's-1',
+        's-2',
+      ]);
+      _completeHandshake(harness, 0, '客厅的电脑');
+      await _flushConnection(tester);
+
+      final route = destinationRouteName('remote-session:s-2');
+      expect(log.names.where((name) => name == route), hasLength(1));
+
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      await _flushConnection(tester);
+
+      expect(find.byType(RemoteDshConversationPage), findsNothing);
+      expect(
+        log.names.where((name) => name == route),
+        hasLength(1),
+        reason: '返回首页会重读列表；pending 已消费，不应再次打开同一会话',
+      );
 
       await tester.pumpWidget(const SizedBox());
       await tester.pumpAndSettle();

@@ -63,6 +63,7 @@ class MainActivity : FlutterActivity() {
     private var isolatedReviewPreparing = false
     private var linuxReviewRequestId: String? = null
     private var notificationSessionId: String? = null
+    private var pendingRemoteLaunch: RemoteNotificationLaunch? = null
     private var runtimeRequested = false
     private var notificationPermission: MethodChannel.Result? = null
     private val main = Handler(Looper.getMainLooper())
@@ -267,6 +268,9 @@ class MainActivity : FlutterActivity() {
         if (BuildConfig.DEBUG) attachments.stage(intent)
         // 扫码配对验收旁路（仅 debug）：启动 Intent 带 dshPairingScanImage 时解码并写 logcat。
         if (BuildConfig.DEBUG) pairingScan.decodeLaunchImage(intent)
+        // 远程通知点击深链：启动 Intent 里的有效 extra 先存成 pending，Dart 就绪后经
+        // dsh/runtime 的 notifications.launch.take 取一次即清空；本地通知路由不变。
+        captureRemoteLaunch(intent)
         documentPreviews = DocumentPreviewFactory(engine.dartExecutor.binaryMessenger) { frame, result -> sendCall(frame, result); Unit }.also {
             engine.platformViewsController.registry.registerViewFactory("dsh/document-preview", it)
         }
@@ -426,6 +430,13 @@ class MainActivity : FlutterActivity() {
                 "notifications.remote.cancelAll" -> {
                     remoteNotifications.cancelAll()
                     result.success(null)
+                }
+                // 远程通知点击深链（pull 语义）：取一次即清空，没有 pending 时返回 null。
+                // 与本地通知的 navigation.open 事件分发互不影响。
+                "notifications.launch.take" -> {
+                    val launch = pendingRemoteLaunch
+                    pendingRemoteLaunch = null
+                    result.success(launch?.toJson())
                 }
                 "restart" -> restartRuntime(result)
                 "runtime.ensureBound" -> ensureBinding(result)
@@ -912,7 +923,20 @@ class MainActivity : FlutterActivity() {
         // singleTop 复用同一个 Activity 时，「am start」带来的调试暂存 extra 在这里登记。
         if (BuildConfig.DEBUG) attachments.stage(intent)
         if (BuildConfig.DEBUG) pairingScan.decodeLaunchImage(intent)
+        // App 存活时点通知走这里：先登记远程通知深链，再走本地通知的既有路由。
+        captureRemoteLaunch(intent)
         deliverNavigation()
+    }
+
+    /**
+     * 记录远程通知点击深链，供 `notifications.launch.take` 取走。
+     *
+     * 只接受 `RemoteNotifications.takeLaunch` 校验通过的 Intent；损坏/未知 extra 返回 null
+     * 时保留之前尚未取走的 pending（新的无效点击不覆盖有效深链）。取过的 extra 会被移除，
+     * Activity 重建不会重复投递。
+     */
+    private fun captureRemoteLaunch(intent: Intent?) {
+        pendingRemoteLaunch = RemoteNotifications.takeLaunch(intent) ?: pendingRemoteLaunch
     }
     private fun deliverNavigation() {
         val sink = events ?: return
