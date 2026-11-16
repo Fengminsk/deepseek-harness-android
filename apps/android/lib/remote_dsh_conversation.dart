@@ -61,6 +61,13 @@
 // 永久不支持。一次性审批卡片（允许一次 / 拒绝）保持不变：预设只影响新请求，不会
 // 自动通过已挂起的审批。
 //
+// 会话洞察：输入区上方是待办卡片（收起一行摘要「任务 + 各状态计数」，展开为清单，
+// 展开状态由页面持有并在本次会话内保留），输入区下方是一行统计条（轮/步、token
+// 与缓存命中、上下文占用；缺少的读数整段不显示，窄屏放不下时折叠成可点的小胶囊）。
+// 点按统计条打开底部详情弹层（token 四桶、上下文占用说明与平均 TTFT / 解码速度）。
+// 两块读数都来自 [RemoteSessionInsights]：只有数据源推来新的洞察时才变化，页面不
+// 轮询、不播放入场或逐帧动画。
+//
 // 连接阶段来自传入的数据源（它投影 `RemoteConnectionController.phase`）：
 // 连接中 / 就绪 / 失败三态分别给出连接提示、正常会话与带 `lastError` 的失败条；
 // 失败条上的「重新连接」重连同一台电脑，不新建连接。宿主不支持某个门面方法时
@@ -96,7 +103,9 @@ import 'remote_dsh_widgets.dart';
 import 'remote_goal_plan.dart';
 import 'remote_permissions.dart';
 import 'remote_session_insights.dart';
+import 'remote_stats_bar.dart';
 import 'remote_terminal_page.dart';
+import 'remote_todo_card.dart';
 import 'remote_workspace_diff_page.dart';
 import 'runtime.dart';
 import 'runtime_transport.dart';
@@ -224,9 +233,13 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
   /// 会话洞察的最近一次读数：待办、会话统计、token 用量与上下文占用。
   ///
   /// 数据源在首屏、重连、手动重试（`reload`）与轮次边界 / 待办写入后重新读取，
-  /// 用 [RemoteConversationInsights] 推送；本页只按整体替换持有状态，不渲染读数
-  /// （悬浮任务卡片与底部统计条由后续 UI 接入）。null 表示这一周期没有可用读数。
+  /// 用 [RemoteConversationInsights] 推送；本页只按整体替换持有状态，交给输入区
+  /// 上方的待办卡片与下方的统计条渲染。null 表示这一周期没有可用读数。
   RemoteSessionInsights? _insights;
+
+  /// 待办卡片是否展开。属于页面状态：窗口刷新、流式增量重建都不会收起，换到
+  /// 别的会话时随新页面重置为收起。
+  bool _todosExpanded = false;
 
   /// 已经用一次成功发送确认过的路由；同一条路由不再显示发送前提示。
   RemoteModelChoice? _routeConfirmed;
@@ -505,6 +518,7 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
                 ),
                 ?_interactionArea(context),
                 _planArea(context),
+                ?_todoArea(context),
                 ?_modelRouteNotice(context),
                 ?_credentialNotice(context),
                 ?_commandResultBar(context),
@@ -957,6 +971,11 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
             onApproval: _permissions.presetsReady ? _openPermissionSheet : null,
             onModel: canSelectModel ? () => unawaited(_openModelSheet()) : null,
           ),
+          // 输入区下方的会话统计条；没有读数时组件自己收起为零高度。
+          RemoteStatsBar(
+            insights: _insights ?? RemoteSessionInsights.none,
+            onTap: _openStatsSheet,
+          ),
         ],
       ),
     );
@@ -993,6 +1012,37 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
       );
     },
   );
+
+  // ------------------------------------------------------------ 会话洞察
+
+  /// 输入区上方的待办卡片；没有待办投影（或清单为空）时不占布局。
+  ///
+  /// 卡片放在计划条之后、提示条之前：与本地会话页 `ChatTodoDock` 同在输入区
+  /// 上方，但不覆盖输入框；展开状态由页面持有（[_todosExpanded]），窗口刷新与
+  /// 流式增量重建都不会收起。
+  Widget? _todoArea(BuildContext context) {
+    final todos = _insights?.todos;
+    if (todos == null || todos.isEmpty) return null;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      child: RemoteTodoCard(
+        todos: todos,
+        expanded: _todosExpanded,
+        onToggle: () => setState(() => _todosExpanded = !_todosExpanded),
+      ),
+    );
+  }
+
+  /// 打开会话统计详情弹层：弹层取代输入焦点，先收起键盘。
+  ///
+  /// 统计条只在有统计读数时渲染，这里用同一个判定兜底，避免打开一个没有内容的
+  /// 弹层（只有待办的会话不渲染统计条）。
+  void _openStatsSheet() {
+    final insights = _insights;
+    if (insights == null || !RemoteStatsBar.hasReadings(insights)) return;
+    _focus.unfocus();
+    unawaited(showRemoteStatsSheet(context, insights: insights));
+  }
 
   /// 输入区上方的当前模型回显：点按打开模型选择弹层。
   ///

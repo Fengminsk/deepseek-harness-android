@@ -16,6 +16,8 @@ import 'package:dsh_android/remote_dsh_conversation.dart';
 import 'package:dsh_android/remote_dsh_widgets.dart';
 import 'package:dsh_android/remote_permissions.dart';
 import 'package:dsh_android/remote_session_insights.dart';
+import 'package:dsh_android/remote_stats_bar.dart';
+import 'package:dsh_android/remote_todo_card.dart';
 import 'package:dsh_android/remote_workspace_diff_page.dart';
 import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/runtime_transport.dart';
@@ -466,40 +468,178 @@ void main() {
     await tester.pump();
     connection.setPhase(RemoteConnectionPhase.ready);
     await tester.pumpAndSettle();
-    expect(
-      projectionReads,
-      greaterThan(beforeReconnect),
-      reason: '重连后重读洞察',
-    );
+    expect(projectionReads, greaterThan(beforeReconnect), reason: '重连后重读洞察');
     expect(tester.takeException(), isNull);
   });
 
   testWidgets('数据源推会话洞察更新时页面持有状态且不影响消息区', (tester) async {
     final source = FakeRemoteConversationSource(
       window: _window(conversationEvents()),
-      insights: RemoteSessionInsights.fromProjectionValues(
-        <String, dynamic>{
-          'todos': <Map<String, dynamic>>[
-            <String, dynamic>{'content': '检查构建', 'status': 'in_progress'},
-          ],
-          'sessionStats': <String, dynamic>{'turns': 2, 'steps': 3},
-        },
+      insights: RemoteSessionInsights.fromProjectionValues(<String, dynamic>{
+        'todos': <Map<String, dynamic>>[
+          <String, dynamic>{'content': '检查构建', 'status': 'in_progress'},
+        ],
+        'sessionStats': <String, dynamic>{'turns': 2, 'steps': 3},
+      }),
+    );
+    await tester.pumpWidget(_host(source));
+    await tester.pumpAndSettle();
+
+    // 假数据源在 start() 里按数据源契约读了洞察并推给页面；页面把读数交给待办
+    // 卡片与统计条渲染，但推送与整体替换不能打扰已有的会话内容。
+    expect(source.insightReads, 1);
+    expect(find.text('你好'), findsOneWidget);
+    expect(find.byKey(RemoteTodoCard.toggleKey), findsOneWidget);
+    expect(find.text('轮 2 · 步 3'), findsOneWidget);
+
+    source.emit(const RemoteConversationInsights(RemoteSessionInsights.none));
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+    expect(find.text('你好'), findsOneWidget);
+    expect(find.byKey(RemoteTodoCard.toggleKey), findsNothing);
+    expect(find.byKey(RemoteStatsBar.barKey), findsNothing);
+  });
+
+  testWidgets('会话洞察到位时显示待办卡片与统计条，读数更新后一起刷新', (tester) async {
+    final source = FakeRemoteConversationSource(
+      window: _window(conversationEvents()),
+      insights: RemoteSessionInsights(
+        todos: const <RemoteTodoItem>[
+          RemoteTodoItem(content: '检查构建', status: RemoteTodoStatus.inProgress),
+          RemoteTodoItem(content: '跑测试', status: RemoteTodoStatus.pending),
+          RemoteTodoItem(content: '收尾', status: RemoteTodoStatus.completed),
+        ],
+        stats: const RemoteSessionStats(
+          turns: 20,
+          steps: 23,
+          llmMs: 0,
+          toolMs: 0,
+          ttftMs: 0,
+          ttftSteps: 0,
+          decodeMs: 0,
+          decodeTokens: 0,
+        ),
+        usage: const RemoteTokenUsage(
+          uncachedInputTokens: 100,
+          cacheReadTokens: 900,
+          cacheWriteTokens: 0,
+          outputTokens: 50,
+        ),
+        pressure: const RemoteContextPressure(
+          projectedTokens: 500,
+          contextWindow: 1000,
+        ),
       ),
     );
     await tester.pumpWidget(_host(source));
     await tester.pumpAndSettle();
 
-    // 假数据源在 start() 里按数据源契约读了洞察（页面持有它但先不渲染）；
-    // UI 任务接入读数前，这里的推送与整体替换只要求不打扰会话内容。
-    expect(source.insightReads, 1);
-    expect(find.text('你好'), findsOneWidget);
+    expect(find.byKey(RemoteTodoCard.toggleKey), findsOneWidget);
+    expect(find.text('已完成 1 · 进行中 1 · 待处理 1'), findsOneWidget);
+    expect(find.byKey(RemoteStatsBar.barKey), findsOneWidget);
+    expect(find.byKey(RemoteStatsBar.lineKey), findsOneWidget);
+    expect(find.text('轮 20 · 步 23'), findsOneWidget);
+    expect(find.text('1.1K tok · 缓存命中 90%'), findsOneWidget);
+    expect(find.text('上下文 50%'), findsOneWidget);
+
+    // 展开清单；随后数据源推新的读数，清单保持展开、摘要与统计一起刷新。
+    await tester.tap(find.byKey(RemoteTodoCard.toggleKey));
+    await tester.pump();
+    expect(find.byKey(RemoteTodoCard.listKey), findsOneWidget);
+    expect(find.text('检查构建'), findsOneWidget);
 
     source.emit(
-      const RemoteConversationInsights(RemoteSessionInsights.none),
+      RemoteConversationInsights(
+        RemoteSessionInsights(
+          todos: const <RemoteTodoItem>[
+            RemoteTodoItem(content: '检查构建', status: RemoteTodoStatus.completed),
+            RemoteTodoItem(content: '跑测试', status: RemoteTodoStatus.inProgress),
+            RemoteTodoItem(content: '收尾', status: RemoteTodoStatus.completed),
+            RemoteTodoItem(content: '发布', status: RemoteTodoStatus.pending),
+          ],
+          stats: const RemoteSessionStats(
+            turns: 21,
+            steps: 24,
+            llmMs: 0,
+            toolMs: 0,
+            ttftMs: 0,
+            ttftSteps: 0,
+            decodeMs: 0,
+            decodeTokens: 0,
+          ),
+        ),
+      ),
     );
     await tester.pump();
+
+    expect(find.text('已完成 2 · 进行中 1 · 待处理 1'), findsOneWidget);
+    expect(find.text('轮 21 · 步 24'), findsOneWidget);
+    // 新读数没有 token 与上下文：对应分段消失，而不是留下旧值或 0%。
+    expect(find.textContaining('缓存命中'), findsNothing);
+    expect(find.textContaining('上下文'), findsNothing);
+    expect(
+      find.byKey(RemoteTodoCard.listKey),
+      findsOneWidget,
+      reason: '读数刷新不会收起清单',
+    );
+    expect(find.text('发布'), findsOneWidget);
     expect(tester.takeException(), isNull);
-    expect(find.text('你好'), findsOneWidget);
+  });
+
+  testWidgets('没有会话洞察读数时不显示待办卡片与统计条', (tester) async {
+    final source = FakeRemoteConversationSource(
+      window: _window(conversationEvents()),
+    );
+    await tester.pumpWidget(_host(source));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(RemoteTodoCard.toggleKey), findsNothing);
+    expect(find.byKey(RemoteStatsBar.barKey), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('点按统计条打开会话统计详情弹层', (tester) async {
+    final source = FakeRemoteConversationSource(
+      window: _window(conversationEvents()),
+      insights: RemoteSessionInsights(
+        stats: const RemoteSessionStats(
+          turns: 2,
+          steps: 3,
+          llmMs: 4000,
+          toolMs: 0,
+          ttftMs: 2000,
+          ttftSteps: 2,
+          decodeMs: 1000,
+          decodeTokens: 120,
+        ),
+        usage: const RemoteTokenUsage(
+          uncachedInputTokens: 10,
+          cacheReadTokens: 90,
+          cacheWriteTokens: 0,
+          outputTokens: 5,
+        ),
+        pressure: const RemoteContextPressure(
+          pressureTokens: 100,
+          contextWindow: 1000,
+        ),
+      ),
+    );
+    await tester.pumpWidget(_host(source));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(RemoteStatsBar.barKey));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('remote-stats-sheet')), findsOneWidget);
+    expect(find.text('Token 用量'), findsOneWidget);
+    expect(find.text('未缓存输入'), findsOneWidget);
+    expect(find.text('上下文'), findsOneWidget);
+    expect(find.textContaining('不含输出'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('关闭会话统计'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('remote-stats-sheet')), findsNothing);
+    expect(tester.takeException(), isNull);
   });
 
   test('会话目的地标识带 remote-session:<id> 前缀', () {
