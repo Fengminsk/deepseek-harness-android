@@ -470,30 +470,39 @@ class PocketComposer extends StatelessWidget {
 
   Widget _input(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    return TextField(
-      key: inputKey,
-      controller: controller,
-      focusNode: focusNode,
-      enabled: enabled,
-      minLines: 1,
-      maxLines: 4,
-      textInputAction: TextInputAction.newline,
-      textAlignVertical: TextAlignVertical.center,
-      style: AppTextStyle.subheadline.of(context),
-      onChanged: onChanged,
-      onSubmitted: onSubmitted,
-      decoration: InputDecoration(
-        hintText: placeholder,
-        hintMaxLines: 1,
-        hintStyle: AppTextStyle.subheadline
-            .of(context)
-            .copyWith(color: colors.onSurfaceVariant),
-        filled: false,
-        border: InputBorder.none,
-        enabledBorder: InputBorder.none,
-        focusedBorder: InputBorder.none,
-        disabledBorder: InputBorder.none,
-        contentPadding: const EdgeInsets.symmetric(horizontal: 2, vertical: 10),
+    final browse = mode == PocketComposerMode.browse;
+    return SizedBox(
+      height: browse ? 44 : null,
+      child: TextField(
+        key: inputKey,
+        controller: controller,
+        focusNode: focusNode,
+        enabled: enabled,
+        minLines: 1,
+        maxLines: browse ? 1 : 4,
+        textInputAction: TextInputAction.newline,
+        textAlign: TextAlign.start,
+        textAlignVertical: TextAlignVertical.center,
+        style: AppTextStyle.subheadline.of(context),
+        onChanged: onChanged,
+        onSubmitted: onSubmitted,
+        decoration: InputDecoration(
+          hintText: placeholder,
+          hintMaxLines: 1,
+          hintStyle: AppTextStyle.subheadline
+              .of(context)
+              .copyWith(color: colors.onSurfaceVariant),
+          filled: false,
+          border: InputBorder.none,
+          enabledBorder: InputBorder.none,
+          focusedBorder: InputBorder.none,
+          disabledBorder: InputBorder.none,
+          isDense: browse,
+          contentPadding: EdgeInsets.symmetric(
+            horizontal: 2,
+            vertical: browse ? 0 : 10,
+          ),
+        ),
       ),
     );
   }

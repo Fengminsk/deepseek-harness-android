@@ -24,18 +24,25 @@ class ChatExecutionHeader extends StatelessWidget {
     required this.chain,
     required this.expanded,
     required this.onToggle,
+    this.compact = false,
     super.key,
   });
   final ChatExecutionChain chain;
   final bool expanded;
   final VoidCallback onToggle;
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     final ink = chain.needsAttention ? colors.error : colors.onSurfaceVariant;
-    final title = expanded && chain.completed ? '规划与执行' : chain.title;
-    return Semantics(
+    final duration = chain.duration;
+    final title = compact && duration != null
+        ? '用时 ${duration.replaceAll('m ', ' 分钟 ').replaceAll('s', ' 秒')}'
+        : expanded && chain.completed
+        ? '规划与执行'
+        : chain.title;
+    final row = Semantics(
       button: true,
       expanded: expanded,
       label: title,
@@ -45,32 +52,41 @@ class ChatExecutionHeader extends StatelessWidget {
           onTap: onToggle,
           borderRadius: BorderRadius.circular(12),
           child: ConstrainedBox(
-            constraints: const BoxConstraints(minHeight: 48),
+            constraints: BoxConstraints(minHeight: compact ? 34 : 48),
             child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 8),
+              padding: EdgeInsets.symmetric(vertical: compact ? 3 : 8),
               child: Row(
                 children: [
-                  Icon(
-                    chain.completed && !expanded
-                        ? Icons.check_circle_rounded
-                        : chain.needsAttention
-                        ? Icons.error_outline_rounded
-                        : Icons.psychology_outlined,
-                    size: 22,
-                    color: chain.completed ? colors.primary : ink,
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Text(
+                  if (!compact) ...[
+                    Icon(
+                      chain.completed && !expanded
+                          ? Icons.check_circle_rounded
+                          : chain.needsAttention
+                          ? Icons.error_outline_rounded
+                          : Icons.psychology_outlined,
+                      size: 22,
+                      color: chain.completed ? colors.primary : ink,
+                    ),
+                    const SizedBox(width: 12),
+                  ],
+                  if (compact)
+                    Text(
                       title,
                       style: Theme.of(context).textTheme.bodyMedium
-                          ?.copyWith(color: ink, fontWeight: FontWeight.w600),
+                          ?.copyWith(color: ink, fontWeight: FontWeight.w500),
+                    )
+                  else
+                    Expanded(
+                      child: Text(
+                        title,
+                        style: Theme.of(context).textTheme.bodyMedium
+                            ?.copyWith(color: ink, fontWeight: FontWeight.w600),
+                      ),
                     ),
-                  ),
-                  if (expanded && chain.duration != null) ...[
+                  if (!compact && expanded && duration != null) ...[
                     const SizedBox(width: 6),
                     Text(
-                      chain.duration!,
+                      duration,
                       style: Theme.of(context).textTheme.labelSmall
                           ?.copyWith(color: colors.onSurfaceVariant),
                     ),
@@ -83,12 +99,25 @@ class ChatExecutionHeader extends StatelessWidget {
                     size: 18,
                     color: ink,
                   ),
+                  if (compact) const Spacer(),
                 ],
               ),
             ),
           ),
         ),
       ),
+    );
+    if (!compact) return row;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        row,
+        Divider(
+          height: 1,
+          thickness: .5,
+          color: colors.outlineVariant.withValues(alpha: .55),
+        ),
+      ],
     );
   }
 }

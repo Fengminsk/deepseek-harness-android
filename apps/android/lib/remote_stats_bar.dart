@@ -1,21 +1,18 @@
 // 远程会话页的底部统计条与它的详情弹层。
 //
-// 统计条是一行紧凑读数，分三段：`轮 X · 步 Y`（sessionStats）、
-// `N tok · 缓存命中 P%`（tokenUsage 派生）、`上下文 Q%`（contextPressure 派生）。
+// 统计条是一行紧凑读数，分三段：轮/步、缓存命中、上下文占用。
 // 每一段只在宿主真的给出对应读数时出现：缓存命中率没有计费输入 token 时整段不写，
 // 上下文缺已用量或容量时不写百分比，会话统计 0 轮 0 步时也不写——不拿 0 当读数。
 //
-// 空间不足时（实测一行放不下，例如窄屏或放大字体）折叠成一枚仍可点的小胶囊，
-// 只保留最关键的一项读数（上下文占用 > 缓存命中 > token 总量 > 轮/步），点按
-// 照常打开同一个详情弹层；正常一行时点按整条也能打开详情。
+// 手机宽度先缩短分段文案；仍放不下时只保留最关键的一项读数。
+// 左右滑动可以把长胶囊收纳到对应边缘，成为只显示上下文的圆球。
 //
-// 组件是纯展示：读数由页面给，组件没有订阅、定时器或动画，因此只有页面收到新的
-// 会话洞察时才重建。详情弹层的排版沿用 App 现有底部弹层（玻璃顶角、把手、居中
-// 标题与圆形关闭按钮，见 `remote_dsh_widgets.dart` 的权限弹层）。
+// 读数由页面给，组件没有订阅或定时器。详情弹层复用 App 现有底部弹层。
 
 import 'package:material_ui/material_ui.dart';
 
 import 'flclash/typography.dart';
+import 'remote_dsh_widgets.dart';
 import 'remote_session_insights.dart';
 import 'ui.dart';
 
@@ -38,7 +35,7 @@ const double _statsLineInset = 8;
 const double _statsFitMargin = 4;
 
 /// 远程会话的底部统计条：一行紧凑读数，点按打开详情弹层。
-class RemoteStatsBar extends StatelessWidget {
+class RemoteStatsBar extends StatefulWidget {
   /// 创建统计条。
   const RemoteStatsBar({super.key, required this.insights, this.onTap});
 
@@ -62,48 +59,72 @@ class RemoteStatsBar extends StatelessWidget {
   /// 页面用它决定要不要为详情弹层提供入口；只有待办读数的会话不会渲染统计条，
   /// 也就不应打开一个没有任何统计小节的弹层。
   static bool hasReadings(RemoteSessionInsights insights) =>
-      _segmentsOf(insights).isNotEmpty;
+      _RemoteStatsBarState._segmentsOf(insights).isNotEmpty;
+
+  @override
+  State<RemoteStatsBar> createState() => _RemoteStatsBarState();
+}
+
+enum _DockSide { expanded, left, right }
+
+class _RemoteStatsBarState extends State<RemoteStatsBar> {
+  _DockSide _side = _DockSide.expanded;
+  double _dragDistance = 0;
 
   @override
   Widget build(BuildContext context) {
-    final segments = _segmentsOf(insights);
+    final segments = _segmentsOf(widget.insights);
     if (segments.isEmpty) return const SizedBox.shrink();
     final colors = Theme.of(context).colorScheme;
     final style = AppTextStyle.caption1
         .of(context)
         .copyWith(color: colors.onSurfaceVariant);
+    final reduced = MediaQuery.disableAnimationsOf(context);
+    final contextPercent = widget.insights.contextPercent;
     return Semantics(
-      key: barKey,
-      button: onTap != null,
-      label: '会话统计：${segments.join(' · ')}；点按查看详情',
-      onTap: onTap,
+      key: RemoteStatsBar.barKey,
+      button: true,
+      label: _side == _DockSide.expanded
+          ? '会话统计：${segments.join(' · ')}；左右滑动收纳，点按查看详情'
+          : '上下文${contextPercent == null ? '暂无读数' : '$contextPercent%'}；点按展开会话统计',
+      onTap: _side == _DockSide.expanded
+          ? widget.onTap
+          : () => setState(() => _side = _DockSide.expanded),
       child: ExcludeSemantics(
-        child: ElasticPress(
-          enabled: onTap != null,
-          child: Material(
-            type: MaterialType.transparency,
-            child: InkWell(
-              customBorder: AppShape.full,
-              onTap: onTap,
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  final fits =
-                      _lineWidth(context, segments, style) +
-                          _statsLineInset * 2 +
-                          _statsFitMargin <=
-                      constraints.maxWidth;
-                  return Center(
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: _statsLineInset,
-                        vertical: 6,
-                      ),
-                      child: fits
-                          ? _line(segments, style)
-                          : _capsule(context, segments, style),
-                    ),
-                  );
-                },
+        child: GestureDetector(
+          onHorizontalDragStart: (_) => _dragDistance = 0,
+          onHorizontalDragUpdate: (details) =>
+              _dragDistance += details.primaryDelta ?? 0,
+          onHorizontalDragEnd: (details) {
+            final movement = _dragDistance.abs() >= 44
+                ? _dragDistance
+                : (details.primaryVelocity ?? 0).abs() >= 300
+                ? details.primaryVelocity!
+                : 0;
+            if (movement == 0) return;
+            setState(
+              () => _side = movement < 0 ? _DockSide.left : _DockSide.right,
+            );
+          },
+          child: LayoutBuilder(
+            builder: (context, constraints) => AnimatedAlign(
+              duration: reduced
+                  ? Duration.zero
+                  : const Duration(milliseconds: 240),
+              curve: Curves.easeInOutCubic,
+              alignment: switch (_side) {
+                _DockSide.expanded => Alignment.center,
+                _DockSide.left => Alignment.centerLeft,
+                _DockSide.right => Alignment.centerRight,
+              },
+              child: AnimatedSize(
+                duration: reduced
+                    ? Duration.zero
+                    : const Duration(milliseconds: 240),
+                curve: Curves.easeInOutCubic,
+                child: _side == _DockSide.expanded
+                    ? _expanded(context, constraints.maxWidth, segments, style)
+                    : _ball(context, contextPercent, style),
               ),
             ),
           ),
@@ -112,11 +133,80 @@ class RemoteStatsBar extends StatelessWidget {
     );
   }
 
+  Widget _expanded(
+    BuildContext context,
+    double available,
+    List<String> segments,
+    TextStyle style,
+  ) {
+    final width = available.clamp(0.0, 480.0).toDouble();
+    final fits =
+        _lineWidth(context, segments, style) +
+            _statsLineInset * 2 +
+            _statsFitMargin <=
+        width;
+    final shortSegments = fits ? segments : _shortSegmentsOf(widget.insights);
+    final shortFits =
+        _lineWidth(context, shortSegments, style) +
+            _statsLineInset * 2 +
+            _statsFitMargin <=
+        width;
+    return SizedBox(
+      width: width,
+      child: GlassSurface(
+        radius: AppCorner.full,
+        child: Material(
+          type: MaterialType.transparency,
+          child: InkWell(
+            customBorder: AppShape.full,
+            onTap: widget.onTap,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(
+                horizontal: _statsLineInset,
+                vertical: 10,
+              ),
+              child: Center(
+                child: shortFits
+                    ? _line(shortSegments, style)
+                    : _capsule(context, segments, style),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _ball(BuildContext context, int? percent, TextStyle style) =>
+      SizedBox.square(
+        dimension: 52,
+        child: GlassSurface(
+          key: const ValueKey('remote-stats-ball'),
+          radius: AppCorner.full,
+          child: Material(
+            type: MaterialType.transparency,
+            child: InkWell(
+              customBorder: AppShape.full,
+              onTap: () => setState(() => _side = _DockSide.expanded),
+              child: Center(
+                child: Text(
+                  percent == null ? '—' : '$percent%',
+                  style: style.copyWith(
+                    color: Theme.of(context).colorScheme.onSurface,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+
   /// 一行读数：图标、三个分段、展开提示。
   Widget _line(List<String> segments, TextStyle style) {
     final color = style.color;
     return Row(
-      key: lineKey,
+      key: RemoteStatsBar.lineKey,
       mainAxisSize: MainAxisSize.min,
       children: [
         Icon(Icons.query_stats_rounded, size: _statsGlyph, color: color),
@@ -142,37 +232,34 @@ class RemoteStatsBar extends StatelessWidget {
     TextStyle style,
   ) {
     final colors = Theme.of(context).colorScheme;
-    final reading = _capsuleReadingOf(insights) ?? segments.first;
-    return GlassSurface(
-      key: capsuleKey,
-      radius: AppCorner.full,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              Icons.query_stats_rounded,
-              size: _statsGlyph,
-              color: colors.onSurfaceVariant,
+    final reading = _capsuleReadingOf(widget.insights) ?? segments.first;
+    return Padding(
+      key: RemoteStatsBar.capsuleKey,
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            Icons.query_stats_rounded,
+            size: _statsGlyph,
+            color: colors.onSurfaceVariant,
+          ),
+          const SizedBox(width: _statsGap),
+          Flexible(
+            child: Text(
+              reading,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: style,
             ),
-            const SizedBox(width: _statsGap),
-            Flexible(
-              child: Text(
-                reading,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: style,
-              ),
-            ),
-            const SizedBox(width: _statsTrailingGap),
-            Icon(
-              Icons.unfold_more_rounded,
-              size: _statsGlyph,
-              color: colors.onSurfaceVariant,
-            ),
-          ],
-        ),
+          ),
+          const SizedBox(width: _statsTrailingGap),
+          Icon(
+            Icons.unfold_more_rounded,
+            size: _statsGlyph,
+            color: colors.onSurfaceVariant,
+          ),
+        ],
       ),
     );
   }
@@ -190,13 +277,34 @@ class RemoteStatsBar extends StatelessWidget {
       segments.add(
         cacheHit == null
             ? '${_formatCompactTokens(usage.totalTokens)} tok'
-            : '${_formatCompactTokens(usage.totalTokens)} tok · 缓存命中 $cacheHit%',
+            : '缓存命中 $cacheHit%',
       );
     }
     final contextPercent = insights.contextPercent;
     if (contextPercent != null) {
       segments.add('上下文 $contextPercent%');
     }
+    return segments;
+  }
+
+  /// 普通手机屏幕用更短的标签完整保留步数、缓存与上下文三项。
+  static List<String> _shortSegmentsOf(RemoteSessionInsights insights) {
+    final segments = <String>[];
+    final stats = insights.stats;
+    if (stats != null && (stats.turns > 0 || stats.steps > 0)) {
+      segments.add('步 ${stats.steps}');
+    }
+    final usage = insights.usage;
+    if (usage != null && usage.totalTokens > 0) {
+      final cacheHit = insights.cacheHitPercent;
+      segments.add(
+        cacheHit == null
+            ? '${_formatCompactTokens(usage.totalTokens)} tok'
+            : '缓存 $cacheHit%',
+      );
+    }
+    final contextPercent = insights.contextPercent;
+    if (contextPercent != null) segments.add('上下文 $contextPercent%');
     return segments;
   }
 
@@ -261,93 +369,18 @@ class _RemoteStatsSheet extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    final shape = AppShape.top(AppCorner.xxl);
     return Semantics(
       key: const ValueKey('remote-stats-sheet'),
       container: true,
       scopesRoute: true,
       explicitChildNodes: true,
-      child: SafeArea(
-        top: false,
-        child: Padding(
-          padding: const EdgeInsets.only(top: 10),
-          child: ConstrainedBox(
-            constraints: BoxConstraints(
-              maxHeight: MediaQuery.sizeOf(context).height * .82,
-            ),
-            child: GlassSurface(
-              radius: AppCorner.xxl,
-              child: Material(
-                type: MaterialType.transparency,
-                shape: shape,
-                clipBehavior: Clip.antiAlias,
-                child: SafeArea(
-                  top: false,
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      SizedBox(
-                        height: 18,
-                        child: Center(
-                          child: Container(
-                            width: 32,
-                            height: 4,
-                            decoration: BoxDecoration(
-                              color: colors.onSurfaceVariant.withValues(
-                                alpha: .5,
-                              ),
-                              borderRadius: AppRadius.full,
-                            ),
-                          ),
-                        ),
-                      ),
-                      SizedBox(
-                        height: 48,
-                        child: Row(
-                          children: [
-                            const SizedBox(width: 48),
-                            Expanded(
-                              child: Text(
-                                '会话统计',
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                textAlign: TextAlign.center,
-                                style: AppTextStyle.headline.of(
-                                  context,
-                                  emphasized: true,
-                                ),
-                              ),
-                            ),
-                            SizedBox(
-                              width: 48,
-                              child: GlassButton(
-                                icon: Icons.close_rounded,
-                                label: '关闭会话统计',
-                                onPressed: () => Navigator.maybePop(context),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      Flexible(
-                        child: SingleChildScrollView(
-                          padding: const EdgeInsets.only(bottom: 12),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.stretch,
-                            children: _sections(context),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
+      child: RemoteSheet(
+        title: '会话统计',
+        closeLabel: '关闭会话统计',
+        children: [
+          _StatsSummary(insights: insights),
+          ..._sections(context),
+        ],
       ),
     );
   }
@@ -366,6 +399,7 @@ class _RemoteStatsSheet extends StatelessWidget {
       sections.add(
         PocketSection(
           title: '进度与用时',
+          divided: true,
           children: [
             _DetailRow(label: '轮次', value: '${stats.turns}'),
             _DetailRow(label: '步数', value: '${stats.steps}'),
@@ -393,6 +427,7 @@ class _RemoteStatsSheet extends StatelessWidget {
       sections.add(
         PocketSection(
           title: 'Token 用量',
+          divided: true,
           children: [
             if (cacheHit != null)
               _DetailRow(label: '缓存命中', value: '$cacheHit%'),
@@ -428,6 +463,7 @@ class _RemoteStatsSheet extends StatelessWidget {
       sections.add(
         PocketSection(
           title: '上下文',
+          divided: true,
           children: [
             if (used != null)
               _DetailRow(
@@ -460,6 +496,92 @@ class _RemoteStatsSheet extends StatelessWidget {
     }
     return sections;
   }
+}
+
+/// A quick reading before the detailed, grouped iOS-style rows.
+class _StatsSummary extends StatelessWidget {
+  const _StatsSummary({required this.insights});
+
+  final RemoteSessionInsights insights;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final percent = insights.contextPercent;
+    final hit = insights.cacheHitPercent;
+    final steps = insights.stats?.steps;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 18),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: colors.surfaceContainerLow,
+          borderRadius: AppRadius.xl,
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(18),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                '会话概览',
+                style: AppTextStyle.footnote
+                    .of(context, emphasized: true)
+                    .copyWith(color: colors.onSurfaceVariant),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  if (steps != null)
+                    _SummaryReading(label: '执行步骤', value: '$steps 步'),
+                  if (hit != null)
+                    _SummaryReading(label: '缓存', value: '$hit% 命中'),
+                  if (percent != null)
+                    _SummaryReading(label: '上下文占用', value: '$percent% 已用'),
+                ],
+              ),
+              if (percent != null) ...[
+                const SizedBox(height: 16),
+                ClipRRect(
+                  borderRadius: AppRadius.full,
+                  child: LinearProgressIndicator(
+                    value: (percent / 100).clamp(0.0, 1.0),
+                    minHeight: 5,
+                    backgroundColor: colors.outlineVariant.withValues(
+                      alpha: .45,
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SummaryReading extends StatelessWidget {
+  const _SummaryReading({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) => Expanded(
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(value, style: AppTextStyle.title3.of(context, emphasized: true)),
+        const SizedBox(height: 3),
+        Text(
+          label,
+          style: AppTextStyle.footnote
+              .of(context)
+              .copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
+        ),
+      ],
+    ),
+  );
 }
 
 /// 详情里的一行「名称 — 数值」。

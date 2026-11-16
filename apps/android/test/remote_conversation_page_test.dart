@@ -8,6 +8,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:dsh_android/chat_plan.dart';
+import 'package:dsh_android/chat_execution_chain.dart';
 import 'package:dsh_android/pocket_composer.dart';
 import 'package:dsh_android/remote_attachments.dart';
 import 'package:dsh_android/remote_connection.dart';
@@ -556,7 +557,7 @@ void main() {
     expect(find.byKey(RemoteStatsBar.barKey), findsOneWidget);
     expect(find.byKey(RemoteStatsBar.lineKey), findsOneWidget);
     expect(find.text('轮 20 · 步 23'), findsOneWidget);
-    expect(find.text('1.1K tok · 缓存命中 90%'), findsOneWidget);
+    expect(find.text('缓存命中 90%'), findsOneWidget);
     expect(find.text('上下文 50%'), findsOneWidget);
 
     // 展开清单；随后数据源推新的读数，清单保持展开、摘要与统计一起刷新。
@@ -613,6 +614,60 @@ void main() {
     expect(find.byKey(RemoteTodoCard.toggleKey), findsNothing);
     expect(find.byKey(RemoteStatsBar.barKey), findsNothing);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('沉浸悬浮布局与紧凑用时行复用处理流展开', (tester) async {
+    final events = <Map<String, dynamic>>[
+      fixture.input(0, '检查代码'),
+      fixture.event(1, 'turn/start', {'turn': 1}),
+      fixture.event(2, 'assistant/message', {
+        'turn': 1,
+        'step': 1,
+        'message': {
+          'id': 'answer-1',
+          'role': 'assistant',
+          'content': [
+            {'type': 'reasoning', 'text': '先检查代码结构'},
+            {'type': 'text', 'text': '检查完成'},
+          ],
+        },
+      }, surface: 'append'),
+      fixture.event(3, 'turn/end', {
+        'turn': 1,
+        'reason': {'kind': 'completed'},
+      }),
+    ];
+    await tester.pumpWidget(
+      _host(FakeRemoteConversationSource(window: _window(events))),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byType(PocketScaffold), findsOneWidget);
+    expect(find.text('用时 2 秒'), findsOneWidget);
+    expect(find.textContaining('检查完成', findRichText: true), findsWidgets);
+    expect(find.textContaining('先检查代码结构', findRichText: true), findsNothing);
+    final header = find.byType(ChatExecutionHeader);
+    await tester.tap(header);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('先检查代码结构', findRichText: true), findsWidgets);
+    await tester.tap(header);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('先检查代码结构', findRichText: true), findsNothing);
+  });
+
+  testWidgets('缩小输入卡的加号与文字在同一水平线上', (tester) async {
+    await tester.pumpWidget(
+      _host(
+        FakeRemoteConversationSource(window: _window(conversationEvents())),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final add = find.byTooltip('添加与指令');
+    final field = find.byKey(PocketComposer.inputKey);
+    expect(
+      (tester.getCenter(add).dy - tester.getCenter(field).dy).abs(),
+      lessThan(3),
+    );
   });
 
   testWidgets('点按统计条打开会话统计详情弹层', (tester) async {

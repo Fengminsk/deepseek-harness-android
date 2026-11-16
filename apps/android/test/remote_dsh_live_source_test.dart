@@ -208,6 +208,37 @@ void main() {
   });
 
   group('新建会话的门面调用', () {
+    test('项目编辑入口只在指定工作区创建', () async {
+      final transport = _RecordingTransport(
+        <String, Object? Function(Map<String, dynamic>)>{
+          'library.catalog': (_) => _catalog(),
+          'library.sessionCreate': (_) => <String, dynamic>{
+            'sessionId': 's-new',
+          },
+        },
+      );
+      final facade = RemoteDshFacade(transport);
+      await facade.createSession(projectId: r'cwd:C:\work\cars');
+      expect(
+        transport.paramsOf('library.sessionCreate'),
+        <Map<String, dynamic>>[
+          <String, dynamic>{'workspaceId': 'w-cars'},
+        ],
+      );
+
+      await expectLater(
+        facade.createSession(projectId: r'cwd:C:\work\missing'),
+        throwsA(
+          isA<PlatformException>().having(
+            (error) => error.code,
+            'code',
+            'remote/project-unavailable',
+          ),
+        ),
+      );
+      expect(transport.countOf('library.sessionCreate'), 1);
+    });
+
     test('默认目录的工作区新建会话，随后作废目录缓存', () async {
       final transport = _RecordingTransport(
         <String, Object? Function(Map<String, dynamic>)>{

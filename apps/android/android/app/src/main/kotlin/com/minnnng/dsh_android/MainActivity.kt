@@ -540,6 +540,20 @@ class MainActivity : FlutterActivity() {
                     }
                     null
                 }
+                "remote.home.read" -> LocalPreferenceIo.call(result, "remote-home") {
+                    preferenceContext.getSharedPreferences("remote-devices", MODE_PRIVATE)
+                        .getString("home", null)
+                }
+                "remote.home.save" -> LocalPreferenceIo.call(result, "remote-home") {
+                    val raw = call.arguments as String
+                    require(raw.toByteArray(Charsets.UTF_8).size <= 524288) { "Remote home cache too large" }
+                    JSONObject(raw)
+                    check(preferenceContext.getSharedPreferences("remote-devices", MODE_PRIVATE)
+                        .edit().putString("home", raw).commit()) {
+                        "Remote home cache could not be saved"
+                    }
+                    null
+                }
                 "network.proxy.test" -> try {
                     NetworkProxyPreferences.testAsync(preferenceContext, JSONObject(call.arguments as String), result)
                 } catch (failure: Exception) { result.error("proxy-test", failure.message, null) }

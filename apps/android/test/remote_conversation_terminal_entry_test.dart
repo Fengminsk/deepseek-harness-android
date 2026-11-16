@@ -196,7 +196,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    await tester.tap(find.byKey(const ValueKey('remote-session-s-1')));
+    await tester.tap(find.byKey(const ValueKey('remote-session-device-1-s-1')));
     await tester.pumpAndSettle();
 
     final page = tester.widget<RemoteDshConversationPage>(

@@ -346,7 +346,7 @@ abstract interface class RemoteDshSessionCreator {
   ///
   /// 没有任何工作区时抛 [RemoteDshNoWorkspaceException]；其它失败抛
   /// `PlatformException`，`message` 可直接展示。
-  Future<RemoteDshCreatedSession> createSession();
+  Future<RemoteDshCreatedSession> createSession({String? projectId});
 }
 
 // ---------------------------------------------------------------------------
@@ -1215,12 +1215,22 @@ class RemoteDshFacade {
   ///
   /// 先读 [catalog] 选工作区，再调 `library.sessionCreate`，成功后作废缓存：下一次
   /// 读取会拿到包含新会话的目录。返回的标识用于打开会话页。
-  Future<RemoteDshCreatedSession> createSession() async {
+  Future<RemoteDshCreatedSession> createSession({String? projectId}) async {
     final catalog = await this.catalog();
-    final workspace = chooseRemoteDshWorkspace(
-      catalog.workspaces,
-      catalog.defaultDirectory,
-    );
+    final projectPath = projectId?.startsWith('cwd:') == true
+        ? projectId!.substring(4)
+        : null;
+    final workspace = projectId == null
+        ? chooseRemoteDshWorkspace(catalog.workspaces, catalog.defaultDirectory)
+        : projectPath == null
+        ? null
+        : catalog.workspaceForPath(projectPath);
+    if (projectId != null && workspace == null) {
+      throw PlatformException(
+        code: 'remote/project-unavailable',
+        message: '这个项目在电脑上已不可用，请刷新项目列表后重试。',
+      );
+    }
     if (workspace == null) throw const RemoteDshNoWorkspaceException();
     final created = await _request(remoteSessionCreateMethod, {
       'workspaceId': workspace.id,
@@ -1522,8 +1532,8 @@ class RemoteDshLiveSource
 
   /// 在默认目录（或第一个）工作区里新建会话。
   @override
-  Future<RemoteDshCreatedSession> createSession() async =>
-      (await _liveFacade()).createSession();
+  Future<RemoteDshCreatedSession> createSession({String? projectId}) async =>
+      (await _liveFacade()).createSession(projectId: projectId);
 
   /// 读取那台电脑上已归档的会话。
   @override

@@ -39,6 +39,13 @@ class _HomeSource
     this.archived = const <RemoteDshArchivedSession>[],
     this.createGate,
     this.createError,
+    this.devices = const <RemoteDshDevice>[
+      RemoteDshDevice(
+        id: 'device-1',
+        label: '客厅的电脑',
+        state: RemoteDshDeviceState.online,
+      ),
+    ],
   });
 
   /// 当前项目列表。
@@ -55,8 +62,10 @@ class _HomeSource
 
   /// 新建会话抛出的失败。
   Object? createError;
+  final List<RemoteDshDevice> devices;
 
   int createCalls = 0;
+  String? lastCreatedProjectId;
   int archivedCalls = 0;
   final List<String> restored = <String>[];
 
@@ -67,20 +76,15 @@ class _HomeSource
   String? get hostName => '客厅的电脑';
 
   @override
-  Future<List<RemoteDshDevice>> listDevices() async => const <RemoteDshDevice>[
-    RemoteDshDevice(
-      id: 'device-1',
-      label: '客厅的电脑',
-      state: RemoteDshDeviceState.online,
-    ),
-  ];
+  Future<List<RemoteDshDevice>> listDevices() async => devices;
 
   @override
   Future<List<RemoteDshProject>> listProjects() async => projects;
 
   @override
-  Future<RemoteDshCreatedSession> createSession() async {
+  Future<RemoteDshCreatedSession> createSession({String? projectId}) async {
     createCalls++;
+    lastCreatedProjectId = projectId;
     final gate = createGate;
     if (gate != null) await gate.future;
     final error = createError;
@@ -443,7 +447,8 @@ List<RemoteDshProject> _projects() => const <RemoteDshProject>[
 ];
 
 /// 首页上的会话行查找器。
-Finder _sessionRow(String id) => find.byKey(ValueKey('remote-session-$id'));
+Finder _sessionRow(String id) =>
+    find.byKey(ValueKey('remote-session-device-1-$id'));
 
 /// 输入卡里的文本框。
 Finder _composerField() => find.byKey(PocketComposer.inputKey);
@@ -541,15 +546,6 @@ RemoteDeviceChip _chip(WidgetTester tester, String label) =>
       ),
     );
 
-/// 标题下方的连接摘要文字。
-String _summary(WidgetTester tester) =>
-    tester
-        .widget<Text>(
-          find.byKey(const ValueKey('remote-home-connection-summary')),
-        )
-        .data ??
-    '';
-
 /// 打开首页标题菜单。
 Future<void> _openHomeMenu(WidgetTester tester) async {
   await tester.tap(find.text('远程 DSH'));
@@ -565,9 +561,98 @@ Future<void> _enterSearch(WidgetTester tester, String query) async {
 }
 
 void main() {
+  group('最近项目与会话', () {
+    testWidgets('全部显示两台电脑，设备页签只显示对应电脑', (tester) async {
+      final source = _HomeSource(
+        projects: <RemoteDshProject>[
+          ..._projects(),
+          const RemoteDshProject(
+            id: 'cwd:Study',
+            deviceId: 'device-2',
+            name: 'Study',
+            sessions: <RemoteDshSession>[
+              RemoteDshSession(id: 's-study', title: '书房会话'),
+            ],
+          ),
+        ],
+        devices: const <RemoteDshDevice>[
+          RemoteDshDevice(
+            id: 'device-1',
+            label: '客厅的电脑',
+            state: RemoteDshDeviceState.online,
+          ),
+          RemoteDshDevice(
+            id: 'device-2',
+            label: '书房的笔记本',
+            state: RemoteDshDeviceState.offline,
+          ),
+        ],
+      );
+      await _show(tester, source);
+      expect(find.text('Pocket'), findsOneWidget);
+      expect(find.text('Study'), findsOneWidget);
+      await tester.scrollUntilVisible(
+        find.text('最近会话'),
+        350,
+        scrollable: find.descendant(
+          of: find.byKey(const ValueKey('remote-project-list')),
+          matching: find.byType(Scrollable),
+        ),
+      );
+      expect(find.text('最近会话'), findsOneWidget);
+
+      await tester.tap(
+        find.descendant(
+          of: find.byType(RemoteDeviceRail),
+          matching: find.text('书房的笔记本'),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(_chip(tester, '书房的笔记本').selected, isTrue);
+      expect(find.text('Study'), findsOneWidget);
+      expect(find.text('Pocket'), findsNothing);
+
+      await tester.tap(find.text('全部'));
+      await tester.pumpAndSettle();
+      expect(_chip(tester, '全部').selected, isTrue);
+      expect(find.text('Pocket'), findsOneWidget);
+      expect(find.text('Study'), findsOneWidget);
+    });
+
+    testWidgets('项目行折叠渐隐，右侧编辑在项目中新建会话', (tester) async {
+      final source = _HomeSource(projects: _projects());
+      await _show(tester, source);
+      final group = find.byKey(
+        const ValueKey('remote-project-device-1-cwd:Pocket'),
+      );
+      final expandedHeight = tester.getSize(group).height;
+      expect(_sessionRow('s-1'), findsOneWidget);
+      await tester.tap(find.text('Pocket'));
+      await tester.pump();
+      final fade = tester.widget<AnimatedCrossFade>(
+        find.descendant(
+          of: find.byKey(const ValueKey('remote-project-device-1-cwd:Pocket')),
+          matching: find.byType(AnimatedCrossFade),
+        ),
+      );
+      expect(fade.crossFadeState, CrossFadeState.showFirst);
+      await tester.pumpAndSettle();
+      expect(tester.getSize(group).height, lessThan(expandedHeight));
+
+      await tester.tap(find.byTooltip('在Pocket中新建会话'));
+      await tester.pump();
+      expect(source.createCalls, 1);
+      expect(source.lastCreatedProjectId, 'cwd:Pocket');
+    });
+  });
+
   group('头部搜索', () {
     testWidgets('按会话标题过滤，大小写不敏感的包含匹配', (tester) async {
       await _show(tester, _HomeSource(projects: _projects()));
+      expect(
+        tester.widget<TextField>(_composerField()).textAlign,
+        TextAlign.start,
+      );
       await _openSearch(tester);
 
       expect(
@@ -1052,12 +1137,17 @@ void main() {
         _livingRoom().appEndpoint.toString(),
         reason: '上次连接的是客厅那台',
       );
-      expect(_summary(tester), '正在连接「客厅的电脑」…');
+      expect(
+        find.byKey(const ValueKey('remote-home-connection-summary')),
+        findsNothing,
+      );
+      expect(find.text('正在连接「客厅的电脑」'), findsOneWidget);
 
       _completeHandshake(harness, 0, '客厅的电脑');
       await _flushConnection(tester);
 
-      expect(_chip(tester, '客厅的电脑').selected, isTrue);
+      expect(_chip(tester, '客厅的电脑').selected, isFalse);
+      expect(_chip(tester, '全部').selected, isTrue);
       expect(
         _chip(tester, '客厅的电脑').status,
         RemoteDeviceStatus.online,
@@ -1070,7 +1160,6 @@ void main() {
         RemoteDeviceStatus.offline,
         reason: '从未连接过的电脑还没有电脑名，用地址占位',
       );
-      expect(_summary(tester), '已连接「客厅的电脑」');
 
       await tester.pumpWidget(const SizedBox());
       await tester.pumpAndSettle();
@@ -1097,12 +1186,11 @@ void main() {
       expect(harness.factory.endpoints.last, _study().appEndpoint.toString());
       expect(harness.controller.activeDevice?.id, _studyId);
       expect(harness.controller.phase, RemoteConnectionPhase.connecting);
-      expect(_summary(tester), '正在连接「书房的笔记本」…');
+      expect(find.text('正在连接「书房的笔记本」'), findsOneWidget);
 
       _completeHandshake(harness, 1, '书房的笔记本');
       await _flushConnection(tester);
 
-      expect(_summary(tester), '已连接「书房的笔记本」');
       expect(_chip(tester, '书房的笔记本').selected, isTrue);
       expect(_chip(tester, '客厅的电脑').status, RemoteDeviceStatus.offline);
 
@@ -1140,7 +1228,6 @@ void main() {
       );
 
       // 失败页指向那台连不上的电脑，而不是静默回到可用的旧状态。
-      expect(_summary(tester), '没能连接到「客厅的电脑」');
       expect(find.text('没能连接到「客厅的电脑」'), findsWidgets);
       expect(find.text('无法验证电脑的 TLS 证书：证书指纹不匹配。'), findsOneWidget);
       expect(find.text('重试'), findsOneWidget);
@@ -1166,7 +1253,6 @@ void main() {
       expect(harness.controller.activeDevice?.id, _studyId);
       _completeHandshake(harness, 1, '书房的笔记本');
       await _flushConnection(tester);
-      expect(_summary(tester), '已连接「书房的笔记本」');
 
       await tester.pumpWidget(const SizedBox());
       await tester.pumpAndSettle();
@@ -1183,7 +1269,6 @@ void main() {
       await _showConnection(tester, harness);
 
       expect(harness.factory.links, isEmpty, reason: '没有上次连接记录时不猜要连哪台');
-      expect(_summary(tester), '已配对 2 台电脑，还没有连接过');
       expect(find.text('还没有连接过任何一台电脑'), findsOneWidget);
       expect(find.text('还没有连接任何电脑'), findsNothing, reason: '与完全没配对区分');
       // 从未连接过的电脑还不知道电脑名：胶囊退回地址。
@@ -1201,7 +1286,6 @@ void main() {
       addTearDown(harness.dispose);
       await _showConnection(tester, harness);
 
-      expect(_summary(tester), '还没有配对任何电脑');
       expect(find.text('还没有连接任何电脑'), findsOneWidget);
       expect(harness.factory.links, isEmpty);
 
@@ -1265,7 +1349,6 @@ void main() {
       expect(storedDevices.map((row) => row['id']), <String>[_studyId]);
       expect(stored.containsKey(paired.remoteLastConnectedDeviceKey), isFalse);
       expect(harness.vault.values.keys, <String>['remote-device/$_studyId']);
-      expect(_summary(tester), '已配对 1 台电脑，还没有连接过');
 
       // 自动连接不会因为「少了一台」再发起：每个页面实例只自动连一次。
       expect(harness.factory.links, hasLength(1));
@@ -1359,7 +1442,7 @@ void main() {
         findsNothing,
         reason: '连接就绪前不能打开一个没有数据源的会话页',
       );
-      expect(_summary(tester), '正在连接「客厅的电脑」…');
+      expect(find.text('正在连接「客厅的电脑」'), findsOneWidget);
 
       _completeHandshake(harness, 0, '客厅的电脑');
       await _flushConnection(tester);
@@ -1399,7 +1482,7 @@ void main() {
       );
       expect(find.text('会话已归档或不在该电脑上。'), findsOneWidget);
       expect(
-        find.byKey(const ValueKey('remote-session-s-1')),
+        find.byKey(const ValueKey('remote-session-$_livingRoomId-s-1')),
         findsOneWidget,
         reason: '首页项目列表保持可用，用户可以从列表继续找',
       );

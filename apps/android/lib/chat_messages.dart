@@ -147,6 +147,7 @@ class ChatTimeline extends StatefulWidget {
     this.onOpenWorkflowChild,
     this.onQuote,
     this.showTurnNavigation = true,
+    this.compactTurns = false,
     this.historyHeader,
     this.submittedAfterSeq,
     this.followSubmittedMessage = true,
@@ -165,6 +166,9 @@ class ChatTimeline extends StatefulWidget {
   final List<Json> events;
   final ChatLiveMessage? live;
   final bool showTurnNavigation;
+
+  /// Tighter process and answer rhythm used by the remote conversation page.
+  final bool compactTurns;
   final Widget? historyHeader;
   final Widget? footer;
   final ChatOpenLink? onOpenLink;
@@ -775,6 +779,7 @@ class _ChatTimelineState extends State<ChatTimeline>
               chain: group,
               expanded: _isExpanded(group),
               onToggle: () => _toggle(group),
+              compact: widget.compactTurns,
             );
           }
           final row = item.entry!;
@@ -899,6 +904,7 @@ class _ChatTimelineState extends State<ChatTimeline>
             skillNames: _references.namesFor(row.seq),
             sessionLabels: _references.sessionLabelsFor(row.seq),
             onQuote: widget.onQuote,
+            compact: widget.compactTurns,
           );
           return KeyedSubtree(
             key: ValueKey((sessionId, _displayKeys[item.key] ?? item.key)),
@@ -910,7 +916,9 @@ class _ChatTimelineState extends State<ChatTimeline>
           return KeyedSubtree(
             key: ValueKey((sessionId, liveKey!)),
             child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 14),
+              padding: EdgeInsets.symmetric(
+                vertical: widget.compactTurns ? 4 : 14,
+              ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -942,7 +950,9 @@ class _ChatTimelineState extends State<ChatTimeline>
         if (showProgress && rowIndex == progressIndex) {
           return Padding(
             key: ValueKey((sessionId, 'progress')),
-            padding: const EdgeInsets.symmetric(vertical: 14),
+            padding: EdgeInsets.symmetric(
+              vertical: widget.compactTurns ? 4 : 14,
+            ),
             child: ChatProgressLine(
               calls: _progressCalls,
               writing:
@@ -976,6 +986,7 @@ class ChatMessage extends StatelessWidget {
     this.skillNames = const [],
     this.sessionLabels = const [],
     this.onQuote,
+    this.compact = false,
     super.key,
   });
   final ChatEntry entry;
@@ -992,6 +1003,7 @@ class ChatMessage extends StatelessWidget {
   final Future<void> Function(String name)? onOpenSkill;
   final List<String> skillNames, sessionLabels;
   final ValueChanged<String>? onQuote;
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
@@ -1083,10 +1095,17 @@ class ChatMessage extends StatelessWidget {
             constraints: BoxConstraints(
               maxWidth: MediaQuery.sizeOf(context).width * (user ? .8 : 1),
             ),
-            margin: EdgeInsets.only(top: 10, bottom: user ? 0 : 10),
+            margin: EdgeInsets.only(
+              top: compact ? 3 : 10,
+              bottom: user
+                  ? 0
+                  : compact
+                  ? 3
+                  : 10,
+            ),
             padding: EdgeInsets.symmetric(
               horizontal: user ? 18 : 0,
-              vertical: user ? 10 : 6,
+              vertical: user ? (compact ? 8 : 10) : (compact ? 2 : 6),
             ),
             decoration: user
                 ? BoxDecoration(

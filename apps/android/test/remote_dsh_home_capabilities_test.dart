@@ -592,7 +592,7 @@ void main() {
       expect(source.projectCalls, 1);
 
       await tester.tap(
-        find.byKey(const ValueKey<String>('remote-session-s-1')),
+        find.byKey(const ValueKey<String>('remote-session-device-1-s-1')),
       );
       await tester.pumpAndSettle();
       expect(find.byType(RemoteDshConversationPage), findsOneWidget);
@@ -604,7 +604,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(source.projectCalls, greaterThanOrEqualTo(2));
-      expect(find.text('改名后的会话'), findsOneWidget);
+      expect(find.text('改名后的会话'), findsWidgets, reason: '项目分组与最近会话都会显示标题');
       expect(find.text('修复登录'), findsNothing);
     });
   });

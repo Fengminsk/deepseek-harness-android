@@ -73,11 +73,9 @@
 // 自动通过已挂起的审批。
 //
 // 会话洞察：输入区上方是待办卡片（收起一行摘要「任务 + 各状态计数」，展开为清单，
-// 展开状态由页面持有并在本次会话内保留），输入区正上方是一行统计条（轮/步、token
-// 与缓存命中、上下文占用；缺少的读数整段不显示，窄屏放不下时折叠成可点的小胶囊）。
-// 点按统计条打开底部详情弹层（token 四桶、上下文占用说明与平均 TTFT / 解码速度）。
-// 两块读数都来自 [RemoteSessionInsights]：只有数据源推来新的洞察时才变化，页面不
-// 轮询、不播放入场或逐帧动画。
+// 展开状态由页面持有并在本次会话内保留）。独立的悬浮统计胶囊显示步数、缓存命中、
+// 上下文占用；左右滑动收纳到屏幕边缘为上下文球，点球展开，点长条打开详情弹层。
+// 两块读数都来自 [RemoteSessionInsights]：只有数据源推来新的洞察时才变化，页面不轮询。
 //
 // 连接阶段来自传入的数据源（它投影 `RemoteConnectionController.phase`）：
 // 连接中 / 就绪 / 失败三态分别给出连接提示、正常会话与带 `lastError` 的失败条；
@@ -102,7 +100,6 @@ import 'chat_plan.dart';
 import 'chat_projection.dart';
 import 'composer_commands.dart';
 import 'flclash/color.dart';
-import 'flclash/daylight.dart';
 import 'flclash/popup.dart';
 import 'flclash/typography.dart';
 import 'model_reasoning.dart';
@@ -185,9 +182,6 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
 
   /// 消息列表的滚动位置：进入会话后停在最新内容。
   final _scroll = ScrollController();
-
-  /// 列表滚动时用来暂停背景的流动光，避免滚动期间每帧重绘氛围层。
-  final _scrolling = ValueNotifier<bool>(false);
 
   /// 会话事件的投影与原始事件。两者一起交给 [ChatTimeline]。
   final _projection = ChatProjection();
@@ -348,7 +342,6 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     _permissions.dispose();
     _source.dispose();
     _attachmentSurface?.dispose();
-    _scrolling.dispose();
     _scroll.dispose();
     _focus.dispose();
     _input.dispose();
@@ -580,10 +573,6 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
   bool _trackScroll(ScrollNotification notification) {
     if (notification.depth != 0) return false;
     switch (notification) {
-      case ScrollStartNotification():
-        _scrolling.value = true;
-      case ScrollEndNotification():
-        _scrolling.value = false;
       case ScrollUpdateNotification():
         final metrics = notification.metrics;
         _pinnedToEnd =
@@ -598,48 +587,45 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
 
   @override
   Widget build(BuildContext context) {
-    final glass = LiquidGlassScope.of(context);
-    return Scaffold(
-      // 输入区是正文 Column 的最后一行，所以键盘弹起时由 Scaffold 按
-      // `MediaQuery.viewInsets` 缩短正文，输入区随之让位到键盘上方。
-      resizeToAvoidBottomInset: true,
-      body: Stack(
-        fit: StackFit.expand,
-        children: [
-          if (glass) DaylightBackdrop(suspendMotion: _scrolling),
-          SafeArea(
-            child: Column(
-              children: [
-                _header(context),
-                ?_banner(context),
-                Expanded(
-                  child: Listener(
-                    key: const ValueKey('remote-transcript'),
-                    // 推理面板开着时，点聊天区收起面板回到输入态（参照图「点别处」
-                    // 同一意图）；不主动唤起键盘，纯浏览时直接回到缩小态。不用
-                    // GestureDetector，避免抢走消息自身的点击。
-                    onPointerDown: _composerMode == PocketComposerMode.picker
-                        ? (_) => _exitReasoningPanel(keepKeyboard: false)
-                        : null,
-                    child: NotificationListener<ScrollNotification>(
-                      onNotification: _trackScroll,
-                      child: _transcript(context),
-                    ),
-                  ),
-                ),
-                ?_interactionArea(context),
-                _planArea(context),
-                ?_todoArea(context),
-                ?_modelRouteNotice(context),
-                ?_credentialNotice(context),
-                ?_commandResultBar(context),
-                ?_persistentNoticeBar(context),
-                _composerArea(context),
-              ],
-            ),
-          ),
-        ],
+    return PocketScaffold(
+      title: const SizedBox.shrink(),
+      header: _header(context),
+      headerHeight: 64,
+      body: Listener(
+        key: const ValueKey('remote-transcript'),
+        onPointerDown: _composerMode == PocketComposerMode.picker
+            ? (_) => _exitReasoningPanel(keepKeyboard: false)
+            : null,
+        child: NotificationListener<ScrollNotification>(
+          onNotification: _trackScroll,
+          child: _transcript(context),
+        ),
       ),
+      bottom: _bottomDock(context),
+    );
+  }
+
+  Widget _bottomDock(BuildContext context) {
+    final insights = _insights;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        ?_banner(context),
+        ?_interactionArea(context),
+        _planArea(context),
+        ?_todoArea(context),
+        ?_modelRouteNotice(context),
+        ?_credentialNotice(context),
+        ?_commandResultBar(context),
+        ?_persistentNoticeBar(context),
+        if (insights != null && RemoteStatsBar.hasReadings(insights))
+          Padding(
+            padding: const EdgeInsets.fromLTRB(0, 8, 0, 2),
+            child: RemoteStatsBar(insights: insights, onTap: _openStatsSheet),
+          ),
+        _composerArea(context),
+      ],
     );
   }
 
@@ -719,33 +705,14 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
         ),
       );
     }
-    return Stack(
-      children: [
-        Positioned.fill(
-          child: ChatTimeline(
-            sessionId: _source.sessionId,
-            projection: _projection,
-            controller: _scroll,
-            events: _events,
-            live: _live,
-            running: _running,
-          ),
-        ),
-        // 输入区是实心的，列表在它上方被硬边裁掉；这一条渐隐把最后一行融进页面底色。
-        Positioned(
-          left: 0,
-          right: 0,
-          bottom: 0,
-          child: SizedBox(
-            height: 26,
-            child: FloatingEdgeScrim(
-              backgroundColor: Theme.of(context).scaffoldBackgroundColor,
-              bottom: true,
-              fadeStart: .25,
-            ),
-          ),
-        ),
-      ],
+    return ChatTimeline(
+      sessionId: _source.sessionId,
+      projection: _projection,
+      controller: _scroll,
+      events: _events,
+      live: _live,
+      running: _running,
+      compactTurns: true,
     );
   }
 
@@ -755,7 +722,7 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     final colors = Theme.of(context).colorScheme;
     final canPop = Navigator.canPop(context);
     return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 4, 12, 6),
+      padding: const EdgeInsets.fromLTRB(0, 4, 0, 6),
       child: Row(
         children: [
           _RemoteIconControl(
@@ -981,7 +948,6 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     final canOpenMenu = apiState == RemoteCapabilityState.available;
     final hasDraft = !_draftEmpty || _hasDraftAttachments;
     final drafts = _drafts;
-    final insights = _insights ?? RemoteSessionInsights.none;
     // 权限预设与当前模型是「展开输入时」的上下文：缩小态只留一行悬浮卡与其上方
     // 的会话读数，不展示这些回显行（用户原话「输入框未展开时没有审核权限这一说」）。
     final expanded = _composerMode != PocketComposerMode.browse;
@@ -1070,16 +1036,10 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
             ],
           ),
         ),
-        // 输入区正上方的一行会话读数（参照图把短读数放在输入卡上方；没有读数
-        // 时整段不占高度）。
-        if (RemoteStatsBar.hasReadings(insights))
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            child: RemoteStatsBar(insights: insights, onTap: _openStatsSheet),
-          ),
         // 悬浮输入卡：缩小/展开/推理面板三态，附件 rail 作为卡片上方的插槽。
         RemoteComposer(
           floating: true,
+          margin: const EdgeInsets.fromLTRB(0, 10, 0, 4),
           mode: _composerMode,
           deviceLabel: widget.deviceName,
           placeholder: canSend

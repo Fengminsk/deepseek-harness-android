@@ -44,11 +44,7 @@ ThemeData pocketTheme(
 /// The imported FlClash page motion, including interactive drag back.
 class PocketRoute<T> extends PageRoute<T>
     with DragBackRouteMixin<T>, SharedXPageRouteMixin<T> {
-  PocketRoute({
-    required this.builder,
-    this.dragBack = true,
-    super.settings,
-  });
+  PocketRoute({required this.builder, this.dragBack = true, super.settings});
   final WidgetBuilder builder;
 
   /// 是否接受边缘拖动返回。首页级全屏页面传 false，手势不能把它带走。
@@ -295,13 +291,18 @@ class PocketScaffold extends StatefulWidget {
     required this.body,
     this.leading,
     this.trailing,
+    this.header,
+    this.headerHeight,
     this.bottom,
     this.drawer,
     this.onDrawerChanged,
     this.scaffoldKey,
   });
   final Widget title, body;
-  final Widget? leading, trailing, bottom, drawer;
+  final Widget? leading, trailing, header, bottom, drawer;
+
+  /// Height of a custom floating header; defaults to the standard title row.
+  final double? headerHeight;
   final ValueChanged<bool>? onDrawerChanged;
   final GlobalKey<ScaffoldState>? scaffoldKey;
   @override
@@ -324,8 +325,9 @@ class _PocketScaffoldState extends State<PocketScaffold> {
   Widget build(BuildContext context) {
     final safe = MediaQuery.paddingOf(context);
     final color = Theme.of(context).scaffoldBackgroundColor;
-    final headerHeight = (MediaQuery.textScalerOf(context).scale(17) * 2.4)
-        .clamp(52.0, 120.0);
+    final headerHeight =
+        widget.headerHeight ??
+        (MediaQuery.textScalerOf(context).scale(17) * 2.4).clamp(52.0, 120.0);
     final top = safe.top + headerHeight + 20;
     return PocketReveal(
       child: Scaffold(
@@ -389,41 +391,43 @@ class _PocketScaffoldState extends State<PocketScaffold> {
                   right: 18,
                   child: SizedBox(
                     height: headerHeight,
-                    child: Stack(
-                      alignment: Alignment.center,
-                      children: [
-                        Positioned.fill(
-                          left: 60,
-                          right: 60,
-                          child: Center(
-                            child: DefaultTextStyle(
-                              style: AppTextStyle.headline.of(
-                                context,
-                                emphasized: true,
-                              ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              textAlign: TextAlign.center,
-                              child: widget.title,
-                            ),
-                          ),
-                        ),
-                        Row(
+                    child:
+                        widget.header ??
+                        Stack(
+                          alignment: Alignment.center,
                           children: [
-                            widget.leading ??
-                                GlassButton(
-                                  icon: Icons.arrow_back_rounded,
-                                  label: '返回',
-                                  onPressed: Navigator.canPop(context)
-                                      ? () => Navigator.maybePop(context)
-                                      : null,
+                            Positioned.fill(
+                              left: 60,
+                              right: 60,
+                              child: Center(
+                                child: DefaultTextStyle(
+                                  style: AppTextStyle.headline.of(
+                                    context,
+                                    emphasized: true,
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  textAlign: TextAlign.center,
+                                  child: widget.title,
                                 ),
-                            const Spacer(),
-                            widget.trailing ?? const SizedBox(width: 44),
+                              ),
+                            ),
+                            Row(
+                              children: [
+                                widget.leading ??
+                                    GlassButton(
+                                      icon: Icons.arrow_back_rounded,
+                                      label: '返回',
+                                      onPressed: Navigator.canPop(context)
+                                          ? () => Navigator.maybePop(context)
+                                          : null,
+                                    ),
+                                const Spacer(),
+                                widget.trailing ?? const SizedBox(width: 44),
+                              ],
+                            ),
                           ],
                         ),
-                      ],
-                    ),
                   ),
                 ),
                 if (widget.bottom != null) ...[

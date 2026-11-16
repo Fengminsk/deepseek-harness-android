@@ -144,7 +144,7 @@ void main() {
     expect(find.byKey(RemoteStatsBar.lineKey), findsOneWidget);
     expect(find.byKey(RemoteStatsBar.capsuleKey), findsNothing);
     expect(find.text('轮 20 · 步 23'), findsOneWidget);
-    expect(find.text('406K tok · 缓存命中 95%'), findsOneWidget);
+    expect(find.text('缓存命中 95%'), findsOneWidget);
     expect(find.text('上下文 2%'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
@@ -202,7 +202,7 @@ void main() {
         ),
       ),
     );
-    expect(find.text('100 tok · 缓存命中 0%'), findsOneWidget);
+    expect(find.text('缓存命中 0%'), findsOneWidget);
 
     // 四舍五入会放大成 100% 时提高精度，保持「部分命中低于 100%」。
     await tester.pumpWidget(
@@ -212,7 +212,7 @@ void main() {
         ),
       ),
     );
-    expect(find.text('10K tok · 缓存命中 99.99%'), findsOneWidget);
+    expect(find.text('缓存命中 99.99%'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -233,7 +233,7 @@ void main() {
         width: 200,
       ),
     );
-    expect(find.byKey(RemoteStatsBar.capsuleKey), findsOneWidget);
+    expect(find.byKey(RemoteStatsBar.lineKey), findsOneWidget);
     expect(find.text('缓存命中 95%'), findsOneWidget);
 
     await tester.pumpWidget(
@@ -244,6 +244,31 @@ void main() {
     );
     expect(find.text('轮 2 · 步 3'), findsOneWidget);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('左右滑动统计胶囊收纳为上下文球，点球展开', (tester) async {
+    await tester.pumpWidget(_host(insights: _fullInsights(), width: 360));
+    expect(find.byKey(RemoteStatsBar.lineKey), findsOneWidget);
+    expect(find.text('步 23'), findsOneWidget);
+    expect(find.text('缓存 95%'), findsOneWidget);
+    expect(find.text('上下文 2%'), findsOneWidget);
+    final bar = find.byKey(RemoteStatsBar.barKey);
+    await tester.drag(bar, const Offset(-150, 0));
+    await tester.pumpAndSettle();
+    final ball = find.byKey(const ValueKey('remote-stats-ball'));
+    expect(ball, findsOneWidget);
+    expect(find.text('2%'), findsOneWidget);
+    final left = tester.getTopLeft(ball).dx;
+
+    await tester.tap(ball);
+    await tester.pumpAndSettle();
+    expect(ball, findsNothing);
+    expect(find.byKey(RemoteStatsBar.lineKey), findsOneWidget);
+
+    await tester.drag(bar, const Offset(150, 0));
+    await tester.pumpAndSettle();
+    expect(ball, findsOneWidget);
+    expect(tester.getTopLeft(ball).dx, greaterThan(left + 100));
   });
 
   testWidgets('点按统计条打开详情弹层，列出 token 四桶、上下文说明与平均读数', (tester) async {

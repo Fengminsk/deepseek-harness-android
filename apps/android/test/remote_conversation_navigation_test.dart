@@ -39,7 +39,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    final row = find.byKey(const ValueKey('remote-session-s-1'));
+    final row = find.byKey(const ValueKey('remote-session-device-1-s-1'));
     expect(row, findsOneWidget);
 
     await tester.tap(row);
@@ -57,7 +57,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byType(RemoteDshConversationPage), findsNothing);
 
-    await tester.tap(find.byKey(const ValueKey('remote-session-s-1')));
+    await tester.tap(find.byKey(const ValueKey('remote-session-device-1-s-1')));
     await tester.pumpAndSettle();
     expect(find.byType(RemoteDshConversationPage), findsOneWidget);
     expect(

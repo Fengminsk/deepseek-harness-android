@@ -1,8 +1,7 @@
 // 远程 DSH 首页：连接一台电脑后，浏览那台电脑上的项目与会话。
 //
 // 页面结构对齐设计参照截图：自建浮动头部（菜单、标题加下拉箭头、搜索）、
-// 设备胶囊条、「项目」分组与底部悬浮输入卡；布局沿用 PocketScaffold 的风格
-// （全高滚动视口、内容让出头部、玻璃或实心表面）。
+// 设备胶囊条、「项目」分组与底部悬浮输入卡；项目列表滚到浮动头部下方。
 //
 // 头部的搜索按钮把头部原地切成一个搜索输入框：输入时按项目名与会话标题在本地
 // 过滤，清空或关闭搜索后恢复完整列表。底部输入卡与会话页共用 `PocketComposer`
@@ -26,7 +25,7 @@
 // 与 [RemoteDshSettingsSource]：只读数据源没有实现时，对应入口给出可见的
 // 「暂未开放」提示；实现了但电脑声明不可用时，入口置灰并展示原因（协议 §10.2）。
 //
-// 多台电脑：设备胶囊条列出本机全部已配对电脑，标题下的摘要说明当前连接的是哪台
+// 多台电脑：设备胶囊条列出本机全部已配对电脑，选中项说明当前连接的是哪台
 // （名称来自握手时电脑自报的 `host.name`，见 [RemoteDeviceStore.markConnected]）；
 // 点另一台会先干净关闭旧连接再连新的。冷启动自动连上次成功连接的那台（没有记录
 // 时只在恰好一台的情况下自动连）；失败停在失败态并给出「重试 / 切换设备」，不会
@@ -40,7 +39,6 @@ import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'chat_sidebar.dart';
-import 'flclash/daylight.dart';
 import 'flclash/popup.dart';
 import 'flclash/typography.dart';
 import 'model_reasoning.dart';
@@ -51,6 +49,7 @@ import 'remote_dsh_archived_page.dart';
 import 'remote_dsh_conversation.dart';
 import 'remote_device_store.dart' as paired;
 import 'remote_dsh_live_source.dart';
+import 'remote_home_cache.dart';
 import 'remote_dsh_settings_page.dart';
 import 'remote_dsh_widgets.dart';
 import 'remote_notification_navigation.dart';
@@ -403,9 +402,6 @@ class _RemoteDshPageState extends State<RemoteDshPage>
   /// 默认模型候选（模型目录）的来源；为 null 时设置页退回手动填写。
   RemoteDshModelCatalogSource? _catalogSource;
 
-  /// 滚动期间让首页背景暂停流动，与 PocketScaffold 的做法一致。
-  final _suspendBackdrop = ValueNotifier<bool>(false);
-
   /// 页面实际使用的连接控制器：注入的优先，未注入时由本页创建。
   ///
   /// 未注入也必须有一个：否则数据源会退回占位源，页面既读不到本机已配对的电脑，
@@ -419,6 +415,16 @@ class _RemoteDshPageState extends State<RemoteDshPage>
   RemoteDshDataSource _source = const RemoteDshPlaceholderSource();
 
   late RemoteDshView _view;
+  final _recentByDevice = <String, List<RemoteDshProject>>{};
+  final _homeCache = const RemoteHomeCache();
+  late final Future<void> _cacheRestore;
+  String? _selectedDeviceId;
+  int _loadGeneration = 0;
+  bool _deviceListLoaded = false;
+  ({RemoteDshProject project, RemoteDshSession? session})?
+  _pendingProjectAction;
+  StreamSubscription<Map<String, dynamic>>? _homeEvents;
+  Timer? _recentRefresh;
 
   /// 本页自己的 Scaffold，用来**原地**打开侧栏（不离开远程页面）。
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
@@ -471,7 +477,7 @@ class _RemoteDshPageState extends State<RemoteDshPage>
   RemoteDshOrder _order = RemoteDshOrder.byProject;
 
   /// 是否把最近有活动的项目排在前面。
-  bool _recentFirst = false;
+  bool _recentFirst = true;
 
   /// 是否已经尝试过冷启动自动连接。
   ///
@@ -557,6 +563,7 @@ class _RemoteDshPageState extends State<RemoteDshPage>
       _catalogSource = catalog;
     }
     _connection.addListener(_onConnectionChanged);
+    _homeEvents = _connection.events.listen(_onHomeEvent);
     widget.runtime.addListener(_onRuntimeChanged);
     WidgetsBinding.instance.addObserver(this);
     _composerFocus.addListener(_onComposerFocusChanged);
@@ -571,12 +578,17 @@ class _RemoteDshPageState extends State<RemoteDshPage>
     );
     _visibleConnection = _connectionSnapshot();
     _pendingLaunch = widget.notificationLaunch;
+    _cacheRestore = widget.source == null && widget.connection == null
+        ? _restoreRecent()
+        : Future<void>.value();
     unawaited(_load());
   }
 
   @override
   void dispose() {
     _connection.removeListener(_onConnectionChanged);
+    unawaited(_homeEvents?.cancel());
+    _recentRefresh?.cancel();
     widget.runtime.removeListener(_onRuntimeChanged);
     WidgetsBinding.instance.removeObserver(this);
     _composerFocus.removeListener(_onComposerFocusChanged);
@@ -585,7 +597,6 @@ class _RemoteDshPageState extends State<RemoteDshPage>
     _composerFocus.dispose();
     _search.dispose();
     _searchFocus.dispose();
-    _suspendBackdrop.dispose();
     super.dispose();
   }
 
@@ -625,6 +636,25 @@ class _RemoteDshPageState extends State<RemoteDshPage>
     unawaited(_load());
   }
 
+  /// Refresh recents only for catalog changes, not for the token-by-token live stream.
+  void _onHomeEvent(Map<String, dynamic> event) {
+    if (!mounted || _source.connection != RemoteDshConnectionState.connected) {
+      return;
+    }
+    final method = event['method'];
+    if (method != 'sessions.changed' &&
+        method != 'session.changed' &&
+        method != 'remote.sessionChanged') {
+      return;
+    }
+    _recentRefresh?.cancel();
+    _recentRefresh = Timer(const Duration(milliseconds: 300), () {
+      if (mounted && _source.connection == RemoteDshConnectionState.connected) {
+        unawaited(_load());
+      }
+    });
+  }
+
   /// 会影响首页画面的连接快照；[devices] 是设备表展示字段的拼接。
   ///
   /// 设备条数与字段都很少（个位数设备），这里只拼一个小字符串，比每帧重建整棵
@@ -661,11 +691,38 @@ class _RemoteDshPageState extends State<RemoteDshPage>
 
   /// 读取设备与项目；失败时保留「未连接」状态并给出可重试的说明。
   Future<void> _load() async {
+    final generation = ++_loadGeneration;
     try {
       final devices = await _source.listDevices();
+      if (!mounted || generation != _loadGeneration) return;
+      if (widget.source == null && widget.connection == null) {
+        _deviceListLoaded = true;
+        final pairedIds = devices.map((device) => device.id).toSet();
+        _recentByDevice.removeWhere((id, _) => !pairedIds.contains(id));
+      }
+      setState(() {
+        _view = RemoteDshView(
+          connection: _source.connection,
+          hostName: _source.hostName,
+          devices: devices,
+          projects: _view.projects,
+        );
+      });
       _maybeAutoConnect();
       final projects = await _source.listProjects();
-      if (!mounted) return;
+      if (!mounted || generation != _loadGeneration) return;
+      if (_source.connection == RemoteDshConnectionState.connected) {
+        final deviceId = _connection.activeDevice?.id;
+        if (deviceId != null) _recentByDevice[deviceId] = projects;
+        for (final id in projects.map((project) => project.deviceId).toSet()) {
+          _recentByDevice[id] = projects
+              .where((project) => project.deviceId == id)
+              .toList();
+        }
+        if (widget.source == null && widget.connection == null) {
+          unawaited(_persistRecent());
+        }
+      }
       setState(() {
         _error = null;
         _view = RemoteDshView(
@@ -676,8 +733,9 @@ class _RemoteDshPageState extends State<RemoteDshPage>
         );
       });
       _resolvePendingLaunch();
+      _resolveProjectAction();
     } catch (error) {
-      if (!mounted) return;
+      if (!mounted || generation != _loadGeneration) return;
       // 门面失败一律是 PlatformException，message 已是可直接展示的中文。
       final detail = error is PlatformException ? error.message : '$error';
       setState(() {
@@ -685,6 +743,24 @@ class _RemoteDshPageState extends State<RemoteDshPage>
       });
       _notifyPendingLaunchFailure('load:$detail', '通知里的会话没能打开：读取会话列表失败。');
     }
+  }
+
+  Future<void> _restoreRecent() async {
+    final saved = await _homeCache.read();
+    if (!mounted || saved.isEmpty) return;
+    setState(() {
+      for (final entry in saved.entries) {
+        if (!_deviceListLoaded ||
+            _view.devices.any((device) => device.id == entry.key)) {
+          _recentByDevice.putIfAbsent(entry.key, () => entry.value);
+        }
+      }
+    });
+  }
+
+  Future<void> _persistRecent() async {
+    await _cacheRestore;
+    await _homeCache.write(_recentByDevice);
   }
 
   /// 通知深链：连接就绪后按会话标识打开会话；打不开时留在首页并给出可见原因。
@@ -1280,11 +1356,15 @@ class _RemoteDshPageState extends State<RemoteDshPage>
     }
   }
 
-  /// 点设备胶囊：null 是「全部」（当前这台电脑的全部项目，不切换连接）。
+  /// 点设备胶囊：null 是所有已配对电脑的最近项目与会话。
   ///
   /// 点已经连上（或正在连）的那台不会重复连接；点另一台走 [RemoteConnectionController.switchTo]，
   /// 由连接层先关闭旧连接再连新的（协议 §11）。失败态下点当前设备等于重试。
   void _selectDevice(String? id) {
+    setState(() => _selectedDeviceId = id);
+    if (id != _pendingProjectAction?.project.deviceId) {
+      _pendingProjectAction = null;
+    }
     if (id == null) return;
     final device = _pairedDevice(id);
     if (device == null) return;
@@ -1489,6 +1569,10 @@ class _RemoteDshPageState extends State<RemoteDshPage>
       return;
     }
     if (!mounted) return;
+    _recentByDevice.remove(device.id);
+    if (widget.source == null && widget.connection == null) {
+      unawaited(_persistRecent());
+    }
     await _load();
     if (!mounted) return;
     _notice('已从这台手机移除「$name」');
@@ -1514,6 +1598,61 @@ class _RemoteDshPageState extends State<RemoteDshPage>
         projectName: project.name,
       ),
     );
+  }
+
+  /// A cached row can be chosen before its computer reconnects.
+  void _activateProjectItem(
+    RemoteDshProject project, [
+    RemoteDshSession? session,
+  ]) {
+    if (_source.connection == RemoteDshConnectionState.connected &&
+        (widget.source != null ||
+            _connection.activeDevice?.id == project.deviceId)) {
+      if (session == null) {
+        unawaited(_createSession(project: project));
+      } else {
+        _openSession(project, session);
+      }
+      return;
+    }
+    final device = _pairedDevice(project.deviceId);
+    if (device == null || !_canStartRemoteConnection()) return;
+    _pendingProjectAction = (project: project, session: session);
+    _selectDevice(project.deviceId);
+  }
+
+  void _resolveProjectAction() {
+    final pending = _pendingProjectAction;
+    if (pending == null ||
+        _source.connection != RemoteDshConnectionState.connected ||
+        _connection.activeDevice?.id != pending.project.deviceId) {
+      return;
+    }
+    _pendingProjectAction = null;
+    RemoteDshProject? current;
+    for (final project in _view.projects) {
+      if (project.id == pending.project.id &&
+          project.deviceId == pending.project.deviceId) {
+        current = project;
+        break;
+      }
+    }
+    if (current == null) {
+      _notice('这个项目已不在电脑上，请刷新后重试。');
+      return;
+    }
+    final pendingSession = pending.session;
+    if (pendingSession == null) {
+      unawaited(_createSession(project: current));
+      return;
+    }
+    for (final session in current.sessions) {
+      if (session.id == pendingSession.id) {
+        _openSession(current, session);
+        return;
+      }
+    }
+    _notice('这个会话已不在电脑上，请刷新后重试。');
   }
 
   /// 按会话标识打开会话页；首页会话行、新建会话与已归档会话都走这里。
@@ -1566,11 +1705,11 @@ class _RemoteDshPageState extends State<RemoteDshPage>
   /// 文本只用于触发新建：会话页由自己的数据源读取，本页不预填内容。新建期间
   /// 输入卡不可用并显示「正在新建会话」；失败保留原有草稿，并用可见提示给出
   /// 电脑返回的原因。
-  Future<void> _createSession() async {
+  Future<void> _createSession({RemoteDshProject? project}) async {
     if (_creating) return;
     _exitComposerPanel(keepKeyboard: false);
     final draft = _composer.text.trim();
-    if (draft.isEmpty) return;
+    if (project == null && draft.isEmpty) return;
     final creator = _creator;
     if (creator == null) {
       _unavailable('新建会话', detail: '当前数据源不支持在电脑上新建会话。');
@@ -1578,11 +1717,13 @@ class _RemoteDshPageState extends State<RemoteDshPage>
     }
     setState(() => _creating = true);
     try {
-      final created = await creator.createSession();
+      final created = await creator.createSession(projectId: project?.id);
       if (!mounted) return;
-      _composer.clear();
-      setState(() => _draftEmpty = true);
-      _composerFocus.unfocus();
+      if (project == null) {
+        _composer.clear();
+        setState(() => _draftEmpty = true);
+        _composerFocus.unfocus();
+      }
       // 先刷新项目列表：新会话通常已经在 sessions.list 里，于是能拿到电脑投影的
       // 标题与项目名；读取失败也不挡打开，退回工作区名与占位标题。
       await _load();
@@ -1752,29 +1893,6 @@ class _RemoteDshPageState extends State<RemoteDshPage>
   String _composerDeviceLabel(RemoteDshView view) =>
       _activeComputerName(view) ?? '';
 
-  /// 首页标题下方的连接摘要：当前电脑名与连接阶段。
-  ///
-  /// 未连接时说明已配对几台、有没有连接过，把「空列表」与「已配对但从未连接」
-  /// 区分开；搜索模式下由搜索框占用这一行，不显示摘要。
-  String _connectionSummary(RemoteDshView view) {
-    final name = _activeComputerName(view);
-    final named = name == null || name.isEmpty ? null : name;
-    switch (view.connection) {
-      case RemoteDshConnectionState.connected:
-        return named == null ? '已连接到电脑' : '已连接「$named」';
-      case RemoteDshConnectionState.connecting:
-        return named == null ? '正在连接电脑…' : '正在连接「$named」…';
-      case RemoteDshConnectionState.failed:
-        return named == null ? '没能连接到这台电脑' : '没能连接到「$named」';
-      case RemoteDshConnectionState.notConnected:
-        if (view.devices.isEmpty) return '还没有配对任何电脑';
-        if (_connection.lastConnectedDevice != null) {
-          return '已配对 ${view.devices.length} 台电脑，当前未连接';
-        }
-        return '已配对 ${view.devices.length} 台电脑，还没有连接过';
-    }
-  }
-
   /// 输入卡的占位文案。
   ///
   /// 连接后是「与 <设备名> 新对话」；未连接与新建期间各自说明当前状态。原来卡片
@@ -1791,9 +1909,9 @@ class _RemoteDshPageState extends State<RemoteDshPage>
   ///
   /// v1 一次只连一台电脑（协议 §11），项目列表就是当前这台电脑的全部项目；会话只
   /// 在项目内重排；[_recentFirst] 决定项目之间是否按最近活动排序。
-  List<RemoteDshProject> _orderedProjects(RemoteDshView view) {
+  List<RemoteDshProject> _orderedProjects(List<RemoteDshProject> projects) {
     final ordered = [
-      for (final project in view.projects)
+      for (final project in projects)
         RemoteDshProject(
           id: project.id,
           deviceId: project.deviceId,
@@ -1838,8 +1956,11 @@ class _RemoteDshPageState extends State<RemoteDshPage>
 
   @override
   Widget build(BuildContext context) {
-    final glass = LiquidGlassScope.of(context);
     final safe = MediaQuery.paddingOf(context);
+    final colors = Theme.of(context).colorScheme;
+    final background = colors.brightness == Brightness.light
+        ? Colors.white
+        : colors.surface;
     final view = _view;
     final connected = view.connection == RemoteDshConnectionState.connected;
     return PopScope(
@@ -1854,124 +1975,102 @@ class _RemoteDshPageState extends State<RemoteDshPage>
         body: Stack(
           fit: StackFit.expand,
           children: [
-            if (glass)
-              Positioned.fill(
-                child: DaylightBackdrop(suspendMotion: _suspendBackdrop),
-              ),
-            NotificationListener<ScrollNotification>(
-              onNotification: (notification) {
-                if (notification is ScrollStartNotification) {
-                  _suspendBackdrop.value = true;
-                } else if (notification is ScrollEndNotification) {
-                  _suspendBackdrop.value = false;
-                }
-                return false;
-              },
-              child: Padding(
-                padding: EdgeInsets.only(top: safe.top),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    const SizedBox(height: 10),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 18),
-                      child: _searching
-                          ? _RemoteSearchHeader(
-                              controller: _search,
-                              focusNode: _searchFocus,
-                              onClose: _closeSearch,
-                              onChanged: _onSearchChanged,
-                              onClear: _clearSearch,
-                            )
-                          : RemoteHomeHeader(
-                              key: _headerKey,
-                              title: '远程 DSH',
-                              // 三横线是本 App 的菜单：在原地打开侧栏，不离开远程页。
-                              onMenu: () {
-                                final scaffold = _scaffoldKey.currentState;
-                                if (scaffold == null) {
-                                  _unavailable('菜单', detail: '侧栏还没有准备好，请稍后再试。');
-                                  return;
-                                }
-                                scaffold.openDrawer();
-                              },
-                              onTitle: _showHomeMenu,
-                              onSearch: _openSearch,
-                              menuLabel: '打开菜单',
-                              searchLabel: '搜索会话',
-                            ),
+            ColoredBox(color: background),
+            Listener(
+              key: const ValueKey('remote-home-content'),
+              onPointerDown: _effectiveComposerMode == PocketComposerMode.picker
+                  ? (_) => _exitComposerPanel(keepKeyboard: false)
+                  : null,
+              child: _content(view),
+            ),
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              height: safe.top + 142,
+              child: IgnorePointer(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                        background,
+                        background,
+                        background.withValues(alpha: 0),
+                      ],
+                      stops: const [0, .75, 1],
                     ),
-                    if (!_searching) ...[
-                      const SizedBox(height: 6),
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 18),
-                        child: Text(
-                          _connectionSummary(view),
-                          key: const ValueKey('remote-home-connection-summary'),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: AppTextStyle.footnote
-                              .of(context)
-                              .copyWith(
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .onSurfaceVariant,
-                              ),
-                        ),
-                      ),
-                    ],
-                    const SizedBox(height: 8),
-                    RemoteDeviceRail(
-                      devices: _railDevices(view),
-                      // 选中态就是当前连接的那台电脑：v1 一次只连一台，「全部」只
-                      // 在没有当前连接时选中。点已连接的胶囊不会重复连接。
-                      selectedId: _connection.activeDevice?.id,
-                      onSelected: _selectDevice,
-                      padding: const EdgeInsets.symmetric(horizontal: 18),
-                    ),
-                    const SizedBox(height: 14),
-                    Expanded(
-                      child: Listener(
-                        key: const ValueKey('remote-home-content'),
-                        // 默认模型面板开着时，点列表收起面板（与远程会话页「点别处」
-                        // 同一意图）；不用 GestureDetector，避免抢走列表自身的点击。
-                        onPointerDown:
-                            _effectiveComposerMode == PocketComposerMode.picker
-                            ? (_) => _exitComposerPanel(keepKeyboard: false)
-                            : null,
-                        child: _content(view),
-                      ),
-                    ),
-                    // 悬浮输入卡：缩小/展开/默认模型面板三态，与远程会话页同一外观。
-                    Padding(
-                      padding: EdgeInsets.only(bottom: safe.bottom),
-                      child: RemoteComposer(
-                        floating: true,
-                        mode: _effectiveComposerMode,
-                        deviceLabel: _composerDeviceLabel(view),
-                        placeholder: _composerPlaceholder(
-                          view,
-                          connected: connected,
-                        ),
-                        controller: _composer,
-                        focusNode: _composerFocus,
-                        enabled: connected && !_creating,
-                        hasDraft: !_draftEmpty,
-                        sending: _creating,
-                        onChanged: _onComposerChanged,
-                        onSubmitted: (_) => _submitComposerDraft(),
-                        onAdd: _openComposerAddSheet,
-                        onReasoning: _toggleComposerPanel,
-                        reasoning:
-                            _effectiveComposerMode == PocketComposerMode.picker
-                            ? _composerReasoningPanel()
-                            : null,
-                        onSend: _submitComposerDraft,
-                        sendKey: const ValueKey('remote-home-send'),
-                      ),
-                    ),
-                  ],
+                  ),
                 ),
+              ),
+            ),
+            Positioned(
+              top: safe.top + 10,
+              left: 18,
+              right: 18,
+              child: _searching
+                  ? _RemoteSearchHeader(
+                      controller: _search,
+                      focusNode: _searchFocus,
+                      onClose: _closeSearch,
+                      onChanged: _onSearchChanged,
+                      onClear: _clearSearch,
+                    )
+                  : RemoteHomeHeader(
+                      key: _headerKey,
+                      title: '远程 DSH',
+                      // 三横线是本 App 的菜单：在原地打开侧栏，不离开远程页。
+                      onMenu: () {
+                        final scaffold = _scaffoldKey.currentState;
+                        if (scaffold == null) {
+                          _unavailable('菜单', detail: '侧栏还没有准备好，请稍后再试。');
+                          return;
+                        }
+                        scaffold.openDrawer();
+                      },
+                      onTitle: _showHomeMenu,
+                      onSearch: _openSearch,
+                      menuLabel: '打开菜单',
+                      searchLabel: '搜索会话',
+                    ),
+            ),
+            Positioned(
+              top: safe.top + 86,
+              left: 0,
+              right: 0,
+              child: RemoteDeviceRail(
+                devices: _railDevices(view),
+                // 选中态就是当前连接的那台电脑：v1 一次只连一台，「全部」只
+                // 在没有当前连接时选中。点已连接的胶囊不会重复连接。
+                selectedId: _selectedDeviceId,
+                onSelected: _selectDevice,
+                padding: const EdgeInsets.symmetric(horizontal: 18),
+              ),
+            ),
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: safe.bottom,
+              child: RemoteComposer(
+                floating: true,
+                mode: _effectiveComposerMode,
+                deviceLabel: _composerDeviceLabel(view),
+                placeholder: _composerPlaceholder(view, connected: connected),
+                controller: _composer,
+                focusNode: _composerFocus,
+                enabled: connected && !_creating,
+                hasDraft: !_draftEmpty,
+                sending: _creating,
+                onChanged: _onComposerChanged,
+                onSubmitted: (_) => _submitComposerDraft(),
+                onAdd: _openComposerAddSheet,
+                onReasoning: _toggleComposerPanel,
+                reasoning: _effectiveComposerMode == PocketComposerMode.picker
+                    ? _composerReasoningPanel()
+                    : null,
+                onSend: _submitComposerDraft,
+                sendKey: const ValueKey('remote-home-send'),
               ),
             ),
           ],
@@ -1987,7 +2086,8 @@ class _RemoteDshPageState extends State<RemoteDshPage>
   /// 设备的入口；切换失败不会静默退回旧电脑（旧连接在切换时已经关闭）。
   Widget _content(RemoteDshView view) {
     final error = _error;
-    if (error != null) {
+    final hasRecent = _visibleRecent().isNotEmpty;
+    if (error != null && !hasRecent) {
       return PocketEmpty(
         child: _RemoteNotice(
           icon: Icons.cloud_off_rounded,
@@ -1998,6 +2098,7 @@ class _RemoteDshPageState extends State<RemoteDshPage>
         ),
       );
     }
+    if (hasRecent) return _projects(view);
     final name = _activeComputerName(view);
     return switch (view.connection) {
       // 两个空态各自返回完整的 PocketEmpty：不要再套一层（滚动视口里不能再放一个
@@ -2063,7 +2164,8 @@ class _RemoteDshPageState extends State<RemoteDshPage>
   /// 「没有匹配的会话」，与「这台电脑上还没有项目」区分开。
   Widget _projects(RemoteDshView view) {
     final query = _searchQuery.trim();
-    final projects = filterRemoteProjects(_orderedProjects(view), query);
+    final visible = _visibleRecent();
+    final projects = filterRemoteProjects(_orderedProjects(visible), query);
     if (projects.isEmpty) {
       if (query.isNotEmpty) {
         return PocketEmpty(
@@ -2084,41 +2186,119 @@ class _RemoteDshPageState extends State<RemoteDshPage>
         ),
       );
     }
-    final colors = Theme.of(context).colorScheme;
     return ListView(
       key: const ValueKey('remote-project-list'),
-      padding: const EdgeInsets.only(bottom: 24),
+      padding: EdgeInsets.only(
+        top: MediaQuery.paddingOf(context).top + 150,
+        bottom: MediaQuery.paddingOf(context).bottom + 112,
+      ),
       keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
       children: [
-        const RemoteSectionLabel('项目'),
+        if (view.connection != RemoteDshConnectionState.connected)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+            child: Text(
+              switch (view.connection) {
+                RemoteDshConnectionState.connecting =>
+                  '正在连接「${_activeComputerName(view) ?? '电脑'}」 · 显示上次同步的内容',
+                RemoteDshConnectionState.failed => '连接未恢复 · 显示上次同步的内容',
+                _ => '尚未连接 · 显示上次同步的内容',
+              },
+              style: AppTextStyle.footnote
+                  .of(context)
+                  .copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+            ),
+          ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
+          child: Text(
+            '项目',
+            style: AppTextStyle.subheadline.of(context, emphasized: true),
+          ),
+        ),
         for (final project in projects)
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 18),
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 4),
             child: RemoteProjectGroup(
-              key: ValueKey('remote-project-${project.id}'),
+              key: ValueKey('remote-project-${project.deviceId}-${project.id}'),
               name: project.name,
-              trailing: project.sessions.isEmpty
-                  ? null
-                  : Text(
-                      '${project.sessions.length}',
-                      maxLines: 1,
-                      style: AppTextStyle.footnote
-                          .of(context)
-                          .copyWith(color: colors.onSurfaceVariant),
-                    ),
+              plain: true,
+              deviceLabel: _selectedDeviceId == null && view.devices.length > 1
+                  ? _deviceName(view, project.deviceId)
+                  : null,
+              showCreate: true,
+              onCreate: () => _activateProjectItem(project),
               children: [
                 for (final session in project.sessions)
                   RemoteSessionRow(
-                    key: ValueKey('remote-session-${session.id}'),
+                    key: ValueKey(
+                      'remote-session-${project.deviceId}-${session.id}',
+                    ),
                     title: session.title,
+                    plain: true,
                     trailingCount: session.pendingCount,
-                    onTap: () => _openSession(project, session),
+                    onTap: () => _activateProjectItem(project, session),
                   ),
               ],
             ),
           ),
+        if (projects.any((project) => project.sessions.isNotEmpty)) ...[
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 22, 20, 8),
+            child: Text(
+              '最近会话',
+              style: AppTextStyle.subheadline.of(context, emphasized: true),
+            ),
+          ),
+          for (final item in _recentSessions(projects).take(20))
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 18),
+              child: RemoteSessionRow(
+                key: ValueKey(
+                  'remote-recent-${item.project.deviceId}-${item.session.id}',
+                ),
+                title: item.session.title,
+                plain: true,
+                plainInset: 2,
+                contextLabel:
+                    _selectedDeviceId == null && view.devices.length > 1
+                    ? '${item.project.name} · ${_deviceName(view, item.project.deviceId)}'
+                    : null,
+                onTap: () => _activateProjectItem(item.project, item.session),
+              ),
+            ),
+        ],
       ],
     );
+  }
+
+  List<RemoteDshProject> _visibleRecent() {
+    final selected = _selectedDeviceId;
+    if (selected != null) return _recentByDevice[selected] ?? const [];
+    return [for (final projects in _recentByDevice.values) ...projects];
+  }
+
+  String _deviceName(RemoteDshView view, String id) {
+    for (final device in view.devices) {
+      if (device.id == id) return device.label;
+    }
+    return id;
+  }
+
+  List<({RemoteDshProject project, RemoteDshSession session})> _recentSessions(
+    List<RemoteDshProject> projects,
+  ) {
+    final rows = [
+      for (final project in projects)
+        for (final session in project.sessions)
+          (project: project, session: session),
+    ];
+    rows.sort(
+      (a, b) => (b.session.updatedAt ?? 0).compareTo(a.session.updatedAt ?? 0),
+    );
+    return rows;
   }
 }
 

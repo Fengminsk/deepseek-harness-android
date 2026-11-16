@@ -53,16 +53,9 @@ class RemoteDeviceChip extends StatelessWidget {
     final colors = Theme.of(context).colorScheme;
     final dark = colors.brightness == Brightness.dark;
     final status = this.status;
-    // 选中态沿用分段选择器的高亮板面：浅色主题用 surfaceBright，深色主题
-    // 抬高一级并叠一点 onSurface，保持和其余玻璃控件同一套层次。
     final fill = selected
-        ? (dark
-              ? Color.alphaBlend(
-                  colors.onSurface.withValues(alpha: .2),
-                  colors.surfaceContainerHighest,
-                )
-              : colors.surfaceBright)
-        : SurfaceLevel.block.colorOf(colors);
+        ? (dark ? colors.surfaceContainerHighest : const Color(0xfff2f2f2))
+        : Colors.transparent;
     final foreground = selected ? colors.onSurface : colors.onSurfaceVariant;
     return Semantics(
       button: true,
@@ -77,19 +70,11 @@ class RemoteDeviceChip extends StatelessWidget {
           child: ConstrainedBox(
             // 触摸目标不小于 48dp；名称单行省略，胶囊最宽 200dp。
             constraints: const BoxConstraints(minHeight: 48, maxWidth: 200),
-            child: DaylightSurface(
-              shape: AppShape.full,
-              color: fill,
-              enabled: LiquidGlassScope.of(context),
-              shadows: selected
-                  ? [
-                      BoxShadow(
-                        color: colors.shadow.withValues(alpha: .12),
-                        blurRadius: 3,
-                        offset: const Offset(0, 1),
-                      ),
-                    ]
-                  : const [],
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: fill,
+                borderRadius: AppRadius.full,
+              ),
               child: Material(
                 type: MaterialType.transparency,
                 shape: AppShape.full,
@@ -206,7 +191,6 @@ class RemoteDeviceRail extends StatelessWidget {
         children: [
           RemoteDeviceChip(
             label: allLabel,
-            icon: Icons.devices_rounded,
             selected: selectedId == null,
             onTap: onSelected == null ? null : () => onSelected(null),
           ),
@@ -261,6 +245,9 @@ class RemoteSessionRow extends StatelessWidget {
     required this.title,
     this.trailingCount,
     this.selected = false,
+    this.plain = false,
+    this.plainInset = 44,
+    this.contextLabel,
     this.onTap,
   });
 
@@ -273,6 +260,15 @@ class RemoteSessionRow extends StatelessWidget {
   /// 是否为当前会话。
   final bool selected;
 
+  /// 首页参照图使用平铺列表，不画卡片行。
+  final bool plain;
+
+  /// Leading inset for flat rows; recent conversations are not nested in a project.
+  final double plainInset;
+
+  /// Project and computer shown under a flattened recent conversation.
+  final String? contextLabel;
+
   /// 打开会话的回调；为 null 时不可点。
   final VoidCallback? onTap;
 
@@ -280,6 +276,53 @@ class RemoteSessionRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     final count = trailingCount;
+    if (plain) {
+      return Semantics(
+        selected: selected,
+        button: true,
+        child: InkWell(
+          onTap: onTap,
+          child: Padding(
+            padding: EdgeInsets.fromLTRB(plainInset, 16, 20, 16),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: AppTextStyle.subheadline.of(context),
+                      ),
+                      if (contextLabel != null) ...[
+                        const SizedBox(height: 3),
+                        Text(
+                          contextLabel!,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: AppTextStyle.footnote
+                              .of(context)
+                              .copyWith(color: colors.onSurfaceVariant),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+                if (count != null && count > 0)
+                  Text(
+                    '$count',
+                    style: AppTextStyle.footnote
+                        .of(context)
+                        .copyWith(color: colors.onSurfaceVariant),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
     return Semantics(
       selected: selected,
       child: ElasticPress(
@@ -317,6 +360,10 @@ class RemoteProjectGroup extends StatefulWidget {
     required this.name,
     required this.children,
     this.initiallyExpanded = true,
+    this.plain = false,
+    this.showCreate = false,
+    this.onCreate,
+    this.deviceLabel,
     this.trailing,
   });
 
@@ -328,6 +375,18 @@ class RemoteProjectGroup extends StatefulWidget {
 
   /// 首次挂载时是否展开。
   final bool initiallyExpanded;
+
+  /// 首页参照图使用无卡片的项目分组。
+  final bool plain;
+
+  /// 在项目标题右侧显示新建会话入口。
+  final bool showCreate;
+
+  /// 在这个项目里新建会话；不可用时仍保留按钮并说明原因。
+  final VoidCallback? onCreate;
+
+  /// Computer name, shown when the All tab combines several computers.
+  final String? deviceLabel;
 
   /// 标题右侧、折叠箭头之前的附加信息，例如会话数量。
   final Widget? trailing;
@@ -343,6 +402,80 @@ class _RemoteProjectGroupState extends State<RemoteProjectGroup> {
   Widget build(BuildContext context) {
     final reduceMotion = MediaQuery.disableAnimationsOf(context);
     final trailing = widget.trailing;
+    if (widget.plain) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Semantics(
+            expanded: _expanded,
+            button: true,
+            child: InkWell(
+              onTap: () => setState(() => _expanded = !_expanded),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(2, 16, 2, 10),
+                child: Row(
+                  children: [
+                    const Icon(Icons.folder_outlined, size: 22),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        widget.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: AppTextStyle.subheadline.of(context),
+                      ),
+                    ),
+                    if (widget.deviceLabel != null)
+                      ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 96),
+                        child: Text(
+                          widget.deviceLabel!,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: AppTextStyle.footnote
+                              .of(context)
+                              .copyWith(
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onSurfaceVariant,
+                              ),
+                        ),
+                      ),
+                    if (widget.showCreate)
+                      IconButton(
+                        tooltip: '在${widget.name}中新建会话',
+                        onPressed: widget.onCreate,
+                        icon: const Icon(Icons.edit_square, size: 21),
+                      ),
+                    AnimatedRotation(
+                      turns: _expanded ? .25 : 0,
+                      duration: reduceMotion
+                          ? Duration.zero
+                          : const Duration(milliseconds: 200),
+                      child: const Icon(Icons.chevron_right_rounded),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          AnimatedCrossFade(
+            firstChild: const SizedBox.shrink(),
+            secondChild: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: widget.children,
+            ),
+            crossFadeState: _expanded
+                ? CrossFadeState.showSecond
+                : CrossFadeState.showFirst,
+            duration: reduceMotion
+                ? Duration.zero
+                : const Duration(milliseconds: 220),
+            sizeCurve: Curves.easeInOutCubic,
+          ),
+        ],
+      );
+    }
     return PocketSection(
       children: [
         Semantics(
@@ -528,6 +661,7 @@ class RemoteComposer extends StatefulWidget {
     this.sendKey,
     this.stopKey,
     this.top,
+    this.margin,
   });
 
   /// 目标设备显示名，用于默认占位文案。
@@ -575,7 +709,7 @@ class RemoteComposer extends StatefulWidget {
   /// 选择」，工具条上的推理按钮则用 [onReasoning]。
   final VoidCallback? onModel;
 
-  /// 是否渲染为悬浮三态卡；首页传 false，会话页传 true。
+  /// 是否渲染为悬浮三态卡；首页与会话页都使用悬浮样式。
   final bool floating;
 
   /// 悬浮卡的当前状态；[floating] 为 false 时忽略。
@@ -613,6 +747,9 @@ class RemoteComposer extends StatefulWidget {
 
   /// 悬浮卡上方的插槽（附件 rail、命令 chip 等）。
   final Widget? top;
+
+  /// Outer inset of the floating composer when its parent already provides one.
+  final EdgeInsetsGeometry? margin;
 
   @override
   State<RemoteComposer> createState() => _RemoteComposerState();
@@ -675,6 +812,7 @@ class _RemoteComposerState extends State<RemoteComposer> {
         ? widget.reasoning
         : null,
     top: widget.top,
+    margin: widget.margin,
   );
 
   /// 首页使用的紧凑单行输入条（与引入悬浮卡之前的形态一致）。
@@ -850,7 +988,7 @@ class _RemotePermissionSheetState extends State<RemotePermissionSheet> {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    return _RemoteSheet(
+    return RemoteSheet(
       title: '权限预设',
       closeLabel: '关闭权限预设',
       children: [
@@ -1063,7 +1201,7 @@ Future<void> showRemoteCommandsSheet(
   sheetAnimationStyle: MediaQuery.disableAnimationsOf(context)
       ? AnimationStyle.noAnimation
       : null,
-  builder: (sheetContext) => _RemoteSheet(
+  builder: (sheetContext) => RemoteSheet(
     title: '添加与指令',
     closeLabel: '关闭添加菜单',
     children: [
@@ -1078,8 +1216,9 @@ Future<void> showRemoteCommandsSheet(
 /// 底部弹层的共同外壳：超椭圆顶角、玻璃或实心底色、把手、标题与关闭按钮。
 ///
 /// 内容区可滚动，因此放大字体时仍然完整可达；底部安全区由内层 SafeArea 让出。
-class _RemoteSheet extends StatelessWidget {
-  const _RemoteSheet({
+class RemoteSheet extends StatelessWidget {
+  const RemoteSheet({
+    super.key,
     required this.title,
     required this.closeLabel,
     required this.children,
