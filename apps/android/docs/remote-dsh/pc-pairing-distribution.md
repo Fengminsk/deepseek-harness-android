@@ -111,6 +111,8 @@
 2. **B**（可选 1 天）：给无 TTY/无浏览器场景的终端兜底与设备管理。
 3. A2 / 桌面集成：等 §2 的 PC 分发决定后再议（若 remote-host 最终以 Desktop 形态分发，配对 UI 应该做进 Desktop，而不是 Web GUI）。
 
+**已落地（2026-11-16）**：A1 已实现，实现说明、契约、威胁模型与验证见 [pc-pairing-page.md](pc-pairing-page.md)。与本节评估的差异：① 页面用 **Host 校验 + 进程级随机 CSRF token + Origin 同源校验**，没有采用本节建议的一次性 `uiToken`（页面 URL 不含 token，浏览器打开即可用）；② `RemotePairingTicket` 按「接口增补 1」增加了 `usbPairUrl`，`status()` 增补未做（页面只需要当前窗口 + 设备摘要，在线状态留给后续）；③ 二维码按评估结论用 `encodeQrMatrix` 直接出内联 SVG，不引 PNG 依赖。`pairing-page-selfcheck.ts` **24/24 PASS**、两个 tsc exit 0、oxlint 改动文件 0 error、宿主冒烟 14/14；浏览器截图验收待补（位置见 pc-pairing-page.md §2）。
+
 ---
 
 ## 2. PC 分发

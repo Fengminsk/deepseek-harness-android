@@ -14,9 +14,11 @@
  * 4. 提供 `remoteHost` 服务（`devices()` / `revokeDevice()` / `pair()`），作为 PC 侧设备管理、
  *    撤销设备与重新打开配对窗口的入口；
  * 5. 启用 UDP 局域网发现（`./discovery.ts`）：同网段的手机广播一帧探测就能拿到当前配对
- *    链接，省掉扫码与粘贴。发现端口绑定失败只记 warn，不影响宿主启动。
+ *    链接，省掉扫码与粘贴。发现端口绑定失败只记 warn，不影响宿主启动；
+ * 6. 在回环地址上提供本机配对设置页（`./pairing-page.ts`）：二维码、窗口倒计时、明文链接、
+ *    USB 提示与设备撤销都能在电脑浏览器里完成，不需要读终端日志；页面端口绑定失败同样只记 warn。
  *
- * 注册即 effect：插件卸载时关闭配对窗口、断开全部连接、停止发现并停止监听。
+ * 注册即 effect：插件卸载时关闭配对窗口、断开全部连接、停止发现、停止配对页并停止监听。
  *
  * 与 `./identity.ts`、`./tls.ts`、`./devices.ts`、`./pairing.ts` 的接口约定：
  * `ensureTlsMaterial({ dir, hosts, commonName })` 先跑（新签 CA 时它会把 instanceId 绑定为 CA 指纹），
@@ -44,6 +46,12 @@ import {
   type RemoteSessionFacts,
   type RemoteSessionLookup,
 } from './notifications.ts'
+import {
+  DEFAULT_PAIRING_PAGE_PORT,
+  PairingPageServer,
+  type PairingPageSource,
+  type PairingPageTicket,
+} from './pairing-page.ts'
 import { encodeQrMatrix, renderTerminalQr } from './pairing-qr.ts'
 import { PairingWindow, pairUrl } from './pairing.ts'
 import {
@@ -140,6 +148,20 @@ export interface Config {
    * 与 {@link port} 是不同的协议（UDP / TCP），同一台电脑上两者互不冲突。
    */
   discoveryPort: number
+  /**
+   * 是否启用本机配对设置页（`./pairing-page.ts`）；默认开启。
+   *
+   * 页面只监听回环地址 127.0.0.1，用来展示配对二维码/链接、重开配对窗口与撤销设备。
+   * 关掉它不影响配对本身：配对链接仍会写进日志。
+   */
+  pagesEnabled: boolean
+  /**
+   * 本机配对页的 HTTP 端口；默认 4780。0 表示交给系统分配，只用于本地调试。
+   *
+   * 与 {@link port}（wss / TCP）和 {@link discoveryPort}（UDP）都不同，互不冲突；
+   * 页面只绑回环地址，不会对局域网开放。
+   */
+  pagesPort: number
 }
 
 /** 配置校验：越界值在加载期就失败，不做静默兜底。 */
@@ -153,6 +175,8 @@ export const Config: z<Config> = z.object({
   publicOrigin: z.transform(z.string(), value => normalizePublicOrigin(value)).default(''),
   discoveryEnabled: z.boolean().default(true),
   discoveryPort: z.number().step(1).min(0).max(65535).default(DEFAULT_DISCOVERY_PORT),
+  pagesEnabled: z.boolean().default(true),
+  pagesPort: z.number().step(1).min(0).max(65535).default(DEFAULT_PAIRING_PAGE_PORT),
 })
 
 /** 服务器叶子证书的 CN；只影响证书展示，SAN 才是连得上与否的判据。 */
@@ -292,13 +316,14 @@ const FACADE_UNSUPPORTED: readonly string[] = [
 /** 宿主提供给其他插件/界面的远程宿主服务名。 */
 const REMOTE_HOST_SERVICE = 'remoteHost'
 
-/** 一次新打开的配对窗口。 */
-interface RemotePairingTicket {
-  /** 可直接展示/编码成二维码的配对链接。 */
-  readonly pairUrl: string
-  /** 窗口关闭时间（Unix 毫秒）。 */
-  readonly expiresAt: number
-}
+/**
+ * 一次新打开的配对窗口。
+ *
+ * `usbPairUrl` 是回环地址（`wss://127.0.0.1:<port>`）的同一张配对票据：手机 USB 连接
+ * 方式与局域网方式用的是同一个令牌与 instanceId，只是主机名不同。终端二维码、日志与
+ * 本机配对页展示的都是这一份事实。
+ */
+type RemotePairingTicket = PairingPageTicket
 
 /** 一次成功启动的远程宿主。 */
 interface RemoteHostHandle {
@@ -325,6 +350,13 @@ interface RemoteHostHandle {
    * @returns 配对链接与新窗口的过期时间。
    */
   pair(): RemotePairingTicket
+
+  /**
+   * 本机配对页的数据源：当前窗口、重开窗口、设备列表、撤销与宿主身份。
+   * 页面不自己判断窗口状态，宿主把内部记账投影成它需要的事实。
+   * @returns 交给 `./pairing-page.ts` 的数据源。
+   */
+  pages(): PairingPageSource
 }
 
 /**
@@ -430,6 +462,19 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     revokeDevice: (deviceId: string) => handle.revokeDevice(deviceId),
     pair: () => handle.pair(),
   })
+  // 本机配对页：只绑 127.0.0.1 的增强能力。`start()` 自己把端口绑定失败降级成 warn，
+  // 所以这里没有错误分支；effect 逆序释放，页面会先于 wss 监听停止。
+  if (!config.pagesEnabled) {
+    writeRemoteLog({
+      level: 'info',
+      event: 'pairing-page-disabled',
+      message: '本机配对页已关闭（Config.pagesEnabled = false）：配对链接仍会写进日志。',
+    })
+    return
+  }
+  const pages = new PairingPageServer({ port: config.pagesPort, source: handle.pages(), log: writeRemoteLog })
+  ctx.effect(() => () => pages.stop(), 'remote-host: 本机配对页')
+  await pages.start()
 }
 
 /**
@@ -604,13 +649,13 @@ async function startRemoteHost(
       const opened = pairing.open(config.pairingTtlMs)
       const ticket: RemotePairingTicket = {
         pairUrl: pairUrl(origin, identity.instanceId, opened.token),
+        // USB 连接方式：同一张叶子证书的 SAN 恒包含 127.0.0.1（tls.ts 的 MANDATORY_HOSTS），
+        // 因此用户在电脑上 `adb reverse tcp:<port> tcp:<port>` 后，可以用回环地址的同一张
+        // 配对票据完成配对，不需要手机与电脑同网段。令牌与 instanceId 与原链接完全相同。
+        usbPairUrl: pairUrl(`wss://127.0.0.1:${bound.port}`, identity.instanceId, opened.token),
         expiresAt: opened.expiresAt,
       }
-      // USB 连接方式：同一张叶子证书的 SAN 恒包含 127.0.0.1（tls.ts 的 MANDATORY_HOSTS），
-      // 因此用户在电脑上 `adb reverse tcp:<port> tcp:<port>` 后，可以用回环地址的同一张
-      // 配对票据完成配对，不需要手机与电脑同网段。令牌与 instanceId 与原链接完全相同。
-      const usbPairUrl = pairUrl(`wss://127.0.0.1:${bound.port}`, identity.instanceId, opened.token)
-      // 当前配对票据也是发现应答的唯一来源：窗口未开或已消费时快照里没有 pairing。
+      // 当前配对票据也是发现应答与本机配对页的唯一来源：窗口未开或已消费时没有票据。
       currentPairing = ticket
       writeRemoteLog({
         level: 'info',
@@ -621,13 +666,13 @@ async function startRemoteHost(
           origin,
           instanceId: identity.instanceId,
           pairUrl: ticket.pairUrl,
-          usbPairUrl,
+          usbPairUrl: ticket.usbPairUrl,
           expiresAt: ticket.expiresAt,
         },
       })
       // 链接里的令牌与指纹合计 107 个字符，手输不现实；在真终端里额外画一张二维码。
       // 日志被重定向（非 TTY）时只保留上面那条结构化日志，不往日志文件里撒块字符。
-      writePairingQr(ticket.pairUrl, usbPairUrl, bound.port)
+      writePairingQr(ticket.pairUrl, ticket.usbPairUrl, bound.port)
       return ticket
     }
     openPairingWindow(
@@ -664,31 +709,60 @@ async function startRemoteHost(
         message: '局域网发现已关闭（Config.discoveryEnabled = false）：手机只能扫码或粘贴配对链接。',
       })
     }
+    /** 打开配对窗口：`remoteHost.pair()` 与本机配对页的「重新打开」按钮共用。 */
+    const reopenPairing = (): RemotePairingTicket => openPairingWindow(
+      'pairing-window-opened',
+      '已打开新的配对窗口：用下面的配对链接在手机上添加这台电脑。',
+    )
+    /** 撤销设备：`remoteHost.revokeDevice()` 与本机配对页的「撤销」按钮共用。 */
+    const revokeDevice = async (deviceId: string): Promise<RemoteDeviceRevokeResult> => {
+      const result = await server.revokeDevice(devices, deviceId, 'user-revoked')
+      // 撤销之后旧配对链接已经消费或过期：自动重开一个，省掉「重启宿主才能配下一台」的步骤。
+      if (result.revoked) {
+        openPairingWindow(
+          'pairing-window-reopened',
+          '设备已撤销，宿主自动打开了新的配对窗口：用下面的配对链接配对新手机，无需重启宿主。',
+          { revokedDeviceId: deviceId },
+        )
+      }
+      return result
+    }
+    /**
+     * 本机配对页看到的「当前窗口」：过期或被消费的窗口如实返回 undefined，
+     * 页面据此显示「已过期/已使用」而不是继续展示一张扫了也会失败的二维码。
+     * @returns 仍可用的窗口票据；没有时为 undefined。
+     */
+    const currentPairingForPage = (): RemotePairingTicket | undefined => {
+      const ticket = currentPairing
+      if (ticket === undefined || ticket.expiresAt <= Date.now()) return undefined
+      return ticket
+    }
     return {
       stop: async () => {
         // 先停通知观察者：连接关闭过程中门面可能还在收尾，不再追加 `remote.*` 帧。
         binding?.notifications.dispose()
         if (discovery !== undefined) await discovery.stop()
         pairing.close()
+        // 停止后页面数据源不应再交出一张仍含令牌的票据。
+        currentPairing = undefined
         await server.stop()
       },
       devices: () => devices.list(),
-      revokeDevice: async (deviceId: string) => {
-        const result = await server.revokeDevice(devices, deviceId, 'user-revoked')
-        // 撤销之后旧配对链接已经消费或过期：自动重开一个，省掉「重启宿主才能配下一台」的步骤。
-        if (result.revoked) {
-          openPairingWindow(
-            'pairing-window-reopened',
-            '设备已撤销，宿主自动打开了新的配对窗口：用下面的配对链接配对新手机，无需重启宿主。',
-            { revokedDeviceId: deviceId },
-          )
-        }
-        return result
-      },
-      pair: () => openPairingWindow(
-        'pairing-window-opened',
-        '已打开新的配对窗口：用下面的配对链接在手机上添加这台电脑。',
-      ),
+      revokeDevice,
+      pair: reopenPairing,
+      pages: () => ({
+        currentPairing: currentPairingForPage,
+        pair: reopenPairing,
+        devices: () => devices.list(),
+        revokeDevice,
+        host: () => ({
+          name: identity.displayName,
+          instanceId: identity.instanceId,
+          origin,
+          port: bound.port,
+          discovery: { enabled: config.discoveryEnabled, port: config.discoveryPort },
+        }),
+      }),
     }
   } catch (error) {
     if (discovery !== undefined) await discovery.stop()
@@ -1021,10 +1095,11 @@ async function originHost(config: Config): Promise<string> {
  * 而配对链接的生成函数（`./pairing.ts`）只接受 wss。路径、查询串、片段与账号
  * 信息同样拒绝——App 的配对解析不接受路径前缀，这些都会生成手机连不上的链接。
  * @param value - 配置里的原始值；空字符串表示不覆盖自动生成的 origin。
- * @returns 归一化后的 `wss://host[:port]`（主机名小写、默认端口省略）；未配置时为空串。
+ * @returns 归一化后的 `wss://host[:port]`（主机名小写；显式写的 `:443` 会保留，
+ *   因为 WHATWG URL 会把它当默认端口省略掉）；未配置时为空串。
  * @throws 不是绝对 wss origin、或带路径/查询串/片段/账号信息时抛出，让配置在加载期失败。
  */
-function normalizePublicOrigin(value: string): string {
+export function normalizePublicOrigin(value: string): string {
   const trimmed = value.trim()
   if (trimmed === '') return ''
   if (/[\u0000-\u0020\u007f]/u.test(trimmed)) {
@@ -1051,6 +1126,10 @@ function normalizePublicOrigin(value: string): string {
   if (url.pathname !== '' && url.pathname !== '/') {
     throw new Error('publicOrigin 不能带路径前缀：v1 只接受直连的 wss://<host>:<port>，反向代理请用 TCP 直通。')
   }
+  // WHATWG URL 会把 wss 的默认端口 443 归一化掉（`wss://h:443` → `wss://h`），而配对链接
+  // 原样使用该 origin，App 对缺失端口会按 4777 补全，导致连到错误端口。部署者显式写了
+  // :443 时保留端口；未写端口的地址仍按默认端口处理（App 侧见 remote_pairing.dart）。
+  if (url.port === '' && /:443\/?$/u.test(trimmed)) return `wss://${url.hostname}:443`
   return url.origin
 }
 
