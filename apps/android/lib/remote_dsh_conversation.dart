@@ -20,7 +20,8 @@
 // 档位来自 `session.modelCatalog` 里当前模型声明的强度，切换走既有
 // `selectModel`；没有档位时只显示模型名。面板不依赖键盘 insets：用户按返回键
 // 收起键盘时面板保持可见，输入态则在没有草稿时缩回浏览态、有草稿时保持展开；
-// 缩小态点整张卡都会聚焦输入框并请求输入法显示。
+// 缩小态点整张卡都会聚焦输入框并请求输入法显示。权限预设与当前模型的回显行
+// 只属于展开的输入上下文：缩小态只留一行悬浮卡及其上方的会话读数，不显示它们。
 //
 // 模型入口在输入区：上方回显当前 `provider/model`，点按与推理面板第一行都打开
 // 底部模型弹层（模型目录来自 `api.call` 的 `session.modelCatalog`），应用后数据源
@@ -981,20 +982,23 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     final hasDraft = !_draftEmpty || _hasDraftAttachments;
     final drafts = _drafts;
     final insights = _insights ?? RemoteSessionInsights.none;
+    // 权限预设与当前模型是「展开输入时」的上下文：缩小态只留一行悬浮卡与其上方
+    // 的会话读数，不展示这些回显行（用户原话「输入框未展开时没有审核权限这一说」）。
+    final expanded = _composerMode != PocketComposerMode.browse;
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         // 输入卡上方的回显与提示：权限预设、当前模型、指令提示、状态与结果。
-        // 这些入口都保留原有位置与文案，只是与悬浮卡分开排版。
+        // 权限与模型回显只在展开态出现；其余提示照旧。
         Padding(
           padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              if (ready) _permissionStatusRow(context),
-              if (ready) _modelLabelRow(context),
+              if (ready && expanded) _permissionStatusRow(context),
+              if (ready && expanded) _modelLabelRow(context),
               if (ready && !canOpenMenu)
                 Padding(
                   padding: const EdgeInsets.only(bottom: 4),

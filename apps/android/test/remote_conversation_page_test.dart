@@ -39,6 +39,15 @@ Widget _host(RemoteConversationSource source) => MaterialApp(
   ),
 );
 
+/// 展开输入卡。
+///
+/// 页面默认是缩小态：权限预设与当前模型的回显行只在展开态出现，因此断言或点按
+/// `remote-permission-label` / `remote-model-label` 之前先调用它。
+Future<void> _expandComposer(WidgetTester tester) async {
+  await tester.tap(find.byKey(PocketComposer.inputKey));
+  await tester.pumpAndSettle();
+}
+
 RemoteConversationWindow _window(List<Map<String, dynamic>> events) =>
     RemoteConversationWindow(
       events: events,
@@ -830,6 +839,9 @@ void main() {
     await tester.pumpWidget(_host(source));
     await tester.pumpAndSettle();
 
+    // 缩小态不回显模型行；展开后才出现并可点。
+    expect(find.byKey(const ValueKey('remote-model-label')), findsNothing);
+    await _expandComposer(tester);
     expect(find.text('deepseek-account/deepseek-flash'), findsOneWidget);
 
     await tester.tap(find.byKey(const ValueKey('remote-model-label')));
@@ -870,6 +882,8 @@ void main() {
         reasoningEffort: 'high',
       ),
     );
+    // 弹层收起后输入卡回到缩小态；展开确认回显行显示新模型与强度。
+    await _expandComposer(tester);
     expect(find.text('deepseek-account/deepseek-v4-pro · 高'), findsOneWidget);
   });
 
@@ -886,6 +900,7 @@ void main() {
     await tester.pumpWidget(_host(source));
     await tester.pumpAndSettle();
 
+    await _expandComposer(tester);
     await tester.tap(find.byKey(const ValueKey('remote-model-label')));
     await tester.pumpAndSettle();
 
@@ -993,6 +1008,12 @@ void main() {
     await tester.pumpWidget(_host(source));
     await tester.pumpAndSettle();
 
+    // 缩小态不显示回显行；展开后模型入口以「原因行」代替死按钮。
+    expect(
+      find.byKey(const ValueKey('remote-model-unavailable')),
+      findsNothing,
+    );
+    await _expandComposer(tester);
     expect(
       find.byKey(const ValueKey('remote-model-unavailable')),
       findsOneWidget,
@@ -1982,15 +2003,15 @@ void main() {
     await tester.pumpWidget(_host(source));
     await tester.pumpAndSettle();
 
+    // 缩小态不显示权限/模型回显行，也没有权限按钮；展开后才出现。
+    expect(find.byKey(const ValueKey('remote-permission-label')), findsNothing);
+    expect(find.byTooltip('权限预设：工作区内修改'), findsNothing);
+    await _expandComposer(tester);
     expect(
       find.byKey(const ValueKey('remote-permission-label')),
       findsOneWidget,
     );
     expect(find.text('权限预设：工作区内修改'), findsOneWidget);
-    // 参照图的缩小态没有权限按钮：展开后才出现，且是小图标工具条按钮。
-    expect(find.byTooltip('权限预设：工作区内修改'), findsNothing);
-    await tester.tap(find.byKey(PocketComposer.inputKey));
-    await tester.pumpAndSettle();
     expect(find.byTooltip('权限预设：工作区内修改'), findsOneWidget);
 
     await tester.tap(find.byKey(const ValueKey('remote-permission-label')));
@@ -2017,6 +2038,8 @@ void main() {
       findsNothing,
       reason: '成功后退回会话页',
     );
+    // 弹层退出时输入卡已收起；回显行只在展开态出现，展开后再断言写回结果。
+    await _expandComposer(tester);
     expect(find.text('权限预设：仅可查看'), findsOneWidget, reason: '写回后重读投影');
   });
 
@@ -2024,6 +2047,7 @@ void main() {
     final source = _permissionSource();
     await tester.pumpWidget(_host(source));
     await tester.pumpAndSettle();
+    await _expandComposer(tester);
 
     await tester.tap(find.byKey(const ValueKey('remote-permission-label')));
     await tester.pumpAndSettle();
@@ -2048,6 +2072,8 @@ void main() {
           .params['line'],
       '/permission danger-full-access',
     );
+    // 弹层收起后输入卡回到缩小态；展开确认回显行写回了新预设。
+    await _expandComposer(tester);
     expect(find.text('权限预设：完全权限'), findsOneWidget);
   });
 
@@ -2056,15 +2082,18 @@ void main() {
     await tester.pumpWidget(_host(source));
     await tester.pumpAndSettle();
 
+    // 缩小态不显示回显行与权限按钮；展开后回显成带锁原因、按钮置灰。
+    expect(
+      find.byKey(const ValueKey('remote-permission-unavailable')),
+      findsNothing,
+    );
+    expect(find.byTooltip('权限预设：这台电脑未启用权限预设'), findsNothing);
+    await _expandComposer(tester);
     expect(
       find.byKey(const ValueKey('remote-permission-unavailable')),
       findsOneWidget,
     );
     expect(find.text('这台电脑未启用权限预设'), findsOneWidget);
-    // 缩小态没有权限按钮；展开后按钮置灰，原因仍可由无障碍文案读到。
-    expect(find.byTooltip('权限预设：这台电脑未启用权限预设'), findsNothing);
-    await tester.tap(find.byKey(PocketComposer.inputKey));
-    await tester.pumpAndSettle();
     expect(find.byTooltip('权限预设：这台电脑未启用权限预设'), findsOneWidget);
 
     await tester.tap(find.byTooltip('权限预设：这台电脑未启用权限预设'), warnIfMissed: false);
@@ -2108,6 +2137,7 @@ void main() {
     };
     await tester.pumpWidget(_host(source));
     await tester.pumpAndSettle();
+    await _expandComposer(tester);
 
     await tester.tap(find.byKey(const ValueKey('remote-permission-label')));
     await tester.pumpAndSettle();
@@ -2119,6 +2149,11 @@ void main() {
 
     expect(find.text('无法读取权限预设'), findsNothing);
     expect(find.text('仅可查看'), findsOneWidget);
+
+    // 收起弹层后展开输入卡，回显行仍在（缩小态本来就不显示它）。
+    tester.state<NavigatorState>(find.byType(Navigator)).pop();
+    await tester.pumpAndSettle();
+    await _expandComposer(tester);
     expect(
       find.byKey(const ValueKey('remote-permission-label')),
       findsOneWidget,
@@ -2129,6 +2164,7 @@ void main() {
     final source = _permissionSource(interactions: [_approvalInteraction()]);
     await tester.pumpWidget(_host(source));
     await tester.pumpAndSettle();
+    await _expandComposer(tester);
 
     expect(
       find.byKey(const ValueKey('remote-permission-label')),
@@ -2164,17 +2200,21 @@ void main() {
     await tester.pumpWidget(_host(source));
     await tester.pumpAndSettle();
 
-    // 缩小态：一行悬浮卡，占位文案、加号与盾牌都在，没有工具条与发送圆钮。
+    // 缩小态：一行悬浮卡（占位文案、加号与发送圆钮），没有工具条、没有权限/模型
+    // 回显行。
     expect(find.text('在 客厅的电脑 上工作'), findsOneWidget);
     expect(find.byTooltip('添加与指令'), findsOneWidget);
     expect(find.byTooltip('推理强度'), findsNothing);
     expect(find.byKey(const ValueKey('remote-send')), findsNothing);
+    expect(find.byKey(const ValueKey('remote-permission-label')), findsNothing);
+    expect(find.byKey(const ValueKey('remote-model-label')), findsNothing);
     final collapsed = tester.getSize(find.byKey(PocketComposer.cardKey)).height;
 
-    // 点输入框：卡片展开成「输入区 + 工具条一行」。
+    // 点输入框：卡片展开成「输入区 + 工具条一行」，权限/模型回显行随之出现。
     await tester.tap(find.byKey(PocketComposer.inputKey));
     await tester.pumpAndSettle();
     expect(find.byTooltip('推理强度'), findsOneWidget);
+    expect(find.byKey(const ValueKey('remote-model-label')), findsOneWidget);
     expect(
       tester.getSize(find.byKey(PocketComposer.cardKey)).height,
       greaterThan(collapsed),
@@ -2195,6 +2235,67 @@ void main() {
     expect(find.byTooltip('推理强度'), findsNothing, reason: '纯浏览时回到缩小态');
   });
 
+  testWidgets('缩小态不显示权限/模型回显行，展开后出现且可点', (tester) async {
+    final source = _permissionSource()..modelChoice = _flash;
+    await tester.pumpWidget(_host(source));
+    await tester.pumpAndSettle();
+
+    // 缩小态：只剩悬浮卡（其上方没有权限/模型回显行）。
+    expect(
+      find.byKey(const ValueKey('remote-permission-label')),
+      findsNothing,
+      reason: '输入未展开时没有审核权限这一说',
+    );
+    expect(find.byKey(const ValueKey('remote-model-label')), findsNothing);
+
+    await _expandComposer(tester);
+    expect(
+      find.byKey(const ValueKey('remote-permission-label')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const ValueKey('remote-model-label')), findsOneWidget);
+
+    // 两个回显行依旧是各自弹层的入口：模型行打开模型选择。
+    await tester.tap(find.byKey(const ValueKey('remote-model-label')));
+    await tester.pumpAndSettle();
+    expect(find.text('选择会话模型'), findsOneWidget);
+    await tester.tap(find.byTooltip('关闭模型选择'));
+    await tester.pumpAndSettle();
+
+    // 弹层收起后回到缩小态，回显行随之隐藏；再展开可点权限回显行。
+    expect(find.byKey(const ValueKey('remote-permission-label')), findsNothing);
+    await _expandComposer(tester);
+    await tester.tap(find.byKey(const ValueKey('remote-permission-label')));
+    await tester.pumpAndSettle();
+    expect(find.text('仅可查看'), findsOneWidget);
+  });
+
+  testWidgets('有草稿保持展开时回显行可见，清空并收起后消失', (tester) async {
+    final source = _permissionSource()..modelChoice = _flash;
+    await tester.pumpWidget(_host(source));
+    await tester.pumpAndSettle();
+    await _expandComposer(tester);
+
+    await tester.enterText(find.byKey(PocketComposer.inputKey), '写了一半的草稿');
+    await tester.pump();
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('remote-permission-label')),
+      findsOneWidget,
+      reason: '有草稿时保持展开，回显行保持可见',
+    );
+    expect(find.byKey(const ValueKey('remote-model-label')), findsOneWidget);
+
+    await tester.enterText(find.byKey(PocketComposer.inputKey), '');
+    await tester.pump();
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('remote-permission-label')), findsNothing);
+    expect(find.byKey(const ValueKey('remote-model-label')), findsNothing);
+    expect(find.byTooltip('推理强度'), findsNothing, reason: '纯浏览时回到缩小态');
+  });
+
   testWidgets('点推理按钮进入强度面板：模型与档位来自目录，切档走 selectModel', (tester) async {
     final source = FakeRemoteConversationSource(
       window: _window(conversationEvents()),
@@ -2210,6 +2311,11 @@ void main() {
 
     expect(source.catalogFetches, 1, reason: '面板的档位与默认值来自模型目录，第一次打开读一次');
     expect(find.byKey(PocketComposer.modelsKey), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('remote-model-label')),
+      findsOneWidget,
+      reason: 'picker 属于展开态，模型回显行保留',
+    );
     expect(find.text('DeepSeek V4 Pro'), findsOneWidget, reason: '当前模型显示名');
     expect(find.text('高'), findsOneWidget, reason: '当前强度回显');
     expect(find.byKey(PocketComposer.stopKeyFor('low')), findsOneWidget);
