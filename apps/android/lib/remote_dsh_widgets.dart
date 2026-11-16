@@ -1,5 +1,6 @@
 // 远程 DSH 的共享展示组件：设备胶囊与胶囊条、分组标题、会话行、项目分组、
-// 远程首页标题栏、底部输入条，以及权限预设与指令菜单两个底部弹层。
+// 远程首页标题栏、底部输入条（首页的紧凑单行与会话页的悬浮三态卡），以及权限
+// 预设与指令菜单两个底部弹层。
 //
 // 这些组件只负责绘制与回调：不读取运行时、不发起请求、不持有业务状态。
 // 颜色一律取自当前 Theme，排版比例取自 AppTextStyle；玻璃开关、纯黑模式、
@@ -12,6 +13,7 @@ import 'composer_commands.dart';
 import 'flclash/daylight.dart';
 import 'flclash/surface.dart';
 import 'flclash/typography.dart';
+import 'pocket_composer.dart';
 import 'remote_permissions.dart';
 import 'ui.dart';
 
@@ -478,7 +480,15 @@ class RemoteHomeHeader extends StatelessWidget {
   }
 }
 
-/// 底部悬浮输入条：加号、输入框、审批盾牌与模型。
+/// 底部输入条：加号、输入框、审批盾牌与模型。
+///
+/// 有两种形态，由 [floating] 选择：
+///
+/// - 缺省（`floating: false`）：首页使用的紧凑单行输入条，加号、输入框、盾牌与
+///   模型挤在一行，下方可以带一行可操作说明；发送按钮由首页自己放在右侧。
+/// - `floating: true`：会话页使用的悬浮三态卡（[PocketComposer]）。状态由调用方
+///   通过 [mode] 持有；[onSend]/[onStop]/[onReasoning]/[reasoning] 缺省为 null 时
+///   对应入口按置灰或不显示处理，因此本组件在其中一种形态下也不会拿到死按钮。
 ///
 /// 占位文案默认「在 设备名 上工作」，可用 [placeholder] 覆盖。组件不持有业务
 /// 状态、不发请求；输入内容由调用方通过 [controller] 持有，未提供时使用内部
@@ -489,7 +499,7 @@ class RemoteHomeHeader extends StatelessWidget {
 /// 不再留「能点但没用」的入口（设计文档 §4.2 第 4 条）。
 ///
 /// 语音输入在远程页不做（设计文档 §4.4：手机侧没有录音实现，DSH 的语音是
-/// experimental 组合），因此这里不画麦克风按钮；系统输入法自带语音听写。
+/// experimental 组合），因此两种形态都不画麦克风按钮；系统输入法自带语音听写。
 class RemoteComposer extends StatefulWidget {
   const RemoteComposer({
     super.key,
@@ -506,6 +516,18 @@ class RemoteComposer extends StatefulWidget {
     this.onAdd,
     this.onApproval,
     this.onModel,
+    this.floating = false,
+    this.mode = PocketComposerMode.browse,
+    this.onSend,
+    this.onStop,
+    this.sending = false,
+    this.hasDraft = false,
+    this.onReasoning,
+    this.reasoningDisabledReason,
+    this.reasoning,
+    this.sendKey,
+    this.stopKey,
+    this.top,
   });
 
   /// 目标设备显示名，用于默认占位文案。
@@ -548,7 +570,49 @@ class RemoteComposer extends StatefulWidget {
   final VoidCallback? onApproval;
 
   /// 点按模型：选择模型或推理强度。
+  ///
+  /// 紧凑形态里是右侧的模型按钮；悬浮卡里是推理面板第一行的「打开完整模型
+  /// 选择」，工具条上的推理按钮则用 [onReasoning]。
   final VoidCallback? onModel;
+
+  /// 是否渲染为悬浮三态卡；首页传 false，会话页传 true。
+  final bool floating;
+
+  /// 悬浮卡的当前状态；[floating] 为 false 时忽略。
+  final PocketComposerMode mode;
+
+  /// 悬浮卡的发送回调；为 null 时发送圆钮永远置灰。
+  final VoidCallback? onSend;
+
+  /// 悬浮卡的停止回调；非 null 时右侧圆钮显示停止。
+  ///
+  /// 远程会话的数据源目前没有取消接口（见报告），页面传 null，因此不会出现
+  /// 点了没反应的停止按钮。
+  final VoidCallback? onStop;
+
+  /// 是否正在发送/执行指令；为 true 时右侧圆钮换成进度。
+  final bool sending;
+
+  /// 是否有可发送内容（草稿文本或附件）；决定发送圆钮是否出现。
+  final bool hasDraft;
+
+  /// 推理强度按钮回调：进入或退出推理面板（[PocketComposerMode.picker]）。
+  final VoidCallback? onReasoning;
+
+  /// 推理强度按钮不可用的原因；与 [onReasoning] 同时为 null 时不显示按钮。
+  final String? reasoningDisabledReason;
+
+  /// 推理面板的数据；[mode] 不是 [PocketComposerMode.picker] 时忽略。
+  final PocketReasoningPanel? reasoning;
+
+  /// 发送圆钮的标识；不传时用 [PocketComposer.defaultSendKey]。
+  final Key? sendKey;
+
+  /// 停止圆钮的标识；不传时用 [PocketComposer.defaultStopKey]。
+  final Key? stopKey;
+
+  /// 悬浮卡上方的插槽（附件 rail、命令 chip 等）。
+  final Widget? top;
 
   @override
   State<RemoteComposer> createState() => _RemoteComposerState();
@@ -566,14 +630,57 @@ class _RemoteComposerState extends State<RemoteComposer> {
     super.dispose();
   }
 
+  /// 默认占位文案：没有设备名时退化为通用说法。
+  String get _placeholder {
+    final device = widget.deviceLabel.trim();
+    return widget.placeholder ??
+        (device.isEmpty ? '在远程设备上工作' : '在 $device 上工作');
+  }
+
+  /// 盾牌的完整提示文案；当前预设为空时返回 null（组件用「权限预设」）。
+  String? get _permissionsLabel {
+    final approval = widget.approvalLabel?.trim();
+    if (approval == null || approval.isEmpty) return null;
+    return '权限预设：$approval';
+  }
+
   @override
   Widget build(BuildContext context) {
+    if (widget.floating) return _floating(context);
+    return _inline(context);
+  }
+
+  /// 会话页的悬浮三态卡。
+  Widget _floating(BuildContext context) => PocketComposer(
+    mode: widget.mode,
+    controller: _controller,
+    focusNode: widget.focusNode,
+    placeholder: _placeholder,
+    enabled: widget.enabled,
+    onChanged: widget.onChanged,
+    onSubmitted: widget.onSubmitted,
+    onAdd: widget.onAdd,
+    onPermissions: widget.onApproval,
+    permissionsLabel: _permissionsLabel,
+    onReasoning: widget.onReasoning,
+    reasoningDisabledReason: widget.reasoningDisabledReason,
+    reasoningActive: widget.mode == PocketComposerMode.picker,
+    onSend: widget.onSend,
+    onStop: widget.onStop,
+    sending: widget.sending,
+    hasDraft: widget.hasDraft,
+    sendKey: widget.sendKey,
+    stopKey: widget.stopKey,
+    reasoning: widget.mode == PocketComposerMode.picker
+        ? widget.reasoning
+        : null,
+    top: widget.top,
+  );
+
+  /// 首页使用的紧凑单行输入条（与引入悬浮卡之前的形态一致）。
+  Widget _inline(BuildContext context) {
     final enabled = widget.enabled;
-    final device = widget.deviceLabel.trim();
-    final placeholder =
-        widget.placeholder ?? (device.isEmpty ? '在远程设备上工作' : '在 $device 上工作');
     final model = widget.modelLabel?.trim();
-    final approval = widget.approvalLabel?.trim();
     final hint = widget.hint?.trim();
     final colors = Theme.of(context).colorScheme;
     return GlassSurface(
@@ -606,7 +713,7 @@ class _RemoteComposerState extends State<RemoteComposer> {
                     onChanged: widget.onChanged,
                     onSubmitted: widget.onSubmitted,
                     decoration: InputDecoration(
-                      hintText: placeholder,
+                      hintText: _placeholder,
                       hintMaxLines: 1,
                       filled: false,
                       border: InputBorder.none,
@@ -622,9 +729,7 @@ class _RemoteComposerState extends State<RemoteComposer> {
                 const SizedBox(width: 4),
                 _RemoteCircleButton(
                   icon: Icons.shield_outlined,
-                  label: approval == null || approval.isEmpty
-                      ? '权限预设'
-                      : '权限预设：$approval',
+                  label: _permissionsLabel ?? '权限预设',
                   onPressed: enabled ? widget.onApproval : null,
                 ),
                 const SizedBox(width: 2),

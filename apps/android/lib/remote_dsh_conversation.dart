@@ -13,11 +13,21 @@
 // [RemoteConversationSource.replyApproval] / [RemoteConversationSource.answerQuestion]，
 // 页面不拼线上 `response` 字段。
 //
-// 模型入口在输入区：显示当前 `provider/model`，点按打开底部弹层（模型目录来自
-// `api.call` 的 `session.modelCatalog`），应用后数据源推新的选择。发送因凭据类
-// 错误失败时，页面先尝试一次自动恢复：读电脑上的默认模型（`settings.describe`），
-// 与当前路由不同就切过去并重发一次；成功或两次都失败都在输入区上方留下常驻说明，
-// 自动恢复不了时保留一条直接指向模型选择的可操作提示。
+// 输入区是一张悬浮输入卡（共享组件 `pocket_composer.dart`），三态由页面持有：
+// 浏览时是一行缩小卡（加号、占位文案、盾牌与发送圆钮）；输入框获得焦点、键盘
+// 弹起或草稿非空时向上展开成「输入区 + 工具条一行」；点工具条上的推理按钮后
+// 输入区换成「当前模型 + 推理强度滑杆」面板，再点推理按钮或点聊天区收起。面板
+// 档位来自 `session.modelCatalog` 里当前模型声明的强度，切换走既有
+// `selectModel`；没有档位时只显示模型名。面板不依赖键盘 insets：用户按返回键
+// 收起键盘时面板保持可见，输入态则在没有草稿时缩回浏览态、有草稿时保持展开；
+// 缩小态点整张卡都会聚焦输入框并请求输入法显示。
+//
+// 模型入口在输入区：上方回显当前 `provider/model`，点按与推理面板第一行都打开
+// 底部模型弹层（模型目录来自 `api.call` 的 `session.modelCatalog`），应用后数据源
+// 推新的选择。发送因凭据类错误失败时，页面先尝试一次自动恢复：读电脑上的默认
+// 模型（`settings.describe`），与当前路由不同就切过去并重发一次；成功或两次都
+// 失败都在输入区上方留下常驻说明，自动恢复不了时保留一条直接指向模型选择的
+// 可操作提示。
 //
 // 数据源把电脑模型目录的读取失败服务商（例如缺少 API Key）推给页面：当前路由的
 // provider 命中时，发送前就有一条常驻提示说明发送会自动改用电脑默认模型，动作
@@ -62,7 +72,7 @@
 // 自动通过已挂起的审批。
 //
 // 会话洞察：输入区上方是待办卡片（收起一行摘要「任务 + 各状态计数」，展开为清单，
-// 展开状态由页面持有并在本次会话内保留），输入区下方是一行统计条（轮/步、token
+// 展开状态由页面持有并在本次会话内保留），输入区正上方是一行统计条（轮/步、token
 // 与缓存命中、上下文占用；缺少的读数整段不显示，窄屏放不下时折叠成可点的小胶囊）。
 // 点按统计条打开底部详情弹层（token 四桶、上下文占用说明与平均 TTFT / 解码速度）。
 // 两块读数都来自 [RemoteSessionInsights]：只有数据源推来新的洞察时才变化，页面不
@@ -95,6 +105,7 @@ import 'flclash/daylight.dart';
 import 'flclash/popup.dart';
 import 'flclash/typography.dart';
 import 'model_reasoning.dart';
+import 'pocket_composer.dart';
 import 'remote_attachments.dart';
 import 'remote_commands.dart';
 import 'remote_connection.dart';
@@ -244,6 +255,32 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
   /// 已经用一次成功发送确认过的路由；同一条路由不再显示发送前提示。
   RemoteModelChoice? _routeConfirmed;
 
+  /// 输入卡的当前状态：浏览时缩小、聚焦输入时展开、点推理按钮后显示强度面板。
+  ///
+  /// 状态由页面持有（[PocketComposer] 是受控组件）：没有焦点且没有草稿时是
+  /// [PocketComposerMode.browse]；输入框获得焦点或草稿非空时是
+  /// [PocketComposerMode.composing]（草稿非空时即使失焦也保持展开，只有纯浏览
+  /// 才收缩）；点工具条上的推理按钮进入 [PocketComposerMode.picker]。
+  PocketComposerMode _composerMode = PocketComposerMode.browse;
+
+  /// 推理面板读取的模型目录；只在第一次打开面板时读一次，失败后可重试。
+  ///
+  /// 面板需要知道当前模型声明了哪些推理强度档位，档位与默认值都来自
+  /// `session.modelCatalog`（与既有模型选择弹层同一个读取入口）。
+  RemoteModelCatalog? _reasoningCatalog;
+  bool _reasoningLoading = false;
+  String? _reasoningError;
+
+  /// 正在提交一次推理强度切换；期间滑杆不可点。
+  bool _reasoningApplying = false;
+
+  /// 上一次 metrics 事件里键盘是否真的可见。
+  ///
+  /// 只有 0→可见→0 这种真正的显隐变化才改输入卡状态：Android 在聚焦输入框时
+  /// 会先派发若干次「键盘还不可见」的 metrics（动画中间帧、窗口大小抖动），把
+  /// 它们当成「用户收起了键盘」会在聚焦后立刻缩回并解焦，键盘就再也起不来。
+  bool _keyboardVisible = false;
+
   /// 是否仍然贴着最新内容。用户向上翻到离底部较远的位置后，键盘、更新都不再
   /// 把列表拽回底部；滚回底部附近时自动恢复跟随。
   bool _pinnedToEnd = true;
@@ -321,6 +358,57 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
   void didChangeMetrics() {
     // 键盘与安全区变化会改变列表视口高度；仍贴着最新内容时重新贴住。
     _scheduleScrollToEnd();
+    // 键盘收起（例如按返回键）时输入框不会自动失焦：下一帧 MediaQuery 更新完
+    // 再看一次键盘是否还在，决定缩小回浏览态还是保持展开。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _syncComposerWithKeyboard();
+    });
+  }
+
+  /// 键盘显隐后同步输入卡状态。
+  ///
+  /// 只处理**真正的显隐变化**：连续 metrics 事件里 insets 一直为 0 的抖动不改
+  /// 状态（聚焦时 Android 会先派发这种事件，误判会让卡片刚展开就缩回并解焦）。
+  /// 键盘真正收起时，推理面板保持可见（用户可能只是收起键盘还想调强度，点聊天
+  /// 区或表盘再退出）；输入态按草稿决定：有草稿保持展开，纯浏览缩回缩小态。
+  void _syncComposerWithKeyboard() {
+    if (!mounted) return;
+    final visible = MediaQuery.viewInsetsOf(context).bottom > 0;
+    final wasVisible = _keyboardVisible;
+    _keyboardVisible = visible;
+    if (visible == wasVisible) return;
+    if (visible) {
+      if (_composerMode == PocketComposerMode.browse) {
+        setState(() => _composerMode = PocketComposerMode.composing);
+      }
+      return;
+    }
+    if (_composerMode == PocketComposerMode.picker) return;
+    if (_input.text.trim().isNotEmpty) return;
+    setState(() => _composerMode = PocketComposerMode.browse);
+    // 故意不在此处解焦：真机上「键盘闪现后又隐藏」的抖动不应把焦点也丢掉；
+    // 缩小态点卡片会再次 requestFocus + TextInput.show，键盘可立刻回来。
+  }
+
+  /// 把焦点交给输入框，并显式请求一次输入法显示。
+  ///
+  /// 真机上出现过「卡片展开了但键盘没起来」：输入框已经聚焦、IME 却被系统藏起
+  /// 时，再点一次输入框不会自动重新显示。focus 之后在下一帧补一次
+  /// `TextInput.show`（没有活动输入连接时是空操作），让点按一定能进入输入。
+  void _requestInputFocus() {
+    if (!_focus.hasFocus) _focus.requestFocus();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_focus.hasFocus) return;
+      unawaited(_showInput());
+    });
+  }
+
+  Future<void> _showInput() async {
+    try {
+      await SystemChannels.textInput.invokeMethod<void>('TextInput.show');
+    } on Object {
+      // 没有活动输入连接（或测试环境没有通道）时忽略：展开与焦点不依赖它。
+    }
   }
 
   // ------------------------------------------------------------ 数据源
@@ -451,7 +539,20 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
   // ------------------------------------------------------------ 滚动
 
   void _onFocusChanged() {
-    if (_focus.hasFocus) _scheduleScrollToEnd();
+    if (!mounted) return;
+    if (_focus.hasFocus) {
+      _scheduleScrollToEnd();
+      // 聚焦即展开输入卡；面板打开期间焦点不变，状态由面板自己管。
+      if (_composerMode == PocketComposerMode.browse) {
+        setState(() => _composerMode = PocketComposerMode.composing);
+      }
+      return;
+    }
+    // 失焦不立刻缩小：有草稿时保持展开，纯浏览才回到缩小态。
+    if (_input.text.trim().isEmpty &&
+        _composerMode == PocketComposerMode.composing) {
+      setState(() => _composerMode = PocketComposerMode.browse);
+    }
   }
 
   /// 跳到列表底部，并在下一帧再校正一次：懒加载列表的最大滚动距离要等新行布局
@@ -511,9 +612,18 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
                 _header(context),
                 ?_banner(context),
                 Expanded(
-                  child: NotificationListener<ScrollNotification>(
-                    onNotification: _trackScroll,
-                    child: _transcript(context),
+                  child: Listener(
+                    key: const ValueKey('remote-transcript'),
+                    // 推理面板开着时，点聊天区收起面板回到输入态（参照图「点别处」
+                    // 同一意图）；不主动唤起键盘，纯浏览时直接回到缩小态。不用
+                    // GestureDetector，避免抢走消息自身的点击。
+                    onPointerDown: _composerMode == PocketComposerMode.picker
+                        ? (_) => _exitReasoningPanel(keepKeyboard: false)
+                        : null,
+                    child: NotificationListener<ScrollNotification>(
+                      onNotification: _trackScroll,
+                      child: _transcript(context),
+                    ),
                   ),
                 ),
                 ?_interactionArea(context),
@@ -868,117 +978,155 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     // `+` 的数据源是 `api.call` 的指令目录；这台电脑不支持时置灰并写原因，
     // 而不是弹出一个永远读不到内容的菜单（协议 §10.2）。
     final canOpenMenu = apiState == RemoteCapabilityState.available;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          if (ready) _permissionStatusRow(context),
-          if (ready) _modelLabelRow(context),
-          if (ready && !canOpenMenu)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 4),
-              child: Align(
-                alignment: Alignment.centerRight,
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      Icons.lock_outline_rounded,
-                      size: 14,
-                      color: colors.onSurfaceVariant.withValues(alpha: .6),
+    final hasDraft = !_draftEmpty || _hasDraftAttachments;
+    final drafts = _drafts;
+    final insights = _insights ?? RemoteSessionInsights.none;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // 输入卡上方的回显与提示：权限预设、当前模型、指令提示、状态与结果。
+        // 这些入口都保留原有位置与文案，只是与悬浮卡分开排版。
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (ready) _permissionStatusRow(context),
+              if (ready) _modelLabelRow(context),
+              if (ready && !canOpenMenu)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 4),
+                  child: Align(
+                    alignment: Alignment.centerRight,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.lock_outline_rounded,
+                          size: 14,
+                          color: colors.onSurfaceVariant.withValues(alpha: .6),
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          '这台电脑不支持会话指令与添加菜单',
+                          key: const ValueKey(
+                            'remote-composer-menu-unavailable',
+                          ),
+                          style: AppTextStyle.footnote
+                              .of(context)
+                              .copyWith(
+                                color: colors.onSurfaceVariant.withValues(
+                                  alpha: .75,
+                                ),
+                              ),
+                        ),
+                      ],
                     ),
-                    const SizedBox(width: 4),
-                    Text(
-                      '这台电脑不支持会话指令与添加菜单',
-                      key: const ValueKey('remote-composer-menu-unavailable'),
+                  ),
+                ),
+              ?_commandHint(context),
+              if (_status case final status?)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Semantics(
+                    liveRegion: true,
+                    child: Text(
+                      status,
+                      key: const ValueKey('remote-conversation-status'),
+                      textAlign: TextAlign.center,
                       style: AppTextStyle.footnote
                           .of(context)
-                          .copyWith(
-                            color: colors.onSurfaceVariant.withValues(
-                              alpha: .75,
-                            ),
-                          ),
+                          .copyWith(color: colors.onSurfaceVariant),
                     ),
-                  ],
-                ),
-              ),
-            ),
-          ?_commandHint(context),
-          if (_status case final status?)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 6),
-              child: Semantics(
-                liveRegion: true,
-                child: Text(
-                  status,
-                  key: const ValueKey('remote-conversation-status'),
-                  textAlign: TextAlign.center,
-                  style: AppTextStyle.footnote
-                      .of(context)
-                      .copyWith(color: colors.onSurfaceVariant),
-                ),
-              ),
-            ),
-          if (canSend && _sending)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 6),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  const SizedBox(
-                    width: 14,
-                    height: 14,
-                    child: CircularProgressIndicator(strokeWidth: 2),
                   ),
-                  const SizedBox(width: 8),
-                  Text(
-                    _submittingCommand ? '正在执行电脑上的指令…' : '正在发送…',
-                    style: AppTextStyle.footnote
-                        .of(context)
-                        .copyWith(color: colors.onSurfaceVariant),
+                ),
+              if (canSend && _sending)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      const SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        _submittingCommand ? '正在执行电脑上的指令…' : '正在发送…',
+                        style: AppTextStyle.footnote
+                            .of(context)
+                            .copyWith(color: colors.onSurfaceVariant),
+                      ),
+                    ],
                   ),
-                ],
-              ),
-            )
-          else if (canSend && (!_draftEmpty || _hasDraftAttachments))
-            Align(
-              alignment: Alignment.centerRight,
-              child: PocketButton(
-                key: const ValueKey('remote-send'),
-                onPressed: () => unawaited(_submit(_input.text)),
-                child: const Text('发送'),
-              ),
-            ),
-          if (_drafts case final drafts?)
-            PocketAttachmentRail(drafts: drafts, sessionId: _source.sessionId),
-          RemoteComposer(
-            deviceLabel: widget.deviceName,
-            placeholder: canSend
-                ? '在 ${widget.deviceName} 上工作'
-                : ready
-                ? '这台电脑不支持发送消息'
-                : '先连接这台电脑',
-            controller: _input,
-            focusNode: _focus,
-            approvalLabel: _permissionShieldLabel,
-            modelLabel: _modelLabel,
-            enabled: canSend && !_sending,
-            onChanged: _onDraftChanged,
-            onSubmitted: (value) => unawaited(_submit(value)),
-            onAdd: canOpenMenu ? _openAddSheet : null,
-            onApproval: _permissions.presetsReady ? _openPermissionSheet : null,
-            onModel: canSelectModel ? () => unawaited(_openModelSheet()) : null,
+                ),
+            ],
           ),
-          // 输入区下方的会话统计条；没有读数时组件自己收起为零高度。
-          RemoteStatsBar(
-            insights: _insights ?? RemoteSessionInsights.none,
-            onTap: _openStatsSheet,
+        ),
+        // 输入区正上方的一行会话读数（参照图把短读数放在输入卡上方；没有读数
+        // 时整段不占高度）。
+        if (RemoteStatsBar.hasReadings(insights))
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            child: RemoteStatsBar(insights: insights, onTap: _openStatsSheet),
           ),
-        ],
-      ),
+        // 悬浮输入卡：缩小/展开/推理面板三态，附件 rail 作为卡片上方的插槽。
+        RemoteComposer(
+          floating: true,
+          mode: _composerMode,
+          deviceLabel: widget.deviceName,
+          placeholder: canSend
+              ? '在 ${widget.deviceName} 上工作'
+              : ready
+              ? '这台电脑不支持发送消息'
+              : '先连接这台电脑',
+          controller: _input,
+          focusNode: _focus,
+          approvalLabel: _permissionShieldLabel,
+          modelLabel: _modelLabel,
+          enabled: canSend && !_sending,
+          hasDraft: hasDraft,
+          sending: _sending,
+          onChanged: _onDraftChanged,
+          onSubmitted: (value) => unawaited(_submit(value)),
+          onAdd: canOpenMenu ? _openAddSheet : null,
+          onApproval: _permissions.presetsReady ? _openPermissionSheet : null,
+          onModel: canSelectModel ? _openModelsFromReasoningPanel : null,
+          onReasoning: canSelectModel ? _toggleReasoningPanel : null,
+          reasoningDisabledReason: canSelectModel
+              ? null
+              : apiState == RemoteCapabilityState.pending
+              ? '正在连接电脑…'
+              : '这台电脑不支持选择模型',
+          reasoning: _composerMode == PocketComposerMode.picker
+              ? _reasoningPanel(canSelectModel)
+              : null,
+          onSend: canSend ? _sendDraft : null,
+          // 远程数据源没有取消入口（协议方法表里没有取消方法），不画停止按钮。
+          onStop: null,
+          sendKey: const ValueKey('remote-send'),
+          top: _attachmentRailSlot(context, drafts),
+        ),
+      ],
     );
+  }
+
+  /// 附件 rail 作为悬浮卡上方的插槽；没有草稿也不在选文件时返回 null。
+  Widget? _attachmentRailSlot(BuildContext context, AttachmentDrafts? drafts) {
+    if (drafts == null) return null;
+    final sessionId = _source.sessionId;
+    final picking = drafts.pickingSession == sessionId;
+    if (!picking && drafts.items(sessionId).isEmpty) return null;
+    return PocketAttachmentRail(drafts: drafts, sessionId: sessionId);
+  }
+
+  /// 发送草稿：先收起推理面板，再走既有发送/指令提交。
+  void _sendDraft() {
+    _exitReasoningPanel();
+    unawaited(_submit(_input.text));
   }
 
   /// 输入区上方的计划模式条：与本地共用 [ChatPlanDock]。
@@ -1038,6 +1186,7 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
   /// 统计条只在有统计读数时渲染，这里用同一个判定兜底，避免打开一个没有内容的
   /// 弹层（只有待办的会话不渲染统计条）。
   void _openStatsSheet() {
+    _exitReasoningPanel(keepKeyboard: false);
     final insights = _insights;
     if (insights == null || !RemoteStatsBar.hasReadings(insights)) return;
     _focus.unfocus();
@@ -1134,6 +1283,11 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     setState(() {
       _draftEmpty = empty;
       _draftIsCommand = command;
+      // 有草稿就展开：即使输入框没拿到焦点（例如程序写入草稿），卡片也保持
+      // 展开态，用户能看见自己正在编辑什么。
+      if (!empty && _composerMode == PocketComposerMode.browse) {
+        _composerMode = PocketComposerMode.composing;
+      }
     });
   }
 
@@ -1458,6 +1612,7 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
   ///   由用户补全参数后按普通指令提交；
   /// - `export` / `skills` 本轮不支持，置灰并写明原因。
   void _openAddSheet() {
+    _exitReasoningPanel();
     final drafts = _drafts;
     final state = _attachState();
     final canAttach =
@@ -1594,6 +1749,7 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
   /// 计划原文与开关都在同一页；输入区上方的 [ChatPlanDock] 也会在进入计划模式后
   /// 出现「退出计划模式」。
   Future<void> _openPlanMode() async {
+    _exitReasoningPanel(keepKeyboard: false);
     _focus.unfocus();
     await _goalPlan.refresh();
     if (!mounted) return;
@@ -1735,6 +1891,7 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
 
   /// 打开权限预设弹层：每次打开都重新读目录，失败只在弹层内报错并可重试。
   void _openPermissionSheet() {
+    _exitReasoningPanel(keepKeyboard: false);
     final permissions = _permissions;
     if (!permissions.presetsReady) {
       _showStatus(permissions.unavailableReason ?? '这台电脑暂不可切换权限预设。');
@@ -2004,6 +2161,7 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
 
   /// 打开模型选择弹层；应用成功由弹层回调，数据源随后推新的选择。
   Future<void> _openModelSheet() async {
+    _exitReasoningPanel(keepKeyboard: false);
     if (_source.phase != RemoteConnectionPhase.ready) {
       _showStatus('先连接这台电脑');
       return;
@@ -2035,6 +2193,163 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
       _persistentNotice = null;
     });
     _showStatus('已切换模型：${applied.label}');
+  }
+
+  /// 推理强度面板：当前模型、档位与切换入口。
+  ///
+  /// 档位来自 `session.modelCatalog` 里当前模型声明的 `reasoning.efforts`；目录
+  /// 还没读到时只显示模型名与一行进度，读取失败时显示原因与重试。没有档位的
+  /// 模型（或目录里找不到当前模型）只显示模型名，不给空滑杆。
+  PocketReasoningPanel _reasoningPanel(bool canSelectModel) {
+    final choice = _modelChoice;
+    final model = _modelOf(_reasoningCatalog, choice);
+    final reasoning = model?.reasoning;
+    final efforts = reasoning?.efforts ?? const <RemoteReasoningLevel>[];
+    final selected = choice?.reasoningEffort ?? reasoning?.defaultEffort;
+    final stops = <PocketReasoningStop>[
+      for (final effort in efforts)
+        PocketReasoningStop(
+          id: effort.id,
+          label: reasoningEffortLabel(effort.id, fallback: effort.name),
+        ),
+    ];
+    return PocketReasoningPanel(
+      modelLabel: model?.name ?? choice?.label ?? '当前模型',
+      effortLabel: selected == null ? '默认' : reasoningEffortLabel(selected),
+      stops: stops,
+      selectedId: selected,
+      loading: _reasoningLoading && _reasoningCatalog == null,
+      error: _reasoningError,
+      busy: _reasoningApplying,
+      onOpenModels: canSelectModel ? _openModelsFromReasoningPanel : null,
+      onRetry: () => unawaited(_loadReasoningCatalog()),
+      onSelected: canSelectModel
+          ? (effort) => unawaited(_applyReasoningEffort(effort))
+          : null,
+    );
+  }
+
+  /// 模型目录里按当前选择找到模型声明；找不到时为 null（面板只显示模型名）。
+  static RemoteModelInfo? _modelOf(
+    RemoteModelCatalog? catalog,
+    RemoteModelChoice? choice,
+  ) {
+    if (catalog == null || choice == null) return null;
+    for (final group in catalog.groups) {
+      if (group.id != choice.provider) continue;
+      for (final model in group.models) {
+        if (model.id == choice.model) return model;
+      }
+    }
+    return null;
+  }
+
+  /// 打开/收起推理面板。
+  ///
+  /// 打开时立刻把焦点与输入法还给输入框，并在下一帧再确认一次：点按工具条按钮
+  /// 时焦点可能在触摸抬手后才交还，晚一拍会让键盘在面板出现的同时被收起。面板
+  /// 本身不依赖键盘 insets 的瞬时值，键盘被系统收起也保持可见。
+  void _toggleReasoningPanel() {
+    if (_composerMode == PocketComposerMode.picker) {
+      _exitReasoningPanel();
+      return;
+    }
+    setState(() => _composerMode = PocketComposerMode.picker);
+    _requestInputFocus();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _composerMode != PocketComposerMode.picker) return;
+      _requestInputFocus();
+    });
+    if (_reasoningCatalog == null && !_reasoningLoading) {
+      unawaited(_loadReasoningCatalog());
+    }
+  }
+
+  /// 收起推理面板回到输入态。
+  ///
+  /// [keepKeyboard] 为 true（点表盘、发送）时把焦点与键盘还给输入框；为 false
+  /// （点聊天区、打开别的弹层）时按当前键盘与草稿决定：键盘收起且没有草稿就回到
+  /// 缩小态，否则回到展开态但不主动唤起键盘。
+  void _exitReasoningPanel({bool keepKeyboard = true}) {
+    if (_composerMode != PocketComposerMode.picker) return;
+    final keyboardVisible = MediaQuery.viewInsetsOf(context).bottom > 0;
+    final expand =
+        keepKeyboard || keyboardVisible || _input.text.trim().isNotEmpty;
+    setState(
+      () => _composerMode = expand
+          ? PocketComposerMode.composing
+          : PocketComposerMode.browse,
+    );
+    if (keepKeyboard) {
+      _requestInputFocus();
+    } else if (!expand && _focus.hasFocus) {
+      _focus.unfocus();
+    }
+  }
+
+  /// 从推理面板第一行打开完整模型选择弹层（面板先收起）。
+  void _openModelsFromReasoningPanel() {
+    _exitReasoningPanel(keepKeyboard: false);
+    unawaited(_openModelSheet());
+  }
+
+  /// 读一次模型目录：只为推理面板的档位与默认值，失败后可在面板里重试。
+  Future<void> _loadReasoningCatalog() async {
+    if (_reasoningLoading) return;
+    setState(() {
+      _reasoningLoading = true;
+      _reasoningError = null;
+    });
+    try {
+      final catalog = await _source.fetchModelCatalog();
+      if (!mounted) return;
+      setState(() {
+        _reasoningCatalog = catalog;
+        _reasoningLoading = false;
+      });
+    } on RuntimeTransportFailure catch (failure) {
+      if (!mounted) return;
+      setState(() {
+        _reasoningError = failure.message;
+        _reasoningLoading = false;
+      });
+    } on Object catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _reasoningError = '读取模型目录失败：$error';
+        _reasoningLoading = false;
+      });
+    }
+  }
+
+  /// 提交一次推理强度切换：与模型弹层同一个 `selectModel`，不另写一套应用逻辑。
+  Future<void> _applyReasoningEffort(String effort) async {
+    final current = _modelChoice;
+    if (current == null || _reasoningApplying) return;
+    if (current.reasoningEffort == effort) return;
+    setState(() => _reasoningApplying = true);
+    try {
+      await _source.selectModel(
+        RemoteModelChoice(
+          provider: current.provider,
+          model: current.model,
+          reasoningEffort: effort,
+        ),
+      );
+      if (!mounted) return;
+      setState(() {
+        _credentialHint = null;
+        // 用户手动换了强度，自动切换/凭据提示不再需要常驻。
+        _persistentNotice = null;
+      });
+      _showStatus('推理强度已改为「${reasoningEffortLabel(effort)}」');
+    } on RuntimeTransportFailure catch (failure) {
+      if (mounted) _showStatus('切换推理强度失败：${failure.message}');
+    } on Object catch (error) {
+      if (mounted) _showStatus('切换推理强度失败：$error');
+    } finally {
+      if (mounted) setState(() => _reasoningApplying = false);
+    }
   }
 
   // ------------------------------------------------------------ 会话操作

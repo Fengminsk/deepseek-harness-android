@@ -8,6 +8,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:dsh_android/chat_plan.dart';
+import 'package:dsh_android/pocket_composer.dart';
 import 'package:dsh_android/remote_attachments.dart';
 import 'package:dsh_android/remote_connection.dart';
 import 'package:dsh_android/remote_conversation_live_source.dart';
@@ -141,6 +142,13 @@ const RemoteModelChoice _flash = RemoteModelChoice(
 const RemoteModelChoice _official = RemoteModelChoice(
   provider: 'deepseek-official',
   model: 'deepseek-chat',
+);
+
+/// 声明了推理强度、当前选「高」的可调路由：输入区推理面板用它验证档位回显。
+const RemoteModelChoice _v4ProHigh = RemoteModelChoice(
+  provider: 'deepseek-account',
+  model: 'deepseek-v4-pro',
+  reasoningEffort: 'high',
 );
 
 /// 附件草稿的会话页测试用 id（小写 UUID v4，与 `attachment.pick` 生成规则一致）。
@@ -1860,6 +1868,48 @@ void main() {
     expect(find.text('计划模式'), findsOneWidget);
   });
 
+  testWidgets('控制流基线快照建立计划状态，不显示状态确认失败', (tester) async {
+    final source = FakeRemoteConversationSource(
+      window: _window(conversationEvents()),
+    );
+    await tester.pumpWidget(_host(source));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey('remote-conversation-plan-status')),
+      findsNothing,
+    );
+
+    // 宿主 `session.control` 基线里的会话块是 `{asOfSeq, values}`，没有
+    // `kind`（`SessionProjectionBaseline` 与 `session.projections` 的
+    // `{kind:'sequenced', …}` 是同一份快照）。真机上把缺 `kind` 当成读失败
+    // 会弹常驻「无法确认计划模式状态」横幅，这里守住它不再出现。
+    source.emitControl(<String, dynamic>{
+      'type': 'item',
+      'value': <String, dynamic>{
+        'type': 'baseline',
+        'value': <String, dynamic>{
+          'projections': <String, dynamic>{
+            source.sessionId: <String, dynamic>{
+              'asOfSeq': 3,
+              'values': <String, dynamic>{
+                'plan': <String, dynamic>{'active': true, 'pending': false},
+              },
+            },
+          },
+        },
+      },
+    });
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey('remote-conversation-plan-status')),
+      findsNothing,
+    );
+    expect(find.text('计划模式'), findsOneWidget);
+    expect(find.byTooltip('退出计划模式'), findsOneWidget);
+  });
+
   testWidgets('计划审核卡片批准计划，回 intent.approve 选项', (tester) async {
     final source = FakeRemoteConversationSource(
       window: _window(conversationEvents()),
@@ -2089,6 +2139,335 @@ void main() {
       reason: '切换预设不会自动通过已挂起的请求',
     );
     expect(source.approvalReplies, isEmpty);
+  });
+
+  // -------------------------------------------------- 输入区三态（悬浮输入卡）
+
+  testWidgets('输入区默认缩小态，聚焦展开，失焦后由草稿决定是否收起', (tester) async {
+    final source = FakeRemoteConversationSource(
+      window: _window(conversationEvents()),
+      modelChoice: _v4ProHigh,
+    );
+    await tester.pumpWidget(_host(source));
+    await tester.pumpAndSettle();
+
+    // 缩小态：一行悬浮卡，占位文案、加号与盾牌都在，没有工具条与发送圆钮。
+    expect(find.text('在 客厅的电脑 上工作'), findsOneWidget);
+    expect(find.byTooltip('添加与指令'), findsOneWidget);
+    expect(find.byTooltip('推理强度'), findsNothing);
+    expect(find.byKey(const ValueKey('remote-send')), findsNothing);
+    final collapsed = tester.getSize(find.byKey(PocketComposer.cardKey)).height;
+
+    // 点输入框：卡片展开成「输入区 + 工具条一行」。
+    await tester.tap(find.byKey(PocketComposer.inputKey));
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('推理强度'), findsOneWidget);
+    expect(
+      tester.getSize(find.byKey(PocketComposer.cardKey)).height,
+      greaterThan(collapsed),
+    );
+
+    // 有草稿时失焦保持展开：用户还能看见自己写的内容。
+    await tester.enterText(find.byKey(PocketComposer.inputKey), '写了一半的草稿');
+    await tester.pump();
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('推理强度'), findsOneWidget, reason: '有草稿时保持展开');
+
+    // 纯浏览（草稿清空且失焦）才缩小回一行。
+    await tester.enterText(find.byKey(PocketComposer.inputKey), '');
+    await tester.pump();
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('推理强度'), findsNothing, reason: '纯浏览时回到缩小态');
+  });
+
+  testWidgets('点推理按钮进入强度面板：模型与档位来自目录，切档走 selectModel', (tester) async {
+    final source = FakeRemoteConversationSource(
+      window: _window(conversationEvents()),
+      modelChoice: _v4ProHigh,
+    );
+    await tester.pumpWidget(_host(source));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(PocketComposer.inputKey));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('推理强度'));
+    await tester.pumpAndSettle();
+
+    expect(source.catalogFetches, 1, reason: '面板的档位与默认值来自模型目录，第一次打开读一次');
+    expect(find.byKey(PocketComposer.modelsKey), findsOneWidget);
+    expect(find.text('DeepSeek V4 Pro'), findsOneWidget, reason: '当前模型显示名');
+    expect(find.text('高'), findsOneWidget, reason: '当前强度回显');
+    expect(find.byKey(PocketComposer.stopKeyFor('low')), findsOneWidget);
+    expect(find.byKey(PocketComposer.stopKeyFor('high')), findsOneWidget);
+
+    await tester.tap(find.byKey(PocketComposer.stopKeyFor('low')));
+    await tester.pumpAndSettle();
+
+    expect(source.selectedModels, <RemoteModelChoice>[
+      const RemoteModelChoice(
+        provider: 'deepseek-account',
+        model: 'deepseek-v4-pro',
+        reasoningEffort: 'low',
+      ),
+    ]);
+    expect(find.textContaining('推理强度已改为「低」'), findsOneWidget);
+    expect(find.text('低'), findsWidgets, reason: '写回后回显当前强度');
+
+    // 再次点推理按钮收起面板，输入区回来。
+    await tester.tap(find.byTooltip('推理强度'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(PocketComposer.modelsKey), findsNothing);
+    expect(find.byKey(PocketComposer.inputKey), findsOneWidget);
+
+    // 面板第一行的模型名打开既有模型选择弹层，原有模型入口不丢。
+    await tester.tap(find.byTooltip('推理强度'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(PocketComposer.modelsKey));
+    await tester.pumpAndSettle();
+    expect(find.text('选择会话模型'), findsOneWidget);
+    await tester.tap(find.byTooltip('关闭模型选择'));
+    await tester.pumpAndSettle();
+
+    // 点聊天区也收起面板，回到输入态（参照图「点别处」）。
+    await tester.tap(find.byKey(PocketComposer.inputKey));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('推理强度'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(PocketComposer.modelsKey), findsOneWidget);
+    await tester.tapAt(
+      tester.getRect(find.byKey(const ValueKey('remote-transcript'))).center,
+    );
+    await tester.pumpAndSettle();
+    expect(find.byKey(PocketComposer.modelsKey), findsNothing);
+    expect(find.byKey(PocketComposer.inputKey), findsOneWidget);
+  });
+
+  testWidgets('推理面板读取目录失败时在面板里给原因并可重试', (tester) async {
+    final source =
+        FakeRemoteConversationSource(
+            window: _window(conversationEvents()),
+            modelChoice: _v4ProHigh,
+          )
+          ..modelCatalogFailure = const RuntimeTransportFailure(
+            code: 'gateway/unavailable',
+            message: '电脑上的 DSH 暂时不可用，请稍后重试。',
+          );
+    await tester.pumpWidget(_host(source));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(PocketComposer.inputKey));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('推理强度'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('电脑上的 DSH 暂时不可用'), findsOneWidget);
+    expect(find.byKey(PocketComposer.reasoningRetryKey), findsOneWidget);
+
+    source.modelCatalogFailure = null;
+    await tester.tap(find.byKey(PocketComposer.reasoningRetryKey));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(PocketComposer.stopKeyFor('low')), findsOneWidget);
+    expect(find.textContaining('电脑上的 DSH 暂时不可用'), findsNothing);
+  });
+
+  testWidgets('展开态保留既有入口：加号与权限预设都在，发送仍走 session.send', (tester) async {
+    final source = _permissionSource();
+    await tester.pumpWidget(_host(source));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(PocketComposer.inputKey));
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('添加与指令'), findsOneWidget);
+    expect(find.byTooltip('权限预设：工作区内修改'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('remote-permission-label')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const ValueKey('remote-send')), findsNothing);
+
+    await tester.enterText(find.byKey(PocketComposer.inputKey), ' 发送这条消息 ');
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('remote-send')));
+    await tester.pumpAndSettle();
+
+    expect(source.sent, <String>['发送这条消息'], reason: '发送仍走既有 session.send');
+    expect(
+      find.byKey(const ValueKey('remote-send')),
+      findsNothing,
+      reason: '受理后草稿清空，发送圆钮收起',
+    );
+  });
+
+  testWidgets('展开态下附件 rail 是输入卡上方的插槽，发送带上附件', (tester) async {
+    final surface = FakeAttachmentSurface();
+    final source = FakeRemoteConversationSource(
+      window: _window(conversationEvents()),
+    )..attachmentSurface = surface;
+    _mockAttachmentPicker(tester);
+    await tester.pumpWidget(_host(source));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(PocketComposer.inputKey));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('添加与指令'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('文件  file'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('季度报告.txt'), findsOneWidget);
+    final rail = tester.getRect(find.text('季度报告.txt'));
+    final card = tester.getRect(find.byKey(PocketComposer.cardKey));
+    expect(
+      rail.bottom,
+      lessThanOrEqualTo(card.top),
+      reason: '附件 rail 渲染在卡片上方的插槽里',
+    );
+    expect(find.byKey(const ValueKey('remote-send')), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('remote-send')));
+    await tester.pumpAndSettle();
+    expect(source.sentAttachmentIds.single, <String>[_attachmentId]);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('键盘收起后纯浏览回到缩小态，有草稿时保持展开', (tester) async {
+    final source = FakeRemoteConversationSource(
+      window: _window(conversationEvents()),
+      modelChoice: _v4ProHigh,
+    );
+    addTearDown(tester.view.resetViewInsets);
+    await tester.pumpWidget(_host(source));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(PocketComposer.inputKey));
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('推理强度'), findsOneWidget);
+
+    // 模拟键盘弹起：纯浏览（无草稿）时收起键盘应回到缩小态。
+    tester.view.viewInsets = const FakeViewPadding(bottom: 600);
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('推理强度'), findsOneWidget, reason: '键盘弹起时保持展开');
+
+    tester.view.resetViewInsets();
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('推理强度'), findsNothing, reason: '键盘收起且无草稿回到缩小态');
+
+    // 有草稿时键盘收起仍保持展开。
+    await tester.enterText(find.byKey(PocketComposer.inputKey), '写了一半');
+    await tester.pump();
+    tester.view.viewInsets = const FakeViewPadding(bottom: 600);
+    await tester.pumpAndSettle();
+    tester.view.resetViewInsets();
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('推理强度'), findsOneWidget, reason: '有草稿时保持展开');
+  });
+
+  testWidgets('聚焦后键盘尚未弹起的 metrics 抖动不会把输入卡缩回', (tester) async {
+    final source = FakeRemoteConversationSource(
+      window: _window(conversationEvents()),
+      modelChoice: _v4ProHigh,
+    );
+    addTearDown(tester.view.resetPhysicalSize);
+    await tester.pumpWidget(_host(source));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(PocketComposer.inputKey));
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('推理强度'), findsOneWidget);
+
+    // 真机上的现象：聚焦后、键盘真正弹起前，Android 还会派发一次「键盘仍不可
+    // 见」的 metrics（例如窗口尺寸抖动）。这里用尺寸变化触发同样的回调，而
+    // viewInsets 保持 0：输入卡不得因此缩回并解焦。
+    tester.view.physicalSize = const Size(2400, 1802);
+    await tester.pump();
+    tester.view.physicalSize = const Size(2400, 1800);
+    await tester.pumpAndSettle();
+
+    expect(
+      tester.widget<RemoteComposer>(find.byType(RemoteComposer)).mode,
+      PocketComposerMode.composing,
+      reason: '键盘还没起来时的 metrics 抖动不得缩回输入卡',
+    );
+    expect(find.byTooltip('推理强度'), findsOneWidget);
+    expect(find.byKey(PocketComposer.inputKey), findsOneWidget);
+  });
+
+  testWidgets('缩小态点卡片空白处也能聚焦展开并进入输入', (tester) async {
+    final source = FakeRemoteConversationSource(
+      window: _window(conversationEvents()),
+      modelChoice: _v4ProHigh,
+    );
+    await tester.pumpWidget(_host(source));
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('推理强度'), findsNothing);
+
+    // 卡片底部内边距不属于输入框：点它也应聚焦输入框并展开（真机上「点输入区
+    // 有时没反应」的兜底入口）。
+    final card = tester.getRect(find.byKey(PocketComposer.cardKey));
+    await tester.tapAt(Offset(card.center.dx, card.bottom - 4));
+    await tester.pumpAndSettle();
+
+    expect(
+      tester.widget<RemoteComposer>(find.byType(RemoteComposer)).mode,
+      PocketComposerMode.composing,
+    );
+    expect(find.byTooltip('推理强度'), findsOneWidget);
+  });
+
+  testWidgets('推理面板不依赖键盘 insets：键盘收起/再弹起仍显示滑杆，点聊天区退出', (tester) async {
+    final source = FakeRemoteConversationSource(
+      window: _window(conversationEvents()),
+      modelChoice: _v4ProHigh,
+    );
+    addTearDown(tester.view.resetViewInsets);
+    await tester.pumpWidget(_host(source));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(PocketComposer.inputKey));
+    await tester.pumpAndSettle();
+    tester.view.viewInsets = const FakeViewPadding(bottom: 600);
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('推理强度'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(PocketComposer.modelsKey), findsOneWidget);
+    expect(find.byType(ReasoningEffortSlider), findsOneWidget);
+
+    // 用户按返回键收起键盘：面板保持可见、滑杆仍在，不被踢回浏览态。
+    tester.view.resetViewInsets();
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<RemoteComposer>(find.byType(RemoteComposer)).mode,
+      PocketComposerMode.picker,
+      reason: '推理面板不因键盘收起而退出',
+    );
+    expect(find.byKey(PocketComposer.modelsKey), findsOneWidget);
+    expect(find.byType(ReasoningEffortSlider), findsOneWidget);
+
+    // 面板开着时键盘再弹起（0→>0 的又一次变化）同样不打断面板。
+    tester.view.viewInsets = const FakeViewPadding(bottom: 600);
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<RemoteComposer>(find.byType(RemoteComposer)).mode,
+      PocketComposerMode.picker,
+    );
+    expect(find.byType(ReasoningEffortSlider), findsOneWidget);
+
+    // 点聊天区退出：键盘已收起且无草稿，回到缩小态。
+    tester.view.resetViewInsets();
+    await tester.pumpAndSettle();
+    await tester.tapAt(
+      tester.getRect(find.byKey(const ValueKey('remote-transcript'))).center,
+    );
+    await tester.pumpAndSettle();
+    expect(find.byKey(PocketComposer.modelsKey), findsNothing);
+    expect(
+      tester.widget<RemoteComposer>(find.byType(RemoteComposer)).mode,
+      PocketComposerMode.browse,
+    );
   });
 }
 
