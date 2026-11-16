@@ -286,6 +286,12 @@ class PluginsController extends ChangeNotifier {
     super.dispose();
   }
 
+  /// Read the authoritative inventory, or the current not-ready state.
+  ///
+  /// Pages call this while the tree is building (`initState`). The flight and its
+  /// read start synchronously, so generation fencing still discards an old read;
+  /// only the first notification is deferred. Publishing `loading` on this stack
+  /// would mark listeners in other routes dirty during that build.
   Future<void> load({bool invalidate = false}) {
     if (_disposed) return Future.value();
     if (invalidate) {
@@ -296,7 +302,7 @@ class PluginsController extends ChangeNotifier {
     if (_load != null) return _load!;
     if (!runtime.ready) {
       _fresh = false;
-      publish();
+      scheduleMicrotask(publish);
       return Future.value();
     }
     // Publish only after installing the flight, so a listener cannot start a
@@ -330,7 +336,9 @@ class PluginsController extends ChangeNotifier {
 
   Future<void> _readLoop() async {
     loading = true;
-    publish();
+    // The read below is still started on the caller's stack; microtasks run
+    // after the frame's build phase, where notifying is safe.
+    scheduleMicrotask(publish);
     do {
       _reload = false;
       final current = ++generation;
