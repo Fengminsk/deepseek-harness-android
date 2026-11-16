@@ -221,7 +221,12 @@ function normalizeOrigin(origin: string): string {
   if (url.username !== '' || url.password !== '') {
     throw new Error('配对 origin 不能包含用户名或密码。')
   }
-  return `${url.origin}${url.pathname.replace(/\/+$/u, '')}`
+  // WHATWG URL 会把 wss 的默认端口 443 从 origin/host 里归一化掉，而配对链接原样使用
+  // 该 origin；App 对缺失端口按 4777 补全，会连到错误端口。部署者显式写了 :443
+  // （HTTPS 反代/域名入口）时必须保留。
+  const explicit443 = /:443\/?$/u.test(origin.trim())
+  const base = explicit443 && url.port === '' ? `wss://${url.hostname}:443` : url.origin
+  return `${base}${url.pathname.replace(/\/+$/u, '')}`
 }
 
 /**

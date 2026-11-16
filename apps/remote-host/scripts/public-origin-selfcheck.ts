@@ -4,6 +4,10 @@
 // 运行：node --import tsx/esm apps/remote-host/scripts/public-origin-selfcheck.ts
 
 import { normalizePublicOrigin } from '../src/index.ts'
+import { pairUrl } from '../src/pairing.ts'
+
+const INSTANCE_ID = 'a'.repeat(64)
+const TOKEN = 'b'.repeat(43)
 
 interface Case {
   readonly name: string
@@ -56,4 +60,33 @@ if (failures.length > 0) {
   process.exitCode = 1
 } else {
   console.log(`\nPASS  ${passed}/${cases.length} 项全部通过（显式 443 保留 + 合法性校验）`)
+}
+
+// 配对链接生成：normalizePublicOrigin 保留了 :443，pairUrl 也必须保留，否则 App 会按
+// 4777 补全端口，HTTPS 反代（域名:443）入口连不上。
+const pairCases: readonly { readonly name: string; readonly origin: string; readonly marker: string }[] = [
+  { name: '显式 443 保留到配对链接', origin: 'wss://pc.example.com:443', marker: 'wss://pc.example.com:443#' },
+  { name: '默认端口省略时不补 443', origin: 'wss://pc.example.com', marker: 'wss://pc.example.com#' },
+  { name: 'IPv6 显式 443 保留', origin: 'wss://[::1]:443', marker: 'wss://[::1]:443#' },
+  { name: '非默认端口保留', origin: 'wss://pc.example.com:8443', marker: 'wss://pc.example.com:8443#' },
+]
+
+let pairPassed = 0
+const pairFailures: string[] = []
+for (const testCase of pairCases) {
+  const link = pairUrl(testCase.origin, INSTANCE_ID, TOKEN)
+  if (link.startsWith(testCase.marker) && link.endsWith(`#instance=${INSTANCE_ID}&token=${TOKEN}`)) {
+    pairPassed += 1
+    console.log(`PASS  ${testCase.name}：${JSON.stringify(testCase.origin)} → ${link.slice(0, link.indexOf('#'))}#…`)
+    continue
+  }
+  pairFailures.push(`${testCase.name}：${JSON.stringify(link)} 未以 ${JSON.stringify(testCase.marker)} 开头`)
+}
+
+if (pairFailures.length > 0) {
+  for (const failure of pairFailures) console.error(`FAIL  ${failure}`)
+  console.error(`\nFAIL  ${pairFailures.length}/${pairCases.length} 项配对链接端口检查失败`)
+  process.exitCode = 1
+} else if (process.exitCode !== 1) {
+  console.log(`PASS  ${pairPassed}/${pairCases.length} 项配对链接端口检查通过`)
 }
