@@ -652,7 +652,9 @@ class _SessionTerminalViewState extends State<SessionTerminalView>
   Timer? polling, resizeTimer, cursorTimer;
   bool reading = false, sending = false, closing = false, resizing = false;
   bool visible = true;
-  bool cursorPhase = true;
+  /// 光标闪烁相位。用 [ValueNotifier] 而不是 state 字段：只有光标所在行依赖它，
+  /// 每次闪烁都 setState 会让整页（含所有终端行）重建，是终端输出的主要构建成本之一。
+  final ValueNotifier<bool> cursorPhase = ValueNotifier<bool>(true);
   bool interactiveInput = true, inputDeliveryUncertain = false;
   bool enterAfterInput = false;
   String display = '', state = 'starting';
@@ -730,7 +732,8 @@ class _SessionTerminalViewState extends State<SessionTerminalView>
           screenView?.cursorBlink != true) {
         return;
       }
-      setState(() => cursorPhase = !cursorPhase);
+      // 只通知依赖光标相位的行，不触发整页重建。
+      cursorPhase.value = !cursorPhase.value;
     });
     unawaited(read());
   }
@@ -869,7 +872,7 @@ class _SessionTerminalViewState extends State<SessionTerminalView>
   void didChangeAppLifecycleState(AppLifecycleState next) {
     visible = next == AppLifecycleState.resumed;
     if (visible) {
-      setState(() => cursorPhase = true);
+      cursorPhase.value = true;
       unawaited(read());
     }
   }
@@ -894,7 +897,7 @@ class _SessionTerminalViewState extends State<SessionTerminalView>
         state = 'unconfirmed';
         sending = false;
         screenView = null;
-        cursorPhase = true;
+        cursorPhase.value = true;
         display = '';
         operationError = null;
         error = widget.runtime.ready ? '正在确认终端状态…' : '服务未连接，终端状态待确认。';
@@ -961,7 +964,7 @@ class _SessionTerminalViewState extends State<SessionTerminalView>
         setState(() {
           revision = nextRevision;
           screenView = nextView;
-          if (resetCursorPhase) cursorPhase = true;
+          if (resetCursorPhase) cursorPhase.value = true;
           display = result['display'] is String
               ? result['display'] as String
               : '';
@@ -1190,6 +1193,7 @@ class _SessionTerminalViewState extends State<SessionTerminalView>
     polling?.cancel();
     resizeTimer?.cancel();
     cursorTimer?.cancel();
+    cursorPhase.dispose();
     pendingKeys.clear();
     activeMouseButtons.clear();
     lastMouseCells.clear();
@@ -1292,19 +1296,30 @@ class _SessionTerminalViewState extends State<SessionTerminalView>
                   }
                   final line = index - 4;
                   final view = screenView!;
-                  final content = TerminalScreenLine(
+                  final lineData = view.lines[line];
+                  // 只有含光标单元格的行依赖闪烁相位；其它行固定 running=false，
+                  // 使 530ms 一次的相位切换只重建光标行，而不是整页所有终端行。
+                  final hasCursor = lineData.runs.any((run) => run.cursor);
+                  final cursorRunning = state == 'running' && view.cursorVisible;
+                  TerminalScreenLine buildLine(bool phase) => TerminalScreenLine(
                     key: ValueKey('terminal-line-$line'),
-                    line: view.lines[line],
+                    line: lineData,
                     running:
-                        state == 'running' &&
-                        view.cursorVisible &&
-                        (!view.cursorBlink || cursorPhase),
+                        hasCursor &&
+                        cursorRunning &&
+                        (!view.cursorBlink || phase),
                     palette: view.palette,
                     foreground: view.foreground,
                     background: view.background,
                     cursorColor: view.cursorColor,
                     cursorStyle: view.cursorStyle,
                   );
+                  final content = hasCursor && view.cursorBlink
+                      ? ValueListenableBuilder<bool>(
+                          valueListenable: cursorPhase,
+                          builder: (context, phase, _) => buildLine(phase),
+                        )
+                      : buildLine(true);
                   if (!view.sgrMouse || view.mouseTracking == 'off' ||
                       line < view.lines.length - view.rows) {
                     return content;
