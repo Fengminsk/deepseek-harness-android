@@ -3,18 +3,22 @@
 > 这份文件是**唯一的入口**：新会话、新 Agent、或工作区被还原之后，先读它再动手。
 > 每完成一轮交付，在 §9 追加一条记录；状态变化就改 §3，不要把过时结论留在正文里。
 >
-> 关键事实（2026-11-16 03:30）：**支持多种连接 DSH 的方式**已落地并完成真机验收：
-> ① 粘贴配对链接（原有）；② **扫码配对**（系统相机 intent + ZXing 3.5.3 解码，自动填入链接走同一配对流程，
-> 真机解码链路 PASS）；③ **局域网自动发现**（宿主 UDP 4778 广播应答，App「搜索局域网」一键配对；
-> 宿主侧 PC 探测 PASS，真机因当前 Wi-Fi AP 客户端隔离未拿到广播，UI/空态/回退已在真机验证）；
-> ④ **USB/adb reverse**（宿主打印回环配对链接，`adb reverse tcp:4777 tcp:4777` 后经 127.0.0.1 配对并连接，
-> 真机 PASS：host 日志 `peer/remoteAddress=127.0.0.1`）；⑤ **手动地址覆盖**（完整链接 + 可达地址，供反代/USB）。
-> 多台电脑：设备胶囊条显示电脑名与状态、切换失败保留 failed + 重试/切换、冷启动自动连上次成功设备（真机 PASS）、
-> 菜单「移除已配对电脑」（仅本机删除，真机 PASS）。P5 六批与 B3/③/附件真机验收均已通过。
-> P6 进度：可达性文档、终端二维码（自检 16/16）、发现协议文档；后台通知与 PC 配对界面仍待做。
-> 下一步见 §4。
+> 关键事实（2026-11-16 12:35）：**支持多种连接 DSH 的方式**已落地并完成真机验收：
+> ① 粘贴配对链接（原有）；② **扫码配对**（系统相机 intent + ZXing 3.5.3 解码，真机解码链路 PASS）；
+> ③ **局域网自动发现**（宿主 UDP 4778 广播应答，App「搜索局域网」一键配对；宿主侧 PC 探测 PASS，
+> 真机因 Wi-Fi AP 客户端隔离未拿到广播，UI/空态/回退已在真机验证）；④ **USB/adb reverse**（真机连接
+> PASS：host 日志 `peer/remoteAddress=127.0.0.1`）；⑤ **手动地址覆盖**（完整链接 + 可达地址，供反代/USB）。
+> 多台电脑：设备胶囊显示电脑名与状态、切换失败保留 failed + 重试/切换、冷启动自动连上次成功设备、
+> 菜单「移除已配对电脑」（均真机 PASS）。
+> **P6 第三批完成**：宿主按协议 §8 发送 `remote.taskCompleted/approvalPending/sessionChanged` + App 系统通知
+> （退后台弹、前台抑制、断开清理）并支持**点击通知直达远程会话**；**PC 配对设置页**（宿主内嵌回环 HTTP：
+> 二维码/倒计时/USB 链接/设备列表/撤销，浏览器验收）；**App 拨号超时 12s**；**wss 443 修复**；
+> 通知/配对界面/分发评估见 `pc-pairing-distribution.md`。
+> **新增：远程会话「会话洞察」**——悬浮任务卡片（可展开 todos）+ 底部统计条（轮/步、tok/缓存命中%、
+> 上下文%，点按详情弹层），数据来自 `session.projections`，已真机验证（§3.2.15）。
+> 下一步见 §4（当前优先：修复 App stream limit 泄漏、PC 分发决策、60fps 优化暂停中）。
 >
-> 最后更新：2026-11-16 03:30（lead）
+> 最后更新：2026-11-16 12:35（lead）
 > 分支 `android`，最近提交见 `git log --oneline -10`
 > 真机：`8a044bba`（adb 在线，OnePlus6 / Android 11；当前环境：USB 连接 + adb reverse，
 > 手机 Wi-Fi 192.168.5.140 与 PC 192.168.5.21 之间被 AP 客户端隔离，局域网发现/直连真机验证受阻）
@@ -113,7 +117,8 @@ cd apps/android
 | P4a 侧栏入口与组件 | 完成（含重复进入修复与回归测试） | `test/destination_navigation_test.dart` |
 | P4b 远程页面 | 完成：真实设备/项目/会话 + 真实会话页（读窗口/发消息/流式/审批/模型选择/变更/归档/终端入口） + 首页搜索/新建/归档/电脑文件/设置 | `remote_*` 数据源与页面 + 测试；真机证据见 §3.3 |
 | P5 能力补齐 | **六批完成**：审批与模型选择、搜索、新建、归档、电脑文件、远程设置、workspace diff、归档动作、能力三态、模型路由兜底、远程终端、附件上行（含 debug 旁路真机验收）、输入区 `+`/方案模式、模型路由前置提示（C3 真机）、**B3 审批预设（真机切换通过）**、首页输入条文案 + goal 行置灰 | §3.3 `p5-*`/`p5b-*`/`p5c-*` 截图；§3.2.2–§3.2.8 |
-| P6 可达性 | **第二批完成**：扫码配对（相机+ZXing，真机解码 PASS）、局域网自动发现（宿主 UDP 4778 + App 搜索/一键配对，PC 探测 PASS）、USB/adb reverse（真机连接 PASS）、手动地址覆盖、多台电脑管理与切换（真机 PASS）；可达性文档、终端二维码、后台通知设计/取证 | 待做：App 扫码真机相机拍照验收（需人手持）、§8 通知实现、PC 配对界面、PC 分发。见 §3.2.10、`reachability.md`、`discovery.md` |
+| P6 可达性 | **第三批完成**：扫码配对（真机解码 PASS）、局域网自动发现（PC 探测 PASS）、USB/adb reverse（真机连接 PASS）、手动地址覆盖、多台电脑管理与切换（真机 PASS）、后台通知步骤 (1)+(2)（宿主 §8 发送 + App 系统通知/点击深链，真机验证）、PC 配对设置页（浏览器验收）、App 拨号超时、wss 443 修复 | 待做：真机拍照扫码、无隔离网络发现直连、approvalPending 真机链路、步骤 (3) 前台服务持 WS、PC 分发决策。见 §3.2.10–§3.2.14、`reachability.md`、`discovery.md`、`pc-pairing-page.md` |
+| 会话洞察 UI | **完成（真机验证）**：远程会话页悬浮任务卡片（可展开 todos）+ 底部统计条（轮/步、tok 与缓存命中%、上下文%，点按详情弹层），数据来自 `session.projections` 四类投影，事件驱动刷新 | `remote_session_insights.dart`、`remote_todo_card.dart`、`remote_stats_bar.dart`；§3.2.15 |
 
 ### 3.2 已核验的通过项（本轮）
 
@@ -489,9 +494,31 @@ and validated: remote.taskCompleted×1`）。
 上」，用户可在设备胶囊条手动切换后从列表打开。要做精确归位需要宿主在通知里带来源设备标识（协议变更，
 不在本轮范围）。
 
+**真机复验修复（lead 验收回馈，2026-11-16 11:37–11:52）**：
+
+1. **冷启动深链抢跑连接**：原实现页面一挂载就自动连接，而设备令牌经本机凭据服务读取
+   （`credentials.read`），`runtime.ready` 之前 AgentService 直接回「运行时正在启动」，界面因此先落在
+   「本机凭据服务拒绝了这次操作…」失败态。现 `RemoteDshPage` 监听 `widget.runtime`：`runtime.ready`
+   之前不发起自动连接、也不消耗「只自动连一次」的机会，就绪后补一次 `_load` 完成自动连接；设备胶囊 /
+   失败页「重试」/「添加连接」在本机服务启动期间先给可见提示，不把连接层错误暴露给用户。
+2. **连接失败清空了 pending**：原失败分支把 pending 清空，用户点「重试」连上后停在首页、不再打开通知
+   会话。现 pending 只在**成功打开**、**明确不存在**（已归档/删除/属于别的电脑）或**离开页面**时清空；
+   连接失败/本地运行时就绪前/读取失败都保留，失败原因按原因键去重、只弹一次 SnackBar，重试成功后仍会
+   打开通知里的会话。新增 3 项 widget 用例覆盖：运行时未就绪→ready、失败→重试成功打开、pending 只
+   消费一次。
+
+**真机复验（2026-11-16 11:48–11:49，OnePlus6 / Android 11，debug APK 重装后）**：
+
+| 项 | 命令/操作 | 结果 |
+|---|---|---|
+| 冷启动深链 | `am force-stop` 后 `am start -a …OPEN_REMOTE_NOTIFICATION -f 0x24000000 --es pocket.route remote --es pocket.sessionId session-1bada031-… --es pocket.remoteKind taskCompleted --es pocket.remoteTag turn:3` | **PASS**：约 8 s 自动进入该会话页（标题 `OK`，副标题 `DESKTOP-DCVQRNS · deepseek-harness-android`），无「凭据服务拒绝/运行时正在启动」，不再停在远程首页 |
+| 无效 sessionId | 同上，sessionId 换成不存在的 `session-does-not-exist-…` | **PASS**：停在远程首页（`已连接「DESKTOP-DCVQRNS」` + 项目列表），底部 SnackBar「会话已归档或不在该电脑上。」 |
+
+证据：两张 adb 截图（冷启动会话页 / 无效会话首页+SnackBar）随本轮任务报告提交，未入库。
+
 **验证（原样）**：`flutter analyze` 11 条既有告警；Kotlin `compileDebugKotlin`/`compileReleaseKotlin`
 `BUILD SUCCESSFUL`（exit 0）；新增 `test/remote_notification_navigation_test.dart` 15 项、扩展
-`test/remote_dsh_home_page_test.dart` 5 项（合计 30 项）全通过；相关既有测试
+`test/remote_dsh_home_page_test.dart` 5+3 项（该文件 33 项）全通过；相关既有测试
 （remote_notifications / approval_navigation / destination_navigation / task_history_recovery 35 项、
 main_chat_flow / widget / remote_connection / remote_conversation_navigation / remote_dsh_archived 56 项）全通过。
 
@@ -635,6 +662,33 @@ P5 第一批（审批、模型选择、搜索、新建、归档）同样在真�
 exit 0；oxlint 改动 3 文件 0 error；宿主冒烟 **14/14**。本轮未截图（[pc-pairing-page.md](pc-pairing-page.md) §2 位置已定），真机/浏览器验收
 （页面扫码配对 → 设备列表 → 撤销 → 自动重开）由 lead 在 4777 宿主上补；命令见
 [pc-pairing-page.md](pc-pairing-page.md) §7.2。
+
+#### 3.2.15 会话洞察：悬浮任务卡片 + 底部统计条（P6 后新增，真机验证）
+
+**动机**：用户对照 DSH Web GUI 截图要求远程会话页也展示「悬浮/可展开的任务」以及「底部步数、缓存命中、上下文占用」，但**沿用 App 自己的视觉语言**（glass/Pocket 组件，中文），不照搬 Web 样式。
+
+- **数据层**：新 `apps/android/lib/remote_session_insights.dart` 从 `session.projections` 的 `values` 解析四类投影
+  （真机探针确认 values 有 23 个 key，目标 4 个全部存在）：`todos`（`TodoItem[]|null`）、`sessionStats`
+  （turns/steps/llmMs/toolMs/ttftMs/decodeMs/decodeTokens）、`tokenUsage`（uncachedInputTokens/cacheReadTokens/
+  cacheWriteTokens/outputTokens）、`contextPressure`（pressureTokens/projectedTokens/contextWindow）。
+  派生缓存命中率对齐 Web `StatsPills`（整数%，四舍五入到 100% 时提高精度保持 <100 的真实性）、上下文占用
+  `round(used/window*100)`；任何缺失/坏类型都不抛，只隐藏对应读数。
+- **刷新**：`RemoteConversationSource.readInsights()` 默认实现复用 `session.projections`；live source 在首屏、
+  重连、reload、`turn/start`/`turn/end`/`todo/write` 事件后单飞重读（无轮询、内容不变不推、失败保留上次读数）；
+  页面持有 `_insights` 状态。
+- **UI**：新 `remote_todo_card.dart`（收起行「任务 + 已完成/进行中/待处理」，展开为状态图标+文本清单、已完成划掉、
+  限高滚动、展开状态由页面持有且轮次刷新不收起）与 `remote_stats_bar.dart`（输入区下方一行：`轮 X · 步 Y`、
+  `N tok · 缓存命中 P%`、`上下文 Q%`，逐段缺失隐藏、一行放不下折叠成胶囊；点按 `showRemoteStatsSheet`
+  查看进度与用时/TTFT/TPS、Token 四桶与合计、上下文口径）。只在 insights 变化时重建，无逐帧动画。
+- **真机验收**（OnePlus6 / Android 11，debug APK + 4777 宿主，先让会话 `Write approval file with pwsh`
+  用 `todo_write` 建 alpha/beta/gamma）：收起「任务 待处理 3」、展开三项「待处理：alpha/beta/gamma」；
+  统计条「轮 16 · 步 25 · 481K tok · 缓存命中 96% · 上下文 2%」；详情弹层显示轮次/步数/模型用时/工具调用用时/
+  首 token 平均 1.9 秒/输出速度 218 tok/s 与 token 四桶（合计 481,082 tok）。证据
+  `.cache/remote-device/p7-insights-collapsed.png`、`p7-insights-todo-expanded2.png`、`p7-insights-stats-sheet.png`。
+- **测试**：insights 解析 19 项、todo/stats widget 6+7 项、页面集成 61 项；全量 `flutter test` 1982 项通过；
+  `flutter analyze` 11 条基线。
+- **顺带发现并修复中的缺陷**：真机页出现「App stream limit reached」——宿主 `AppStreams` 以固定 owner
+  `remote` 跨连接累积、连接关闭未清理，多次重连后触顶；修复见 §4 新条目。
 
 ### 3.4 远程宿主为什么能跑起来（三个非显然事实）
 
@@ -878,6 +932,42 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
 ---
 
 ## 9. 变更日志（append-only，最新在最上面）
+
+### 2026-11-16 12:35 · lead（会话洞察 UI：悬浮任务卡片 + 底部统计条，真机验证）
+
+- **新需求落地**：远程会话页接入 `session.projections` 四类数据（`todos`/`sessionStats`/`tokenUsage`/
+  `contextPressure`，真机探针确认 values 23 个 key 中目标 key 全部存在）；新增 `remote_session_insights.dart`
+  容错解析与派生（缓存命中率对齐 Web `StatsPills`、上下文占用对齐 `ContextMeter`），live source 在首屏/重连/
+  reload/轮次边界/`todo/write` 后单飞刷新（无轮询）；新增 `RemoteTodoCard` 悬浮任务卡片与 `RemoteStatsBar`
+  统计条 + 统计详情弹层，沿用 App 的 glass/Pocket 视觉语言（用户要求「UI 依旧采用我们的」）。
+- **真机验收**：会话 `Write approval file with pwsh`（已用 todo_write 建 alpha/beta/gamma）显示收起「待处理 3」、
+  展开三项、统计条「轮 16 · 步 25 · 481K tok · 缓存命中 96% · 上下文 2%」、详情弹层含 TTFT 1.9 秒/TPS 218 与
+  Token 四桶（合计 481,082 tok）；证据 `p7-insights-*.png`。
+- **发现缺陷**：真机页出现 `App stream limit reached` 横幅——宿主 `AppStreams` 固定 owner `remote` 跨连接累积、
+  关闭未清理，多次重连后触顶 32；已立项修复（§4 新条目）。
+- 验证：全量 `flutter test` **1982 项通过**；`flutter analyze` 11 条基线。
+
+### 2026-11-16 12:10 · lead（P6 补强：PC 配对设置页、通知深链、拨号超时、wss 443）
+
+- **PC 配对设置页**（P6 A1）：宿主内嵌回环 HTTP 页（二维码/倒计时/USB 链接/设备列表/撤销/重开窗口），
+  Host+CSRF+Origin 防护；selfcheck 24/24；浏览器验收（headless Edge 截图 `pairing-page-lan.png`、HTTP 200/
+  安全头/SVG/CSRF/reopen 303/Host 403/revoke 触发 device-revoked）。
+- **通知点击深链**：系统通知点击直达对应远程会话；修复冷启动凭据时序与失败清空 pending 两个真机缺陷；
+  真机复验冷启动 8s 进会话、无效 sessionId 回首页+提示。
+- **拨号超时**：12s 终止性失败（`remote/connect-timeout`），不可达电脑快速显示失败+重试。
+- **wss 443**：`normalizePublicOrigin` 保留显式 `:443`，selfcheck 13/13。
+
+### 2026-11-16 11:52 · app-notify-deeplink（修复冷启动深链两处真机缺陷）
+
+- **冷启动抢跑连接**：远程页在 `runtime.ready` 之前不发起自动连接（设备令牌经本机凭据服务读取，未就绪
+  会被拒「运行时正在启动」），监听本机运行时 ready 后补连；设备胶囊/失败页重试/添加连接在服务启动期间
+  先给可见提示。
+- **连接失败不再清空 pending**：pending 只在成功打开、明确不存在（已归档/删除/属于别的电脑）或离开页面
+  时清空；失败原因按原因去重只提示一次，用户重试连上后仍会打开通知里的会话。
+- 测试：`test/remote_dsh_home_page_test.dart` 新增 3 项（运行时未就绪→ready、失败→重试成功、pending 只
+  消费一次），该文件 33 项全绿；`flutter analyze` 11 条基线。详见 §3.2.13「真机复验修复」。
+- **真机复验 PASS**（重装 debug APK）：冷启动深链 ~8 s 自动进入目标会话页；无效 sessionId 停在远程首页
+  并显示「会话已归档或不在该电脑上。」SnackBar。
 
 ### 2026-11-16 11:30 · app-notify-deeplink（P6 后台通知③：点击深链打开远程会话）
 
