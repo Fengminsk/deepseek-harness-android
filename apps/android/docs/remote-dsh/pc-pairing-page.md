@@ -1,6 +1,7 @@
 # 远程 DSH · 本机配对设置页（宿主内嵌回环页面）
 
-状态：2026-11-16，**已落地并自检通过**（`apps/remote-host/src/pairing-page.ts`）；浏览器/真机截图验收待补（见 §3）。
+状态：2026-11-16，**已落地并通过自检 + 浏览器验收**（`apps/remote-host/src/pairing-page.ts`）；
+页面截图 `pairing-page-lan.png` 已补（见 §2）；真机扫码配对链路仍由 §3 的常规配对验收覆盖。
 读者：在 PC 上给手机配对/撤销设备的用户、排障的 Agent、后续改配对 UI 的施工者。
 
 相关：[pc-pairing-distribution.md](pc-pairing-distribution.md)（§1 方案评估与决策、§2 分发）、[HANDOFF.md](HANDOFF.md)（§3.2.14、§4、§9）、[pairing-qr-design.md](pairing-qr-design.md)（终端二维码与配对输入路线）、[discovery.md](discovery.md)（UDP 局域网发现）、[protocol.md](protocol.md)（§2 配对、§8.4 撤销）。
@@ -43,7 +44,8 @@ cordis.yml 覆盖示例（不改默认值时不需要写）：
 
 拍摄方法：用真实 profile 启动宿主（HANDOFF §1），PC 浏览器打开日志里的 URL，直接截屏；点「撤销」确认后再截一张（宿主自动重开窗口 + 列表出现已撤销行）。验收后把文件名补进 HANDOFF §3.2.14/§9。
 
-本轮未截图：验证环境不跑真实宿主（lead 的 4777 在跑，本任务禁止占 4777/4778），页面渲染与防护契约由 `pairing-page-selfcheck.ts` 的 24 项断言覆盖（见 §8）。
+**2026-11-16 已补**：`pairing-page-lan.png`（1000×1600，窗口打开：宿主信息/instance 前缀/origin/发现状态、二维码、明文链接、USB `adb reverse` 段、设备表含已撤销行与撤销按钮）——用 headless Edge 打开真实 4777 宿主的 `http://127.0.0.1:4780/` 截图。浏览器验收同时确认：`GET /` 200 + `nosniff`/`no-store`/无 CORS；`/api/state` 返回窗口与设备表；带 CSRF 的 `POST /pair/reopen` → 303（宿主日志 `pairing-page-action result=ok`）；伪造 Host → 403；对旧「M1 探针」设备 `POST /devices/revoke` → 303，宿主日志 `device-revoked`，设备列表该行变为「已撤销」。
+USB/expired 两张未单独截：USB 段与窗口打开态在同一页（已包含在 `pairing-page-lan.png`），过期态需等 15 分钟窗口到期（自检已覆盖窗口关闭时无二维码/无链接的契约）。
 
 ## 3. 使用步骤
 

@@ -442,7 +442,7 @@ deviceRevoked 全部经 `_closeTransport()` 统一 `clear()`（清去重表 + `c
 「任务授权与提问」（IMPORTANCE_HIGH，幂等创建），notification tag = `pocket-remote:<kind>:<协议 id>`、
 id 21/22；`cancelAll()` 只取消 `pocket-remote:` 前缀的项（不误清本地 `pocket-completed:`/`pocket-interaction:`）；
 点击 Intent 打开 `MainActivity`（`pocket.route=remote`、`pocket.sessionId`、`pocket.remoteKind`、`pocket.remoteTag`，
-远程深链路由后续再接）；Android 13+ 未授权/渠道关闭/通知总开关关闭时静默降级，不新增权限弹窗。
+**点击深链已接**，实现与失败分支见 §3.2.13）；Android 13+ 未授权/渠道关闭/通知总开关关闭时静默降级，不新增权限弹窗。
 
 **真机验收（OnePlus6 / Android 11，debug APK + 4777 宿主重启后）**：
 
@@ -452,7 +452,7 @@ id 21/22；`cancelAll()` 只取消 `pocket-remote:` 前缀的项（不误清本�
 | N2 前台抑制 | 前台再发一轮（OK2），宿主发送 turn 13/14 通知 | 宿主日志有 `remote-notify-sent`，但通知列表**只有** N1 的 tag（前台不弹，页面线正常显示回复） | 同上 |
 | N3 清理 | 返回键退出远程 DSH 页（连接 `client-closed` 关闭） | 所有 `pocket-remote:*` 通知被 `cancelAll()` 清除，tag 列表为空 | 同上 |
 | N4 审批通知 | 需要模型发起真实审批（本轮尝试 read-only 预设下执行命令、工作区外写文件均被沙箱直接拒绝/工具报错，未产生审批交互） | **未在真机触发**；映射与渲染由宿主 selfcheck（§3.2.11）与 App 单元测试（23 项）覆盖 | — |
-| N5 点击通知 | 点击完成通知 | 打开 App（远程深链未接，Intent 已带 sessionId/tag） | 未截图（通知已在 N3 清理） |
+| N5 点击通知 | 点击完成通知 | **已接远程会话深链**（§3.2.13）：打开对应远程会话；会话已归档/不在该电脑上、连接失败或无配对时落到远程首页并给出可见提示。本轮由单测覆盖，真机点击验收待 lead（命令见 §3.2.13） | 未截图（通知已在 N3 清理） |
 
 **已知边界**：WS 仍由 Flutter 进程持有（未上前台服务），按 Home 后只在进程存活期间能收到并弹通知；
 进程被杀/长时间后台会漏。真正的后台送达需要评估文档 §3 的前台服务架构（
@@ -463,6 +463,56 @@ id 21/22；`cancelAll()` 只取消 `pocket-remote:` 前缀的项（不误清本�
 宿主 e2e **23/23**（send 项严格断言 `remote.taskCompleted matches §8.2 (292 bytes, title=22 chars,
 turn=5, truncated=false); page line task.completed observed`，cleanup 复验 `remote.* frames observed
 and validated: remote.taskCompleted×1`）。
+
+#### 3.2.13 P6 后台通知③：点击通知深链打开对应远程会话
+
+**平台层**：`MainActivity` 在 `configureFlutterEngine`（冷启动，含进程被杀后由通知拉起）与 `onNewIntent`
+（App 存活）里用 `RemoteNotifications.takeLaunch` 校验并记录 `pocket.route=remote` + `pocket.sessionId` +
+`pocket.remoteKind` + `pocket.remoteTag`。只接受本类 `OPEN_ACTION`、`route=remote`、非空且 ≤128 字符的
+`sessionId` 与两种已知 kind；未知/损坏 extra 丢弃，取过的 extra 立即从 Intent 移除（Activity 重建不会
+重复投递）。新方法 `dsh/runtime` → `notifications.launch.take` 返回 pending 的 JSON（无 pending 回 null），
+**取一次即清空**；本地通知的 `session`/`tasks`/`approval` 路由仍由既有 `deliverNavigation` 经 `dsh/events`
+分发，未改行为。
+
+**Dart**：新 `remote_notification_navigation.dart`（`RemoteNotificationLaunch.parse` 严格解析 +
+`RemoteNotificationLaunchSource` 抽象 + `RemoteNotificationNavigation` 消费器）；`main.dart` 在 App 启动
+首帧后与每次 `resumed` 调 `consume()`（根页面未挂载时保留 pending，下次重试；读取失败静默降级）。
+`RemoteDshPage` 新增 `notificationLaunch`：连接就绪且项目列表读完后按 `sessionId` 走既有
+`_openSessionById` 打开会话（同一目的地标识，不叠层）。失败分支全部留在远程首页且可见：会话不在当前
+列表 → SnackBar「会话已归档或不在该电脑上。」；连接失败 → 既有失败态 + 重试/切换设备 + SnackBar；本机
+无已配对电脑 → 配对空态 + SnackBar；多台电脑且无「上次连接」记录 → 不猜测设备，提示先选择电脑；
+读取设备表/会话列表失败 → 页面读取失败态 + SnackBar，不把用户留在 loading。
+
+**设备归属限制**：协议 §8.2/§8.3 的通知负载没有来源 `deviceId`，多台已配对电脑时 App 无法判断通知来自
+哪一台。深链因此与首页冷启动一致：只连「上次成功连接」的电脑（没有记录时恰好一台才连），不为了猜测
+自动切换设备；若通知实际来自另一台电脑，会落在当前这台电脑的远程首页并提示「会话已归档或不在该电脑
+上」，用户可在设备胶囊条手动切换后从列表打开。要做精确归位需要宿主在通知里带来源设备标识（协议变更，
+不在本轮范围）。
+
+**验证（原样）**：`flutter analyze` 11 条既有告警；Kotlin `compileDebugKotlin`/`compileReleaseKotlin`
+`BUILD SUCCESSFUL`（exit 0）；新增 `test/remote_notification_navigation_test.dart` 15 项、扩展
+`test/remote_dsh_home_page_test.dart` 5 项（合计 30 项）全通过；相关既有测试
+（remote_notifications / approval_navigation / destination_navigation / task_history_recovery 35 项、
+main_chat_flow / widget / remote_connection / remote_conversation_navigation / remote_dsh_archived 56 项）全通过。
+
+**真机验收（lead）**：debug APK + 已配对宿主，先进入远程会话发一条消息并立即 Home 退后台，等系统通知
+出现后二选一：
+
+1. **真实点按**（推荐，验证 PendingIntent 全链路）：在通知栏点该通知，App 回到前台后应直接进入那条
+   远程会话（目的地面包屑为会话标题，不是远程首页）。
+2. **用相同 Intent 模拟**（可复现；进程被杀=冷启动，App 存活=onNewIntent）：
+   ```powershell
+   # 冷启动：先杀进程，再带通知 extra 拉起（会话应自动连接并打开）
+   adb shell am force-stop com.minnnng.dsh_android
+   adb shell am start -n com.minnnng.dsh_android/.MainActivity `
+     -a com.minnnng.dsh_android.OPEN_REMOTE_NOTIFICATION -f 0x24000000 `
+     --es pocket.route remote --es pocket.sessionId <sessionId> `
+     --es pocket.remoteKind taskCompleted --es pocket.remoteTag turn:3
+   # App 存活：先打开 App 并 Home 退后台，再执行同一条 am start（走 onNewIntent）
+   ```
+   失败分支验收：把 `<sessionId>` 换成已归档/不存在的 id → 停在远程首页并出现「会话已归档或不在该电脑
+   上。」SnackBar；断开电脑网络后再点通知 → 远程首页失败态 + 「通知里的会话没能打开」SnackBar；
+   移除全部已配对电脑后模拟 → 远程首页配对空态 + 可见提示。
 
 
 
@@ -554,6 +604,38 @@ P5 第一批（审批、模型选择、搜索、新建、归档）同样在真�
 
 已知的 M1 范围外残留（见 §4）：附件上行 App 侧收尾与真机、输入区其余控件、审批预设、P6。
 
+#### 3.2.14 P6 A1：宿主内嵌 PC 配对设置页（回环 HTTP + 二维码 + 设备管理）
+
+**实现**：新 `apps/remote-host/src/pairing-page.ts`（零新依赖，`node:http`）：`PairingPageServer` 只绑
+`127.0.0.1`（`Config.pagesPort` 默认 4780，0=临时端口），服务端渲染单页 HTML + `GET /api/state` JSON：
+配对窗口状态/剩余秒数/过期时间、`encodeQrMatrix` → 内联 SVG 二维码、明文配对链接、USB
+`adb reverse tcp:<port> tcp:<port>` + `usbPairUrl`、已配对设备（label/id 前 8 位/createdAt/lastSeenAt/
+状态）、「重新打开配对窗口」与每行「撤销」（303 → `/`）。`apps/remote-host/src/index.ts` 接线：
+`RemotePairingTicket` 增加 `usbPairUrl`（评估 §1.2 的接口增补 1）、`RemoteHostHandle.pages()` 数据源
+（当前窗口/重开/设备列表/撤销/宿主身份）、`apply()` 在服务挂载后 start、effect 卸载时 stop；
+`Config` 新增 `pagesEnabled`（默认 true，schema 校验）与 `pagesPort`（默认 4780）。页面端口绑定失败
+只记 `pairing-page-failed` warn，宿主照常启动（与 UDP 发现同一降级语义）。
+
+**安全**：只绑回环；所有请求校验 `Host` ∈ {`127.0.0.1:<port>`, `localhost:<port>`}（DNS rebinding）；
+带 `Origin` 的请求必须同源（无 CORS 头）；POST 必须带进程启动时随机 CSRF token（隐藏表单字段，
+`timingSafeEqual`，缺/错/重复 403）；`nosniff` + `no-store` + CSP（`default-src 'none'`、`connect-src
+'self'`、`frame-ancestors 'none'`）+ `X-Frame-Options: DENY`；设备名 HTML 转义；JSON 只含
+`DeviceSummary`（无令牌摘要）；token 只在窗口打开期间渲染/返回。日志 `pairing-page-ready`（URL）、
+`pairing-page-failed`、`pairing-page-action`（action/method/result）不含 token 与 CSRF。威胁模型
+（同机其它进程可读页面/日志属已接受、不要反代暴露本页）写在 [pc-pairing-page.md](pc-pairing-page.md) §5。
+
+**与评估（[pc-pairing-distribution.md](pc-pairing-distribution.md) §1）的差异**：未采用一次性
+`uiToken`，改为 Host+CSRF+Origin（页面 URL 不含 token，浏览器打开即用）；`status()` 增补未做
+（页面只需要当前窗口 + 设备摘要，设备在线状态仍看 `lastSeenAt`）；二维码按评估结论只出 SVG。
+
+**验证（原样）**：`node --import tsx/esm apps/remote-host/scripts/pairing-page-selfcheck.ts` →
+**PASS 24/24**（HTML 契约/QR SVG/CSRF、`/api/state` 形状与窗口开关、reopen 换令牌、revoke 调用并模拟
+`remote.deviceRevoked`、Host/Origin/CSRF/Content-Type/超大体积/方法错误 4xx、日志无 token、stop 释放
+端口、端口占用降级）；`tsc -p apps/remote-host/tsconfig.json` 与 `tsc -p tsconfig.host.json` 均
+exit 0；oxlint 改动 3 文件 0 error；宿主冒烟 **14/14**。本轮未截图（[pc-pairing-page.md](pc-pairing-page.md) §2 位置已定），真机/浏览器验收
+（页面扫码配对 → 设备列表 → 撤销 → 自动重开）由 lead 在 4777 宿主上补；命令见
+[pc-pairing-page.md](pc-pairing-page.md) §7.2。
+
 ### 3.4 远程宿主为什么能跑起来（三个非显然事实）
 
 1. **profile 是 shipped 模板**：`packages/util/official-bundles/src/bundles.ts` 的
@@ -644,14 +726,18 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
     `RemoteNotifications.kt` 系统通知/`cancelAll`（§3.2.12）。**真机验证**：退后台收到
     `task-completed` 通知（tag `pocket-remote:taskCompleted:turn:<session>:<turn>`）、前台不弹、
     退出远程页连接关闭后通知清空。**剩余**：(a) `remote.approvalPending` 真机链路未触发（需模型发起
-    真实审批；映射/渲染由 selfcheck+单测覆盖）；(b) 系统通知点击暂无远程会话深链（Intent 已带
-    sessionId/tag）；(c) 真后台送达（进程被杀/长时间后台）需要步骤 (3)：前台服务持 WS 或 transport
-    移出 UI 进程，架构对比与推荐见 [pc-pairing-distribution.md](pc-pairing-distribution.md) §3。
+    真实审批；映射/渲染由 selfcheck+单测覆盖）；(b) **点击深链已接**（§3.2.13）：点击通知直达对应
+    远程会话，失败分支（会话已归档/不在该电脑上、连接失败、无配对、多台无法判断来源设备）都落到远程
+    首页并给出可见提示，单测覆盖、真机点击验收待 lead；(c) 真后台送达（进程被杀/长时间后台）需要
+    步骤 (3)：前台服务持 WS 或 transport 移出 UI 进程，架构对比与推荐见
+    [pc-pairing-distribution.md](pc-pairing-distribution.md) §3。
     (d) §8.5 归档/删除事件未发（需 `library.catalog` diff 与删除/归档歧义判定）。
-14. **`publicOrigin` 不能用 443（新发现）**：WHATWG URL 会把 wss 的默认端口 443 归一化掉
+14. **`publicOrigin` 不能用 443（已修）**：WHATWG URL 会把 wss 的默认端口 443 归一化掉
     （`new URL('wss://h:443').origin === 'wss://h'`），配对链接因此不带端口，而 App 缺省补 4777
-    （`apps/android/lib/remote_pairing.dart:163`）→ 连到错误端口。修法二选一：`normalizePublicOrigin`
-    保留 443，或 App 按 scheme 补默认端口；在此之前公网入口用 8443 等非 443 端口。详见
+    （`apps/android/lib/remote_pairing.dart:163`）→ 连到错误端口。
+    **已修（2026-11-16）**：`normalizePublicOrigin` 检测输入里显式写的 `:443` 并保留端口，
+    未写端口的地址行为不变；自检 `node --import tsx/esm apps/remote-host/scripts/public-origin-selfcheck.ts`
+    （13/13：显式 443 保留、无端口不变、8443 不变、IPv6、大小写、非法输入）。详见
     [reachability.md](reachability.md) §3.5。
 15. **WS 升级鉴权没有 per-IP 限速**：protocol §2.2 写的是「同一源地址 5 秒内最多 5 次尝试，超出
     HTTP 429」，当前只有 `/pair` 有对端限速（`apps/remote-host/src/pairing.ts:176-195`），升级路径
@@ -667,11 +753,26 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
 17. **连接失败可见性（新发现）**：切换到不可达电脑（IP 不通）时页面可停在「正在连接」较长时间
     （TCP 连接超时，未给拨号设 App 侧超时）。建议给 `RemoteRuntimeTransport.connect` 加超时
     （例如 10–15 s）并映射到 `gateway/timeout`，让失败态与「重试/切换设备」更快出现。
+    **已修（2026-11-16，默认 12s，错误码 `remote/connect-timeout`）**：拨号阶段由
+    `RemoteRuntimeTransport` 自己计时（`defaultConnectTimeout = 12s`，可配置常量、不新增用户
+    设置），超时按终止性失败处理（不自动重连），先 `HttpClient.close(force: true)` 拆掉在途
+    socket/流、再关掉竞态里晚到的连接，并取消超时定时器；`RemoteConnectionController` 把它
+    映射为 `phase=failed` +「连接电脑超时，请检查地址与网络后重试。」，可直接重试/切换设备。
+    验证：`flutter analyze`（11 条基线）、
+    `flutter test test/remote_transport_test.dart test/remote_connection_test.dart`（40 项全绿）。
 18. **后台通知宿主发送端（本轮已落地，App 侧待真机验收）**：宿主 `apps/remote-host/src/notifications.ts`
     已按协议 §8 发送 `remote.taskCompleted`（§8.2）、`remote.approvalPending`（§8.3）与
     `remote.sessionChanged`（§8.5，仅标题变化；归档/删除待目录 diff）；selfcheck 11/11、隔离宿主
     e2e 23/23（send 项严格校验 §8.2）。App 侧消费（前台不弹 / 退后台弹 / 点击路由）由 task-21
     落地后需真机验收；系统通知仍只在 App 进程存活时可达（见第 13 条）。详见 §3.2.11 与 §9。
+19. **PC 配对设置页（A1 已落地，浏览器/真机验收待补）**：宿主内嵌回环页
+    `apps/remote-host/src/pairing-page.ts`（`http://127.0.0.1:4780/`，`Config.pagesEnabled`/
+    `pagesPort`）已提供二维码 + 窗口倒计时 + 明文链接 + USB `adb reverse` 段落 + 设备列表 +
+    重开/撤销；selfcheck 24/24、两个 tsc exit 0、oxlint 0 error、冒烟 14/14。剩余：① 在真实宿主
+    （lead 的 4777 重启后）用浏览器走一遍「扫码配对 → 设备列表 → 撤销 → 自动重开」并按
+    [pc-pairing-page.md](pc-pairing-page.md) §2 截图；② 设备在线状态未展示（需要宿主暴露当前绑定
+    连接，评估 §1.2 的 `status()` 增补，本轮未改 `server.ts`）；③ 页面中文单语，是否双语待产品决定。
+    契约、威胁模型、排障与验证命令见 [pc-pairing-page.md](pc-pairing-page.md)、§3.2.14。
 
 ---
 
@@ -777,6 +878,38 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
 ---
 
 ## 9. 变更日志（append-only，最新在最上面）
+
+### 2026-11-16 11:30 · app-notify-deeplink（P6 后台通知③：点击深链打开远程会话）
+
+- 平台层：`MainActivity` 在启动 Intent 与 `onNewIntent` 里用 `RemoteNotifications.takeLaunch` 校验
+  `pocket.route=remote` 等 extra 并存成 pending；`dsh/runtime` 新增 `notifications.launch.take`
+  （取一次即清空，损坏/未知 extra 丢弃）；本地通知 `session`/`tasks`/`approval` 路由未改。
+- App：新 `remote_notification_navigation.dart`（严格解析 + 可注入读取口 + 消费器）；`main.dart`
+  在启动首帧后与每次回前台消费；`RemoteDshPage` 连接就绪后按 `sessionId` 打开会话。失败分支
+  （会话已归档/不在该电脑上、连接失败、本机无配对、多台无法判断来源设备）全部落到远程首页并
+  给出可见提示。限制：通知负载不带来源设备，按「上次连接设备」处理（§3.2.13）。
+- 验证：`flutter analyze` 11 条基线；Kotlin debug/release 编译 exit 0；新增 20 项测试与相关既有
+  91 项测试全绿。详见 §3.2.13、§4 第 13 项。
+
+### 2026-11-16 11:27 · host-pairing-page（P6 A1：宿主内嵌 PC 配对设置页）
+
+- 新 `apps/remote-host/src/pairing-page.ts`：`PairingPageServer` 只绑 `127.0.0.1`，服务端渲染
+  单页 HTML（中文、内联 CSS/JS、无外部资源）+ `GET /api/state`：窗口状态/倒计时/过期时间、
+  `encodeQrMatrix` → 内联 SVG 二维码、明文链接、USB `adb reverse` + `usbPairUrl`、设备列表
+  （label/id 前缀/时间/状态/撤销）、「重新打开配对窗口」；POST 动作 303 回 `/`。端口默认 4780
+  （`Config.pagesPort`，0=临时）、`Config.pagesEnabled` 默认 true；绑定失败只记 warn、宿主照常启动。
+- `apps/remote-host/src/index.ts`：`RemotePairingTicket` 加 `usbPairUrl`、`RemoteHostHandle.pages()`
+  数据源（当前窗口/重开/设备列表/撤销/宿主身份，过期/已消费窗口如实返回 undefined）、`apply()`
+  装配与 effect 清理（页面先于 wss 监听停止）；`Config` 两个新字段走 schemastery 校验。
+- 安全：Host 白名单（防 DNS rebinding）+ Origin 同源 + 进程级随机 CSRF（POST 必须带，缺/错/重复
+  403）+ `nosniff`/`no-store`/CSP/`frame-ancestors 'none'`，无 CORS；token 只在窗口打开时渲染/返回；
+  页面三类日志不含 token/CSRF（自检断言）。威胁模型与排障写进新
+  `apps/android/docs/remote-dsh/pc-pairing-page.md`；[pc-pairing-distribution.md](pc-pairing-distribution.md)
+  §1 已补「已落地」指针。与评估差异：未用一次性 `uiToken`（改 Host+CSRF+Origin）、`status()` 增补未做。
+- 新 `apps/remote-host/scripts/pairing-page-selfcheck.ts`：零依赖、真实回环 HTTP + 内存假数据源。
+- **验证（原样）**：selfcheck **24/24 PASS**；`tsc -p apps/remote-host/tsconfig.json` exit 0；
+  `tsc -p tsconfig.host.json` exit 0；oxlint 改动 3 文件 `0 warnings and 0 errors`；宿主冒烟 **14/14**。
+  未截图/未真机：浏览器侧验收由 lead 在 4777 宿主重启后按 pc-pairing-page.md §7.2 补。
 
 ### 2026-11-16 11:15 · lead（第六轮：60fps 冷机有效复测 + 优化实验与结论）
 

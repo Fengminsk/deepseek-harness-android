@@ -217,17 +217,19 @@ socat TCP-LISTEN:8443,fork,reuseaddr TCP:127.0.0.1:4777
 | 空闲超时 | App 与宿主各 20 s 发一次 ping（`apps/android/docs/remote-dsh/protocol.md` §1.5、`apps/remote-host/src/server.ts:53-56`）；中间设备的空闲超时设到 ≥ 120 s 更稳 | `apps/android/lib/remote_transport.dart:592` |
 | `/ca.cer` 缓存 | 宿主已声明 `no-store`；反代也不要在 HTTP 层缓存（L4 不会） | `apps/remote-host/src/server.ts:1396-1401` |
 
-### 3.5 端口不能是 443（实测限制，务必先读）
+### 3.5 端口 443（已修复，可正常使用）
 
-宿主用 WHATWG URL 归一化 `publicOrigin`（`apps/remote-host/src/index.ts:892-920`，返回 `url.origin`）。`wss` 的默认端口是 443，所以：
+宿主用 WHATWG URL 归一化 `publicOrigin`（`apps/remote-host/src/index.ts` 的 `normalizePublicOrigin`）。
+`wss` 的默认端口是 443，`new URL('wss://dsh.example.com:443').origin` 会得到 `wss://dsh.example.com`
+（端口被吃掉），而 App 在链接没写端口时按 **4777** 补（`apps/android/lib/remote_pairing.dart:163`），
+曾导致「填 443 反而连错端口」。
 
-```text
-new URL('wss://dsh.example.com:443').origin  ===  'wss://dsh.example.com'   # 端口被吃掉
-```
+**现状（2026-11-16 已修）**：`normalizePublicOrigin` 在检测到输入里显式写了 `:443` 时保留端口，
+配对链接变成 `wss://dsh.example.com:443#instance=…`；未写端口的地址行为不变。自检：
+`node --import tsx/esm apps/remote-host/scripts/public-origin-selfcheck.ts`（13/13，覆盖
+`wss://h:443` 保留、`wss://h` 不变、`wss://h:8443` 不变、IPv6、大小写、非法输入）。
 
-配对链接于是变成 `wss://dsh.example.com#instance=…`，而 App 在链接没写端口时按 **4777** 补（`apps/android/lib/remote_pairing.dart:163`），连到错误端口。
-
-**结论：公网入口端口不要用 443**，用 `8443` 之类并在 `publicOrigin` 里显式写出。若确实必须占 443，当前版本没有配置项能绕过这一点（记录在 HANDOFF §4，后续需要修 `publicOrigin` 或让 App 按 scheme 补默认端口）。
+仍然注意：反代/隧道必须把外网 443/tcp 原样转到宿主端口（L4 直通），App 侧端口以配对链接为准。
 
 ### 3.6 反代的访问控制（有就加，没有也别指望宿主）
 
