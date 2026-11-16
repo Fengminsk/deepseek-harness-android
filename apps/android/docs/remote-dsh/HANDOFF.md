@@ -448,11 +448,11 @@ id 21/22；`cancelAll()` 只取消 `pocket-remote:` 前缀的项（不误清本�
 
 | 项 | 操作 | 结果 | 证据 |
 |---|---|---|---|
-| N1 完成通知 | 远程会话（session-1bada031）发消息后立即 Home 退后台，等宿主轮次完成 | `dumpsys notification` 出现 `id=21 tag=pocket-remote:taskCompleted:turn:<session>:11 channel=task-completed`（IMPORTANCE 4），宿主日志 `remote-notify-sent {"method":"remote.taskCompleted","bytes":292}` | 终端输出；`.cache/remote-device/notify-dump.txt` 待补 |
+| N1 完成通知 | 远程会话（session-1bada031）发消息后立即 Home 退后台，等宿主轮次完成 | `dumpsys notification` 出现 `id=21 tag=pocket-remote:taskCompleted:turn:<session>:11 channel=task-completed`（IMPORTANCE 4），宿主日志 `remote-notify-sent {"method":"remote.taskCompleted","bytes":292}` | 会话内 `dumpsys notification --noredact` 输出（含 channel/key/groupKey/sound 字段） |
 | N2 前台抑制 | 前台再发一轮（OK2），宿主发送 turn 13/14 通知 | 宿主日志有 `remote-notify-sent`，但通知列表**只有** N1 的 tag（前台不弹，页面线正常显示回复） | 同上 |
 | N3 清理 | 返回键退出远程 DSH 页（连接 `client-closed` 关闭） | 所有 `pocket-remote:*` 通知被 `cancelAll()` 清除，tag 列表为空 | 同上 |
-| N4 审批通知 | 需要模型发起真实审批（本轮尝试 read-only/工作区外写入均被沙箱直接拒绝、未产生审批交互） | **未在真机触发**；映射与渲染由宿主 selfcheck（§3.2.11）与 App 单元测试（23 项）覆盖 | — |
-| N5 点击通知 | 点击完成通知 | 打开 App（远程深链未接，Intent 已带 sessionId/tag） | 截图待补 |
+| N4 审批通知 | 需要模型发起真实审批（本轮尝试 read-only 预设下执行命令、工作区外写文件均被沙箱直接拒绝/工具报错，未产生审批交互） | **未在真机触发**；映射与渲染由宿主 selfcheck（§3.2.11）与 App 单元测试（23 项）覆盖 | — |
+| N5 点击通知 | 点击完成通知 | 打开 App（远程深链未接，Intent 已带 sessionId/tag） | 未截图（通知已在 N3 清理） |
 
 **已知边界**：WS 仍由 Flutter 进程持有（未上前台服务），按 Home 后只在进程存活期间能收到并弹通知；
 进程被杀/长时间后台会漏。真正的后台送达需要评估文档 §3 的前台服务架构（
