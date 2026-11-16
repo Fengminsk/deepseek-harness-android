@@ -45,6 +45,13 @@ node apps/android/tool/device-frame-profile.mjs --skip-build --skip-install --bu
 > 热状态前提：`dumpsys thermalservice` 的 `Thermal Status` 必须 ≤ 1（none/light）；
 > 2（moderate）以上表示设备正在降频，帧耗时整体抬高，测量结果不能用于验收。
 > 驱动脚本会记录 `thermalBefore/thermalAfter`，`thermalBefore ≥ 2` 时直接判失败并提示先冷却。
+>
+> **本机实测补充（必须遵守）**：OnePlus6 的 `Thermal Status` 会粘滞在 3（厂商实现/充电状态），
+> 即使电池 30°C 也不回 0/1，因此热状态不能单独作为依据。实际判据用**电池温度**：
+> `dumpsys battery` 的 `temperature` ≤ 34°C（34.0）时为有效测量；≥ 35°C 时帧耗时整体翻倍
+> （同一构建 home p95 17.4 → 50+ ms）。驱动脚本按场景记录电池温度，>34°C 时打印 WARN，
+> 报告里也带上电池温度；冷却方式：熄屏 + 不跑构建/测试 15–25 分钟（USB 充电仍会缓慢加热，
+> 30°C 左右是这台机器的最冷状态）。
 
 | 场景 | frames | p50 total | p95 total | build p95 | raster p95 | 掉帧比例 | 结论 |
 |---|---|---|---|---|---|---|---|
@@ -60,8 +67,10 @@ node apps/android/tool/device-frame-profile.mjs --skip-build --skip-install --bu
 | 液态玻璃 = 关闭 | p95 **9.61 ms**，0.9% | p95 21.86 ms，8.9% | p95 31.59 ms（build p95 21.6） | 首页达 60 fps；流式仍被构建拖住 |
 | 液态玻璃 = 标准 | p95 17.84 ms，11.3% | p95 28.35 ms，47.0% | — | 「标准/精细」只改着色细节，不减少背景捕获开销 |
 | B3/③ 后复测（`post-b3-perf.json`，**热状态 3**） | p95 26.37 ms，43.9% | p95 29.90 ms，31.1% | p95 39.00 ms，40.2%（build p95 10.46） | **降频中，不作为验收依据**：设备插 USB 充电 + 长时间亮屏，`Thermal Status: 3`（severe），CPU 59–61°C；需熄屏/断充冷却到 ≤1 后重测 |
-| 多种连接方式后复测（`post-connections-perf.json`，thermalOverride，电池 35.9°C） | p95 16.97 ms，6.0%，activeFps 55.8 | p95 27.78 ms，27.4% | p95 49.32 ms，54.4%（build p95 22.68） | **仅参考**：熄屏冷却 24 min 后 CPU/电池温度已正常（39.8°C / 35.9°C），但该 ROM 的 `Thermal Status` 仍报 3（疑似厂商状态粘滞），用 `--allow-hot` 记录；home/files/terminal 与基线同量级（无新 UI 回归），session-stream p95 波动大（build 成本主导），待冷却到状态 ≤1 的正式测量 |
-| 后台通知批次（2026-11-16 04:2x） | — | — | — | **未测**：为拿到 0/1 热状态重启了设备，该机 SIM PIN 启用，重启后停在 SIM PIN 锁屏（无跳过入口），自动化无法解锁；本批被测页面（home/session/terminal/files）UI 未变，通知只在 Kotlin 通知栏。待用户输入 SIM PIN 解锁后补测 |
+| 多种连接方式后复测（`post-connections-perf.json`，thermalOverride，电池 35.9°C） | p95 16.97 ms，6.0%，activeFps 55.8 | p95 27.78 ms，27.4% | p95 49.32 ms，54.4%（build p95 22.68） | **仅参考**：熄屏冷却 24 min 后 CPU/电池温度已正常（39.8°C / 35.9°C），但该 ROM 的 `Thermal Status` 仍报 3（疑似厂商状态粘滞），用 `--allow-hot` 记录；home/files/terminal 与基线同量级（无新 UI 回归），session-stream p95 波动大（build 成本主导） |
+| 后台通知批次「冷机重测」（2026-11-16 08:35–08:42，电池 33.4–33.8°C） | **p95 17.38 / 17.64 ms，jank 8.3% / 9.2%，activeFps 56.2 / 56.3**（连测两轮） | — | — | 长时间熄屏冷却后的 home 两轮与原始基线（17.26/9.2%）一致，**证明多种连接/通知两批 UI 没有回归**；home 仍未达 60 fps 门禁（jank >1%），瓶颈仍是液态玻璃背景捕获 |
+| 同一批次热机重测（2026-11-16 08:42–08:55，电池 35.6–36.7°C） | p95 50.37–51.43 ms，100% | p95 29.98–31.5 ms | p95 61.66–96.08 ms（terminal build p95 42–46） | **无效数据**：电池 ≥35°C 后整机帧耗时约×2–3（Thermal Status 仍报 3），保留在 `post-notify-perf*.json` 仅作降频证据 |
+| 后台通知批次（2026-11-16 04:2x 首次尝试） | — | — | — | 为拿 0/1 热状态重启设备后被 SIM PIN 锁屏（无跳过入口），自动化无法解锁；本批被测页面 UI 未变，通知只在系统通知栏 |
 
 ## 3. 热点结论
 
