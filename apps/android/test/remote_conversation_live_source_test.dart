@@ -368,12 +368,23 @@ void main() {
     expect(rebuilt.last['seq'], 2);
     expect(rebuilt.any((event) => event['seq'] == 1), isTrue);
 
+    final subscribedBeforeDispose = transport.paramsOf('api.subscribe').length;
     source.dispose();
     await pumpEventQueue();
     expect(
       transport.paramsOf('api.unsubscribe').map((params) => params['streamId']),
       contains(resubscribe['streamId']),
       reason: '页面关闭时也要显式退订当前流',
+    );
+
+    // 页面关闭后连接即使再回到 ready，也不得重新订阅：否则宿主又多一条孤儿流。
+    connection.setPhase(RemoteConnectionPhase.reconnecting);
+    connection.setPhase(RemoteConnectionPhase.ready);
+    await pumpEventQueue();
+    expect(
+      transport.paramsOf('api.subscribe'),
+      hasLength(subscribedBeforeDispose),
+      reason: '页面关闭后不得重新订阅',
     );
   });
 

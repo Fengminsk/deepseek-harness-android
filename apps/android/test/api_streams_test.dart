@@ -215,4 +215,55 @@ void main() {
       await streams.close();
     },
   );
+
+  test('close() 向宿主退订每一条在途观察，关闭后不再订阅', () async {
+    final calls = <({String method, ApiJson params})>[];
+    final streams = AppApiStreams((method, params) async {
+      calls.add((method: method, params: params));
+      if (method == 'api.subscribe') {
+        return {'generation': 'generation-${params['streamId']}'};
+      }
+      return {'accepted': true};
+    })..setReady(true);
+    final events = <ApiJson>[];
+    final first = streams
+        .watch('session', 'follow')
+        .listen(events.add, onError: events.add);
+    final second = streams
+        .watch('session', 'control')
+        .listen(events.add, onError: events.add);
+    await Future<void>.delayed(Duration.zero);
+    final subscribed = calls
+        .where((call) => call.method == 'api.subscribe')
+        .toList();
+    expect(subscribed, hasLength(2));
+    expect(streams.diagnostics, hasLength(2));
+
+    await streams.close();
+
+    final unsubscribed = calls
+        .where((call) => call.method == 'api.unsubscribe')
+        .toList();
+    expect(
+      unsubscribed.map((call) => call.params['streamId']),
+      unorderedEquals(subscribed.map((call) => call.params['streamId'])),
+      reason: '关闭时必须向宿主退订每一条在途流，不能把 streamId 留在宿主上',
+    );
+    expect(streams.diagnostics, isEmpty, reason: '关闭后不应再持有观察记录');
+
+    final errors = <Object>[];
+    final late = streams
+        .watch('session', 'follow')
+        .listen((_) {}, onError: errors.add);
+    await Future<void>.delayed(Duration.zero);
+    expect(
+      calls.where((call) => call.method == 'api.subscribe'),
+      hasLength(2),
+      reason: '关闭后不允许再发起订阅',
+    );
+    expect(errors, hasLength(1));
+    await late.cancel();
+    await first.cancel();
+    await second.cancel();
+  });
 }

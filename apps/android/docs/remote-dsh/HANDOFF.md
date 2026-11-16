@@ -827,6 +827,51 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
     [pc-pairing-page.md](pc-pairing-page.md) §2 截图；② 设备在线状态未展示（需要宿主暴露当前绑定
     连接，评估 §1.2 的 `status()` 增补，本轮未改 `server.ts`）；③ 页面中文单语，是否双语待产品决定。
     契约、威胁模型、排障与验证命令见 [pc-pairing-page.md](pc-pairing-page.md)、§3.2.14。
+20. **App stream 跨重连泄漏（真机 `App stream limit reached`，已修，真机复验待 lead）**：真机远程
+    会话页出现「无法确认计划模式状态：…App stream limit reached; close an unused page before
+    subscribing」，多次 App 重启/重连后触顶 `appStreamMaxSubscriptions=32`。
+    **根因**：门面每个进程只建一个 `AppStreams`，远程连接又恒用固定 owner `'remote'`
+    （`apps/android/runtime/streams.mjs`），记录的清理只挂在 `native.appDisconnected` 上；协议
+    §6.6 要求“连接关闭 → 该连接全部流终止”，但远程宿主从不发 `native.appDisconnected`，
+    `facade.unbind` 当时只 detach 终端/附件，不清理流 → App 进程被杀/网络断掉时没发
+    `api.unsubscribe`，订阅记录与上游生产者（`session.follow`/`session.control`）永久累积。
+    **多连接语义**：`server.ts` 的连接表允许多条已鉴权连接并存，但 `index.ts` 按协议 §11
+    **同一时刻只服务一台设备**：新连接到达时先 `unbind` 旧连接再 `bind` 新连接，并异步关闭旧
+    socket。因此“每条连接一个 owner”成立；替换窗口里旧连接在途请求仍带旧 owner，不会污染新连接。
+    **修复（宿主侧，协议未变、App 未改）**：`apps/android/runtime/index.mjs` 新增
+    `RemoteConnectionOwners` + `createRemoteFacadeService`：宿主给每条连接分配 `randomUUID()` owner，
+    `bind(sink, owner)` 记住映射、`dispatch(method, params, owner)` 对
+    `api.subscribe/ack/unsubscribe`、`references.*`、`workspaceChanges.*`、`document(s).*`、
+    `session.attachmentFile.*` 注入 owner（客户端自带 owner 时保留，例如 App「本次变更」页面的
+    `remote-<uuid>`——连接关闭不代页面释放，否则页面重连后同一 owner 会被资源的已关闭集合永久
+    拒绝），`unbind` 释放该 owner 的流、references/documentPreview/attachmentFiles 等资源与会话
+    历史租约；清理失败只 warn，不变成连接关闭失败/未处理 rejection。`native.appDisconnected`
+    改为复用同一条 release 路径。`apps/remote-host/src/index.ts` 每连接生成 owner 并在
+    `connection-ready` 日志中输出（仅宿主进程内使用的 UUID，不上线）。
+    **App 侧核查**：`AppApiStreams.close()`/页面 `dispose()` 本来就会显式 `api.unsubscribe`
+    （无缺陷，未改 `lib/`）；新增测试固化该行为（`api_streams_test.dart` close 退订全部在途观察
+    且关闭后不再订阅；`remote_conversation_live_source_test.dart` 页面 dispose 后连接再 ready
+    不重新订阅）。
+    **验证（原样）**：新 `apps/remote-host/scripts/stream-lifecycle-selfcheck.ts` **PASS 11/11**
+    （owner 逐连接唯一/上限与回执按 owner 隔离/关闭释放且不误伤其它连接/客户端 owner 保留/
+    清理失败降级/40 轮 连接→订阅→关闭 回归 + 旧共享 owner 第 33 次订阅触顶夹具）；
+    `tsc -p apps/remote-host/tsconfig.json` exit 0；`tsc -p tsconfig.host.json` exit 0；oxlint 改动
+    2 个 TS 文件 `0 warnings and 0 errors`；宿主冒烟 **14/14**；隔离宿主（4789 + 临时 DSH_HOME
+    副本，未动 lead 的 4777/PID 14796）真实 e2e **22/22 PASS**，宿主日志出现
+    `connection-ready {…,"owner":"1c4d3a3e-…"}` 与干净的 `connection-closed`，无
+    `facade-unbind-failed`/清理失败；App `flutter test test/api_streams_test.dart
+    test/remote_conversation_live_source_test.dart` **31 项全绿**；`flutter analyze` 11 条基线。
+    **lead 重启 4777 后的真机复验**：① 用同一源码启动命令重启宿主（`node --import tsx/esm
+    apps/cli/src/bin.ts --profile remote-host --patch .cache/remote-m1-host.overlay.yml --no-open`，
+    PC 宿主直接加载 workspace 里的 `apps/android/runtime/*.mjs`，不需要重新构建）；② App 打开远程
+    会话页，宿主日志应出现带新 `owner` 的 `connection-ready`；③ **稳定复现旧 bug**：每次杀掉
+    App 进程再重开同一会话（一次打开 = `session.follow` + `session.control` 两条流），重复 ≥17 次
+    （旧实现第 33 条订阅触顶）；④ 修复后同样的 17 次循环不再出现「App stream limit reached」横幅，
+    每次重连宿主日志的 `owner` 都是新值，且旧连接的 `connection-closed` 之后没有清理失败日志。
+    **风险/边界**：客户端页面自带的 owner（`workspaceChanges.*`）不在连接关闭时释放，其在途读取
+    由自身超时收口（避免把页面 owner 记进已关闭集合导致重连后被拒）；owner 注入会让此前必失败
+    的远程 `session.attachmentFile.*`/`document.*` 路径开始可用（这些方法本来就在
+    `FACADE_METHODS` 里）；宿主若未传 owner 则退回旧的固定 owner 行为（兼容兜底）。
 
 ---
 
@@ -932,6 +977,33 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
 ---
 
 ## 9. 变更日志（append-only，最新在最上面）
+
+### 2026-11-16 12:57 · stream-lifecycle（修复宿主 AppStreams 跨重连泄漏，宿主侧）
+
+- **根因复核**：`AppStreams` 每个门面进程只建一次，远程连接恒用固定 owner `'remote'`
+  （协议 §6.4 的 owner 不上线，远程侧缺省成同一个值）；记录清理只挂在
+  `native.appDisconnected` 上，而远程宿主从不发它，`facade.unbind` 只 detach 终端/附件。
+  协议 §6.6 要求“连接关闭 → 该连接全部流终止”，旧实现没有履行；App 进程被杀/网络断掉时
+  不会发 `api.unsubscribe`，订阅记录与上游生产者跨重连累积，触顶 32 后报
+  `App stream limit reached`。
+- **多连接语义**：`server.ts` 允许多条连接并存，但 `index.ts` 按协议 §11 同一时刻只服务
+  一台设备（新连接先 unbind 旧连接再 bind 新连接并关闭旧 socket），因此按连接分配独立
+  owner 是成立的；替换窗口内旧连接的在途请求仍带旧 owner，不会串到新连接。
+- **修复**：`apps/android/runtime/index.mjs` 新增 `RemoteConnectionOwners` +
+  `createRemoteFacadeService`（按 owner 注入参数、bind/unbind 维护 owner 生命周期、
+  unbind 释放流/references/workspaceChanges/documentPreview/documentReads/documentSearch/
+  attachmentFiles/历史租约，清理失败只 warn）；`apps/remote-host/src/index.ts` 每条连接
+  `randomUUID()` 作 owner，`bind(sink, owner)`/`dispatch(method, params, owner)` 接线，
+  `connection-ready` 日志带 owner，unbind 的同步异常与异步拒绝都记 `facade-unbind-failed`
+  而不产生未处理 rejection。协议未变、`protocol.md` 未改、App `lib/` 未改。
+- **测试**：新 `apps/remote-host/scripts/stream-lifecycle-selfcheck.ts` 11/11 PASS；
+  `api_streams_test.dart` 新增 close 退订断言、`remote_conversation_live_source_test.dart`
+  补页面 dispose 后不得重新订阅；App 相关 31 项全绿。
+- **验证（原样）**：selfcheck 11/11；`tsc -p apps/remote-host/tsconfig.json` exit 0；
+  `tsc -p tsconfig.host.json` exit 0；oxlint 改动 2 文件 `0 warnings and 0 errors`；
+  宿主冒烟 **14/14**；隔离宿主（4789 + 临时 DSH_HOME 副本）真实 e2e **22/22 PASS**，
+  日志 `connection-ready … "owner":"1c4d3a3e-…"`，无清理失败；`flutter analyze` 11 条基线。
+  真机复验步骤与风险见 §4 第 20 条（lead 重启 4777 后执行）。
 
 ### 2026-11-16 12:35 · lead（会话洞察 UI：悬浮任务卡片 + 底部统计条，真机验证）
 

@@ -433,6 +433,137 @@ const FACADE_UNSUPPORTED = Object.freeze(['documents.*', 'linuxVm.*', 'scheduleW
 const TERMINAL_ACTIONS = Object.freeze(['list', 'shells', 'create', 'read', 'write', 'resize', 'rename', 'close'])
 const TERMINAL_WRITE_ACTIONS = Object.freeze(['create', 'write', 'resize', 'rename'])
 
+// `owner` 是协议 §6.4 的本地概念、不上线：Android 本地链路由原生 Binder 注入，远程连接上由
+// 宿主在 dispatch 前注入。只有这些方法按 owner 管理资源；其它方法原样转交，避免给参数校验
+// 严格的方法塞一个它不认识的字段。
+const OWNER_SCOPED_METHODS = new Set(['api.subscribe', 'api.ack', 'api.unsubscribe'])
+const OWNER_SCOPED_PREFIXES = Object.freeze([
+  'references.', 'workspaceChanges.', 'document.', 'documents.', 'session.attachmentFile.',
+])
+
+/**
+ * 远程连接的 owner 生命周期。
+ *
+ * 协议 §6.6 要求连接关闭时终止该连接的全部流；`native.appDisconnected` 只在 Android 本地
+ * Binder 链路上出现，远程宿主没有等价的注释。这里把 owner 释放集中到一条路径：宿主给每条
+ * 连接分配独立 owner，解除绑定时释放该 owner 的全部资源。owner 逐连接唯一，否则同一条
+ * `AppStreams` 上的订阅记录会跨 App 重启/重连累积，触顶 `appStreamMaxSubscriptions` 后
+ * 新订阅被拒（`App stream limit reached`），上游生产者也会一直挂着。
+ */
+export class RemoteConnectionOwners {
+  /**
+   * @param {object} options 资源清单与记录出口
+   * @param {{ label: string, closeOwner: (owner: string) => Promise<unknown> }[]} options.ownerResources 按 owner 释放的资源
+   * @param {{ label: string, release: () => unknown }[]} [options.sharedResources] 连接切换时整体释放的共享资源（会话历史租约）
+   * @param {(message: string) => void} options.warn 清理失败的记录出口
+   */
+  constructor({ ownerResources, sharedResources = [], warn }) {
+    this.ownerResources = ownerResources
+    this.sharedResources = sharedResources
+    this.warn = warn
+    this.owners = new Map()
+  }
+
+  /**
+   * 给按 owner 管理的方法注入连接 owner；其它方法、已有客户端 owner 与非对象参数原样返回。
+   *
+   * 客户端自带的 owner（App 的「本次变更」页面）属于页面自己的生命周期，连接关闭时不代它
+   * 释放：那会把页面 owner 记进资源的已关闭集合，页面重连后同一个 owner 就被永久拒绝。
+   * @param {string} method 门面方法名
+   * @param {unknown} params 入站参数
+   * @param {string} [owner] 当前连接的 owner
+   * @returns {unknown} 注入后的参数
+   */
+  scopedParams(method, params, owner) {
+    if (typeof owner !== 'string' || owner === '') return params
+    if (typeof params !== 'object' || params === null || Array.isArray(params)) return params
+    if (params.owner !== undefined) return params
+    if (typeof method !== 'string') return params
+    if (!OWNER_SCOPED_METHODS.has(method) && !OWNER_SCOPED_PREFIXES.some(prefix => method.startsWith(prefix))) {
+      return params
+    }
+    return { ...params, owner }
+  }
+
+  /**
+   * 记录一条连接的 sink 与其 owner。同一个 sink 换成新 owner 时先释放旧 owner，避免静默泄漏。
+   * @param {object} sink 连接的转发端
+   * @param {string} owner 这条连接的 owner
+   * @returns {void}
+   */
+  bind(sink, owner) {
+    const previous = this.owners.get(sink)
+    this.owners.set(sink, owner)
+    if (previous !== undefined && previous !== owner) void this.release(previous)
+  }
+
+  /**
+   * 解除绑定并释放该 owner 的全部资源。
+   * @param {object} sink 连接的转发端
+   * @returns {Promise<boolean>} 是否确有绑定被解除
+   */
+  async unbind(sink) {
+    const owner = this.owners.get(sink)
+    if (owner === undefined) return false
+    this.owners.delete(sink)
+    await this.release(owner)
+    return true
+  }
+
+  /**
+   * 释放一个 owner 的资源。共享资源先释放（副作用同步生效，赶在下一条连接开始工作之前），
+   * 单条清理失败只记录，不把连接关闭流程变成失败。
+   * @param {string} owner 要释放的 owner
+   * @returns {Promise<void>} 全部清理尝试结束后兑现
+   */
+  async release(owner) {
+    if (typeof owner !== 'string' || owner === '') return
+    const tasks = []
+    const fail = (label, error) => this.warn(`${label}: ${error instanceof Error ? error.message : String(error)}`)
+    for (const { label, release } of this.sharedResources) {
+      try {
+        const result = release()
+        if (result !== undefined && result !== null) tasks.push(Promise.resolve(result).catch(error => fail(label, error)))
+      } catch (error) {
+        fail(label, error)
+      }
+    }
+    for (const { label, closeOwner } of this.ownerResources) {
+      try {
+        tasks.push(Promise.resolve(closeOwner(owner)).catch(error => fail(label, error)))
+      } catch (error) {
+        fail(label, error)
+      }
+    }
+    await Promise.all(tasks)
+  }
+}
+
+/**
+ * 远端宿主使用的门面服务表面：入站请求按连接 owner 注入参数，bind/unbind 维护 owner 生命周期。
+ * Android 本地链路也拿到同一个表面，但那里没有可绑定的宿主，bind/unbind 不会被调用。
+ * @param {object} options 组装依赖
+ * @param {(method: string, params: object) => unknown} options.dispatch 门面分发表
+ * @param {RemoteConnectionOwners} options.owners 连接 owner 生命周期
+ * @param {{ bind?: (sink: object) => void, unbind?: (sink: object) => boolean }} options.transport 晚绑定传输
+ * @param {() => void} [options.detachConnection] 解除当前绑定时回收连接级终端/附件资源
+ * @returns {{ dispatch: (method: string, params: object, owner?: string) => unknown, bind: (sink: object, owner: string) => void, unbind: (sink: object) => Promise<boolean> }} 门面服务表面
+ */
+export function createRemoteFacadeService({ dispatch, owners, transport, detachConnection }) {
+  return {
+    dispatch: (method, params, owner) => dispatch(method, owners.scopedParams(method, params, owner)),
+    bind(sink, owner) {
+      transport.bind?.(sink)
+      owners.bind(sink, owner)
+    },
+    unbind(sink) {
+      const unbound = transport.unbind?.(sink) === true
+      if (unbound) detachConnection?.()
+      return owners.unbind(sink)
+    },
+  }
+}
+
 /** Android is an additional carrier over the same DSH services and session log. */
 export function apply(ctx, config) {
   // 远程宿主复用同一套门面，但设备侧能力（Shell、Keystore、隔离执行、Linux VM）不存在。
@@ -730,19 +861,28 @@ export function apply(ctx, config) {
     maxSubscriptions: () => config.appStreamMaxSubscriptions.get(),
     maxFrameBytes: () => config.appStreamMaxFrameBytes.get(),
   })
+  const connectionOwners = new RemoteConnectionOwners({
+    warn: message => ctx.logger.warn(message),
+    ownerResources: [
+      { label: 'App reference cleanup failed', closeOwner: owner => references.closeOwner(owner) },
+      { label: 'App change comparison cleanup failed', closeOwner: owner => workspaceChanges.closeOwner(owner) },
+      { label: 'App stream cleanup failed', closeOwner: owner => streams.closeOwner(owner) },
+      { label: 'App file read cleanup failed', closeOwner: owner => documentReads.closeOwner(owner) },
+      { label: 'App file search cleanup failed', closeOwner: owner => documentSearch.closeOwner(owner) },
+      { label: 'App document preview cleanup failed', closeOwner: owner => documentPreview.closeOwner(owner) },
+      { label: 'App attachment file cleanup failed', closeOwner: owner => attachmentFiles.closeOwner(owner) },
+    ],
+    sharedResources: [
+      { label: 'App session history cleanup failed', release: () => history.releaseAll() },
+    ],
+  })
   transport.onNotification((method, params) => {
     if (method === 'native.networkChanged') {
       void web.refresh().catch(error => web.publish({ phase: 'failed', host: null, url: null, error: String(error) }))
     }
     if (method === 'native.appDisconnected') {
-      history.releaseAll()
-      void references.closeOwner(params.owner).catch(error => console.error('App reference cleanup failed:', error))
-      void workspaceChanges.closeOwner(params.owner).catch(error => console.error('App change comparison cleanup failed:', error))
-      void streams.closeOwner(params.owner).catch(error => console.error('App stream cleanup failed:', error))
-      void documentReads.closeOwner(params.owner).catch(error => console.error('App file read cleanup failed:', error))
-      void documentSearch.closeOwner(params.owner).catch(error => console.error('App file search cleanup failed:', error))
-      void documentPreview.closeOwner(params.owner).catch(error => console.error('App document preview cleanup failed:', error))
-      void attachmentFiles.closeOwner(params.owner).catch(() => console.error('App attachment file cleanup failed'))
+      // 原生 Binder 的页面/Activity 断连与远程连接关闭走同一条 owner 释放路径。
+      void connectionOwners.release(params.owner)
     }
   })
   const describe = () => describeAndroidSettings(ctx)
@@ -1026,17 +1166,17 @@ export function apply(ctx, config) {
   // 一个点击即失败的入口。getter 让每次握手都重新读取当前服务状态。
   const terminalSupported = () => android || ctx.get('terminalController') !== undefined
   ctx.provide('appRuntimeFacade', {
-    dispatch: facadeDispatch,
-    bind: sink => transport.bind?.(sink),
-    unbind: sink => {
-      // 连接级资源不随 sink 自动回收：终端附件与保留流属于这条连接，不 detach 会
-      // 一直占着 PC 上的输入权和保留额度；附件上传的分页拉取同理，断连后不再推进。
-      const unbound = transport.unbind?.(sink) === true
-      if (unbound && !android) {
+    ...createRemoteFacadeService({
+      dispatch: facadeDispatch,
+      owners: connectionOwners,
+      transport,
+      // 连接级资源不随 sink 自动回收：终端附件与保留流属于这条连接，不 detach 会一直占着
+      // PC 上的输入权和保留额度；附件上传的分页拉取同理，断连后不再推进。
+      detachConnection: android ? undefined : () => {
         terminals.detachAll()
         attachments.detachAll()
-      }
-    },
+      },
+    }),
     get methods() {
       return terminalSupported()
         ? FACADE_METHODS

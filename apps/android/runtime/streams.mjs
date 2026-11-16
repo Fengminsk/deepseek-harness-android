@@ -12,8 +12,10 @@ const WINDOW_BYTES = 1048576
 const ACK_VIOLATION = 'app-stream/ack-violation'
 
 /**
- * 远程连接上的流归属：协议 §6.4 规定一条连接只有一个 owner，`owner` 维度
- * 不上线，因此缺省时用这个固定值。本地 loopback 的 `owner` 仍由原生注入。
+ * 远程连接的流归属。协议 §6.4 规定一条连接只有一个 owner，`owner` 维度不上线：
+ * Android 本地链路由原生 Binder 注入，远程连接上由远端宿主为每条连接注入一个独立值
+ * （`index.mjs` 的 `RemoteConnectionOwners`），连接关闭时按该 owner 释放流。这里的
+ * 固定值只作兼容兜底：宿主没有注入 owner 时仍按旧行为把连接归到同一个 owner。
  */
 const REMOTE_OWNER = 'remote'
 
@@ -35,8 +37,8 @@ export class AppStreams {
   }
 
   /**
-   * 流归属。本地 loopback 由原生注入 `owner`；远程连接按协议 §6.4 不带该字段，
-   * 恒映射成同一个值，不为协议新增字段。
+   * 流归属。本地 loopback 由原生注入 `owner`；远程连接上由远端宿主在 dispatch 前注入
+   * 每条连接自己的 owner（同样不上线），只有宿主没有注入时才退回固定值。
    * @param {{ owner?: unknown }} params 订阅/回执/退订的参数
    * @returns {string} 归属标识
    */

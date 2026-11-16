@@ -29,7 +29,7 @@
  * @module @deepseek-ai/dsh-remote-host
  */
 
-import { X509Certificate } from 'node:crypto'
+import { X509Certificate, randomUUID } from 'node:crypto'
 import { createSocket } from 'node:dgram'
 import { hostname, networkInterfaces } from 'node:os'
 import { join } from 'node:path'
@@ -404,21 +404,25 @@ interface AppRuntimeFacade {
    * 执行一次门面方法。
    * @param method - 手机发来的方法名，例如 `session.send`。
    * @param params - 帧里的 `params` 对象。
+   * @param owner - 这条连接的 owner。协议 §6.4 的 owner 是本地概念、不上线：门面据此把
+   *   按 owner 管理的方法参数补齐，并在连接关闭时释放该 owner 的资源。省略时按无 owner 处理。
    * @returns JSON-RPC `result`，可以是同步值或 Promise；抛错由传输层转成 `-32603`。
    */
-  dispatch(method: string, params: Record<string, unknown>): unknown
+  dispatch(method: string, params: Record<string, unknown>, owner?: string): unknown
 
   /**
    * 把一条连接安装成门面的转发端。
    * @param sink - 反向请求与通知的出口。
+   * @param owner - 这条连接的 owner；门面记住它与 sink 的对应关系，解除绑定时释放。
    */
-  bind(sink: RemoteFacadeSink): void
+  bind(sink: RemoteFacadeSink, owner?: string): void
 
   /**
-   * 解除绑定。只有当前绑定的就是 `sink` 时生效。
+   * 解除绑定：只有当前绑定的就是 `sink` 时才生效，随后释放该连接的 owner。
    * @param sink - 之前交给 {@link AppRuntimeFacade.bind} 的同一个对象。
+   * @returns 清理异步进行时可 await；宿主不等待。
    */
-  unbind(sink: RemoteFacadeSink): void
+  unbind(sink: RemoteFacadeSink): void | Promise<unknown>
 
   /**
    * 门面的方法清单（协议 §10.1 语法）。门面声明时优先于 {@link FACADE_METHODS}：
@@ -527,6 +531,30 @@ async function startRemoteHost(
     readonly sink: RemoteFacadeSink
     readonly notifications: RemoteNotifications
   } | undefined
+  /**
+   * 解除一条连接的门面绑定；门面随即释放这条连接的 owner 资源（流、历史租约等）。
+   *
+   * 清理异步进行：同步抛错与 Promise 拒绝都只记一条 `facade-unbind-failed`，既不打断
+   * 连接关闭流程，也不留下未处理的 rejection。
+   * @param connection - 被解除绑定的那条连接（用于日志字段）。
+   * @param sink - 之前交给门面 `bind` 的同一个对象。
+   * @returns 无返回值。
+   */
+  const unbindFacade = (connection: RemoteConnection, sink: RemoteFacadeSink): void => {
+    const report = (error: unknown): void => {
+      writeRemoteLog({
+        level: 'error',
+        event: 'facade-unbind-failed',
+        message: '解除门面绑定失败，门面后续的通知可能仍指向这条已关闭的连接。',
+        fields: { connectionId: connection.id, error: describeRemoteError(error) },
+      })
+    }
+    try {
+      void Promise.resolve(facade?.unbind(sink)).catch(report)
+    } catch (error) {
+      report(error)
+    }
+  }
   /** 查询会话标题与所属项目的宿主本地读（协议 §8.2 补全字段）。 */
   const lookupSession = createSessionFactsLookup(facade, writeRemoteLog)
   const server = new RemoteHostServer({
@@ -553,7 +581,7 @@ async function startRemoteHost(
       if (previous !== undefined) {
         // 先摘旧绑定再挂新绑定：旧连接关闭期间，门面的通知不能写到一个正在关闭的 socket 上。
         // 通知观察者在 unbind 之后 dispose：被替换连接的在途 `remote.*` 构造不再落帧。
-        facade.unbind(previous.sink)
+        unbindFacade(previous.connection, previous.sink)
         previous.notifications.dispose()
         writeRemoteLog({
           level: 'warn',
@@ -582,14 +610,18 @@ async function startRemoteHost(
         lookupSession,
       })
       const sink = createFacadeSink(connection, nativeProvider, notifications)
+      // 每条连接一个独立 owner（协议 §6.4 的 owner 是本地概念、不上线）：门面用它把
+      // `api.subscribe` 等按 owner 管理的资源隔离开，并在解除绑定时释放——连接关闭后
+      // 这些记录与上游流不能留到下一条连接。这里的 UUID 只在宿主进程内使用。
+      const owner = randomUUID()
       binding = { connection, sink, notifications }
-      facade.bind(sink)
-      connection.onRequest((method, params) => facade.dispatch(method, params))
+      facade.bind(sink, owner)
+      connection.onRequest((method, params) => facade.dispatch(method, params, owner))
       writeRemoteLog({
         level: 'info',
         event: 'connection-ready',
         message: '已把这条连接接到门面方法表上。',
-        fields: { connectionId: connection.id, deviceId: connection.deviceId },
+        fields: { connectionId: connection.id, deviceId: connection.deviceId, owner },
       })
     },
     onClose: (connection: RemoteConnection, outcome: RemoteCloseOutcome) => {
@@ -598,16 +630,7 @@ async function startRemoteHost(
       if (released !== undefined) {
         binding = undefined
         released.notifications.dispose()
-        try {
-          facade?.unbind(released.sink)
-        } catch (error) {
-          writeRemoteLog({
-            level: 'error',
-            event: 'facade-unbind-failed',
-            message: '解除门面绑定失败，门面后续的通知可能仍指向这条已关闭的连接。',
-            fields: { connectionId: connection.id, error: describeRemoteError(error) },
-          })
-        }
+        unbindFacade(released.connection, released.sink)
       }
       writeRemoteLog({
         level: 'info',
