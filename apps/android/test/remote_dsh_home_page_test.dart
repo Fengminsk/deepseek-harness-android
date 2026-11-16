@@ -7,6 +7,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:dsh_android/pocket_composer.dart';
 import 'package:dsh_android/remote_connection.dart';
 import 'package:dsh_android/remote_device_store.dart' as paired;
 import 'package:dsh_android/remote_dsh_archived_page.dart';
@@ -444,11 +445,8 @@ List<RemoteDshProject> _projects() => const <RemoteDshProject>[
 /// 首页上的会话行查找器。
 Finder _sessionRow(String id) => find.byKey(ValueKey('remote-session-$id'));
 
-/// 输入条里的文本框。
-Finder _composerField() => find.descendant(
-  of: find.byKey(const ValueKey('remote-composer')),
-  matching: find.byType(TextField),
-);
+/// 输入卡里的文本框。
+Finder _composerField() => find.byKey(PocketComposer.inputKey);
 
 Future<_RouteLog> _show(
   WidgetTester tester,
@@ -716,16 +714,16 @@ void main() {
       final composer = tester.widget<RemoteComposer>(
         find.byType(RemoteComposer).first,
       );
-      expect(composer.enabled, isFalse, reason: '新建期间输入条不可用');
+      expect(composer.enabled, isFalse, reason: '新建期间输入卡不可用');
+      expect(composer.sending, isTrue, reason: '新建期间右侧圆钮换成进度');
       expect(
-        tester
-            .widget<GlassButton>(find.byKey(const ValueKey('remote-home-send')))
-            .onPressed,
-        isNull,
+        find.byKey(const ValueKey('remote-home-send')),
+        findsNothing,
+        reason: '忙碌时不存在可再次点按的发送圆钮',
       );
-      await tester.tap(find.byKey(const ValueKey('remote-home-send')));
+      expect(find.byType(CircularProgressIndicator), findsOneWidget);
       await tester.pump();
-      expect(source.createCalls, 1, reason: '忙碌期间再点不会重复新建');
+      expect(source.createCalls, 1, reason: '忙碌时不存在可再次点按的发送圆钮');
 
       gate.complete();
       await tester.pumpAndSettle();
@@ -875,69 +873,117 @@ void main() {
     });
   });
 
-  group('输入条会话外能力说明', () {
-    /// 输入条里某个按钮的 IconButton 控件；按钮不可点时 `onPressed` 为 null。
-    IconButton circleButton(WidgetTester tester, String tooltip) =>
-        tester.widget<IconButton>(
-          find.ancestor(
-            of: find.byTooltip(tooltip),
-            matching: find.byType(IconButton),
-          ),
-        );
+  group('输入卡三态', () {
+    /// 首页输入卡当前状态（受控组件，状态由页面持有）。
+    PocketComposerMode modeOf(WidgetTester tester) =>
+        tester.widget<RemoteComposer>(find.byType(RemoteComposer).first).mode;
 
-    testWidgets('已连接时加号、权限与模型置灰，并说明进入会话后可用', (tester) async {
+    testWidgets('缩小态是悬浮单行卡：加号、占位与置灰发送，没有权限/推理按钮', (tester) async {
       await _show(tester, _HomeSource(projects: _projects()));
 
-      expect(
-        find.byKey(const ValueKey('remote-composer-hint')),
-        findsOneWidget,
-      );
-      expect(
-        find.text('进入会话后可添加附件与指令、切换权限预设与选择模型'),
-        findsOneWidget,
-        reason: '会话外的不可用能力统一给可操作说明',
-      );
-
-      for (final tooltip in ['添加与指令', '权限预设', '选择模型']) {
-        expect(
-          circleButton(tester, tooltip).onPressed,
-          isNull,
-          reason: '$tooltip 在首页没有数据源，必须置灰',
-        );
-      }
-
-      // 不再是「能点但没用」的入口：点按不弹「暂未开放」提示，也不跳页。
-      for (final tooltip in ['添加与指令', '权限预设', '选择模型']) {
-        await tester.tap(find.byTooltip(tooltip), warnIfMissed: false);
-      }
-      await tester.pumpAndSettle();
-      expect(find.textContaining('暂未开放'), findsNothing);
-      expect(find.textContaining('添加内容'), findsNothing);
-      expect(find.byType(RemoteDshConversationPage), findsNothing);
-
-      // 语音入口已删除（§4.4 语音不做），不能留死按钮。
-      expect(find.byTooltip('语音输入'), findsNothing);
-      expect(find.byIcon(Icons.mic_rounded), findsNothing);
+      expect(find.byKey(PocketComposer.cardKey), findsOneWidget);
+      expect(find.text('与 客厅的电脑 新对话'), findsOneWidget);
+      expect(find.byTooltip('添加与指令'), findsOneWidget);
+      expect(find.byKey(const ValueKey('remote-home-send')), findsNothing);
+      // 首页没有权限入口；推理按钮只在展开态出现。
+      expect(find.byTooltip('权限预设'), findsNothing);
+      expect(find.byTooltip('推理强度'), findsNothing);
+      // 旧的说明行已并入占位文案/+ 弹层，卡片外不再多一行。
+      expect(find.byKey(const ValueKey('remote-composer-hint')), findsNothing);
+      expect(modeOf(tester), PocketComposerMode.browse);
 
       await tester.pumpWidget(const SizedBox());
       await tester.pumpAndSettle();
     });
 
-    testWidgets('未连接时输入条整体不可用并说明先连接', (tester) async {
+    testWidgets('点输入卡一次即展开并进入输入，工具条按钮紧凑可用', (tester) async {
+      await _show(tester, _HomeSource(projects: _projects()));
+
+      await tester.tap(find.byKey(PocketComposer.inputKey));
+      await tester.pumpAndSettle();
+
+      expect(modeOf(tester), PocketComposerMode.composing);
+      expect(find.byTooltip('添加与指令'), findsOneWidget);
+      expect(find.byTooltip('推理强度'), findsOneWidget);
+      // 首页没有 session、没有权限入口：工具条不画权限按钮（避免死按钮）。
+      expect(find.byTooltip('权限预设'), findsNothing);
+      // 工具条动作按钮是小图标（40dp 热区），没有 44dp 大圆底。
+      expect(tester.getSize(find.byTooltip('推理强度')), const Size(40, 40));
+
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('「+」弹层说明进入会话后可添加文件与指令', (tester) async {
+      await _show(tester, _HomeSource(projects: _projects()));
+
+      await tester.tap(find.byKey(PocketComposer.inputKey));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('添加与指令'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('添加与指令'), findsOneWidget, reason: '弹层标题与按钮同名');
+      expect(find.text('进入会话后可添加文件与指令'), findsOneWidget);
+      expect(find.textContaining('添加附件、执行会话指令'), findsOneWidget);
+
+      await tester.tap(find.byTooltip('关闭添加菜单'));
+      await tester.pumpAndSettle();
+
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('未连接时输入卡整体不可用并提示先连接', (tester) async {
       await _show(tester, _OfflineSource());
 
       final composer = tester.widget<RemoteComposer>(
         find.byType(RemoteComposer).first,
       );
       expect(composer.enabled, isFalse);
-      expect(find.text('连接后可输入消息并新建会话'), findsOneWidget, reason: '未连接时说明连接的作用');
-      for (final tooltip in ['添加与指令', '权限预设', '选择模型']) {
-        expect(
-          circleButton(tester, tooltip).onPressed,
-          isNull,
-          reason: '$tooltip 在未连接时不可点',
-        );
-      }
+      expect(find.text('先连接一台电脑'), findsOneWidget);
+      final add = tester.widget<IconButton>(
+        find.ancestor(
+          of: find.byTooltip('添加与指令'),
+          matching: find.byType(IconButton),
+        ),
+      );
+      expect(add.onPressed, isNull, reason: '未连接时加号不可点');
+
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('键盘收起后纯浏览缩回缩小态，有草稿保持展开', (tester) async {
+      addTearDown(tester.view.resetViewInsets);
+      await _show(tester, _HomeSource(projects: _projects()));
+
+      await tester.tap(find.byKey(PocketComposer.inputKey));
+      await tester.pumpAndSettle();
+      expect(modeOf(tester), PocketComposerMode.composing);
+
+      tester.view.viewInsets = const FakeViewPadding(bottom: 600);
+      await tester.pumpAndSettle();
+      expect(modeOf(tester), PocketComposerMode.composing);
+
+      tester.view.resetViewInsets();
+      await tester.pumpAndSettle();
+      expect(
+        modeOf(tester),
+        PocketComposerMode.browse,
+        reason: '键盘收起且无草稿回到缩小态',
+      );
+
+      await tester.enterText(find.byKey(PocketComposer.inputKey), '写了一半');
+      await tester.pump();
+      tester.view.viewInsets = const FakeViewPadding(bottom: 600);
+      await tester.pumpAndSettle();
+      tester.view.resetViewInsets();
+      await tester.pumpAndSettle();
+      expect(
+        modeOf(tester),
+        PocketComposerMode.composing,
+        reason: '有草稿时键盘收起仍保持展开',
+      );
 
       await tester.pumpWidget(const SizedBox());
       await tester.pumpAndSettle();

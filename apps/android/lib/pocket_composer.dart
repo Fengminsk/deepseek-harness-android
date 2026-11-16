@@ -73,6 +73,7 @@ class PocketReasoningPanel {
     this.loading = false,
     this.error,
     this.busy = false,
+    this.hint,
     this.onOpenModels,
     this.onRetry,
     this.onSelected,
@@ -98,6 +99,11 @@ class PocketReasoningPanel {
 
   /// 是否正在提交一次强度切换；期间滑杆不可点。
   final bool busy;
+
+  /// 面板底部的说明行；为空时不显示。
+  ///
+  /// 首页的推理面板是只读的，用它说明「默认模型与强度在远程设置里修改」。
+  final String? hint;
 
   /// 点按模型名：打开完整的模型选择弹层；为 null 时这一行只展示。
   final VoidCallback? onOpenModels;
@@ -203,6 +209,15 @@ class PocketComposer extends StatelessWidget {
 
   /// 某一档强度滑杆档位的标识。
   static Key stopKeyFor(String id) => ValueKey('$stopKeyPrefix$id');
+
+  /// 工具条小图标按钮的点击热区边长（视觉更小，但热区仍 ≥40dp）。
+  static const double toolbarButtonSize = 40;
+
+  /// 工具条小图标按钮的图标尺寸。
+  static const double toolbarIconSize = 20;
+
+  /// 右侧发送/停止实心圆钮的直径（强调色实心，比工具条动作按钮大）。
+  static const double actionButtonSize = 44;
 
   /// 卡片状态；由父页面持有。
   final PocketComposerMode mode;
@@ -424,14 +439,17 @@ class PocketComposer extends StatelessWidget {
         // 缩小时加号在行内；展开时它移到下方工具条，这里留零宽占位以保持
         // 输入框在同一个 Row 槽位（元素的父子关系不变，焦点不闪断）。
         SizedBox(
-          width: browse ? 46 : 0,
+          width: browse ? toolbarButtonSize + 4 : 0,
           height: 44,
           child: browse
-              ? _iconButton(
-                  context,
-                  icon: Icons.add_rounded,
-                  label: addLabel,
-                  onPressed: onAdd,
+              ? Align(
+                  alignment: Alignment.centerLeft,
+                  child: _compactIconButton(
+                    context,
+                    icon: Icons.add_rounded,
+                    label: addLabel,
+                    onPressed: onAdd,
+                  ),
                 )
               : null,
         ),
@@ -480,49 +498,66 @@ class PocketComposer extends StatelessWidget {
     );
   }
 
-  /// 缩小态里输入框右侧的按钮：盾牌（保持既有权限入口）、可选麦克风、发送。
+  /// 缩小态里输入框右侧的按钮：可选麦克风与发送圆钮。
+  ///
+  /// 参照图的缩小态只有加号、占位文案与右侧圆钮；权限预设只在展开态的工具条里
+  /// （它本来就是「进入会话后」才有意义的入口），不在浏览态出现。
   List<Widget> _browseTrailing(BuildContext context) {
-    final permissions = _permissionsButton(context);
     final mic = _micButton(context);
     return <Widget>[
-      permissions,
-      if (mic != null) ...[const SizedBox(width: 2), mic],
-      const SizedBox(width: 2),
+      if (mic != null) ...[mic, const SizedBox(width: 6)],
       _trailingAction(context),
     ];
   }
 
   // ------------------------------------------------------------ 工具条
 
-  Widget _toolbar(BuildContext context) => Row(
-    crossAxisAlignment: CrossAxisAlignment.center,
-    children: [
-      _iconButton(
-        context,
-        icon: Icons.add_rounded,
-        label: addLabel,
-        onPressed: onAdd,
-      ),
-      const SizedBox(width: 2),
-      _permissionsButton(context),
-      ..._reasoningToolbarItems(context),
-      for (final action in actions) ...[
-        const SizedBox(width: 2),
-        _actionButton(context, action),
+  /// 展开态工具条：左侧一行小图标动作，右侧是强调色实心圆钮。
+  ///
+  /// 动作按钮是「小图标 + 无大圆底」的紧凑样式（40dp 热区、20dp 图标，按压时
+  /// 一层极淡的底色）；只有最右侧的发送/停止保留实心圆钮。权限按钮只在调用方
+  /// 提供了回调或置灰原因时出现——首页没有会话、没有权限入口，就不画它。
+  Widget _toolbar(BuildContext context) {
+    final permissionsLabel = this.permissionsLabel?.trim();
+    final showPermissions =
+        onPermissions != null ||
+        (permissionsLabel != null && permissionsLabel.isNotEmpty);
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        _compactIconButton(
+          context,
+          icon: Icons.add_rounded,
+          label: addLabel,
+          onPressed: onAdd,
+        ),
+        if (showPermissions) ...[
+          const SizedBox(width: 6),
+          _compactIconButton(
+            context,
+            icon: Icons.shield_outlined,
+            label: permissionsLabel == null || permissionsLabel.isEmpty
+                ? '权限预设'
+                : permissionsLabel,
+            onPressed: onPermissions,
+          ),
+        ],
+        if (_reasoningButton(context) case final button?) ...[
+          const SizedBox(width: 6),
+          button,
+        ],
+        for (final action in actions) ...[
+          const SizedBox(width: 6),
+          _actionButton(context, action),
+        ],
+        const Spacer(),
+        if (_micButton(context) case final mic?) ...[
+          mic,
+          const SizedBox(width: 6),
+        ],
+        _trailingAction(context),
       ],
-      const Spacer(),
-      if (_micButton(context) case final mic?) ...[
-        mic,
-        const SizedBox(width: 2),
-      ],
-      _trailingAction(context),
-    ],
-  );
-
-  List<Widget> _reasoningToolbarItems(BuildContext context) {
-    final button = _reasoningButton(context);
-    if (button == null) return const <Widget>[];
-    return <Widget>[const SizedBox(width: 2), button];
+    );
   }
 
   Widget? _reasoningButton(BuildContext context) {
@@ -532,51 +567,78 @@ class PocketComposer extends StatelessWidget {
         (disabledReason == null || disabledReason.isEmpty)) {
       return null;
     }
-    return GlassButton(
+    return _compactIconButton(
+      context,
       icon: Icons.speed_rounded,
       label: onReasoning == null ? disabledReason! : reasoningLabel,
-      solid: reasoningActive,
-      onPressed: enabled ? onReasoning : null,
-    );
-  }
-
-  Widget _permissionsButton(BuildContext context) {
-    final label = permissionsLabel?.trim();
-    return GlassButton(
-      icon: Icons.shield_outlined,
-      label: label == null || label.isEmpty ? '权限预设' : label,
-      onPressed: enabled ? onPermissions : null,
+      active: reasoningActive,
+      onPressed: onReasoning,
     );
   }
 
   Widget? _micButton(BuildContext context) {
     final onMic = this.onMic;
     if (onMic == null) return null;
-    return GlassButton(
+    return _compactIconButton(
+      context,
       icon: Icons.mic_none_rounded,
       label: micLabel,
-      onPressed: enabled ? onMic : null,
+      onPressed: onMic,
     );
   }
 
   Widget _actionButton(BuildContext context, PocketComposerAction action) =>
-      GlassButton(
+      _compactIconButton(
+        context,
         icon: action.icon,
         label: action.label,
-        solid: action.active,
-        onPressed: enabled ? action.onPressed : null,
+        active: action.active,
+        onPressed: action.onPressed,
       );
 
-  Widget _iconButton(
+  /// 工具条上的紧凑圆形按钮：40dp 热区、20dp 图标、没有常驻圆底。
+  ///
+  /// [active] 为 true 时（例如推理面板已展开）加一层很淡的强调色底并换用强调色
+  /// 图标，用于标示当前面板；按压时只有一层极淡的 onSurfaceVariant。
+  Widget _compactIconButton(
     BuildContext context, {
     required IconData icon,
     required String label,
     required VoidCallback? onPressed,
-  }) => GlassButton(
-    icon: icon,
-    label: label,
-    onPressed: enabled ? onPressed : null,
-  );
+    bool active = false,
+  }) {
+    final colors = Theme.of(context).colorScheme;
+    final effective = enabled ? onPressed : null;
+    return ElasticPress(
+      enabled: effective != null,
+      preserveAspectRatio: true,
+      child: IconButton(
+        tooltip: label,
+        onPressed: effective,
+        icon: Icon(icon),
+        style: IconButton.styleFrom(
+          fixedSize: const Size.square(toolbarButtonSize),
+          minimumSize: const Size.square(toolbarButtonSize),
+          maximumSize: const Size.square(toolbarButtonSize),
+          iconSize: toolbarIconSize,
+          padding: EdgeInsets.zero,
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          shape: const CircleBorder(),
+          backgroundColor: active
+              ? colors.primary.withValues(alpha: .14)
+              : Colors.transparent,
+          disabledBackgroundColor: Colors.transparent,
+          foregroundColor: active ? colors.primary : colors.onSurface,
+          disabledForegroundColor: colors.onSurfaceVariant.withValues(
+            alpha: .38,
+          ),
+          // 只在按压/悬停时出现一层极淡的底色（触摸设备上就是按压反馈）。
+          overlayColor: colors.onSurfaceVariant.withValues(alpha: .12),
+          splashFactory: NoSplash.splashFactory,
+        ),
+      ),
+    );
+  }
 
   /// 右侧主圆钮：发送中显示进度；可停止时显示停止；否则是发送。
   ///
@@ -585,7 +647,7 @@ class PocketComposer extends StatelessWidget {
   Widget _trailingAction(BuildContext context) {
     if (sending) {
       return const SizedBox.square(
-        dimension: 44,
+        dimension: actionButtonSize,
         child: Center(
           child: SizedBox.square(
             dimension: 18,
@@ -675,6 +737,19 @@ class PocketComposer extends StatelessWidget {
             selectedId: data.selectedId,
             busy: data.busy,
             onSelected: data.onSelected,
+          ),
+        if (data.hint case final hint? when hint.trim().isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(10, 8, 10, 0),
+            child: Text(
+              hint.trim(),
+              key: const ValueKey('pocket-composer-reasoning-hint'),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: AppTextStyle.footnote
+                  .of(context)
+                  .copyWith(color: colors.onSurfaceVariant),
+            ),
           ),
       ],
     );

@@ -5,10 +5,12 @@
 // 构造真实会话数据源，但替身报告连接就绪、页面自建的连接控制器仍是空闲态，因此不会
 // 发出请求。
 
+import 'package:dsh_android/pocket_composer.dart';
 import 'package:dsh_android/remote_dsh_conversation.dart';
 import 'package:dsh_android/remote_dsh_live_source.dart';
 import 'package:dsh_android/remote_dsh_page.dart';
 import 'package:dsh_android/remote_dsh_settings_page.dart';
+import 'package:dsh_android/remote_dsh_widgets.dart';
 import 'package:dsh_android/remote_workspace_files_page.dart';
 import 'package:dsh_android/ui.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -315,6 +317,265 @@ void main() {
 
       expect(find.textContaining('「设置」暂未开放'), findsOneWidget);
       expect(find.byType(RemoteDshSettingsPage), findsNothing);
+    });
+  });
+
+  group('首页输入卡默认模型面板', () {
+    /// 展开输入卡并点推理按钮进入默认模型面板。
+    Future<void> openPicker(WidgetTester tester) async {
+      await tester.tap(find.byKey(PocketComposer.inputKey));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('推理强度'));
+      await tester.pumpAndSettle();
+    }
+
+    PocketComposerMode modeOf(WidgetTester tester) =>
+        tester.widget<RemoteComposer>(find.byType(RemoteComposer).first).mode;
+
+    testWidgets('键盘弹起时点推理按钮进入 picker，键盘收起/再弹起都不折叠面板', (tester) async {
+      addTearDown(tester.view.resetViewInsets);
+      addTearDown(tester.view.resetPhysicalSize);
+      final settings = FakeRemoteSettingsSource(
+        describes: <RemoteDshSettingsSnapshot>[_settingsSnapshot()],
+      );
+      final source = _source(
+        files: FakeRemoteFilesSource(),
+        settings: settings,
+      );
+      await _show(tester, source);
+
+      await tester.tap(find.byKey(PocketComposer.inputKey));
+      await tester.pumpAndSettle();
+      // 模拟键盘弹起（真实输入法会让 viewInsets 0→>0）。
+      tester.view.viewInsets = const FakeViewPadding(bottom: 600);
+      await tester.pumpAndSettle();
+      expect(modeOf(tester), PocketComposerMode.composing);
+
+      await tester.tap(find.byTooltip('推理强度'));
+      await tester.pumpAndSettle();
+      expect(modeOf(tester), PocketComposerMode.picker);
+      expect(find.text('DeepSeek-V4-Flash'), findsOneWidget);
+      // 输入区仍在树上（透明覆盖，不吃指针），只是被面板盖住；键盘不会因为
+      // 面板替换输入区而被卸载。
+      expect(find.byKey(PocketComposer.inputKey), findsOneWidget);
+      expect(find.byKey(PocketComposer.inputKey).hitTestable(), findsNothing);
+
+      // 键盘收起（insets → 0）不得把面板折叠回 browse。
+      tester.view.resetViewInsets();
+      await tester.pumpAndSettle();
+      expect(
+        modeOf(tester),
+        PocketComposerMode.picker,
+        reason: '键盘收起不得折叠 picker',
+      );
+      expect(find.text('DeepSeek-V4-Flash'), findsOneWidget);
+
+      // 面板打开期间键盘再弹起（0→>0）同样不折叠。
+      tester.view.viewInsets = const FakeViewPadding(bottom: 600);
+      await tester.pumpAndSettle();
+      expect(modeOf(tester), PocketComposerMode.picker);
+      expect(find.text('DeepSeek-V4-Flash'), findsOneWidget);
+
+      // 面板打开期间再来一次「insets 不变但 metrics 抖动」（窗口尺寸变化）也
+      // 不得折叠。
+      tester.view.physicalSize = const Size(2400, 1802);
+      await tester.pump();
+      tester.view.physicalSize = const Size(2400, 1800);
+      await tester.pumpAndSettle();
+      expect(modeOf(tester), PocketComposerMode.picker);
+      expect(find.text('DeepSeek-V4-Flash'), findsOneWidget);
+    });
+
+    testWidgets('点推理按钮显示电脑默认模型与默认强度（只读）', (tester) async {
+      final settings = FakeRemoteSettingsSource(
+        describes: <RemoteDshSettingsSnapshot>[_settingsSnapshot()],
+      );
+      final source = _source(
+        files: FakeRemoteFilesSource(),
+        settings: settings,
+      );
+      await _show(tester, source);
+
+      await openPicker(tester);
+
+      expect(modeOf(tester), PocketComposerMode.picker);
+      expect(
+        find.text('DeepSeek-V4-Flash'),
+        findsOneWidget,
+        reason: '目录里的模型显示名',
+      );
+      expect(find.text('默认强度'), findsOneWidget, reason: '电脑没有指定推理强度');
+      expect(
+        find.byType(ReasoningEffortSlider),
+        findsNothing,
+        reason: '这个模型没有声明强度档位，只显示模型名',
+      );
+      expect(find.textContaining('可在「设置」中修改'), findsOneWidget);
+      expect(settings.describeCalls, 1, reason: '第一次打开面板读一次设置');
+
+      // 再次打开面板复用缓存，不重复读设置。
+      await tester.tap(find.byTooltip('推理强度'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('推理强度'));
+      await tester.pumpAndSettle();
+      expect(settings.describeCalls, 1);
+    });
+
+    testWidgets('默认模型声明强度时面板显示当前档位，滑杆只读', (tester) async {
+      final settings = FakeRemoteSettingsSource(
+        describes: <RemoteDshSettingsSnapshot>[
+          fakeSettingsSnapshot(
+            sections: <RemoteDshSettingsSection>[
+              fakeDefaultModelSection(
+                model: 'deepseek-v4-pro',
+                reasoningEffort: 'high',
+              ),
+            ],
+          ),
+        ],
+      );
+      final source = _source(
+        files: FakeRemoteFilesSource(),
+        settings: settings,
+      );
+      await _show(tester, source);
+
+      await openPicker(tester);
+
+      expect(find.text('DeepSeek-V4-Pro'), findsOneWidget);
+      expect(find.text('高'), findsOneWidget);
+      expect(find.byType(ReasoningEffortSlider), findsOneWidget);
+
+      // 只读：点档位不会写回电脑设置。
+      await tester.tap(
+        find.byKey(PocketComposer.stopKeyFor('low')),
+        warnIfMissed: false,
+      );
+      await tester.pump();
+      expect(settings.mutations, isEmpty);
+    });
+
+    testWidgets('面板第一行打开远程设置页，返回后可以重新读取默认模型', (tester) async {
+      final settings = FakeRemoteSettingsSource(
+        describes: <RemoteDshSettingsSnapshot>[_settingsSnapshot()],
+      );
+      final source = _source(
+        files: FakeRemoteFilesSource(),
+        settings: settings,
+      );
+      final log = await _show(tester, source);
+      await openPicker(tester);
+
+      await tester.tap(find.byKey(PocketComposer.modelsKey));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(RemoteDshSettingsPage), findsOneWidget);
+      expect(
+        log.names,
+        contains(destinationRouteName(RemoteDshSettingsPage.routeDestination)),
+      );
+
+      tester.state<NavigatorState>(find.byType(Navigator)).pop();
+      await tester.pumpAndSettle();
+
+      // 返回后缓存作废：再打开面板会重新读一次设置（设置页自己也读过一次，
+      // 因此这里只断言「又增加了一次」，不断言总数）。
+      final before = settings.describeCalls;
+      await openPicker(tester);
+      expect(settings.describeCalls, before + 1);
+    });
+
+    testWidgets('电脑声明设置不可用时面板内显示原因，没有重试死按钮', (tester) async {
+      final settings = FakeRemoteSettingsSource(
+        capability: const RemoteDshCapability.notDeclared(
+          '这台电脑没有声明「settings.describe」，暂时无法使用。',
+        ),
+        describes: <RemoteDshSettingsSnapshot>[_settingsSnapshot()],
+      );
+      final source = _source(
+        files: FakeRemoteFilesSource(),
+        settings: settings,
+      );
+      await _show(tester, source);
+      await openPicker(tester);
+
+      expect(find.textContaining('「设置」不可用'), findsOneWidget);
+      expect(find.textContaining('没有声明「settings.describe」'), findsOneWidget);
+      expect(find.byKey(PocketComposer.reasoningRetryKey), findsNothing);
+      expect(settings.describeCalls, 0);
+    });
+
+    testWidgets('数据源不支持设置能力时面板给出「不支持」说明', (tester) async {
+      await _show(tester, _ReadOnlySource(_projects()));
+      await openPicker(tester);
+
+      expect(find.text('当前数据源不支持读取电脑设置。'), findsOneWidget);
+      expect(find.byKey(PocketComposer.reasoningRetryKey), findsNothing);
+    });
+
+    testWidgets('点列表退出面板，再点推理按钮可再次收起', (tester) async {
+      final source = _source(
+        files: FakeRemoteFilesSource(),
+        settings: FakeRemoteSettingsSource(
+          describes: <RemoteDshSettingsSnapshot>[_settingsSnapshot()],
+        ),
+      );
+      await _show(tester, source);
+      await openPicker(tester);
+      expect(find.byKey(PocketComposer.modelsKey), findsOneWidget);
+
+      // 点列表空白处收起面板（不主动唤起键盘，无草稿 → 缩回缩小态）。
+      final content = tester.getRect(
+        find.byKey(const ValueKey('remote-home-content')),
+      );
+      await tester.tapAt(content.topLeft + const Offset(8, 8));
+      await tester.pumpAndSettle();
+      expect(find.byKey(PocketComposer.modelsKey), findsNothing);
+      expect(modeOf(tester), PocketComposerMode.browse);
+
+      // 展开后再点推理按钮两次：进入与退出面板都不依赖键盘。
+      await tester.tap(find.byKey(PocketComposer.inputKey));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('推理强度'));
+      await tester.pumpAndSettle();
+      expect(modeOf(tester), PocketComposerMode.picker);
+      await tester.tap(find.byTooltip('推理强度'));
+      await tester.pumpAndSettle();
+      expect(modeOf(tester), PocketComposerMode.composing);
+    });
+
+    testWidgets('点列表退出时按草稿决定展开态：无草稿回 browse，有草稿保持 composing', (tester) async {
+      final source = _source(
+        files: FakeRemoteFilesSource(),
+        settings: FakeRemoteSettingsSource(
+          describes: <RemoteDshSettingsSnapshot>[_settingsSnapshot()],
+        ),
+      );
+      await _show(tester, source);
+      final content = tester.getRect(
+        find.byKey(const ValueKey('remote-home-content')),
+      );
+
+      // 有草稿：进入面板再点列表，应回到展开态（不丢草稿的可见性）。
+      await tester.enterText(find.byKey(PocketComposer.inputKey), '写了一半');
+      await tester.pump();
+      expect(modeOf(tester), PocketComposerMode.composing);
+      await tester.tap(find.byTooltip('推理强度'));
+      await tester.pumpAndSettle();
+      expect(modeOf(tester), PocketComposerMode.picker);
+      await tester.tapAt(content.topLeft + const Offset(8, 8));
+      await tester.pumpAndSettle();
+      expect(modeOf(tester), PocketComposerMode.composing);
+      expect(find.byKey(const ValueKey('remote-home-send')), findsOneWidget);
+
+      // 清空草稿后再点列表 → 缩回缩小态。
+      await tester.enterText(find.byKey(PocketComposer.inputKey), '');
+      await tester.pump();
+      await tester.tap(find.byTooltip('推理强度'));
+      await tester.pumpAndSettle();
+      await tester.tapAt(content.topLeft + const Offset(8, 8));
+      await tester.pumpAndSettle();
+      expect(modeOf(tester), PocketComposerMode.browse);
     });
   });
 

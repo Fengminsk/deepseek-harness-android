@@ -205,18 +205,28 @@ const PocketReasoningStop _medium = PocketReasoningStop(
 const PocketReasoningStop _high = PocketReasoningStop(id: 'high', label: '高');
 
 void main() {
-  testWidgets('缩小态是一行悬浮卡：加号、占位与盾牌，没有工具条动作', (tester) async {
+  testWidgets('缩小态是一行悬浮卡：加号、占位与发送圆钮，没有权限与工具条动作', (tester) async {
     await _pump(tester);
 
     expect(find.byKey(PocketComposer.rootKey), findsOneWidget);
     expect(find.byKey(PocketComposer.cardKey), findsOneWidget);
     expect(find.text('在 云端 上工作'), findsOneWidget);
     expect(find.byTooltip('添加与指令'), findsOneWidget);
-    expect(find.byTooltip('权限预设：工作区内修改'), findsOneWidget);
+    // 参照图的缩小态没有权限按钮：权限预设只在展开态的工具条里。
+    expect(find.byTooltip('权限预设：工作区内修改'), findsNothing);
     // 推理按钮只在展开态的工具条里。
     expect(find.byTooltip('推理强度'), findsNothing);
     // 没有草稿时不出现发送圆钮（既有页面断言依赖这里）。
     expect(find.byKey(PocketComposer.defaultSendKey), findsNothing);
+
+    // 缩小态加号也是紧凑按钮：40dp 热区、没有 44dp 大圆底。
+    expect(
+      tester.getSize(find.byTooltip('添加与指令')),
+      const Size(
+        PocketComposer.toolbarButtonSize,
+        PocketComposer.toolbarButtonSize,
+      ),
+    );
 
     // 卡片不贴边：左右各 16。
     final card = tester.getRect(find.byKey(PocketComposer.cardKey));
@@ -228,6 +238,51 @@ void main() {
         .5,
       ),
     );
+  });
+
+  testWidgets('缩小态没有权限预设按钮，展开后出现且小热区可点', (tester) async {
+    var permissions = 0;
+    await _pump(tester, onPermissions: () => permissions++, onReasoning: () {});
+    expect(find.byTooltip('权限预设：工作区内修改'), findsNothing);
+
+    await tester.tap(find.byKey(PocketComposer.inputKey));
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('权限预设：工作区内修改'), findsOneWidget);
+
+    // 工具条动作用小图标：40dp 热区（视觉只有 20dp 图标、无大圆底）。
+    final add = tester.getSize(find.byTooltip('添加与指令'));
+    expect(add, const Size(40, 40));
+    final permissionsButton = tester.getSize(find.byTooltip('权限预设：工作区内修改'));
+    expect(permissionsButton, const Size(40, 40));
+
+    await tester.tap(find.byTooltip('权限预设：工作区内修改'));
+    await tester.pump();
+    expect(permissions, 1);
+  });
+
+  testWidgets('没有权限回调也没有置灰原因时，工具条不画权限按钮', (tester) async {
+    await _pump(
+      tester,
+      initialMode: PocketComposerMode.composing,
+      onReasoning: () {},
+      permissionsLabel: null,
+    );
+    expect(find.byTooltip('权限预设'), findsNothing, reason: '首页没有会话，不画死按钮');
+    expect(find.byTooltip('推理强度'), findsOneWidget);
+  });
+
+  testWidgets('右侧发送圆钮是强调色实心圆，直径 44dp', (tester) async {
+    await _pump(
+      tester,
+      onSend: () {},
+      initialMode: PocketComposerMode.composing,
+    );
+    await tester.enterText(find.byKey(PocketComposer.inputKey), '你好');
+    await tester.pump();
+
+    final send = tester.getRect(find.byKey(PocketComposer.defaultSendKey));
+    expect(send.width, PocketComposer.actionButtonSize);
+    expect(send.height, PocketComposer.actionButtonSize);
   });
 
   testWidgets('聚焦展开：工具条出现，卡片向上生长', (tester) async {
@@ -621,10 +676,10 @@ void main() {
       tester.widget<TextField>(find.byKey(PocketComposer.inputKey)).enabled,
       isFalse,
     );
-    final add = tester.widget<GlassButton>(
+    final add = tester.widget<IconButton>(
       find.ancestor(
         of: find.byTooltip('添加与指令'),
-        matching: find.byType(GlassButton),
+        matching: find.byType(IconButton),
       ),
     );
     expect(add.onPressed, isNull);

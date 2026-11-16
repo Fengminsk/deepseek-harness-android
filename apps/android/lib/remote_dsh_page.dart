@@ -1,12 +1,17 @@
 // 远程 DSH 首页：连接一台电脑后，浏览那台电脑上的项目与会话。
 //
 // 页面结构对齐设计参照截图：自建浮动头部（菜单、标题加下拉箭头、搜索）、
-// 设备胶囊条、「项目」分组与底部输入条；布局沿用 PocketScaffold 的风格
+// 设备胶囊条、「项目」分组与底部悬浮输入卡；布局沿用 PocketScaffold 的风格
 // （全高滚动视口、内容让出头部、玻璃或实心表面）。
 //
 // 头部的搜索按钮把头部原地切成一个搜索输入框：输入时按项目名与会话标题在本地
-// 过滤，清空或关闭搜索后恢复完整列表。输入条在连接就绪后可用，提交非空内容会在
-// 那台电脑上新建一个会话并打开它；新建期间输入条不可用并显示「正在新建会话」。
+// 过滤，清空或关闭搜索后恢复完整列表。底部输入卡与会话页共用 `PocketComposer`
+// 的三态：缩小时只有加号、占位「与 <设备名> 新对话」与发送圆钮；聚焦输入、键盘
+// 弹起或有草稿时展开为「输入区 + 工具条」；点工具条上的推理按钮切换为「电脑默认
+// 模型 + 默认强度」只读面板（数据来自 `settings.describe` 与模型目录，修改入口是
+// 远程设置页）。首页没有会话，因此「+」弹层只说明「进入会话后可添加文件与指令」。
+// 输入卡在连接就绪后可用，提交非空内容会在那台电脑上新建一个会话并打开它；新建
+// 期间卡片右侧换成进度，失败保留草稿并给出电脑返回的原因。
 // 「已归档任务」菜单项打开独立的全屏目的地（`RemoteDshArchivedPage`），在那里
 // 可以查看并恢复电脑上已归档的会话。「电脑文件」与「设置」分别打开
 // `RemoteWorkspaceFilesPage` 与 `RemoteDshSettingsPage`；从这些目的地返回后首页
@@ -38,6 +43,8 @@ import 'chat_sidebar.dart';
 import 'flclash/daylight.dart';
 import 'flclash/popup.dart';
 import 'flclash/typography.dart';
+import 'model_reasoning.dart';
+import 'pocket_composer.dart';
 import 'remote_connection.dart';
 import 'remote_conversation_live_source.dart';
 import 'remote_dsh_archived_page.dart';
@@ -309,7 +316,8 @@ enum _HomeMenuChoice {
   settings,
 }
 
-class _RemoteDshPageState extends State<RemoteDshPage> {
+class _RemoteDshPageState extends State<RemoteDshPage>
+    with WidgetsBindingObserver {
   /// 浮动头部的渲染对象，用来算出标题菜单的锚点。
   final _headerKey = GlobalKey();
   final _composer = TextEditingController();
@@ -328,8 +336,57 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
   /// 是否正在那台电脑上新建会话。
   bool _creating = false;
 
-  /// 输入条是否为空草稿；用来决定发送按钮是否出现，避免每次按键都重建整页。
+  /// 输入卡是否为空草稿；用来决定发送按钮是否出现，避免每次按键都重建整页。
   bool _draftEmpty = true;
+
+  /// 底部输入卡的当前基础状态（picker 打开时实际状态由 [_pickerOpen] 决定）。
+  ///
+  /// 缩小态（[PocketComposerMode.browse]）只显示加号、占位文案与发送圆钮；聚焦、
+  /// 键盘弹起或有草稿时展开为 [PocketComposerMode.composing]；点模型/推理按钮后
+  /// 切换为只读的默认模型面板 [PocketComposerMode.picker]。
+  PocketComposerMode _composerMode = PocketComposerMode.browse;
+
+  /// 默认模型面板是否打开。
+  ///
+  /// 与 [_composerMode] 分开记一个粘滞标记：一旦用户点了推理按钮，picker 就
+  /// 不会因为键盘收起、焦点变化或 metrics 抖动被折叠回 browse——只有显式退出
+  /// （再点推理按钮、点列表、发送、打开别的页面）才清除。真机上键盘/IME 的
+  /// 异步事件可能晚于点按到达，只看瞬时的 insets 会把刚打开的面板吃掉。
+  bool _pickerOpen = false;
+
+  /// 实际渲染用的输入卡状态：面板打开时恒为 picker。
+  PocketComposerMode get _effectiveComposerMode =>
+      _pickerOpen ? PocketComposerMode.picker : _composerMode;
+
+  /// 记录一次状态切换（仅 debug 包输出，真机诊断用）+ 赋值。
+  ///
+  /// 真机上键盘与焦点事件是异步的，出问题时可以用
+  /// `adb logcat -s flutter` 看到是哪条事件把卡片切走的。
+  void _setComposerMode(PocketComposerMode next, String reason) {
+    if (_composerMode == next) return;
+    assert(() {
+      debugPrint(
+        '[remote-home-composer] $reason: '
+        '${_composerMode.name} -> ${next.name}',
+      );
+      return true;
+    }());
+    _composerMode = next;
+  }
+
+  /// 上一次 metrics 事件里键盘是否真的可见；只有真正的 0→可见→0 才改状态。
+  bool _keyboardVisible = false;
+
+  /// 首页输入卡的默认模型数据：电脑设置快照与模型目录（只用于显示名/档位）。
+  ///
+  /// 首页没有会话，因此这里只读：默认模型来自 `settings.describe` 的
+  /// `agent-default-model` 一节，模型目录来自 `session.modelCatalog`；修改入口是
+  /// 远程设置页。两者都在第一次打开面板时读一次并缓存。
+  RemoteDshSettingsSnapshot? _composerSettings;
+  RemoteDshModelCatalog? _composerCatalog;
+  bool _composerSettingsLoading = false;
+  String? _composerSettingsError;
+  bool _composerSettingsRetryable = false;
 
   /// 已归档任务页的数据来源；当前数据源不支持归档时为 null。
   RemoteDshArchiveSource? _archivedSource;
@@ -501,6 +558,8 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
     }
     _connection.addListener(_onConnectionChanged);
     widget.runtime.addListener(_onRuntimeChanged);
+    WidgetsBinding.instance.addObserver(this);
+    _composerFocus.addListener(_onComposerFocusChanged);
     _localRuntimeReady = widget.runtime.ready;
     _view = RemoteDshView(
       connection: _source.connection,
@@ -519,6 +578,8 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
   void dispose() {
     _connection.removeListener(_onConnectionChanged);
     widget.runtime.removeListener(_onRuntimeChanged);
+    WidgetsBinding.instance.removeObserver(this);
+    _composerFocus.removeListener(_onComposerFocusChanged);
     if (_ownsConnection) _connection.dispose();
     _composer.dispose();
     _composerFocus.dispose();
@@ -748,6 +809,7 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
   /// 头部搜索按钮：把头部原地切成搜索输入框。
   void _openSearch() {
     if (_searching) return;
+    _exitComposerPanel(keepKeyboard: false);
     setState(() => _searching = true);
   }
 
@@ -776,11 +838,265 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
     setState(() => _searchQuery = value);
   }
 
-  /// 草稿从空变成非空（或反过来）时重建一次，决定发送按钮是否出现。
+  /// 草稿从空变成非空（或反过来）时重建一次，决定发送按钮是否出现，并在有草稿
+  /// 时保持输入卡展开（即使输入框没拿到焦点，例如程序写入草稿）。
   void _onComposerChanged(String value) {
     final empty = value.trim().isEmpty;
-    if (empty == _draftEmpty) return;
-    setState(() => _draftEmpty = empty);
+    if (empty == _draftEmpty) {
+      if (!empty &&
+          !_pickerOpen &&
+          _composerMode == PocketComposerMode.browse) {
+        setState(() => _setComposerMode(PocketComposerMode.composing, '草稿'));
+      }
+      return;
+    }
+    setState(() {
+      _draftEmpty = empty;
+      if (!empty &&
+          !_pickerOpen &&
+          _composerMode == PocketComposerMode.browse) {
+        _setComposerMode(PocketComposerMode.composing, '草稿');
+      }
+    });
+  }
+
+  // ------------------------------------------------------------ 输入卡三态
+
+  /// 聚焦输入框即展开输入卡；失焦时只有「纯浏览」才缩回缩小态。
+  ///
+  /// 面板打开期间忽略焦点事件：面板是粘滞的，不能因为 IME 收起带来的焦点变化
+  /// 把卡片折叠回 browse。
+  void _onComposerFocusChanged() {
+    if (!mounted || _pickerOpen) return;
+    if (_composerFocus.hasFocus) {
+      if (_composerMode == PocketComposerMode.browse) {
+        setState(() => _setComposerMode(PocketComposerMode.composing, '聚焦'));
+      }
+      return;
+    }
+    if (_draftEmpty && _composerMode == PocketComposerMode.composing) {
+      setState(() => _setComposerMode(PocketComposerMode.browse, '失焦'));
+    }
+  }
+
+  /// 键盘显隐后同步输入卡状态，语义与远程会话页一致。
+  ///
+  /// 只有真正的显隐切换才改状态（聚焦时 Android 会先派发「键盘仍不可见」的
+  /// metrics，误判会让卡片刚展开就缩回并解焦）；面板打开期间完全不改状态——
+  /// 键盘被 IME 收起也不折叠 picker；输入态按草稿决定是否缩回；收起键盘不解焦，
+  /// 点卡片可立刻把键盘唤回来。
+  void _syncComposerWithKeyboard() {
+    if (!mounted) return;
+    final visible = MediaQuery.viewInsetsOf(context).bottom > 0;
+    final wasVisible = _keyboardVisible;
+    _keyboardVisible = visible;
+    if (visible == wasVisible) return;
+    if (_pickerOpen) return;
+    if (visible) {
+      if (_composerMode == PocketComposerMode.browse) {
+        setState(() => _setComposerMode(PocketComposerMode.composing, '键盘弹起'));
+      }
+      return;
+    }
+    if (!_draftEmpty) return;
+    setState(() => _setComposerMode(PocketComposerMode.browse, '键盘收起'));
+  }
+
+  @override
+  void didChangeMetrics() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _syncComposerWithKeyboard();
+    });
+  }
+
+  /// 把焦点交给输入框，并在下一帧补一次输入法显示。
+  ///
+  /// 与远程会话页同一套处理：真机上输入框已聚焦但 IME 被系统藏起时，再点一次
+  /// 不会自动弹键盘，显式 `TextInput.show` 才能让一次点击就进入输入。
+  void _requestComposerFocus() {
+    if (!_composerFocus.hasFocus) _composerFocus.requestFocus();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_composerFocus.hasFocus) return;
+      unawaited(_showComposerInput());
+    });
+  }
+
+  Future<void> _showComposerInput() async {
+    try {
+      await SystemChannels.textInput.invokeMethod<void>('TextInput.show');
+    } on Object {
+      // 没有活动输入连接（或测试环境没有通道）时忽略：展开与焦点不依赖它。
+    }
+  }
+
+  /// 打开/收起默认模型面板（picker）。
+  ///
+  /// 面板是粘滞的：`_pickerOpen` 一旦置位，键盘收起、焦点变化、metrics 抖动都
+  /// 不会把它折叠回 browse；只有显式退出（再点推理按钮、点列表、发送、打开别的
+  /// 页面）才清除。打开时不再主动 requestFocus/TextInput.show——用户是在键盘
+  /// 弹起、工具条可见时点的按钮，无需再扰动 IME；万一 IME 被系统收起，面板也
+  /// 仍然可见（滑杆/模型行不依赖键盘 insets）。
+  void _toggleComposerPanel() {
+    if (_pickerOpen) {
+      _exitComposerPanel();
+      return;
+    }
+    setState(() {
+      _pickerOpen = true;
+      _setComposerMode(PocketComposerMode.picker, '打开面板');
+    });
+    if (_composerSettings == null && !_composerSettingsLoading) {
+      unawaited(_loadComposerSettings());
+    }
+  }
+
+  /// 收起默认模型面板。
+  ///
+  /// [keepKeyboard] 为 true（点推理按钮、发送）时回展开态并把焦点/键盘还给输入
+  /// 框；为 false（点列表、打开别的页面）时按键盘与草稿决定：键盘收起且无草稿
+  /// 就缩回缩小态，否则回到展开态但不主动唤起键盘。
+  void _exitComposerPanel({bool keepKeyboard = true}) {
+    if (!_pickerOpen) return;
+    final keyboardVisible = MediaQuery.viewInsetsOf(context).bottom > 0;
+    final expand = keepKeyboard || keyboardVisible || !_draftEmpty;
+    setState(() {
+      _pickerOpen = false;
+      _setComposerMode(
+        expand ? PocketComposerMode.composing : PocketComposerMode.browse,
+        keepKeyboard ? '关闭面板' : '关闭面板(不唤键盘)',
+      );
+    });
+    if (keepKeyboard) {
+      _requestComposerFocus();
+    } else if (!expand && _composerFocus.hasFocus) {
+      _composerFocus.unfocus();
+    }
+  }
+
+  /// 读一次电脑设置（默认模型）与模型目录；目录读取失败只影响显示名，不报错。
+  Future<void> _loadComposerSettings() async {
+    if (_composerSettingsLoading) return;
+    final settings = _settingsSource;
+    setState(() {
+      _composerSettingsLoading = true;
+      _composerSettingsError = null;
+      _composerSettingsRetryable = false;
+    });
+    if (settings == null) {
+      setState(() {
+        _composerSettingsLoading = false;
+        _composerSettingsError = '当前数据源不支持读取电脑设置。';
+      });
+      return;
+    }
+    final capability = settings.settingsCapability;
+    if (!capability.isAvailable) {
+      setState(() {
+        _composerSettingsLoading = false;
+        _composerSettingsError =
+            '「设置」不可用：${capability.reason ?? '这台电脑没有声明该能力。'}';
+      });
+      return;
+    }
+    try {
+      final snapshot = await settings.describeSettings();
+      RemoteDshModelCatalog? catalog;
+      final catalogSource = _catalogSource;
+      if (catalogSource != null) {
+        try {
+          catalog = await catalogSource.describeModelCatalog();
+        } on Object {
+          // 目录只用来把 provider/model 换成显示名与档位；读取失败时回退到路由
+          // 原文，面板仍然可用。
+        }
+      }
+      if (!mounted) return;
+      setState(() {
+        _composerSettings = snapshot;
+        _composerCatalog = catalog;
+        _composerSettingsLoading = false;
+      });
+    } on Object catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _composerSettingsError = error is PlatformException
+            ? (error.message ?? '读取电脑设置失败，请稍后重试。')
+            : '读取电脑设置失败：$error';
+        _composerSettingsRetryable = true;
+        _composerSettingsLoading = false;
+      });
+    }
+  }
+
+  /// 首页默认模型面板的数据：电脑默认模型 + 声明强度（只读）。
+  PocketReasoningPanel _composerReasoningPanel() {
+    final settings = _composerSettings;
+    final route = settings?.defaultModelSection?.defaultModelRoute;
+    final model = _composerModelOf(route);
+    final reasoning = model?.reasoning;
+    final efforts = reasoning?.efforts ?? const <RemoteDshReasoningLevel>[];
+    final selected = route?.reasoningEffort ?? reasoning?.defaultEffort;
+    final effort = route?.reasoningEffort;
+    final capability = _settingsSource?.settingsCapability;
+    final canOpenSettings =
+        _settingsSource != null && (capability?.isAvailable ?? false);
+    return PocketReasoningPanel(
+      modelLabel: route == null ? '未设置默认模型' : (model?.name ?? route.label),
+      effortLabel: effort == null ? '默认强度' : reasoningEffortLabel(effort),
+      stops: <PocketReasoningStop>[
+        for (final level in efforts)
+          PocketReasoningStop(
+            id: level.id,
+            label: reasoningEffortLabel(level.id, fallback: level.name),
+          ),
+      ],
+      selectedId: selected,
+      // 只读：没有 onSelected，滑杆只回显电脑上的默认强度。
+      loading: _composerSettingsLoading,
+      error: _composerSettingsError,
+      onOpenModels: canOpenSettings ? _openComposerSettings : null,
+      onRetry: _composerSettingsRetryable
+          ? () => unawaited(_loadComposerSettings())
+          : null,
+      hint: canOpenSettings ? '默认模型与强度由电脑设置决定，可在「设置」中修改' : '默认模型与强度由电脑设置决定',
+    );
+  }
+
+  /// 模型目录里按默认路由找到模型声明；目录缺失或找不到时为 null。
+  RemoteDshModel? _composerModelOf(RemoteDshModelRoute? route) {
+    final catalog = _composerCatalog;
+    if (catalog == null || route == null) return null;
+    for (final group in catalog.groups) {
+      if (group.id != route.provider) continue;
+      for (final model in group.models) {
+        if (model.id == route.model) return model;
+      }
+    }
+    return null;
+  }
+
+  /// 面板第一行/说明里的修改入口：退出面板并打开远程设置页。
+  Future<void> _openComposerSettings() async {
+    _exitComposerPanel(keepKeyboard: false);
+    await _openSettings();
+  }
+
+  /// 首页的「+」：打开与「添加与指令」同款弹层，说明首页没有会话、进入会话后可用。
+  void _openComposerAddSheet() {
+    _exitComposerPanel(keepKeyboard: false);
+    _composerFocus.unfocus();
+    unawaited(
+      showRemoteCommandsSheet(
+        context,
+        builder: (_) => const _ComposerAddHint(),
+      ),
+    );
+  }
+
+  /// 发送草稿：先收起面板，再走既有新建会话流程。
+  void _submitComposerDraft() {
+    _exitComposerPanel(keepKeyboard: false);
+    unawaited(_createSession());
   }
 
   /// 标题菜单的锚点：头部去掉左右两个 48dp 按钮后的中间段，坐标取导航器本地坐标。
@@ -847,6 +1163,7 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
   /// 展开标题菜单：排序项只切换本地状态，未接入的项给出可见提示。
   Future<void> _showHomeMenu() async {
     if (_menuRoute != null) return;
+    _exitComposerPanel(keepKeyboard: false);
     final anchor = _titleAnchor();
     if (anchor == null) return;
     final navigator = Navigator.of(context);
@@ -1244,13 +1561,14 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
     return null;
   }
 
-  /// 提交输入条内容：在那台电脑上新建一个会话，刷新项目列表并打开它。
+  /// 提交输入卡内容：在那台电脑上新建一个会话，刷新项目列表并打开它。
   ///
   /// 文本只用于触发新建：会话页由自己的数据源读取，本页不预填内容。新建期间
-  /// 输入条不可用并显示「正在新建会话」；失败保留原有草稿，并用可见提示给出
+  /// 输入卡不可用并显示「正在新建会话」；失败保留原有草稿，并用可见提示给出
   /// 电脑返回的原因。
   Future<void> _createSession() async {
     if (_creating) return;
+    _exitComposerPanel(keepKeyboard: false);
     final draft = _composer.text.trim();
     if (draft.isEmpty) return;
     final creator = _creator;
@@ -1300,6 +1618,7 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
   /// 同样走 [openDestination]：重复选择只会收起菜单，不会叠第二层。页面返回后重读
   /// 一次列表：用户可能在归档页里恢复过会话，首页的缓存不能继续显示旧结果。
   Future<void> _openArchived() async {
+    _exitComposerPanel(keepKeyboard: false);
     final source = _archivedSource;
     if (source == null) {
       _unavailable('已归档任务', detail: '当前数据源不支持读取已归档会话。');
@@ -1335,6 +1654,7 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
   /// 走 [openDestination]，重复选择不会叠第二层。能力在打开前再判一次：菜单行
   /// 已经按能力置灰，这里保留兜底，避免重新连接后能力变化时打开一个不可用页面。
   Future<void> _openFiles() async {
+    _exitComposerPanel(keepKeyboard: false);
     final source = _filesSource;
     if (source == null) {
       _unavailable('电脑文件', detail: '当前数据源不支持浏览电脑上的文件。');
@@ -1376,6 +1696,12 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
           RemoteDshSettingsPage(source: source, catalogSource: _catalogSource),
     );
     if (!mounted) return;
+    // 设置页里可能改过默认模型：输入卡面板的缓存作废，下次打开重新读取。
+    setState(() {
+      _composerSettings = null;
+      _composerCatalog = null;
+      _composerSettingsError = null;
+    });
     unawaited(_load());
   }
 
@@ -1422,7 +1748,7 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
       ),
   ];
 
-  /// 输入条里的目标电脑名：当前连接的那台；未连接时为空。
+  /// 输入卡里的目标电脑名：当前连接的那台；未连接时为空。
   String _composerDeviceLabel(RemoteDshView view) =>
       _activeComputerName(view) ?? '';
 
@@ -1449,18 +1775,16 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
     }
   }
 
-  /// 首页输入条下方的可操作说明。
+  /// 输入卡的占位文案。
   ///
-  /// 首页没有会话 id：加号（附件与指令）、权限预设与模型选择都要进入会话后才有
-  /// 数据源，因此三个按钮一律置灰，这里只写一份「到哪里能用」的说明，不把同一句
-  /// 原因重复挂到每个按钮上，也不留「能点但没用」的入口（设计文档 §4.2 第 4 条）。
-  /// 未连接时先说明连接的作用；新建会话期间由输入框占位文案承担，说明收起。
-  static String? _composerHint({
-    required bool connected,
-    required bool creating,
-  }) {
-    if (creating) return null;
-    return connected ? '进入会话后可添加附件与指令、切换权限预设与选择模型' : '连接后可输入消息并新建会话';
+  /// 连接后是「与 <设备名> 新对话」；未连接与新建期间各自说明当前状态。原来卡片
+  /// 下方那行「进入会话后可添加附件与指令…」的说明已并入占位文案与「+」弹层，
+  /// 卡片外没有额外说明行，保持悬浮感。
+  String _composerPlaceholder(RemoteDshView view, {required bool connected}) {
+    if (_creating) return '正在电脑上新建会话…';
+    if (!connected) return '先连接一台电脑';
+    final device = _composerDeviceLabel(view).trim();
+    return device.isEmpty ? '与这台电脑新对话' : '与 $device 新对话';
   }
 
   /// 按当前排序方式重排项目与会话。
@@ -1518,7 +1842,6 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
     final safe = MediaQuery.paddingOf(context);
     final view = _view;
     final connected = view.connection == RemoteDshConnectionState.connected;
-    final canSubmit = connected && !_creating && !_draftEmpty;
     return PopScope(
       // 搜索模式先收起搜索，再考虑离开页面：系统返回键不会直接关掉整个远程页。
       canPop: !_searching,
@@ -1607,51 +1930,44 @@ class _RemoteDshPageState extends State<RemoteDshPage> {
                       padding: const EdgeInsets.symmetric(horizontal: 18),
                     ),
                     const SizedBox(height: 14),
-                    Expanded(child: _content(view)),
+                    Expanded(
+                      child: Listener(
+                        key: const ValueKey('remote-home-content'),
+                        // 默认模型面板开着时，点列表收起面板（与远程会话页「点别处」
+                        // 同一意图）；不用 GestureDetector，避免抢走列表自身的点击。
+                        onPointerDown:
+                            _effectiveComposerMode == PocketComposerMode.picker
+                            ? (_) => _exitComposerPanel(keepKeyboard: false)
+                            : null,
+                        child: _content(view),
+                      ),
+                    ),
+                    // 悬浮输入卡：缩小/展开/默认模型面板三态，与远程会话页同一外观。
                     Padding(
-                      padding: EdgeInsets.fromLTRB(16, 10, 16, safe.bottom + 8),
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.center,
-                        children: [
-                          Expanded(
-                            child: RemoteComposer(
-                              deviceLabel: _composerDeviceLabel(view),
-                              controller: _composer,
-                              focusNode: _composerFocus,
-                              enabled: connected && !_creating,
-                              placeholder: _creating
-                                  ? '正在电脑上新建会话…'
-                                  : (connected ? null : '先连接一台电脑'),
-                              hint: _composerHint(
-                                connected: connected,
-                                creating: _creating,
-                              ),
-                              onChanged: _onComposerChanged,
-                              // 首页没有会话：这几个能力进入会话后才有数据源，
-                              // 回调传 null 即置灰，原因由上面的 hint 统一说明。
-                              onAdd: null,
-                              onApproval: null,
-                              onModel: null,
-                              onSubmitted: (_) => unawaited(_createSession()),
-                            ),
-                          ),
-                          // 输入条提交=在电脑上新建会话；与会话页一样，有草稿时
-                          // 才出现发送按钮，新建期间换成忙碌态。
-                          if (_creating || !_draftEmpty) ...[
-                            const SizedBox(width: 8),
-                            GlassButton(
-                              key: const ValueKey('remote-home-send'),
-                              icon: _creating
-                                  ? Icons.hourglass_top_rounded
-                                  : Icons.arrow_upward_rounded,
-                              label: _creating ? '正在新建会话' : '新建会话',
-                              solid: true,
-                              onPressed: canSubmit
-                                  ? () => unawaited(_createSession())
-                                  : null,
-                            ),
-                          ],
-                        ],
+                      padding: EdgeInsets.only(bottom: safe.bottom),
+                      child: RemoteComposer(
+                        floating: true,
+                        mode: _effectiveComposerMode,
+                        deviceLabel: _composerDeviceLabel(view),
+                        placeholder: _composerPlaceholder(
+                          view,
+                          connected: connected,
+                        ),
+                        controller: _composer,
+                        focusNode: _composerFocus,
+                        enabled: connected && !_creating,
+                        hasDraft: !_draftEmpty,
+                        sending: _creating,
+                        onChanged: _onComposerChanged,
+                        onSubmitted: (_) => _submitComposerDraft(),
+                        onAdd: _openComposerAddSheet,
+                        onReasoning: _toggleComposerPanel,
+                        reasoning:
+                            _effectiveComposerMode == PocketComposerMode.picker
+                            ? _composerReasoningPanel()
+                            : null,
+                        onSend: _submitComposerDraft,
+                        sendKey: const ValueKey('remote-home-send'),
                       ),
                     ),
                   ],
@@ -2089,6 +2405,38 @@ class _RemoteDeviceSheetRow extends StatelessWidget {
               child: Text(trailingLabel),
             ),
       onTap: onPressed,
+    );
+  }
+}
+
+/// 首页「+」弹层的内容：说明首页没有会话、这些能力进入会话后可用。
+///
+/// 复用会话页「添加与指令」弹层的同一套外壳（[showRemoteCommandsSheet]），因此
+/// 标题、关闭按钮与玻璃表面都一致；这里只换正文。
+class _ComposerAddHint extends StatelessWidget {
+  const _ComposerAddHint();
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return PocketSection(
+      children: [
+        const PocketTile(
+          contentPadding: EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+          leading: Icon(Icons.info_outline_rounded),
+          title: Text('进入会话后可添加文件与指令'),
+          subtitle: Text('在会话页的输入区里用「+」添加附件、执行会话指令、进入方案模式或切换权限预设。'),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(18, 4, 18, 12),
+          child: Text(
+            '现在可以直接在下面的输入框里说点什么，发送后会在电脑上新建会话并打开它。',
+            style: AppTextStyle.footnote
+                .of(context)
+                .copyWith(color: colors.onSurfaceVariant),
+          ),
+        ),
+      ],
     );
   }
 }

@@ -1987,6 +1987,10 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('权限预设：工作区内修改'), findsOneWidget);
+    // 参照图的缩小态没有权限按钮：展开后才出现，且是小图标工具条按钮。
+    expect(find.byTooltip('权限预设：工作区内修改'), findsNothing);
+    await tester.tap(find.byKey(PocketComposer.inputKey));
+    await tester.pumpAndSettle();
     expect(find.byTooltip('权限预设：工作区内修改'), findsOneWidget);
 
     await tester.tap(find.byKey(const ValueKey('remote-permission-label')));
@@ -2057,6 +2061,10 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('这台电脑未启用权限预设'), findsOneWidget);
+    // 缩小态没有权限按钮；展开后按钮置灰，原因仍可由无障碍文案读到。
+    expect(find.byTooltip('权限预设：这台电脑未启用权限预设'), findsNothing);
+    await tester.tap(find.byKey(PocketComposer.inputKey));
+    await tester.pumpAndSettle();
     expect(find.byTooltip('权限预设：这台电脑未启用权限预设'), findsOneWidget);
 
     await tester.tap(find.byTooltip('权限预设：这台电脑未启用权限预设'), warnIfMissed: false);
@@ -2069,7 +2077,7 @@ void main() {
     );
   });
 
-  testWidgets('未连接时盾牌说明「正在连接电脑…」且不显示回显行', (tester) async {
+  testWidgets('未连接时不显示权限按钮，原因由连接提示条承担', (tester) async {
     final source = FakeRemoteConversationSource(
       window: _window(conversationEvents()),
       phase: RemoteConnectionPhase.connecting,
@@ -2077,7 +2085,12 @@ void main() {
     await tester.pumpWidget(_host(source));
     await tester.pumpAndSettle();
 
-    expect(find.byTooltip('权限预设：正在连接电脑…'), findsOneWidget);
+    // 缩小态不画权限按钮（参照图），连接阶段的原因由顶部提示条给出。
+    expect(find.byTooltip('权限预设：正在连接电脑…'), findsNothing);
+    expect(
+      find.byKey(const ValueKey('remote-conversation-connecting')),
+      findsOneWidget,
+    );
     expect(find.byKey(const ValueKey('remote-permission-label')), findsNothing);
     expect(
       find.byKey(const ValueKey('remote-permission-unavailable')),
