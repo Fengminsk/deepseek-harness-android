@@ -624,11 +624,16 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
     terminal-design.md 与适配器注释里，不阻塞。
 11. **真机 debug 签名**：本机 `~/.android/debug.keystore` 曾丢失，重装后新 keystore 备份在
     `.cache/android/debug.keystore`；换机/清缓存前先确认它还在，否则又要卸载重装并重新配对。
-12. **真机 60 fps 性能目标（新，进行中）**：目标与验收判据、测量方法、当前基线（4 个场景）、
-    热点结论与优化计划见 [performance.md](../performance.md)。现状：首页滚动栅格成本主要来自
+12. **真机 60 fps 性能目标（进行中）**：目标与验收判据、测量方法、基线（4 个场景）、
+    热点结论与优化计划见 [performance.md](../performance.md)。现状：首页/文件页栅格成本主要来自
     液态玻璃背景捕获（关闭玻璃 p95 17.26→9.61 ms）；流式会话与远程终端的瓶颈在 UI 线程重建
-    （build p95 21–45 ms，与栅格无关）；文件列表仍有首帧栅格尖峰。下一步按 performance.md §4
-    的收益顺序优化并复跑同一套场景。
+    （build p95 9 / 25 ms）。**2026-11-16 11:xx 冷机有效测量**（电池 25.9–28.8°C，
+    `post-p6-cold-perf.json`）：home p95 28.76 ms/51.7%、session 30.40/32.9%、
+    terminal 38.10/47.4%、files 29.80/100%，**全部仍未达门禁**；home 在不同冷机时段有
+    17.4–28.8 ms 波动，最佳值与基线一致（说明无回归）。已尝试「长流式文本纯文本渲染」实验
+    （build 9.03→7.74 ms、total 无变化）后回滚。**下一步**：玻璃捕获改造依赖 pub 包
+    `material_ui 1.7.0`（不在仓库内），需要用户决定是否 fork/vendor 或降低默认玻璃质量；
+    terminal 构建成本（App 侧）是无需产品决策的下一优化点。
 13. **后台通知（步骤 (1)+(2) 已实现并真机验证；步骤 (3) 待产品决策）**：取证结论是「宿主确实发
     notifications，但不是 protocol §8 那四条」——宿主原先只发 `remote.deviceRevoked`
     （`apps/remote-host/src/server.ts`）；`task.completed` 与 `interactions.changed` 已经在线上
@@ -772,6 +777,19 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
 ---
 
 ## 9. 变更日志（append-only，最新在最上面）
+
+### 2026-11-16 11:15 · lead（第六轮：60fps 冷机有效复测 + 优化实验与结论）
+
+- **冷机有效复测**（电池 25.9→28.8°C，`post-p6-cold-perf.json`）：home p95 28.76 ms/51.7%、
+  session 30.40/32.9%（build 9.03）、terminal 38.10/47.4%（build 25.21）、files 29.80/100%
+  （raster 15.52）——全部仍超 16.667 ms 预算；home 在不同冷机时段波动 17.4–28.8 ms，最佳与基线一致
+  （无回归）。测量驱动新增每场景电池温度记录（>34°C WARN）与滚动场景预热，见 performance.md §2。
+- **优化实验（已回滚）**：长流式文本（>1200 字符）流式期间改纯文本渲染 —— build p95 9.03→7.74 ms，
+  total p95 30.24→30.24（无变化，帧调度/栅格主导），且会让长回复流式期间失去 markdown 格式；
+  收益不足，回滚代码，仅保留结论在 performance.md §2/§4。
+- **结论**：60fps 门禁仍未达成；home/files 的 raster 成本（12–16 ms）来自 pub 包
+  `material_ui 1.7.0` 的液态玻璃背景捕获（不在本仓库内，需 fork/vendor 或降低默认玻璃质量的
+  产品决策）；terminal build（25 ms，App 侧）是无需产品决策的下一优化点。
 
 ### 2026-11-16 04:20 · lead（P6 后台通知落地 + PC 配对/分发评估 + 通知真机验收）
 

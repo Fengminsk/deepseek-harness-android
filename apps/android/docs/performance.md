@@ -70,7 +70,8 @@ node apps/android/tool/device-frame-profile.mjs --skip-build --skip-install --bu
 | 多种连接方式后复测（`post-connections-perf.json`，thermalOverride，电池 35.9°C） | p95 16.97 ms，6.0%，activeFps 55.8 | p95 27.78 ms，27.4% | p95 49.32 ms，54.4%（build p95 22.68） | **仅参考**：熄屏冷却 24 min 后 CPU/电池温度已正常（39.8°C / 35.9°C），但该 ROM 的 `Thermal Status` 仍报 3（疑似厂商状态粘滞），用 `--allow-hot` 记录；home/files/terminal 与基线同量级（无新 UI 回归），session-stream p95 波动大（build 成本主导） |
 | 后台通知批次「冷机重测」（2026-11-16 08:35–08:42，电池 33.4–33.8°C） | **p95 17.38 / 17.64 ms，jank 8.3% / 9.2%，activeFps 56.2 / 56.3**（连测两轮） | — | — | 长时间熄屏冷却后的 home 两轮与原始基线（17.26/9.2%）一致，**证明多种连接/通知两批 UI 没有回归**；home 仍未达 60 fps 门禁（jank >1%），瓶颈仍是液态玻璃背景捕获 |
 | 同一批次热机重测（2026-11-16 08:42–08:55，电池 35.6–36.7°C） | p95 50.37–51.43 ms，100% | p95 29.98–31.5 ms | p95 61.66–96.08 ms（terminal build p95 42–46） | **无效数据**：电池 ≥35°C 后整机帧耗时约×2–3（Thermal Status 仍报 3），保留在 `post-notify-perf*.json` 仅作降频证据 |
-| 后台通知批次（2026-11-16 04:2x 首次尝试） | — | — | — | 为拿 0/1 热状态重启设备后被 SIM PIN 锁屏（无跳过入口），自动化无法解锁；本批被测页面 UI 未变，通知只在系统通知栏 |
+| P6 收尾后「冷机全场景」（2026-11-16 10:58–11:05，电池 25.9→28.8°C，`post-p6-cold-perf.json`） | p95 28.76 ms，51.7%（build 2.89 / raster 12.33） | p95 29.80 ms，100%（raster 15.52） | session p95 30.40 ms，32.9%（build 9.03 / raster 8.58）；terminal p95 38.10 ms，47.4%（build 25.21） | 本机电池温度最冷区间的有效测量；**全部场景仍未达 60 fps 门禁**。home 在冷机下也有 17.4–28.8 ms 的波动（多次测量），最佳值与基线一致；raster（玻璃背景捕获）与 terminal 构建仍是主瓶颈 |
+| 流式长文本纯文本渲染实验（2026-11-16 11:1x，电池 32.2°C，已回滚） | — | — | session p95 30.24 ms，build p95 **9.03→7.74 ms** | 长流式文本（>1200 字符）先按纯文本渲染的实验：build 有约 1.3 ms 收益，但 total p95 无变化（帧调度/栅格主导），且会让长回复流式期间失去 markdown 格式——**收益不足以支撑产品行为变化，已回滚**。后续优化应优先玻璃捕获（需评估 vendor/上游 `material_ui`）与 terminal 构建成本 |
 
 ## 3. 热点结论
 
@@ -90,10 +91,19 @@ node apps/android/tool/device-frame-profile.mjs --skip-build --skip-install --bu
 
 ## 4. 优化计划（按收益排序）
 
+> 现状（2026-11-16 11:xx）：全部 4 个场景在冷机（电池 ≤34°C）下仍未达门禁；home/files 的
+> raster 成本（12–16 ms）来自 `material_ui` 包的液态玻璃背景捕获，属外部依赖；
+> session/terminal 的 build 成本（9 / 25 ms）在 App 侧，但已尝试的「长流式文本纯文本渲染」
+> 只有 1.3 ms build 收益、total 无变化（已回滚）。下一步需要**产品决策**：是否 vendor/patch
+> `material_ui` 做「静止复用背景截图 / 滚动期降捕获」；否则只能靠降低默认玻璃质量或接受现状。
+
 1. **降低背景捕获开销（首页/文件页/会话页的玻璃背景）**：
    - 评估「静止时复用上一次背景截图、只在实际动画帧重新捕获」；
    - 评估滚动/流式期间降低捕获分辨率或帧率（视觉近似，需设计确认）；
    - 评估把模糊层与内容滚动解耦（仅对固定背景层做捕获）。
+   - **依赖现状**：`LiquidGlass`/`LiquidGlassHost` 由 pub 包 `material_ui 1.7.0`
+     （`C:\Users\JZ_Colin\AppData\Local\Pub\Cache\hosted\pub.dev\material_ui-1.7.0`）提供，
+     不在本仓库内；改造需要 fork/vendor 该包或推动上游，属需要用户批准的决策。
 2. **缩短流式与终端的单次重建成本**：
    - 会话页长历史：把「已完成消息」的 markdown 解析/布局结果做缓存，使流式增量只重建
      活动消息（`PocketMarkdown` 的构建缓存 + `ChatTimeline` 的行级隔离）；
