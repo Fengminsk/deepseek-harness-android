@@ -76,6 +76,8 @@ void main() {
     final runtime = FailingRuntime();
     await tester.pumpWidget(MaterialApp(home: ChatPage(runtime: runtime)));
     await tester.enterText(find.byType(TextField), '读取我的授权文件');
+    // 草稿出现后输入卡展开、发送圆钮按草稿可用性重建；等一帧再点。
+    await tester.pump();
     await tester.tap(find.byTooltip('发送'));
     await tester.pumpAndSettle();
     expect(find.text('读取我的授权文件'), findsOneWidget);

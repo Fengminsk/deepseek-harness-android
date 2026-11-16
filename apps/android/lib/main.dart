@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:material_ui/material_ui.dart';
 import 'package:dynamic_color/dynamic_color.dart';
+import 'package:flutter/services.dart';
 
 import 'runtime.dart';
 import 'remote_dsh_page.dart';
@@ -27,10 +28,14 @@ import 'session_browser.dart';
 import 'session_terminal.dart';
 import 'terminal_shells.dart';
 import 'models.dart';
+import 'models_data.dart';
+import 'model_reasoning.dart';
 import 'account.dart';
 import 'account_quota_notice.dart';
 import 'settings.dart';
 import 'flclash/popup.dart';
+import 'pocket_composer.dart';
+import 'remote_dsh_widgets.dart';
 import 'automations.dart';
 import 'chat_projection.dart';
 import 'chat_quotes.dart';
@@ -193,7 +198,7 @@ class ChatPage extends StatefulWidget {
   State<ChatPage> createState() => _ChatPageState();
 }
 
-class _ChatPageState extends State<ChatPage> {
+class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   final input = TextEditingController();
   final inputFocus = FocusNode();
   final scaffold = GlobalKey<ScaffoldState>();
@@ -224,6 +229,32 @@ class _ChatPageState extends State<ChatPage> {
   bool userScrolling = false;
   int? submittedAfterSeq;
   bool followSubmittedMessage = true;
+
+  /// 输入卡的当前状态：纯浏览时缩小、聚焦/有草稿时展开、点推理按钮后显示强度面板。
+  ///
+  /// 与远程会话页同一套语义（`remote_dsh_conversation.dart`）：[PocketComposer]
+  /// 是受控组件，状态由本页持有。草稿非空时即使在浏览态也按展开渲染（见
+  /// [_composerModeFor]）；失焦且草稿为空才收缩，键盘收起且草稿为空也收缩。
+  PocketComposerMode _composerMode = PocketComposerMode.browse;
+
+  /// 当前会话模型目录；第一次打开推理面板时读一次，失败后可在面板里重试。
+  ///
+  /// 与 `SessionModelPage` 同一个读取入口（`api.call session.modelCatalog`），
+  /// 档位与默认强度来自目录里当前模型声明的 `reasoning`。
+  Json? _reasoningCatalog;
+  bool _reasoningLoading = false;
+  String? _reasoningError;
+
+  /// 正在提交一次推理强度切换；期间滑杆不可点。
+  bool _reasoningApplying = false;
+
+  /// 上一次 metrics 事件里键盘是否真的可见。
+  ///
+  /// 只有 0→可见→0 这种真正的显隐变化才改输入卡状态：Android 在聚焦输入框时
+  /// 会先派发若干次「键盘还不可见」的 metrics（动画中间帧、窗口大小抖动），把
+  /// 它们当成「用户收起了键盘」会在聚焦后立刻缩回并解焦，键盘就再也起不来。
+  bool _keyboardVisible = false;
+
   bool get submitting => submissions.contains(sessionId);
   String? get submitError => errors[sessionId];
   set submitError(String? error) {
@@ -238,6 +269,8 @@ class _ChatPageState extends State<ChatPage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    inputFocus.addListener(_onComposerFocusChanged);
     // 全屏子页面（例如「远程 DSH」）原地挂出同一份侧栏，需要根页面的动作。
     registerAppShellActions(
       AppShellActions(
@@ -429,6 +462,8 @@ class _ChatPageState extends State<ChatPage> {
   @override
   void dispose() {
     registerAppShellActions(null);
+    WidgetsBinding.instance.removeObserver(this);
+    inputFocus.removeListener(_onComposerFocusChanged);
     runtime.plugins.detach();
     currentModelCatalog.dispose();
     keyboardShortcuts.dispose();
@@ -543,6 +578,447 @@ class _ChatPageState extends State<ChatPage> {
     if (mounted) setState(() {});
   }
 
+  // ------------------------------------------------------------ 输入卡状态
+
+  @override
+  void didChangeMetrics() {
+    // 键盘与安全区变化会改变输入卡可用高度；下一帧 MediaQuery 更新完再看一次
+    // 键盘是否还在，决定收缩回浏览态还是保持展开。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _syncComposerWithKeyboard();
+    });
+  }
+
+  /// 键盘显隐后同步输入卡状态。
+  ///
+  /// 只处理**真正的显隐变化**：连续 metrics 事件里 insets 一直为 0 的抖动不改
+  /// 状态（聚焦时 Android 会先派发这种事件，误判会让卡片刚展开就缩回并解焦）。
+  /// 键盘真正收起时推理面板保持可见（用户可能只是收起键盘还想调强度，点聊天区
+  /// 或表盘再退出）；输入态按草稿决定：有草稿保持展开，纯浏览缩回缩小态。
+  void _syncComposerWithKeyboard() {
+    if (!mounted) return;
+    final visible = MediaQuery.viewInsetsOf(context).bottom > 0;
+    final wasVisible = _keyboardVisible;
+    _keyboardVisible = visible;
+    if (visible == wasVisible) return;
+    if (visible) {
+      if (_composerMode == PocketComposerMode.browse) {
+        setState(() => _composerMode = PocketComposerMode.composing);
+      }
+      return;
+    }
+    if (_composerMode == PocketComposerMode.picker) return;
+    if (input.text.trim().isNotEmpty) return;
+    setState(() => _composerMode = PocketComposerMode.browse);
+    // 故意不在此处解焦：真机上「键盘闪现后又隐藏」的抖动不应把焦点也丢掉；
+    // 缩小态点卡片会再次 requestFocus + TextInput.show，键盘可立刻回来。
+  }
+
+  /// 把焦点交给输入框，并在下一帧补一次输入法显示请求。
+  ///
+  /// 真机上出现过「卡片展开了但键盘没起来」：输入框已经聚焦、IME 却被系统藏起
+  /// 时，再点一次输入框不会自动重新显示。focus 完成后在下一帧调
+  /// `TextInput.show`（没有活动输入连接时是空操作），保证一次点按就能进入输入。
+  void _requestInputFocus() {
+    if (!inputFocus.hasFocus) inputFocus.requestFocus();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !inputFocus.hasFocus) return;
+      unawaited(_showInput());
+    });
+  }
+
+  Future<void> _showInput() async {
+    try {
+      await SystemChannels.textInput.invokeMethod<void>('TextInput.show');
+    } on Object {
+      // 测试环境或输入连接尚未建立时通道可能不可用：忽略即可，点按展开不依赖它。
+    }
+  }
+
+  /// 点输入卡（含缩小态空白处）时先展开并聚焦，不等输入框自己抢焦点。
+  ///
+  /// 真机上缩小态的 TextField 只有一行高度，点卡片空白处不会命中它；组件内部
+  /// 也有兜底，这里再补一次页面级的 focus + 下一帧 IME 请求，确保一次点按就能
+  /// 进入输入并弹出键盘（与远程会话页同一做法）。
+  void _onComposerPointerDown() {
+    if (_composerMode == PocketComposerMode.picker) return;
+    if (_composerMode == PocketComposerMode.browse) {
+      setState(() => _composerMode = PocketComposerMode.composing);
+    }
+    _requestInputFocus();
+  }
+
+  /// 聚焦即展开；失焦只在草稿为空时收缩（草稿非空保持展开）。
+  void _onComposerFocusChanged() {
+    if (!mounted) return;
+    if (inputFocus.hasFocus) {
+      if (_composerMode == PocketComposerMode.browse) {
+        setState(() => _composerMode = PocketComposerMode.composing);
+      }
+      return;
+    }
+    if (input.text.trim().isEmpty &&
+        _composerMode == PocketComposerMode.composing) {
+      setState(() => _composerMode = PocketComposerMode.browse);
+    }
+  }
+
+  /// 交给组件的渲染状态：草稿非空时即使失焦也按展开渲染；推理面板优先。
+  PocketComposerMode _composerModeFor({required bool hasDraft}) {
+    if (_composerMode == PocketComposerMode.picker) {
+      return PocketComposerMode.picker;
+    }
+    if (hasDraft) return PocketComposerMode.composing;
+    return _composerMode;
+  }
+
+  /// 发送或切换会话后按当前草稿重新定状态：空草稿且没有焦点时缩回浏览态。
+  void _settleComposerMode() {
+    if (_composerMode == PocketComposerMode.picker) return;
+    _composerMode = input.text.trim().isEmpty && !inputFocus.hasFocus
+        ? PocketComposerMode.browse
+        : PocketComposerMode.composing;
+  }
+
+  // ------------------------------------------------------------ 输入卡入口
+
+  /// 「+」：复用本地那套数据驱动的 `ComposerCommands`，外壳与远程会话页一致
+  /// （底部弹层，`showRemoteCommandsSheet`）。
+  void _openComposerCommands() {
+    _exitReasoningPanel(keepKeyboard: false);
+    inputFocus.unfocus();
+    final id = sessionId;
+    unawaited(
+      showRemoteCommandsSheet(
+        context,
+        builder: (sheetContext) => ComposerCommands(
+          runtime: runtime,
+          sessionId: id,
+          deferActivation:
+              !localDraftSessions.contains(id) &&
+              !['idle', 'running', 'waiting'].contains(runtime.statuses[id]),
+          maxHeight:
+              (MediaQuery.sizeOf(sheetContext).height -
+                      MediaQuery.paddingOf(sheetContext).vertical -
+                      MediaQuery.viewInsetsOf(sheetContext).bottom -
+                      40)
+                  .clamp(100.0, 520.0),
+          onPick: pickCommand,
+        ),
+      ),
+    );
+  }
+
+  /// 盾牌：打开本地权限预设页。
+  ///
+  /// 本地没有常驻的权限目录投影；这里懒读一次会话指令目录拿到 `/permission`
+  /// 的描述（`SessionPermissionPage` 用它拼指令行），读不到就在输入卡上方给出
+  /// 可见原因，而不是留一个点了没反应的按钮。
+  Future<void> _openSessionPermissions() async {
+    if (!runtime.ready) return;
+    _exitReasoningPanel(keepKeyboard: false);
+    inputFocus.unfocus();
+    final id = sessionId;
+    try {
+      final catalog = await loadComposerCatalog(runtime, id);
+      if (!mounted || id != sessionId || !runtime.ready) return;
+      final command = composerCommandRows(catalog)
+          .where((row) => composerCommandKey(row) == 'permission')
+          .firstOrNull;
+      if (command == null) throw StateError('当前会话没有权限预设指令');
+      await Navigator.of(context).push(
+        PocketRoute<void>(
+          builder: (_) => SessionPermissionPage(
+            runtime: runtime,
+            sessionId: id,
+            command: command,
+          ),
+        ),
+      );
+    } catch (failure) {
+      if (mounted) {
+        setState(() => errors[id] = '无法打开权限预设：$failure');
+      }
+    }
+  }
+
+  /// 推理按钮：进入/退出强度面板；打开时保持键盘（输入框离屏但仍有焦点）。
+  ///
+  /// 打开时立刻把焦点与输入法还给输入框，并在下一帧再确认一次：点按工具条按钮
+  /// 时焦点可能在触摸抬手后才交还，晚一拍会让键盘在面板出现的同时被收起。
+  void _toggleReasoningPanel() {
+    if (_composerMode == PocketComposerMode.picker) {
+      _exitReasoningPanel();
+      return;
+    }
+    setState(() => _composerMode = PocketComposerMode.picker);
+    _requestInputFocus();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _composerMode != PocketComposerMode.picker) return;
+      _requestInputFocus();
+    });
+    if (_reasoningCatalog == null && !_reasoningLoading) {
+      unawaited(_loadReasoningCatalog());
+    }
+  }
+
+  /// 收起强度面板回到输入态。
+  ///
+  /// [keepKeyboard] 为 true（点表盘、发送）时把焦点与键盘还给输入框；为 false
+  /// （点聊天区、打开别的弹层）时按当前键盘与草稿决定：键盘收起且没有草稿就回到
+  /// 缩小态，否则回到展开态但不主动唤起键盘。
+  void _exitReasoningPanel({bool keepKeyboard = true}) {
+    if (_composerMode != PocketComposerMode.picker) return;
+    final keyboardVisible = MediaQuery.viewInsetsOf(context).bottom > 0;
+    final expand =
+        keepKeyboard || keyboardVisible || input.text.trim().isNotEmpty;
+    setState(
+      () => _composerMode = expand
+          ? PocketComposerMode.composing
+          : PocketComposerMode.browse,
+    );
+    if (keepKeyboard) {
+      _requestInputFocus();
+    } else if (!expand && inputFocus.hasFocus) {
+      inputFocus.unfocus();
+    }
+  }
+
+  /// 读一次会话模型目录：只为强度面板的档位与默认值，失败后可在面板里重试。
+  Future<void> _loadReasoningCatalog() async {
+    if (_reasoningLoading) return;
+    final id = sessionId;
+    final owner = runtime;
+    final generation = owner.connectionGeneration;
+    setState(() {
+      _reasoningLoading = true;
+      _reasoningError = null;
+    });
+    try {
+      await owner.ensureSession(id);
+      final catalog = await modelsApi(owner, 'session', 'modelCatalog');
+      if (catalog is! Json) throw const FormatException('模型目录数据不完整');
+      if (!mounted || id != sessionId || owner != runtime) return;
+      if (generation != owner.connectionGeneration || !owner.ready) return;
+      setState(() => _reasoningCatalog = catalog);
+    } catch (failure) {
+      if (mounted && id == sessionId) {
+        setState(() => _reasoningError = '读取模型目录失败：$failure');
+      }
+    } finally {
+      if (mounted) setState(() => _reasoningLoading = false);
+    }
+  }
+
+  /// 提交一次推理强度切换：与 `SessionModelPage` 同一个 `session.selectModel`。
+  ///
+  /// 当前选择写进会话日志（`model/selection`），页面上的模型回显与强度面板都从
+  /// 会话投影刷新，因此这里不做乐观状态。
+  Future<void> _applyReasoningEffort(Json selection, String effort) async {
+    if (_reasoningApplying) return;
+    final model = _reasoningModel(selection);
+    final fallback =
+        model?['reasoning']?['defaultEffort'] ??
+        _reasoningCatalog?['default']?['reasoningEffort'];
+    final current = selection['reasoningEffort'] ?? fallback;
+    if (current == effort) return;
+    final id = sessionId;
+    final owner = runtime;
+    setState(() {
+      _reasoningApplying = true;
+      _reasoningError = null;
+    });
+    try {
+      await owner.ensureSession(id);
+      await modelsApi(owner, 'session', 'selectModel', {
+        'request': {
+          'sessionId': id,
+          if (selection['provider'] is String)
+            'provider': selection['provider'],
+          if (selection['model'] is String) 'model': selection['model'],
+          'reasoningEffort': effort,
+        },
+      });
+    } catch (failure) {
+      if (mounted && id == sessionId) {
+        setState(() => _reasoningError = '切换推理强度失败：$failure');
+      }
+    } finally {
+      if (mounted) setState(() => _reasoningApplying = false);
+    }
+  }
+
+  /// 模型目录里按当前选择找到模型声明；找不到时面板只显示模型名。
+  Json? _reasoningModel(Json selection) {
+    final groups = _reasoningCatalog?['groups'];
+    if (groups is! List) return null;
+    for (final group in groups) {
+      if (group is! Map || group['id'] != selection['provider']) continue;
+      final models = group['models'];
+      if (models is! List) continue;
+      for (final model in models) {
+        if (model is! Map || model['id'] != selection['model']) continue;
+        return Map<String, dynamic>.from(model);
+      }
+    }
+    return null;
+  }
+
+  /// 强度面板的数据：当前模型、可调档位与切换入口；档位来自会话模型目录。
+  PocketReasoningPanel _reasoningPanel(Json selection) {
+    final model = _reasoningModel(selection);
+    final reasoning = model?['reasoning'];
+    final efforts = reasoning is Map && reasoning['efforts'] is List
+        ? (reasoning['efforts'] as List).cast<Json>()
+        : const <Json>[];
+    final defaultEffort =
+        reasoning is Map && reasoning['defaultEffort'] is String
+        ? reasoning['defaultEffort'] as String
+        : null;
+    final selected = selection['reasoningEffort'] as String? ?? defaultEffort;
+    final modelName = model?['name'];
+    return PocketReasoningPanel(
+      modelLabel: modelName is String && modelName.trim().isNotEmpty
+          ? modelName
+          : '${selection['model'] ?? '当前模型'}',
+      effortLabel: reasoningEffortLabel(selected),
+      stops: <PocketReasoningStop>[
+        for (final effort in efforts)
+          if (effort['id'] is String)
+            PocketReasoningStop(
+              id: effort['id'] as String,
+              label: reasoningEffortLabel(
+                effort['id'] as String,
+                fallback: effort['name'] is String
+                    ? effort['name'] as String
+                    : null,
+              ),
+            ),
+      ],
+      selectedId: selected,
+      loading: _reasoningLoading && _reasoningCatalog == null,
+      error: _reasoningError,
+      busy: _reasoningApplying,
+      onOpenModels: () => _openModelsFromReasoningPanel(),
+      onRetry: () => unawaited(_loadReasoningCatalog()),
+      onSelected: _reasoningApplying
+          ? null
+          : (effort) => unawaited(_applyReasoningEffort(selection, effort)),
+    );
+  }
+
+  /// 从强度面板第一行打开完整模型选择：先收起面板再推既有会话模型页。
+  void _openModelsFromReasoningPanel() {
+    _exitReasoningPanel(keepKeyboard: false);
+    inputFocus.unfocus();
+    navigate(SessionModelPage(runtime: runtime, sessionId: sessionId));
+  }
+
+  /// 发送草稿：先收起强度面板，再走既有发送逻辑。
+  void _sendDraft() {
+    _exitReasoningPanel();
+    unawaited(send());
+  }
+
+  /// 停止当前任务；失败原因显示在输入卡上方（与发送错误同一个位置）。
+  Future<void> _cancelTask() async {
+    final id = sessionId;
+    try {
+      await runtime.call('session.cancel', {'sessionId': id});
+    } catch (error) {
+      if (mounted) setState(() => errors[id] = '$error');
+    }
+  }
+
+  /// 悬浮卡上方的插槽：引用/斜杠建议、命令 chip、附件 rail、等待授权提示与错误。
+  ///
+  /// 这些入口在缩小态也保持可见（附件、命令 chip、等待授权都不能因为卡片收起
+  /// 而藏起来），顺序与悬浮卡之前的输入区一致。
+  Widget _composerTop(BuildContext context, List<Json> sessionRequests) {
+    final colors = Theme.of(context).colorScheme;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        ComposerReferenceSuggestions(
+          key: ValueKey((runtime, sessionId)),
+          runtime: runtime,
+          sessionId: sessionId,
+          input: input,
+          focus: inputFocus,
+          prepare: prepareReferences(sessionId),
+        ),
+        ValueListenableBuilder<TextEditingValue>(
+          valueListenable: input,
+          builder: (context, value, _) {
+            final query = RegExp(r'^\s*/([^\s]*)$')
+                .firstMatch(value.text)
+                ?.group(1);
+            if (query == null || commandDrafts[sessionId] != null) {
+              return const SizedBox.shrink();
+            }
+            final id = sessionId;
+            return ComposerSlashSuggestions(
+              key: ValueKey((runtime, id)),
+              runtime: runtime,
+              sessionId: id,
+              query: query,
+              skills: skillsFor(id),
+              onCommand: (command) => pickTypedCommand(id, command),
+              onSkill: (skill) => insertSkill(id, skill),
+              onMoreSkills: pickSkill,
+            );
+          },
+        ),
+        if (commandDrafts[sessionId] != null)
+          ComposerCommandChip(
+            command: commandDrafts[sessionId]!,
+            onRemove: () => setState(() => commandDrafts.remove(sessionId)),
+          ),
+        PocketAttachmentRail(drafts: attachments, sessionId: sessionId),
+        if (sessionRequests.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: GlassSurface(
+              radius: 22,
+              child: PocketTile(
+                leading: const Icon(Icons.pending_actions_rounded),
+                title: Text(
+                  sessionRequests.length == 1
+                      ? sessionRequests.first['kind'] == 'approval'
+                            ? '任务需要你的授权'
+                            : '任务有问题等待回答'
+                      : '${sessionRequests.length} 项请求等待处理',
+                ),
+                trailing: const Icon(Icons.chevron_right_rounded),
+                onTap: () => navigate(
+                  ApprovalsPage(
+                    runtime: runtime,
+                    requestId: sessionRequests.length == 1
+                        ? sessionRequests.first['id'] as String
+                        : null,
+                    requestVersion: sessionRequests.length == 1
+                        ? sessionRequests.first['version'] as int
+                        : null,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        if (submitError != null)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: Text(
+              submitError!,
+              maxLines: 3,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: colors.error, fontSize: 13),
+            ),
+          ),
+      ],
+    );
+  }
+
   void activateSession(String id) {
     if (id == sessionId) return;
     sessionNavigationEpoch++;
@@ -554,6 +1030,7 @@ class _ChatPageState extends State<ChatPage> {
       followSubmittedMessage = true;
       connectGoalPlan();
       input.value = drafts[id] ?? TextEditingValue.empty;
+      _settleComposerMode();
     });
   }
 
@@ -840,6 +1317,7 @@ class _ChatPageState extends State<ChatPage> {
             if (input.text.trim() == text) {
               input.clear();
               drafts.remove(sendingId);
+              _settleComposerMode();
             }
             pickCommand(command);
             return;
@@ -887,7 +1365,10 @@ class _ChatPageState extends State<ChatPage> {
           identical(commandDrafts[sendingId], pickedCommand)) {
         drafts.remove(sendingId);
         commandDrafts.remove(sendingId);
-        if (sendingId == sessionId) input.clear();
+        if (sendingId == sessionId) {
+          input.clear();
+          _settleComposerMode();
+        }
       }
       await attachments.consume(sendingId, attachedIds);
     } catch (error) {
@@ -1222,175 +1703,183 @@ class _ChatPageState extends State<ChatPage> {
           synchronizeNotificationViewing();
         },
 
-        body: projection.entries.isEmpty && live == null && sessionError == null
-            ? PocketEmpty(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const PocketMark(size: 58),
-                    const SizedBox(height: 25),
-                    const Text(
-                      '新对话',
-                      style: TextStyle(
-                        fontSize: 26,
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: -1,
-                      ),
-                      textAlign: TextAlign.center,
-                    ),
-                    const SizedBox(height: 18),
-                    SessionPresetChip(
-                      key: ValueKey('session-preset-$sessionId'),
-                      runtime: runtime,
-                      sessionId: sessionId,
-                    ),
-                    const SizedBox(height: 22),
-                    _Suggestion(
-                      icon: Icons.description_outlined,
-                      title: '读一份文件',
-                      subtitle: '提取重点与待办',
-                      onTap: () => navigate(FilesPage(runtime: runtime)),
-                    ),
-                    const SizedBox(height: 14),
-                    _Suggestion(
-                      icon: Icons.terminal_rounded,
-                      title: '执行任务',
-                      onTap: () => suggest('请检查当前应用工作目录中的文件，并说明你可以执行哪些任务。'),
-                    ),
-                    if (runtime.error != null)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 18),
-                        child: PocketButton.tonal(
-                          onPressed: () =>
-                              navigate(DiagnosticsPage(runtime: runtime)),
-                          child: const Text('本地服务需要处理 · 查看详情'),
+        // 推理面板开着时，点聊天区收起面板回到输入态（与远程会话页同一意图）；
+        // 不用 GestureDetector，避免抢走消息自身的点击。
+        body: Listener(
+          onPointerDown: _composerMode == PocketComposerMode.picker
+              ? (_) => _exitReasoningPanel(keepKeyboard: false)
+              : null,
+          child:
+              projection.entries.isEmpty && live == null && sessionError == null
+              ? PocketEmpty(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const PocketMark(size: 58),
+                      const SizedBox(height: 25),
+                      const Text(
+                        '新对话',
+                        style: TextStyle(
+                          fontSize: 26,
+                          fontWeight: FontWeight.w600,
+                          letterSpacing: -1,
                         ),
+                        textAlign: TextAlign.center,
                       ),
-                  ],
-                ),
-              )
-            : NotificationListener<ScrollNotification>(
-                onNotification: (notification) {
-                  if (notification.depth != 0) return false;
-                  if (notification is ScrollStartNotification &&
-                      notification.dragDetails != null) {
-                    scrollRequest++;
-                    followPending = false;
-                    userScrolling = true;
-                    if (followSubmittedMessage) {
-                      setState(() => followSubmittedMessage = false);
-                    }
-                  }
-                  if (notification is ScrollEndNotification) {
-                    userScrolling = false;
-                  }
-                  return false;
-                },
-                child: ChatTimeline(
-                  runtime: runtime,
-                  sessionId: sessionId,
-                  events: runtime.timelines[sessionId] ?? const [],
-                  projection: projection,
-                  controller: messageScroll,
-                  submittedAfterSeq: submittedAfterSeq,
-                  followSubmittedMessage: followSubmittedMessage,
-                  live: live,
-                  running: running,
-                  onOpenSkill: (name) =>
-                      openSkillReference(viewedSessionId, name),
-                  onQuote: sessionId == viewedSessionId ? quoteMessage : null,
-                  onBranch: (atSeq) => forkConversationAt(
-                    viewedSessionId,
-                    atSeq,
-                    viewedConnectionGeneration,
-                  ),
-                  onOpenWorkflowChild: (address, label) async {
-                    if (runtime.connectionGeneration !=
-                            viewedConnectionGeneration ||
-                        !runtime.ready ||
-                        sessionId != viewedSessionId ||
-                        address.parentSessionId != viewedSessionId) {
-                      return;
-                    }
-                    await Navigator.push<void>(
-                      context,
-                      PocketRoute<void>(
-                        builder: (_) => SubagentConversationPage(
-                          runtime: runtime,
-                          address: address,
-                          label: label,
-                        ),
+                      const SizedBox(height: 18),
+                      SessionPresetChip(
+                        key: ValueKey('session-preset-$sessionId'),
+                        runtime: runtime,
+                        sessionId: sessionId,
                       ),
-                    );
-                  },
-                  onOpenLink: (uri) => RuntimeController.channel
-                      .invokeMethod<void>('openUrl', uri.toString()),
-                  onOpenFile: (file) async {
-                    await Navigator.push<void>(
-                      context,
-                      PocketRoute<void>(
-                        builder: (_) => SessionDocumentPage(
-                          runtime: widget.runtime,
-                          sessionId: file.sessionId,
-                          path: file.path,
-                          line: file.line,
-                        ),
+                      const SizedBox(height: 22),
+                      _Suggestion(
+                        icon: Icons.description_outlined,
+                        title: '读一份文件',
+                        subtitle: '提取重点与待办',
+                        onTap: () => navigate(FilesPage(runtime: runtime)),
                       ),
-                    );
-                  },
-                  onOpenImage: (attachment) => showPocketSessionImage(
-                    context,
-                    widget.runtime,
-                    sessionId,
-                    attachment,
-                  ),
-                  onOpenAttachment: (attachment) => showPocketSessionFile(
-                    context,
-                    widget.runtime,
-                    sessionId,
-                    attachment,
-                  ),
-                  footer: sessionError == null
-                      ? null
-                      : PocketCard(
-                          child: Padding(
-                            padding: const EdgeInsets.all(18),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  '本轮任务未完成',
-                                  style: TextStyle(
-                                    color: colors.error,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                                const SizedBox(height: 10),
-                                SelectableText(sessionError),
-                                const SizedBox(height: 10),
-                                Wrap(
-                                  spacing: 8,
-                                  children: [
-                                    PocketButton.tonal(
-                                      onPressed: () => navigate(
-                                        ModelsPage(runtime: runtime),
-                                      ),
-                                      child: const Text('模型与凭据'),
-                                    ),
-                                    PocketButton.tonal(
-                                      onPressed: () => navigate(
-                                        DiagnosticsPage(runtime: runtime),
-                                      ),
-                                      child: const Text('服务诊断'),
-                                    ),
-                                  ],
-                                ),
-                              ],
-                            ),
+                      const SizedBox(height: 14),
+                      _Suggestion(
+                        icon: Icons.terminal_rounded,
+                        title: '执行任务',
+                        onTap: () => suggest('请检查当前应用工作目录中的文件，并说明你可以执行哪些任务。'),
+                      ),
+                      if (runtime.error != null)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 18),
+                          child: PocketButton.tonal(
+                            onPressed: () =>
+                                navigate(DiagnosticsPage(runtime: runtime)),
+                            child: const Text('本地服务需要处理 · 查看详情'),
                           ),
                         ),
+                    ],
+                  ),
+                )
+              : NotificationListener<ScrollNotification>(
+                  onNotification: (notification) {
+                    if (notification.depth != 0) return false;
+                    if (notification is ScrollStartNotification &&
+                        notification.dragDetails != null) {
+                      scrollRequest++;
+                      followPending = false;
+                      userScrolling = true;
+                      if (followSubmittedMessage) {
+                        setState(() => followSubmittedMessage = false);
+                      }
+                    }
+                    if (notification is ScrollEndNotification) {
+                      userScrolling = false;
+                    }
+                    return false;
+                  },
+                  child: ChatTimeline(
+                    runtime: runtime,
+                    sessionId: sessionId,
+                    events: runtime.timelines[sessionId] ?? const [],
+                    projection: projection,
+                    controller: messageScroll,
+                    submittedAfterSeq: submittedAfterSeq,
+                    followSubmittedMessage: followSubmittedMessage,
+                    live: live,
+                    running: running,
+                    onOpenSkill: (name) =>
+                        openSkillReference(viewedSessionId, name),
+                    onQuote: sessionId == viewedSessionId ? quoteMessage : null,
+                    onBranch: (atSeq) => forkConversationAt(
+                      viewedSessionId,
+                      atSeq,
+                      viewedConnectionGeneration,
+                    ),
+                    onOpenWorkflowChild: (address, label) async {
+                      if (runtime.connectionGeneration !=
+                              viewedConnectionGeneration ||
+                          !runtime.ready ||
+                          sessionId != viewedSessionId ||
+                          address.parentSessionId != viewedSessionId) {
+                        return;
+                      }
+                      await Navigator.push<void>(
+                        context,
+                        PocketRoute<void>(
+                          builder: (_) => SubagentConversationPage(
+                            runtime: runtime,
+                            address: address,
+                            label: label,
+                          ),
+                        ),
+                      );
+                    },
+                    onOpenLink: (uri) => RuntimeController.channel
+                        .invokeMethod<void>('openUrl', uri.toString()),
+                    onOpenFile: (file) async {
+                      await Navigator.push<void>(
+                        context,
+                        PocketRoute<void>(
+                          builder: (_) => SessionDocumentPage(
+                            runtime: widget.runtime,
+                            sessionId: file.sessionId,
+                            path: file.path,
+                            line: file.line,
+                          ),
+                        ),
+                      );
+                    },
+                    onOpenImage: (attachment) => showPocketSessionImage(
+                      context,
+                      widget.runtime,
+                      sessionId,
+                      attachment,
+                    ),
+                    onOpenAttachment: (attachment) => showPocketSessionFile(
+                      context,
+                      widget.runtime,
+                      sessionId,
+                      attachment,
+                    ),
+                    footer: sessionError == null
+                        ? null
+                        : PocketCard(
+                            child: Padding(
+                              padding: const EdgeInsets.all(18),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    '本轮任务未完成',
+                                    style: TextStyle(
+                                      color: colors.error,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 10),
+                                  SelectableText(sessionError),
+                                  const SizedBox(height: 10),
+                                  Wrap(
+                                    spacing: 8,
+                                    children: [
+                                      PocketButton.tonal(
+                                        onPressed: () => navigate(
+                                          ModelsPage(runtime: runtime),
+                                        ),
+                                        child: const Text('模型与凭据'),
+                                      ),
+                                      PocketButton.tonal(
+                                        onPressed: () => navigate(
+                                          DiagnosticsPage(runtime: runtime),
+                                        ),
+                                        child: const Text('服务诊断'),
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                  ),
                 ),
-              ),
+        ),
         bottom: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -1400,173 +1889,57 @@ class _ChatPageState extends State<ChatPage> {
               sessionId: sessionId,
               events: runtime.timelines[sessionId] ?? const [],
             ),
-            ComposerReferenceSuggestions(
-              key: ValueKey((runtime, sessionId)),
-              runtime: runtime,
-              sessionId: sessionId,
-              input: input,
-              focus: inputFocus,
-              prepare: prepareReferences(sessionId),
-            ),
             ValueListenableBuilder<TextEditingValue>(
               valueListenable: input,
               builder: (context, value, _) {
-                final query = RegExp(r'^\s*/([^\s]*)$')
-                    .firstMatch(value.text)
-                    ?.group(1);
-                if (query == null || commandDrafts[sessionId] != null) {
-                  return const SizedBox.shrink();
-                }
-                final id = sessionId;
-                return ComposerSlashSuggestions(
-                  key: ValueKey((runtime, id)),
-                  runtime: runtime,
-                  sessionId: id,
-                  query: query,
-                  skills: skillsFor(id),
-                  onCommand: (command) => pickTypedCommand(id, command),
-                  onSkill: (skill) => insertSkill(id, skill),
-                  onMoreSkills: pickSkill,
+                final commandDraft = commandDrafts[sessionId];
+                final hasDraft =
+                    value.text.trim().isNotEmpty ||
+                    commandDraft != null ||
+                    attachments.items(sessionId).isNotEmpty;
+                final mode = _composerModeFor(hasDraft: hasDraft);
+                final canSend =
+                    runtime.ready &&
+                    !submitting &&
+                    !stoppable &&
+                    attachments.ready(sessionId);
+                return Listener(
+                  // 缩小态点卡片（含输入框与卡片空白）时页面级补一次聚焦与 IME
+                  // 请求：组件内部也有兜底，但真机上只靠 TextField 自身偶尔不弹
+                  // 键盘（与远程会话页同一做法）。
+                  onPointerDown: (_) => _onComposerPointerDown(),
+                  child: PocketComposer(
+                    key: const ValueKey('chat-composer'),
+                    mode: mode,
+                    controller: input,
+                    focusNode: inputFocus,
+                    // PocketScaffold 的 bottom 已让出左右 16、底部安全区 + 8，这里不再
+                    // 叠加水平边距，底部只留 4（与安全区合计约 12，与远程页一致）。
+                    margin: const EdgeInsets.fromLTRB(0, 12, 0, 4),
+                    placeholder: commandDraft == null
+                        ? '交给 Pocket Harness'
+                        : '${commandDraft['input']?['hint'] ?? commandDescription(commandDraft)}',
+                    onAdd: runtime.ready ? _openComposerCommands : null,
+                    onPermissions: runtime.ready
+                        ? () => unawaited(_openSessionPermissions())
+                        : null,
+                    onReasoning: runtime.ready ? _toggleReasoningPanel : null,
+                    reasoningActive: mode == PocketComposerMode.picker,
+                    onSend: canSend ? _sendDraft : null,
+                    onStop: stoppable && !submitting && runtime.ready
+                        ? () => unawaited(_cancelTask())
+                        : null,
+                    sending: submitting,
+                    hasDraft: hasDraft,
+                    sendKey: const ValueKey('chat-composer-send'),
+                    stopKey: const ValueKey('chat-composer-stop'),
+                    reasoning: mode == PocketComposerMode.picker
+                        ? _reasoningPanel(modelSelection)
+                        : null,
+                    top: _composerTop(context, sessionRequests),
+                  ),
                 );
               },
-            ),
-            if (commandDrafts[sessionId] != null)
-              ComposerCommandChip(
-                command: commandDrafts[sessionId]!,
-                onRemove: () => setState(() => commandDrafts.remove(sessionId)),
-              ),
-            PocketAttachmentRail(drafts: attachments, sessionId: sessionId),
-            if (sessionRequests.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 10),
-                child: GlassSurface(
-                  radius: 22,
-                  child: PocketTile(
-                    leading: const Icon(Icons.pending_actions_rounded),
-                    title: Text(
-                      sessionRequests.length == 1
-                          ? sessionRequests.first['kind'] == 'approval'
-                                ? '任务需要你的授权'
-                                : '任务有问题等待回答'
-                          : '${sessionRequests.length} 项请求等待处理',
-                    ),
-                    trailing: const Icon(Icons.chevron_right_rounded),
-                    onTap: () => navigate(
-                      ApprovalsPage(
-                        runtime: runtime,
-                        requestId: sessionRequests.length == 1
-                            ? sessionRequests.first['id'] as String
-                            : null,
-                        requestVersion: sessionRequests.length == 1
-                            ? sessionRequests.first['version'] as int
-                            : null,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            if (submitError != null)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
-                child: Text(
-                  submitError!,
-                  maxLines: 3,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: colors.error, fontSize: 13),
-                ),
-              ),
-            GlassSurface(
-              key: const ValueKey('chat-composer'),
-              child: Padding(
-                padding: const EdgeInsets.all(8),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.center,
-                  children: [
-                    CommonPopupBox(
-                      placement: PopupPlacement.overAnchorStart,
-                      onOpen: inputFocus.unfocus,
-                      popupBuilder: (popupContext) => ComposerCommands(
-                        runtime: runtime,
-                        sessionId: sessionId,
-                        deferActivation:
-                            !localDraftSessions.contains(sessionId) &&
-                            ![
-                              'idle',
-                              'running',
-                              'waiting',
-                            ].contains(runtime.statuses[sessionId]),
-                        maxHeight:
-                            (MediaQuery.sizeOf(popupContext).height -
-                                    MediaQuery.paddingOf(popupContext)
-                                        .vertical -
-                                    MediaQuery.viewInsetsOf(popupContext)
-                                        .bottom -
-                                    40)
-                                .clamp(100.0, 520.0),
-                        onPick: pickCommand,
-                      ),
-                      targetBuilder: (open) => GlassButton(
-                        icon: Icons.add_rounded,
-                        label: '添加与指令',
-                        onPressed: runtime.ready ? open : null,
-                      ),
-                    ),
-                    const SizedBox(width: 6),
-                    Expanded(
-                      child: TextField(
-                        key: const ValueKey('chat-composer-input'),
-                        controller: input,
-                        focusNode: inputFocus,
-                        minLines: 1,
-                        maxLines: 5,
-                        textAlignVertical: TextAlignVertical.center,
-                        style: const TextStyle(fontSize: 15, height: 1.4),
-                        decoration: InputDecoration(
-                          hintText: commandDrafts[sessionId] == null
-                              ? '交给 Pocket Harness'
-                              : '${commandDrafts[sessionId]!['input']?['hint'] ?? commandDescription(commandDrafts[sessionId]!)}',
-                          filled: false,
-                          border: InputBorder.none,
-                          enabledBorder: InputBorder.none,
-                          focusedBorder: InputBorder.none,
-                          contentPadding: const EdgeInsets.symmetric(
-                            vertical: 12,
-                            horizontal: 2,
-                          ),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 6),
-                    GlassButton(
-                      icon: submitting
-                          ? Icons.more_horiz_rounded
-                          : stoppable
-                          ? Icons.stop_rounded
-                          : Icons.arrow_upward_rounded,
-                      label: stoppable ? '停止任务' : '发送',
-                      solid: true,
-                      onPressed:
-                          !runtime.ready ||
-                              submitting ||
-                              (!stoppable && !attachments.ready(sessionId))
-                          ? null
-                          : stoppable
-                          ? () async {
-                              try {
-                                await runtime.call('session.cancel', {
-                                  'sessionId': sessionId,
-                                });
-                              } catch (error) {
-                                if (mounted) {
-                                  setState(() => submitError = '$error');
-                                }
-                              }
-                            }
-                          : send,
-                    ),
-                  ],
-                ),
-              ),
             ),
           ],
         ),

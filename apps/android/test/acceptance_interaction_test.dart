@@ -277,6 +277,8 @@ void main() {
       await tester.pumpAndSettle();
       final composer = find.widgetWithText(TextField, '交给 Pocket Harness');
       await tester.enterText(composer, '两个对话中相同的文字');
+      // 草稿出现后输入卡展开、发送圆钮按草稿可用性重建；等一帧再点。
+      await tester.pump();
       await tester.tap(find.byTooltip('发送'));
       await runtime.entered.future;
       await tester.tap(find.byTooltip('新对话'));

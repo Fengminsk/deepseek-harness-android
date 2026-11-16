@@ -6,6 +6,7 @@ import 'package:dsh_android/chat_goal.dart';
 import 'package:dsh_android/chat_messages.dart';
 import 'package:dsh_android/chat_projection.dart';
 import 'package:dsh_android/main.dart';
+import 'package:dsh_android/pocket_composer.dart';
 import 'package:dsh_android/models.dart';
 import 'package:dsh_android/models_provider.dart';
 import 'package:dsh_android/runtime.dart';
@@ -278,7 +279,7 @@ void main() {
     addTearDown(runtime.dispose);
     await tester.pumpWidget(host(ChatPage(runtime: runtime)));
     await tester.pumpAndSettle();
-    final field = find.byKey(const Key('chat-composer-input'));
+    final field = find.byKey(PocketComposer.inputKey);
     await tester.enterText(field, '/su');
     await tester.pumpAndSettle();
     await tester.tap(find.text('/summarize'));
@@ -334,7 +335,7 @@ void main() {
       addTearDown(runtime.dispose);
       await tester.pumpWidget(host(ChatPage(runtime: runtime)));
       await tester.pumpAndSettle();
-      final field = find.byKey(const Key('chat-composer-input'));
+      final field = find.byKey(PocketComposer.inputKey);
       await tester.enterText(field, '/comp');
       await tester.pumpAndSettle();
       expect(find.text('压缩  compact'), findsOneWidget);
@@ -362,7 +363,7 @@ void main() {
       addTearDown(runtime.dispose);
       await tester.pumpWidget(host(ChatPage(runtime: runtime)));
       await tester.pumpAndSettle();
-      final field = find.byKey(const Key('chat-composer-input'));
+      final field = find.byKey(PocketComposer.inputKey);
       await tester.enterText(field, '/su');
       await tester.pumpAndSettle();
       expect(find.textContaining('无法读取会话指令'), findsOneWidget);
@@ -651,10 +652,9 @@ void main() {
       addTearDown(runtime.dispose);
       await tester.pumpWidget(host(ChatPage(runtime: runtime)));
       await tester.pumpAndSettle();
-      await tester.enterText(
-        find.byKey(const Key('chat-composer-input')),
-        '/反馈',
-      );
+      await tester.enterText(find.byKey(PocketComposer.inputKey), '/反馈');
+      // 草稿出现后输入卡展开、发送圆钮按草稿可用性重建；等一帧再点。
+      await tester.pump();
       await tester.tap(find.byTooltip('发送'));
       await tester.pumpAndSettle();
       expect(find.byType(SessionFeedbackPage), findsOneWidget);
@@ -695,10 +695,8 @@ void main() {
     addTearDown(runtime.dispose);
     await tester.pumpWidget(host(ChatPage(runtime: runtime)));
     await tester.pumpAndSettle();
-    await tester.enterText(
-      find.byKey(const Key('chat-composer-input')),
-      '/反馈 建议改善布局',
-    );
+    await tester.enterText(find.byKey(PocketComposer.inputKey), '/反馈 建议改善布局');
+    await tester.pump();
     await tester.tap(find.byTooltip('发送'));
     await tester.pumpAndSettle();
     expect(find.byType(SessionFeedbackPage), findsNothing);
@@ -727,6 +725,7 @@ void main() {
       await tester.pumpWidget(host(ChatPage(runtime: runtime)));
       await tester.pumpAndSettle();
       await tester.enterText(find.byType(TextField), '/压缩');
+      await tester.pump();
       await tester.tap(find.byTooltip('发送'));
       await tester.pumpAndSettle();
       expect(runtime.calls.last.params['line'], '/compact');
@@ -737,6 +736,7 @@ void main() {
       );
       runtime.failCatalog = true;
       await tester.enterText(find.byType(TextField), '/计划 off');
+      await tester.pump();
       await tester.tap(find.byTooltip('发送'));
       await tester.pumpAndSettle();
       expect(runtime.prompts, 0);
@@ -912,10 +912,7 @@ void main() {
       addTearDown(runtime.dispose);
       await tester.pumpWidget(host(ChatPage(runtime: runtime)));
       await tester.pumpAndSettle();
-      await tester.enterText(
-        find.byKey(const Key('chat-composer-input')),
-        '未发送草稿',
-      );
+      await tester.enterText(find.byKey(PocketComposer.inputKey), '未发送草稿');
       await tester.tap(find.byTooltip('添加与指令'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('反馈  feedback'));
@@ -930,7 +927,7 @@ void main() {
       expect(find.byType(SessionFeedbackPage), findsNothing);
       expect(
         tester
-            .widget<TextField>(find.byKey(const Key('chat-composer-input')))
+            .widget<TextField>(find.byKey(PocketComposer.inputKey))
             .controller!
             .text,
         '未发送草稿',

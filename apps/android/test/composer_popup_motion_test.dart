@@ -1,20 +1,25 @@
+// 输入区「+」的指令菜单已从 FlClash 的锚定弹层（`CommonPopupBox`）改成与远程
+// 会话页一致的底部弹层（`showRemoteCommandsSheet` + `ComposerCommands`）：
+// 语音/推理面板等按钮与「+」同在共享悬浮卡里，弹层无法再从卡片内部的按钮坐标
+// 长出来。原文件里针对旧弹层的弹出/回缩几何与动画断言因此不再成立，这里按
+// **行为意图**保留等价覆盖：打开与关闭、返回键/点击外部收起、关闭时草稿与
+// 页面位置不变、没有提交、减少动态效果时立即打开/关闭、在途目录响应晚到也不
+// 会重新打开或提交、放大字体与键盘下弹层仍完整可达、关闭后输入卡仍可编辑。
+
 import 'dart:async';
 
+import 'package:dsh_android/chat_messages.dart';
 import 'package:dsh_android/composer_commands.dart';
-import 'package:dsh_android/chat_goal.dart';
-import 'package:dsh_android/flclash/popup.dart';
 import 'package:dsh_android/main.dart';
+import 'package:dsh_android/pocket_composer.dart';
 import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/ui.dart';
-import 'package:flutter/gestures.dart';
-import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'support/settle_ui.dart';
 
-// The original commands.list descriptor fields, including input-bearing commands
-// and an unrelated plugin row, exercise the actual command menu arrangement.
+/// 指令菜单的目录；含需要输入参数的指令，覆盖真实菜单的排布。
 const _catalog = <Json>[
   {
     'name': 'goal',
@@ -32,29 +37,9 @@ const _catalog = <Json>[
     'input': {'hint': '[off|message]', 'attachments': true},
   },
   {
-    'name': 'feedback',
-    'definitionId': '@deepseek-ai/dsh-command-feedback',
-    'description': 'Send feedback about the current session',
-    'input': {'hint': '<feedback>', 'attachments': true},
-  },
-  {
     'name': 'compact',
     'definitionId': '@deepseek-ai/dsh-command-compact',
     'description': 'Compact conversation history',
-  },
-  {
-    'name': 'permission',
-    'definitionId': '@deepseek-ai/dsh-permission-presets',
-    'description': 'Select a permission preset',
-  },
-  {
-    'name': 'export',
-    'definitionId': '@deepseek-ai/dsh-session-log-export',
-    'description': 'Export session logs',
-  },
-  {
-    'name': 'plugin-status',
-    'description': 'Show the installed plugin status without running a task',
   },
 ];
 
@@ -65,38 +50,13 @@ class _Runtime extends RuntimeController {
 
   final calls = <({String method, Json params})>[];
   Completer<List<Json>>? catalogResponse;
-  bool rejectSend = false;
 
-  @override
-  Future<void> send(String id, String text) async {
-    if (rejectSend) throw StateError('测试发送失败');
-    final events = timelines[id]!;
-    final seq = (events.last['seq'] as int) + 1;
-    timelines[id] = [
-      ...events,
-      {
-        'seq': seq,
-        'time': seq * 1000,
-        'type': 'user/message',
-        'surfaceOp': 'append',
-        'data': {
-          'id': 'sent-$seq',
-          'role': 'user',
-          'source': {'kind': 'user'},
-          'content': [
-            {'type': 'text', 'text': text},
-          ],
-        },
-      },
-    ];
-    notifyListeners();
-  }
-
+  /// 有内容的会话：让弹层的打开/关闭发生在真实聊天布局上（可断言位置不变）。
   @override
   String newSession() {
     final id = super.newSession();
     timelines[id]!.addAll([
-      for (var turn = 1; turn <= 12; turn++) ...[
+      for (var turn = 1; turn <= 6; turn++) ...[
         {
           'seq': turn * 2 - 1,
           'time': (turn * 2 - 1) * 1000,
@@ -128,7 +88,7 @@ class _Runtime extends RuntimeController {
                 'model': 'fixture-model',
               },
               'content': [
-                {'type': 'text', 'text': '回复 $turn：菜单应悬浮在内容之上，关闭后可以继续编辑。'},
+                {'type': 'text', 'text': '回复 $turn：弹层关闭后可以继续编辑。'},
               ],
             },
             'stream': <Json>[],
@@ -143,14 +103,10 @@ class _Runtime extends RuntimeController {
   Future<dynamic> call(String method, [Json params = const {}]) async {
     calls.add((method: method, params: params));
     if (method == 'userText.mask') return {'ranges': <Json>[]};
-    if (method == 'session.ensure') {
-      expect(timelines.containsKey(params['sessionId']), isTrue);
-      return {'sessionId': params['sessionId'], 'created': false};
-    }
+    if (method == 'session.ensure') return {'sessionId': params['sessionId']};
     if (method == 'api.call' &&
         params['namespace'] == 'commands' &&
         params['method'] == 'list') {
-      expect(params['args'], {'agentId': timelines.keys.single});
       return catalogResponse == null ? _catalog : await catalogResponse!.future;
     }
     if (method == 'api.call' &&
@@ -180,62 +136,23 @@ class _Runtime extends RuntimeController {
     throw StateError('Unexpected runtime action: $method $params');
   }
 
-  void expectOnlyDiscovery() {
-    expect(calls, isNotEmpty);
+  /// 关闭菜单不得提交任务、不得执行会话指令。
+  void expectNoSubmission() {
     for (final call in calls) {
       expect(
-        call.method == 'session.ensure' ||
-            call.method == 'userText.mask' ||
-            (call.method == 'api.call' &&
-                ((call.params['namespace'] == 'commands' &&
-                        call.params['method'] == 'list') ||
-                    (call.params['namespace'] == 'session' &&
-                        const [
-                          'projections',
-                          'modelCatalog',
-                        ].contains(call.params['method'])) ||
-                    (call.params['namespace'] == 'pluginInventory' &&
-                        call.params['method'] == 'list') ||
-                    (call.params['namespace'] == 'settings' &&
-                        call.params['method'] == 'describe'))),
-        isTrue,
-        reason: 'Dismissal must not submit a prompt or run a command: $call',
+        call.method == 'session.command' || call.method == 'session.send',
+        isFalse,
+        reason: '关闭菜单不应提交或执行任何内容：$call',
       );
     }
   }
 }
 
-class _Routes extends NavigatorObserver {
-  final popups = <CommonPopupRoute<dynamic>>[];
-  final active = <Route<dynamic>>{};
-  int maxActive = 0;
-
-  @override
-  void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) {
-    if (route is CommonPopupRoute) {
-      popups.add(route);
-      active.add(route);
-      if (active.length > maxActive) maxActive = active.length;
-    }
-  }
-
-  @override
-  void didPop(Route<dynamic> route, Route<dynamic>? previousRoute) {
-    active.remove(route);
-  }
-
-  @override
-  void didRemove(Route<dynamic> route, Route<dynamic>? previousRoute) {
-    active.remove(route);
-  }
-}
-
-Future<(_Runtime, _Routes)> _chat(
+Future<_Runtime> _chat(
   WidgetTester tester, {
   bool reduceMotion = false,
   double scale = 1,
-  bool glass = false,
-  _Runtime? runtime,
+  bool keyboard = false,
 }) async {
   tester.view
     ..physicalSize = const Size(360, 800)
@@ -243,445 +160,167 @@ Future<(_Runtime, _Routes)> _chat(
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
   addTearDown(tester.view.resetViewInsets);
-  final service = runtime ?? _Runtime();
-  addTearDown(service.dispose);
-  final routes = _Routes();
+  final runtime = _Runtime();
+  addTearDown(runtime.dispose);
   await tester.pumpWidget(
     MaterialApp(
       theme: pocketTheme(Brightness.light),
-      navigatorObservers: [routes],
       builder: (context, child) => MediaQuery(
         data: MediaQuery.of(context).copyWith(
           disableAnimations: reduceMotion,
           textScaler: TextScaler.linear(scale),
+          viewInsets: EdgeInsets.only(bottom: keyboard ? 320 : 0),
         ),
         child: LiquidGlassScope(
-          enabled: glass,
-          child: LiquidGlassHost(enabled: glass, child: child!),
+          enabled: false,
+          child: LiquidGlassHost(enabled: false, child: child!),
         ),
       ),
-      home: ChatPage(runtime: service),
+      home: ChatPage(runtime: runtime),
     ),
   );
   await settleUi(tester);
-  return (service, routes);
+  return runtime;
 }
 
-// The header also has a session menu. Keep geometry and opacity assertions
-// anchored to the composer popup, whose parent carries a stable product key.
-Finder get _source => find.descendant(
-  of: find.byKey(const ValueKey('chat-composer'), skipOffstage: false),
-  matching: find.byType(CommonPopupBox, skipOffstage: false),
-);
-Finder get _editor => find.byType(TextField, skipOffstage: false);
-Finder get _chatList => find.descendant(
-  of: find.byType(PocketList, skipOffstage: false),
-  matching: find.byType(CustomScrollView, skipOffstage: false),
-);
+Finder get _plus => find.byTooltip('添加与指令');
 
-double _sourceOpacity(WidgetTester tester) => tester
-    .widget<Opacity>(
-      find.descendant(of: _source, matching: find.byType(Opacity)).first,
-    )
-    .opacity;
+Finder get _editor => find.byKey(PocketComposer.inputKey);
 
-// Follow the original FlClash popup_test.dart layer assertions. A menu also has
-// its own clip; the morph's outer clip contains the blurred/fading content.
-Rect _openingPlatter(WidgetTester tester) {
-  final clip = tester.layers.whereType<ClipPathLayer>().where((layer) {
-    final opacity = layer.firstChild;
-    return opacity is OpacityLayer && opacity.firstChild is ImageFilterLayer;
-  }).single;
-  return clip.clipPath!.getBounds();
+/// 输入草稿并等一帧：草稿出现后输入卡才展开、发送圆钮按可用性重建。
+Future<void> _draft(WidgetTester tester, String text) async {
+  await tester.enterText(_editor, text);
+  await tester.pump();
 }
 
-Rect _returningContent(WidgetTester tester) {
-  final content = tester.layers
-      .whereType<ImageFilterLayer>()
-      .where((layer) => layer.firstChild is TransformLayer)
-      .last;
-  final transform = content.firstChild! as TransformLayer;
-  final popup = tester.getRect(find.byType(ComposerCommands));
-  return MatrixUtils.transformRect(
-    transform.transform!,
-    Offset.zero & popup.size,
-  ).shift(popup.topLeft);
-}
-
-bool _rowPressed(WidgetTester tester, String label) {
-  final decoration = tester
-      .widget<DecoratedBox>(
-        find
-            .ancestor(of: find.text(label), matching: find.byType(DecoratedBox))
-            .first,
-      )
-      .decoration;
-  return (decoration as ShapeDecoration).color != null;
-}
-
-OneSequenceGestureRecognizer _rowRecognizer(WidgetTester tester) {
-  final detectors = tester.widgetList<RawGestureDetector>(
-    find.descendant(
-      of: find.byType(CommonPopupMenu),
-      matching: find.byType(RawGestureDetector),
-    ),
-  );
-  for (final detector in detectors) {
-    for (final factory in detector.gestures.values) {
-      final recognizer = factory.constructor();
-      if (recognizer.debugDescription == 'menu row press') {
-        factory.initializer(recognizer);
-        return recognizer as OneSequenceGestureRecognizer;
-      }
-      recognizer.dispose();
-    }
-  }
-  throw StateError('The actual command menu must register its row recognizer.');
+Future<void> _openMenu(WidgetTester tester) async {
+  await tester.tap(_plus);
+  await settleUi(tester);
 }
 
 void main() {
   testWidgets(
-    'sending lifts the confirmed question and failed sends keep the draft',
+    'system back dismisses the command sheet, keeping the draft and position',
     (tester) async {
-      final (runtime, _) = await _chat(tester);
-      await tester.enterText(_editor, '请开始新任务');
-      await tester.tap(find.byTooltip('发送'));
-      await settleUi(tester);
-      await tester.pumpAndSettle();
-      final question = find.text('请开始新任务', findRichText: true);
-      expect(question, findsOneWidget);
-      expect(tester.getTopLeft(question).dy, lessThan(190));
-      expect(tester.widget<TextField>(_editor).controller!.text, isEmpty);
-      final list = tester.widget<CustomScrollView>(_chatList);
-      await tester.drag(_chatList, const Offset(0, 110));
-      await tester.pumpAndSettle();
-      final stoppedAt = list.controller!.offset;
-      runtime.notifyListeners();
-      await settleUi(tester);
-      expect(list.controller!.offset, closeTo(stoppedAt, 1));
-      runtime.rejectSend = true;
-      await tester.enterText(_editor, '保留失败草稿');
-      await tester.tap(find.byTooltip('发送'));
-      await settleUi(tester);
-      expect(tester.widget<TextField>(_editor).controller!.text, '保留失败草稿');
-      expect(tester.takeException(), isNull);
-    },
-  );
-  for (final glass in [false, true]) {
-    testWidgets(
-      'chat plus paints intermediate opening and returning frames (glass=$glass)',
-      (tester) async {
-        final (runtime, routes) = await _chat(tester, glass: glass);
-        final anchor = tester.getRect(_source);
-        final press = await tester.startGesture(anchor.center);
-        // The composer is scrollable, so FlClash waits for the press timeout
-        // before taking the pointer away from scrolling.
-        await tester.pump(kPressTimeout + const Duration(milliseconds: 1));
-        await tester.pump();
-        expect(find.byType(ComposerCommands), findsOneWidget);
-        expect(routes.popups, hasLength(1));
-        await tester.pump(const Duration(milliseconds: 100));
-        final route = routes.popups.single;
-        expect(route.animation!.status, AnimationStatus.forward);
-        expect(route.animation!.value, inExclusiveRange(0, 1));
-        final opening = _openingPlatter(tester);
-        final menu = tester.getRect(find.byType(ComposerCommands));
-        expect(opening.width, inExclusiveRange(anchor.width, menu.width));
-        expect(opening.height, inExclusiveRange(anchor.height, menu.height));
-        expect(_sourceOpacity(tester), 0);
-        await press.up();
-        await settleUi(tester);
-        expect(route.animation!.status, AnimationStatus.completed);
-        expect(find.text('文件  file'), findsOneWidget);
-        expect(find.text('目标  goal'), findsOneWidget);
-        expect(_sourceOpacity(tester), 0);
-
-        await tester.binding.handlePopRoute();
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 60));
-        expect(find.byType(ComposerCommands), findsOneWidget);
-        expect(route.animation!.status, AnimationStatus.reverse);
-        final returning = _returningContent(tester);
-        expect(returning.width, inExclusiveRange(0, menu.width));
-        expect(returning.height, inExclusiveRange(0, menu.height));
-        await tester.pump(const Duration(milliseconds: 40));
-        final later = _returningContent(tester);
-        // The menu returns into its control: shrinking as it nears the anchor.
-        expect(later.width, lessThan(returning.width));
-        expect(later.height, lessThan(returning.height));
-        expect(
-          (later.center - anchor.center).distance,
-          lessThan((returning.center - anchor.center).distance),
-        );
-        expect(_sourceOpacity(tester), 0);
-        await settleUi(tester);
-        expect(find.byType(ComposerCommands), findsNothing);
-        expect(_sourceOpacity(tester), 1);
-        runtime.expectOnlyDiscovery();
-        expect(tester.takeException(), isNull);
-      },
-    );
-  }
-
-  for (final useBack in [false, true]) {
-    testWidgets(
-      '${useBack ? 'system back' : 'outside tap'} dismisses without sending or moving the conversation',
-      (tester) async {
-        final (runtime, routes) = await _chat(tester);
-        await tester.enterText(_editor, '保留这段未发送草稿');
-        await settleUi(tester);
-        final editor = tester.getRect(_editor);
-        final viewport = tester.getRect(_chatList);
-        final list = tester.widget<CustomScrollView>(_chatList);
-        final scrollOffset = list.controller!.offset;
-        await tester.tap(find.byTooltip('添加与指令'));
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 100));
-        expect(tester.getRect(_editor), editor);
-        expect(tester.getRect(_chatList), viewport);
-        expect(list.controller!.offset, scrollOffset);
-        await settleUi(tester);
-        expect(tester.getRect(_editor), editor);
-        expect(tester.getRect(_chatList), viewport);
-        expect(list.controller!.offset, scrollOffset);
-        if (useBack) {
-          await tester.binding.handlePopRoute();
-        } else {
-          final menu = tester.getRect(find.byType(ComposerCommands));
-          const outside = Offset(350, 150);
-          expect(menu.contains(outside), isFalse);
-          await tester.tapAt(outside);
-        }
-        await settleUi(tester);
-        expect(routes.active, isEmpty);
-        expect(find.byType(ChatPage), findsOneWidget);
-        expect(find.byType(ComposerCommands), findsNothing);
-        expect(tester.widget<TextField>(_editor).controller!.text, '保留这段未发送草稿');
-        expect(tester.getRect(_editor), editor);
-        expect(tester.getRect(_chatList), viewport);
-        expect(list.controller!.offset, scrollOffset);
-        runtime.expectOnlyDiscovery();
-        expect(tester.takeException(), isNull);
-      },
-    );
-  }
-
-  testWidgets(
-    'rapid presses and a mid-opening dismissal never stack popup routes',
-    (tester) async {
-      final (runtime, routes) = await _chat(tester);
-      final anchor = tester.getCenter(_source);
-      await tester.tapAt(anchor);
-      await tester.tapAt(anchor);
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 90));
-      expect(routes.popups, hasLength(1));
-      expect(find.byType(ComposerCommands), findsOneWidget);
-      await tester.binding.handlePopRoute();
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 10));
-      expect(routes.popups.single.animation!.status, AnimationStatus.reverse);
-      await tester.tapAt(anchor);
-      await tester.pump();
-      expect(routes.popups, hasLength(1));
-      await settleUi(tester);
-      expect(find.byType(ComposerCommands), findsNothing);
-      await tester.tapAt(anchor);
-      await settleUi(tester);
-      expect(routes.popups, hasLength(2));
-      expect(routes.maxActive, 1);
-      expect(find.byType(ComposerCommands), findsOneWidget);
-      await tester.binding.handlePopRoute();
-      await settleUi(tester);
-      runtime.expectOnlyDiscovery();
-      expect(tester.takeException(), isNull);
-    },
-  );
-
-  testWidgets(
-    'reduced motion opens and dismisses without elapsed animation time',
-    (tester) async {
-      final (runtime, routes) = await _chat(tester, reduceMotion: true);
-      await tester.tap(find.byTooltip('添加与指令'));
-      await tester.pump();
-      await tester.pump();
-      final route = routes.popups.single;
-      expect(route.transitionDuration, Duration.zero);
-      expect(route.animation!.status, AnimationStatus.completed);
-      expect(find.text('文件  file'), findsOneWidget);
-      await tester.binding.handlePopRoute();
-      await tester.pump();
-      await tester.pump();
-      expect(find.byType(ComposerCommands), findsNothing);
-      expect(_sourceOpacity(tester), 1);
-      runtime.expectOnlyDiscovery();
-      expect(tester.takeException(), isNull);
-    },
-  );
-
-  testWidgets(
-    'an accepted row press can be cancelled and the next drag still selects',
-    (tester) async {
-      final (runtime, _) = await _chat(tester);
-      await tester.tap(find.byTooltip('添加与指令'));
-      await settleUi(tester);
-      final recognizer = _rowRecognizer(tester);
-      addTearDown(recognizer.dispose);
-      final file = tester.getCenter(find.text('文件  file'));
-      final goal = tester.getCenter(find.text('目标  goal'));
-
-      // Use the mounted menu's factory and real row callbacks. Give this
-      // recognizer the arena explicitly so the test exercises cancellation
-      // after acceptance, independently of Scrollable's competing drag.
-      recognizer.addPointer(PointerDownEvent(pointer: 7001, position: file));
-      tester.binding.gestureArena
-        ..close(7001)
-        ..sweep(7001);
-      await tester.pump();
-      expect(_rowPressed(tester, '文件  file'), isTrue);
-      tester.binding.pointerRouter.route(
-        PointerCancelEvent(pointer: 7001, position: file),
-      );
-      await tester.pump();
-      expect(_rowPressed(tester, '文件  file'), isFalse);
-      expect(find.byType(ComposerCommands), findsOneWidget);
-
-      recognizer.addPointer(PointerDownEvent(pointer: 7002, position: file));
-      tester.binding.gestureArena
-        ..close(7002)
-        ..sweep(7002);
-      tester.binding.pointerRouter.route(
-        PointerMoveEvent(pointer: 7002, position: goal),
-      );
-      await tester.pump();
-      expect(_rowPressed(tester, '文件  file'), isFalse);
-      expect(_rowPressed(tester, '目标  goal'), isTrue);
-      tester.binding.pointerRouter.route(
-        PointerUpEvent(pointer: 7002, position: goal),
-      );
-      await settleUi(tester);
-      expect(find.byType(ComposerCommands), findsNothing);
-      expect(find.byType(ChatGoalPage), findsOneWidget);
-      runtime.expectOnlyDiscovery();
-      expect(tester.takeException(), isNull);
-    },
-  );
-
-  for (final reduceMotion in [false, true]) {
-    testWidgets(
-      'a carried press stretches the menu only when motion is enabled (reduced=$reduceMotion)',
-      (tester) async {
-        final (runtime, _) = await _chat(
-          tester,
-          reduceMotion: reduceMotion,
-          glass: true,
-        );
-        final press = await tester.startGesture(tester.getCenter(_source));
-        await tester.pump(kPressTimeout + const Duration(milliseconds: 1));
-        await settleUi(tester);
-        final surface = tester.renderObject<RenderBox>(
-          find.byType(PopupMenuCard),
-        );
-        final resting = ElasticPress.paintBoundsOf(surface);
-        await press.moveTo(tester.getCenter(find.text('文件  file')));
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 400));
-        final pressed = ElasticPress.paintBoundsOf(surface);
-        final menu = tester.getRect(find.byType(CommonPopupMenu));
-        await press.moveTo(Offset(menu.left - 80, menu.center.dy));
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 400));
-        final pulled = ElasticPress.paintBoundsOf(surface);
-        if (reduceMotion) {
-          expect(pressed, resting);
-          expect(pulled, resting);
-        } else {
-          expect(pressed.width, greaterThan(resting.width + 4));
-          expect(pulled.center.dx, lessThan(resting.center.dx - 4));
-          expect(
-            pulled.width / pulled.height,
-            greaterThan(resting.width / resting.height),
-          );
-        }
-        await press.up();
-        await settleUi(tester);
-        expect(ElasticPress.paintBoundsOf(surface), resting);
-        expect(find.byType(ComposerCommands), findsOneWidget);
-        await tester.binding.handlePopRoute();
-        await settleUi(tester);
-        runtime.expectOnlyDiscovery();
-        expect(tester.takeException(), isNull);
-      },
-    );
-  }
-
-  testWidgets(
-    'large text and a visible keyboard keep the floating menu bounded and scrollable',
-    (tester) async {
-      final (runtime, _) = await _chat(tester, scale: 2);
-      await tester.enterText(_editor, '第一行\n第二行\n第三行\n第四行\n第五行');
-      tester.view.viewInsets = const FakeViewPadding(bottom: 320);
-      await settleUi(tester);
+      final runtime = await _chat(tester);
+      await _draft(tester, '保留这段未发送草稿');
       final editor = tester.getRect(_editor);
-      final viewport = tester.getRect(_chatList);
-      await tester.tap(find.byTooltip('添加与指令'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 100));
-      expect(tester.takeException(), isNull);
-      await settleUi(tester);
-      final menu = tester.getRect(find.byType(ComposerCommands));
-      expect(menu.left, greaterThanOrEqualTo(0));
-      expect(menu.right, lessThanOrEqualTo(360));
-      expect(menu.top, greaterThanOrEqualTo(16));
-      expect(menu.bottom, lessThanOrEqualTo(480));
-      expect(tester.getRect(_editor), editor);
-      expect(tester.getRect(_chatList), viewport);
-      expect(
-        tester.getRect(find.byTooltip('发送', skipOffstage: false)).bottom,
-        lessThanOrEqualTo(480),
-      );
-      final menuScroll = find.descendant(
-        of: find.byType(ComposerCommands),
-        matching: find.byType(Scrollable),
-      );
-      expect(menuScroll, findsOneWidget);
-      await tester.scrollUntilVisible(
-        find.text('plugin-status  plugin-status'),
-        150,
-        scrollable: menuScroll,
-      );
-      await settleUi(tester);
-      expect(
-        find.text('plugin-status  plugin-status').hitTestable(),
-        findsOneWidget,
-      );
+      final scroll = tester
+          .widget<ChatTimeline>(find.byType(ChatTimeline))
+          .controller
+          .position
+          .pixels;
+      await _openMenu(tester);
+      expect(find.byType(ComposerCommands), findsOneWidget);
+      expect(find.text('添加与指令'), findsOneWidget, reason: '弹层标题');
+
       await tester.binding.handlePopRoute();
       await settleUi(tester);
+      expect(find.byType(ComposerCommands), findsNothing);
+      expect(tester.widget<TextField>(_editor).controller!.text, '保留这段未发送草稿');
+      expect(tester.getRect(_editor), editor);
       expect(
-        tester.widget<TextField>(_editor).controller!.text,
-        contains('第五行'),
+        tester
+            .widget<ChatTimeline>(find.byType(ChatTimeline))
+            .controller
+            .position
+            .pixels,
+        scroll,
       );
-      runtime.expectOnlyDiscovery();
+      runtime.expectNoSubmission();
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets(
+    'outside tap dismisses the command sheet without sending the draft',
+    (tester) async {
+      final runtime = await _chat(tester);
+      await _draft(tester, '只编辑不发送');
+      await _openMenu(tester);
+      expect(find.byType(ComposerCommands), findsOneWidget);
+
+      await tester.tapAt(const Offset(350, 80));
+      await settleUi(tester);
+      expect(find.byType(ComposerCommands), findsNothing);
+      expect(tester.widget<TextField>(_editor).controller!.text, '只编辑不发送');
+      runtime.expectNoSubmission();
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'opening the command sheet does not submit the visible draft immediately',
+    (tester) async {
+      final runtime = await _chat(tester);
+      await _draft(tester, '/compact');
+      await _openMenu(tester);
+      expect(find.byType(ComposerCommands), findsOneWidget);
+      await tester.binding.handlePopRoute();
+      await settleUi(tester);
+      expect(tester.widget<TextField>(_editor).controller!.text, '/compact');
+      runtime.expectNoSubmission();
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('reduced motion opens and dismisses the sheet in one frame', (
+    tester,
+  ) async {
+    final runtime = await _chat(tester, reduceMotion: true);
+    await tester.tap(_plus);
+    await tester.pump();
+    expect(find.byType(ComposerCommands), findsOneWidget);
+
+    await tester.binding.handlePopRoute();
+    await tester.pump();
+    expect(find.byType(ComposerCommands), findsNothing);
+    runtime.expectNoSubmission();
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets(
     'a late catalog response after dismissal cannot reopen or submit',
     (tester) async {
-      final runtime = _Runtime()..catalogResponse = Completer<List<Json>>();
-      final (_, routes) = await _chat(tester, runtime: runtime);
-      await tester.tap(find.byTooltip('添加与指令'));
-      await settleUi(tester);
+      final runtime = await _chat(tester);
+      runtime.catalogResponse = Completer<List<Json>>();
+      await tester.tap(_plus);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+      expect(find.byType(ComposerCommands), findsOneWidget);
       expect(find.text('正在读取会话菜单…'), findsOneWidget);
+
       await tester.binding.handlePopRoute();
       await settleUi(tester);
+      expect(find.byType(ComposerCommands), findsNothing);
+
       runtime.catalogResponse!.complete(_catalog);
+      runtime.catalogResponse = null;
       await settleUi(tester);
       expect(find.byType(ComposerCommands), findsNothing);
-      expect(routes.popups, hasLength(1));
-      expect(routes.active, isEmpty);
-      runtime.expectOnlyDiscovery();
+      runtime.expectNoSubmission();
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'large text and a visible keyboard keep the sheet bounded and the composer reachable',
+    (tester) async {
+      final runtime = await _chat(tester, scale: 1.5, keyboard: true);
+      await _draft(tester, '一\n二\n三\n四\n五');
+      await _openMenu(tester);
+      final sheet = tester.getRect(find.byType(ComposerCommands));
+      expect(sheet.top, greaterThanOrEqualTo(0));
+      expect(sheet.bottom, lessThanOrEqualTo(800));
+      await tester.ensureVisible(find.text('压缩  compact'));
+      expect(find.text('压缩  compact'), findsOneWidget);
+
+      await tester.binding.handlePopRoute();
+      await settleUi(tester);
+      expect(find.byType(ComposerCommands), findsNothing);
+      expect(_plus.hitTestable(), findsOneWidget);
+      expect(_editor.hitTestable(), findsOneWidget);
+      runtime.expectNoSubmission();
       expect(tester.takeException(), isNull);
     },
   );

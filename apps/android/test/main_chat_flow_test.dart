@@ -4,7 +4,9 @@ import 'dart:ui' as ui;
 
 import 'package:dsh_android/chat_messages.dart';
 import 'package:dsh_android/chat_turn_navigation.dart';
+import 'package:dsh_android/composer_commands.dart';
 import 'package:dsh_android/main.dart';
+import 'package:dsh_android/pocket_composer.dart';
 import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/resource_hub.dart';
 import 'package:dsh_android/session_document.dart';
@@ -257,6 +259,101 @@ class _ChatRuntime extends RuntimeController {
   }
 }
 
+/// 会话模型目录与 `selectModel` 的测试替身：推理面板的档位、默认强度与切换回执
+/// 都走与 `SessionModelPage` 相同的门面方法，`selectModel` 成功后把
+/// `model/selection` 写进会话日志（与真实核心一致），供页面投影回显。
+class _ModelChatRuntime extends _ChatRuntime {
+  _ModelChatRuntime(super.history);
+
+  final modelCalls = <({String method, Json params})>[];
+
+  static const _catalog = <String, dynamic>{
+    'default': {
+      'provider': 'deepseek-official',
+      'model': 'deepseek-flash',
+      'reasoningEffort': 'low',
+    },
+    'groups': [
+      {
+        'id': 'deepseek-official',
+        'name': 'DeepSeek',
+        'models': [
+          {
+            'id': 'deepseek-flash',
+            'name': 'DeepSeek-V4.1-Flash',
+            'reasoning': {
+              'defaultEffort': 'low',
+              'efforts': [
+                {'id': 'low', 'name': '低'},
+                {'id': 'medium', 'name': '中'},
+                {'id': 'high', 'name': '高'},
+              ],
+            },
+          },
+        ],
+      },
+    ],
+    'failures': <Json>[],
+    'routableProviders': ['deepseek-official'],
+  };
+
+  @override
+  Future<dynamic> call(String method, [Json params = const {}]) async {
+    if (method == 'session.ensure') return {'sessionId': params['sessionId']};
+    if (method == 'session.cancel') return <String, dynamic>{};
+    if (method == 'api.call' && params['namespace'] == 'session') {
+      switch (params['method']) {
+        case 'modelCatalog':
+          modelCalls.add((method: 'modelCatalog', params: params));
+          return _catalog;
+        case 'selectModel':
+          modelCalls.add((method: 'selectModel', params: params));
+          final request = (params['args'] as Json)['request'] as Json;
+          final selected = <String, dynamic>{
+            'provider': request['provider'],
+            'model': request['model'],
+            'reasoningEffort': request['reasoningEffort'],
+          };
+          final id = request['sessionId'] as String;
+          final timeline = timelines[id] ??= <Json>[];
+          timeline.add({
+            'seq': timeline.length,
+            'time': 0,
+            'type': 'model/selection',
+            'surfaceOp': 'append',
+            'data': selected,
+          });
+          notifyListeners();
+          return {'selected': selected};
+        case 'projections':
+          return null;
+      }
+    }
+    if (method == 'api.call' &&
+        params['namespace'] == 'commands' &&
+        params['method'] == 'list') {
+      return <Json>[
+        {
+          'name': 'permission',
+          'definitionId': '@deepseek-ai/dsh-permission-presets',
+          'description': '切换权限预设（沙箱模式与审批策略）',
+        },
+      ];
+    }
+    if (method == 'api.call' &&
+        params['namespace'] == 'permissionPresets' &&
+        params['method'] == 'catalog') {
+      return {
+        'options': [
+          {'value': 'read-only', 'name': '仅可查看'},
+          {'value': 'workspace-write', 'name': '工作区内修改'},
+        ],
+      };
+    }
+    return super.call(method, params);
+  }
+}
+
 Widget _host(_ChatRuntime runtime) => MaterialApp(
   theme: pocketTheme(Brightness.light),
   builder: (_, child) => MediaQuery(
@@ -265,7 +362,6 @@ Widget _host(_ChatRuntime runtime) => MaterialApp(
   ),
   home: ChatPage(runtime: runtime),
 );
-
 void _phone(WidgetTester tester) {
   tester.view.physicalSize = const Size(390, 844);
   tester.view.devicePixelRatio = 1;
@@ -283,6 +379,11 @@ Future<void> _openHistory(WidgetTester tester) async {
 
 ScrollController _scroll(WidgetTester tester) =>
     tester.widget<ChatTimeline>(find.byType(ChatTimeline)).controller;
+
+/// 输入卡当前渲染状态（browse/composing/picker）。
+PocketComposerMode _composerMode(WidgetTester tester) => tester
+    .widget<PocketComposer>(find.byKey(const ValueKey('chat-composer')))
+    .mode;
 
 void main() {
   testWidgets('external keyboard searches sessions and starts a new chat', (
@@ -330,7 +431,7 @@ void main() {
     expect(runtime.draft, 2);
     expect(
       tester
-          .widget<TextField>(find.byKey(const ValueKey('chat-composer-input')))
+          .widget<TextField>(find.byKey(PocketComposer.inputKey))
           .focusNode
           ?.hasFocus,
       isTrue,
@@ -420,7 +521,7 @@ void main() {
         await tester.pumpAndSettle();
         if (layout == 'multiline') {
           await tester.enterText(
-            find.byKey(const ValueKey('chat-composer-input')),
+            find.byKey(PocketComposer.inputKey),
             '读取选中的文件\n整理主要内容\n列出需要确认的问题',
           );
           await tester.pumpAndSettle();
@@ -445,10 +546,301 @@ void main() {
     }
   });
 
+  testWidgets('composer starts collapsed and expands when focused', (
+    tester,
+  ) async {
+    _phone(tester);
+    final runtime = _ChatRuntime([]);
+    addTearDown(runtime.dispose);
+    await tester.pumpWidget(_host(runtime));
+    await tester.pumpAndSettle();
+    final field = find.byKey(PocketComposer.inputKey);
+    final plus = find.byTooltip('添加与指令');
+    final send = find.byTooltip('发送');
+    // 缩小态：加号与发送圆钮跟输入框在同一行、垂直居中。
+    expect(
+      tester.getRect(plus).center.dy,
+      closeTo(tester.getRect(field).center.dy, .01),
+    );
+    expect(
+      tester.getRect(send).center.dy,
+      closeTo(tester.getRect(field).center.dy, .01),
+    );
+    expect(find.byKey(PocketComposer.rootKey), findsOneWidget);
+
+    // 聚焦展开：加号与发送圆钮移到输入区下方工具条，输入区在上。
+    await tester.tap(field);
+    await tester.pumpAndSettle();
+    expect(
+      tester.getRect(plus).top,
+      greaterThanOrEqualTo(tester.getRect(field).bottom),
+    );
+    expect(
+      tester.getRect(send).top,
+      greaterThanOrEqualTo(tester.getRect(field).bottom),
+    );
+    expect(
+      tester.getRect(send).center.dy,
+      closeTo(tester.getRect(plus).center.dy, .01),
+    );
+
+    // 失焦且草稿为空：缩回浏览态。
+    tester.binding.focusManager.primaryFocus?.unfocus();
+    await tester.pumpAndSettle();
+    expect(
+      tester.getRect(plus).center.dy,
+      closeTo(tester.getRect(field).center.dy, .01),
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('keyboard hides collapse the composer only without a draft', (
+    tester,
+  ) async {
+    _phone(tester);
+    final runtime = _ChatRuntime([]);
+    addTearDown(runtime.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: pocketTheme(Brightness.light),
+        builder: (context, child) => MediaQuery(
+          data: MediaQuery.of(context).copyWith(disableAnimations: true),
+          child: child!,
+        ),
+        home: ChatPage(runtime: runtime),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final field = find.byKey(PocketComposer.inputKey);
+    final plus = find.byTooltip('添加与指令');
+    expect(
+      tester.getRect(plus).center.dy,
+      closeTo(tester.getRect(field).center.dy, .01),
+    );
+
+    tester.view.viewInsets = const FakeViewPadding(bottom: 300);
+    await tester.pumpAndSettle();
+    expect(
+      _composerMode(tester),
+      PocketComposerMode.composing,
+      reason: '键盘弹起时输入卡展开',
+    );
+    expect(
+      tester.getRect(plus).top,
+      greaterThanOrEqualTo(tester.getRect(field).bottom),
+      reason: '键盘弹起时输入卡展开',
+    );
+
+    tester.view.viewInsets = const FakeViewPadding();
+    await tester.pumpAndSettle();
+    expect(
+      _composerMode(tester),
+      PocketComposerMode.browse,
+      reason: '键盘收起且没有草稿时缩回浏览态',
+    );
+    expect(
+      tester.getRect(plus).center.dy,
+      closeTo(tester.getRect(field).center.dy, .01),
+      reason: '键盘收起且没有草稿时缩回浏览态',
+    );
+
+    await tester.enterText(field, '保留的草稿');
+    await tester.pumpAndSettle();
+    tester.view.viewInsets = const FakeViewPadding(bottom: 300);
+    await tester.pumpAndSettle();
+    tester.view.viewInsets = const FakeViewPadding();
+    await tester.pumpAndSettle();
+    expect(
+      _composerMode(tester),
+      PocketComposerMode.composing,
+      reason: '有草稿时即使键盘收起也保持展开',
+    );
+    expect(
+      tester.getRect(plus).top,
+      greaterThanOrEqualTo(tester.getRect(field).bottom),
+      reason: '有草稿时即使键盘收起也保持展开',
+    );
+    expect(find.text('保留的草稿'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'composer stays expanded through metrics jitter before the keyboard shows',
+    (tester) async {
+      _phone(tester);
+      final runtime = _ChatRuntime([]);
+      addTearDown(runtime.dispose);
+      await tester.pumpWidget(_host(runtime));
+      await tester.pumpAndSettle();
+      final field = find.byKey(PocketComposer.inputKey);
+      await tester.tap(field);
+      await tester.pumpAndSettle();
+      expect(_composerMode(tester), PocketComposerMode.composing);
+
+      // 聚焦后、键盘真正弹起前，Android 还会派发「键盘仍不可见」的 metrics
+      // （窗口尺寸抖动）。输入卡不得因此缩回，也不得被解焦。
+      for (var jitter = 0; jitter < 5; jitter++) {
+        tester.binding.handleMetricsChanged();
+        await tester.pump();
+      }
+      await tester.pumpAndSettle();
+
+      expect(
+        _composerMode(tester),
+        PocketComposerMode.composing,
+        reason: '键盘还没起来时的 metrics 抖动不得缩回输入卡',
+      );
+      expect(find.byTooltip('推理强度'), findsOneWidget);
+      expect(
+        tester.widget<TextField>(field).focusNode?.hasFocus,
+        isTrue,
+        reason: 'metrics 抖动不得把输入框解焦',
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'tapping the collapsed composer focuses the input and requests the IME',
+    (tester) async {
+      _phone(tester);
+      final runtime = _ChatRuntime([]);
+      addTearDown(runtime.dispose);
+      await tester.pumpWidget(_host(runtime));
+      await tester.pumpAndSettle();
+      final field = find.byKey(PocketComposer.inputKey);
+      expect(_composerMode(tester), PocketComposerMode.browse);
+      tester.testTextInput.log.clear();
+
+      // 卡片底部内边距不属于输入框：点它也要聚焦并展开。
+      final card = tester.getRect(find.byKey(PocketComposer.cardKey));
+      await tester.tapAt(Offset(card.center.dx, card.bottom - 4));
+      await tester.pump();
+      await tester.pumpAndSettle();
+
+      expect(_composerMode(tester), PocketComposerMode.composing);
+      expect(
+        tester.widget<TextField>(field).focusNode?.hasFocus,
+        isTrue,
+        reason: '点卡片空白处也要聚焦输入框',
+      );
+      expect(
+        tester.testTextInput.log.map((call) => call.method),
+        contains('TextInput.show'),
+        reason: '聚焦后要显式请求一次输入法显示',
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'composer plus opens the data-driven command sheet and keeps the draft',
+    (tester) async {
+      _phone(tester);
+      final runtime = _ChatRuntime([]);
+      addTearDown(runtime.dispose);
+      await tester.pumpWidget(_host(runtime));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(PocketComposer.inputKey), '保留的草稿');
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('添加与指令'));
+      await tester.pumpAndSettle();
+      expect(find.byType(ComposerCommands), findsOneWidget);
+
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(find.byType(ComposerCommands), findsNothing);
+      expect(
+        tester
+            .widget<TextField>(find.byKey(PocketComposer.inputKey))
+            .controller!
+            .text,
+        '保留的草稿',
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'composer reasoning panel reads the session model catalog and applies an effort',
+    (tester) async {
+      _phone(tester);
+      final runtime = _ModelChatRuntime([]);
+      addTearDown(runtime.dispose);
+      await tester.pumpWidget(_host(runtime));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(PocketComposer.inputKey));
+      await tester.pumpAndSettle();
+      final catalogReadsBefore = runtime.modelCalls
+          .where((call) => call.method == 'modelCatalog')
+          .length;
+      await tester.tap(find.byTooltip('推理强度'));
+      await tester.pumpAndSettle();
+      expect(
+        runtime.modelCalls.where((call) => call.method == 'modelCatalog'),
+        hasLength(catalogReadsBefore + 1),
+        reason: '打开面板时按会话模型目录读一次档位',
+      );
+      final models = find.byKey(PocketComposer.modelsKey);
+      expect(models, findsOneWidget);
+      expect(
+        find.descendant(of: models, matching: find.text('DeepSeek-V4.1-Flash')),
+        findsOneWidget,
+      );
+      // 当前会话没有显式选择时用目录声明的默认强度回显。
+      expect(
+        find.descendant(of: models, matching: find.text('低')),
+        findsOneWidget,
+      );
+      expect(find.byKey(PocketComposer.stopKeyFor('high')), findsOneWidget);
+
+      await tester.tap(find.byKey(PocketComposer.stopKeyFor('high')));
+      await tester.pumpAndSettle();
+      final selectModel = runtime.modelCalls
+          .where((call) => call.method == 'selectModel')
+          .single;
+      final selectRequest =
+          (selectModel.params['args'] as Json)['request'] as Json;
+      expect(selectRequest['sessionId'], runtime.timelines.keys.single);
+      expect(selectRequest['reasoningEffort'], 'high');
+      // 会话日志里的 model/selection 让面板回显新档位。
+      expect(
+        find.descendant(of: models, matching: find.text('高')),
+        findsOneWidget,
+      );
+
+      // 模型名那一行连接既有会话模型页（与页头标题同一入口）；这里只断言接线，
+      // 不真的推页：`SessionModelPage` 打开时插件状态刷新会在调试构建里触发一条
+      // 既有的「setState during build」断言（与本输入卡无关，另行报告）。
+      expect(tester.widget<InkWell>(models).onTap, isNotNull);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('composer permission shield opens the local permission page', (
+    tester,
+  ) async {
+    _phone(tester);
+    final runtime = _ModelChatRuntime([]);
+    addTearDown(runtime.dispose);
+    await tester.pumpWidget(_host(runtime));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(PocketComposer.inputKey));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('权限预设'));
+    await tester.pumpAndSettle();
+    expect(find.byType(SessionPermissionPage), findsOneWidget);
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    expect(find.byKey(PocketComposer.inputKey), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   for (final scale in [1.0, 1.6]) {
     for (final keyboard in [0.0, 300.0]) {
       testWidgets(
-        'composer centers input and round actions: scale=$scale keyboard=$keyboard',
+        'composer composes input above the toolbar within the viewport: scale=$scale keyboard=$keyboard',
         (tester) async {
           _phone(tester);
           final runtime = _ChatRuntime([]);
@@ -468,22 +860,21 @@ void main() {
             ),
           );
           await tester.pumpAndSettle();
-          final field = find.byKey(const ValueKey('chat-composer-input'));
+          final field = find.byKey(PocketComposer.inputKey);
+          final card = find.byKey(PocketComposer.cardKey);
           for (final draft in ['', '一行输入', '第一行\n第二行\n第三行']) {
             await tester.enterText(field, draft);
             await tester.pumpAndSettle();
-            final bar = tester.getRect(
-              find.byKey(const ValueKey('chat-composer')),
-            );
+            final bar = tester.getRect(card);
             final input = tester.getRect(field);
             final plus = tester.getRect(find.byTooltip('添加与指令'));
             final send = tester.getRect(find.byTooltip('发送'));
-            expect(input.center.dy, closeTo(bar.center.dy, .01));
-            expect(plus.center.dy, closeTo(bar.center.dy, .01));
-            expect(send.center.dy, closeTo(bar.center.dy, .01));
+            // 展开态：输入区一行、工具条一行；工具条在输入区下方。
+            expect(plus.top, greaterThanOrEqualTo(input.bottom));
+            expect(send.top, greaterThanOrEqualTo(input.bottom));
+            expect(plus.center.dy, closeTo(send.center.dy, .01));
             expect(plus.size.width, closeTo(plus.size.height, .01));
             expect(send.size.width, closeTo(send.size.height, .01));
-            expect(plus.top - bar.top, closeTo(bar.bottom - plus.bottom, .01));
             expect(bar.bottom, lessThanOrEqualTo(844 - keyboard));
             expect(tester.takeException(), isNull);
           }
