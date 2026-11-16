@@ -129,7 +129,7 @@ cd apps/android
 | P5 能力补齐 | **六批完成**：审批与模型选择、搜索、新建、归档、电脑文件、远程设置、workspace diff、归档动作、能力三态、模型路由兜底、远程终端、附件上行（含 debug 旁路真机验收）、输入区 `+`/方案模式、模型路由前置提示（C3 真机）、**B3 审批预设（真机切换通过）**、首页输入条文案 + goal 行置灰 | §3.3 `p5-*`/`p5b-*`/`p5c-*` 截图；§3.2.2–§3.2.8 |
 | P6 可达性 | **第三批完成**：扫码配对（真机解码 PASS）、局域网自动发现（PC 探测 PASS）、USB/adb reverse（真机连接 PASS）、手动地址覆盖、多台电脑管理与切换（真机 PASS）、后台通知步骤 (1)+(2)（宿主 §8 发送 + App 系统通知/点击深链，真机验证）、PC 配对设置页（浏览器验收）、App 拨号超时、wss 443 修复 | 待做：真机拍照扫码、无隔离网络发现直连、approvalPending 真机链路、步骤 (3) 前台服务持 WS、PC 分发决策。见 §3.2.10–§3.2.14、`reachability.md`、`discovery.md`、`pc-pairing-page.md` |
 | 会话洞察 UI | **完成（真机验证）**：远程会话页悬浮任务卡片（可展开 todos）+ 底部统计条（轮/步、tok 与缓存命中%、上下文%，点按详情弹层），数据来自 `session.projections` 四类投影，事件驱动刷新 | `remote_session_insights.dart`、`remote_todo_card.dart`、`remote_stats_bar.dart`；§3.2.15 |
-| 输入区重构（新） | **完成（真机验证）**：按官方 App 参照重做悬浮输入卡——缩小/展开/推理面板三态，远程与本地聊天页共用 `PocketComposer`；修复键盘不弹、picker 进不去、计划状态误报、模型页 debug 断言等问题 | `pocket_composer.dart`、`remote_dsh_widgets.dart`、`remote_dsh_conversation.dart`、`main.dart`；§3.2.16 |
+| 输入区重构（新） | **完成（真机验证）**：按官方 App 参照重做悬浮输入卡——缩小/展开/推理面板三态，**首页与远程会话页共用**，本地聊天页也接入；修复键盘不弹、picker 进不去、计划状态误报、模型页 debug 断言等问题 | `pocket_composer.dart`、`remote_dsh_widgets.dart`、`remote_dsh_conversation.dart`、`remote_dsh_page.dart`、`main.dart`；§3.2.16–§3.2.17 |
 
 ### 3.2 已核验的通过项（本轮）
 
@@ -738,6 +738,39 @@ exit 0；oxlint 改动 3 文件 0 error；宿主冒烟 **14/14**。本轮未截�
 - **测试**：pocket_composer 18、remote_conversation_page 71、main_chat_flow 24（含三态/键盘抖动/
   IME 请求）、plan 24、plugins_publish 4 等；全量 `flutter test` **2025 项通过**；analyze 11 条基线。
 
+#### 3.2.17 输入区三态扩展到远程首页 + 视觉收敛（两台真机验证）
+
+用户反馈「远程 DSH 首页输入条还是旧的一行、不悬浮、没有三态」「未展开时没有审核权限」「展开后按钮太大」后完成：
+
+- **远程首页输入条重做**（`remote_dsh_page.dart`）：也改为悬浮卡三态——
+  `browse`（紧凑 `+`、占位「与 <设备名> 新对话」、置灰发送圆钮）；`composing`（输入区 + 工具条：
+  `+` 打开「添加与指令」说明弹层、推理按钮、发送；发送走既有 `library.sessionCreate` 新建并打开会话，
+  创建中进度、失败保留草稿）；`picker`（电脑默认模型 + 默认强度**只读**面板，数据 `settings.describe`
+  + 模型目录，第一行/说明行进入远程设置页，点表盘/点列表退出）。旧说明行删除，语义并入占位与弹层。
+- **共享组件视觉收敛**（`pocket_composer.dart`）：缩小态去掉权限按钮（只剩 `+`/占位/发送圆钮）；
+  工具条动作改为小图标（20dp 图标、40dp 热区、默认无大圆底，按下极淡底）；发送圆钮保持 44dp 强调色；
+  picker 增加可选说明行。
+- **会话页缩小态**（`remote_dsh_conversation.dart`）：权限预设与模型回显行只在展开态
+  （composing/picker）渲染，缩小态只剩悬浮卡与会话读数；展开后两个入口行为不变。
+- **首页 picker 真机缺陷修复**：点推理按钮后键盘收起/卡片缩回 browse 的竞态——增加 picker 粘滞标记
+  与 effective mode，键盘/insets/metrics 事件不再折叠面板；进入面板不再扰动 IME。
+- **真机验证（两台）**：
+  - OnePlus6（`8a044bba`，Android 11）：首页/会话页三态、picker 滑杆、强度切换与回显、键盘收起缩回
+    均通过；证据 `.cache/remote-device/p10b-home-browse.png`、`p10d-home-composing.png`、
+    `p10d-home-picker.png`、`p10d-session-browse.png`、`p10d-session-composing.png`、`p10d-session-picker.png`。
+  - OnePlus PLP110（`3B162D00E1K00000`，Android 17）：重新配对（USB adb reverse + 粘贴 `usbPairUrl`）
+    后复验同一批状态，另测暗色主题；证据 `.cache/remote-device/p11-newdev-remote-home-browse.png`、
+    `p11-newdev-remote-home-composing.png`、`p11-newdev-remote-home-picker.png`、
+    `p11-newdev-remote-session-browse.png`、`p11-newdev-remote-session-composing.png`、
+    `p11-newdev-remote-session-picker.png`、`p11-newdev-session-picker-dark.png`。
+- **新机注意**：该机原有同包名 App 签名不同，`adb install -r` 报
+  `INSTALL_FAILED_UPDATE_INCOMPATIBLE`，需先 `adb uninstall` 再装（会清掉旧 App 数据）；
+  `adb install` 流式安装在 Android 17 上偶发 `Failure [-99]`，改用「push 到 /data/local/tmp +
+  `pm install -r -t`」成功；该机无英文输入法，中文 IME 下用 `adb shell input text` 会把 ASCII 转成中文，
+  配对链接需先关 IME（`ime disable`）再用带单引号保护的 `input text`。
+- **测试**：首页 page/capabilities 51 项、page 73 项、组件 21 项及邻接批次全绿；全量 `flutter test`
+  **2041+ 项通过**；analyze 11 条基线。改动提交 `7f814b1278`、`8da0e7493d`。
+
 ### 3.4 远程宿主为什么能跑起来（三个非显然事实）
 
 1. **profile 是 shipped 模板**：`packages/util/official-bundles/src/bundles.ts` 的
@@ -1033,6 +1066,18 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
 ---
 
 ## 9. 变更日志（append-only，最新在最上面）
+
+### 2026-11-16 17:00 · lead（首页输入条三态 + 视觉收敛 + 新机复验）
+
+- **用户反馈**：远程 DSH 首页输入条仍是旧的一行、不悬浮、无三态；缩小态不应出现审核权限；展开后的
+  按钮过大；随后又要求换设备测试。
+- **交付**：首页输入条重做为悬浮卡三态（browse/composing/picker，picker 为电脑默认模型只读面板，
+  发送走 `library.sessionCreate` 新建并打开会话）；组件视觉收敛（缩小态无权限按钮、工具条小图标
+  20dp/40dp 热区、发送 44dp）；会话页缩小态隐藏权限/模型回显行，只在展开态显示。
+- **修复**：首页 picker 点开后被键盘 metrics 折叠回 browse 的真机竞态（粘滞标记 + 不扰动 IME）。
+- **真机**：OnePlus6（Android 11）与 OnePlus PLP110（Android 17）双机复验三态与暗色主题；新机重新配对
+  （USB reverse + 粘贴配对链接）。证据 `.cache/remote-device/p10d-*`、`p11-newdev-*`。
+- **测试**：全量 `flutter test` 2041+ 项通过；analyze 11 条基线。提交 `7f814b1278`、`8da0e7493d`。
 
 ### 2026-11-16 15:15 · lead（输入区重构：悬浮卡三态 + 用户参照对齐 + 三个缺陷修复）
 
