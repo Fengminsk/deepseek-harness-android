@@ -129,6 +129,7 @@ cd apps/android
 | P5 能力补齐 | **六批完成**：审批与模型选择、搜索、新建、归档、电脑文件、远程设置、workspace diff、归档动作、能力三态、模型路由兜底、远程终端、附件上行（含 debug 旁路真机验收）、输入区 `+`/方案模式、模型路由前置提示（C3 真机）、**B3 审批预设（真机切换通过）**、首页输入条文案 + goal 行置灰 | §3.3 `p5-*`/`p5b-*`/`p5c-*` 截图；§3.2.2–§3.2.8 |
 | P6 可达性 | **第三批完成**：扫码配对（真机解码 PASS）、局域网自动发现（PC 探测 PASS）、USB/adb reverse（真机连接 PASS）、手动地址覆盖、多台电脑管理与切换（真机 PASS）、后台通知步骤 (1)+(2)（宿主 §8 发送 + App 系统通知/点击深链，真机验证）、PC 配对设置页（浏览器验收）、App 拨号超时、wss 443 修复 | 待做：真机拍照扫码、无隔离网络发现直连、approvalPending 真机链路、步骤 (3) 前台服务持 WS、PC 分发决策。见 §3.2.10–§3.2.14、`reachability.md`、`discovery.md`、`pc-pairing-page.md` |
 | 会话洞察 UI | **完成（真机验证）**：远程会话页悬浮任务卡片（可展开 todos）+ 底部统计条（轮/步、tok 与缓存命中%、上下文%，点按详情弹层），数据来自 `session.projections` 四类投影，事件驱动刷新 | `remote_session_insights.dart`、`remote_todo_card.dart`、`remote_stats_bar.dart`；§3.2.15 |
+| 输入区重构（新） | **完成（真机验证）**：按官方 App 参照重做悬浮输入卡——缩小/展开/推理面板三态，远程与本地聊天页共用 `PocketComposer`；修复键盘不弹、picker 进不去、计划状态误报、模型页 debug 断言等问题 | `pocket_composer.dart`、`remote_dsh_widgets.dart`、`remote_dsh_conversation.dart`、`main.dart`；§3.2.16 |
 
 ### 3.2 已核验的通过项（本轮）
 
@@ -700,6 +701,43 @@ exit 0；oxlint 改动 3 文件 0 error；宿主冒烟 **14/14**。本轮未截�
 - **顺带发现并修复中的缺陷**：真机页出现「App stream limit reached」——宿主 `AppStreams` 以固定 owner
   `remote` 跨连接累积、连接关闭未清理，多次重连后触顶；修复见 §4 新条目。
 
+#### 3.2.16 输入区重构：悬浮卡 + 缩小/展开/推理面板三态（用户参照官方 App 截图，真机验证）
+
+**动机**：用户对照官方 App 对话页 3 张截图（`docs/设计参照截图/远程DSH功能/` 的「拉起键盘准备对话」「聊天调整推理强度」「浏览对话内容」）指出输入区形式不对：应为**悬浮输入框**，有**浏览时缩小 / 触发时展开**两种基础状态，以及**点按钮切换**的第三态（模型+推理强度面板）；但视觉沿用 App 自己的 glass/Pocket 语言。
+
+- **共享组件** `apps/android/lib/pocket_composer.dart`：悬浮圆角玻璃卡（左右 16、底部 12、轻阴影）；
+  - `browse`：缩小单行（`+` / 占位「在 <device> 上工作」 / 权限 / 右侧发送圆钮）；
+  - `composing`：输入区 + 工具条一行（`+`、权限、推理表盘、发送/停止），高度一次 `AnimatedSize`
+    200ms 过渡（减少动态效果时不挂动画）；
+  - `picker`：输入行用 `Opacity+IgnorePointer` 常驻（保持焦点与 IME 连接，键盘不收起），
+    面板「模型名 + 当前强度 › + 强度滑杆」叠在输入行上方；档位由调用方数据决定（有 2 档画 2 档，
+    无档位只显示模型名）；再次点表盘/点聊天区退出。
+- **远程会话页**：保留 `+` 弹层、权限预设、附件 rail、方案 dock、统计条（移到卡上方）、错误提示；
+  模型按钮改为打开推理强度面板（复用 `RemoteModelCatalog` + `session.selectModel`）。
+- **本地聊天页**：同一组件/三态；`+` 改为与远程一致的底部弹层承载 `ComposerCommands`；权限盾牌接
+  真实 `SessionPermissionPage`；推理面板数据 `session.modelCatalog` + `session.selectModel`，模型行
+  打开 `SessionModelPage`。
+- **真机验收发现的缺陷及修复**：
+  1. 点输入框不聚焦/不弹键盘（聚焦时 IME 尚未显示前的 metrics 抖动被误判成键盘收起 → 解焦 → IME
+     取消 → 循环，logcat 出现 0.7s 内多次 viewport metrics）：改为**键盘显隐闩锁**（同值 metrics 直接
+     返回）、键盘收起不解焦、点卡片 `requestFocus` + 下一帧 `TextInput.show`；
+  2. 点推理强度进不了面板（`Visibility/Offstage` 会断开输入连接）：改为透明覆盖、metrics 不折叠 picker。
+- **真机验收（OnePlus6/Android 11，debug APK）**：远程会话页缩小态单行悬浮卡；点卡片一次即展开 +
+  键盘（`mInputShown=true`）；点推理表盘出现「DeepSeek-V4-Pro 高 ›」+ 4 档滑杆（App 绿色 accent），
+  点「低」后状态条「推理强度已改为「低」」、卡上方回显变 `· 低`；再点表盘回输入态、按返回收键盘后卡片
+  缩回单行；本地新对话页同样三态（缩小/展开/picker、`+` 弹层、权限盾牌）。证据
+  `.cache/remote-device/p9-fix-browse.png`、`p9-fix-composing3.png`、`p9-fix-picker.png`、
+  `p9-fix-picker-low.png`、`p9-local-browse2.png`、`p9-local-composing4.png`、`p9-local-picker.png`。
+- **顺带修复**：远程会话页「无法确认计划模式状态：FormatException: 会话尚未提供可用的状态快照」
+  常驻横幅——`session.control` 基线块没有 `kind`（只有 projections 应答有），旧 `_baseline` 把合法基线
+  当错误；现区分「未就绪（有限重试后静默）」与「真失败（保留错误+重试）」。
+  本地聊天页打开模型页时 debug 构建的 `setState() during build`——`plugins.load()` 首次通知微任务化。
+- **已知差异/未做**：远程无取消接口，停止按钮暂不出现（组件已支持 `onStop`，协议/数据源后续补）；
+  手形/麦克风/语音不做（无实现，组件留接口）；picker 为保留退出入口比参照多一行工具条；卡片目前
+  在 Column 中不覆盖聊天内容（真正浮层需 Stack+列表底部留白，后续视觉 polish）。
+- **测试**：pocket_composer 18、remote_conversation_page 71、main_chat_flow 24（含三态/键盘抖动/
+  IME 请求）、plan 24、plugins_publish 4 等；全量 `flutter test` **2025 项通过**；analyze 11 条基线。
+
 ### 3.4 远程宿主为什么能跑起来（三个非显然事实）
 
 1. **profile 是 shipped 模板**：`packages/util/official-bundles/src/bundles.ts` 的
@@ -995,6 +1033,23 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
 ---
 
 ## 9. 变更日志（append-only，最新在最上面）
+
+### 2026-11-16 15:15 · lead（输入区重构：悬浮卡三态 + 用户参照对齐 + 三个缺陷修复）
+
+- **新需求**：按用户提供的官方 App 3 张对话页参照重做输入区——悬浮玻璃卡、浏览时缩小/触发时展开、
+  点「推理强度」切换第三态（模型名+强度滑杆），沿用 App 视觉语言（远程与本地聊天页共用 `PocketComposer`）。
+- **交付**：`pocket_composer.dart` 共享三态组件；远程会话页接入（模型按钮→推理面板、保留全部既有入口、
+  统计条移到卡上方）；本地聊天页接入（`+` 弹层、权限盾牌、推理面板、发送/停止）；`pocket_composer` 增加
+  可选 margin 参数（默认不变）。
+- **真机缺陷修复**：① 点输入卡不聚焦/不弹键盘与 viewport metrics 风暴（键盘显隐闩锁 + 收起不解焦 +
+  点卡 requestFocus/TextInput.show）；② 点推理强度进不了面板（透明覆盖替代 Visibility，保持输入连接）；
+  ③ 远程会话页「无法确认计划模式状态：会话尚未提供可用的状态快照」误报（session.control 基线无 kind，
+  改为未就绪有限重试/真失败才可见）；④ 本地打开模型页 debug 构建 setState-during-build（plugins 首通知
+  微任务化）。
+- **真机验收**：远程缩小/展开/picker/强度切换（低→高回显）与本地三态均通过；证据 `.cache/remote-device/
+  p9-*.png`。全量 `flutter test` **2025 项通过**；analyze 11 条基线；Kotlin 未改（无需重编译验证）。
+- **已知差异**：远程停止按钮暂缺（无取消接口）、手形/麦克风/语音不做、picker 保留工具条、卡片未真正
+  浮层覆盖内容（后续 polish）。
 
 ### 2026-11-16 12:57 · stream-lifecycle（修复宿主 AppStreams 跨重连泄漏，宿主侧）
 
