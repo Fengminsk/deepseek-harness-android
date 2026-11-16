@@ -20,8 +20,9 @@
 >
 > 最后更新：2026-11-16 12:35（lead）
 > 分支 `android`，最近提交见 `git log --oneline -10`
-> 真机：`8a044bba`（adb 在线，OnePlus6 / Android 11；当前环境：USB 连接 + adb reverse，
-> 手机 Wi-Fi 192.168.5.140 与 PC 192.168.5.21 之间被 AP 客户端隔离，局域网发现/直连真机验证受阻）
+> 真机：`8a044bba`（adb 在线，OnePlus6 / Android 11；当前开发机 WLAN 已换到 `192.168.1.81`，
+> 手机 Wi-Fi 处于断开状态，因此当前主用 **USB + adb reverse**；局域网直连/发现真机验证仍待换到
+> 同一网段后补测。宿主覆盖层 `.cache/remote-m1-host.overlay.yml` 的 `publicHost` 已同步为新地址）
 > 真机 App：debug APK（含扫码/发现/多设备/附件验收旁路）；性能测量用 `--target=lib/main_perf.dart`
 > 的 profile 包，见 [performance.md](../performance.md)
 
@@ -868,6 +869,14 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
     App 进程再重开同一会话（一次打开 = `session.follow` + `session.control` 两条流），重复 ≥17 次
     （旧实现第 33 条订阅触顶）；④ 修复后同样的 17 次循环不再出现「App stream limit reached」横幅，
     每次重连宿主日志的 `owner` 都是新值，且旧连接的 `connection-closed` 之后没有清理失败日志。
+
+    **lead 真机复验结果（2026-11-16 13:0x）**：修复后重启 4777 宿主，App 冷启动/重连共建立
+    **19 条连接、19 个互不相同的 owner**（宿主日志 `connection-ready {"owner":"<UUID>"}` 每条都变），
+    全程 **零** `facade-unbind-failed` / `App stream cleanup failed`；修复前的 `App stream limit
+    reached` 横幅在旧宿主上可稳定看到、重启后不再出现。另：同一宿主的真实 e2e 在修复后 **PASS
+    23/23**（含 §8.2 `remote.taskCompleted` 断言与清理复验），宿主 6 个 selfcheck 全 PASS、
+    `build:check` 2/2。开发机 WLAN 地址已从 192.168.5.21 变为 192.168.1.81（`publicHost` 已同步），
+    手机当前走 USB/adb reverse，故 e2e/验证均以 192.168.1.81 进行。
     **风险/边界**：客户端页面自带的 owner（`workspaceChanges.*`）不在连接关闭时释放，其在途读取
     由自身超时收口（避免把页面 owner 记进已关闭集合导致重连后被拒）；owner 注入会让此前必失败
     的远程 `session.attachmentFile.*`/`document.*` 路径开始可用（这些方法本来就在
