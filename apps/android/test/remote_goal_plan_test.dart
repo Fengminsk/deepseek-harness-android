@@ -18,6 +18,10 @@ import 'package:dsh_android/remote_conversation_live_source.dart';
 import 'package:dsh_android/remote_conversation_source.dart';
 import 'package:dsh_android/remote_goal_plan.dart';
 import 'package:dsh_android/runtime_transport.dart';
+// 显式断言「未就绪重试定时器已取消、没有 pending timer」需要 fake_async；它由
+// flutter_test 传递引入（pubspec.lock 已锁定），本轮不改 pubspec，所以直接导入。
+// ignore: depend_on_referenced_packages
+import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'support/remote_conversation_fakes.dart';
@@ -40,6 +44,33 @@ Map<String, dynamic> _projections({
 
 Map<String, dynamic> _plan({required bool active, required bool pending}) =>
     <String, dynamic>{'active': active, 'pending': pending};
+
+/// 宿主还没给出可用快照时的真实应答：旧格式会话的迁移提示（没有 asOfSeq）。
+Map<String, dynamic> _notReadyProjections() => <String, dynamic>{
+  'kind': 'migration-required',
+  'values': <String, dynamic>{},
+};
+
+/// 控制流基线里的会话块：宿主 `SessionProjectionBaseline`，只有 asOfSeq/values。
+Map<String, dynamic> _controlBaselineBlock({
+  Map<String, dynamic>? plan,
+  int asOfSeq = 1,
+}) => <String, dynamic>{
+  'asOfSeq': asOfSeq,
+  'values': <String, dynamic>{'plan': ?plan},
+};
+
+/// 控制流的第一帧：`{type:'item', value:{type:'baseline', value:{projections:{…}}}}`。
+Map<String, dynamic> _controlBaselineFrame(Map<String, dynamic> block) =>
+    <String, dynamic>{
+      'type': 'item',
+      'value': <String, dynamic>{
+        'type': 'baseline',
+        'value': <String, dynamic>{
+          'projections': <String, dynamic>{'s-1': block},
+        },
+      },
+    };
 
 Map<String, dynamic> _item(
   String streamId,
@@ -294,6 +325,231 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 500));
     expect(controller.error, isNull);
     expect(controller.plan?.target, isTrue, reason: '保留最后一次已知投影');
+  });
+
+  test('控制流基线的会话块（没有 kind）建立计划状态且不报错', () async {
+    final source = _source();
+    final controller = _controller(source);
+    await controller.start();
+    expect(controller.fresh, isTrue);
+
+    // 宿主控制流基线的每个会话是 `{asOfSeq, values}`；它和
+    // `session.projections` 的 `{kind:'sequenced', …}` 是同一份已排序快照，
+    // 缺 kind 不能被当成「读失败」而弹常驻错误条（真机 p8 的误报）。
+    source.emitControl(
+      _controlBaselineFrame(
+        _controlBaselineBlock(
+          plan: _plan(active: true, pending: false),
+          asOfSeq: 7,
+        ),
+      ),
+    );
+    await pumpEventQueue();
+
+    expect(controller.error, isNull);
+    expect(controller.fresh, isTrue);
+    expect(controller.plan?.active, isTrue);
+    expect(controller.plan?.target, isTrue);
+    expect(source.projectionReads, 1, reason: '基线已建立状态，不再额外读投影');
+  });
+
+  test('非 sequenced 快照不产生错误，有限重试后静默降级', () {
+    fakeAsync((async) {
+      final source = _source(projections: _notReadyProjections());
+      final controller = RemoteGoalPlanController(source: source);
+      unawaited(controller.start());
+      async.flushMicrotasks();
+
+      expect(source.projectionReads, 1);
+      expect(controller.error, isNull, reason: '快照未就绪不是失败，不显示错误条');
+      expect(controller.fresh, isFalse);
+      expect(controller.plan, isNull);
+      expect(controller.canMutate, isFalse);
+      expect(async.pendingTimers, hasLength(1), reason: '一次未就绪只排一个重试');
+
+      // 300/600/1200 ms 各重读一次；每次仍未就绪继续排下一个。
+      async.elapse(const Duration(milliseconds: 300));
+      async.flushMicrotasks();
+      expect(source.projectionReads, 2);
+      async.elapse(const Duration(milliseconds: 600));
+      async.flushMicrotasks();
+      expect(source.projectionReads, 3);
+      async.elapse(const Duration(milliseconds: 1200));
+      async.flushMicrotasks();
+      expect(source.projectionReads, 4);
+
+      // 预算用尽：静默停在「计划状态不可用」，不报错也不再请求。
+      async.elapse(const Duration(seconds: 10));
+      async.flushMicrotasks();
+      expect(source.projectionReads, 4);
+      expect(controller.error, isNull);
+      expect(controller.fresh, isFalse);
+      expect(controller.plan, isNull);
+      expect(async.pendingTimers, isEmpty);
+
+      controller.dispose();
+      async.flushMicrotasks();
+      expect(async.pendingTimers, isEmpty, reason: 'dispose 后没有残留定时器');
+    });
+  });
+
+  test('sequenced 快照缺 values 也按未就绪处理，不报错', () {
+    fakeAsync((async) {
+      final source = _source(
+        projections: <String, dynamic>{'kind': 'sequenced', 'asOfSeq': 1},
+      );
+      final controller = RemoteGoalPlanController(source: source);
+      unawaited(controller.start());
+      async.flushMicrotasks();
+
+      expect(controller.error, isNull);
+      expect(controller.fresh, isFalse);
+      expect(controller.plan, isNull);
+      expect(async.pendingTimers, hasLength(1));
+      controller.dispose();
+      async.flushMicrotasks();
+    });
+  });
+
+  test('未就绪后恢复为 sequenced 快照即恢复计划状态', () {
+    fakeAsync((async) {
+      final source = _source(projections: _notReadyProjections());
+      final controller = RemoteGoalPlanController(source: source);
+      unawaited(controller.start());
+      async.flushMicrotasks();
+      expect(controller.fresh, isFalse);
+      expect(controller.error, isNull);
+
+      source.projections = _projections(
+        plan: _plan(active: false, pending: true),
+        asOfSeq: 4,
+      );
+      async.elapse(const Duration(milliseconds: 300));
+      async.flushMicrotasks();
+
+      expect(controller.fresh, isTrue);
+      expect(controller.error, isNull);
+      expect(controller.plan?.pending, isTrue);
+      expect(controller.plan?.target, isTrue);
+      expect(controller.canMutate, isTrue, reason: '快照恢复后可以写');
+      expect(async.pendingTimers, isEmpty);
+      controller.dispose();
+    });
+  });
+
+  test('未就绪重试期间的真实读失败仍然可见，恢复后清除', () {
+    fakeAsync((async) {
+      final source = _source(projections: _notReadyProjections());
+      final controller = RemoteGoalPlanController(source: source);
+      unawaited(controller.start());
+      async.flushMicrotasks();
+      expect(async.pendingTimers, hasLength(1));
+
+      source.projectionsFailure = const RuntimeTransportFailure(
+        code: 'gateway/unavailable',
+        message: '连接中断',
+      );
+      async.elapse(const Duration(milliseconds: 300));
+      async.flushMicrotasks();
+
+      expect(controller.error, contains('无法确认计划模式状态'));
+      expect(controller.error, contains('连接中断'));
+      expect(controller.fresh, isFalse);
+      expect(controller.canMutate, isFalse);
+      expect(async.pendingTimers, isEmpty, reason: '真失败不再排未就绪重试');
+      async.elapse(const Duration(seconds: 10));
+      expect(source.projectionReads, 2);
+
+      source.projectionsFailure = null;
+      source.projections = _projections(
+        plan: _plan(active: true, pending: false),
+        asOfSeq: 2,
+      );
+      unawaited(controller.refresh());
+      async.flushMicrotasks();
+      expect(controller.error, isNull);
+      expect(controller.plan?.target, isTrue);
+      controller.dispose();
+    });
+  });
+
+  test('断连取消未就绪重试，重连后重读', () {
+    fakeAsync((async) {
+      final source = _source(projections: _notReadyProjections());
+      final controller = RemoteGoalPlanController(source: source);
+      unawaited(controller.start());
+      async.flushMicrotasks();
+      expect(async.pendingTimers, hasLength(1));
+
+      source.setPhase(RemoteConnectionPhase.reconnecting);
+      async.flushMicrotasks();
+      expect(async.pendingTimers, isEmpty, reason: '断连必须取消重试定时器');
+      async.elapse(const Duration(seconds: 10));
+      expect(source.projectionReads, 1, reason: '断开期间不再读');
+
+      source.projections = _projections(
+        plan: _plan(active: true, pending: false),
+      );
+      source.setPhase(RemoteConnectionPhase.ready);
+      async.flushMicrotasks();
+      expect(source.projectionReads, 2, reason: '重连后重读');
+      expect(controller.plan?.target, isTrue);
+      controller.dispose();
+    });
+  });
+
+  test('控制流 opening 帧取消未就绪重试', () {
+    fakeAsync((async) {
+      final source = _source(projections: _notReadyProjections());
+      final controller = RemoteGoalPlanController(source: source);
+      unawaited(controller.start());
+      async.flushMicrotasks();
+      expect(async.pendingTimers, hasLength(1));
+
+      source.emitControl(<String, dynamic>{'type': 'opening'});
+      async.flushMicrotasks();
+      expect(async.pendingTimers, isEmpty);
+      async.elapse(const Duration(seconds: 10));
+      expect(source.projectionReads, 1);
+      controller.dispose();
+    });
+  });
+
+  test('dispose 取消未就绪重试，fakeAsync 断言没有 Timer 泄漏', () {
+    fakeAsync((async) {
+      final source = _source(projections: _notReadyProjections());
+      final controller = RemoteGoalPlanController(source: source);
+      unawaited(controller.start());
+      async.flushMicrotasks();
+      expect(async.pendingTimers, hasLength(1));
+
+      controller.dispose();
+      async.flushMicrotasks();
+      expect(async.pendingTimers, isEmpty);
+      async.elapse(const Duration(seconds: 10));
+      expect(source.projectionReads, 1);
+    });
+  });
+
+  test('显式 refresh 取代已排队重试且不重复排计时器', () {
+    fakeAsync((async) {
+      final source = _source(projections: _notReadyProjections());
+      final controller = RemoteGoalPlanController(source: source);
+      unawaited(controller.start());
+      async.flushMicrotasks();
+      expect(async.pendingTimers, hasLength(1));
+
+      unawaited(controller.refresh());
+      async.flushMicrotasks();
+      expect(source.projectionReads, 2);
+      expect(async.pendingTimers, hasLength(1), reason: '不重复排计时器');
+
+      async.elapse(const Duration(milliseconds: 300));
+      async.flushMicrotasks();
+      expect(source.projectionReads, 3);
+      controller.dispose();
+      async.flushMicrotasks();
+    });
   });
 
   // -------------------------------------------------------- 真实数据源契约

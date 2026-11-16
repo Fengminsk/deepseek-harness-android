@@ -10,8 +10,10 @@
 // - goal（追求目标）不做：D6 已决策，激活态依赖 `goal/activation-changed` 这种
 //   runtime 事件，远程协议 §8 的通知清单里没有对应项。
 //
-// 三态：未连接时 [plan] 保持 null（条不显示，不置灰一个不存在的条）；
-// `session.projections` 读失败时 [error] 给出「状态待确认」并保留 [refresh] 供
+// 三态：未连接时 [plan] 保持 null（条不显示，不置灰一个不存在的条）；宿主的
+// 投影快照尚未就绪（冷会话/旧格式待迁移）不是失败，保持 [fresh] 为 false 并按
+// 有限退避再读，仍不可用就静默降级为「计划状态不可用」；只有真正的读失败
+// （`readProjections` 抛错）才让 [error] 给出「状态待确认」并保留 [refresh] 供
 // 页面提供重试；`session.command` 写失败时 [actionError] 保留原文说明，调用方
 // 的输入草稿不受影响（本类不持有输入）。
 //
@@ -60,12 +62,24 @@ class RemoteGoalPlanController extends ChangeNotifier
   RemoteConnectionPhase _phase = RemoteConnectionPhase.idle;
   int _epoch = 0, _read = 0, _planSeq = -1;
   StreamSubscription<Json>? _control;
-  Timer? _resubscribe;
-  int _controlEnds = 0;
+  Timer? _resubscribe, _readiness;
+  int _controlEnds = 0, _readinessAttempt = 0;
 
   /// 控制流在连接重建时会被退役（`onDone`），这不代表计划状态不可信；重连
   /// ready 后重新订阅，短时间连续结束（例如宿主立即收口）才停止重试，避免空转。
   static const int _maxControlEnds = 3;
+
+  /// 投影快照未就绪时的有限重试节奏。
+  ///
+  /// 宿主还没有为这个会话给出 sequenced 快照（冷会话尚未激活、旧格式待迁移）时，
+  /// 读会成功但拿不到可用值：这不是失败，按 300/600/1200 ms 退避再读几次；仍
+  /// 不可用就静默降级为「计划状态不可用」，页面按无计划状态渲染。重连、控制流
+  /// 重新订阅与显式 [refresh] 都会重新给一轮完整预算。
+  static const List<Duration> _readinessRetryDelays = <Duration>[
+    Duration(milliseconds: 300),
+    Duration(milliseconds: 600),
+    Duration(milliseconds: 1200),
+  ];
 
   /// 控制器是否仍可用；页面在销毁前不必再检查。
   bool get alive => !_disposed;
@@ -112,8 +126,18 @@ class RemoteGoalPlanController extends ChangeNotifier
   }
 
   @override
-  Future<void> refresh() async {
-    if (_disposed || source.phase != RemoteConnectionPhase.ready) return;
+  Future<void> refresh() {
+    // 显式重读（页面重试、恢复连接、计划页刷新）取代已排队的未就绪重试，并重新
+    // 给出完整的有限重试预算。
+    _cancelReadinessRetry();
+    return _readProjections();
+  }
+
+  Future<void> _readProjections() async {
+    if (_disposed || source.phase != RemoteConnectionPhase.ready) {
+      _cancelReadinessRetry();
+      return;
+    }
     final epoch = _epoch, read = ++_read;
     loading = true;
     _publish();
@@ -121,13 +145,18 @@ class RemoteGoalPlanController extends ChangeNotifier
       final value = await source.readProjections();
       if (!_current(epoch) || read != _read) return;
       if (value == null) {
-        // 会话还没有投影：与本地一样，不编一个默认状态。
+        // 宿主明确回答「这个会话还没有投影」：与本地一样，不编一个默认状态。
         plan = null;
         fresh = true;
+        error = null;
+        _cancelReadinessRetry();
+      } else if (_acceptBaseline(value)) {
+        fresh = true;
+        error = null;
+        _cancelReadinessRetry();
       } else {
-        _baseline(value);
+        _snapshotNotReady();
       }
-      error = null;
     } on Object catch (failure) {
       if (_current(epoch) && read == _read) _readFailure(failure);
     } finally {
@@ -194,6 +223,7 @@ class RemoteGoalPlanController extends ChangeNotifier
       _epoch++;
       _read++;
       _planSeq = -1;
+      _cancelReadinessRetry();
       plan = null;
       fresh = false;
       loading = false;
@@ -208,6 +238,7 @@ class RemoteGoalPlanController extends ChangeNotifier
       // 重连后重新确认：先清掉上一代的读数，等待新的投影基线。
       _epoch++;
       _planSeq = -1;
+      _cancelReadinessRetry();
       fresh = false;
       error = null;
       _controlEnds = 0;
@@ -219,21 +250,56 @@ class RemoteGoalPlanController extends ChangeNotifier
 
   void _readFailure(Object failure) {
     if (_disposed) return;
+    _cancelReadinessRetry();
     fresh = false;
     error = '无法确认计划模式状态：$failure';
     _publish();
   }
 
-  void _baseline(Object? value) {
-    if (value is! Map ||
-        value['kind'] != 'sequenced' ||
-        value['values'] is! Map ||
-        value['asOfSeq'] is! int) {
-      throw const FormatException('会话尚未提供可用的状态快照');
+  /// 快照尚未就绪：读本身成功，但宿主还没有给出可用基线。
+  ///
+  /// 这不是失败，不显示常驻错误条；保持 [fresh] 为 false（禁用写、页面按无计划
+  /// 状态渲染），按 [_readinessRetryDelays] 退避再读。次数用尽后静默停在这里，
+  /// 等重连、控制流重新订阅或显式 [refresh] 再试。
+  void _snapshotNotReady() {
+    if (_disposed) return;
+    fresh = false;
+    error = null;
+    _scheduleReadinessRetry();
+  }
+
+  void _scheduleReadinessRetry() {
+    if (_disposed || _readiness != null) return;
+    if (_readinessAttempt >= _readinessRetryDelays.length) return;
+    final delay = _readinessRetryDelays[_readinessAttempt++];
+    _readiness = Timer(delay, () {
+      _readiness = null;
+      unawaited(_readProjections());
+    });
+  }
+
+  /// 取消排队的未就绪重试并复位预算；重连/换代/显式重读都会调到它。
+  void _cancelReadinessRetry() {
+    _readiness?.cancel();
+    _readiness = null;
+    _readinessAttempt = 0;
+  }
+
+  /// 接受一份投影基线；false 表示快照尚未就绪而不是失败。
+  ///
+  /// `session.projections` 回 `{kind:'sequenced', asOfSeq, values}`；控制流基线的
+  /// 每个会话是 `{asOfSeq, values}`（宿主的 `SessionProjectionBaseline`，没有
+  /// `kind`）。两者是同一份已排序快照，缺 `kind` 不能当成失败。`plan` 值本身
+  /// 不合法仍是协议失败，由调用方走 [_readFailure]。
+  bool _acceptBaseline(Object? value) {
+    if (value is! Map || value['values'] is! Map || value['asOfSeq'] is! int) {
+      return false;
     }
+    final kind = value['kind'];
+    if (kind != null && kind != 'sequenced') return false;
     final values = value['values'] as Map;
     _acceptPlan(values['plan'], value['asOfSeq'] as int);
-    fresh = true;
+    return true;
   }
 
   void _acceptPlan(Object? value, int seq) {
@@ -248,6 +314,7 @@ class RemoteGoalPlanController extends ChangeNotifier
       if (frame['type'] == 'opening' || frame['type'] == 'disconnected') {
         _epoch++;
         _planSeq = -1;
+        _cancelReadinessRetry();
         fresh = false;
         loading = false;
         _publish();
@@ -262,7 +329,13 @@ class RemoteGoalPlanController extends ChangeNotifier
         final baseline = projections is Map
             ? projections[source.sessionId]
             : null;
-        if (baseline != null) _baseline(baseline);
+        if (baseline != null) {
+          if (_acceptBaseline(baseline)) {
+            fresh = true;
+          } else {
+            _snapshotNotReady();
+          }
+        }
         // 冷会话不在控制流里；还需要一次只读查询拿投影。
         if (!fresh) unawaited(refresh());
       } else if (item['type'] == 'projection' &&
@@ -303,6 +376,8 @@ class RemoteGoalPlanController extends ChangeNotifier
     source.removeListener(_sourceChanged);
     _resubscribe?.cancel();
     _resubscribe = null;
+    _readiness?.cancel();
+    _readiness = null;
     final control = _control;
     _control = null;
     if (control != null) unawaited(control.cancel());
