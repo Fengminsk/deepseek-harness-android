@@ -25,9 +25,10 @@
 ///
 /// 传输层只会推出 `connecting` / `handshaking` / `ready` / `reconnecting` /
 /// `lost` 五个阶段；本类额外区分 `idle`（没有连接）与 `failed`（终止态）。判定终止态
-/// 的依据是错误码是否属于协议 §1.4 的「不自动重连」一类（认证失败、设备撤销、
-/// 版本不匹配、正常关闭、帧超限、端点不存在、证书不受信任、握手超时）：这些情况下
-/// 传输已经停止重连，界面必须给出「重新配对 / 重新连接」，而不是继续转圈。
+/// 的依据是错误码是否属于「不自动重连」一类（协议 §1.4 的认证失败、设备撤销、
+/// 版本不匹配、正常关闭、帧超限、端点不存在、证书不受信任、握手超时，以及客户端侧
+/// 判定的拨号超时）：这些情况下传输已经停止重连，界面必须给出「重新配对 / 重新
+/// 连接」，而不是继续转圈。
 ///
 /// 终止性失败后本类会主动 close 掉传输：它的 socket 已经关闭，但事件流要等
 /// `close()` 才收敛，留着就是一条泄漏的订阅。
@@ -174,13 +175,15 @@ class RemoteConnectionController extends ChangeNotifier {
   ///
   /// 传输层已经把这些码包装成自己的终止态（socket 关闭、不再重连），本类据此把
   /// `lost` 提升成 `failed`，让界面给出「重新连接 / 重新配对」而不是无限转圈。
-  /// `remote/tls`、`remote/handshake-timeout` 是客户端侧判定的终止态：证书不受
-  /// 信任、宿主不回握手都属于「重试同一个动作不会变好」。
+  /// `remote/tls`、`remote/handshake-timeout`、`remote/connect-timeout` 是客户端
+  /// 侧判定的终止态：证书不受信任、宿主不回握手、拨号超时（地址不可达/端口黑洞）
+  /// 都属于「自动重试同一个动作不会变好」，交给用户检查后手动重试。
   static const Set<String> terminalCodes = <String>{
     'auth-failed',
     'auth-revoked',
     'protocol-mismatch',
     'remote/closed',
+    'remote/connect-timeout',
     'remote/frame-too-large',
     'remote/handshake-timeout',
     'remote/not-found',
@@ -823,6 +826,8 @@ class RemoteConnectionController extends ChangeNotifier {
         return '协议版本不匹配。请把两端升级到同一版本。';
       case 'remote/frame-too-large':
         return '请求过大，电脑已关闭连接。请缩小请求范围后重新连接。';
+      case 'remote/connect-timeout':
+        return '连接电脑超时，请检查地址与网络后重试。';
       case 'remote/handshake-timeout':
         return '已连上电脑，但电脑没有在 10 秒内完成握手。请确认电脑上的 DSH 版本与手机一致，然后重试。';
       case 'remote/host-failed':

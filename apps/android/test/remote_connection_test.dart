@@ -352,13 +352,14 @@ void _completeHandshake(_FakeLink link) {
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('终止态错误码覆盖证书、握手超时与认证失败', () {
+  test('终止态错误码覆盖证书、握手超时、拨号超时与认证失败', () {
     expect(
       RemoteConnectionController.terminalCodes,
       containsAll(<String>[
         'auth-failed',
         'auth-revoked',
         'protocol-mismatch',
+        'remote/connect-timeout',
         'remote/handshake-timeout',
         'remote/tls',
       ]),
@@ -465,6 +466,96 @@ void main() {
 
     expect(controller.phase, RemoteConnectionPhase.failed);
     expect(controller.lastErrorCode, 'remote/handshake-timeout');
+  });
+
+  test('拨号超时是终止态：failed 文案与错误码正确，重试可用且不回 ready', () async {
+    final devices = _DevicePreferences(<RemoteDevice>[_device()]);
+    addTearDown(devices.dispose);
+    final store = devices.store(_MemoryVault(_deviceToken));
+    final factory = _LinkFactory();
+    final controller = _controllerWith(store, factory.call);
+    addTearDown(controller.dispose);
+
+    await controller.connect(_device());
+    expect(controller.phase, RemoteConnectionPhase.connecting);
+    expect(controller.isReady, isFalse);
+
+    // 传输层拨号超时后推出 lost；没有走到握手，所以这里不需要 handshakeSucceeded。
+    factory.links.single.lost('remote/connect-timeout', '连接电脑超时，请检查地址与网络后重试。');
+    await pumpEventQueue();
+
+    expect(controller.phase, RemoteConnectionPhase.failed);
+    expect(controller.lastErrorCode, 'remote/connect-timeout');
+    expect(controller.lastError, '连接电脑超时，请检查地址与网络后重试。');
+    expect(controller.isReady, isFalse);
+    expect(controller.transport, isNull);
+    expect(factory.links.single.isClosed, isTrue, reason: '终止态要关掉传输');
+
+    // 状态机不得回 ready：旧代际迟到的握手/ready 不能把它拉回去。
+    factory.links.single.handshakeSucceeded(_hostInfo());
+    factory.links.single.emit('runtime.status', <String, dynamic>{
+      'phase': 'ready',
+    });
+    await pumpEventQueue();
+    expect(controller.phase, RemoteConnectionPhase.failed);
+    expect(controller.lastErrorCode, 'remote/connect-timeout');
+
+    // 重试可用：再次 connect 会重新拨号，而不是停在 failed。
+    await controller.connect(_device());
+    expect(factory.links, hasLength(2));
+    expect(controller.phase, RemoteConnectionPhase.connecting);
+    expect(controller.activeDevice?.id, _device().id);
+    expect(controller.lastError, isNull);
+    expect(controller.lastErrorCode, isNull);
+  });
+
+  test('切换电脑会取消等待宿主就绪的定时器', () async {
+    final devices = _DevicePreferences(<RemoteDevice>[
+      _device(),
+      _secondDevice(),
+    ]);
+    addTearDown(devices.dispose);
+    final store = devices.store(_MemoryVault(_deviceToken));
+    final factory = _LinkFactory();
+    final controller = _controllerWith(
+      store,
+      factory.call,
+      hostStatusTimeout: const Duration(milliseconds: 60),
+    );
+    addTearDown(controller.dispose);
+
+    await controller.connect(_device());
+    factory.links.single.handshakeSucceeded(_hostInfo());
+    expect(controller.phase, RemoteConnectionPhase.handshaking);
+
+    await controller.switchTo(_secondDevice());
+    // 超过旧连接的 60 ms 等待窗口：定时器若没取消，会把新连接推进 failed。
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+
+    expect(controller.phase, RemoteConnectionPhase.connecting);
+    expect(controller.lastErrorCode, isNull);
+    expect(factory.links.first.isClosed, isTrue);
+  });
+
+  test('断开连接会取消等待宿主就绪的定时器', () async {
+    final link = _FakeLink();
+    final controller = _controllerFor(
+      link,
+      hostStatusTimeout: const Duration(milliseconds: 60),
+    );
+    addTearDown(controller.dispose);
+    await controller.connect(_device());
+    link.handshakeSucceeded(_hostInfo());
+    expect(controller.phase, RemoteConnectionPhase.handshaking);
+
+    await controller.disconnect();
+    // 超过等待窗口：定时器若没取消，会留下 lastError 或把阶段推翻。
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+
+    expect(controller.phase, RemoteConnectionPhase.idle);
+    expect(controller.lastError, isNull);
+    expect(controller.lastErrorCode, isNull);
+    expect(link.isClosed, isTrue);
   });
 
   test('events 广播全部入站帧，后订阅者能收到后续帧，dispose 后流正常关闭', () async {

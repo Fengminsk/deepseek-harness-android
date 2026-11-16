@@ -5,6 +5,10 @@ import 'dart:math';
 
 import 'package:dsh_android/remote_transport.dart';
 import 'package:dsh_android/runtime_transport.dart';
+// 显式断言「超时定时器已取消、没有 pending timer」需要 fake_async；它由
+// flutter_test 传递引入（pubspec.lock 已锁定），本轮不改 pubspec，所以直接导入。
+// ignore: depend_on_referenced_packages
+import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'support/remote_tls_fixture.dart';
@@ -238,4 +242,336 @@ void main() {
       expect(businessId, isNot(helloId));
     });
   });
+
+  group('拨号超时（HANDOFF §4 第 17 项）', () {
+    test('默认 12 秒，错误码复用 remote/* 客户端命名空间', () {
+      expect(
+        RemoteRuntimeTransport.defaultConnectTimeout,
+        const Duration(seconds: 12),
+      );
+      expect(
+        RemoteRuntimeTransport.connectTimeoutCode,
+        'remote/connect-timeout',
+      );
+    });
+
+    test('拨号 12 秒未完成即终止：超时失败、主动中止连接、不自动重连、无 Timer 泄漏', () {
+      fakeAsync((async) {
+        var attempts = 0;
+        var aborts = 0;
+        final pending = Completer<WebSocket>();
+        final transport = _transportWithDialer((HttpClient client) {
+          attempts++;
+          return RemoteDialAttempt(
+            socket: pending.future,
+            abort: () => aborts++,
+          );
+        });
+        final phases = <String>[];
+        final codes = <String?>[];
+        final subscription = transport.events.listen((event) {
+          if (event['method'] != 'remote.status') return;
+          final params = event['params'];
+          if (params is! Map<String, dynamic>) return;
+          final phase = params['phase'];
+          if (phase is String) phases.add(phase);
+          final error = params['error'];
+          if (error is Map<String, dynamic> && error['code'] is String) {
+            codes.add(error['code'] as String);
+          }
+        });
+        Object? failure;
+        unawaited(
+          transport.handshake.then<void>(
+            (_) {},
+            onError: (Object error) => failure = error,
+          ),
+        );
+        async.flushMicrotasks();
+
+        async.elapse(
+          RemoteRuntimeTransport.defaultConnectTimeout -
+              const Duration(milliseconds: 1),
+        );
+        expect(attempts, 1);
+        expect(aborts, 0, reason: '没到时限不能提前放弃');
+        expect(failure, isNull);
+        expect(transport.phase, 'connecting');
+
+        async.elapse(const Duration(milliseconds: 1));
+        async.flushMicrotasks();
+
+        expect(
+          failure,
+          isA<RuntimeTransportFailure>().having(
+            (value) => value.code,
+            'code',
+            RemoteRuntimeTransport.connectTimeoutCode,
+          ),
+        );
+        expect(aborts, 1, reason: '超时必须主动中止仍在建立的连接');
+        expect(transport.phase, 'lost');
+        expect(phases, contains('lost'));
+        expect(phases, isNot(contains('ready')));
+        expect(codes, contains(RemoteRuntimeTransport.connectTimeoutCode));
+
+        // 终止性失败：不按退避重连，不会出现第二个 12 秒窗口。
+        async.elapse(const Duration(minutes: 2));
+        expect(attempts, 1);
+        expect(phases, isNot(contains('reconnecting')));
+
+        // `abort` 与底层拨号完成存在竞态：晚到的 socket 也必须关掉。
+        final late = _FakeWebSocket();
+        pending.complete(late);
+        async.flushMicrotasks();
+        expect(late.closeCalls, 1, reason: '超时后晚到的 socket 必须被关闭');
+        expect(late.lastCloseReason, RemoteRuntimeTransport.connectTimeoutCode);
+
+        unawaited(transport.close());
+        async.flushMicrotasks();
+        expect(transport.isClosed, isTrue);
+        expect(async.pendingTimers, isEmpty, reason: '超时定时器必须在失败/关闭路径上取消');
+        unawaited(subscription.cancel());
+      });
+    });
+
+    test('拨号期间 close（切换设备 / dispose）取消定时器并中止在途连接', () {
+      fakeAsync((async) {
+        var aborts = 0;
+        final pending = Completer<WebSocket>();
+        final transport = _transportWithDialer(
+          (_) =>
+              RemoteDialAttempt(socket: pending.future, abort: () => aborts++),
+        );
+        async.flushMicrotasks();
+        expect(transport.phase, 'connecting');
+
+        var closed = false;
+        unawaited(transport.close().then((_) => closed = true));
+        async.flushMicrotasks();
+
+        expect(closed, isTrue);
+        expect(transport.isClosed, isTrue);
+        expect(aborts, 1, reason: '关闭传输必须中止在途拨号，不能留下悬挂连接');
+
+        // 定时器已随 close 取消：再等三个窗口也不会触发任何回调。
+        async.elapse(RemoteRuntimeTransport.defaultConnectTimeout * 3);
+        expect(aborts, 1);
+        expect(async.pendingTimers, isEmpty);
+      });
+    });
+
+    test('拨号失败时取消超时定时器，按退避转入重连', () {
+      fakeAsync((async) {
+        var attempts = 0;
+        final transport = _transportWithDialer((_) {
+          attempts++;
+          return RemoteDialAttempt(
+            socket: Future<WebSocket>.error(
+              const SocketException('connection refused'),
+            ),
+            abort: () {},
+          );
+        });
+        final phases = <String>[];
+        final subscription = transport.events.listen((event) {
+          if (event['method'] != 'remote.status') return;
+          final params = event['params'];
+          if (params is Map<String, dynamic> && params['phase'] is String) {
+            phases.add(params['phase'] as String);
+          }
+        });
+        async.flushMicrotasks();
+
+        expect(attempts, 1);
+        expect(phases, contains('reconnecting'));
+        // 拨号已经失败：12 秒定时器取消，只剩 1 秒档的退避重连定时器。
+        expect(
+          async.pendingTimers.map((timer) => timer.duration),
+          isNot(contains(RemoteRuntimeTransport.defaultConnectTimeout)),
+        );
+
+        unawaited(transport.close());
+        async.flushMicrotasks();
+        expect(transport.isClosed, isTrue);
+        expect(async.pendingTimers, isEmpty, reason: '退避定时器也要随 close 取消');
+        unawaited(subscription.cancel());
+      });
+    });
+
+    test('底层拨号先抛 TimeoutException 也按拨号超时终止，不退回可重试', () {
+      fakeAsync((async) {
+        final transport = _transportWithDialer(
+          (_) => RemoteDialAttempt(
+            socket: Future<WebSocket>.error(
+              TimeoutException(
+                'Connection timed out',
+                RemoteRuntimeTransport.defaultConnectTimeout,
+              ),
+            ),
+            abort: () {},
+          ),
+        );
+        final phases = <String>[];
+        final subscription = transport.events.listen((event) {
+          if (event['method'] != 'remote.status') return;
+          final params = event['params'];
+          if (params is Map<String, dynamic> && params['phase'] is String) {
+            phases.add(params['phase'] as String);
+          }
+        });
+        Object? failure;
+        unawaited(
+          transport.handshake.then<void>(
+            (_) {},
+            onError: (Object error) => failure = error,
+          ),
+        );
+        async.flushMicrotasks();
+
+        expect(
+          failure,
+          isA<RuntimeTransportFailure>().having(
+            (value) => value.code,
+            'code',
+            RemoteRuntimeTransport.connectTimeoutCode,
+          ),
+        );
+        expect(phases, contains('lost'));
+        expect(phases, isNot(contains('reconnecting')));
+
+        unawaited(transport.close());
+        async.flushMicrotasks();
+        expect(async.pendingTimers, isEmpty);
+        unawaited(subscription.cancel());
+      });
+    });
+
+    test('拨号成功即取消超时定时器；握手完成后不遗留定时器', () {
+      fakeAsync((async) {
+        final socket = _FakeWebSocket();
+        final transport = _transportWithDialer(
+          (_) => RemoteDialAttempt(
+            socket: Future<WebSocket>.value(socket),
+            abort: () => throw StateError('拨号成功后不应再中止连接'),
+          ),
+          handshakeTimeout: const Duration(hours: 1),
+        );
+        final phases = <String>[];
+        final subscription = transport.events.listen((event) {
+          if (event['method'] != 'remote.status') return;
+          final params = event['params'];
+          if (params is Map<String, dynamic> && params['phase'] is String) {
+            phases.add(params['phase'] as String);
+          }
+        });
+        async.flushMicrotasks();
+
+        expect(transport.phase, 'handshaking');
+        expect(socket.sent, hasLength(1));
+        final hello = jsonDecode(socket.sent.single) as Map<String, dynamic>;
+        expect(hello['method'], 'protocol.hello');
+        final id = hello['id'];
+        expect(id, isA<String>());
+        // 连接建立时拨号定时器已经取消：这里只剩 1 小时的握手窗口。
+        expect(
+          async.pendingTimers.map((timer) => timer.duration),
+          isNot(contains(RemoteRuntimeTransport.defaultConnectTimeout)),
+        );
+
+        socket.emit(
+          '${jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': id,
+            'result': <String, dynamic>{
+              'protocolVersion': 1,
+              'host': <String, dynamic>{'name': '本地测试宿主', 'platform': 'win32', 'home': r'C:\test\dsh'},
+              'methods': <String>[],
+              'unsupported': <String>[],
+              'capabilities': <String>[],
+            },
+          })}\n',
+        );
+        async.flushMicrotasks();
+
+        expect(transport.phase, 'ready');
+        expect(phases, contains('ready'));
+        expect(async.pendingTimers, isEmpty, reason: '握手定时器在成功后取消');
+
+        unawaited(transport.close());
+        async.flushMicrotasks();
+        expect(transport.isClosed, isTrue);
+        expect(async.pendingTimers, isEmpty);
+        unawaited(subscription.cancel());
+      });
+    });
+  });
+}
+
+/// 注入拨号实现的传输；端点用 TEST-NET-1，永远不会真的发起网络请求。
+RemoteRuntimeTransport _transportWithDialer(
+  RemoteDialer dialer, {
+  Duration handshakeTimeout = const Duration(seconds: 10),
+}) => RemoteRuntimeTransport(
+  endpoint: 'wss://192.0.2.1:4777/app',
+  token: _deviceToken,
+  pinnedCaPem: pairingCaPem,
+  dialer: dialer,
+  handshakeTimeout: handshakeTimeout,
+);
+
+/// 测试用的假 WebSocket：只实现传输层真正会碰到的成员，其余成员被用到时由
+/// [noSuchMethod] 抛错，避免假实现悄悄偏离真实接口。
+class _FakeWebSocket implements WebSocket {
+  final StreamController<dynamic> _inbound = StreamController<dynamic>();
+  final List<String> sent = <String>[];
+  int closeCalls = 0;
+  int? lastCloseCode;
+  String? lastCloseReason;
+  Duration? _pingInterval;
+
+  @override
+  StreamSubscription<dynamic> listen(
+    void Function(dynamic event)? onData, {
+    Function? onError,
+    void Function()? onDone,
+    bool? cancelOnError,
+  }) => _inbound.stream.listen(
+    onData,
+    onError: onError,
+    onDone: onDone,
+    cancelOnError: cancelOnError,
+  );
+
+  @override
+  void add(dynamic data) {
+    if (data is String) sent.add(data);
+  }
+
+  @override
+  Future<void> close([int? code, String? reason]) async {
+    closeCalls++;
+    lastCloseCode = code;
+    lastCloseReason = reason;
+    if (!_inbound.isClosed) await _inbound.close();
+  }
+
+  @override
+  Duration? get pingInterval => _pingInterval;
+
+  @override
+  set pingInterval(Duration? value) => _pingInterval = value;
+
+  @override
+  int? get closeCode => lastCloseCode;
+
+  @override
+  String? get closeReason => lastCloseReason;
+
+  /// 模拟宿主推来一帧文本。
+  void emit(String frame) => _inbound.add(frame);
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) =>
+      throw UnsupportedError('测试假 socket 未实现 ${invocation.memberName}');
 }

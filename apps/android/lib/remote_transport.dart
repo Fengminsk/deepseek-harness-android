@@ -140,6 +140,26 @@ abstract interface class RemoteTransportLink implements RuntimeTransport {
   bool get isClosed;
 }
 
+/// 一次进行中的 WebSocket 拨号。
+///
+/// 单独成类是为了给拨号超时一个最小可注入点：测试可以返回一个永不完成的
+/// [socket]，并断言超时或 [RemoteRuntimeTransport.close] 时 [abort] 被调用。
+/// 真实实现里 [abort] 强关底层 `HttpClient`，把正在建立的 TCP/TLS socket 与
+/// 响应流一起拆掉，不留下悬挂连接。
+class RemoteDialAttempt {
+  /// 创建一次拨号尝试。
+  RemoteDialAttempt({required this.socket, required this.abort});
+
+  /// 拨号结果：成功时给出已建立的 WebSocket，失败时以异常完成。
+  final Future<WebSocket> socket;
+
+  /// 主动中止仍在建立的连接；幂等，可以重复调用。
+  final void Function() abort;
+}
+
+/// 拨号入口；只给测试替换成永不完成/可控的连接，缺省实现走 `WebSocket.connect`。
+typedef RemoteDialer = RemoteDialAttempt Function(HttpClient client);
+
 /// 远程模式的 [RuntimeTransport] 实现。
 ///
 /// 生命周期：构造即开始拨号（不提供单独的 `start`）。首次握手成功后
@@ -162,6 +182,13 @@ class RemoteRuntimeTransport implements RemoteTransportLink {
   /// （协议 §3.1）。[requestTimeout] 是普通请求的兜底超时，避免宿主无响应时页面
   /// 永久悬挂；[handshakeTimeout] 对应协议 §3.3 的 10 秒握手窗口。
   ///
+  /// [connectTimeout] 是拨号（TCP + TLS + HTTP 升级）的总时限，默认
+  /// [defaultConnectTimeout]（12 秒）：不可达网络下 OS 的 TCP 超时可达约 2 分钟，
+  /// 期间页面只能停在「正在连接」。超时按终止性失败处理（不自动重连），页面进入
+  /// 可见失败态，用户检查地址与网络后可重试。
+  ///
+  /// [dialer] 只给测试注入拨号实现；App 侧不要传入，缺省用 `WebSocket.connect`。
+  ///
   /// [pingInterval] 是 WebSocket 自动 ping 的周期；默认 20 秒，即两个周期（40 秒）
   /// 无回应时底层关闭连接并触发重连。
   RemoteRuntimeTransport({
@@ -171,10 +198,11 @@ class RemoteRuntimeTransport implements RemoteTransportLink {
     this.deviceLabel = '未命名的 Android 设备',
     this.appVersion = '0.1.0',
     List<String> capabilities = const <String>['window-ack'],
-    Duration connectTimeout = const Duration(seconds: 15),
+    Duration connectTimeout = defaultConnectTimeout,
     Duration handshakeTimeout = const Duration(seconds: 10),
     Duration requestTimeout = const Duration(seconds: 90),
     Duration pingInterval = const Duration(seconds: 20),
+    this.dialer,
   }) : _endpoint = _normalizeEndpoint(endpoint),
        _token = _validateToken(token),
        _capabilities = List<String>.unmodifiable(capabilities),
@@ -203,6 +231,23 @@ class RemoteRuntimeTransport implements RemoteTransportLink {
 
   /// 协议版本；当前协议 v1 恒为 1（协议 §3.1）。
   static const int protocolVersion = 1;
+
+  /// 拨号（TCP + TLS + WebSocket 升级）的默认超时。
+  ///
+  /// 12 秒覆盖正常局域网/公网入口的拨号延迟，又比不可达网络下 OS 的 TCP 超时
+  /// （可能约 2 分钟）短一个数量级（HANDOFF §4 第 17 项）。这是传输的固定策略，
+  /// 不开放用户设置。
+  static const Duration defaultConnectTimeout = Duration(seconds: 12);
+
+  /// 拨号超时的失败码。
+  ///
+  /// 复用 `remote/*` 这个客户端侧命名空间（同 `remote/tls`、
+  /// `remote/handshake-timeout`、`remote/connect-failed`），而不是新增
+  /// `gateway/connect-timeout`：协议 §9.2 的 `gateway/*` 是宿主应用层
+  /// `_pocket_error` 的词汇，拨号超时发生在手机侧、宿主根本没有参与应答，用
+  /// `gateway/*` 会把客户端失败误归因成宿主错误；`gateway/timeout`（协议 §4.1）
+  /// 描述的是宿主请求 90 秒无响应，语义也不符。
+  static const String connectTimeoutCode = 'remote/connect-timeout';
 
   /// 协议要求的固定 Origin，逐字节比较（协议 §2.1）。
   static const String origin = 'https://pocket-harness.local';
@@ -233,6 +278,11 @@ class RemoteRuntimeTransport implements RemoteTransportLink {
   /// App 构建号，进入 `protocol.hello.params.appVersion`，仅用于宿主展示与排障。
   final String appVersion;
 
+  /// 拨号实现；null 表示走缺省的 `WebSocket.connect`。
+  ///
+  /// 只用于测试注入永不完成/可控的连接来驱动超时路径，App 侧不要传入。
+  final RemoteDialer? dialer;
+
   final List<String> _capabilities;
   final Duration _connectTimeout;
   final Duration _handshakeTimeout;
@@ -257,6 +307,8 @@ class RemoteRuntimeTransport implements RemoteTransportLink {
   WebSocket? _socket;
   StreamSubscription<dynamic>? _socketSubscription;
   HttpClient? _dialingClient;
+  RemoteDialAttempt? _dialAttempt;
+  Timer? _dialTimer;
   Future<void>? _socketClose;
   Future<void>? _closing;
   Completer<void>? _retryWake;
@@ -414,6 +466,10 @@ class RemoteRuntimeTransport implements RemoteTransportLink {
     _failPending(_cancelledFailure);
     if (!_handshake.isCompleted) _handshake.completeError(_cancelledFailure);
     _cancelRetry();
+    // 拨号中的超时定时器与在途连接也要收掉：切换设备 / dispose 时页面已经离开，
+    // 不能留下 12 秒后才触发的回调和悬挂的 socket。
+    _cancelDialTimeout();
+    _dialAttempt?.abort();
     _dialingClient?.close(force: true);
     await _closeSocket(WebSocketStatus.normalClosure, 'client-closed');
     _socket = null;
@@ -571,43 +627,57 @@ class RemoteRuntimeTransport implements RemoteTransportLink {
     throw _closeFailureFor(_closeCode, _closeReason);
   }
 
+  /// 建立一条 WebSocket 连接；拨号超时与失败都在这里收敛成结构化失败。
+  ///
+  /// 超时使用显式 [Timer] 而不是 `Future.timeout`：外部 [close]（切换设备、dispose）
+  /// 必须能立刻取消它，否则页面已经离开、回调还在等 12 秒，测试里也会留下 pending
+  /// timer。超时按终止性失败处理——拨号已经等满一个完整窗口，自动重连只会把同一个
+  /// 12 秒再演一遍，交给用户检查地址与网络。
   Future<WebSocket> _dial() async {
     final client = HttpClient(context: _securityContext)
       ..connectionTimeout = _connectTimeout;
     _dialingClient = client;
-    Future<WebSocket>? dial;
+    Timer? timer;
+    final timedOut = Completer<Never>();
     try {
-      dial = WebSocket.connect(
-        _endpoint.toString(),
-        headers: <String, dynamic>{
-          'Authorization': 'Bearer $_token',
-          'Origin': origin,
-        },
-        // 协议 §1.1 明确不启用 permessage-deflate。
-        compression: CompressionOptions.compressionOff,
-        customClient: client,
-      );
-      final socket = await dial.timeout(_connectTimeout);
-      // 协议 §1.5：客户端每 20 秒 ping 一次；两个周期没有 pong 时底层关闭。
-      socket.pingInterval = _pingInterval;
-      return socket;
-    } on TimeoutException {
-      final late = dial;
-      if (late != null) {
-        // `.timeout` 不会取消底层拨号；晚到的连接必须由我们关掉，否则泄漏 socket。
+      final dial = dialer?.call(client) ?? _webSocketDial(client);
+      _dialAttempt = dial;
+      timer = Timer(_connectTimeout, () {
+        // 主动拆掉还在建立的 TCP/TLS 连接：只丢下 future 会泄漏悬挂的 socket。
+        dial.abort();
+        // `abort` 与底层拨号完成存在竞态：晚到的连接也必须关掉。
         unawaited(
-          late.then<void>(
+          dial.socket.then<void>(
             (socket) => unawaited(
-              socket.close(WebSocketStatus.goingAway, 'connect-timeout'),
+              socket.close(WebSocketStatus.goingAway, connectTimeoutCode),
             ),
             onError: (Object _) {},
           ),
         );
-      }
-      throw RuntimeTransportFailure(
-        code: 'remote/connect-timeout',
-        message: '连接电脑超时，请确认手机与电脑在同一网络。',
-        details: <String, dynamic>{'endpoint': _endpoint.toString()},
+        if (!timedOut.isCompleted) {
+          timedOut.completeError(_connectTimeoutFailure());
+        }
+      });
+      _dialTimer = timer;
+      final socket = await Future.any<WebSocket>(<Future<WebSocket>>[
+        dial.socket,
+        timedOut.future,
+      ]);
+      // 协议 §1.5：客户端每 20 秒 ping 一次；两个周期没有 pong 时底层关闭。
+      socket.pingInterval = _pingInterval;
+      return socket;
+    } on _TerminalFailure {
+      rethrow;
+    } on RuntimeTransportFailure catch (failure) {
+      // 只有拨号超时会以结构化失败走到这里（其它异常由下面的分支映射）。
+      throw _TerminalFailure(failure, WebSocketStatus.goingAway);
+    } on TimeoutException {
+      // `HttpClient.connectionTimeout` 与拨号定时器是同一个窗口的两层保险：哪一层
+      // 先到都收敛成同一个终止性失败，否则同一个 12 秒会因底层实现不同退化成
+      // 可重试的 `remote/connect-failed`。
+      throw _TerminalFailure(
+        _connectTimeoutFailure(),
+        WebSocketStatus.goingAway,
       );
     } on HandshakeException catch (error) {
       // 证书不受信任是终止态（协议 §1.4：证书/令牌/协议不匹配不属于可重试的网络
@@ -630,10 +700,51 @@ class RemoteRuntimeTransport implements RemoteTransportLink {
         details: error.toString(),
       );
     } finally {
+      timer?.cancel();
+      if (identical(_dialTimer, timer)) _dialTimer = null;
+      _dialAttempt = null;
       if (identical(_dialingClient, client)) _dialingClient = null;
       // 升级成功后 socket 已经从 HttpClient 上 detach，关闭客户端不会影响它。
       client.close(force: true);
     }
+  }
+
+  /// 缺省拨号实现：用固定 TLS 上下文的 [HttpClient] 建立 `wss://` 连接。
+  ///
+  /// [RemoteDialAttempt.abort] 强关客户端；`HttpClient.close(force: true)` 会中止
+  /// 正在建立的连接，这是「超时后不留下悬挂 socket」的最终兜底。
+  RemoteDialAttempt _webSocketDial(HttpClient client) {
+    final socket = WebSocket.connect(
+      _endpoint.toString(),
+      headers: <String, dynamic>{
+        'Authorization': 'Bearer $_token',
+        'Origin': origin,
+      },
+      // 协议 §1.1 明确不启用 permessage-deflate。
+      compression: CompressionOptions.compressionOff,
+      customClient: client,
+    );
+    return RemoteDialAttempt(
+      socket: socket,
+      abort: () => client.close(force: true),
+    );
+  }
+
+  RuntimeTransportFailure _connectTimeoutFailure() {
+    return RuntimeTransportFailure(
+      code: connectTimeoutCode,
+      message: '连接电脑超时，请检查地址与网络后重试。',
+      details: <String, dynamic>{
+        'endpoint': _endpoint.toString(),
+        'timeoutMs': _connectTimeout.inMilliseconds,
+      },
+    );
+  }
+
+  /// 取消拨号超时定时器：成功、失败与外部取消路径都要走到。
+  void _cancelDialTimeout() {
+    _dialTimer?.cancel();
+    _dialTimer = null;
   }
 
   RuntimeTransportFailure _tlsFailure(TlsException error) {
@@ -1415,8 +1526,8 @@ class RemoteRuntimeTransport implements RemoteTransportLink {
     if (error is RuntimeTransportFailure) return error;
     if (error is TimeoutException) {
       return RuntimeTransportFailure(
-        code: 'remote/connect-timeout',
-        message: '连接电脑超时，请确认手机与电脑在同一网络。',
+        code: connectTimeoutCode,
+        message: '连接电脑超时，请检查地址与网络后重试。',
         details: error.toString(),
       );
     }
