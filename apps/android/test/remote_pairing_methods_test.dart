@@ -25,6 +25,10 @@ final String _instanceId = caCertificateFingerprint(pairingCaPem);
 String _link(String host) =>
     'wss://$host:4777#instance=$_instanceId&token=$_pairingToken';
 
+/// 一条 HTTPS 反代形态的配对链接（显式 443）。
+String _proxyLink(String host) =>
+    'wss://$host:443#instance=$_instanceId&token=$_pairingToken';
+
 /// 一台发现到的电脑（页面只消费字段，不需要经过协议解析）。
 RemoteDiscoveredHost _host({
   required String name,
@@ -113,7 +117,7 @@ class _FakeDiscovery implements RemoteDiscovery {
   }
 }
 
-/// 不联网的配对编排：记录收到的链接，成功时返回一条已保存设备。
+/// 不联网的配对编排：记录收到的链接与信任模式，成功时返回一条已保存设备。
 class _FakeFlow extends RemotePairingFlow {
   _FakeFlow({required super.store, this.device});
 
@@ -121,14 +125,24 @@ class _FakeFlow extends RemotePairingFlow {
   final List<String> links = <String>[];
   String? lastDeviceLabel;
 
+  /// 最近一次调用传入的 TLS 信任模式（普通入口 false，反代入口 true）。
+  bool? lastSystemTrust;
+
+  /// 非 null 时配对以它失败（页面错误展示用例）。
+  Object? failure;
+
   @override
   Future<RemoteDevice> pair(
     String link, {
     required String deviceLabel,
     String? appVersion,
+    bool systemTrust = false,
   }) async {
     links.add(link);
     lastDeviceLabel = deviceLabel;
+    lastSystemTrust = systemTrust;
+    final error = failure;
+    if (error != null) throw error;
     final result = device;
     if (result == null) {
       throw const RemotePairingFailure('pairing/test', '测试没有配置配对结果。');
@@ -276,7 +290,7 @@ void main() {
     testWidgets('默认粘贴链接；三段式入口齐全且发现不自动启动', (tester) async {
       await pumpPage(tester);
 
-      for (final label in ['粘贴链接', '扫码配对', '搜索局域网']) {
+      for (final label in ['粘贴链接', '扫码配对', '搜索局域网', 'HTTPS 反代']) {
         expect(
           find.descendant(of: modes(), matching: find.text(label)),
           findsOneWidget,
@@ -311,6 +325,119 @@ void main() {
         _link('192.168.1.11'),
       );
       expect(tester.widget<PocketButton>(submitButton()).onPressed, isNotNull);
+    });
+  });
+
+  group('HTTPS 反代入口', () {
+    Finder proxySubmit() =>
+        find.byKey(const ValueKey('remote-pairing-proxy-submit'));
+    Finder switchProxy() =>
+        find.byKey(const ValueKey('remote-pairing-switch-proxy'));
+
+    testWidgets('切到「HTTPS 反代」显示场景说明与反代提交按钮', (tester) async {
+      await pumpPage(tester);
+      await openMode(tester, 'HTTPS 反代');
+
+      expect(find.textContaining('TLS 在反代处终止'), findsOneWidget);
+      expect(find.textContaining('系统根证书'), findsOneWidget);
+      expect(proxySubmit(), findsOneWidget);
+      // 普通「连接」按钮只在普通入口出现：两个入口的信任模式不同，不能共用同一个按钮。
+      expect(submitButton(), findsNothing);
+    });
+
+    testWidgets('反代入口配对把 systemTrust 传给配对流程', (tester) async {
+      await pumpPage(tester, paired: _pairedDevice());
+      await openMode(tester, 'HTTPS 反代');
+      await tester.enterText(linkField(), _proxyLink('dsh.example.com'));
+      await tester.pump();
+
+      await tester.tap(proxySubmit());
+      await tester.pumpAndSettle();
+
+      expect(flow.links, <String>[_proxyLink('dsh.example.com')]);
+      expect(flow.lastSystemTrust, isTrue);
+      expect(flow.lastDeviceLabel, 'Pixel 8');
+      // 配对成功时页面带着设备记录出栈，回到调用方。
+      expect(find.text('打开配对页'), findsOneWidget);
+    });
+
+    testWidgets('普通入口遇到反代链接只提示切换，不发起配对也不改模式', (tester) async {
+      await pumpPage(tester, paired: _pairedDevice());
+      await tester.enterText(linkField(), _proxyLink('dsh.example.com'));
+      await tester.pump();
+
+      await tester.tap(submitButton());
+      await tester.pumpAndSettle();
+
+      // 没有静默改用系统信任：一次配对请求都没发。
+      expect(flow.links, isEmpty);
+      expect(find.textContaining('指向 HTTPS 反代'), findsOneWidget);
+      expect(switchProxy(), findsOneWidget);
+      // 仍在普通入口：普通连接按钮还在，反代按钮不在。
+      expect(submitButton(), findsOneWidget);
+      expect(proxySubmit(), findsNothing);
+      expect(
+        tester.widget<TextField>(linkField()).controller!.text,
+        _proxyLink('dsh.example.com'),
+      );
+    });
+
+    testWidgets('点切换按钮改用反代入口：链接保留，再按反代模式配对', (tester) async {
+      await pumpPage(tester, paired: _pairedDevice());
+      await tester.enterText(linkField(), _proxyLink('dsh.example.com'));
+      await tester.pump();
+      await tester.tap(submitButton());
+      await tester.pumpAndSettle();
+
+      await tester.tap(switchProxy());
+      await tester.pumpAndSettle();
+
+      expect(proxySubmit(), findsOneWidget);
+      expect(submitButton(), findsNothing);
+      expect(find.textContaining('指向 HTTPS 反代'), findsNothing);
+      expect(
+        tester.widget<TextField>(linkField()).controller!.text,
+        _proxyLink('dsh.example.com'),
+      );
+
+      await tester.tap(proxySubmit());
+      await tester.pumpAndSettle();
+      expect(flow.links, <String>[_proxyLink('dsh.example.com')]);
+      expect(flow.lastSystemTrust, isTrue);
+    });
+
+    testWidgets('反代入口的配对失败显示可读原因，停在页面可重试', (tester) async {
+      await pumpPage(tester);
+      flow.failure = const RemotePairingFailure(
+        'pairing/proxy-tls',
+        '反代出示的 HTTPS 证书不受系统信任（自签、过期或证书链不完整）。',
+      );
+      await openMode(tester, 'HTTPS 反代');
+      await tester.enterText(linkField(), _proxyLink('dsh.example.com'));
+      await tester.pump();
+
+      await tester.tap(proxySubmit());
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('反代出示的 HTTPS 证书不受系统信任'), findsOneWidget);
+      expect(proxySubmit(), findsOneWidget);
+      expect(
+        tester.widget<PocketButton>(proxySubmit()).onPressed,
+        isNotNull,
+        reason: '失败后停在页面，可以重试',
+      );
+    });
+
+    testWidgets('原生直连入口的配对仍以 pinned 模式提交', (tester) async {
+      await pumpPage(tester, paired: _pairedDevice());
+      await tester.enterText(linkField(), _link('192.168.1.10'));
+      await tester.pump();
+
+      await tester.tap(submitButton());
+      await tester.pumpAndSettle();
+
+      expect(flow.links, <String>[_link('192.168.1.10')]);
+      expect(flow.lastSystemTrust, isFalse);
     });
   });
 

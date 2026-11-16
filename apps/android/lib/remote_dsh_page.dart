@@ -2559,6 +2559,11 @@ class _RemoteDeviceSheetRow extends StatelessWidget {
   /// 点按回调（行与行尾动作共用）。
   final VoidCallback onPressed;
 
+  /// 状态/地址行尾的信任模式标记；直连电脑不加标记。
+  ///
+  /// 只做展示：连接逻辑读的是设备记录里的 `systemTrust`，不看这段文字。
+  String get _trustLabel => record.systemTrust ? ' · HTTPS 反代' : '';
+
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
@@ -2570,7 +2575,7 @@ class _RemoteDeviceSheetRow extends StatelessWidget {
         overflow: TextOverflow.ellipsis,
       ),
       subtitle: Text(
-        active ? activeLabel : record.host,
+        '${active ? activeLabel : record.host}$_trustLabel',
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
       ),

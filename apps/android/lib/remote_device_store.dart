@@ -113,10 +113,24 @@ class RemoteDeviceStoreException implements Exception {
 /// 同值），不是电脑名：同一台手机配对的电脑会得到相同的 label。电脑名只有握手
 /// （`host.name`）里才有，因此 [hostName] 从第一次连接成功起才存在。展示电脑时
 /// 用 [displayName]。
+///
+/// ## 两种 TLS 信任模式（[systemTrust]）
+///
+/// - `false`（默认，pinned）：直连电脑自己的 TLS 端点。连接只信任 [caPem] 这张
+///   自签 CA（`SecurityContext(withTrustedRoots: false)`），配对时也用同一个
+///   信任库验证 `/pair`。局域网、组网与 TCP 直通反代都属于这一类。
+/// - `true`（HTTPS 反代）：TLS 在反代处终止，App 看到的是反代出示的**公网证书**。
+///   连接与配对改用系统根证书校验（含主机名），因此必须是有公网 CA 签发证书的
+///   域名；[caPem] 与 [instanceId] 仍然保存并在读回时复核，作为「反代后面是同一
+///   台电脑」的身份绑定（`/ca.cer` 的响应体指纹必须等于 [instanceId]）。
+///
+/// 模式是配对时用户显式选择的，不会根据地址猜测：同一台电脑换一条网络路径就要
+/// 重新配对，两种模式不能共用一条记录。
 class RemoteDevice {
   /// 创建一台已配对电脑的记录。
   ///
   /// 字段非法时抛 [FormatException]（中文消息），例如从偏好里读回被改坏的数据。
+  /// [systemTrust] 省略为 `false`，与旧版本 App 写下的记录一致。
   RemoteDevice({
     required this.id,
     required this.label,
@@ -127,6 +141,7 @@ class RemoteDevice {
     required this.createdAt,
     this.lastSeenAt,
     String? hostName,
+    this.systemTrust = false,
   }) : hostName = _normalizedHostName(hostName),
        tokenRef = 'remote-device/$id' {
     if (!_deviceIdPattern.hasMatch(id)) {
@@ -169,6 +184,7 @@ class RemoteDevice {
     final createdAt = value['createdAt'];
     final lastSeenAt = value['lastSeenAt'];
     final hostName = value['hostName'];
+    final systemTrust = value['systemTrust'];
     if (id is! String) throw const FormatException('设备记录缺少 id。');
     if (label is! String) throw const FormatException('设备记录缺少显示名。');
     if (host is! String) throw const FormatException('设备记录缺少地址。');
@@ -184,6 +200,9 @@ class RemoteDevice {
     if (hostName != null && hostName is! String) {
       throw const FormatException('设备记录的电脑名不是字符串。');
     }
+    if (systemTrust != null && systemTrust is! bool) {
+      throw const FormatException('设备记录的信任模式不是布尔值。');
+    }
     return RemoteDevice(
       id: id,
       label: label,
@@ -196,6 +215,8 @@ class RemoteDevice {
           ? DateTime.fromMillisecondsSinceEpoch(lastSeenAt, isUtc: true)
           : null,
       hostName: hostName is String ? hostName : null,
+      // 旧版本 App 写的记录没有这个字段：一律按 pinned 读回（迁移默认值）。
+      systemTrust: systemTrust is bool ? systemTrust : false,
     );
   }
 
@@ -215,7 +236,16 @@ class RemoteDevice {
   final String instanceId;
 
   /// 配对时固定的 CA 证书 PEM 文本，交给 `RemoteRuntimeTransport` 做 TLS 固定。
+  ///
+  /// [systemTrust] 为 true 时它不参与本次 TLS 验证（对端出示的是反代的公网证书），
+  /// 但仍用于身份绑定：读回记录时复核 `SHA-256(DER) == instanceId`，配对时也用
+  /// `/ca.cer` 的响应体验证同一个指纹。
   final String caPem;
+
+  /// TLS 信任模式：`false` 固定 [caPem]，`true` 使用系统根证书（HTTPS 反代）。
+  ///
+  /// 旧记录没有这个字段，读回时按 `false` 处理；模式只能由配对入口显式选择。
+  final bool systemTrust;
 
   /// 配对成功时间。
   final DateTime createdAt;
@@ -249,13 +279,15 @@ class RemoteDevice {
   Uri get appEndpoint =>
       Uri(scheme: 'wss', host: host, port: port, path: '/app');
 
-  /// 更新显示名、最后在线时间或电脑名后的新记录；[id] 与 CA 不变。
+  /// 更新显示名、最后在线时间、电脑名或信任模式后的新记录；[id] 与 CA 不变。
   ///
-  /// [hostName] 传 null 表示保持原值（无法用本方法清空电脑名）。
+  /// [hostName] 传 null 表示保持原值（无法用本方法清空电脑名）；
+  /// [systemTrust] 传 null 表示保持原值。
   RemoteDevice copyWith({
     String? label,
     DateTime? lastSeenAt,
     String? hostName,
+    bool? systemTrust,
   }) => RemoteDevice(
     id: id,
     label: label ?? this.label,
@@ -266,11 +298,13 @@ class RemoteDevice {
     createdAt: createdAt,
     lastSeenAt: lastSeenAt ?? this.lastSeenAt,
     hostName: hostName ?? this.hostName,
+    systemTrust: systemTrust ?? this.systemTrust,
   );
 
   /// 偏好里的持久形态。
   ///
-  /// 不含 [tokenRef]：它由 [id] 推导，存两份会让两处可能不一致。
+  /// 不含 [tokenRef]：它由 [id] 推导，存两份会让两处可能不一致。只有
+  /// [systemTrust] 为 true 时才写这个字段，旧版本 App 因此仍读到 pinned 语义。
   Json toJson() => <String, dynamic>{
     'id': id,
     'label': label,
@@ -281,6 +315,7 @@ class RemoteDevice {
     'createdAt': createdAt.millisecondsSinceEpoch,
     if (lastSeenAt != null) 'lastSeenAt': lastSeenAt!.millisecondsSinceEpoch,
     if (hostName != null) 'hostName': hostName,
+    if (systemTrust) 'systemTrust': true,
   };
 }
 
@@ -603,6 +638,8 @@ class RemoteDeviceStore {
   ///
   /// 不相等说明偏好里的证书与指纹来自两次不同配对（或被改写）。此时既不能信任
   /// 旧指纹，也不能信任新证书，唯一安全的动作是拒绝读数并要求重新配对。
+  /// [RemoteDevice.systemTrust] 为 true 时这一步同样是强制的：系统信任只改变
+  /// 传输层用哪套根证书验证反代，不放松「反代后面必须是同一台电脑」的绑定。
   static void _verifyTrustAnchor(RemoteDevice device, int index) {
     final String fingerprint;
     try {

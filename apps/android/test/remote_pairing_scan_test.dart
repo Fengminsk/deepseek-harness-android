@@ -31,6 +31,10 @@ final String _instanceId = caCertificateFingerprint(pairingCaPem);
 String _link(String host) =>
     'wss://$host:4777#instance=$_instanceId&token=$_pairingToken';
 
+/// 一条 HTTPS 反代形态的配对链接（显式 443）。
+String _proxyLink() =>
+    'wss://dsh.example.com:443#instance=$_instanceId&token=$_pairingToken';
+
 final String _firstLink = _link('192.168.1.10');
 final String _secondLink = _link('192.168.1.11');
 
@@ -79,7 +83,7 @@ class _FakeScanner implements PairingScanner {
   }
 }
 
-/// 不联网的配对编排：记录收到的链接，成功时返回一条已保存设备。
+/// 不联网的配对编排：记录收到的链接与信任模式，成功时返回一条已保存设备。
 class _FakeFlow extends RemotePairingFlow {
   _FakeFlow({required super.store, this.device});
 
@@ -87,14 +91,19 @@ class _FakeFlow extends RemotePairingFlow {
   final List<String> links = <String>[];
   String? lastDeviceLabel;
 
+  /// 最近一次调用传入的 TLS 信任模式。
+  bool? lastSystemTrust;
+
   @override
   Future<RemoteDevice> pair(
     String link, {
     required String deviceLabel,
     String? appVersion,
+    bool systemTrust = false,
   }) async {
     links.add(link);
     lastDeviceLabel = deviceLabel;
+    lastSystemTrust = systemTrust;
     final result = device;
     if (result == null) {
       throw const RemotePairingFailure('pairing/test', '测试没有配置配对结果。');
@@ -209,6 +218,32 @@ void main() {
 
       expect(find.textContaining('扫到的内容不是配对链接'), findsOneWidget);
       expect(linkText(tester), _firstLink);
+    });
+
+    testWidgets('扫到 HTTPS 反代链接只提示切换；切到反代入口后才按系统信任配对', (tester) async {
+      final paired = _pairedDevice();
+      scanner.answer = () async => _proxyLink();
+      await pumpPage(tester, paired: paired);
+
+      await tester.tap(scanButton());
+      await tester.pumpAndSettle();
+
+      // 链接照常填进输入框，但普通入口不静默改用系统信任：先提示切换。
+      expect(linkText(tester), _proxyLink());
+      expect(find.textContaining('指向 HTTPS 反代'), findsOneWidget);
+      expect(flow.links, isEmpty);
+
+      await tester.tap(
+        find.byKey(const ValueKey('remote-pairing-switch-proxy')),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(const ValueKey('remote-pairing-proxy-submit')),
+      );
+      await tester.pumpAndSettle();
+
+      expect(flow.links, <String>[_proxyLink()]);
+      expect(flow.lastSystemTrust, isTrue);
     });
 
     testWidgets('取消扫码不当作失败：输入框与提示保持原样', (tester) async {

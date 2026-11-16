@@ -88,6 +88,7 @@ void main() {
     DateTime? createdAt,
     DateTime? lastSeenAt,
     String? hostName,
+    bool systemTrust = false,
   }) => RemoteDevice(
     id: id,
     label: label,
@@ -98,6 +99,7 @@ void main() {
     createdAt: createdAt ?? DateTime.utc(2026, 11, 15, 6, 0, 0),
     lastSeenAt: lastSeenAt,
     hostName: hostName,
+    systemTrust: systemTrust,
   );
 
   /// 直接写偏好原文，模拟旧版本 App 或外部改写留下的数据。
@@ -358,6 +360,100 @@ void main() {
       final reloaded = await newStore().loadTable();
       expect(reloaded.devices.single.hostName, '客厅的电脑');
       expect(reloaded.devices.single.displayName, '客厅的电脑');
+    });
+  });
+
+  group('TLS 信任模式（pinned / systemTrust）', () {
+    test('旧记录没有 systemTrust 字段时按 pinned 读回', () async {
+      // 旧版本 App 不知道这个字段：缺省必须是固定宿主 CA 的直连模式。
+      writePreferences(<String, dynamic>{
+        'version': remoteDeviceStoreVersion,
+        'devices': <Map<String, dynamic>>[device().toJson()],
+      });
+
+      final table = await newStore().loadTable();
+      expect(table.devices.single.systemTrust, isFalse);
+    });
+
+    test('systemTrust 记录存储往返，并保留 instanceId 身份绑定', () async {
+      final store = newStore();
+      await store.save(
+        device(host: 'dsh.example.com', port: 443, systemTrust: true),
+        deviceToken: _deviceToken,
+      );
+
+      final stored =
+          (storedPreferences()['devices'] as List).single
+              as Map<String, dynamic>;
+      expect(stored['systemTrust'], isTrue);
+
+      final reloaded = await newStore().load();
+      expect(reloaded.single.systemTrust, isTrue);
+      expect(reloaded.single.host, 'dsh.example.com');
+      expect(reloaded.single.port, 443);
+      expect(reloaded.single.instanceId, _pairingInstanceId);
+      expect(reloaded.single.caPem, pairingCaPem);
+    });
+
+    test('pinned 记录不写 systemTrust 字段，旧版本 App 仍按 pinned 读', () async {
+      await newStore().save(device(), deviceToken: _deviceToken);
+
+      final stored =
+          (storedPreferences()['devices'] as List).single
+              as Map<String, dynamic>;
+      expect(stored.containsKey('systemTrust'), isFalse);
+      expect((await newStore().load()).single.systemTrust, isFalse);
+    });
+
+    test('systemTrust 记录仍复核 CA 指纹（不放松身份绑定）', () async {
+      final tampered = device(systemTrust: true).toJson()
+        ..['caPem'] = foreignCaPem;
+      preferences = jsonEncode(<String, dynamic>{
+        'version': remoteDeviceStoreVersion,
+        'devices': <Map<String, dynamic>>[tampered],
+      });
+
+      await expectLater(
+        newStore().load(),
+        throwsA(
+          isA<RemoteDeviceStoreException>().having(
+            (failure) => failure.code,
+            'code',
+            'remote/instance-mismatch',
+          ),
+        ),
+      );
+    });
+
+    test('systemTrust 字段类型不对时报数据损坏', () async {
+      final tampered = device().toJson()..['systemTrust'] = 'yes';
+      preferences = jsonEncode(<String, dynamic>{
+        'version': remoteDeviceStoreVersion,
+        'devices': <Map<String, dynamic>>[tampered],
+      });
+
+      await expectLater(
+        newStore().load(),
+        throwsA(
+          isA<RemoteDeviceStoreException>().having(
+            (failure) => failure.code,
+            'code',
+            'remote/preferences-corrupt',
+          ),
+        ),
+      );
+    });
+
+    test('copyWith 能切换信任模式，id 与信任锚不变', () async {
+      final pinned = device(host: 'dsh.example.com', port: 443);
+      final proxy = pinned.copyWith(systemTrust: true);
+
+      expect(proxy.systemTrust, isTrue);
+      expect(proxy.id, pinned.id);
+      expect(proxy.instanceId, pinned.instanceId);
+      expect(proxy.caPem, pinned.caPem);
+      expect(proxy.host, pinned.host);
+      expect(proxy.copyWith(systemTrust: false).systemTrust, isFalse);
     });
   });
 }

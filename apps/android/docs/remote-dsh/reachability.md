@@ -3,7 +3,7 @@
 状态：v1 适用（2026-11-16）。读者：想从外网用手机连自己 PC 的用户、给远程宿主接入反代/组网的运维。
 上位文档：[remote-dsh-plan.md](../remote-dsh-plan.md) §5.7 可达性阶梯；协议细节唯一来源：[protocol.md](protocol.md)；接力状态：[HANDOFF.md](HANDOFF.md)。
 
-**一句话结论**：v1 只接受「手机直连宿主自己的 TLS 端点」。所以外网访问只有两类真正可用的做法——① 把手机和 PC 放进同一个私有网络（Tailscale/WireGuard）后直连；② 用户自有的 **TCP 直通**（L4）反代或隧道把 4777 原样搬到公网，TLS 全程由宿主自己做。**任何在中间终止 TLS 的做法（Cloudflare Tunnel、Caddy/nginx 的 HTTPS 反代、Tailscale Serve/Funnel、ngrok 默认模式）都会让手机固定 CA 的校验失败**，v1 不支持，也不要把固定 CA 关掉换取可用性。
+**一句话结论**：默认只接受「手机直连宿主自己的 TLS 端点」（固定宿主 CA）。所以外网访问的默认做法是——① 把手机和 PC 放进同一个私有网络（Tailscale/WireGuard）后直连；② 用户自有的 **TCP 直通**（L4）反代或隧道把 4777 原样搬到公网，TLS 全程由宿主自己做。**在中间终止 TLS 的做法（Cloudflare Tunnel、Caddy/nginx 的 HTTPS 反代、Tailscale Serve/Funnel、ngrok 默认模式）在默认入口下会因固定 CA 校验失败**；2026-11-16 起 App 另有一个显式的「HTTPS 反代」配对入口（§3.7），在你自己控制反代、后端只有我们的宿主、域名证书由公网 CA 签发的条件下支持这种链路——它用系统根证书验证反代证书，并继续用 `/ca.cer` 指纹绑定电脑身份，默认入口不会自动切过去。
 
 ---
 
@@ -15,7 +15,7 @@
 | **A. Tailscale / WireGuard 组网后直连** | **可用** | PC 与手机各装一个客户端、登录同一网络；手机需常开 VPN | **首选**：不暴露公网、不改宿主、TLS 端到端 |
 | **A'. 自有域名 + 公网 IP/端口转发（不终止 TLS）** | 可用 | 需要公网 IPv4 或 IPv6、DNS、路由器端口映射 | 次选（对固定线路很干净） |
 | **B. 自有反代/隧道，TCP 直通** | 可用 | 一台公网机器（VPS）+ frp/rathole/nginx stream/HAProxy 等；公网入口暴露一个端口 | 能接受运维时可用 |
-| C. TLS 终止型反代/隧道（Cloudflare Tunnel、HTTPS 反代、Tailscale Serve/Funnel、ngrok 默认） | **不可用** | 会直接破坏证书固定，必须改 App 信任模型 | **不做**（见 §4） |
+| C. TLS 终止型反代/隧道（Cloudflare Tunnel、HTTPS 反代、Tailscale Serve/Funnel、ngrok 默认） | 默认入口**不可用**；自有反代可走 **§3.7 HTTPS 反代入口** | 默认入口会直接破坏证书固定；§3.7 入口显式改用系统根证书验证反代证书，并要求反代可信、后端只有我们的宿主 | 仅在你控制反代且需要 HTTPS 域名时用 §3.7；否则优先 A/B |
 | D. 「反代只转发 `/app` 路径」 | **不可用** | 与配对链接格式冲突，见 §1.4 | **不做** |
 | E. 内建公网穿透/隧道管理 | 不做 | v1 明确交给用户自己的网络手段 | 不做（plan §9:440） |
 
@@ -40,7 +40,7 @@
 ### 1.2 一条连接上必须成立的四件事
 
 1. **TLS 端到端由宿主自己做**。宿主进程用一张长期自签 CA + 一张 1 年期的服务器叶子证书起 https 服务器（`apps/remote-host/src/server.ts:1267`、`apps/remote-host/src/tls.ts:43-53`）。CA 证书 DER 的 SHA-256 就是宿主 `instanceId`（`apps/remote-host/src/tls.ts:350-367`）。
-2. **手机固定这张 CA**。配对后 App 用 `SecurityContext(withTrustedRoots: false)` 只信任这张 CA 连 `/pair` 和 `wss /app`（`apps/android/lib/remote_pairing.dart:612-635`、`apps/android/lib/remote_transport.dart:1469-1498`）；叶子证书的主机名还必须与链接里的主机名一致（Dart `HttpClient` 默认做主机名校验，App 没有关）。例外只有取 CA 那一次：`/ca.cer` 用「先握手、后按响应体指纹判定」的 TOFU 方式（`apps/android/lib/remote_pairing.dart:339-370`）。
+2. **手机固定这张 CA**。配对后 App 用 `SecurityContext(withTrustedRoots: false)` 只信任这张 CA 连 `/pair` 和 `wss /app`（`apps/android/lib/remote_pairing.dart`、`apps/android/lib/remote_transport.dart`）；叶子证书的主机名还必须与链接里的主机名一致（Dart `HttpClient` 默认做主机名校验，App 没有关）。例外只有取 CA 那一次：`/ca.cer` 用「先握手、后按响应体指纹判定」的 TOFU 方式。**另一个显式例外**是「HTTPS 反代」配对入口（§3.7）：该模式下 `/pair` 与 `/app` 用系统根证书验证反代出示的公网证书（含主机名），宿主 CA 仍通过 `/ca.cer` 响应体指纹绑定身份。
 3. **`Origin` 必须逐字节等于 `https://pocket-harness.local`**，否则升级被 HTTP 403 拒绝（宿主常量 `apps/remote-host/src/server.ts:41`，校验在 `apps/remote-host/src/server.ts:1573-1582`；App 发出的就是该常量 `apps/android/lib/remote_transport.dart:207`、`apps/android/lib/remote_transport.dart:582-585`）。这是纵深防御，不是鉴权（protocol §2.3）。
 4. **鉴权只在应用层**：升级头 `Authorization: Bearer <43 字符 base64url>`（`apps/remote-host/src/server.ts:65`、`apps/remote-host/src/server.ts:1583-1593`），令牌摘要用 `timingSafeEqual` 比对（`apps/remote-host/src/devices.ts:418` 起）；失败先在升级后回结构化错误再关闭 `4000`/`4001`（`apps/remote-host/src/server.ts:1683-1712`）。
 
@@ -56,9 +56,10 @@ wss://<host>:<port>#instance=<64 位小写 hex>&token=<43 字符 base64url>
 
 ### 1.4 为什么「反代只转发 `/app` 路径」不可行
 
-- 路径反代意味着反代在 HTTP 层解析请求 → 它必须先终止 TLS → 手机看到的是反代的证书，而手机只信宿主那张 CA，`/pair` 与 `/app` 都在 TLS 握手阶段失败（§1.2 第 2 条）。
+- 路径反代意味着反代在 HTTP 层解析请求 → 它必须先终止 TLS → 手机看到的是反代的证书。默认入口的 App 只信宿主那张 CA，`/pair` 与 `/app` 都在 TLS 握手阶段失败（§1.2 第 2 条）。
 - 即便证书问题被绕过，链接也不允许带路径前缀，App 解析阶段就会拒（§1.3）。
-- 宿主没有「按路径放行」的配置：要么整个端口可达（宿主自己只实现 `/app`、`/ca.cer`、`/pair` 三个端点，其它一律 404），要么不可达。**所以「只转发 /app」在 v1 里没有实现方式，也不计划实现**；要做访问控制请在网络层做（§3.4、§6）。
+- 宿主没有「按路径放行」的配置：要么整个端口可达（宿主自己只实现 `/app`、`/ca.cer`、`/pair` 三个端点，其它一律 404），要么不可达。**默认入口下「只转发 /app」没有实现方式**；要做访问控制请在网络层做（§3.4、§6）。
+- §3.7 的「HTTPS 反代」入口同样要求**整站转发**（`/ca.cer`、`/pair`、`/app` 三条端点都到同一台宿主）：只转发 `/app` 时配对第一步取 `/ca.cer` 就会失败。
 
 ---
 
@@ -229,11 +230,135 @@ socat TCP-LISTEN:8443,fork,reuseaddr TCP:127.0.0.1:4777
 `node --import tsx/esm apps/remote-host/scripts/public-origin-selfcheck.ts`（13/13，覆盖
 `wss://h:443` 保留、`wss://h` 不变、`wss://h:8443` 不变、IPv6、大小写、非法输入）。
 
-仍然注意：反代/隧道必须把外网 443/tcp 原样转到宿主端口（L4 直通），App 侧端口以配对链接为准。
+仍然注意：L4 反代/隧道必须把外网 443/tcp 原样转到宿主端口；HTTPS 反代（§3.7）不需要 L4 直通，但要求整站端点转发与可信反代。
 
 ### 3.6 反代的访问控制（有就加，没有也别指望宿主）
 
 L4 反代看不到应用层内容，能做的是网络层控制：只放行已知源 IP、只绑 tailnet/VPN 地址、或给 8443 套 `fail2ban` 之类的连接级限速。宿主自带的防护是：43 字符随机令牌、`/pair` 对端限速（§6）。
+
+### 3.7 HTTPS 反代（TLS 在反代终止）接入
+
+这是 §3.1「反代不能终止 TLS」前提的**唯一例外**：App 的「添加连接」页有独立的第四个入口
+「HTTPS 反代」，只在用户显式选择时把 TLS 信任库换成**系统根证书**，用来验证反代出示的
+公网证书（含主机名）。其余入口（粘贴 / 扫码 / 局域网）仍是固定宿主 CA 的直连语义，不会
+自动切换到该模式。
+
+适用链路：手机 → 公网域名（内网穿透/端口映射）→ 反代（Nginx 等）终止 TLS → 电脑 4777。
+反代必须把 `/ca.cer`、`/pair` 与 `/app`（含 WebSocket Upgrade）都转发到**同一台**电脑。
+
+#### 3.7.1 宿主配置（电脑）
+
+宿主生成的配对链接由 `publicOrigin` 决定。经反代接入时把它写成对外的域名与端口：
+
+```yaml
+- id: remote-host
+  config:
+    enabled: true
+    publicOrigin: wss://ddsshh.data.knows.love:443
+```
+
+重启宿主后日志/二维码里的链接形如：
+
+```
+wss://ddsshh.data.knows.love:443#instance=<64 位 hex>&token=<43 字符>
+```
+
+- `instance` 仍是电脑 CA 的 SHA-256，设备令牌与撤销语义都不变（§5）。
+- 显式写 `:443` 会被 `normalizePublicOrigin` 保留（§3.5），App 不会再把端口猜成 4777。
+- 宿主叶子证书在反代模式下不再被直接校验（反代的 `proxy_ssl_verify off`），但 `/ca.cer`
+  的响应体指纹必须等于 `instance`，所以「反代后面必须是这台电脑」没有被放松。
+
+#### 3.7.2 Nginx 示例（树莓派，TLS 在反代终止）
+
+```nginx
+# http 段：WebSocket 升级用的 Connection 变量
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+upstream dsh_pc {
+    # PC 上的 remote-host。宿主本身只监听 HTTPS/WSS，所以 upstream 也用 https。
+    server 192.168.5.21:4777;
+    keepalive 16;
+}
+
+server {
+    listen 443 ssl;
+    server_name ddsshh.data.knows.love;
+
+    # 公网 CA 签发的证书（如 Let's Encrypt）：手机用系统根证书验证它。
+    ssl_certificate     /etc/nginx/certs/fullchain.pem;
+    ssl_certificate_key /etc/nginx/certs/privkey.pem;
+
+    location / {
+        proxy_pass https://dsh_pc;
+
+        # 只关闭「反代 → 电脑」这一跳对宿主自签叶子的校验：它在你自己内网里，
+        # 且电脑身份由 /ca.cer 指纹绑定。手机 → 反代这一跳仍是公网证书验证。
+        proxy_ssl_verify off;
+
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Host $host;          # 宿主不校验 Host，仅保持可读
+        proxy_set_header X-Forwarded-For $remote_addr;
+
+        proxy_read_timeout 300s;              # App/宿主各 20s ping；≥120s 更稳
+        proxy_send_timeout 300s;
+        proxy_buffering off;                  # 流式帧不要攒批
+    }
+}
+```
+
+要点：
+
+- **`proxy_ssl_verify off` 不是「关闭证书校验」**：它只作用于 `反代 → 电脑` 这一跳；
+  `手机 → 反代` 这一跳由系统根证书 + 公网 CA 证书验证，这才是本模式的安全边界。
+- 不要在没有 `proxy_ssl_trusted_certificate` 的情况下改用 `proxy_ssl_verify on`（会一律
+  失败），也不要在这里做路径前缀或 `rewrite`——宿主只实现 `/app`、`/ca.cer`、`/pair`。
+- `proxy_buffering off` 与 ≥120 s 的读写超时避免流式回复被攒批、连接被空闲掐断
+  （App 与宿主各 20 s ping，见 §3.4）。
+- 反代到电脑这一段若改走明文 `http://`：宿主只监听 HTTPS，会直接握手失败；upstream
+  必须保持 `https://`。
+- 想启用 HTTP/2 时再加 `http2 on;`；若 WebSocket 升级在 h2 上不通，先退回纯 HTTP/1.1
+  验证链路。
+- 若内网穿透本身也终止了 TLS（例如穿透服务提供 https 入口），则对外的证书由**最先
+  终止 TLS 的那一跳**提供：树莓派 Nginx 可以改成内网 `listen 80`，但手机看到的证书
+  必须仍是公网 CA 签发且匹配链接域名。判据只有一条：**手机这一侧能通过系统根证书
+  验证**。
+- HTTP 层反代会保留 App 固定发送的 `Origin: https://pocket-harness.local` 与路径；
+  若某个中间层会改写它们，升级会被 403/404 拒绝（§1.2、§6.4）。
+
+#### 3.7.3 App 配对步骤
+
+1. 在电脑上打开远程 DSH，拿到 `publicOrigin` 生成的配对链接（日志/终端二维码）。
+2. 手机「添加连接」→ 切到 **HTTPS 反代** 入口 → 粘贴整段链接 → 点连接。
+   - App 用系统根证书验证反代证书（证书链、有效期、域名）；
+   - 取回 `/ca.cer` 并核对 `instance` 指纹（身份绑定）；
+   - `POST /pair` 换取设备令牌，设备记录保存为「HTTPS 反代」模式。
+3. 配对成功后照常用原生 UI 连接 `wss://<域名>:443/app`：协议、`Authorization`、
+   `Origin`、重连与通知全部不变。
+4. 在普通「粘贴链接」入口粘了反代链接时，App 只显示「改用 HTTPS 反代」按钮，不会
+   静默改变信任模式；看到提示时不要为了「能连上」手工绕开模式。
+5. 之后改域名/端口/反代地址都要重新配对（设备记录固化地址，§5）。
+
+#### 3.7.4 安全模型变化
+
+| 项 | 直连（默认） | HTTPS 反代（§3.7 入口） |
+|---|---|---|
+| 手机 → 对端的 TLS 证书 | 固定宿主 CA（自签） | 反代公网证书，系统根证书验证（含主机名） |
+| 反代能否看到明文 | 否（L4 只看字节） | **能**：TLS 在反代终止，反代可见明文 JSON、设备令牌与内容 |
+| 电脑身份绑定 | CA 固定 | `/ca.cer` 响应体 SHA-256 == `instanceId`；读回设备记录时复核 |
+| 设备令牌 / Origin / 路径 / 协议 | 不变 | 不变 |
+| 适用条件 | 任意可达路径 | 反代由你自己控制；upstream 只有我们的宿主；域名证书由公网 CA 签发 |
+
+- **只在你自己控制的反代上使用**：反代（树莓派）能看到请求明文与设备令牌，它被入侵
+  就等于电脑被冒充；域名与证书也必须归你所有。
+- `/ca.cer` 指纹核对会拒绝转到别的后端，但它不能替代对反代本身与网络路径的信任。
+- 公网暴露后仍按 §6 做网络层限制：`/pair` 窗口只有 120 s，配完撤设备或关宿主。
+- 该模式不放松任何既有约束：链路仍必须 HTTPS，设备令牌仍是唯一鉴权，`Origin` 仍是
+  纵深防御（protocol §2.3）。
 
 ---
 
@@ -241,15 +366,16 @@ L4 反代看不到应用层内容，能做的是网络层控制：只放行已�
 
 | 方案 | 为什么不可用 |
 |---|---|
-| **Cloudflare Tunnel（普通模式）** | 隧道在 Cloudflare 边缘终止 TLS，手机拿到的是边缘的公有 CA 证书；App 只信任宿主那张 CA，`/pair` 与 `/app` 在 TLS 握手中停住（`apps/android/lib/remote_pairing.dart:612-635`、`apps/android/lib/remote_transport.dart:1469-1498`）。`/ca.cer` 因为走 TOFU 能取到，但配对第二步必失败，表现出来的现象是「证书指纹对得上、配对仍连不上」。 |
-| 任何 HTTPS 反代（Caddy `reverse_proxy`、nginx `location /` + `proxy_pass`） | 同上：终止 TLS = 换证书。 |
-| Tailscale Serve / Funnel | Tailscale 侧终止 TLS 并出示 `*.ts.net` 证书，同上。 |
-| ngrok 默认（HTTPS 端点） | ngrok 终止 TLS，同上。付费 TCP 端点属于 L4，理论可用但不推荐把命门交给第三方。 |
-| 反代只转发 `/app` 路径 | §1.4：与链接格式、TLS 信任模型都冲突。 |
-| 关掉 App 的证书固定（接受任意证书） | 直接放弃唯一能挡住中间人的判据；配对=完全控制那台电脑（`apps/android/lib/remote_pairing_page.dart:186-192`），不接受的改动（HANDOFF §6 第 4 条）。 |
+| **Cloudflare Tunnel（普通模式）** | 隧道在 Cloudflare 边缘终止 TLS，手机拿到的是边缘的公有 CA 证书；默认入口只信任宿主那张 CA，`/pair` 与 `/app` 在 TLS 握手中停住（`apps/android/lib/remote_pairing.dart`、`apps/android/lib/remote_transport.dart`）。`/ca.cer` 因为走 TOFU 能取到，但配对第二步必失败，表现出来的现象是「证书指纹对得上、配对仍连不上」。技术上可改用 §3.7 入口，但边缘与明文都经过第三方，不推荐。 |
+| **任何 HTTPS 反代（Caddy `reverse_proxy`、nginx `location /` + `proxy_pass`）** | **经 §3.7「HTTPS 反代」入口支持**：条件 = 反代由你自己控制、upstream 只有我们的宿主、域名证书由公网 CA 签发、整站转发 `/ca.cer` `/pair` `/app`。默认入口仍然失败（不会自动改模式）。 |
+| Tailscale Serve / Funnel | Tailscale 侧终止 TLS 并出示 `*.ts.net` 证书：默认入口失败；Serve 在自有 tailnet 内可经 §3.7 入口（但组网直连更好），Funnel 属第三方入口，不推荐。 |
+| ngrok 默认（HTTPS 端点） | ngrok 终止 TLS，默认入口失败；技术上可经 §3.7，但不推荐把命门交给第三方。付费 TCP 端点属于 L4，仍是首选形态。 |
+| 反代只转发 `/app` 路径 | §1.4：默认入口与链接格式冲突；§3.7 入口也要求整站转发（否则 `/ca.cer` 取不到）。 |
+| 关掉 App 的证书固定（接受任意证书） | 直接放弃唯一能挡住中间人的判据；配对=完全控制那台电脑（`apps/android/lib/remote_pairing_page.dart`），不接受的改动（HANDOFF §6 第 4 条）。§3.7 用的是系统根证书而不是「接受任意证书」。 |
 | v1 内建公网穿透/隧道管理 | 明确不做，隧道交给用户自己的反代（`apps/android/docs/remote-dsh-plan.md:440`）。 |
 
-需要这些能力时，正确顺序是：先改产品信任模型（例如引入「反代证书 pin」或自建中继），再谈配置；不要在文档里给一个「关掉 pinning 就能用」的假方案。
+需要这些能力时，正确顺序是：先确认反代可信并在 App 里显式选择对应信任模式（§3.7 已提供
+「HTTPS 反代」入口），再谈配置；不要在文档里给一个「关掉 pinning 就能用」的假方案。
 
 ---
 
@@ -258,11 +384,12 @@ L4 反代看不到应用层内容，能做的是网络层控制：只放行已�
 先记住两个东西是**分开**的：
 
 - **宿主身份**：`instanceId` = CA 指纹；只要 CA 不变，它就是同一台电脑，设备令牌继续有效。
-- **手机侧的地址**：配对时把 `host`/`port` 写进本机设备记录（`apps/android/lib/remote_device_store.dart:99-130`），**没有任何修改地址的入口**（`RemoteDevice.copyWith` 只允许改 label/lastSeenAt：`apps/android/lib/remote_device_store.dart:208`）。
+- **手机侧的地址**：配对时把 `host`/`port` 写进本机设备记录（`apps/android/lib/remote_device_store.dart`），**没有任何修改地址的入口**（`RemoteDevice.copyWith` 只允许改 label/lastSeenAt/systemTrust，见 `apps/android/lib/remote_device_store.dart`）。记录还包含 **TLS 信任模式**（直连固定 CA / HTTPS 反代系统信任），同样在配对时固化：两种模式不能就地互换，换模式也要重新配对。
 
 | 情形 | instanceId | 设备令牌 | App 侧现象 | 要做的事 |
 |---|---|---|---|---|
-| 换反代/隧道地址（域名或端口变了） | 不变 | 不变 | 仍连旧地址，连不上 | **重新配对**（新链接自动换地址）；旧设备可在电脑上撤销（§6）。已知产品缺口：手机上还没有「删除已配对电脑」的界面，`RemoteDeviceStore.remove` 已实现但无 UI 入口（`apps/android/lib/remote_device_store.dart:523-543`）。 |
+| 换反代/隧道地址（域名或端口变了） | 不变 | 不变 | 仍连旧地址，连不上 | **重新配对**（新链接自动换地址）；旧设备可在电脑上撤销（§6）。已知产品缺口：手机上还没有「删除已配对电脑」的界面，`RemoteDeviceStore.remove` 已实现但无 UI 入口（`apps/android/lib/remote_device_store.dart`）。 |
+| 换接入方式（直连 ↔ HTTPS 反代） | 不变 | 不变 | 旧记录仍按旧信任模式连接，通常 TLS 失败 | **重新配对**并在正确入口选择模式（信任模式固化在设备记录里，不能就地改；§3.7） |
 | 换 IP / 加网卡 / 换域名（叶子重签，CA 复用） | 不变 | 不变 | 用旧链接地址仍可连或连不上（取决于地址） | 不需要重新配对；如果要用新地址就得重新配对（原因同上）。叶子 SAN 覆盖不到新主机名时，宿主按 `publicOrigin` 重签（`apps/remote-host/src/tls.ts:258-277`）。 |
 | 宿主重启 | 不变 | 不变 | 短暂重连 | 无需操作；设备表在 `$DSH_HOME/remote-host/devices.json`。 |
 | 换 CA（删/损坏 `$DSH_HOME/remote-host/tls/`、CA 到期） | **变**（新 CA 指纹） | 旧令牌仍在但手机固定的是旧 CA | 所有旧手机 TLS 失败，重连也失败 | 所有设备**重新配对**；宿主会把 `identity.json` 重新绑定到新 CA（`apps/remote-host/src/identity.ts:198-209`、`apps/remote-host/src/tls.ts:369-401`）。 |
@@ -279,7 +406,7 @@ L4 反代看不到应用层内容，能做的是网络层控制：只放行已�
 ### 6.1 必须做
 
 - **只暴露一个端口**：局域网直连暴露 4777；用反代/组网就只暴露那一个入口。宿主本身只有 `/app`、`/ca.cer`、`/pair` 三个端点，但不要额外假设「多开几个端口无所谓」——每多一个可达入口就多一份配对窗口暴露面。
-- **保留证书固定**：App 的 `withTrustedRoots: false` + 固定 CA 是这套方案唯一的中间人防线（`apps/android/lib/remote_transport.dart:1469-1498`）。任何时候都不要为了「能连上」换成接受任意证书。
+- **保留证书固定（默认入口）**：App 的 `withTrustedRoots: false` + 固定 CA 是直连语义唯一的中间人防线（`apps/android/lib/remote_transport.dart`）。任何时候都不要为了「能连上」换成接受任意证书；需要 TLS 终止型反代时走 §3.7 的显式入口，那里用的是系统根证书，同样不是「接受任意证书」。
 - **配对要在可信网络上做**：配对链接里带着一次性令牌，谁先拿到谁先配对。默认窗口 120 s、单次有效、失败按对端限速（5 次/分钟，对端表上限 256）（`apps/remote-host/src/pairing.ts:20-30`、`apps/remote-host/src/pairing.ts:131-166`）。配完把链接当密码看待，不要贴群聊。
 - **设备表只存摘要**：`devices.json` 里只有令牌的 SHA-256，明文令牌只在配对应答里出现一次（`apps/remote-host/src/devices.ts:5-11`、`apps/remote-host/src/devices.ts:385-390`）。
 - **撤销走顺序**：先落盘删除、再推 `remote.deviceRevoked`、最后关闭连接（`apps/remote-host/src/server.ts:1500-1548`），App 收到即置为已撤销。
@@ -288,7 +415,7 @@ L4 反代看不到应用层内容，能做的是网络层控制：只放行已�
 
 ### 6.2 绝不能做
 
-- 关闭 App 的证书固定 / 使用「信任所有证书」的调试开关连生产电脑。
+- 关闭 App 的证书固定 / 使用「信任所有证书」的调试开关连生产电脑（§3.7 的「HTTPS 反代」入口是系统根证书 + `/ca.cer` 指纹绑定，不属于这类开关）。
 - 把宿主 CA 私钥复制到反代、第三方机器或仓库里（除非你接受 §3.1 的信任根外泄，且知道叶子每年要重签）。
 - 直接把 4777 端口映射到公网却不加任何 L4 访问控制，还指望「协议有 Origin 校验就安全」：Origin 是纵深防御，不是鉴权（protocol §2.3）。
 - 用明文 `ws://` 承载远程连接（v1 默认关闭，protocol §1.1）。
@@ -299,7 +426,7 @@ L4 反代看不到应用层内容，能做的是网络层控制：只放行已�
 - **配对窗口对全世界可达**：`/pair` 有对端限速与单次令牌，但窗口开着就意味着任何能连到端口的人都能尝试。建议只在配对时开、配完撤设备或直接关宿主。
 - **升级端点可被扫描**：没有 per-IP 限速（见 §6.5），43 字符令牌在实践上不可爆破，但会产生日志噪音与资源占用；公网部署建议在网络层只允许自己常用的源地址段。
 - **暴露了你的电脑名/主机名**：握手响应里的 `host.name` 是宿主机器名（`apps/remote-host/src/index.ts` 的 `createHandshake`），只有通过鉴权的连接才看得到，但这仍是信息面。
-- **证书是自签的**：除 App 以外没有别的软件会信任它，这是特性，不是缺陷；反代/隧道绕开它的代价就是 §4 那类失败。
+- **证书是自签的（直连）**：除 App 以外没有别的软件会信任它，这是特性，不是缺陷。§3.7 的反代模式下手机看到的是反代的公网证书，电脑自签证书只在「反代 → 电脑」这一跳出现，由反代按 `proxy_ssl_verify off` 跳过校验。
 - **手机侧风险**：配对 = 完全控制那台电脑。手机丢失去先撤销设备（§5 表格）。
 
 ### 6.4 与 protocol §2 的鉴权要求对照
@@ -317,14 +444,15 @@ L4 反代看不到应用层内容，能做的是网络层控制：只放行已�
 ### 6.5 已知缺口（写在这里，避免被当成「已实现」）
 
 1. **升级请求没有 per-IP 限速**：protocol §2.2 写的是「同一源地址 5 秒内最多 5 次尝试，超出回 HTTP 429」，当前宿主只对 `/pair` 做了对端限速（`apps/remote-host/src/pairing.ts:176-195`），WebSocket 升级的鉴权尝试没有限速分支（`apps/remote-host/src/server.ts` 全文无 429 逻辑）。公网暴露时请用网络层兜住。
-2. **`publicOrigin` 不能用 443**：§3.5，需要修归一化或 App 默认端口策略。
+2. ~~`publicOrigin` 不能用 443~~ **已修复（§3.5）**：显式 `:443` 会被保留，HTTPS 反代链接因此可用。
 3. **手机上不能改地址/不能删除已配对电脑**：§5，重新配对是当前唯一路径。
+4. **HTTPS 反代入口只在 Android App 提供**：旧版本 App 没有这个入口，遇到反代链接只会按默认入口失败（证书校验不过）；升级 App 后重新配对即可。
 
 ---
 
 ## 7. 配对链接与二维码
 
-配对入口有四种（App 的「添加连接」页：粘贴链接 / 扫码配对 / 搜索局域网 / 手动地址，见 §11）。为了不必手抄 107 个字符，宿主进程的 **stderr 直接连终端**时会在配对日志后额外打印一张字符画二维码（实现与校验见 [pairing-qr-design.md](pairing-qr-design.md)）：
+配对入口有五种（App 的「添加连接」页：粘贴链接 / 扫码配对 / 搜索局域网 / HTTPS 反代 / 手动地址，见 §11）。为了不必手抄 107 个字符，宿主进程的 **stderr 直接连终端**时会在配对日志后额外打印一张字符画二维码（实现与校验见 [pairing-qr-design.md](pairing-qr-design.md)）：
 
 ```text
 [remote-host] info listening: 远程宿主已就绪：wss://192.168.5.21:4777/app。…
@@ -356,6 +484,12 @@ PC 侧配对界面（在电脑上重开配对窗口、显示二维码、管理/�
 | 症状 | 最可能原因 | 处置 |
 |---|---|---|
 | 配对报「与电脑建立 TLS 连接失败」 | 链接里的主机名不在叶子 SAN（例如只设了 `publicHost` 的域名，没用 `publicOrigin`，或换网卡后没重启宿主） | 用 `publicOrigin` 声明名字并重启宿主（§2.1、§3.4） |
+| 配对报「反代出示的 HTTPS 证书不受系统信任」 | 反代证书自签/过期/证书链不完整，或粘贴到了普通入口 | 换公网 CA 签发的证书；确认用「HTTPS 反代」入口（§3.7），不要改普通入口 |
+| 配对报「反代证书与配对链接里的域名不一致」 | 证书 SAN 与链接域名不同（Nginx `server_name`/证书不匹配） | 用证书覆盖的域名重新生成链接（`publicOrigin`）；核对 §3.7.2 |
+| 配对报「反代没有把 /ca.cer 转发到电脑」（404/502） | Nginx `location`/`upstream` 未覆盖 `/ca.cer`、`/pair`，或后端端口写错 | 按 §3.7.2 整站转发到 PC:4777，并确认 upstream 用 `https://` |
+| 配对报「反代地址拒绝连接」 | 链接端口不对（HTTPS 反代一般是 443）或 Nginx 未监听该端口 | 核对 `publicOrigin` 与 `listen`；对照 §3.5 |
+| 反代模式能配对但连接以 4000/4001 关闭 | 设备令牌无效/过期/被撤销 | 重新配对（§5） |
+| 反代模式连接反复断（1001） | 反代空闲超时过短、未处理 WebSocket Upgrade 或缓冲流式帧 | `proxy_read_timeout` ≥ 120 s、透传 `Upgrade/Connection`、`proxy_buffering off`（§3.7.2） |
 | 配对报「证书指纹与配对码不一致」 | 链接来自另一台电脑、链接过期，或反代把请求转给了别的后端 | 重新从当前宿主日志取链接；检查反代后端只有一台 |
 | 配对报「配对窗口已关闭或过期」（403） | 窗口默认 120 s、单次有效 | 在电脑上重开配对窗口（宿主撤销设备/`remoteHost.pair()` 会自动开，见 §5） |
 | 配对报 429 | 对端尝试次数超限 | 等一分钟或重开配对窗口 |
@@ -384,12 +518,15 @@ PC 侧配对界面（在电脑上重开配对窗口、显示二维码、管理/�
 | 设备令牌摘要与 tombstone | `apps/remote-host/src/devices.ts:5-11`、`:385-390`、`:418` 起 |
 | `publicHost` / `publicOrigin` 语义与 SAN | `apps/remote-host/src/index.ts:96-117`、`:423-427`、`:892-919`、`:928-935` |
 | 终端配对二维码打印（仅 TTY） | `apps/remote-host/src/index.ts:568`、`:1645-1662` |
-| App 固定 CA（/pair 与 wss） | `apps/android/lib/remote_pairing.dart:612-635`、`apps/android/lib/remote_transport.dart:1469-1498` |
+| App 固定 CA（/pair 与 wss） | `apps/android/lib/remote_pairing.dart`、`apps/android/lib/remote_transport.dart` |
+| HTTPS 反代：App 系统信任配对与传输选择 | `apps/android/lib/remote_pairing.dart`（`systemTrust` 参数、`looksLikeHttpsProxyPairingLink`）、`apps/android/lib/remote_transport.dart`、`apps/android/lib/remote_connection.dart` |
+| HTTPS 反代：设备记录信任模式字段与序列化 | `apps/android/lib/remote_device_store.dart`（`RemoteDevice.systemTrust`） |
+| HTTPS 反代：配对入口与「改用反代」提示 | `apps/android/lib/remote_pairing_page.dart` |
 | `/ca.cer` 的 TOFU 取法与指纹比对 | `apps/android/lib/remote_pairing.dart:339-370` |
 | 配对链接解析：拒绝路径/查询串、默认 4777 | `apps/android/lib/remote_pairing.dart:127-199` |
 | App 设备记录（host/port 固化、无改地址入口） | `apps/android/lib/remote_device_store.dart:99-130`、`:208` |
 | App 收到撤销通知的反应 | `apps/android/lib/remote_connection.dart:498-501` |
-| 「添加连接」页四入口（粘贴/扫码/发现/手动地址）与「完全信任」提示 | `apps/android/lib/remote_pairing_page.dart`、`apps/android/lib/remote_pairing_scan.dart` |
+| 「添加连接」页五入口（粘贴/扫码/发现/HTTPS 反代/手动地址）与「完全信任」提示 | `apps/android/lib/remote_pairing_page.dart`、`apps/android/lib/remote_pairing_scan.dart` |
 | App 侧 UDP 发现（探测/解析/去重/窗口） | `apps/android/lib/remote_discovery.dart`、`apps/android/docs/remote-dsh/discovery.md:321-331` |
 | 可达性阶梯（v1/v2/v3）与不做项 | `apps/android/docs/remote-dsh-plan.md:369-375`、`:436-444` |
 
@@ -398,21 +535,25 @@ PC 侧配对界面（在电脑上重开配对窗口、显示二维码、管理/�
 ## 11. 手机侧连接方式
 
 App 的「添加连接」页（`apps/android/lib/remote_pairing_page.dart`）把所有配对入口收拢在
-一处；四种方式最终都把**同一条配对链接**交给既有配对流程（`remote_pairing_flow.dart`：
+一处；五种方式最终都把**同一条配对链接**交给同一条配对流程（`remote_pairing_flow.dart`：
 解析 → `GET /ca.cer` 校验 instanceId → `POST /pair` → 设备令牌进 Keystore），发现/扫码/
-手动地址都只是「拿到链接」的不同途径，不改变 TLS 固定 CA 与一次性令牌语义。
+手动地址都只是「拿到链接」的不同途径，不改变一次性令牌语义；信任模式（直连固定 CA /
+HTTPS 反代系统信任）由用户选择的入口显式决定（§3.7）。
 
 | 入口 | 适用场景 | 前提 |
 |---|---|---|
-| 粘贴链接 | 任何可达方式（局域网、组网、反代、USB） | 从电脑日志/终端复制完整 `wss://…#instance=…&token=…` |
+| 粘贴链接 | 任何可达方式（局域网、组网、反代、USB） | 从电脑日志/终端复制完整 `wss://…#instance=…&token=…`；直连语义（固定宿主 CA） |
 | 扫码配对 | 电脑日志直接连终端（打印二维码） | 手机有可用相机；App 不申请 CAMERA 权限，用系统相机 intent |
 | 搜索局域网 | 手机与电脑在同一 Wi-Fi/网段 | 宿主 `discoveryEnabled`（默认开）、UDP 4778 入站放行、无 AP 隔离 |
-| 手动地址（高级） | USB adb reverse、反代/域名与链接地址不一致 | 已有一条完整配对链接；只替换地址，不跳过 instanceId |
+| HTTPS 反代 | 公网域名 + Nginx/内网穿透，TLS 在反代终止 | 反代由你自己控制、upstream 只有我们的宿主、公网证书有效；整站转发 `/ca.cer` `/pair` `/app`（§3.7） |
+| 手动地址（高级） | USB adb reverse、反代/域名与链接地址不一致 | 已有一条完整配对链接；只替换地址，不跳过 instanceId；仍是直连语义 |
 
 ### 11.1 粘贴链接
 
 电脑上把日志里的 `wss://…` 整段复制发到手机（或手动输入），粘贴到「粘贴链接」后点「连接」。
 这是所有网络形态的兜底入口：发现被防火墙拦、相机不可用、反代地址变化都回到这里。
+如果粘贴的是 `wss://<域名>:443#…` 或 `https://<域名>…`（HTTPS 反代形态），普通入口只提示
+切换到「HTTPS 反代」，不会静默改用系统信任（§3.7）。
 
 ### 11.2 扫码配对
 
@@ -461,7 +602,19 @@ ZXing 在后台线程解码，把文本填进链接输入框；**扫码不等于
   的信任锚是链接里的 `instanceId`（CA 指纹），App 不会用「从该地址现取的证书」当锚点
   （那会让同网段的中间人可以冒充电脑）。缺少时页面会明确提示粘贴完整链接或改用扫码。
 
-### 11.5 地址变化时怎么办
+### 11.5 HTTPS 反代（TLS 在反代终止）
+
+完整配置与安全模型见 §3.7。App 侧只需要：
+
+1. 「添加连接」→ 切到 **HTTPS 反代** 入口（第四段）；
+2. 粘贴宿主按 `publicOrigin` 生成的完整链接（形如 `wss://ddsshh.data.knows.love:443#instance=…&token=…`）；
+3. 点「连接」。App 用系统根证书验证反代公网证书，仍取回 `/ca.cer` 核对 `instance` 指纹，并把设备记录标成 HTTPS 反代；之后正常使用原生 UI 连接。
+
+在普通「粘贴链接」入口粘到反代链接时，App 只显示「改用 HTTPS 反代」按钮，不会静默
+改变证书信任方式；反方向（在反代入口粘局域网直连链接）也不会自动换模式，失败文案会
+提示改用普通入口。
+
+### 11.6 地址变化时怎么办
 
 主动改地址/换 CA/换设备的处理仍按 §5：地址变了（含 USB 改地址）要重新配对；CA 不变时
 已配对设备不受影响，但设备记录里的 host/port 是配对时固化的（`remote_device_store.dart`），

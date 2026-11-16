@@ -229,6 +229,7 @@ RemoteConnectionController _controllerFor(
     required String endpoint,
     required String token,
     required String pinnedCaPem,
+    required bool systemTrust,
     required String deviceLabel,
     required String appVersion,
     required List<String> capabilities,
@@ -240,6 +241,9 @@ class _LinkFactory {
   final List<_FakeLink> links = <_FakeLink>[];
   final List<String> endpoints = <String>[];
 
+  /// 每次创建连接时收到的 TLS 信任模式（用于断言 systemTrust 透传）。
+  final List<bool> systemTrustFlags = <bool>[];
+
   /// 每次创建新连接时，上一条连接是否已经关闭。
   final List<bool> previousClosedOnCreate = <bool>[];
 
@@ -247,6 +251,7 @@ class _LinkFactory {
     required String endpoint,
     required String token,
     required String pinnedCaPem,
+    required bool systemTrust,
     required String deviceLabel,
     required String appVersion,
     required List<String> capabilities,
@@ -255,6 +260,7 @@ class _LinkFactory {
     final link = _FakeLink();
     links.add(link);
     endpoints.add(endpoint);
+    systemTrustFlags.add(systemTrust);
     return link;
   }
 }
@@ -268,6 +274,18 @@ RemoteDevice _secondDevice() => RemoteDevice(
   instanceId: caCertificateFingerprint(pairingCaPem),
   caPem: pairingCaPem,
   createdAt: DateTime.utc(2026, 11, 15, 6, 30),
+);
+
+/// 一台经 HTTPS 反代配对的电脑：系统信任公网证书，地址是域名 + 443。
+RemoteDevice _proxyDevice() => RemoteDevice(
+  id: '00112233445566778899aabbccddeeff',
+  label: 'Pixel 8',
+  host: 'dsh.example.com',
+  port: 443,
+  instanceId: caCertificateFingerprint(pairingCaPem),
+  caPem: pairingCaPem,
+  createdAt: DateTime.utc(2026, 11, 15, 7),
+  systemTrust: true,
 );
 
 /// 双设备偏好通道：读写与正式实现同一个协议（`{version, devices, lastConnectedDeviceId}`）。
@@ -466,6 +484,27 @@ void main() {
 
     expect(controller.phase, RemoteConnectionPhase.failed);
     expect(controller.lastErrorCode, 'remote/handshake-timeout');
+  });
+
+  test('设备记录的 TLS 信任模式原样传给传输工厂', () async {
+    final devices = _DevicePreferences(<RemoteDevice>[
+      _device(),
+      _proxyDevice(),
+    ]);
+    addTearDown(devices.dispose);
+    final store = devices.store(_MemoryVault(_deviceToken));
+    final factory = _LinkFactory();
+    final controller = _controllerWith(store, factory.call);
+    addTearDown(controller.dispose);
+
+    await controller.connect(_device());
+    await controller.connect(_proxyDevice());
+
+    expect(factory.systemTrustFlags, <bool>[false, true]);
+    expect(factory.endpoints, <String>[
+      'wss://192.168.1.20:4777/app',
+      'wss://dsh.example.com:443/app',
+    ]);
   });
 
   test('拨号超时是终止态：failed 文案与错误码正确，重试可用且不回 ready', () async {

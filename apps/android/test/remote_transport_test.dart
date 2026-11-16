@@ -506,6 +506,80 @@ void main() {
       });
     });
   });
+
+  group('TLS 信任模式（HTTPS 反代）', () {
+    test('systemTrust 不解析 pinnedCaPem：宿主 CA 无效也不影响构造', () async {
+      // 反代模式的信任锚是系统根证书 + 配对时的 /ca.cer 指纹，不装载宿主 CA。
+      final never = Completer<WebSocket>();
+      final transport = RemoteRuntimeTransport(
+        endpoint: 'wss://dsh.example.com:443/app',
+        token: _deviceToken,
+        pinnedCaPem: 'not a certificate',
+        systemTrust: true,
+        dialer: (_) => RemoteDialAttempt(socket: never.future, abort: () {}),
+        handshakeTimeout: const Duration(seconds: 1),
+      );
+      addTearDown(transport.close);
+
+      expect(transport.phase, 'connecting');
+    });
+
+    test('pinned 模式仍拒绝无效 pinnedCaPem（构造期 remote/tls）', () {
+      expect(
+        () => RemoteRuntimeTransport(
+          endpoint: 'wss://192.0.2.1:4777/app',
+          token: _deviceToken,
+          pinnedCaPem: 'not a certificate',
+        ),
+        throwsA(
+          isA<RuntimeTransportFailure>().having(
+            (failure) => failure.code,
+            'code',
+            'remote/tls',
+          ),
+        ),
+      );
+    });
+
+    test('systemTrust 下自签对端按 remote/tls 终止，而不是退化成可重试', () async {
+      // 真实 TLS：对端出示 fixture CA 签发的证书，但反代模式用系统根证书验证，
+      // 因此握手失败；这与「直连模式固定同一张 CA 就成功」形成对照。
+      final context = SecurityContext()
+        ..useCertificateChainBytes(utf8.encode(pairingServerCertPem))
+        ..usePrivateKeyBytes(utf8.encode(pairingServerKeyPem));
+      final server = await HttpServer.bindSecure(
+        InternetAddress.loopbackIPv4,
+        0,
+        context,
+      );
+      addTearDown(() => server.close(force: true));
+      server.listen((_) {}, onError: (Object _) {});
+
+      final transport = RemoteRuntimeTransport(
+        endpoint: 'wss://127.0.0.1:${server.port}/app',
+        token: _deviceToken,
+        pinnedCaPem: pairingCaPem,
+        systemTrust: true,
+        connectTimeout: const Duration(seconds: 10),
+        handshakeTimeout: const Duration(seconds: 2),
+      );
+      addTearDown(transport.close);
+
+      await expectLater(
+        transport.handshake,
+        throwsA(
+          isA<RuntimeTransportFailure>()
+              .having((failure) => failure.code, 'code', 'remote/tls')
+              .having(
+                (failure) => failure.message,
+                'message',
+                contains('反代域名'),
+              ),
+        ),
+      );
+      expect(transport.phase, 'lost');
+    });
+  });
 }
 
 /// 注入拨号实现的传输；端点用 TEST-NET-1，永远不会真的发起网络请求。

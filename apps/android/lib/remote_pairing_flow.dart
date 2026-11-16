@@ -50,6 +50,9 @@ class RemotePairingFlow {
   /// [deviceLabel] 会作为这台手机的显示名上报给电脑，同时写进本机记录。
   /// [appVersion] 省略时读 `app.metadata` 的 `version+build`（与
   /// `protocol.hello.params.appVersion` 同一取值）。
+  /// [systemTrust] 是配对入口显式选择的 TLS 信任模式：`false`（默认）直连宿主
+  /// TLS，`true` 表示 TLS 在反代处终止、用系统根证书验证公网证书。两种模式都先
+  /// 取回 `/ca.cer` 并核对 `instance` 指纹，身份绑定不放松。
   ///
   /// 抛 [FormatException] 表示输入（链接、设备名、版本号）不合法；抛
   /// [RemotePairingFailure] 表示配对过程中的失败，`message` 可直接展示；
@@ -60,6 +63,7 @@ class RemotePairingFlow {
     String link, {
     required String deviceLabel,
     String? appVersion,
+    bool systemTrust = false,
   }) async {
     final descriptor = PairingDescriptor.parse(link);
     // 设备名先校验：不合格就不该为了报错去拉一次 CA。
@@ -67,12 +71,13 @@ class RemotePairingFlow {
     final version = (appVersion == null || appVersion.trim().isEmpty)
         ? await _appVersion()
         : appVersion.trim();
-    final caPem = await pairing.fetchCa(descriptor);
+    final caPem = await pairing.fetchCa(descriptor, systemTrust: systemTrust);
     final credential = await pairing.pair(
       descriptor,
       caPem,
       deviceLabel: label,
       appVersion: version,
+      systemTrust: systemTrust,
     );
     final now = _clock();
     if (!credential.expiresAt.isAfter(now)) {
@@ -91,6 +96,7 @@ class RemotePairingFlow {
       caPem: caPem,
       createdAt: now,
       lastSeenAt: now,
+      systemTrust: systemTrust,
     );
     try {
       await store.save(device, deviceToken: credential.deviceToken);

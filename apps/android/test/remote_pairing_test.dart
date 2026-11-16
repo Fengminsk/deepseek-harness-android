@@ -173,6 +173,200 @@ void main() {
       );
     });
   });
+
+  group('HTTPS 反代：系统根证书验证反代公网证书', () {
+    late HttpServer server;
+    late List<Map<String, dynamic>> pairRequests;
+
+    tearDown(() async {
+      await server.close(force: true);
+    });
+
+    /// 模拟「公网 CA 已经在系统根证书里」：真实环境由系统信任库提供，测试把
+    /// fixture CA 加进一个带系统根证书的上下文，其余验证行为与生产一致。
+    SecurityContext trustFixtureCa() =>
+        SecurityContext(withTrustedRoots: true)
+          ..setTrustedCertificatesBytes(utf8.encode(pairingCaPem));
+
+    test('systemTrust 的 fetchCa 按系统根证书验证：自签反代证书直接失败', () async {
+      final started = await _startPairingServer(
+        certPem: pairingServerCertPem,
+        keyPem: pairingServerKeyPem,
+        caBody: pairingCaPem,
+      );
+      server = started.server;
+      pairRequests = started.pairRequests;
+      final descriptor = _descriptorFor(server.port, pairingCaPem);
+      final pairing = RemotePairing(timeout: const Duration(seconds: 15));
+
+      await expectLater(
+        pairing.fetchCa(descriptor, systemTrust: true),
+        throwsA(
+          isA<RemotePairingFailure>()
+              .having((failure) => failure.code, 'code', 'pairing/proxy-tls')
+              .having(
+                (failure) => failure.message,
+                'message',
+                contains('系统信任'),
+              ),
+        ),
+      );
+      expect(pairRequests, isEmpty);
+    });
+
+    test('systemTrust 在系统信任反代证书时配对成功，且仍核对 /ca.cer 指纹', () async {
+      final started = await _startPairingServer(
+        certPem: pairingServerCertPem,
+        keyPem: pairingServerKeyPem,
+        caBody: pairingCaPem,
+      );
+      server = started.server;
+      pairRequests = started.pairRequests;
+      final descriptor = _descriptorFor(server.port, pairingCaPem);
+      final pairing = RemotePairing(
+        timeout: const Duration(seconds: 15),
+        systemTrustContextFactory: trustFixtureCa,
+      );
+
+      final caPem = await pairing.fetchCa(descriptor, systemTrust: true);
+      expect(caCertificateFingerprint(caPem), descriptor.instanceId);
+
+      final credential = await pairing.pair(
+        descriptor,
+        caPem,
+        deviceLabel: 'Pixel 8',
+        appVersion: '0.1.0+121',
+        systemTrust: true,
+      );
+
+      expect(credential.deviceId, _pairedDeviceId);
+      expect(credential.deviceToken, _pairedDeviceToken);
+      expect(pairRequests, hasLength(1));
+      expect(pairRequests.single['token'], _pairingToken);
+    });
+
+    test('systemTrust 仍拒绝与配对码不一致的 CA（反代转到了别的后端）', () async {
+      final started = await _startPairingServer(
+        certPem: pairingServerCertPem,
+        keyPem: pairingServerKeyPem,
+        caBody: foreignCaPem,
+      );
+      server = started.server;
+      pairRequests = started.pairRequests;
+      final descriptor = _descriptorFor(server.port, pairingCaPem);
+      final pairing = RemotePairing(
+        timeout: const Duration(seconds: 15),
+        systemTrustContextFactory: trustFixtureCa,
+      );
+
+      await expectLater(
+        pairing.fetchCa(descriptor, systemTrust: true),
+        throwsA(
+          isA<RemotePairingFailure>()
+              .having((failure) => failure.code, 'code', 'pairing/ca-fingerprint')
+              .having((failure) => failure.message, 'message', contains('反代')),
+        ),
+      );
+      expect(pairRequests, isEmpty);
+    });
+
+    test('systemTrust 下 /pair 非 2xx 时提示反代没有转发', () async {
+      final started = await _startPairingServer(
+        certPem: pairingServerCertPem,
+        keyPem: pairingServerKeyPem,
+        caBody: pairingCaPem,
+        pairStatus: HttpStatus.badGateway,
+      );
+      server = started.server;
+      pairRequests = started.pairRequests;
+      final descriptor = _descriptorFor(server.port, pairingCaPem);
+      final pairing = RemotePairing(
+        timeout: const Duration(seconds: 15),
+        systemTrustContextFactory: trustFixtureCa,
+      );
+      final caPem = await pairing.fetchCa(descriptor, systemTrust: true);
+
+      await expectLater(
+        pairing.pair(
+          descriptor,
+          caPem,
+          deviceLabel: 'Pixel 8',
+          appVersion: '0.1.0+121',
+          systemTrust: true,
+        ),
+        throwsA(
+          isA<RemotePairingFailure>()
+              .having((failure) => failure.code, 'code', 'pairing/status')
+              .having((failure) => failure.message, 'message', contains('反代')),
+        ),
+      );
+      expect(pairRequests, hasLength(1));
+    });
+  });
+
+  group('反代链接识别（只提示切换入口，不改信任模式）', () {
+    final instanceId = caCertificateFingerprint(pairingCaPem);
+    final fragment = '#instance=$instanceId&token=$_pairingToken';
+
+    test('wss 显式 443 与 https:// 前缀都判为反代形态', () {
+      expect(
+        looksLikeHttpsProxyPairingLink('wss://dsh.example.com:443$fragment'),
+        isTrue,
+      );
+      expect(
+        looksLikeHttpsProxyPairingLink('https://dsh.example.com$fragment'),
+        isTrue,
+      );
+      // 从浏览器复制的裸 https 地址：先提示切换入口，提交时再报缺片段。
+      expect(
+        looksLikeHttpsProxyPairingLink('https://dsh.example.com'),
+        isTrue,
+      );
+    });
+
+    test('缺片段或片段不合法的 443 链接交给普通入口的解析错误', () {
+      expect(
+        looksLikeHttpsProxyPairingLink('wss://dsh.example.com:443'),
+        isFalse,
+      );
+      expect(
+        looksLikeHttpsProxyPairingLink(
+          'wss://dsh.example.com:443#instance=bad&token=bad',
+        ),
+        isFalse,
+      );
+    });
+
+    test('局域网地址、默认 4777 与 8443 直通都判为直连', () {
+      expect(
+        looksLikeHttpsProxyPairingLink('wss://192.168.1.10:4777$fragment'),
+        isFalse,
+      );
+      expect(
+        looksLikeHttpsProxyPairingLink('wss://192.168.1.10$fragment'),
+        isFalse,
+      );
+      expect(
+        looksLikeHttpsProxyPairingLink('wss://dsh.example.com:8443$fragment'),
+        isFalse,
+      );
+    });
+
+    test('无法解析成地址的输入返回 false，交给既有解析错误处理', () {
+      expect(looksLikeHttpsProxyPairingLink(''), isFalse);
+      expect(looksLikeHttpsProxyPairingLink('not a link'), isFalse);
+    });
+
+    test('反代链接仍按既有规则解析，并保留显式 443 端口', () {
+      final proxy = PairingDescriptor.parse(
+        'wss://dsh.example.com:443$fragment',
+      );
+      expect(proxy.host, 'dsh.example.com');
+      expect(proxy.port, 443);
+      expect(proxy.instanceId, instanceId);
+      expect(proxy.token, _pairingToken);
+    });
+  });
 }
 
 PairingDescriptor _descriptorFor(int port, String caPem) {
@@ -194,6 +388,7 @@ _startPairingServer({
   required String certPem,
   required String keyPem,
   required String caBody,
+  int pairStatus = HttpStatus.ok,
 }) async {
   final context = SecurityContext()
     ..useCertificateChainBytes(utf8.encode(certPem))
@@ -223,6 +418,15 @@ _startPairingServer({
         pairRequests.add(
           decoded is Map<String, dynamic> ? decoded : <String, dynamic>{},
         );
+        if (pairStatus != HttpStatus.ok) {
+          final body = utf8.encode('bad gateway');
+          response
+            ..statusCode = pairStatus
+            ..contentLength = body.length
+            ..add(body);
+          await response.close();
+          return;
+        }
         final body = utf8.encode(
           jsonEncode(<String, dynamic>{
             'deviceId': _pairedDeviceId,

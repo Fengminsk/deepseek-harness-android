@@ -109,12 +109,14 @@ enum RemoteConnectionPhase {
 /// 创建远程传输的工厂。
 ///
 /// 参数就是 [RemoteRuntimeTransport] 的构造签名里决定「连哪台电脑」的那部分；
+/// [systemTrust] 来自设备记录（HTTPS 反代模式），决定用系统根证书还是固定 CA。
 /// 返回值是 [RemoteTransportLink]，测试可以注入一个不拨号的实现，因此本类不直接
 /// 依赖 `dart:io`。
 typedef RemoteTransportFactory = RemoteTransportLink Function({
   required String endpoint,
   required String token,
   required String pinnedCaPem,
+  required bool systemTrust,
   required String deviceLabel,
   required String appVersion,
   required List<String> capabilities,
@@ -408,6 +410,7 @@ class RemoteConnectionController extends ChangeNotifier {
         endpoint: device.appEndpoint.toString(),
         token: token,
         pinnedCaPem: device.caPem,
+        systemTrust: device.systemTrust,
         deviceLabel: device.label,
         appVersion: appVersion,
         capabilities: _capabilities,
@@ -867,6 +870,7 @@ RemoteRuntimeTransport _createDefaultTransport({
   required String endpoint,
   required String token,
   required String pinnedCaPem,
+  required bool systemTrust,
   required String deviceLabel,
   required String appVersion,
   required List<String> capabilities,
@@ -874,6 +878,7 @@ RemoteRuntimeTransport _createDefaultTransport({
   endpoint: endpoint,
   token: token,
   pinnedCaPem: pinnedCaPem,
+  systemTrust: systemTrust,
   deviceLabel: deviceLabel,
   appVersion: appVersion,
   capabilities: capabilities,

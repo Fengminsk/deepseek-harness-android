@@ -20,6 +20,21 @@
 /// （`dart:convert` / `dart:io`）没有 SHA-256。用 dart-lang 官方包而不是自己写
 /// DER 解析与十六进制比对。
 ///
+/// ## 两种 TLS 信任模式
+///
+/// 配对链接只描述「host / port / instance / token」，没有字段能表达 TLS 由谁终止。
+/// 因此在 [RemotePairing.fetchCa] / [RemotePairing.pair] 上用显式的 `systemTrust`
+/// 参数选择信任库：
+///
+/// - `false`（默认，直连）：`/ca.cer` 走 TOFU（接受任意证书、按响应体指纹判定），
+///   `/pair` 只信任配对码里那张 CA。局域网、组网与 TCP 直通反代都属于这一类。
+/// - `true`（HTTPS 反代）：`/ca.cer` 与 `/pair` 都改用系统根证书验证反代出示的
+///   公网证书（含主机名），不再装载宿主 CA；身份绑定仍是 `/ca.cer` 响应体的
+///   `SHA-256(DER) == instance`，所以「反代后面必须是同一台电脑」没有被放松。
+///
+/// 模式由用户选择（「添加连接」页的入口），不从地址推断；普通入口收到
+/// [looksLikeHttpsProxyPairingLink] 判定为反代的链接时只提示切换，不静默改模式。
+///
 /// 本文件不依赖 Flutter：只用 `dart:io`、`dart:convert` 与 `package:crypto`，
 /// 因此可以被单元测试直接调用。
 library;
@@ -219,6 +234,46 @@ Map<String, String> _fragmentFields(String fragment) {
   return fields;
 }
 
+/// 这条配对链接看起来像「HTTPS 反代」（TLS 在反代处终止）吗？
+///
+/// 只看两个显式信号：链接写成 `https://`，或 `wss://` 带显式端口 443。它只用于
+/// 在普通入口提示用户「请改用 HTTPS 反代入口重新配对」，**不参与任何信任决定**，
+/// 也不会因此改变既有入口的 pinned 语义。反向代理也可能用其它端口（例如
+/// `wss://dsh.example.com:8443`），那种链接只能由用户在反代入口显式选择模式。
+///
+/// - `wss://<host>:443#…` 必须先能按既有规则解析（缺字段时普通入口的解析错误更
+///   有用，这里返回 false 交给它）；
+/// - 裸 `https://<域名>` 也返回 true：用户很可能只贴了反代地址，先提示切换入口，
+///   真正提交时仍会因缺 `#instance=…&token=…` 得到可读错误；
+/// - 端口 443 的**直连**宿主也会命中这条提示；那种部署请改用「手动地址」入口
+///   把地址写成 `域名:443`（仍是固定 CA 语义）。
+///
+/// 无法解析成地址的输入返回 false。
+///
+/// @param raw 用户粘贴/扫码得到的原始文本。
+/// @returns 是反代形态链接时返回 true。
+bool looksLikeHttpsProxyPairingLink(String raw) {
+  final trimmed = raw.trim();
+  final uri = Uri.tryParse(trimmed);
+  if (uri == null) return false;
+  final scheme = uri.scheme.toLowerCase();
+  final https = scheme == 'https';
+  final wssOn443 = scheme == 'wss' && uri.hasPort && uri.port == 443;
+  if (!https && !wssOn443) return false;
+  if (uri.fragment.isEmpty) {
+    // 裸 https:// 地址可能是用户从浏览器复制的反代入口；wss 但没有片段则缺
+    // 配对字段，交给既有解析给出「缺少 #instance=…&token=…」的说明。
+    return https;
+  }
+  try {
+    PairingDescriptor.parse(trimmed);
+  } on FormatException {
+    // 片段不合法：普通入口的解析错误比「切换入口」更精确。
+    return false;
+  }
+  return true;
+}
+
 /// `/pair` 成功返回的设备凭证。
 class PairedCredential {
   /// 记录一次成功配对的结果。
@@ -291,16 +346,22 @@ class PairedCredential {
 ///
 /// 两个方法都自建 [HttpClient] 并在结束时关闭，不复用连接：配对是低频的一次性
 /// 动作，复用只会让「这次请求信任哪张 CA」这种状态跨请求泄漏。
+///
+/// 每个请求用哪套 TLS 信任库由调用方按配对入口显式选择（`systemTrust` 参数），
+/// 同一个客户端实例可以为一次直连配对与一次反代配对先后服务。
 class RemotePairing {
   /// 创建配对客户端。
   ///
   /// [clientFactory] 只用于测试替换；默认按传入的 [SecurityContext] 新建
   /// [HttpClient]。上下文由本类构造，工厂只负责绑定，信任库不存在被替换的可能。
+  /// [systemTrustContextFactory] 同样只用于测试：系统信任模式下它模拟「系统根证书
+  /// 里已经包含测试 CA」的真实条件（生产不传，用系统信任库）。
   /// [maxResponseBytes] 是 `/ca.cer` 与 `/pair` 响应体的上限。
   RemotePairing({
     Duration timeout = remotePairingTimeout,
     int maxResponseBytes = remotePairingMaxResponseBytes,
     HttpClient Function(SecurityContext context)? clientFactory,
+    this.systemTrustContextFactory,
   }) : _timeout = timeout,
        _maxResponseBytes = maxResponseBytes,
        _clientFactory = clientFactory ?? _defaultClientFactory {
@@ -325,41 +386,83 @@ class RemotePairing {
   /// HTTP 客户端工厂。
   final HttpClient Function(SecurityContext context) _clientFactory;
 
+  /// 系统信任模式下的 TLS 上下文构造器；null 表示用生产实现（系统根证书）。
+  ///
+  /// 只给测试注入「系统根证书里已经包含测试 CA」的环境，生产代码不要传。
+  final SecurityContext Function()? systemTrustContextFactory;
+
   static HttpClient _defaultClientFactory(SecurityContext context) =>
       HttpClient(context: context);
 
+  /// 系统信任模式的 TLS 上下文：只信任系统根证书（含用户安装的 CA）。
+  ///
+  /// 与直连模式相反，这里不装载宿主 CA、也不设置 `badCertificateCallback`：
+  /// 反代出示的公网证书必须由系统信任库验证通过（证书链、有效期与主机名都校验）。
+  SecurityContext _systemTrustContext() {
+    final factory = systemTrustContextFactory;
+    return factory == null
+        ? SecurityContext(withTrustedRoots: true)
+        : factory();
+  }
+
   /// 拉取 `/ca.cer` 并校验指纹，返回可交给 `SecurityContext` 的 PEM 文本。
   ///
-  /// 此时还没有可信参照，TLS 回调必须接受自签证书；真正的判据是响应体的
-  /// `SHA-256(DER)` 必须等于 [PairingDescriptor.instanceId]，不等即抛
-  /// [RemotePairingFailure]（`pairing/ca-fingerprint`），不返回任何可固定内容。
+  /// [systemTrust] 为 false（直连）时还没有可信参照，TLS 回调必须接受自签证书；
+  /// 为 true（HTTPS 反代）时反代出示的必须是系统信任的公网证书，因此证书链与主机名
+  /// 照常验证。两种模式的判据都是响应体的 `SHA-256(DER)` 必须等于
+  /// [PairingDescriptor.instanceId]，不等即抛 [RemotePairingFailure]
+  /// （`pairing/ca-fingerprint`），不返回任何可固定内容。
   ///
   /// 响应非 2xx、超过 [remotePairingMaxResponseBytes]、不是 X.509 结构或超过
-  /// [remotePairingTimeout] 都抛 [RemotePairingFailure]。
-  Future<String> fetchCa(PairingDescriptor descriptor) async {
-    // 首信任（TOFU）：还没有可信参照，只能先握手，再按配对码里的指纹判定响应体。
-    // 这里的信任库刻意为空——判据是下面那次 SHA-256 比对，不是证书链。
-    final client = _clientFactory(SecurityContext());
-    client.badCertificateCallback = (certificate, host, port) => true;
+  /// [remotePairingTimeout] 都抛 [RemotePairingFailure]；反代模式的错误文案会指出
+  /// 「反代没有把 /ca.cer 转发到电脑」这类常见原因。
+  Future<String> fetchCa(
+    PairingDescriptor descriptor, {
+    bool systemTrust = false,
+  }) async {
+    // 直连时是 TOFU：先握手、再按配对码里的指纹判定响应体，因此信任库刻意为空。
+    // 反代模式反过来：反代证书必须由系统验证，电脑身份由响应体指纹绑定。
+    final client = _clientFactory(
+      systemTrust ? _systemTrustContext() : SecurityContext(),
+    );
+    if (!systemTrust) {
+      client.badCertificateCallback = (certificate, host, port) => true;
+    }
     client.connectionTimeout = _timeout;
     try {
-      return await _guard(() async {
+      return await _guard(systemTrust: systemTrust, () async {
         final request = await client.getUrl(descriptor.caEndpoint);
         request.followRedirects = false;
         final response = await request.close();
         if (response.statusCode != HttpStatus.ok) {
           throw RemotePairingFailure(
             'pairing/ca-status',
-            '电脑没有提供 CA 证书（HTTP ${response.statusCode}）。'
-                '请确认配对链接来自这台电脑上正在运行的远程 DSH。',
+            systemTrust
+                ? '反代没有把 /ca.cer 转发到电脑（HTTP ${response.statusCode}）。'
+                      '请确认反代把 /ca.cer、/pair 与 /app 都转发到电脑上的远程 DSH 端口。'
+                : '电脑没有提供 CA 证书（HTTP ${response.statusCode}）。'
+                      '请确认配对链接来自这台电脑上正在运行的远程 DSH。',
           );
         }
-        final der = _certificateDer(await _readBounded(response));
+        final Uint8List der;
+        try {
+          der = _certificateDer(await _readBounded(response));
+        } on RemotePairingFailure catch (failure) {
+          if (!systemTrust) rethrow;
+          throw RemotePairingFailure(
+            'pairing/proxy-ca-forward',
+            '反代返回的不是电脑的 CA 证书。请确认反代把 /ca.cer 原样转发到电脑上的远程 DSH。',
+            failure,
+          );
+        }
         final fingerprint = sha256.convert(der).toString();
         if (fingerprint != descriptor.instanceId) {
-          throw const RemotePairingFailure(
+          throw RemotePairingFailure(
             'pairing/ca-fingerprint',
-            '证书指纹与配对码不一致，已拒绝固定这台电脑的证书。请重新扫描电脑上的配对二维码。',
+            systemTrust
+                ? '证书指纹与配对码不一致，已拒绝固定这台电脑的证书。'
+                      '反代可能转发到了另一台设备；请确认反代后端只有一台电脑后重新扫描配对二维码。'
+                : '证书指纹与配对码不一致，已拒绝固定这台电脑的证书。请重新扫描电脑上的配对二维码。',
           );
         }
         return _pemFromDer(der);
@@ -371,8 +474,12 @@ class RemotePairing {
 
   /// 用一次性配对令牌换取长期设备令牌。
   ///
-  /// [caPem] 必须是 [fetchCa] 返回并已通过指纹校验的 CA；本次请求的 TLS 回调要求
-  /// 对端出示的每张证书的指纹都等于该 CA 的指纹，否则握手失败。
+  /// [caPem] 必须是 [fetchCa] 返回并已通过指纹校验的 CA；指纹比较与旧记录一致，
+  /// 两种信任模式都不放松。
+  ///
+  /// [systemTrust] 决定 `/pair` 的 TLS 信任库：false 只信任 [caPem]（直连，宿主
+  /// 出示它签发的叶子证书）；true 使用系统根证书验证反代出示的公网证书（含主机名），
+  /// 不再装载宿主 CA。
   ///
   /// `POST /pair` 的请求体是 `{token, deviceLabel, appVersion}`，成功响应是
   /// `{deviceId, deviceToken, expiresAt}`。HTTP 401 / 403 / 429 映射成带中文
@@ -382,6 +489,7 @@ class RemotePairing {
     String caPem, {
     required String deviceLabel,
     required String appVersion,
+    bool systemTrust = false,
   }) async {
     final String fingerprint;
     try {
@@ -411,13 +519,15 @@ class RemotePairing {
         'appVersion': version,
       }),
     );
-    // TOFU 的第二步：只信任配对码里那张 CA。宿主出示的是它签发的叶子证书，
-    // 证书链由 BoringSSL 验证；不再用「对端证书指纹」做判断——那个值与 CA 指纹
-    // 永远不相等，等于把每一次配对都判成失败。
-    final client = _clientFactory(_pinnedContext(caPem))
-      ..connectionTimeout = _timeout;
+    // 直连：只信任配对码里那张 CA。宿主出示的是它签发的叶子证书，证书链由
+    // BoringSSL 验证；不再用「对端证书指纹」做判断——那个值与 CA 指纹永远不相等，
+    // 等于把每一次配对都判成失败。
+    // 反代：TLS 在反代处终止，手机看到的是公网证书，按系统根证书验证（含主机名）。
+    final client = _clientFactory(
+      systemTrust ? _systemTrustContext() : _pinnedContext(caPem),
+    )..connectionTimeout = _timeout;
     try {
-      return await _guard(() async {
+      return await _guard(systemTrust: systemTrust, () async {
         final request = await client.postUrl(descriptor.pairEndpoint);
         request.followRedirects = false;
         request.headers.contentType = ContentType.json;
@@ -433,7 +543,11 @@ class RemotePairing {
           allowMalformed: true,
         );
         if (response.statusCode < 200 || response.statusCode >= 300) {
-          throw _pairStatusFailure(response.statusCode, text);
+          throw _pairStatusFailure(
+            response.statusCode,
+            text,
+            systemTrust: systemTrust,
+          );
         }
         return PairedCredential.parse(text);
       });
@@ -443,7 +557,14 @@ class RemotePairing {
   }
 
   /// 把 401 / 403 / 429 与其它非 2xx 映射成可展示的中文说明。
-  RemotePairingFailure _pairStatusFailure(int status, String body) {
+  ///
+  /// [systemTrust] 为 true 时，非预期状态的失败文案会提示「反代没有把 /pair
+  /// 转发到电脑」，因为这种 404/502/503 在反代链路上最常见。
+  RemotePairingFailure _pairStatusFailure(
+    int status,
+    String body, {
+    bool systemTrust = false,
+  }) {
     final excerpt = body.trim().replaceAll(RegExp(r'\s+'), ' ');
     final details = excerpt.length <= 200 ? excerpt : excerpt.substring(0, 200);
     return switch (status) {
@@ -466,30 +587,45 @@ class RemotePairing {
       ),
       _ => RemotePairingFailure(
         'pairing/status',
-        '电脑拒绝了配对（HTTP $status）。请重新打开电脑上的配对二维码。',
+        systemTrust
+            ? '反代返回了 HTTP $status：可能没有把 /pair 转发到电脑，或电脑上的配对窗口已关闭。'
+                  '请确认反代把 /ca.cer、/pair 与 /app 都转发到电脑上的远程 DSH 端口后重试。'
+            : '电脑拒绝了配对（HTTP $status）。请重新打开电脑上的配对二维码。',
         details,
       ),
     };
   }
 
   /// 统一施加超时，并把底层网络异常翻译成中文失败。
-  Future<T> _guard<T>(Future<T> Function() operation) async {
+  ///
+  /// [systemTrust] 为 true 时（HTTPS 反代）失败文案指向反代链路：公网证书是否受
+  /// 系统信任、域名与证书是否一致、反代是否把路径转发到电脑、链接端口是否写对。
+  /// 直连模式的文案保持原样。
+  Future<T> _guard<T>(
+    Future<T> Function() operation, {
+    bool systemTrust = false,
+  }) async {
     try {
       return await operation().timeout(_timeout);
     } on TimeoutException catch (error) {
       throw RemotePairingFailure(
-        'pairing/timeout',
-        '等待电脑响应超时（${_timeout.inSeconds} 秒）。'
-            '请确认手机与电脑在同一局域网，且电脑上的远程 DSH 正在运行。',
+        systemTrust ? 'pairing/proxy-timeout' : 'pairing/timeout',
+        systemTrust
+            ? '等待反代响应超时（${_timeout.inSeconds} 秒）。'
+                  '请确认域名解析正常、反代已启动，且已把 /ca.cer、/pair 与 /app 转发到电脑上的远程 DSH。'
+            : '等待电脑响应超时（${_timeout.inSeconds} 秒）。'
+                  '请确认手机与电脑在同一局域网，且电脑上的远程 DSH 正在运行。',
         error,
       );
     } on HandshakeException catch (error) {
+      if (systemTrust) throw _proxyTlsFailure(error.message, error);
       throw RemotePairingFailure(
         'pairing/tls',
         '与电脑建立 TLS 连接失败：${error.message}。请确认配对链接里的地址与端口正确。',
         error,
       );
     } on TlsException catch (error) {
+      if (systemTrust) throw _proxyTlsFailure(error.message, error);
       throw RemotePairingFailure(
         'pairing/tls',
         '与电脑的 TLS 握手失败：${error.message}。',
@@ -497,18 +633,56 @@ class RemotePairing {
       );
     } on SocketException catch (error) {
       throw RemotePairingFailure(
-        'pairing/network',
-        '无法连接电脑：${error.message}。'
-            '请确认手机与电脑在同一网络，且端口没有被防火墙挡住。',
+        systemTrust ? 'pairing/proxy-network' : 'pairing/network',
+        systemTrust
+            ? _proxySocketMessage(error.message)
+            : '无法连接电脑：${error.message}。'
+                  '请确认手机与电脑在同一网络，且端口没有被防火墙挡住。',
         error,
       );
     } on HttpException catch (error) {
       throw RemotePairingFailure(
-        'pairing/network',
-        '与电脑的连接中断：${error.message}。请重试。',
+        systemTrust ? 'pairing/proxy-network' : 'pairing/network',
+        systemTrust
+            ? '与反代的连接中断：${error.message}。请确认反代稳定运行后重试。'
+            : '与电脑的连接中断：${error.message}。请重试。',
         error,
       );
     }
+  }
+
+  /// 反代模式下证书验证失败的可展示原因：区分「公网证书不受信」与「域名不匹配」。
+  RemotePairingFailure _proxyTlsFailure(String detail, Object error) {
+    final normalized = detail.toLowerCase();
+    final hostnameMismatch =
+        normalized.contains('hostname') ||
+        normalized.contains('host name') ||
+        normalized.contains('subject alternative');
+    final message = hostnameMismatch
+        ? '反代证书与配对链接里的域名不一致。'
+              '请确认链接里的域名就是反代证书覆盖的域名（Nginx 的 server_name 与证书 SAN 一致）。'
+        : '反代出示的 HTTPS 证书不受系统信任（自签、过期或证书链不完整）。'
+              '请确认反代使用公网 CA 签发的证书；局域网直连请改用「粘贴链接」入口。';
+    return RemotePairingFailure(
+      'pairing/proxy-tls',
+      '$message（TLS 详情：$detail）',
+      error,
+    );
+  }
+
+  /// 反代模式下连不上地址的原因：DNS、端口/监听与其它网络故障分开说明。
+  String _proxySocketMessage(String detail) {
+    final normalized = detail.toLowerCase();
+    if (normalized.contains('failed host lookup') ||
+        normalized.contains('nodename nor servname')) {
+      return '无法解析反代域名：$detail。请检查配对链接里的域名拼写与手机 DNS。';
+    }
+    if (normalized.contains('connection refused')) {
+      return '反代地址拒绝连接：$detail。'
+          '请确认链接端口正确（HTTPS 反代一般用 443）、反代已启动并监听该端口。';
+    }
+    return '无法连接反代：$detail。'
+        '请确认反代域名解析到的服务器已启动、端口正确，且已把 /ca.cer 与 /pair 转发到电脑。';
   }
 
   /// 读响应体，超过上限立即中止。

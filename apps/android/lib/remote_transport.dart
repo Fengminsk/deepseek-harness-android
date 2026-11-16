@@ -3,19 +3,19 @@
 /// 这条传输复用本地模式完全相同的门面方法表与帧格式：换行分隔的 JSON-RPC 2.0
 /// （契约见 `docs/remote-dsh/protocol.md`）。传输层只做四件事：
 ///
-/// 1. 拨号与 TLS 固定：只信任配对时固定的 CA，不信任系统根证书；
+/// 1. 拨号与 TLS 验证：按设备的信任模式选择信任库（见下）；
 /// 2. 握手：连接建立后的第一帧是 `protocol.hello`，结果暴露为 [handshake]；
 /// 3. 帧编解码：请求 / 响应 / 通知三分流，反向请求交给 [setRequestHandler]；
 /// 4. 重连：指数退避加抖动，每次重连重新握手，断线期间 [events] 不关闭。
 ///
-/// ## TLS 固定为什么不比对证书指纹
+/// ## 两种 TLS 信任模式
 ///
-/// `dart:convert` 没有 SHA-256，手工比对指纹要么再引入一个加密依赖，要么自己写
-/// DER 解析与十六进制比对——两条路都比「把固定 CA 装进独立信任库」更容易写错。
-/// 这里使用 `SecurityContext(withTrustedRoots: false)` 加
-/// `setTrustedCertificatesBytes`：系统根证书被完全排除，只有调用方传入的那张 CA
-/// 能签出被接受的证书；证书链、有效期与主机名校验仍由 BoringSSL 执行，也没有
-/// 打开 `badCertificateCallback` 这类「先接受再判断」的口子。
+/// - `systemTrust = false`（默认，直连）：只信任配对时固定的 CA，不信任系统根证书。
+///   局域网、组网与 TCP 直通反代都是这一类；证书被替换时握手失败。
+/// - `systemTrust = true`（HTTPS 反代）：TLS 在反代处终止，对端出示的是反代的公网
+///   证书。这里改用系统根证书（`SecurityContext(withTrustedRoots: true)`）验证证书
+///   链、有效期与主机名，不装载宿主 CA。「反代后面是同一台电脑」由配对时的
+///   `/ca.cer` 指纹核对与设备记录复核保证（`RemoteDevice.instanceId`）。
 ///
 /// 代价是固定粒度是「这张 CA 签发的证书」，Dart 层无法再比对 CA 的 SHA-256 是否
 /// 等于 `instanceId`。那一步由配对流程（P3）在写入 CA 之前完成；本传输只信任
@@ -176,7 +176,11 @@ class RemoteRuntimeTransport implements RemoteTransportLink {
   /// 查询串与片段会被拒绝（协议 §1.1）。
   /// [token] 是配对得到的设备令牌，会作为 `Authorization: Bearer <token>` 上线。
   /// [pinnedCaPem] 是配对时固定的 CA 证书 PEM 文本；PEM 为空或无法解析时构造函数
-  /// 立即抛出 `remote/tls` 失败，而不是等到第一次拨号。
+  /// 立即抛出 `remote/tls` 失败，而不是等到第一次拨号。系统信任模式
+  /// （[systemTrust] 为 true）不使用它做 TLS 验证，因此也不解析它。
+  ///
+  /// [systemTrust] 选择 TLS 信任库：false（默认）只信任 [pinnedCaPem]；true 使用
+  /// 系统根证书（HTTPS 反代，TLS 在反代处终止）。
   ///
   /// [deviceLabel] / [appVersion] / [capabilities] 原样进入 `protocol.hello.params`
   /// （协议 §3.1）。[requestTimeout] 是普通请求的兜底超时，避免宿主无响应时页面
@@ -195,6 +199,7 @@ class RemoteRuntimeTransport implements RemoteTransportLink {
     required String endpoint,
     required String token,
     required String pinnedCaPem,
+    bool systemTrust = false,
     this.deviceLabel = '未命名的 Android 设备',
     this.appVersion = '0.1.0',
     List<String> capabilities = const <String>['window-ack'],
@@ -205,12 +210,15 @@ class RemoteRuntimeTransport implements RemoteTransportLink {
     this.dialer,
   }) : _endpoint = _normalizeEndpoint(endpoint),
        _token = _validateToken(token),
+       _systemTrust = systemTrust,
        _capabilities = List<String>.unmodifiable(capabilities),
        _connectTimeout = connectTimeout,
        _handshakeTimeout = handshakeTimeout,
        _requestTimeout = requestTimeout,
        _pingInterval = pingInterval,
-       _securityContext = _pinnedSecurityContext(pinnedCaPem) {
+       _securityContext = systemTrust
+           ? _systemTrustSecurityContext()
+           : _pinnedSecurityContext(pinnedCaPem) {
     if (connectTimeout <= Duration.zero) {
       throw ArgumentError.value(connectTimeout, 'connectTimeout', '必须大于 0');
     }
@@ -289,6 +297,11 @@ class RemoteRuntimeTransport implements RemoteTransportLink {
   final Duration _requestTimeout;
   final Duration _pingInterval;
   final SecurityContext _securityContext;
+
+  /// 本次连接是否使用系统根证书（HTTPS 反代）。
+  ///
+  /// 只影响 TLS 失败文案与（构造期）信任库选择；协议、令牌与 Origin 行为不变。
+  final bool _systemTrust;
 
   /// 重连退避策略；与 [reconnectBackoff] 同一份常量。
   final RemoteReconnectPolicy _reconnectPolicy = RemoteReconnectPolicy();
@@ -748,6 +761,16 @@ class RemoteRuntimeTransport implements RemoteTransportLink {
   }
 
   RuntimeTransportFailure _tlsFailure(TlsException error) {
+    if (_systemTrust) {
+      return RuntimeTransportFailure(
+        code: 'remote/tls',
+        message:
+            '无法验证反代域名的 HTTPS 证书：${error.message}。'
+            '请确认反代的公网证书有效、链接里的域名与证书一致；'
+            '如果是局域网直连，请重新配对并改用「粘贴链接」入口。',
+        details: error.toString(),
+      );
+    }
     return RuntimeTransportFailure(
       code: 'remote/tls',
       message:
@@ -1571,6 +1594,15 @@ class RemoteRuntimeTransport implements RemoteTransportLink {
     }
     return token;
   }
+
+  /// 建立系统信任的 TLS 上下文（HTTPS 反代模式）。
+  ///
+  /// `withTrustedRoots: true` 交给 BoringSSL 用系统根证书验证反代出示的公网证书，
+  /// 证书链、有效期与主机名全部照常校验；没有设置 [HttpClient.badCertificateCallback]
+  /// 这类「先接受、后判断」的口子。宿主 CA 不参与本次验证——「反代后面是同一台
+  /// 电脑」由配对时的 `/ca.cer` 指纹核对保证。
+  static SecurityContext _systemTrustSecurityContext() =>
+      SecurityContext(withTrustedRoots: true);
 
   /// 建立只信任给定 CA 的 TLS 上下文。
   ///

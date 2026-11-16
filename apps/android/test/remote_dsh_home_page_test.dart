@@ -266,6 +266,7 @@ class _HomeLinkFactory {
     required String endpoint,
     required String token,
     required String pinnedCaPem,
+    required bool systemTrust,
     required String deviceLabel,
     required String appVersion,
     required List<String> capabilities,

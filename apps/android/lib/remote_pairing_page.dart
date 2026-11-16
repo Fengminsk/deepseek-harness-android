@@ -6,11 +6,14 @@
 // 本页不连接、不读门面，因此失败时只在按钮下方给出原因，不会和连接状态的空态
 // 互相覆盖。
 //
-// 四种入口最终都落到同一条配对流程：
+// 五种入口最终都落到同一条配对流程：
 // - 粘贴链接：电脑上整段复制配对链接；
 // - 扫码配对：系统相机拍二维码，原生 ZXing 解出文本（[PairingScanner]）；
 // - 搜索局域网：UDP 广播发现同网段宿主，直接把宿主回的配对链接交给流程
 //   （[RemoteDiscovery]，协议见 `docs/remote-dsh/discovery.md`）；
+// - HTTPS 反代：TLS 在反代（公网域名 / Nginx / 内网穿透）处终止时，用系统根证书
+//   验证反代出示的公网证书；仍会取回电脑自己的 CA 并核对 instance 指纹，用户必须
+//   显式选这个入口，普通入口只提示切换、不静默改变信任模式；
 // - 手动地址与令牌（高级）：粘贴完整链接后替换地址，用于 USB adb reverse / 反代。
 //
 // 发现只在用户切到「搜索局域网」或点「重新搜索」时发起，窗口结束即关闭套接字：
@@ -55,7 +58,7 @@ Future<String> resolvePairingDeviceLabel() async {
 }
 
 /// 添加连接页的输入方式。
-enum _PairingMode { paste, scan, discover }
+enum _PairingMode { paste, scan, discover, proxy }
 
 /// 远程配对页。
 ///
@@ -127,6 +130,10 @@ class _RemotePairingPageState extends State<RemotePairingPage> {
   /// 最近一次失败的中文原因；输入变化或重新提交时清空。
   String? _error;
 
+  /// 普通入口收到「看起来是 HTTPS 反代」的链接时置位：只在状态区给出切换按钮，
+  /// 绝不因此改信任模式（模式只能由用户切到「HTTPS 反代」入口来表达）。
+  bool _suggestProxy = false;
+
   /// 最近一次发现结果；null 表示还没搜过。空列表是「搜过但没有找到」。
   List<RemoteDiscoveredHost>? _discovered;
 
@@ -157,7 +164,10 @@ class _RemotePairingPageState extends State<RemotePairingPage> {
 
   void _onLinkChanged(String _) {
     // 只重算按钮可用性并清掉上一次的失败：输入已经变了，旧原因不再对应当前内容。
-    setState(() => _error = null);
+    setState(() {
+      _error = null;
+      _suggestProxy = false;
+    });
   }
 
   /// 切换输入方式；第一次切到「搜索局域网」时才发起发现（懒加载）。
@@ -167,6 +177,7 @@ class _RemotePairingPageState extends State<RemotePairingPage> {
     setState(() {
       _mode = mode;
       _error = null;
+      _suggestProxy = false;
     });
     if (mode == _PairingMode.discover && _discovered == null && !_discovering) {
       unawaited(_search());
@@ -229,11 +240,14 @@ class _RemotePairingPageState extends State<RemotePairingPage> {
         if (!mounted || !replace) return;
       }
       if (!mounted) return;
+      final proxyLink = looksLikeHttpsProxyPairingLink(link);
       setState(() {
         _link.text = link;
         // 扫到链接后回到粘贴视图：用户能看到链接并直接点「连接」。
         _mode = _PairingMode.paste;
         _error = null;
+        // 反代链接只提示切换入口，不静默改信任模式（见「HTTPS 反代」模式）。
+        _suggestProxy = proxyLink;
       });
       // 光标放到末尾：整条链接保持可见，用户可以直接点「连接」。
       _link.selection = TextSelection.collapsed(offset: _link.text.length);
@@ -274,17 +288,31 @@ class _RemotePairingPageState extends State<RemotePairingPage> {
   }
 
   /// 用一条配对链接走既有配对流程；成功时带着设备记录出栈。
-  Future<void> _pairLink(String link) async {
+  ///
+  /// [systemTrust] 由入口显式决定：普通入口为 false（固定宿主 CA）；「HTTPS 反代」
+  /// 入口为 true（系统根证书验证反代公网证书）。普通入口拿到反代形态的链接时只提示
+  /// 切换入口，绝不自动改用系统信任。
+  Future<void> _pairLink(String link, {bool systemTrust = false}) async {
     if (_busy) return;
+    if (!systemTrust && looksLikeHttpsProxyPairingLink(link)) {
+      FocusScope.of(context).unfocus();
+      setState(() {
+        _suggestProxy = true;
+        _error = null;
+      });
+      return;
+    }
     FocusScope.of(context).unfocus();
     setState(() {
       _busy = true;
       _error = null;
+      _suggestProxy = false;
     });
     try {
       final device = await _flow.pair(
         link,
         deviceLabel: widget.deviceLabel ?? await resolvePairingDeviceLabel(),
+        systemTrust: systemTrust,
       );
       if (!mounted) return;
       // 令牌已经写进本机密钥库：把设备交回调用方，由它刷新列表并连接。
@@ -300,7 +328,18 @@ class _RemotePairingPageState extends State<RemotePairingPage> {
 
   Future<void> _submit() async {
     if (!_canSubmit) return;
-    await _pairLink(_link.text);
+    await _pairLink(_link.text, systemTrust: _mode == _PairingMode.proxy);
+  }
+
+  /// 从普通入口切到「HTTPS 反代」入口；输入框内容原样保留，用户再点连接。
+  void _switchToProxy() {
+    if (_mode == _PairingMode.proxy || _busy || _scanning) return;
+    FocusScope.of(context).unfocus();
+    setState(() {
+      _mode = _PairingMode.proxy;
+      _suggestProxy = false;
+      _error = null;
+    });
   }
 
   /// 连接一台发现到的电脑：直接用宿主应答里的配对链接（与扫码/粘贴同一条）。
@@ -384,8 +423,10 @@ class _RemotePairingPageState extends State<RemotePairingPage> {
             ),
             const SizedBox(height: 8),
             Text(
-              '三种方式都会把电脑的配对链接交给同一条配对流程：扫码与自动发现最省事，'
-              '链接也可以从电脑上整段复制粘贴。配对等于完全信任，请只配对你自己的电脑。',
+              '四种方式都会把电脑的配对链接交给同一条配对流程：扫码与自动发现最省事，'
+              '链接也可以从电脑上整段复制粘贴。前三类（粘贴 / 扫码 / 局域网）是直连电脑'
+              '自己的 TLS；「HTTPS 反代」用于 TLS 在公网域名/Nginx/内网穿透处终止的情况。'
+              '配对等于完全信任，请只配对你自己的电脑。',
               style: hint,
             ),
             const SizedBox(height: 16),
@@ -395,6 +436,7 @@ class _RemotePairingPageState extends State<RemotePairingPage> {
                 (_PairingMode.paste, '粘贴链接'),
                 (_PairingMode.scan, '扫码配对'),
                 (_PairingMode.discover, '搜索局域网'),
+                (_PairingMode.proxy, 'HTTPS 反代'),
               ],
               value: _mode,
               onChanged: _busy || _scanning ? null : _selectMode,
@@ -449,10 +491,24 @@ class _RemotePairingPageState extends State<RemotePairingPage> {
         ];
       case _PairingMode.discover:
         return _discoveryContent(context);
+      case _PairingMode.proxy:
+        return [
+          _proxyIntro(context),
+          const SizedBox(height: 12),
+          _linkField(context, proxy: true),
+          const SizedBox(height: 18),
+          PocketButton(
+            key: const ValueKey('remote-pairing-proxy-submit'),
+            onPressed: _canSubmit ? _submit : null,
+            child: _submitLabel(context),
+          ),
+          const SizedBox(height: 12),
+          _proxyTrustNote(context),
+        ];
     }
   }
 
-  Widget _linkField(BuildContext context) => TextField(
+  Widget _linkField(BuildContext context, {bool proxy = false}) => TextField(
     key: const ValueKey('remote-pairing-link'),
     controller: _link,
     enabled: !_busy && !_scanning,
@@ -467,12 +523,52 @@ class _RemotePairingPageState extends State<RemotePairingPage> {
     // Flutter 默认的触摸行为会在点按输入框之外时保留焦点；这里与其它编辑页一致，
     // 点空白处即收起键盘。
     onTapOutside: (_) => FocusScope.of(context).unfocus(),
-    decoration: const InputDecoration(
+    decoration: InputDecoration(
       labelText: '配对链接',
-      hintText: 'wss://192.168.1.10:4777#instance=…&token=…',
+      hintText: proxy
+          ? 'wss://dsh.example.com:443#instance=…&token=…'
+          : 'wss://192.168.1.10:4777#instance=…&token=…',
       hintMaxLines: 3,
     ),
   );
+
+  /// 「HTTPS 反代」正文：适用场景与信任模式说明。
+  Widget _proxyIntro(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final hint = AppTextStyle.footnote
+        .of(context)
+        .copyWith(color: colors.onSurfaceVariant);
+    return Text(
+      '适用于「公网域名 + 反向代理 / Nginx / 内网穿透，TLS 在反代处终止」：'
+      '反代把 /ca.cer、/pair 与 /app（含 WebSocket）转发到你电脑上的远程 DSH。'
+      '这个模式用手机的系统根证书验证反代出示的公网证书，不再固定电脑自己的 CA；'
+      '配对时仍会取回电脑的 CA 证书并核对链接里的指纹，所以反代后端必须是你自己的电脑。',
+      style: hint,
+    );
+  }
+
+  /// 「HTTPS 反代」的信任说明：模式差异 + 只用于可信反代。
+  Widget _proxyTrustNote(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final hint = AppTextStyle.footnote
+        .of(context)
+        .copyWith(color: colors.onSurfaceVariant);
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(Icons.gpp_maybe_outlined, size: 18, color: colors.error),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            '只在你自己控制的反代上使用：反代在终止 TLS 后能看到请求明文，'
+            '请确认域名与证书都归你所有。局域网直连、组网（Tailscale/WireGuard）或 '
+            'TCP 直通反代请改用「粘贴链接」，不要在这里关掉既有的证书固定。',
+            style: hint,
+          ),
+        ),
+      ],
+    );
+  }
 
   Widget _trustNote(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
@@ -795,9 +891,13 @@ class _RemotePairingPageState extends State<RemotePairingPage> {
   /// 扫码/搜索中说明接下来会发生什么；没有错误且输入为空时说明按钮为什么不可用；
   /// 有错误时原样显示异常自带的中文。这里刻意不用 SnackBar：失败原因要与这次提交
   /// 的输入留在同一处。
+  ///
+  /// 普通入口收到反代形态的链接时额外给一个「改用 HTTPS 反代」按钮：模式只能由
+  /// 用户点这个按钮显式切换，页面不会代用户改信任方式。
   Widget _statusSlot(BuildContext context, TextStyle hint) {
     final colors = Theme.of(context).colorScheme;
     final error = _error;
+    final suggestProxy = _suggestProxy && _mode != _PairingMode.proxy;
     final String? message;
     if (error != null) {
       message = error;
@@ -805,10 +905,16 @@ class _RemotePairingPageState extends State<RemotePairingPage> {
       message = '在相机里对准电脑上的配对二维码拍照，回到这里会自动填入链接。';
     } else if (_discovering) {
       message = null;
+    } else if (suggestProxy) {
+      message =
+          '这条链接指向 HTTPS 反代（域名证书由反代出示）。'
+          '要连它，请点下面的按钮改用「HTTPS 反代」入口；普通入口不会改变证书信任方式。';
     } else if (_mode != _PairingMode.discover &&
         !_busy &&
         _link.text.trim().isEmpty) {
-      message = '先扫码或粘贴电脑上的配对链接，再点「连接」。';
+      message = _mode == _PairingMode.proxy
+          ? '先粘贴电脑日志里的 HTTPS 反代配对链接，再点「连接」。'
+          : '先扫码或粘贴电脑上的配对链接，再点「连接」。';
     } else {
       message = null;
     }
@@ -817,22 +923,36 @@ class _RemotePairingPageState extends State<RemotePairingPage> {
         MediaQuery.textScalerOf(context).scale(AppTextStyle.footnote.leading) *
             2 +
         10;
+    final children = <Widget>[
+      if (message != null)
+        Semantics(
+          liveRegion: error != null,
+          child: Text(
+            message,
+            style: hint.copyWith(
+              color: error == null ? colors.onSurfaceVariant : colors.error,
+            ),
+          ),
+        ),
+      if (suggestProxy)
+        Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton(
+            key: const ValueKey('remote-pairing-switch-proxy'),
+            onPressed: _busy || _scanning ? null : _switchToProxy,
+            child: const Text('改用「HTTPS 反代」连接'),
+          ),
+        ),
+    ];
     return ConstrainedBox(
       constraints: BoxConstraints(minHeight: reserved),
       child: Padding(
         padding: const EdgeInsets.only(top: 10),
-        child: message == null
+        child: children.isEmpty
             ? const SizedBox.shrink()
-            : Semantics(
-                liveRegion: error != null,
-                child: Text(
-                  message,
-                  style: hint.copyWith(
-                    color: error == null
-                        ? colors.onSurfaceVariant
-                        : colors.error,
-                  ),
-                ),
+            : Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: children,
               ),
       ),
     );
