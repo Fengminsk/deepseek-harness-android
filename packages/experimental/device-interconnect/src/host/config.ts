@@ -48,6 +48,12 @@ export const DEFAULT_PAGES_PORT = 4_780
 /** Default remote host profile launched by the supervised child. */
 export const DEFAULT_PROFILE = 'remote-host'
 
+/** Default name of the tunnel the automatic provision reuses or creates. */
+export const DEFAULT_TUNNEL_NAME = 'DSH 设备互联'
+
+/** Longest accepted tunnel name, in characters. */
+const MAXIMUM_TUNNEL_NAME_LENGTH = 64
+
 /** Longest accepted access key, in characters. */
 const MAXIMUM_TUNNEL_TOKEN_LENGTH = 512
 
@@ -162,6 +168,11 @@ export function defaultConfig(environment: InferenceEnvironment = processInferen
       publicAddress: '',
       iniPath: '',
       extraArgs: '',
+      autoProvision: false,
+      frpcAutoDownload: true,
+      nodeId: null,
+      tunnelName: DEFAULT_TUNNEL_NAME,
+      tunnelId: null,
     },
   }
 }
@@ -524,7 +535,41 @@ function readTunnel(value: unknown, fallback: TunnelSettings, problems: string[]
   if (extraArgs !== '' && !isSafeTunnelExtraArgs(extraArgs)) {
     problems.push('tunnel.extraArgs 只能包含空白分隔的 frpc 参数，不能包含 shell 元字符或换行。')
   }
-  return { provider, frpcPath, token, tunnelIds, publicAddress, iniPath, extraArgs }
+  const autoProvision = readBoolean(value['autoProvision'], 'tunnel.autoProvision', fallback.autoProvision, problems)
+  const frpcAutoDownload = readBoolean(value['frpcAutoDownload'], 'tunnel.frpcAutoDownload', fallback.frpcAutoDownload, problems)
+  const nodeId = readNullableId(value['nodeId'], 'tunnel.nodeId', fallback.nodeId, problems)
+  const tunnelName = readString(value['tunnelName'], 'tunnel.tunnelName', fallback.tunnelName, problems, MAXIMUM_TUNNEL_NAME_LENGTH)
+  if (SINGLE_LINE_VIOLATION.test(tunnelName)) problems.push('tunnel.tunnelName 不能包含换行或控制字符。')
+  if (tunnelName.trim() === '') problems.push('tunnel.tunnelName 不能为空。')
+  const tunnelId = readNullableId(value['tunnelId'], 'tunnel.tunnelId', fallback.tunnelId, problems)
+  return {
+    provider,
+    frpcPath,
+    token,
+    tunnelIds,
+    publicAddress,
+    iniPath,
+    extraArgs,
+    autoProvision,
+    frpcAutoDownload,
+    nodeId,
+    tunnelName,
+    tunnelId,
+  }
+}
+
+/**
+ * Read an optional provider id: absent keeps the fallback, `null` clears it, and
+ * a non-negative safe integer sets it. Zero means "let the plugin choose".
+ */
+function readNullableId(value: unknown, path: string, fallback: number | null, problems: string[]): number | null {
+  if (value === undefined) return fallback
+  if (value === null) return null
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    problems.push(`${path} 必须是 0 或正整数，或 null（自动选择）。`)
+    return fallback
+  }
+  return value
 }
 
 /** Read the tunnel provider, or the fallback when absent. */

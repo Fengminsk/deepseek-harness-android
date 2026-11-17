@@ -59,6 +59,11 @@ export type TunnelProvider = 'none' | 'sakurafrp'
  * The remote host terminates TLS itself with a fixed CA, so only a TCP tunnel
  * works: an HTTP or HTTPS tunnel would terminate TLS at the provider and every
  * pinned-certificate connection would fail.
+ *
+ * With `autoProvision` the plugin uses the SakuraFrp API to validate the
+ * account, pick a node, create or reuse the tunnel, and fill in `tunnelId`,
+ * `nodeId`, `publicAddress`, and `tunnelIds`; without it every value stays
+ * manual and `autoProvision=false` keeps the historical behavior.
  */
 export interface TunnelSettings {
   /** Which tunnel provider to manage; `none` keeps the frpc child stopped. */
@@ -75,6 +80,16 @@ export interface TunnelSettings {
   readonly iniPath: string
   /** Additional whitespace-separated frpc arguments; empty for none. */
   readonly extraArgs: string
+  /** Use the SakuraFrp API to validate the account and create or reuse the tunnel. */
+  readonly autoProvision: boolean
+  /** Allow downloading frpc when provisioning needs it and `frpcPath` is empty. */
+  readonly frpcAutoDownload: boolean
+  /** Node the automatic provision uses; `null` picks one automatically. */
+  readonly nodeId: number | null
+  /** Tunnel name the automatic provision reuses or creates. */
+  readonly tunnelName: string
+  /** Tunnel the automatic provision created or reused; `null` until it ran. */
+  readonly tunnelId: number | null
 }
 
 /** Everything the Host plugin persists in `<DSH_HOME>/device-interconnect/config.json`. */
@@ -107,6 +122,16 @@ export interface TunnelSettingsView {
   readonly extraArgs: string
   /** Whether an access key is stored; the key itself is never served. */
   readonly tokenConfigured: boolean
+  /** Whether the automatic provision mode is on. */
+  readonly autoProvision: boolean
+  /** Whether frpc may be downloaded when provisioning needs it. */
+  readonly frpcAutoDownload: boolean
+  /** Pinned node id, or null for automatic selection. */
+  readonly nodeId: number | null
+  /** Tunnel name the automatic provision reuses or creates. */
+  readonly tunnelName: string
+  /** Tunnel the automatic provision created or reused, or null. */
+  readonly tunnelId: number | null
 }
 
 /** The configuration as the Settings page sees it, with the write-only access key removed. */
@@ -146,6 +171,16 @@ export interface TunnelSettingsInput {
   readonly iniPath?: string
   /** Additional whitespace-separated frpc arguments. */
   readonly extraArgs?: string
+  /** Turn the automatic provision mode on or off. */
+  readonly autoProvision?: boolean
+  /** Allow downloading frpc when provisioning needs it. */
+  readonly frpcAutoDownload?: boolean
+  /** Pinned node id; null or 0 selects one automatically. */
+  readonly nodeId?: number | null
+  /** Tunnel name the automatic provision reuses or creates. */
+  readonly tunnelName?: string
+  /** Tunnel the automatic provision created or reused. */
+  readonly tunnelId?: number | null
 }
 
 /** One complete configuration document submitted by the Settings page. */
@@ -255,6 +290,75 @@ export interface TunnelReadiness {
   readonly problems: readonly Diagnostic[]
 }
 
+/** The SakuraFrp account facts shown next to the one-click action. */
+export interface TunnelAccount {
+  /** Account name. */
+  readonly name?: string
+  /** Account id. */
+  readonly uid?: number
+  /** Bandwidth limit in Mbit/s. */
+  readonly speed?: number
+  /** Maximum number of tunnels the account may own. */
+  readonly tunnelLimit?: number
+  /** Tunnels the account owns now. */
+  readonly tunnelCount?: number
+  /** Remaining traffic in the provider's unit. */
+  readonly trafficRemaining?: number
+}
+
+/** One status of the automatic provision flow. */
+export type ProvisionStepStatus = 'pending' | 'done' | 'failed' | 'skipped'
+
+/** One step of the automatic provision flow. */
+export interface ProvisionStep {
+  /** Stable step id: `verify-token`, `select-node`, `ensure-tunnel`, `resolve-address`, `prepare-frpc`, `start-tunnel`. */
+  readonly id: string
+  /** Step outcome. */
+  readonly status: ProvisionStepStatus
+  /** Chinese, directly displayable outcome text. */
+  readonly message: string
+}
+
+/** The last automatic provision attempt. */
+export interface TunnelProvisionState {
+  /** Steps of the last attempt, in execution order. */
+  readonly lastSteps: readonly ProvisionStep[]
+  /** Why the last attempt failed, when it did. */
+  readonly lastError?: Diagnostic
+  /** Provider warning the API asked the caller to surface to the user. */
+  readonly warning?: string
+}
+
+/** The node the automatic provision selected. */
+export interface TunnelNodeInfo {
+  /** Node id. */
+  readonly id: number
+  /** Node display name. */
+  readonly name?: string
+  /** Node host the public address uses. */
+  readonly host?: string
+}
+
+/** The tunnel the automatic provision created or reused. */
+export interface TunnelInfo {
+  /** Tunnel id. */
+  readonly id: number
+  /** Tunnel name. */
+  readonly name?: string
+  /** Provider-side remote port or address assigned to the tunnel. */
+  readonly remote?: string
+}
+
+/** The frpc executable the plugin resolved. */
+export interface TunnelFrpcInfo {
+  /** Absolute executable path. */
+  readonly path?: string
+  /** Whether the plugin downloaded this executable. */
+  readonly downloaded?: boolean
+  /** Version reported by `frpc -V`. */
+  readonly version?: string
+}
+
 /** The tunnel child state plus the facts the page derives from its settings. */
 export interface TunnelState extends ChildState {
   /** Configured provider. */
@@ -265,6 +369,16 @@ export interface TunnelState extends ChildState {
   readonly problems: readonly Diagnostic[]
   /** Origin derived from the public address (`wss://…`); empty when none applies. */
   readonly derivedPublicOrigin: string
+  /** SakuraFrp account from the last provision, when known. */
+  readonly account?: TunnelAccount
+  /** The last automatic provision attempt. */
+  readonly provision?: TunnelProvisionState
+  /** Node selected by the last provision or pinned in the configuration. */
+  readonly node?: TunnelNodeInfo
+  /** Tunnel created or reused by the last provision, or the persisted id. */
+  readonly tunnel?: TunnelInfo
+  /** frpc executable facts. */
+  readonly frpc?: TunnelFrpcInfo
 }
 
 /** Whether the saved runner can launch, and what is missing if it cannot. */
@@ -326,6 +440,22 @@ export interface EnabledRequest {
 export interface TunnelRequest {
   /** Whether the tunnel child should run. */
   readonly enabled: boolean
+}
+
+/** `POST /device-interconnect/api/tunnel/provision` body. */
+export interface ProvisionRequest {
+  /** Replacement access key; absent or empty keeps the stored one, `null` clears it. */
+  readonly token?: string | null
+  /** Local frpc executable path; absent keeps the stored one. */
+  readonly frpcPath?: string
+  /** Allow downloading frpc when needed; absent keeps the stored value. */
+  readonly frpcAutoDownload?: boolean
+  /** Pinned node id; `null` or `0` selects one automatically. */
+  readonly nodeId?: number | null
+  /** Tunnel name to reuse or create; absent keeps the stored value. */
+  readonly tunnelName?: string
+  /** Reuse an existing tunnel instead of creating one; defaults to true. */
+  readonly reuseExisting?: boolean
 }
 
 /** `POST /device-interconnect/api/config` body. */

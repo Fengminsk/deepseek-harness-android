@@ -9,8 +9,9 @@
  * @module @deepseek-ai/dsh-device-interconnect/host/tunnel
  */
 
+import { join } from 'node:path'
 import type {
-  DeviceInterconnectConfig, Diagnostic, TunnelReadiness, TunnelSettings,
+  DeviceInterconnectConfig, Diagnostic, ProvisionStep, TunnelReadiness, TunnelSettings,
 } from '../types.ts'
 import type { LaunchCommand } from './supervisor.ts'
 
@@ -50,6 +51,26 @@ export class TunnelError extends Error {
     this.name = 'TunnelError'
     this.code = code
     this.status = status
+  }
+}
+
+/** A failure of the automatic SakuraFrp provision, carrying the steps it reached. */
+export class TunnelProvisionError extends Error {
+  /** Stable machine-readable code the Client maps onto its locale dictionary. */
+  readonly code: string
+  /** Steps of the attempt up to the failure, followed by pending steps. */
+  readonly steps: readonly ProvisionStep[]
+
+  /**
+   * @param code - stable failure code.
+   * @param message - Chinese message usable as-is.
+   * @param steps - steps up to the failure.
+   */
+  constructor(code: string, message: string, steps: readonly ProvisionStep[]) {
+    super(message)
+    this.name = 'TunnelProvisionError'
+    this.code = code
+    this.steps = steps
   }
 }
 
@@ -107,34 +128,75 @@ export function withTunnelOrigin(config: DeviceInterconnectConfig): DeviceInterc
 }
 
 /**
+ * Absolute path of the frpc executable the plugin downloads when the
+ * automatic provision needs one.
+ * @param dataDir - bundle data directory.
+ * @param platform - host platform; Windows uses the `.exe` suffix.
+ * @returns the install path inside the bundle data directory.
+ */
+export function frpcInstallPath(dataDir: string, platform: NodeJS.Platform): string {
+  return join(dataDir, 'bin', platform === 'win32' ? 'frpc.exe' : 'frpc')
+}
+
+/**
  * Whether the saved tunnel can launch frpc, and what is missing if it cannot.
  * Structural problems are rejected at save; this also covers a hand-edited
- * configuration file and an executable removed after saving.
+ * configuration file, an executable removed after saving, and the state before
+ * the automatic provision created its tunnel.
  * @param tunnel - tunnel settings.
  * @param exists - whether one path exists.
+ * @param frpcPath - resolved executable, defaulting to the configured path.
  * @returns readiness with one problem per missing fact.
  */
-export function tunnelReadiness(tunnel: TunnelSettings, exists: (path: string) => boolean): TunnelReadiness {
+export function tunnelReadiness(
+  tunnel: TunnelSettings,
+  exists: (path: string) => boolean,
+  frpcPath: string = tunnel.frpcPath,
+): TunnelReadiness {
   if (tunnel.provider !== 'sakurafrp') return { ready: false, problems: [] }
   const problems: Diagnostic[] = []
-  if (tunnel.frpcPath === '') {
-    problems.push({ code: 'tunnel-frpc-missing', message: '未配置 frpc 可执行文件路径（内网穿透 → frpc 路径）。' })
-  } else if (!exists(tunnel.frpcPath)) {
-    problems.push({ code: 'tunnel-frpc-missing', message: `frpc 可执行文件不存在：${tunnel.frpcPath}` })
+  if (frpcPath === '') {
+    problems.push({
+      code: 'tunnel-frpc-missing',
+      message: tunnel.autoProvision
+        ? '未找到 frpc 可执行文件：请填写路径，或点击一键创建并在允许时自动下载。'
+        : '未配置 frpc 可执行文件路径（内网穿透 → frpc 路径）。',
+    })
+  } else if (!exists(frpcPath)) {
+    problems.push({ code: 'tunnel-frpc-missing', message: `frpc 可执行文件不存在：${frpcPath}` })
   }
   if (tunnel.iniPath !== '') {
     if (!exists(tunnel.iniPath)) {
       problems.push({ code: 'tunnel-ini-missing', message: `自定义 frpc.ini 不存在：${tunnel.iniPath}` })
     }
-  } else {
+  }
+  if (tunnel.autoProvision) {
+    if (tunnel.token === '') {
+      problems.push({ code: 'tunnel-token-missing', message: '未配置 SakuraFrp 访问密钥（一键创建需要）。' })
+    }
+    if (tunnel.tunnelId === null || tunnel.tunnelId <= 0) {
+      problems.push({ code: 'tunnel-not-provisioned', message: '尚未自动创建隧道：点击「保存并自动创建隧道」。' })
+    }
+  } else if (tunnel.iniPath === '') {
     if (tunnel.token === '') {
       problems.push({ code: 'tunnel-token-missing', message: '未配置 SakuraFrp 访问密钥。' })
     }
     if (tunnel.tunnelIds === '') {
       problems.push({ code: 'tunnel-ids-missing', message: '未配置 SakuraFrp 隧道 ID。' })
     }
+  } else {
+    // A custom frpc.ini replaces the access key and tunnel ids.
   }
-  if (tunnel.publicAddress === '') {
+  if (tunnel.autoProvision) {
+    if (tunnel.publicAddress === '') {
+      problems.push({ code: 'tunnel-public-address-missing', message: '隧道公网地址尚未生成，请重新执行一键创建。' })
+    } else if (!isTunnelPublicAddress(tunnel.publicAddress)) {
+      problems.push({
+        code: 'tunnel-public-address-invalid',
+        message: `隧道公网地址必须是 节点域名:远程端口 形式（如 cn-xx.natfrp.cloud:12345）：${tunnel.publicAddress}`,
+      })
+    }
+  } else if (tunnel.publicAddress === '') {
     problems.push({ code: 'tunnel-public-address-missing', message: '未填写隧道公网地址（节点域名:远程端口）。' })
   } else if (!isTunnelPublicAddress(tunnel.publicAddress)) {
     problems.push({
@@ -165,16 +227,18 @@ export function splitExtraArgs(value: string): readonly string[] {
  * @param tunnel - tunnel settings.
  * @param dataDir - bundle data directory the child runs in.
  * @param env - complete environment of the child.
+ * @param frpcPath - resolved executable, defaulting to the configured path.
  * @returns the frpc launch command.
  */
 export function tunnelLaunchCommand(
   tunnel: TunnelSettings,
   dataDir: string,
   env: NodeJS.ProcessEnv,
+  frpcPath: string = tunnel.frpcPath,
 ): LaunchCommand {
   const args = tunnel.iniPath === ''
     ? ['-f', `${tunnel.token}:${tunnel.tunnelIds}`, '-n', '--disable_log_color']
     : ['-c', tunnel.iniPath, '-n']
   args.push(...splitExtraArgs(tunnel.extraArgs))
-  return { file: tunnel.frpcPath, args, cwd: dataDir, env }
+  return { file: frpcPath, args, cwd: dataDir, env }
 }

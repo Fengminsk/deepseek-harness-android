@@ -9,8 +9,8 @@
   en: d372934044c8e669
   zh: 823d7ce7b1471b20
 /deepseek-ai-dsh-device-interconnect/summary:
-  en: 87490703fd7a95c2
-  zh: 06e09c55846b64c6
+  en: 09528e5e3d77f6e6
+  zh: f3837bbc46be3d54
 /deepseek-ai-dsh-device-interconnect/table-of-contents:
   en: d152484eb41ac6b4
   zh: 405b30feaf48c087
@@ -27,11 +27,17 @@
   en: 05723960a9ba2e24
   zh: 13e5297cf71ceef2
 /deepseek-ai-dsh-device-interconnect/use-this-package/sakurafrp-tcp-tunnel:
-  en: 501cf81ec577f991
-  zh: 906f6b16369d553d
+  en: 6d3a39c9286eec7b
+  zh: 0497f65a394ba25a
+/deepseek-ai-dsh-device-interconnect/use-this-package/sakurafrp-tcp-tunnel/one-click-setup-default:
+  en: 28e63fe85a0d4d9d
+  zh: 54120c3a162c90ca
+/deepseek-ai-dsh-device-interconnect/use-this-package/sakurafrp-tcp-tunnel/manual-mode-advanced:
+  en: cae6a95f4c02b1bd
+  zh: 8300be572ab7f126
 /deepseek-ai-dsh-device-interconnect/use-this-package/security-model:
-  en: bf6c394eb065bcfd
-  zh: 7d1a04d374559642
+  en: 17e4b8788f56e71e
+  zh: 630c65e78cef5979
 /deepseek-ai-dsh-device-interconnect/use-this-package/uninstall:
   en: 50b2e818821c31a7
   zh: d06f150bbd7eae73
@@ -39,8 +45,8 @@
   en: ee4615a04fa6503d
   zh: ee2c5fb2204a43cf
 /deepseek-ai-dsh-device-interconnect/understand-the-implementation/host-plugin-and-http-bridge:
-  en: 56ac1872c0ebfc43
-  zh: 4c5a89271657a20a
+  en: cac9379260db364c
+  zh: 3040eed9b6ad0bd9
 /deepseek-ai-dsh-device-interconnect/understand-the-implementation/child-supervisors:
   en: 8be84aa04ab778c3
   zh: dee59dab7bd38c87
@@ -60,8 +66,8 @@
   en: f3a70883399ebc2f
   zh: e64cd073ace5cfa4
 /deepseek-ai-dsh-device-interconnect/known-limitations-and-deferred-work:
-  en: b6e05b968c53bcd0
-  zh: a9445d2f5786a11b
+  en: 49dd615983a09a7c
+  zh: 5a7741270f672357
 /deepseek-ai-dsh-device-interconnect/known-limitations-and-deferred-work/dev-note:
   en: 279d01435256cd2a
   zh: 7c2ad2f568099e7f

@@ -15,16 +15,21 @@
 import { existsSync } from 'node:fs'
 import { dirname } from 'node:path'
 import type {
-  ControlPlaneState, DeviceInterconnectConfig, DeviceInterconnectView, Diagnostic, PairingView, RuntimeState,
-  TunnelReadiness, TunnelSettingsView, TunnelState,
+  ControlPlaneState, DeviceInterconnectConfig, DeviceInterconnectView, Diagnostic, PairingView, ProvisionRequest,
+  ProvisionStep, RuntimeState, TunnelAccount, TunnelFrpcInfo, TunnelInfo, TunnelNodeInfo, TunnelReadiness,
+  TunnelSettings, TunnelSettingsView, TunnelState,
 } from '../types.ts'
 import { QR_ROUTE } from '../api.ts'
 import { ConfigStore, ConfigValidationError, isDeviceId } from './config.ts'
 import { ControlPlaneError, type ControlPlane } from './control-plane.ts'
+import { downloadFrpc as downloadFrpcBinary } from './frpc-download.ts'
 import { overlayPath, writeOverlay } from './overlay.ts'
+import { provisionSakuraFrpTunnel, withPendingSteps } from './provision.ts'
+import { createSakuraFrpApi, type SakuraFrpApi } from './sakurafrp-api.ts'
 import type { LaunchCommand, SupervisorApi } from './supervisor.ts'
 import {
-  TunnelError, derivePublicOrigin, tunnelLaunchCommand, tunnelReadiness, withTunnelOrigin,
+  TunnelError, TunnelProvisionError, derivePublicOrigin, frpcInstallPath, tunnelLaunchCommand, tunnelReadiness,
+  withTunnelOrigin,
 } from './tunnel.ts'
 
 /** How often the tunnel startup waits for the remote host's listener. */
@@ -57,6 +62,14 @@ export interface BridgeOptions {
   readonly readinessPollMs?: number
   /** Host-readiness wait ceiling; defaults to {@link HOST_READY_TIMEOUT_MS}. */
   readonly readinessTimeoutMs?: number
+  /** Builds the SakuraFrp API client of one access key; defaults to the real service. */
+  readonly sakurafrpApi?: (token: string) => SakuraFrpApi
+  /** Downloads frpc for the automatic provision; defaults to the SakuraFrp download. */
+  readonly downloadFrpc?: (dataDir: string) => Promise<{ readonly path: string; readonly version: string }>
+  /** Platform used for the frpc install path; defaults to `process.platform`. */
+  readonly platform?: NodeJS.Platform
+  /** CPU architecture used for the frpc download; defaults to `process.arch`. */
+  readonly arch?: string
   /** Lifecycle log sink. */
   readonly logger?: {
     info(message: string, ...rest: unknown[]): void
@@ -84,12 +97,23 @@ export class Bridge {
   private readonly readinessTimeoutMs: number
   private readonly exists: (path: string) => boolean
   private readonly logger: NonNullable<BridgeOptions['logger']>
+  private readonly sakurafrpApi: (token: string) => SakuraFrpApi
+  private readonly downloadFrpcDependency: (dataDir: string) => Promise<{ readonly path: string; readonly version: string }>
+  private readonly platform: NodeJS.Platform
+  private readonly arch: string
   private readonly activationProblems: Diagnostic[]
   private cachedRead: { readonly at: number; readonly read: ControlPlaneRead } | undefined
   private appliedPublicOrigin: string | undefined
   private disposed = false
   private tunnelStartup: AbortController | undefined
   private tunnelStartupTask: Promise<void> | undefined
+  private provisionAccount: TunnelAccount | undefined
+  private provisionNode: TunnelNodeInfo | undefined
+  private provisionTunnelInfo: TunnelInfo | undefined
+  private provisionFrpc: { readonly path: string; readonly downloaded: boolean; readonly version?: string } | undefined
+  private provisionSteps: readonly ProvisionStep[] = []
+  private provisionError: Diagnostic | undefined
+  private provisionWarning: string | undefined
 
   /** @param options - the composed services and seams. */
   constructor(options: BridgeOptions) {
@@ -105,6 +129,14 @@ export class Bridge {
     this.readinessTimeoutMs = options.readinessTimeoutMs ?? HOST_READY_TIMEOUT_MS
     this.exists = options.exists ?? existsSync
     this.logger = options.logger ?? console
+    this.sakurafrpApi = options.sakurafrpApi ?? (token => createSakuraFrpApi({ token }))
+    this.platform = options.platform ?? process.platform
+    this.arch = options.arch ?? process.arch
+    this.downloadFrpcDependency = options.downloadFrpc ?? (dataDir => downloadFrpcBinary({
+      dataDir,
+      platform: this.platform,
+      arch: this.arch,
+    }))
     this.activationProblems = this.store.problems().map(message => ({ code: 'config-unreadable', message }))
   }
 
@@ -171,6 +203,108 @@ export class Bridge {
     const { task } = this.startTunnelStartup(signal => this.startTunnelNow(signal))
     await task
     return this.state()
+  }
+
+  /**
+   * Validate the access key, then create or reuse a SakuraFrp TCP tunnel, align
+   * the public origin, and start frpc.
+   *
+   * The submitted fields are persisted before the first API call so a retry can
+   * reuse the same access key; a failed attempt keeps the previous tunnel
+   * settings and only records the steps it reached.
+   * @param candidate - optional fields from the page, overriding saved settings.
+   * @returns the snapshot after the attempt, including the provision steps.
+   * @throws {ConfigValidationError} when a submitted field has the wrong type.
+   */
+  async provisionTunnel(candidate: unknown): Promise<RuntimeState> {
+    const request = readProvisionRequest(candidate)
+    this.cachedRead = undefined
+    const current = this.store.current()
+    const token = request.token === undefined ? current.tunnel.token : request.token
+    const submitted: TunnelSettings = {
+      ...current.tunnel,
+      provider: 'sakurafrp',
+      autoProvision: true,
+      ...(token === null ? { token: '' } : { token }),
+      ...(request.frpcPath === undefined ? {} : { frpcPath: request.frpcPath }),
+      ...(request.frpcAutoDownload === undefined ? {} : { frpcAutoDownload: request.frpcAutoDownload }),
+      ...(request.nodeId === undefined ? {} : { nodeId: request.nodeId }),
+      ...(request.tunnelName === undefined ? {} : { tunnelName: request.tunnelName }),
+    }
+    if (token === '' || token === null) {
+      this.provisionSteps = withPendingSteps([], 'verify-token', '未配置 SakuraFrp 访问密钥。')
+      this.provisionError = { code: 'tunnel-token-missing', message: '未配置 SakuraFrp 访问密钥：请先填写访问密钥。' }
+      return this.state()
+    }
+    // Persist the access key and mode now, so the API calls and a retry have them.
+    await this.store.save({ ...current, enabled: true, tunnel: submitted })
+    const result = await this.tryProvision(this.store.current().tunnel, token, request)
+    this.provisionSteps = result.steps
+    this.provisionError = result.error
+    this.cachedRead = undefined
+    return this.state()
+  }
+
+  /**
+   * Run one provision attempt, then start the tunnel when it succeeded.
+   * @param tunnel - settings in force at the start of the attempt.
+   * @param token - effective access key.
+   * @param request - page submission controlling reuse and the local target.
+   * @returns the complete step list and the failure when one occurred.
+   */
+  private async tryProvision(
+    tunnel: TunnelSettings,
+    token: string,
+    request: ReturnType<typeof readProvisionRequest>,
+  ): Promise<{ readonly steps: readonly ProvisionStep[]; readonly error?: Diagnostic }> {
+    try {
+      const result = await provisionSakuraFrpTunnel(tunnel, {
+        api: this.sakurafrpApi(token),
+        localPort: this.store.current().host.port,
+        ...(request.reuseExisting === undefined ? {} : { reuseExisting: request.reuseExisting }),
+        resolveFrpcPath: () => this.frpcPathFor(this.store.current().tunnel),
+        downloadFrpc: () => this.downloadFrpcDependency(this.dataDir),
+      })
+      this.provisionAccount = result.account
+      this.provisionNode = result.node
+      this.provisionTunnelInfo = result.tunnel
+      this.provisionFrpc = result.frpc
+      this.provisionWarning = result.warning
+      await this.store.save({ ...this.store.current(), enabled: true, tunnel: result.settings })
+      // Restart the remote host so the new derived origin reaches its overlay.
+      await this.apply(true)
+      return await this.startTunnelAfterProvision(result.steps)
+    } catch (error) {
+      if (error instanceof TunnelProvisionError) {
+        return { steps: error.steps, error: { code: error.code, message: error.message } }
+      }
+      const message = describeError(error)
+      return { steps: withPendingSteps([], 'verify-token', message), error: { code: 'provision-failed', message } }
+    }
+  }
+
+  /**
+   * Append the start step to a successful provision by starting the tunnel.
+   * @param steps - steps recorded by the provision.
+   * @returns the complete step list and the start failure when it occurred.
+   */
+  private async startTunnelAfterProvision(
+    steps: readonly ProvisionStep[],
+  ): Promise<{ readonly steps: readonly ProvisionStep[]; readonly error?: Diagnostic }> {
+    const withoutStart = steps.filter(step => step.id !== 'start-tunnel')
+    try {
+      const { task } = this.startTunnelStartup(signal => this.startTunnelNow(signal))
+      await task
+      return { steps: [...withoutStart, { id: 'start-tunnel', status: 'done', message: 'frpc 隧道已启动，配对链接使用新的公网地址。' }] }
+    } catch (error) {
+      const message = describeError(error)
+      return {
+        steps: [...withoutStart, { id: 'start-tunnel', status: 'failed', message }],
+        error: error instanceof TunnelError
+          ? { code: error.code, message: error.message }
+          : { code: 'tunnel-start-failed', message },
+      }
+    }
   }
 
   /**
@@ -312,6 +446,11 @@ export class Bridge {
       iniPath: config.tunnel.iniPath,
       extraArgs: config.tunnel.extraArgs,
       tokenConfigured: config.tunnel.token !== '',
+      autoProvision: config.tunnel.autoProvision,
+      frpcAutoDownload: config.tunnel.frpcAutoDownload,
+      nodeId: config.tunnel.nodeId,
+      tunnelName: config.tunnel.tunnelName,
+      tunnelId: config.tunnel.tunnelId,
     }
     return { enabled: config.enabled, runner: config.runner, host: config.host, pairing: config.pairing, tunnel }
   }
@@ -319,13 +458,56 @@ export class Bridge {
   /** Project the tunnel child and its derived facts into the page view. */
   private tunnelState(config: DeviceInterconnectConfig): TunnelState {
     const readiness = this.configTunnelReadiness(config)
+    const frpc = this.frpcInfo(config.tunnel)
+    const node = this.provisionNode
+      ?? (config.tunnel.nodeId !== null && config.tunnel.nodeId > 0 ? { id: config.tunnel.nodeId } : undefined)
+    const tunnelInfo = this.provisionTunnelInfo
+      ?? (config.tunnel.tunnelId !== null && config.tunnel.tunnelId > 0
+        ? {
+          id: config.tunnel.tunnelId,
+          name: config.tunnel.tunnelName,
+          ...remoteOfAddress(config.tunnel.publicAddress),
+        }
+        : undefined)
+    const provision = this.provisionSteps.length === 0
+      ? undefined
+      : {
+        lastSteps: this.provisionSteps,
+        ...(this.provisionError === undefined ? {} : { lastError: this.provisionError }),
+        ...(this.provisionWarning === undefined ? {} : { warning: this.provisionWarning }),
+      }
     return {
       ...this.tunnelSupervisor.status(),
       provider: config.tunnel.provider,
       ready: readiness.ready,
       problems: readiness.problems,
       derivedPublicOrigin: derivePublicOrigin(config.tunnel),
+      ...(this.provisionAccount === undefined ? {} : { account: this.provisionAccount }),
+      ...(provision === undefined ? {} : { provision }),
+      ...(node === undefined ? {} : { node }),
+      ...(tunnelInfo === undefined ? {} : { tunnel: tunnelInfo }),
+      ...(frpc === undefined ? {} : { frpc }),
     }
+  }
+
+  /** Resolve the frpc executable the launch and readiness checks use. */
+  private frpcPathFor(tunnel: TunnelSettings): string {
+    if (tunnel.frpcPath !== '') return tunnel.frpcPath
+    // Only the automatic provision may run the plugin-downloaded binary.
+    if (!tunnel.autoProvision) return ''
+    const managed = frpcInstallPath(this.dataDir, this.platform)
+    return this.exists(managed) ? managed : ''
+  }
+
+  /** Project the resolved frpc executable facts onto the page view. */
+  private frpcInfo(tunnel: TunnelSettings): TunnelFrpcInfo | undefined {
+    const path = this.frpcPathFor(tunnel)
+    if (path === '') return undefined
+    const managed = frpcInstallPath(this.dataDir, this.platform)
+    const cached = this.provisionFrpc?.path === path ? this.provisionFrpc : undefined
+    const downloaded = path === managed || cached?.downloaded === true
+    const version = cached?.version
+    return { path, downloaded, ...(version === undefined ? {} : { version }) }
   }
 
   /** Whether the current configuration asks for and can start the tunnel. */
@@ -335,7 +517,7 @@ export class Bridge {
 
   /** Build the tunnel readiness of one configuration. */
   private configTunnelReadiness(config: DeviceInterconnectConfig): TunnelReadiness {
-    return tunnelReadiness(config.tunnel, this.exists)
+    return tunnelReadiness(config.tunnel, this.exists, this.frpcPathFor(config.tunnel))
   }
 
   /** Project the control-plane window into the page view. */
@@ -408,7 +590,7 @@ export class Bridge {
     }
     const current = this.store.current()
     if (!this.tunnelWanted(current) || this.tunnelSupervisor.status().running) return
-    this.tunnelSupervisor.start(tunnelLaunchCommand(current.tunnel, this.dataDir, this.env))
+    this.tunnelSupervisor.start(tunnelLaunchCommand(current.tunnel, this.dataDir, this.env, this.frpcPathFor(current.tunnel)))
     this.logger.info('device-interconnect: frpc tunnel child started')
   }
 
@@ -440,7 +622,7 @@ export class Bridge {
     if (this.disposed || signal.aborted) return
     if (!ready) throw new TunnelError('tunnel-host-not-ready', 409, '远程宿主尚未就绪（监听端口未确认），请稍后重试。')
     if (this.tunnelSupervisor.status().running) return
-    this.tunnelSupervisor.start(tunnelLaunchCommand(config.tunnel, this.dataDir, this.env))
+    this.tunnelSupervisor.start(tunnelLaunchCommand(config.tunnel, this.dataDir, this.env, this.frpcPathFor(config.tunnel)))
     this.logger.info('device-interconnect: frpc tunnel child started')
   }
 
@@ -563,6 +745,67 @@ export class Bridge {
 /** Platform path-list separator for the child's `PATH`. */
 function nodePathSeparator(): string {
   return process.platform === 'win32' ? ';' : ':'
+}
+
+/**
+ * Read one provision request body; every field is optional and type-checked.
+ * @param candidate - parsed JSON body, or undefined for an empty body.
+ * @returns the validated request.
+ * @throws {ConfigValidationError} when a field has the wrong type.
+ */
+function readProvisionRequest(candidate: unknown): ProvisionRequest {
+  if (candidate === undefined) return {}
+  if (!isRecord(candidate)) throw new ConfigValidationError(['请求体必须是一个 JSON 对象。'])
+  const request: { -readonly [K in keyof ProvisionRequest]: ProvisionRequest[K] } = {}
+  const token = candidate['token']
+  if (token !== undefined) {
+    if (token === null) request.token = null
+    else if (typeof token === 'string') request.token = token.trim()
+    else throw new ConfigValidationError(['token 必须是字符串或 null。'])
+  }
+  const frpcPath = candidate['frpcPath']
+  if (frpcPath !== undefined) {
+    if (typeof frpcPath !== 'string') throw new ConfigValidationError(['frpcPath 必须是字符串。'])
+    request.frpcPath = frpcPath
+  }
+  const frpcAutoDownload = candidate['frpcAutoDownload']
+  if (frpcAutoDownload !== undefined) {
+    if (typeof frpcAutoDownload !== 'boolean') throw new ConfigValidationError(['frpcAutoDownload 必须是 true 或 false。'])
+    request.frpcAutoDownload = frpcAutoDownload
+  }
+  const nodeId = candidate['nodeId']
+  if (nodeId !== undefined) {
+    if (nodeId === null) request.nodeId = null
+    else if (typeof nodeId === 'number' && Number.isSafeInteger(nodeId) && nodeId >= 0) {
+      request.nodeId = nodeId === 0 ? null : nodeId
+    } else {
+      throw new ConfigValidationError(['nodeId 必须是 0 或正整数，或 null（自动选择）。'])
+    }
+  }
+  const tunnelName = candidate['tunnelName']
+  if (tunnelName !== undefined) {
+    if (typeof tunnelName !== 'string') throw new ConfigValidationError(['tunnelName 必须是字符串。'])
+    request.tunnelName = tunnelName
+  }
+  const reuseExisting = candidate['reuseExisting']
+  if (reuseExisting !== undefined) {
+    if (typeof reuseExisting !== 'boolean') throw new ConfigValidationError(['reuseExisting 必须是 true 或 false。'])
+    request.reuseExisting = reuseExisting
+  }
+  return request
+}
+
+/** The provider-side remote value of one public address, when it has one. */
+function remoteOfAddress(publicAddress: string): { readonly remote?: string } {
+  const index = publicAddress.lastIndexOf(':')
+  if (index < 0) return {}
+  const remote = publicAddress.slice(index + 1)
+  return remote === '' ? {} : { remote }
+}
+
+/** Whether one unknown value is a JSON object. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 /** Convert one caught control-plane or transport failure into a diagnostic. */

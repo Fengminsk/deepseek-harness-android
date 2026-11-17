@@ -26,6 +26,11 @@ function tunnel(overrides: Partial<TunnelSettings> = {}): TunnelSettings {
     publicAddress: 'cn-xx.natfrp.cloud:12345',
     iniPath: '',
     extraArgs: '',
+    autoProvision: false,
+    frpcAutoDownload: true,
+    nodeId: null,
+    tunnelName: 'DSH 设备互联',
+    tunnelId: null,
     ...overrides,
   }
 }

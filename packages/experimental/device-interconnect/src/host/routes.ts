@@ -17,7 +17,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import {
   API_PREFIX, BRIDGE_HEADER, BRIDGE_HEADER_VALUE, CONFIG_ROUTE, ENABLED_ROUTE, LOGS_ROUTE,
-  PAIR_ROUTE, QR_ROUTE, REVOKE_ROUTE, STATE_ROUTE, TUNNEL_LOGS_ROUTE, TUNNEL_ROUTE,
+  PAIR_ROUTE, PROVISION_ROUTE, QR_ROUTE, REVOKE_ROUTE, STATE_ROUTE, TUNNEL_LOGS_ROUTE, TUNNEL_ROUTE,
 } from '../api.ts'
 import type { ErrorBody, RuntimeState } from '../types.ts'
 import { ConfigValidationError } from './config.ts'
@@ -35,6 +35,8 @@ export interface BridgeApi {
   setEnabled(enabled: unknown): Promise<RuntimeState>
   /** Start or stop the managed NAT-traversal tunnel. */
   setTunnelEnabled(enabled: unknown): Promise<RuntimeState>
+  /** Validate the access key and create or reuse the SakuraFrp tunnel. */
+  provisionTunnel(candidate: unknown): Promise<RuntimeState>
   /** Validate and persist one configuration. */
   saveConfig(candidate: unknown): Promise<RuntimeState>
   /** Reopen the pairing window. */
@@ -172,6 +174,13 @@ async function route(
         return
       }
       sendJson(response, 200, await bridge.setTunnelEnabled((body as { readonly enabled?: unknown }).enabled))
+      return
+    }
+    case PROVISION_ROUTE: {
+      if (!requireMethod(method, 'POST', response)) return
+      const body = await readJsonBody(request, response)
+      if (body === undefined) return
+      sendJson(response, 200, await bridge.provisionTunnel(body))
       return
     }
     case CONFIG_ROUTE: {

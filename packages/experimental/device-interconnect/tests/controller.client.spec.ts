@@ -29,6 +29,11 @@ function config(overrides: Partial<DeviceInterconnectView> = {}): DeviceIntercon
       iniPath: '',
       extraArgs: '',
       tokenConfigured: true,
+      autoProvision: false,
+      frpcAutoDownload: true,
+      nodeId: null,
+      tunnelName: 'DSH 设备互联',
+      tunnelId: null,
     },
     ...overrides,
   }
@@ -162,6 +167,21 @@ describe('page actions', () => {
     const body = save?.body as { config: { tunnel: Record<string, unknown> } } | undefined
     expect(body?.config.tunnel).not.toHaveProperty('token')
     expect(body?.config.tunnel).toMatchObject({ provider: 'sakurafrp', tunnelIds: '114514' })
+  })
+
+  it('posts the one-click provision request with the staged access key', async () => {
+    const { controller, requests } = bench()
+    await controller.refresh()
+    controller.actions.edit('tunnelToken', 'new-key')
+    controller.actions.toggle('frpcAutoDownload', false)
+    controller.actions.edit('tunnelName', 'My tunnel')
+    await controller.actions.provision()
+    const provision = requests.find(request => request.url.endsWith('/tunnel/provision'))
+    expect(provision).toMatchObject({
+      method: 'POST',
+      body: { token: 'new-key', frpcAutoDownload: false, tunnelName: 'My tunnel' },
+    })
+    expect(controller.store.getSnapshot().notice).toEqual({ kind: 'success', text: { key: 'tunnelProvisioned' } })
   })
 
   it('starts and stops the tunnel through the tunnel route', async () => {

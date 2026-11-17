@@ -150,8 +150,8 @@ function DiagnosticLine(props: { diagnostic: Diagnostic; t: T }) {
 }
 
 /**
- * The managed NAT-traversal card: provider choice, frpc settings, the derived
- * public origin, the child status, its output, and the start/stop action.
+ * The managed NAT-traversal card: the one-click automatic setup, its steps and
+ * account facts, plus the manual fields kept as an advanced option.
  * @param props - the runtime snapshot, the staged configuration, and the page actions.
  * @returns the collapsible tunnel card.
  */
@@ -164,7 +164,9 @@ function TunnelCard(props: {
 }) {
   const { runtime, draft, actions, busy, t } = props
   const tunnel = runtime.tunnel
+  const config = runtime.config
   const sakurafrp = draft.tunnelProvider === 'sakurafrp'
+  const [confirmOpen, setConfirmOpen] = useState(false)
   const canStart = tunnel.ready && runtime.child.running
   const status = !sakurafrp
     ? { label: t('tunnelStatusOff'), tone: 'neutral' as const }
@@ -181,6 +183,26 @@ function TunnelCard(props: {
     { value: 'sakurafrp', label: t('tunnelProviderSakuraFrp') },
   ]
   const providerId = useId()
+  const account = tunnel.account
+  const provision = tunnel.provision
+  const accountLine = account === undefined
+    ? undefined
+    : t('tunnelAccountLine', {
+      name: account.name ?? t('tunnelUnknown'),
+      tunnels: `${String(account.tunnelCount ?? 0)}/${String(account.tunnelLimit ?? '—')}`,
+    })
+  const stepTone = (status: string): 'success' | 'danger' | 'neutral' | 'warning' => {
+    if (status === 'done') return 'success'
+    if (status === 'failed') return 'danger'
+    return 'neutral'
+  }
+  const stepLabel = (status: string): string => {
+    if (status === 'done') return t('tunnelStepDone')
+    if (status === 'failed') return t('tunnelStepFailed')
+    if (status === 'skipped') return t('tunnelStepSkipped')
+    return t('tunnelStepPending')
+  }
+  const provisionActionLabel = provision?.lastError !== undefined ? t('tunnelProvisionRetry') : t('tunnelProvisionAction')
   return (
     <section className={styles.card} aria-labelledby="device-interconnect-tunnel">
       <details>
@@ -208,24 +230,66 @@ function TunnelCard(props: {
             )}
           </div>
           {sakurafrp && <p className={styles.hint}>{t('tunnelTcpOnly')}</p>}
-          {sakurafrp && tunnel.error !== undefined && (
-            <p className={`${styles.hint} ${styles.danger}`}>{tunnel.error}</p>
-          )}
           {sakurafrp && (
             <>
+              <ToggleField label={t('tunnelAutoMode')} checked={draft.autoProvision} disabled={busy}
+                onChange={next => { actions.toggle('autoProvision', next) }} />
+              <p className={styles.hint}>{draft.autoProvision ? t('tunnelAutoModeHint') : t('tunnelManualModeHint')}</p>
               <div className={styles.grid}>
-                <TextField label={t('tunnelFrpcPath')} value={draft.frpcPath} hint={t('tunnelFrpcPathHint')}
-                  disabled={busy} onEdit={value => { actions.edit('frpcPath', value) }} />
                 <TextField label={t('tunnelAccessKey')} value={draft.tunnelToken} password
                   hint={t('tunnelAccessKeyHint')} disabled={busy}
-                  placeholder={runtime.config.tunnel.tokenConfigured ? t('tunnelAccessKeyStoredPlaceholder') : t('tunnelAccessKeyPlaceholder')}
+                  placeholder={config.tunnel.tokenConfigured ? t('tunnelAccessKeyStoredPlaceholder') : t('tunnelAccessKeyPlaceholder')}
                   onEdit={value => { actions.edit('tunnelToken', value) }} />
-                <TextField label={t('tunnelIds')} value={draft.tunnelIds} hint={t('tunnelIdsHint')}
-                  disabled={busy} onEdit={value => { actions.edit('tunnelIds', value) }} />
-                <TextField label={t('tunnelPublicAddress')} value={draft.publicAddress}
-                  hint={t('tunnelPublicAddressHint')} disabled={busy}
-                  onEdit={value => { actions.edit('publicAddress', value) }} />
+                {draft.autoProvision
+                  ? (
+                    <TextField label={t('tunnelTunnelName')} value={draft.tunnelName} hint={t('tunnelTunnelNameHint')}
+                      disabled={busy} onEdit={value => { actions.edit('tunnelName', value) }} />
+                  )
+                  : (
+                    <>
+                      <TextField label={t('tunnelFrpcPath')} value={draft.frpcPath} hint={t('tunnelFrpcPathHint')}
+                        disabled={busy} onEdit={value => { actions.edit('frpcPath', value) }} />
+                      <TextField label={t('tunnelIds')} value={draft.tunnelIds} hint={t('tunnelIdsHint')}
+                        disabled={busy} onEdit={value => { actions.edit('tunnelIds', value) }} />
+                      <TextField label={t('tunnelPublicAddress')} value={draft.publicAddress}
+                        hint={t('tunnelPublicAddressHint')} disabled={busy}
+                        onEdit={value => { actions.edit('publicAddress', value) }} />
+                    </>
+                  )}
               </div>
+              {draft.autoProvision && (
+                <ToggleField label={t('tunnelAutoDownload')} checked={draft.frpcAutoDownload} disabled={busy}
+                  onChange={next => { actions.toggle('frpcAutoDownload', next) }} />
+              )}
+              {accountLine !== undefined && <p className={styles.hint}>{accountLine}</p>}
+              {tunnel.node !== undefined && (
+                <p className={styles.hint}>
+                  {t('tunnelNodeLine', { node: `${String(tunnel.node.id)}${tunnel.node.name === undefined ? '' : ` ${tunnel.node.name}`}${tunnel.node.host === undefined ? '' : ` (${tunnel.node.host})`}` })}
+                </p>
+              )}
+              {tunnel.tunnel !== undefined && (
+                <p className={styles.hint}>
+                  {t('tunnelTunnelLine', { tunnel: `#${String(tunnel.tunnel.id)}${tunnel.tunnel.name === undefined ? '' : ` ${tunnel.tunnel.name}`}` })}
+                </p>
+              )}
+              {provision !== undefined && provision.lastSteps.length > 0 && (
+                <div className={styles.field}>
+                  <span className={styles.fieldLabel}>{t('tunnelStepsTitle')}</span>
+                  <ul className={styles.problemList}>
+                    {provision.lastSteps.map(step => (
+                      <li key={step.id}>
+                        <Tag tone={stepTone(step.status)}>{stepLabel(step.status)}</Tag> {step.message}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {provision?.lastError !== undefined && <DiagnosticLine diagnostic={provision.lastError} t={t} />}
+              {provision?.warning !== undefined && (
+                <p className={`${styles.hint} ${styles.danger}`}>
+                  {t('tunnelProvisionWarning', { warning: provision.warning })}
+                </p>
+              )}
               {tunnel.derivedPublicOrigin !== ''
                 ? (
                   <CopyField label={t('tunnelDerivedOrigin')} text={tunnel.derivedPublicOrigin}
@@ -238,20 +302,46 @@ function TunnelCard(props: {
                   {t('tunnelNotReady', { problems: tunnel.problems.map(problem => problem.message).join(' / ') })}
                 </p>
               )}
+              {tunnel.error !== undefined && (
+                <p className={`${styles.hint} ${styles.danger}`}>{tunnel.error}</p>
+              )}
+              <div className={styles.actions}>
+                {draft.autoProvision
+                  ? (
+                    <>
+                      <Button variant="primary" size="sm" disabled={busy} onClick={() => { setConfirmOpen(true) }}>
+                        {provisionActionLabel}
+                      </Button>
+                      <Button variant="outline" size="sm" disabled={busy} onClick={() => { void actions.save() }}>
+                        {busy ? t('saving') : t('tunnelSave')}
+                      </Button>
+                    </>
+                  )
+                  : (
+                    <Button variant="primary" size="sm" disabled={busy} onClick={() => { void actions.save() }}>
+                      {busy ? t('saving') : t('tunnelSave')}
+                    </Button>
+                  )}
+              </div>
               <details className={styles.details}>
                 <summary className={styles.detailsSummary}>{t('tunnelAdvanced')}</summary>
                 <div className={styles.detailsBody}>
-                  <TextField label={t('tunnelIniPath')} value={draft.tunnelIniPath} hint={t('tunnelIniPathHint')}
-                    disabled={busy} onEdit={value => { actions.edit('tunnelIniPath', value) }} />
-                  <TextField label={t('tunnelExtraArgs')} value={draft.tunnelExtraArgs} hint={t('tunnelExtraArgsHint')}
-                    disabled={busy} onEdit={value => { actions.edit('tunnelExtraArgs', value) }} />
+                  <div className={styles.grid}>
+                    {draft.autoProvision && (
+                      <TextField label={t('tunnelFrpcPath')} value={draft.frpcPath} hint={t('tunnelFrpcPathHint')}
+                        disabled={busy} onEdit={value => { actions.edit('frpcPath', value) }} />
+                    )}
+                    {draft.autoProvision && (
+                      <TextField label={t('tunnelNodeId')} value={draft.nodeId} numeric hint={t('tunnelNodeIdHint')}
+                        disabled={busy} onEdit={value => { actions.edit('nodeId', value) }} />
+                    )}
+                    <TextField label={t('tunnelIniPath')} value={draft.tunnelIniPath} hint={t('tunnelIniPathHint')}
+                      disabled={busy} onEdit={value => { actions.edit('tunnelIniPath', value) }} />
+                    <TextField label={t('tunnelExtraArgs')} value={draft.tunnelExtraArgs} hint={t('tunnelExtraArgsHint')}
+                      disabled={busy} onEdit={value => { actions.edit('tunnelExtraArgs', value) }} />
+                  </div>
                 </div>
               </details>
-              <div className={styles.actions}>
-                <Button variant="primary" size="sm" disabled={busy} onClick={() => { void actions.save() }}>
-                  {busy ? t('saving') : t('tunnelSave')}
-                </Button>
-              </div>
               <details className={styles.details}>
                 <summary className={styles.detailsSummary}>{t('tunnelLogsTitle')}</summary>
                 <div className={styles.detailsBody}>
@@ -264,6 +354,24 @@ function TunnelCard(props: {
           )}
         </div>
       </details>
+      <Modal
+        open={confirmOpen}
+        onClose={() => { setConfirmOpen(false) }}
+        title={t('tunnelProvisionConfirmTitle')}
+        tone="warning"
+        closeLabel={t('close')}
+        description={t('tunnelProvisionConfirmBody')}
+        footer={(
+          <div className={styles.actions}>
+            <Button variant="outline" size="sm" onClick={() => { setConfirmOpen(false) }}>{t('cancel')}</Button>
+            <Button variant="primary" size="sm" disabled={busy}
+              onClick={() => {
+                setConfirmOpen(false)
+                void actions.provision()
+              }}>{t('tunnelProvisionConfirm')}</Button>
+          </div>
+        )}
+      />
     </section>
   )
 }

@@ -8,7 +8,8 @@ export { apply, name } from './host/plugin.ts'
 export type { Config } from './host/plugin.ts'
 export type {
   ChildState, ControlPlaneState, DeviceInterconnectConfig, DeviceInterconnectConfigInput, DeviceInterconnectView,
-  Diagnostic, ErrorBody, PairingSettings, PairingView, RemoteDevice, RemoteHostFacts, RemoteHostSettings,
-  RunnerConfig, RunnerReadiness, RuntimeState, TunnelLogsResponse, TunnelProvider, TunnelReadiness, TunnelRequest,
-  TunnelSettings, TunnelSettingsInput, TunnelSettingsView, TunnelState,
+  Diagnostic, ErrorBody, PairingSettings, PairingView, ProvisionRequest, ProvisionStep, ProvisionStepStatus,
+  RemoteDevice, RemoteHostFacts, RemoteHostSettings, RunnerConfig, RunnerReadiness, RuntimeState, TunnelAccount,
+  TunnelFrpcInfo, TunnelInfo, TunnelLogsResponse, TunnelNodeInfo, TunnelProvider, TunnelProvisionState,
+  TunnelReadiness, TunnelRequest, TunnelSettings, TunnelSettingsInput, TunnelSettingsView, TunnelState,
 } from './types.ts'

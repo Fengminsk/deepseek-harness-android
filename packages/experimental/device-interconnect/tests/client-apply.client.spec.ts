@@ -48,7 +48,7 @@ describe('device-interconnect client apply', () => {
     expect(typeof (face.hooks.deviceInterconnect as { getSnapshot?: unknown }).getSnapshot).toBe('function')
     for (const action of [
       'open', 'close', 'refresh', 'setEnabled', 'setTunnelEnabled', 'edit', 'toggle', 'selectTunnelProvider',
-      'save', 'regeneratePairing', 'revokeDevice', 'dismissNotice',
+      'provision', 'save', 'regeneratePairing', 'revokeDevice', 'dismissNotice',
     ]) {
       expect(typeof face.actions[action]).toBe('function')
     }

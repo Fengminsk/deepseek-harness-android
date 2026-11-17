@@ -23,6 +23,9 @@ export const PAIR_ROUTE = `${API_PREFIX}/pair`
 /** `POST` start or stop the managed NAT-traversal tunnel. */
 export const TUNNEL_ROUTE = `${API_PREFIX}/tunnel`
 
+/** `POST` validate the access key and create or reuse the SakuraFrp tunnel. */
+export const PROVISION_ROUTE = `${API_PREFIX}/tunnel/provision`
+
 /** `POST` revoke one paired device. */
 export const REVOKE_ROUTE = `${API_PREFIX}/devices/revoke`
 

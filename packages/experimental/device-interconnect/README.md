@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-An opt-in Settings page that supervises the PC-side remote DSH host. It starts and stops the host as a child process, shows its long-lived pairing code, edits listener settings, and lists paired phones with a revoke action. It can also supervise a SakuraFrp `frpc` child that publishes the host's TLS port through a TCP tunnel and derives the pairing origin from the tunnel's public address. The host itself is not part of this bundle: the plugin talks to its loopback pairing-control HTTP API, so a stock DSH install can load this package.
+An opt-in Settings page that supervises the PC-side remote DSH host. It starts and stops the host as a child process, shows its long-lived pairing code, edits listener settings, and lists paired phones with a revoke action. Given only a SakuraFrp access key it can also create or reuse a TCP tunnel through the SakuraFrp API, derive the pairing origin from the provider's public address, and start frpc. The host itself is not part of this bundle: the plugin talks to its loopback pairing-control HTTP API, so a stock DSH install can load this package.
 
 ## Table of Contents
 
@@ -56,26 +56,32 @@ The page edits the remote host's `port`, `host`, `publicHost`, `publicOrigin`, U
 
 The page can run a [SakuraFrp](https://www.natfrp.com/) `frpc` child that maps the remote host's TLS port to the internet, so a phone outside the LAN can pair. Only a **TCP tunnel** works: the remote host terminates TLS itself with its fixed CA, so an HTTP or HTTPS tunnel — which terminates TLS at the provider — makes every pinned-certificate connection fail. The tunnel card states that limit and rejects a public address pasted as an `https://` URL.
 
+#### One-click setup (default)
+
+With just the access key the plugin can do the whole setup through the [SakuraFrp API v4](https://api.natfrp.com/docs/) (Bearer auth, only for this computer's DSH remote access — not a public game server):
+
+1. Get the access key from the SakuraFrp panel (**View access key**; different from the account password).
+2. Open **NAT traversal (SakuraFrp)** → **SakuraFrp**, keep **Create the tunnel automatically**, paste the access key, and optionally change the tunnel name.
+3. **Save and create tunnel** asks for confirmation, then: validates the account (frozen, real-name, and tunnel-quota facts are reported), picks the first node that accepts new tunnels (`flag & 4`, not offline, not BETA, not VIP-only), reuses the saved or same-name TCP tunnel (aligning its local target to `127.0.0.1:<remote host port>`), or creates one; derives `publicAddress = <node-host>:<remote-port>` and `publicOrigin = wss://…`; prepares frpc (a missing executable is downloaded only after that explicit click, then checked with `frpc -V` for the SakuraFrp build); restarts the remote host so pairing links use the new origin; and starts the tunnel.
+4. The card shows each step, the account (name, tunnel quota, remaining traffic), node, tunnel id, effective origin, the child state and output. A failed attempt keeps the saved configuration and shows the failed step; **Retry automatic setup** reuses the same tunnel. An `important_warning_for_ai` returned by the API is shown in the card.
+
+The automatic mode consumes one tunnel from the account quota. The access key stays write-only: the page never displays it again.
+
+#### Manual mode (advanced)
+
+Turn **Create the tunnel automatically** off to manage the tunnel yourself:
+
 1. In the SakuraFrp panel, create a **TCP** tunnel whose local target is `127.0.0.1:<the remote host port>` (default 4777). The panel assigns a node domain and remote port.
-2. Open **NAT traversal (SakuraFrp)** on the page, choose **SakuraFrp**, and fill in:
+2. Fill in the frpc executable path, the tunnel IDs, and the public `<node-domain>:<remote-port>`; the access key is still needed to authenticate frpc.
+3. **Save tunnel settings** writes the derived `publicOrigin` into the generated remote-host overlay and restarts a running remote host. **Start tunnel** starts frpc once the remote host reports its listener; **Stop tunnel** leaves the remote host running. When the plugin activates, a configured tunnel starts again after the remote host is ready; disabling the remote host or uninstalling the bundle stops the tunnel first.
 
-   | Field | Value |
-   | --- | --- |
-   | frpc executable | Full path of the `frpc`/`frpc.exe` you obtained from SakuraFrp. The plugin checks that it exists and never downloads it. |
-   | Access key | SakuraFrp panel → **View access key** (different from the account password). Stored in plain text in this plugin's configuration file and never served back to the page. |
-   | Tunnel IDs | One or more TCP tunnel ids, comma separated: `114514` or `114514,114516`. |
-   | Public address | `<node-domain>:<remote-port>` as the panel shows it, for example `cn-xx.natfrp.cloud:12345`. No `https://` prefix; an explicit port such as `:443` is kept. |
-
-3. **Save tunnel settings.** The page derives `publicOrigin = wss://<node-domain>:<remote-port>` and writes it into the generated remote-host overlay, restarting a running remote host so new pairing links use it. While a public address is configured it overrides the manual `publicOrigin` field above; the card echoes the effective origin.
-4. **Start tunnel** starts the frpc child once the remote host reports its listener. The card shows the child state, its recent output, and the action becomes **Stop tunnel** / **Retry**. Stopping the tunnel leaves the remote host running. When the plugin activates, a configured tunnel starts again after the remote host is ready; disabling the remote host or uninstalling the bundle stops the tunnel first.
-
-Required facts may be saved while still empty — readiness lists what is missing and neither the button nor the plugin activation spawns a broken command. The advanced disclosure offers a custom `frpc.ini` (`frpc -c <ini> -n`, replacing the access key and tunnel ids, though the public address is still required for the derived origin) and extra frpc arguments. frpc runs with `-n --disable_log_color` so it does not self-update and its output stays readable.
+Readiness lists missing facts and neither the button nor activation spawns a broken command. The advanced disclosure offers a custom `frpc.ini` (`frpc -c <ini> -n`, replacing the access key and tunnel ids, though the public address is still required for the derived origin), a pinned node id, extra frpc arguments, and the frpc path. Managed frpc runs with `-n --disable_log_color` so it does not self-update and its output stays readable.
 
 ### Security model
 
 The remote host's control API binds `127.0.0.1` only, and this plugin's own bridge routes reject any non-loopback `Host` head and any cross-site `Origin`. Every read and write also requires the `x-dsh-device-interconnect: 1` header, which a cross-site page cannot set without a CORS preflight this Host never approves; no CORS header is returned. The one header-free route is the QR image, which an `<img>` element must be able to load and which reveals nothing the page does not already show. All responses are `Cache-Control: no-store`. The accepted local threat is the usual one: another process on the same computer can read the configuration file and the children's logs.
 
-The SakuraFrp access key is write-only over the bridge: state reports only `tokenConfigured: true`, the page never displays it again, and it is not logged. It is still stored in plain text in `$DSH_HOME/device-interconnect/config.json`, so the same local-read threat applies; an empty staged field keeps the stored key, and clearing it requires an explicit `clearToken`/`null` write. The plugin never downloads frpc: the executable path is user-supplied and only checked for existence.
+The SakuraFrp access key is write-only over the bridge: state reports only `tokenConfigured: true`, the page never displays it again, and it is not logged. It is still stored in plain text in `$DSH_HOME/device-interconnect/config.json`, so the same local-read threat applies; an empty staged field keeps the stored key, and clearing it requires an explicit `clearToken`/`null` write. One click calls `https://api.natfrp.com/v4` with the access key as a Bearer token to read the account, nodes, and tunnels and to create or edit one tunnel; the key is never put in a URL, a log line, or an error message. A clicked one-click setup may download `frpc` from `https://getfr.sh/d/…` into `<DSH_HOME>/device-interconnect/bin/`, then runs `frpc -V` and requires `sakura` in its output before the binary is ever spawned; nothing is downloaded during plugin activation.
 
 ### Uninstall
 
@@ -92,9 +98,10 @@ Remove the bundle in the plugin manager; the plugin stops the tunnel and then th
 
 | Method and path | Body | Effect |
 | --- | --- | --- |
-| `GET /device-interconnect/api/state` | — | configuration (without the access key), remote-host child state and log tail, tunnel child state, derived origin and readiness, control-plane facts, pairing view, devices, runner readiness |
+| `GET /device-interconnect/api/state` | — | configuration (without the access key), remote-host child state and log tail, tunnel child state, derived origin and readiness, SakuraFrp account/node/tunnel/frpc facts, the last provision steps, control-plane facts, pairing view, devices, runner readiness |
 | `POST /device-interconnect/api/enabled` | `{enabled}` | persist the remote-host switch and start or stop that child |
 | `POST /device-interconnect/api/tunnel` | `{enabled}` | start or stop the tunnel child without changing the remote-host switch |
+| `POST /device-interconnect/api/tunnel/provision` | `{token?, frpcPath?, frpcAutoDownload?, nodeId?, tunnelName?, reuseExisting?}` | validate the access key, select a node, create or reuse the TCP tunnel, prepare frpc, align the origin, and start the tunnel; the snapshot carries the step results |
 | `POST /device-interconnect/api/config` | `{config}` | validate the complete document, persist it, restart a running child; `tunnel.token` is write-only (`null` or `clearToken` clears it) |
 | `POST /device-interconnect/api/pair` | — | reopen the pairing window through the control plane |
 | `POST /device-interconnect/api/devices/revoke` | `{deviceId}` | revoke one paired device |
@@ -146,7 +153,8 @@ The bundle adds no request content, so it neither grows nor invalidates a cached
 - **Windows process-tree kill is `taskkill`** — a platform where `taskkill` is unavailable leaves grandchild processes alive after a stop; the supervisor records the timeout rather than reporting a clean stop.
 - **Only TCP tunnels preserve the remote host's TLS** — the App pins the remote host's CA, so an HTTP/HTTPS SakuraFrp tunnel (TLS terminated at the provider) cannot work. The tunnel card rejects an `https://` public address and states the limit; there is no automatic fallback to another tunnel type.
 - **The SakuraFrp access key is stored in plain text** — the bridge never serves it back and it is not logged, but `$DSH_HOME/device-interconnect/config.json` holds it in cleartext for other local processes to read. Accepted under the same local-read threat as the pairing configuration.
-- **frpc is user-supplied** — the plugin never downloads a tunnel client (supply-chain safety), so the user provides the executable path from SakuraFrp and the tunnel cannot start until that file exists.
+- **frpc is downloaded only on an explicit click** — the one-click setup may fetch the SakuraFrp frpc build from `https://getfr.sh/d/…`; the download is version-checked with `frpc -V` and a mismatch asks for a manual path. Manual mode never downloads.
+- **The one-click setup depends on a third-party API** — SakuraFrp API v4, its node flags, and the account's tunnel quota are external contracts. An API or quota change fails the setup with a readable reason, and the saved configuration plus the retry path stay usable.
 - **The tunnel-derived origin overrides the manual one** — while a public address is configured, the manual `publicOrigin` field is ignored and the derived `wss://<node-domain>:<port>` is announced. Clearing the public address restores the manual origin on the next save or start.
 
 <a id="dev-note"></a>

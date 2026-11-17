@@ -8,9 +8,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
-  CONFIG_FILE_NAME, ConfigStore, ConfigValidationError, DEFAULT_PAIRING_TTL_MS, MAXIMUM_PAIRING_TTL_MS,
-  dataDirectory, defaultConfig, defaultDshHome, inferRunner, isDeviceId, isPairingOrigin, normalizeConfig,
-  readConfigFile, writeConfigFile, type InferenceEnvironment,
+  CONFIG_FILE_NAME, ConfigStore, ConfigValidationError, DEFAULT_PAIRING_TTL_MS, DEFAULT_TUNNEL_NAME,
+  MAXIMUM_PAIRING_TTL_MS, dataDirectory, defaultConfig, defaultDshHome, inferRunner, isDeviceId, isPairingOrigin,
+  normalizeConfig, readConfigFile, writeConfigFile, type InferenceEnvironment,
 } from '../src/host/config.ts'
 import type { DeviceInterconnectConfig } from '../src/types.ts'
 
@@ -80,6 +80,11 @@ function validDocument(): Record<string, unknown> {
       publicAddress: 'cn-xx.natfrp.cloud:12345',
       iniPath: '',
       extraArgs: '--log_level debug',
+      autoProvision: false,
+      frpcAutoDownload: true,
+      nodeId: null,
+      tunnelName: DEFAULT_TUNNEL_NAME,
+      tunnelId: null,
     },
   }
 }
@@ -121,6 +126,11 @@ describe('defaults and inference', () => {
       publicAddress: '',
       iniPath: '',
       extraArgs: '',
+      autoProvision: false,
+      frpcAutoDownload: true,
+      nodeId: null,
+      tunnelName: DEFAULT_TUNNEL_NAME,
+      tunnelId: null,
     })
     expect(config.runner).toEqual({
       nodePath: 'C:\\nodejs\\node.exe',
@@ -193,6 +203,11 @@ describe('validation', () => {
       publicAddress: 'cn-xx.natfrp.cloud:12345',
       iniPath: '',
       extraArgs: '--log_level debug',
+      autoProvision: false,
+      frpcAutoDownload: true,
+      nodeId: null,
+      tunnelName: DEFAULT_TUNNEL_NAME,
+      tunnelId: null,
     })
   })
 
@@ -304,6 +319,11 @@ describe('tunnel settings', () => {
         publicAddress: 'cn-xx.natfrp.cloud:12345',
         iniPath: '',
         extraArgs: '',
+        autoProvision: false,
+        frpcAutoDownload: true,
+        nodeId: null,
+        tunnelName: DEFAULT_TUNNEL_NAME,
+        tunnelId: null,
       },
     }
   }
@@ -388,6 +408,35 @@ describe('tunnel settings', () => {
     for (const extraArgs of ['--flag;rm', '--flag|other', '--flag & other', '--flag\n--other', '--flag `x`']) {
       expect(read({ provider: 'sakurafrp', extraArgs }).ok).toBe(false)
     }
+  })
+
+  it('validates the automatic provision fields and migrates their defaults', () => {
+    const migrated = normalizeConfig({ enabled: true }, fallback)
+    expect(migrated.ok).toBe(true)
+    if (!migrated.ok) return
+    expect(migrated.config.tunnel).toMatchObject({
+      autoProvision: false, frpcAutoDownload: true, nodeId: null, tunnelName: DEFAULT_TUNNEL_NAME, tunnelId: null,
+    })
+    const automatic = normalizeConfig({
+      ...validDocument(),
+      tunnel: { autoProvision: true, frpcAutoDownload: false, nodeId: 11, tunnelName: 'DSH 设备互联', tunnelId: 9 },
+    }, fallback)
+    expect(automatic.ok).toBe(true)
+    if (!automatic.ok) return
+    expect(automatic.config.tunnel).toMatchObject({ autoProvision: true, frpcAutoDownload: false, nodeId: 11, tunnelId: 9 })
+    const invalid = normalizeConfig({
+      ...validDocument(),
+      tunnel: { autoProvision: 'yes', frpcAutoDownload: 1, nodeId: -1, tunnelId: 'x', tunnelName: '' },
+    }, fallback)
+    expect(invalid.ok).toBe(false)
+    if (invalid.ok) return
+    expect(invalid.problems).toEqual(expect.arrayContaining([
+      'tunnel.autoProvision 必须是 true 或 false。',
+      'tunnel.frpcAutoDownload 必须是 true 或 false。',
+      'tunnel.nodeId 必须是 0 或正整数，或 null（自动选择）。',
+      'tunnel.tunnelId 必须是 0 或正整数，或 null（自动选择）。',
+      'tunnel.tunnelName 不能为空。',
+    ]))
   })
 
   it('accepts an empty tunnel block when the provider is off', () => {

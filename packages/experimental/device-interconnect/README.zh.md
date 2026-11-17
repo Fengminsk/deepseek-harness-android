@@ -9,7 +9,7 @@ kind: "package-bundle"
 
 ## 概述
 
-一个 opt-in（默认不启用）的设置页：托管 PC 侧的远程 DSH 宿主。页面把宿主作为独立子进程启动和停止，展示长期有效的配对二维码与链接，编辑监听设置，并列出已配对手机、支持撤销。页面还可以托管 SakuraFrp `frpc` 子进程，通过 TCP 隧道把宿主的 TLS 端口发布到公网，并按隧道公网地址推导配对链接的对外地址。宿主本身不属于本包：插件只通过它只监听回环地址的配对控制 HTTP API 通信，因此官方 DSH 安装无需导入宿主的包即可加载本插件。
+一个 opt-in（默认不启用）的设置页：托管 PC 侧的远程 DSH 宿主。页面把宿主作为独立子进程启动和停止，展示长期有效的配对二维码与链接，编辑监听设置，并列出已配对手机、支持撤销。页面还可以托管 SakuraFrp `frpc` 子进程，通过 TCP 隧道把宿主的 TLS 端口发布到公网，并按隧道公网地址推导配对链接的对外地址。只填 SakuraFrp 访问密钥时，插件还可以通过 SakuraFrp API 自动创建或复用 TCP 隧道、按服务商公网地址推导配对地址并启动 frpc。宿主本身不属于本包：插件只通过它只监听回环地址的配对控制 HTTP API 通信，因此官方 DSH 安装无需导入宿主的包即可加载本插件。
 
 ## 目录
 
@@ -56,26 +56,32 @@ kind: "package-bundle"
 
 页面可以托管 [SakuraFrp](https://www.natfrp.com/) 的 `frpc` 子进程，把远程宿主的 TLS 端口映射到公网，使不在同一局域网的手机也能配对。**必须使用 TCP 隧道**：远程宿主用固定 CA 自己做 TLS 终止，HTTP/HTTPS 隧道会在服务商侧终止 TLS，导致 App 的固定证书校验失败、永远连不上。隧道卡会写明这一限制，并拒绝以 `https://` 形式粘贴的公网地址。
 
+#### 一键自动创建（默认）
+
+只填访问密钥，插件就能通过 [SakuraFrp API v4](https://api.natfrp.com/docs/) 完成整套配置（Bearer 认证；用途仅限本机 DSH 远程访问，不是公开游戏服务器）：
+
+1. 在 SakuraFrp 面板「查看访问密钥」获取访问密钥（与账户密码不同）。
+2. 打开「内网穿透（SakuraFrp）」→ 选择 **SakuraFrp**，保持「自动创建隧道」，粘贴访问密钥，可按需修改隧道名称。
+3. 点击 **保存并自动创建隧道** 并二次确认后，插件会：校验账号（冻结、实名、隧道额度问题会给出原因）；按服务顺序选择第一个允许创建隧道、非离线、非 BETA、非 VIP 的节点；复用已保存或同名的 TCP 隧道（把本地目标对齐到 `127.0.0.1:<远程宿主端口>`），没有则新建一条；推导 `publicAddress = <节点域名>:<远程端口>` 与 `publicOrigin = wss://…`；准备 frpc（仅在此次点击后才会下载缺失的可执行文件，并用 `frpc -V` 校验输出包含 sakura）；重启远程宿主使新的配对链接生效；最后启动隧道。
+4. 卡片展示每一步结果、账号信息（名称、隧道额度、剩余流量）、节点、隧道 ID、生效的对外地址、隧道子进程状态与输出。失败时保留已保存配置并标出失败步骤，**重试自动创建** 会复用同一条隧道。若 API 返回 `important_warning_for_ai`，卡片会原文展示。
+
+自动模式会占用账号的一条隧道额度。访问密钥始终只写：页面不会再次显示它。
+
+#### 手动模式（高级）
+
+关闭「自动创建隧道」即可自行管理：
+
 1. 在 SakuraFrp 面板创建一条 **TCP** 隧道，本地目标填 `127.0.0.1:<远程宿主端口>`（默认 4777）。面板会分配节点域名与远程端口。
-2. 在设置页打开「内网穿透（SakuraFrp）」，选择 **SakuraFrp** 并填写：
+2. 填写 frpc 可执行文件路径、隧道 ID 与公网 `<节点域名>:<远程端口>`；frpc 认证仍需要访问密钥。
+3. **保存内网穿透设置** 会把推导出的 `publicOrigin` 写入远程宿主 overlay，并重启正在运行的远程宿主。远程宿主确认监听端口后 **启动隧道** 会拉起 frpc；**停止隧道** 不会停止远程宿主。插件激活时，已配置的隧道会在远程宿主就绪后自动启动；关闭远程宿主开关或卸载 bundle 时会先停隧道。
 
-   | 字段 | 取值 |
-   | --- | --- |
-   | frpc 可执行文件 | 你从 SakuraFrp 获取的 `frpc`/`frpc.exe` 完整路径。插件只校验文件存在，不会自动下载。 |
-   | 访问密钥 | SakuraFrp 面板 →「查看访问密钥」（与账户密码不同）。以明文保存在本插件配置文件中，且不会回传给页面。 |
-   | 隧道 ID | 一条或多条 TCP 隧道 ID，英文逗号分隔：`114514` 或 `114514,114516`。 |
-   | 公网地址 | 面板显示的 `<节点域名>:<远程端口>`，例如 `cn-xx.natfrp.cloud:12345`。不要带 `https://` 前缀；显式端口（如 `:443`）会保留。 |
-
-3. **保存内网穿透设置**。页面推导 `publicOrigin = wss://<节点域名>:<远程端口>` 并写入生成的远程宿主 overlay；远程宿主正在运行时会自动重启，使新的配对链接使用该地址。配置了公网地址时它会覆盖上面的手填 `publicOrigin`，卡片会回显最终生效值。
-4. **启动隧道** 会在远程宿主确认监听端口后启动 frpc 子进程。卡片显示子进程状态、最近输出，按钮变为 **停止隧道** / **重试**。停止隧道不会停止远程宿主。插件激活时，已配置的隧道会在远程宿主就绪后自动启动；关闭远程宿主开关或卸载 bundle 时会先停隧道。
-
-必填项可以先留空保存——页面会列出缺失项并阻止启动，插件激活也不会 spawn 坏命令。高级区提供自定义 `frpc.ini`（以 `frpc -c <ini> -n` 启动，替代访问密钥与隧道 ID，但公网地址仍需填写以推导对外地址）与附加 frpc 参数。frpc 以 `-n --disable_log_color` 运行，不自动更新且日志无颜色控制符。
+缺失项会被就绪检查列出，按钮与插件激活都不会 spawn 坏命令。高级区提供自定义 `frpc.ini`（以 `frpc -c <ini> -n` 启动，替代访问密钥与隧道 ID，但公网地址仍需填写以推导对外地址）、指定节点 ID、附加 frpc 参数与 frpc 路径。受管 frpc 以 `-n --disable_log_color` 运行，不自动更新且日志无颜色控制符。
 
 ### 安全模型
 
 远程宿主的控制 API 只绑定 `127.0.0.1`；本插件的桥接路由拒绝任何非回环 `Host` 头与跨站 `Origin`。每个读写还必须带 `x-dsh-device-interconnect: 1` 头——跨站页面要设置它就必须通过本 Host 从不批准的 CORS 预检；响应不返回任何 CORS 头。唯一免该头的是二维码图片路由：`<img>` 必须能加载它，而它不泄露页面本已展示之外的信息。所有响应都带 `Cache-Control: no-store`。接受的本地威胁是常规情况：同一台电脑上的其它进程本就能读取配置文件与子进程日志。
 
-SakuraFrp 访问密钥在桥接上是只写的：state 只返回 `tokenConfigured: true`，页面不会再次显示密钥，也不会写进日志。但它仍以明文保存在 `$DSH_HOME/device-interconnect/config.json`，同样适用本地读取威胁；页面留空表示保留已存密钥，清除需要显式的 `clearToken`/`null` 写入。插件从不下载 frpc：可执行文件路径由用户提供，只做存在性校验。
+SakuraFrp 访问密钥在桥接上是只写的：state 只返回 `tokenConfigured: true`，页面不会再次显示密钥，也不会写进日志。但它仍以明文保存在 `$DSH_HOME/device-interconnect/config.json`，同样适用本地读取威胁；页面留空表示保留已存密钥，清除需要显式的 `clearToken`/`null` 写入。一键创建会用访问密钥以 Bearer 认证调用 `https://api.natfrp.com/v4`，读取账号/节点/隧道并创建或修改一条隧道；密钥不会出现在 URL、日志或错误信息里。点击一键创建后可能从 `https://getfr.sh/d/…` 下载 frpc 到 `<DSH_HOME>/device-interconnect/bin/`，随后执行 `frpc -V` 并要求输出包含 sakura，校验通过才会 spawn；插件激活时不会下载任何东西。
 
 ### 卸载
 
@@ -92,9 +98,10 @@ SakuraFrp 访问密钥在桥接上是只写的：state 只返回 `tokenConfigure
 
 | 方法与路径 | 请求体 | 效果 |
 | --- | --- | --- |
-| `GET /device-interconnect/api/state` | — | 配置（不含访问密钥）、远程宿主子进程状态与日志尾部、隧道子进程状态、推导出的对外地址与就绪状态、控制面事实、配对视图、设备、运行器就绪状态 |
+| `GET /device-interconnect/api/state` | — | 配置（不含访问密钥）、远程宿主子进程状态与日志尾部、隧道子进程状态、推导出的对外地址与就绪状态、SakuraFrp 账号/节点/隧道/frpc 信息与最近一次创建步骤、控制面事实、配对视图、设备、运行器就绪状态 |
 | `POST /device-interconnect/api/enabled` | `{enabled}` | 持久化远程宿主开关并启动或停止该子进程 |
 | `POST /device-interconnect/api/tunnel` | `{enabled}` | 启动或停止隧道子进程，不改变远程宿主开关 |
+| `POST /device-interconnect/api/tunnel/provision` | `{token?, frpcPath?, frpcAutoDownload?, nodeId?, tunnelName?, reuseExisting?}` | 校验访问密钥、选择节点、创建或复用 TCP 隧道、准备 frpc、对齐对外地址并启动隧道；快照携带步骤结果 |
 | `POST /device-interconnect/api/config` | `{config}` | 校验完整配置文档、持久化，运行中则重启子进程；`tunnel.token` 只写（`null` 或 `clearToken` 清除） |
 | `POST /device-interconnect/api/pair` | — | 通过控制面重开配对窗口 |
 | `POST /device-interconnect/api/devices/revoke` | `{deviceId}` | 撤销一台已配对设备 |
@@ -145,7 +152,8 @@ None, as 本设置页只托管独立子进程（远程宿主与可选的 frpc �
 - **Windows 进程树结束依赖 `taskkill`** —— 在没有 `taskkill` 的平台上，停止后孙进程可能仍存活；supervisor 会记录超时，而不是报告一次干净停止。
 - **只有 TCP 隧道能保留远程宿主的 TLS** —— App 固定信任远程宿主的 CA，因此 HTTP/HTTPS 类型的 SakuraFrp 隧道（TLS 在服务商处终止）无法工作。隧道卡会拒绝 `https://` 公网地址并说明限制，不会自动回退到其它隧道类型。
 - **SakuraFrp 访问密钥明文存储** —— 桥接不回传、日志不记录，但 `$DSH_HOME/device-interconnect/config.json` 中以明文保存，可被本机其它进程读取。按与配对配置相同的本地读取威胁接受。
-- **frpc 由用户自备** —— 插件不自动下载隧道客户端（供应链安全），因此由用户填写 SakuraFrp 提供方的可执行文件路径；文件不存在时隧道无法启动。
+- **frpc 只在明确点击时下载** —— 一键创建可能从 `https://getfr.sh/d/…` 下载 SakuraFrp 版 frpc；下载后用 `frpc -V` 校验，输出不含 sakura 时要求手动填写路径。手动模式从不下载。
+- **一键创建依赖第三方 API** —— SakuraFrp API v4、节点 flag 与账号隧道额度都是外部契约。API 或额度变化会让创建以可读原因失败，已保存配置与重试路径保持可用。
 - **隧道推导出的对外地址会覆盖手填值** —— 配置了公网地址时，上面的手填 `publicOrigin` 被忽略，改用 `wss://<节点域名>:<端口>`；清空公网地址后，下次保存或启动会恢复手填值。
 
 <a id="dev-note"></a>

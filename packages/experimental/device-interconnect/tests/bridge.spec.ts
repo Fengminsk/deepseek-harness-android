@@ -13,6 +13,10 @@ import { ConfigStore, ConfigValidationError, defaultConfig, processInferenceEnvi
 import { ControlPlaneError, type ControlPlane } from '../src/host/control-plane.ts'
 import { OVERLAY_FILE_NAME } from '../src/host/config.ts'
 import { TunnelError } from '../src/host/tunnel.ts'
+import {
+  SakuraFrpApiError, type CreateTunnelRequest, type EditTunnelRequest, type SakuraFrpApi, type SakuraFrpCreatedTunnel,
+  type SakuraFrpNode, type SakuraFrpTunnel, type SakuraFrpUserInfo,
+} from '../src/host/sakurafrp-api.ts'
 import type { ChildState, ControlPlaneState, DeviceInterconnectConfig, TunnelSettings } from '../src/types.ts'
 import type { LaunchCommand, SupervisorApi } from '../src/host/supervisor.ts'
 
@@ -26,6 +30,11 @@ function tunnel(overrides: Partial<TunnelSettings> = {}): TunnelSettings {
     publicAddress: 'cn-xx.natfrp.cloud:12345',
     iniPath: '',
     extraArgs: '',
+    autoProvision: false,
+    frpcAutoDownload: true,
+    nodeId: null,
+    tunnelName: 'DSH 设备互联',
+    tunnelId: null,
     ...overrides,
   }
 }
@@ -152,6 +161,8 @@ async function bench(overrides: {
   now?: () => number
   readinessPollMs?: number
   readinessTimeoutMs?: number
+  sakurafrpApi?: (token: string) => SakuraFrpApi
+  downloadFrpc?: (dataDir: string) => Promise<{ readonly path: string; readonly version: string }>
 } = {}) {
   const directory = await dataDirectory()
   const fallback = overrides.config ?? configuration()
@@ -174,6 +185,8 @@ async function bench(overrides: {
     exists: overrides.exists ?? (() => true),
     readinessPollMs: overrides.readinessPollMs ?? 1,
     readinessTimeoutMs: overrides.readinessTimeoutMs ?? 100,
+    sakurafrpApi: overrides.sakurafrpApi ?? (() => fakeSakuraApi()),
+    downloadFrpc: overrides.downloadFrpc ?? (async () => ({ path: 'C:\\managed\\frpc.exe', version: '0.51' })),
     logger,
   })
   return {
@@ -186,6 +199,39 @@ async function bench(overrides: {
     factory,
     calls,
     logger,
+  }
+}
+
+/** A scripted SakuraFrp API double. */
+function fakeSakuraApi(overrides: {
+  readonly user?: SakuraFrpUserInfo
+  readonly nodes?: readonly SakuraFrpNode[]
+  readonly tunnels?: readonly SakuraFrpTunnel[]
+  readonly created?: SakuraFrpCreatedTunnel
+  readonly failWith?: SakuraFrpApiError
+} = {}): SakuraFrpApi {
+  const user = overrides.user ?? { id: 7, name: 'alice', frozen: false, tunnels: 2, traffic: [0, 100] }
+  const nodes = overrides.nodes ?? [{ id: 11, name: '节点 A', host: 'a.natfrp.cloud', vip: 0, flag: 4 }]
+  const created = overrides.created ?? { id: 99, name: 'DSH 设备互联', remote: '23456' }
+  const fail = (): never => { throw overrides.failWith ?? new SakuraFrpApiError('sakura-api-error', 'API 失败。') }
+  let tunnels: readonly SakuraFrpTunnel[] = overrides.tunnels ?? []
+  return {
+    userInfo: async () => (overrides.failWith === undefined ? user : fail()),
+    listNodes: async () => nodes,
+    listTunnels: async () => tunnels,
+    createTunnel: async (request: CreateTunnelRequest) => {
+      tunnels = [...tunnels, {
+        id: created.id,
+        name: request.name,
+        type: 'tcp',
+        node: request.nodeId,
+        localIp: request.localIp,
+        localPort: request.localPort,
+        remote: created.remote ?? '',
+      }]
+      return created
+    },
+    editTunnel: async (_request: EditTunnelRequest) => {},
   }
 }
 
@@ -621,3 +667,71 @@ describe('page actions', () => {
     expect(defaultConfig(environment).host.port).toBe(4_777)
   })
 })
+
+describe('automatic tunnel provision', () => {
+  /** One configuration in the one-click mode with a stored access key. */
+  function provisionConfig(): DeviceInterconnectConfig {
+    return configuration({
+      enabled: true,
+      tunnel: tunnel({
+        autoProvision: true,
+        tunnelIds: '',
+        publicAddress: '',
+        tunnelId: null,
+      }),
+    })
+  }
+
+  it('creates the tunnel, persists the ids, restarts the host, and starts frpc', async () => {
+    const api = fakeSakuraApi()
+    const { bridge, store, supervisor, tunnelSupervisor } = await bench({
+      config: provisionConfig(),
+      sakurafrpApi: () => api,
+    })
+    const state = await bridge.provisionTunnel({ frpcPath: 'C:\\frpc\\frpc.exe' })
+    expect(store.current().tunnel).toMatchObject({
+      token: 'sakura-access-key',
+      tunnelId: 99,
+      nodeId: 11,
+      tunnelIds: '99',
+      publicAddress: 'a.natfrp.cloud:23456',
+      frpcPath: 'C:\\frpc\\frpc.exe',
+    })
+    expect(supervisor.restart).toHaveBeenCalled()
+    expect(tunnelSupervisor.start).toHaveBeenCalledOnce()
+    expect(tunnelSupervisor.start.mock.calls[0]?.[0].args).toEqual(['-f', 'sakura-access-key:99', '-n', '--disable_log_color'])
+    expect(state.tunnel.provision?.lastSteps.map(step => step.status)).toEqual([
+      'done', 'done', 'done', 'done', 'skipped', 'done',
+    ])
+    expect(state.tunnel.account).toMatchObject({ name: 'alice', tunnelCount: 1 })
+    expect(state.tunnel.node).toMatchObject({ id: 11, host: 'a.natfrp.cloud' })
+    expect(state.tunnel.tunnel).toMatchObject({ id: 99, remote: '23456' })
+    expect(state.tunnel.frpc).toMatchObject({ path: 'C:\\frpc\\frpc.exe' })
+    expect(state.config.tunnel.tokenConfigured).toBe(true)
+    expect(JSON.stringify(state)).not.toContain('sakura-access-key')
+  })
+
+  it('records a failed attempt without touching the previous tunnel settings', async () => {
+    const api = fakeSakuraApi({ failWith: new SakuraFrpApiError('sakura-unauthorized', 'SakuraFrp 访问密钥无效。', 401) })
+    const { bridge, store, tunnelSupervisor } = await bench({ config: provisionConfig(), sakurafrpApi: () => api })
+    const state = await bridge.provisionTunnel({})
+    expect(state.tunnel.provision?.lastError).toMatchObject({ code: 'sakura-unauthorized' })
+    expect(state.tunnel.provision?.lastSteps[0]).toMatchObject({ id: 'verify-token', status: 'failed' })
+    expect(store.current().tunnel.tunnelId).toBeNull()
+    expect(tunnelSupervisor.start).not.toHaveBeenCalled()
+  })
+
+  it('refuses to provision without an access key', async () => {
+    const { bridge } = await bench({
+      config: configuration({ enabled: true, tunnel: tunnel({ autoProvision: true, token: '' }) }),
+    })
+    const state = await bridge.provisionTunnel({})
+    expect(state.tunnel.provision?.lastError).toMatchObject({ code: 'tunnel-token-missing' })
+  })
+
+  it('rejects a malformed provision request', async () => {
+    const { bridge } = await bench()
+    await expect(bridge.provisionTunnel({ frpcPath: 1 })).rejects.toBeInstanceOf(ConfigValidationError)
+  })
+})
+

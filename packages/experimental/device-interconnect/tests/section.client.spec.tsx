@@ -42,6 +42,11 @@ function config(overrides: Partial<DeviceInterconnectView> = {}): DeviceIntercon
       iniPath: '',
       extraArgs: '',
       tokenConfigured: true,
+      autoProvision: true,
+      frpcAutoDownload: true,
+      nodeId: null,
+      tunnelName: 'DSH 设备互联',
+      tunnelId: 114514,
     },
     ...overrides,
   }
@@ -99,7 +104,13 @@ function draft(): NonNullable<SectionSnapshot['draft']> {
     repoDir: 'D:\\repo', profile: 'remote-host', patchPath: '', dshHome: '',
     tunnelProvider: 'sakurafrp', frpcPath: 'C:\\frpc\\frpc.exe', tunnelToken: '',
     tunnelIds: '114514', publicAddress: 'cn-xx.natfrp.cloud:12345', tunnelIniPath: '', tunnelExtraArgs: '',
+    autoProvision: true, frpcAutoDownload: true, nodeId: '', tunnelName: 'DSH 设备互联',
   }
+}
+
+/** The staged draft of the manual (advanced) tunnel mode. */
+function manualDraft(): NonNullable<SectionSnapshot['draft']> {
+  return { ...draft(), autoProvision: false }
 }
 
 /** One action surface whose calls the test inspects. */
@@ -113,6 +124,7 @@ function stubActions(overrides: Partial<DeviceInterconnectActions> = {}): Device
     edit: vi.fn(),
     toggle: vi.fn(),
     selectTunnelProvider: vi.fn(),
+    provision: vi.fn(async () => {}),
     save: vi.fn(async () => {}),
     regeneratePairing: vi.fn(async () => {}),
     revokeDevice: vi.fn(async () => {}),
@@ -288,7 +300,7 @@ describe('Device Interconnect Settings page', () => {
 
 describe('Device Interconnect tunnel card', () => {
   it('renders the provider, the frpc fields, the TCP-only warning, and the derived origin', () => {
-    renderPage()
+    renderPage({ draft: manualDraft() })
     expect(screen.getByText('NAT traversal (SakuraFrp)')).toBeTruthy()
     expect(screen.getByText(/Use a TCP tunnel/u)).toBeTruthy()
     expect((screen.getByLabelText('Tunnel provider') as HTMLSelectElement).value).toBe('sakurafrp')
@@ -308,7 +320,7 @@ describe('Device Interconnect tunnel card', () => {
   })
 
   it('stages every tunnel field and saves the page', () => {
-    const { actions } = renderPage()
+    const { actions } = renderPage({ draft: manualDraft() })
     fireEvent.change(screen.getByLabelText('frpc executable'), { target: { value: 'C:\\other\\frpc.exe' } })
     expect(actions.edit).toHaveBeenCalledWith('frpcPath', 'C:\\other\\frpc.exe')
     fireEvent.change(screen.getByLabelText('Access key'), { target: { value: 'new-key' } })
@@ -376,6 +388,46 @@ describe('Device Interconnect tunnel card', () => {
     renderPage({ state: runtime({ tunnel: tunnelState({ running: true, logsTail: 'start proxy success\n' }) }) })
     fireEvent.click(screen.getByText('frpc output'))
     expect(screen.getByText(/start proxy success/u)).toBeTruthy()
+  })
+
+  it('offers the one-click action and asks for confirmation before creating a tunnel', async () => {
+    const { actions } = renderPage()
+    fireEvent.click(screen.getByRole('button', { name: 'Save and create tunnel' }))
+    const dialog = screen.getByRole('dialog')
+    expect(within(dialog).getByText('Create a SakuraFrp tunnel?')).toBeTruthy()
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Create and start' }))
+    })
+    expect(actions.provision).toHaveBeenCalled()
+  })
+
+  it('shows the account, node, tunnel, steps, failure, and provider warning', () => {
+    renderPage({
+      state: runtime({
+        tunnel: tunnelState({
+          ready: true,
+          account: { name: 'alice', uid: 1, tunnelLimit: 2, tunnelCount: 1, trafficRemaining: 100 },
+          node: { id: 11, name: 'Node A', host: 'cn-xx.natfrp.cloud' },
+          tunnel: { id: 114514, name: 'DSH 设备互联', remote: '12345' },
+          provision: {
+            lastSteps: [
+              { id: 'verify-token', status: 'done', message: '已校验账号 alice' },
+              { id: 'start-tunnel', status: 'failed', message: '启动失败' },
+            ],
+            lastError: { code: 'sakura-timeout', message: '超时。' },
+            warning: '请仅用于个人使用',
+          },
+        }),
+      }),
+    })
+    expect(screen.getByText('SakuraFrp account alice · tunnels 1/2')).toBeTruthy()
+    expect(screen.getByText('Node 11 Node A (cn-xx.natfrp.cloud)')).toBeTruthy()
+    expect(screen.getByText('Tunnel #114514 DSH 设备互联')).toBeTruthy()
+    expect(screen.getByText('Done')).toBeTruthy()
+    expect(screen.getByText('Failed')).toBeTruthy()
+    expect(screen.getByText('The SakuraFrp API timed out; retry.')).toBeTruthy()
+    expect(screen.getByText('SakuraFrp notice: 请仅用于个人使用')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Retry automatic setup' })).toBeTruthy()
   })
 
   it('falls back to the pending-origin hint when no address is configured', () => {

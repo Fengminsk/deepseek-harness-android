@@ -792,6 +792,7 @@ exit 0；oxlint 改动 3 文件 0 error；宿主冒烟 **14/14**。本轮未截�
 - 保存/启动时由公网地址推导 `publicOrigin = wss://<节点域名>:<远程端口>`（显式 443 保留）写入 remote-host overlay，运行中自动重启宿主，使配对链接与叶子证书 SAN 直接可用。
 - 测试：插件包 9 文件 **185 tests**（config/tunnel/supervisor/routes/bridge/client 等）、双 face tsc、`verify-client-ui-i18n`/`verify-export-jsdoc`/`verify-package-meta`/README 摘要与 translation-pairing 均绿；仓库 `typecheck` 5/5；`build:artifacts`/`build:check` 见提交记录。
 - 使用前需**完全重启 DSH**（宿主插件 JS 在启动时加载）才能看到新卡片；配置完成后用手机扫长期配对二维码（链接会变成 SakuraFrp 节点域名地址）。
+- **一键自动接入**（task-40）：用户只填 SakuraFrp 访问密钥（token），插件调用 SakuraFrp **API v4**（Bearer token：`GET /user/info` 校验账号/冻结/实名/额度 → `GET /nodes` 自动选节点（flag&4 允许创建、非离线、非 BETA、非 VIP）→ `GET /tunnels` 复用同名 TCP 隧道或 `POST /tunnels` 创建 → `POST /tunnel/edit` 对齐 `127.0.0.1:<host端口>` → 由节点 `host`+隧道 `remote` 推导 `publicAddress`/`publicOrigin` → 必要时下载 frpc（用户点击触发，`frpc -V` 校验含 `sakura`）→ 重启 remote-host → 启动隧道）；写回 `tunnelId/nodeId/publicAddress`，在页面展示步骤进度、账号/额度/节点/隧道 ID/生效地址、API `important_warning_for_ai`；手动模式保留为高级折叠。API 调用/错误映射/额度与 token 边界见 README。
 ### 3.4 远程宿主为什么能跑起来（三个非显然事实）
 
 1. **profile 是 shipped 模板**：`packages/util/official-bundles/src/bundles.ts` 的
@@ -1088,6 +1089,13 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
 
 ## 9. 变更日志（append-only，最新在最上面）
 
+### 2026-11-17 21:30 · lead（SakuraFrp 一键接入：token → 自动建隧道 → 启动）
+
+- 设备互联插件内网穿透升级：只填 SakuraFrp 访问密钥即自动完成「校验账号 → 选节点 → 创建/复用 TCP 隧道 → 对齐本地端口 → 推导公网地址/publicOrigin → 下载并校验 frpc → 重启 remote-host → 启动隧道」；手动模式保留为高级项。
+- 新增 `sakurafrp-api.ts`（API v4 Bearer 认证，错误映射）、`provision.ts`（6 步流程、节点选择、复用/创建、步骤化失败）、`frpc-download.ts`（用户点击触发、`-V` 含 sakura 校验）；`POST /api/tunnel/provision` 路由与 state 扩展；页面一键卡（确认 Modal、步骤、账号/额度/节点/隧道、警告展示）。
+- 验证：插件 **12 文件 223 tests**、双 face tsc、typecheck 5/5、build:check 2/2、i18n/README/translation-pairing 门禁绿；未真实调用 SakuraFrp API（fake）。
+- 使用前需重启 DSH 加载新插件；仅支持 TCP 隧道（固定 CA）。
+- **提交**：见本次 commit。
 ### 2026-11-17 21:10 · lead（设备互联插件接入 SakuraFrp TCP 隧道）
 
 - 插件 `packages/experimental/device-interconnect` 新增 SakuraFrp 隧道托管：frpc 子进程管理、长期配对、公网地址自动推导 publicOrigin；仅支持 TCP 隧道（固定 CA 需要端到端 TLS）。

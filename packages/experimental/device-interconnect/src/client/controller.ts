@@ -11,11 +11,13 @@
 
 import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import {
-  BRIDGE_HEADER, BRIDGE_HEADER_VALUE, CONFIG_ROUTE, ENABLED_ROUTE, PAIR_ROUTE, REVOKE_ROUTE, STATE_ROUTE, TUNNEL_ROUTE,
+  BRIDGE_HEADER, BRIDGE_HEADER_VALUE, CONFIG_ROUTE, ENABLED_ROUTE, PAIR_ROUTE, PROVISION_ROUTE, REVOKE_ROUTE,
+  STATE_ROUTE, TUNNEL_ROUTE,
 } from '../api.ts'
 import type {
-  ChildState, DeviceInterconnectConfigInput, DeviceInterconnectView, Diagnostic, PairingView, RemoteDevice,
-  RemoteHostFacts, RuntimeState, TunnelProvider, TunnelState,
+  ChildState, DeviceInterconnectConfigInput, DeviceInterconnectView, Diagnostic, PairingView, ProvisionStep,
+  RemoteDevice, RemoteHostFacts, RuntimeState, TunnelAccount, TunnelFrpcInfo, TunnelInfo, TunnelNodeInfo,
+  TunnelProvider, TunnelProvisionState, TunnelState,
 } from '../types.ts'
 
 /** Configuration text staged by the page until the user saves it. */
@@ -64,6 +66,14 @@ export interface ConfigDraft {
   tunnelIniPath: string
   /** Extra frpc arguments text. */
   tunnelExtraArgs: string
+  /** Whether the automatic provision mode is on. */
+  autoProvision: boolean
+  /** Whether frpc may be downloaded when provisioning needs it. */
+  frpcAutoDownload: boolean
+  /** Pinned node id text; empty lets the plugin choose. */
+  nodeId: string
+  /** Tunnel name the automatic provision reuses or creates. */
+  tunnelName: string
 }
 
 /** One actionable message the page shows after an operation. */
@@ -71,7 +81,7 @@ export interface Notice {
   /** Whether the operation succeeded. */
   kind: 'success' | 'error'
   /** Either a dictionary key (success) or a Host diagnostic (failure). */
-  text: { key: 'saved' | 'regenerated' | 'revoked' | 'tunnelStarted' | 'tunnelStopped' } | { diagnostic: Diagnostic }
+  text: { key: 'saved' | 'regenerated' | 'revoked' | 'tunnelStarted' | 'tunnelStopped' | 'tunnelProvisioned' } | { diagnostic: Diagnostic }
 }
 
 /** What the page renders. */
@@ -95,6 +105,7 @@ export type DraftField =
   | 'port' | 'listenHost' | 'publicHost' | 'publicOrigin' | 'discoveryPort' | 'pagesPort'
   | 'nodePath' | 'pnpmPath' | 'repoDir' | 'profile' | 'patchPath' | 'dshHome'
   | 'frpcPath' | 'tunnelToken' | 'tunnelIds' | 'publicAddress' | 'tunnelIniPath' | 'tunnelExtraArgs'
+  | 'nodeId' | 'tunnelName'
 
 /** The page's action surface, passed to the component through the inject face. */
 export interface DeviceInterconnectActions {
@@ -111,9 +122,11 @@ export interface DeviceInterconnectActions {
   /** Stage one editable field. */
   edit(field: DraftField, value: string): void
   /** Stage one boolean toggle. */
-  toggle(field: 'discoveryEnabled' | 'pagesEnabled' | 'longTerm', value: boolean): void
+  toggle(field: 'discoveryEnabled' | 'pagesEnabled' | 'longTerm' | 'autoProvision' | 'frpcAutoDownload', value: boolean): void
   /** Stage the tunnel provider selection. */
   selectTunnelProvider(provider: TunnelProvider): void
+  /** Validate the access key and create or reuse the SakuraFrp tunnel. */
+  provision(): Promise<void>
   /** Validate and persist the staged configuration. */
   save(): Promise<void>
   /** Reopen the pairing window. */
@@ -182,6 +195,7 @@ export class DeviceInterconnectController {
       edit: (field, value) => { this.edit(field, value) },
       toggle: (field, value) => { this.toggle(field, value) },
       selectTunnelProvider: provider => { this.selectTunnelProvider(provider) },
+      provision: () => this.provision(),
       save: () => this.save(),
       regeneratePairing: () => this.regeneratePairing(),
       revokeDevice: deviceId => this.revokeDevice(deviceId),
@@ -258,6 +272,34 @@ export class DeviceInterconnectController {
   }
 
   /**
+   * Validate the access key and create or reuse the SakuraFrp tunnel.
+   * @returns completion once the Host answered; the snapshot carries the steps.
+   */
+  async provision(): Promise<void> {
+    const current = this.store.getSnapshot()
+    const draft = current.draft
+    if (draft === undefined) return
+    await this.runAction(async () => {
+      const token = draft.tunnelToken.trim()
+      const nodeId = draft.nodeId.trim()
+      const state = await this.actionState(PROVISION_ROUTE, {
+        ...(token === '' ? {} : { token }),
+        frpcAutoDownload: draft.frpcAutoDownload,
+        ...(nodeId === '' ? {} : { nodeId: Number(nodeId) }),
+        tunnelName: draft.tunnelName,
+      })
+      this.draftDirty = false
+      this.applyState(state)
+      const error = state.tunnel.provision?.lastError
+      this.store.update((snapshot) => {
+        snapshot.notice = error === undefined
+          ? { kind: 'success', text: { key: 'tunnelProvisioned' } }
+          : { kind: 'error', text: { diagnostic: error } }
+      })
+    })
+  }
+
+  /**
    * Stage one editable text field.
    * @param field - field name.
    * @param value - new text.
@@ -276,7 +318,7 @@ export class DeviceInterconnectController {
    * @param field - toggle name.
    * @param value - new position.
    */
-  toggle(field: 'discoveryEnabled' | 'pagesEnabled' | 'longTerm', value: boolean): void {
+  toggle(field: 'discoveryEnabled' | 'pagesEnabled' | 'longTerm' | 'autoProvision' | 'frpcAutoDownload', value: boolean): void {
     const draft = this.store.getSnapshot().draft
     if (draft === undefined) return
     this.draftDirty = true
@@ -482,10 +524,38 @@ function parseTunnelSettings(value: unknown): DeviceInterconnectView['tunnel'] |
   const iniPath = value['iniPath']
   const extraArgs = value['extraArgs']
   const tokenConfigured = value['tokenConfigured']
+  const autoProvision = value['autoProvision']
+  const frpcAutoDownload = value['frpcAutoDownload']
+  const nodeId = value['nodeId']
+  const tunnelName = value['tunnelName']
+  const tunnelId = value['tunnelId']
   if (provider !== 'none' && provider !== 'sakurafrp') return undefined
   if (typeof frpcPath !== 'string' || typeof tunnelIds !== 'string' || typeof publicAddress !== 'string') return undefined
   if (typeof iniPath !== 'string' || typeof extraArgs !== 'string' || typeof tokenConfigured !== 'boolean') return undefined
-  return { provider, frpcPath, tunnelIds, publicAddress, iniPath, extraArgs, tokenConfigured }
+  if (autoProvision !== undefined && typeof autoProvision !== 'boolean') return undefined
+  if (frpcAutoDownload !== undefined && typeof frpcAutoDownload !== 'boolean') return undefined
+  if (nodeId !== undefined && nodeId !== null && !isOptionalId(nodeId)) return undefined
+  if (tunnelId !== undefined && tunnelId !== null && !isOptionalId(tunnelId)) return undefined
+  if (tunnelName !== undefined && typeof tunnelName !== 'string') return undefined
+  return {
+    provider,
+    frpcPath,
+    tunnelIds,
+    publicAddress,
+    iniPath,
+    extraArgs,
+    tokenConfigured,
+    autoProvision: autoProvision === true,
+    frpcAutoDownload: frpcAutoDownload !== false,
+    nodeId: typeof nodeId === 'number' && nodeId > 0 ? nodeId : null,
+    tunnelName: typeof tunnelName === 'string' ? tunnelName : '',
+    tunnelId: typeof tunnelId === 'number' && tunnelId > 0 ? tunnelId : null,
+  }
+}
+
+/** Whether one unknown value is a non-negative safe-integer provider id. */
+function isOptionalId(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
 }
 
 /** Parse the tunnel runtime block. */
@@ -499,7 +569,120 @@ function parseTunnel(value: unknown): TunnelState | undefined {
   const problems = parseDiagnostics(value['problems'])
   if ((provider !== 'none' && provider !== 'sakurafrp') || typeof ready !== 'boolean') return undefined
   if (typeof derivedPublicOrigin !== 'string' || problems === undefined) return undefined
-  return { ...child, provider, ready, problems, derivedPublicOrigin }
+  const account = parseTunnelAccount(value['account'])
+  const provision = parseTunnelProvision(value['provision'])
+  const node = parseTunnelNode(value['node'])
+  const tunnel = parseTunnelInfo(value['tunnel'])
+  const frpc = parseTunnelFrpc(value['frpc'])
+  if (value['account'] !== undefined && account === undefined) return undefined
+  if (value['provision'] !== undefined && provision === undefined) return undefined
+  if (value['node'] !== undefined && node === undefined) return undefined
+  if (value['tunnel'] !== undefined && tunnel === undefined) return undefined
+  if (value['frpc'] !== undefined && frpc === undefined) return undefined
+  return {
+    ...child,
+    provider,
+    ready,
+    problems,
+    derivedPublicOrigin,
+    ...(account === undefined ? {} : { account }),
+    ...(provision === undefined ? {} : { provision }),
+    ...(node === undefined ? {} : { node }),
+    ...(tunnel === undefined ? {} : { tunnel }),
+    ...(frpc === undefined ? {} : { frpc }),
+  }
+}
+
+/** Parse the SakuraFrp account block. */
+function parseTunnelAccount(value: unknown): TunnelAccount | undefined {
+  if (!isRecord(value)) return undefined
+  const account: { -readonly [K in keyof TunnelAccount]: TunnelAccount[K] } = {}
+  if (typeof value['name'] === 'string') account.name = value['name']
+  if (typeof value['uid'] === 'number') account.uid = value['uid']
+  if (typeof value['speed'] === 'number') account.speed = value['speed']
+  if (typeof value['tunnelLimit'] === 'number') account.tunnelLimit = value['tunnelLimit']
+  if (typeof value['tunnelCount'] === 'number') account.tunnelCount = value['tunnelCount']
+  if (typeof value['trafficRemaining'] === 'number') account.trafficRemaining = value['trafficRemaining']
+  return account
+}
+
+/** Parse the last provision attempt. */
+function parseTunnelProvision(value: unknown): TunnelProvisionState | undefined {
+  if (!isRecord(value)) return undefined
+  const lastSteps = parseProvisionSteps(value['lastSteps'])
+  if (lastSteps === undefined) return undefined
+  const lastError = parseDiagnostic(value['lastError'])
+  const warning = value['warning']
+  if (warning !== undefined && typeof warning !== 'string') return undefined
+  return {
+    lastSteps,
+    ...(lastError === undefined ? {} : { lastError }),
+    ...(typeof warning === 'string' ? { warning } : {}),
+  }
+}
+
+/** Parse the provision step list. */
+function parseProvisionSteps(value: unknown): readonly ProvisionStep[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const steps: ProvisionStep[] = []
+  for (const entry of value) {
+    if (!isRecord(entry)) return undefined
+    const id = entry['id']
+    const status = entry['status']
+    const message = entry['message']
+    if (typeof id !== 'string' || typeof message !== 'string') return undefined
+    if (status !== 'pending' && status !== 'done' && status !== 'failed' && status !== 'skipped') return undefined
+    steps.push({ id, status, message })
+  }
+  return steps
+}
+
+/** Parse the selected node block. */
+function parseTunnelNode(value: unknown): TunnelNodeInfo | undefined {
+  if (!isRecord(value)) return undefined
+  const id = value['id']
+  if (typeof id !== 'number') return undefined
+  const name = value['name']
+  const host = value['host']
+  if (name !== undefined && typeof name !== 'string') return undefined
+  if (host !== undefined && typeof host !== 'string') return undefined
+  return {
+    id,
+    ...(typeof name === 'string' ? { name } : {}),
+    ...(typeof host === 'string' ? { host } : {}),
+  }
+}
+
+/** Parse the tunnel identity block. */
+function parseTunnelInfo(value: unknown): TunnelInfo | undefined {
+  if (!isRecord(value)) return undefined
+  const id = value['id']
+  if (typeof id !== 'number') return undefined
+  const name = value['name']
+  const remote = value['remote']
+  if (name !== undefined && typeof name !== 'string') return undefined
+  if (remote !== undefined && typeof remote !== 'string') return undefined
+  return {
+    id,
+    ...(typeof name === 'string' ? { name } : {}),
+    ...(typeof remote === 'string' ? { remote } : {}),
+  }
+}
+
+/** Parse the frpc executable block. */
+function parseTunnelFrpc(value: unknown): TunnelFrpcInfo | undefined {
+  if (!isRecord(value)) return undefined
+  const path = value['path']
+  const downloaded = value['downloaded']
+  const version = value['version']
+  if (path !== undefined && typeof path !== 'string') return undefined
+  if (downloaded !== undefined && typeof downloaded !== 'boolean') return undefined
+  if (version !== undefined && typeof version !== 'string') return undefined
+  return {
+    ...(typeof path === 'string' ? { path } : {}),
+    ...(typeof downloaded === 'boolean' ? { downloaded } : {}),
+    ...(typeof version === 'string' ? { version } : {}),
+  }
 }
 
 /** Parse the child-state block. */
@@ -660,6 +843,10 @@ function configOf(base: DeviceInterconnectView, draft: ConfigDraft): DeviceInter
       publicAddress: draft.publicAddress,
       iniPath: draft.tunnelIniPath,
       extraArgs: draft.tunnelExtraArgs,
+      autoProvision: draft.autoProvision,
+      frpcAutoDownload: draft.frpcAutoDownload,
+      nodeId: draft.nodeId.trim() === '' ? null : Number(draft.nodeId),
+      tunnelName: draft.tunnelName,
       // An empty field keeps the stored access key; the page never receives it.
       ...(token === '' ? {} : { token }),
     },
@@ -691,6 +878,10 @@ function draftOf(config: DeviceInterconnectView): ConfigDraft {
     publicAddress: config.tunnel.publicAddress,
     tunnelIniPath: config.tunnel.iniPath,
     tunnelExtraArgs: config.tunnel.extraArgs,
+    autoProvision: config.tunnel.autoProvision,
+    frpcAutoDownload: config.tunnel.frpcAutoDownload,
+    nodeId: config.tunnel.nodeId === null ? '' : String(config.tunnel.nodeId),
+    tunnelName: config.tunnel.tunnelName,
   }
 }
 

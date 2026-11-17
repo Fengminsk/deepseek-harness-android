@@ -8,7 +8,7 @@ import type { AddressInfo } from 'node:net'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   API_PREFIX, BRIDGE_HEADER, BRIDGE_HEADER_VALUE, CONFIG_ROUTE, ENABLED_ROUTE, LOGS_ROUTE, PAIR_ROUTE,
-  QR_ROUTE, REVOKE_ROUTE, STATE_ROUTE, TUNNEL_LOGS_ROUTE, TUNNEL_ROUTE,
+  PROVISION_ROUTE, QR_ROUTE, REVOKE_ROUTE, STATE_ROUTE, TUNNEL_LOGS_ROUTE, TUNNEL_ROUTE,
 } from '../src/api.ts'
 import { ConfigValidationError } from '../src/host/config.ts'
 import { ControlPlaneError } from '../src/host/control-plane.ts'
@@ -30,7 +30,8 @@ function snapshot(overrides: Partial<RuntimeState> = {}): RuntimeState {
     pairing: { longTerm: true, pairingTtlMs: 2_592_000_000 },
     tunnel: {
       provider: 'none', frpcPath: '', tunnelIds: '', publicAddress: '', iniPath: '', extraArgs: '',
-      tokenConfigured: false,
+      tokenConfigured: false, autoProvision: false, frpcAutoDownload: true, nodeId: null,
+      tunnelName: 'DSH 设备互联', tunnelId: null,
     },
   }
   return {
@@ -54,6 +55,7 @@ function bridge(): {
   state: ReturnType<typeof vi.fn>
   setEnabled: ReturnType<typeof vi.fn>
   setTunnelEnabled: ReturnType<typeof vi.fn>
+  provisionTunnel: ReturnType<typeof vi.fn>
   saveConfig: ReturnType<typeof vi.fn>
   pair: ReturnType<typeof vi.fn>
   revoke: ReturnType<typeof vi.fn>
@@ -64,6 +66,7 @@ function bridge(): {
   const state = vi.fn(async () => snapshot())
   const setEnabled = vi.fn(async () => snapshot())
   const setTunnelEnabled = vi.fn(async () => snapshot())
+  const provisionTunnel = vi.fn(async () => snapshot())
   const saveConfig = vi.fn(async () => snapshot())
   const pair = vi.fn(async () => snapshot())
   const revoke = vi.fn(async () => snapshot())
@@ -71,10 +74,11 @@ function bridge(): {
   const tunnelLogs = vi.fn(() => 'frpc output')
   const qrSvg = vi.fn(async () => '<svg xmlns="http://www.w3.org/2000/svg"></svg>')
   return {
-    api: { state, setEnabled, setTunnelEnabled, saveConfig, pair, revoke, logs, tunnelLogs, qrSvg },
+    api: { state, setEnabled, setTunnelEnabled, provisionTunnel, saveConfig, pair, revoke, logs, tunnelLogs, qrSvg },
     state,
     setEnabled,
     setTunnelEnabled,
+    provisionTunnel,
     saveConfig,
     pair,
     revoke,
@@ -212,6 +216,14 @@ describe('bridge routes', () => {
     expect(fake.setTunnelEnabled).toHaveBeenCalledWith(true)
     await post(url, TUNNEL_ROUTE, { enabled: false })
     expect(fake.setTunnelEnabled).toHaveBeenLastCalledWith(false)
+  })
+
+  it('provisions the tunnel from the submitted fields', async () => {
+    const fake = bridge()
+    const url = await serve(fake.api)
+    const response = await post(url, PROVISION_ROUTE, { token: 'new-key', frpcAutoDownload: true })
+    expect(response.status).toBe(200)
+    expect(fake.provisionTunnel).toHaveBeenCalledWith({ token: 'new-key', frpcAutoDownload: true })
   })
 
   it('rejects a non-object tunnel body', async () => {
