@@ -6,7 +6,8 @@
  * 1. 读取 `$DSH_HOME/remote-host` 下的身份、TLS 材料与设备表（分别由 `./identity.ts`、`./tls.ts`、
  *    `./devices.ts` 实现）；
  * 2. 开一个配对窗口，把可扫码的配对链接写进日志，并把配对 HTTP 面（`GET /ca.cer`、`POST /pair`）
- *    接到 {@link PairingWindow} 与 {@link DeviceStore} 上；
+ *    接到 {@link PairingWindow} 与 {@link DeviceStore} 上；`Config.pairingLongTerm` 为 true 时，
+ *    配对成功后自动开下一个窗口，保持「长期可配对」入口；
  * 3. 启动 {@link RemoteHostServer}，并把每条新连接接到运行时门面上：手机发来的方法交给门面的
  *    `dispatch`，门面发起的反向请求与通知走这条连接；`native.*` 里语义属于 PC 的方法由
  *    `./native-desktop.ts` 就地应答，不上线；同一条连接上再经 `./notifications.ts` 把页面线的
@@ -15,8 +16,10 @@
  *    撤销设备与重新打开配对窗口的入口；
  * 5. 启用 UDP 局域网发现（`./discovery.ts`）：同网段的手机广播一帧探测就能拿到当前配对
  *    链接，省掉扫码与粘贴。发现端口绑定失败只记 warn，不影响宿主启动；
- * 6. 在回环地址上提供本机配对设置页（`./pairing-page.ts`）：二维码、窗口倒计时、明文链接、
- *    USB 提示与设备撤销都能在电脑浏览器里完成，不需要读终端日志；页面端口绑定失败同样只记 warn。
+ * 6. 在回环地址上提供本机配对设置页（`./pairing-page.ts`）：二维码、窗口状态、明文链接、
+ *    USB 提示与设备撤销都能在电脑浏览器里完成，不需要读终端日志；同一服务器还提供本机
+ *    控制面 JSON API（`/api/state`、`/api/pair`、`/api/devices/revoke`、`/qr.svg`）供设备互联
+ *    插件等本机程序读取状态、长期配对与撤销设备；页面端口绑定失败同样只记 warn。
  *
  * 注册即 effect：插件卸载时关闭配对窗口、断开全部连接、停止发现、停止配对页并停止监听。
  *
@@ -53,7 +56,7 @@ import {
   type PairingPageTicket,
 } from './pairing-page.ts'
 import { encodeQrMatrix, renderTerminalQr } from './pairing-qr.ts'
-import { PairingWindow, pairUrl } from './pairing.ts'
+import { MAXIMUM_PAIRING_TTL_MS, PairingWindow, pairUrl } from './pairing.ts'
 import {
   describeRemoteError,
   RemoteHostServer,
@@ -70,6 +73,17 @@ import {
   type RemotePairRequest,
 } from './server.ts'
 import { ensureTlsMaterial } from './tls.ts'
+
+/**
+ * 把配对链接编码成二维码并渲染成内联 SVG（纯函数，无 I/O）。
+ *
+ * 与宿主页面内联二维码、`GET /qr.svg` 用的是同一份实现。导出它是为了给设备互联等
+ * 本机插件复用，免得到处复制 QR 编码器；编码器容量不足时抛错，由调用方决定降级方式。
+ * @param pairUrl - 完整的配对链接（`wss://…#instance=…&token=…`）。
+ * @returns `viewBox` 定尺寸、含 4 模块安静区的内联 SVG 文本。
+ * @throws 链接超出 `./pairing-qr.ts` 内置编码器容量时抛出。
+ */
+export { renderPairingQrSvg } from './pairing-page.ts'
 
 /** Cordis 插件名。 */
 export const name = 'remote-host'
@@ -109,8 +123,22 @@ export interface Config {
   host: string
   /** 是否真的开监听；默认关闭，避免别的 profile 把整台电脑意外开到网上。 */
   enabled: boolean
-  /** 配对窗口有效期（毫秒）；默认 120 s，单次使用。上限 15 分钟由 `./pairing.ts` 固定。 */
+  /**
+   * 配对窗口有效期（毫秒）；默认 120 s，单次使用。上限 {@link MAXIMUM_PAIRING_TTL_MS}（90 天）。
+   *
+   * 有效期超过 15 分钟、或打开 {@link pairingLongTerm} 时，宿主启动日志会写一条 warn 安全提示：
+   * 长期窗口等于长期可配对入口，只适合个人可信网络，建议配合设备撤销与不用时关闭宿主。
+   */
   pairingTtlMs: number
+  /**
+   * 长期配对模式；默认关闭。
+   *
+   * 为 true 时配对窗口按 {@link pairingTtlMs} 打开，并且**每配对成功一台设备就自动打开
+   * 下一个窗口**（同一 TTL、新 token），会话期间不需要用户手动重开；失败与撤销不改变
+   * 这个语义，宿主重启后照常开新窗口。适合「设置页里长期展示一张二维码」的用法
+   * （设备互联插件），代价是配对入口长期存在——只应部署在个人可信网络里。
+   */
+  pairingLongTerm: boolean
   /** 配对签发的设备令牌有效期（毫秒）；默认 180 天。 */
   deviceTtlMs: number
   /**
@@ -169,7 +197,8 @@ export const Config: z<Config> = z.object({
   port: z.number().step(1).min(0).max(65535).default(4777),
   host: z.string().default('0.0.0.0'),
   enabled: z.boolean().default(false),
-  pairingTtlMs: z.number().step(1).min(1_000).max(900_000).default(120_000),
+  pairingTtlMs: z.number().step(1).min(1_000).max(MAXIMUM_PAIRING_TTL_MS).default(120_000),
+  pairingLongTerm: z.boolean().default(false),
   deviceTtlMs: z.number().step(1).min(60_000).max(3_153_600_000_000).default(180 * 24 * 60 * 60 * 1000),
   publicHost: z.string().default(''),
   publicOrigin: z.transform(z.string(), value => normalizePublicOrigin(value)).default(''),
@@ -184,6 +213,14 @@ const SERVER_CERTIFICATE_COMMON_NAME = 'DeepSeek Harness 远程宿主'
 
 /** 宿主在 v1 支持的能力（协议 §10.3：v1 只定义 `window-ack`）。 */
 const HOST_CAPABILITIES: readonly string[] = ['window-ack']
+
+/**
+ * 放宽前的配对窗口上限（15 分钟）。
+ *
+ * 只用于启动日志区分「普通短窗口」与「配置成了长窗口」；真正的上限是
+ * `./pairing.ts` 的 {@link MAXIMUM_PAIRING_TTL_MS}。
+ */
+const LEGACY_PAIRING_TTL_CAP_MS = 15 * 60 * 1000
 
 /**
  * 门面分发表（`apps/android/runtime/index.mjs` 的 `facadeDispatch` + 6 组前缀分支）在
@@ -516,15 +553,29 @@ async function startRemoteHost(
   // 发现应答里的配对链接与日志/二维码是同一条：窗口打开期间保留当前票据，配对成功后
   // 立刻作废，否则发现会在「窗口已被消费但未过期」这段时间里继续宣布可以配对。
   let currentPairing: RemotePairingTicket | undefined
+  /**
+   * 打开下一个配对窗口的入口（长期配对用）。
+   *
+   * 只有 `server.start()` 之后才知道实际端口，所以这个引用先留空、监听成功后再赋值；
+   * 配对只可能发生在监听之后，赋值与监听在同一个 tick 里完成，因此运行时不会读到空值
+   * （真读到也只会记 warn，不影响已经签发的设备）。
+   */
+  let reopenNextPairingWindow: (() => void) | undefined
   const basePairingSurface = createPairingSurface(tls.caPem, pairing, devices, config.deviceTtlMs)
-  const pairingSurface: RemotePairingSurface = {
-    ...basePairingSurface,
-    redeem: async (request) => {
-      const outcome = await basePairingSurface.redeem(request)
-      if (outcome.ok) currentPairing = undefined
-      return outcome
+  const pairingSurface: RemotePairingSurface = withLongTermPairingReopen(basePairingSurface, {
+    longTerm: config.pairingLongTerm,
+    onRedemptionConsumed: () => {
+      currentPairing = undefined
     },
-  }
+    reopen: () => {
+      const reopen = reopenNextPairingWindow
+      if (reopen === undefined) {
+        throw new Error('配对窗口重开入口还没有就绪（wss 监听尚未完成）。')
+      }
+      reopen()
+    },
+    log: writeRemoteLog,
+  })
   // 协议 §11：一台 PC 同时只服务一台设备。当前绑定的连接、门面出口与 §8 通知观察者成对记录。
   let binding: {
     readonly connection: RemoteConnection
@@ -698,11 +749,39 @@ async function startRemoteHost(
       writePairingQr(ticket.pairUrl, ticket.usbPairUrl, bound.port)
       return ticket
     }
+    // 长期配对：配对成功后由 `withLongTermPairingReopen` 调这里换下一张链接。事件名与
+    // 撤销重开区分开，排障时能看出「窗口是配对成功自动续的」还是「撤销后重开的」。
+    reopenNextPairingWindow = () => {
+      openPairingWindow(
+        'pairing-window-reopened-longterm',
+        '配对成功，长期配对模式已自动打开下一个窗口：用下面的配对链接配对其他手机。',
+        { longTerm: true },
+      )
+    }
     openPairingWindow(
       'listening',
       `远程宿主已就绪：${origin}/app。用下面的配对链接在手机上添加这台电脑。`,
       { deviceName: identity.displayName, listen: `${bound.host}:${bound.port}` },
     )
+    // 长期配对窗口等于「长期可配对入口」：窗口开着期间，任何能连到端口的人都可以尝试
+    // 兑换。默认 120 s 不受影响；这里把风险写进启动日志，避免用户在公网部署里无意打开。
+    if (config.pairingLongTerm) {
+      writeRemoteLog({
+        level: 'warn',
+        event: 'pairing-longterm-enabled',
+        message: '长期配对已开启：配对窗口按配置有效期保持可配对，且每配对成功一台设备后自动换一张新链接。'
+          + '长期窗口等于长期可配对入口，只适合个人可信网络；请配合撤销设备与不用时关闭宿主。',
+        fields: { pairingTtlMs: config.pairingTtlMs },
+      })
+    } else if (config.pairingTtlMs > LEGACY_PAIRING_TTL_CAP_MS) {
+      writeRemoteLog({
+        level: 'warn',
+        event: 'pairing-window-long',
+        message: '配对窗口有效期超过 15 分钟：窗口开着期间任何能连到配对端口的人都可以尝试配对。'
+          + '只适合个人可信网络；配完请撤销不再使用的设备或关闭宿主。',
+        fields: { pairingTtlMs: config.pairingTtlMs },
+      })
+    }
     // 发现应答只回答「这台电脑是谁、当前配对链接是什么」，所以起点必须在配对窗口打开之后：
     // 手机发现到宿主时拿到的一定是此刻可用的链接。
     const discoverySnapshot = (): DiscoverySnapshot => {
@@ -784,6 +863,9 @@ async function startRemoteHost(
           origin,
           port: bound.port,
           discovery: { enabled: config.discoveryEnabled, port: config.discoveryPort },
+          // 页面数据源只在 server.start() 成功后构造，所以这里恒为 true；字段单独给
+          // 本机控制面客户端一个明确的监听事实。
+          listening: true,
         }),
       }),
     }
@@ -909,6 +991,70 @@ export function createPairingSurface(
         },
       })
       return { ok: true, deviceId: issued.id, deviceToken: issued.token, expiresAt: issued.expiresAt }
+    },
+  }
+}
+
+/**
+ * {@link withLongTermPairingReopen} 的选项。
+ */
+export interface LongTermPairingReopenOptions {
+  /** 是否为长期配对模式（`Config.pairingLongTerm`）。 */
+  readonly longTerm: boolean
+
+  /**
+   * 兑换成功后、打开下一个窗口前的回调。
+   *
+   * 宿主用它作废 {@link PairingWindow} 已被消费的窗口票据（`currentPairing`）；它总是先于
+   * {@link reopen} 执行，保证新票据不会被旧票据覆盖。
+   */
+  readonly onRedemptionConsumed: () => void
+
+  /** 打开下一个配对窗口（与 `remoteHost.pair()` 同一条路径，含日志与终端二维码）。 */
+  readonly reopen: () => void
+
+  /** 打开失败时的日志出口。 */
+  readonly log: RemoteLogger
+}
+
+/**
+ * 给配对面加「配对成功后自动开下一个窗口」的长期配对行为。
+ *
+ * 语义：
+ * - 兑换失败（令牌无效/窗口过期/限速/签发失败）不改变窗口，也不重开；
+ * - 兑换成功时先调 {@link LongTermPairingReopenOptions.onRedemptionConsumed}，长期模式下再调
+ *   {@link LongTermPairingReopenOptions.reopen}，让本机控制面在 App 收到设备令牌时已经能读到
+ *   下一张配对链接；
+ * - 重开失败只记一条 warn 并保留成功的配对结果：设备已经签发，不能因为「下一张链接没开出来」
+ *   让这次配对失败（本机控制面可以再手动重开）。
+ *
+ * 抽成纯组合函数是为了让长期配对能脱离 TLS/设备表被自检覆盖；宿主装配与自检用的是同一份实现。
+ * @param surface - 底层配对面（`createPairingSurface` 的结果）。
+ * @param options - 长期模式开关、票据清理、重开动作与日志出口。
+ * @returns 只在兑换成功结果上追加长期配对语义的配对面。
+ */
+export function withLongTermPairingReopen(
+  surface: RemotePairingSurface,
+  options: LongTermPairingReopenOptions,
+): RemotePairingSurface {
+  return {
+    caCertificateDer: surface.caCertificateDer,
+    redeem: async (request: RemotePairRequest): Promise<RemotePairOutcome> => {
+      const outcome = await surface.redeem(request)
+      if (!outcome.ok) return outcome
+      options.onRedemptionConsumed()
+      if (!options.longTerm) return outcome
+      try {
+        options.reopen()
+      } catch (error) {
+        options.log({
+          level: 'warn',
+          event: 'pairing-longterm-reopen-failed',
+          message: '长期配对：设备已配对，但自动打开下一个配对窗口失败；可在本机控制面手动重开。',
+          fields: { error: describeRemoteError(error) },
+        })
+      }
+      return outcome
     },
   }
 }

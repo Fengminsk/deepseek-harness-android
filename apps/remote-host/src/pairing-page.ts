@@ -10,6 +10,13 @@
  * - 所有请求校验 `Host` 头只能是 `127.0.0.1:<port>` / `localhost:<port>`，挡住 DNS rebinding；
  * - 带 `Origin` 的请求必须是同源，否则 403；不返回任何 CORS 头；
  * - POST 必须带本进程随机生成的 CSRF token（隐藏表单字段），缺失或不符一律 403；
+ * - 控制 API（`POST /api/pair`、`POST /api/devices/revoke`）是给本机插件用的 JSON 端点：
+ *   除 Host/Origin 外还必须带固定控制头 {@link CONTROL_HEADER}: `1`，缺失或不符一律 403。
+ *   它挡的是「浏览器里其它网页发起的 CSRF」——跨站表单不能加自定义头，跨站 fetch 加自定义头
+ *   会先发预检，而本页不实现 OPTIONS、也不返回 CORS 头，预检必然失败。控制头不是鉴权：
+ *   同机其它进程本来就能模拟它（见下方已接受的威胁）；
+ * - `GET /qr.svg` 与 `GET /api/state` 是只读端点，不做控制头校验（浏览器 `<img>` 不能带自定义
+ *   头，而跨站读取被同源策略与「无 CORS 头」挡住）；
  * - 页面与 JSON 只展示设备摘要（`DeviceSummary` 不含令牌摘要），配对令牌只在窗口打开时出现；
  * - `X-Content-Type-Options: nosniff`、`Cache-Control: no-store`、CSP 与 `frame-ancestors 'none'`
  *   阻止嗅探、缓存、外链资源与点击劫持；
@@ -17,12 +24,15 @@
  *
  * 已接受的威胁：同一台电脑上的其它进程本来就能读 `$DSH_HOME/remote-host/devices.json` 与宿主
  * 日志，回环页带来的增量风险有限；本页只防「浏览器里其它网页发起的 CSRF / DNS rebinding」。
+ * `<img src="/qr.svg">` 这类跨源嵌入只能显示、不能读像素，也就不构成令牌外泄通道。
  *
  * 失败语义：页面是增强能力。端口被占用或没有权限时只写一条 warn、返回 `listening:false`，
  * 宿主照常启动，配对链接仍在日志里（与 `./discovery.ts` 的降级一致）。
  *
- * 窗口语义：页面不发明「重开」之外的任何入口。窗口是单次有效的，被消耗或过期后
+ * 窗口语义：页面与控制 API 不发明「重开」之外的任何入口。窗口是单次有效的，被消耗或过期后
  * {@link PairingPageSource.currentPairing} 返回 undefined，页面如实显示「没有打开的窗口」。
+ * 长期配对（`Config.pairingLongTerm`）由宿主在配对成功后自动重开下一个窗口，本模块只反映
+ * 宿主的当前事实，不自己延长有效期。
  * @module remote-host/pairing-page
  */
 
@@ -50,6 +60,15 @@ const ALLOWED_HOST_NAMES: readonly string[] = ['127.0.0.1', 'localhost']
 /** POST 表单体的字节上限；页面只有两个隐藏字段，永远不该接近它。 */
 const MAXIMUM_FORM_BYTES = 4 * 1024
 
+/** 控制 API JSON 请求体的字节上限；`/api/devices/revoke` 只有一个设备 id。 */
+const MAXIMUM_CONTROL_BODY_BYTES = 4 * 1024
+
+/** 控制 API 的自定义请求头；本机插件用它标记「这是控制面客户端，不是浏览器表单」。 */
+const CONTROL_HEADER = 'x-dsh-pairing-control'
+
+/** {@link CONTROL_HEADER} 唯一允许的值。 */
+const CONTROL_HEADER_VALUE = '1'
+
 /** CSRF token 的隐藏字段名。 */
 const CSRF_FIELD = 'csrf'
 
@@ -64,6 +83,17 @@ const TEXT_CONTENT_TYPE = 'text/plain; charset=utf-8'
 
 /** JSON 响应类型。 */
 const JSON_CONTENT_TYPE = 'application/json; charset=utf-8'
+
+/** SVG 响应类型（二维码端点）。 */
+const SVG_CONTENT_TYPE = 'image/svg+xml; charset=utf-8'
+
+/**
+ * 页面把窗口显示成「长期有效」而不显示秒级倒计时的阈值（1 小时）。
+ *
+ * 长期配对部署的窗口常在数天到 90 天之间，逐秒倒计时既没有信息量，也让用户误以为
+ * 又回到了「单次短窗口」；此时只展示真实的过期时间，倒计时留给短窗口。
+ */
+const LONG_LIVED_WINDOW_SECONDS = 60 * 60
 
 /**
  * 所有响应统一带的防护头。
@@ -89,7 +119,7 @@ export interface PairingPageTicket {
   readonly expiresAt: number
 }
 
-/** 配对页头部展示的宿主身份与监听信息。 */
+/** 配对页头部展示的宿主身份与监听信息；`/api/state` 的 `host` 字段原样复用它。 */
 export interface PairingPageHost {
   /** 宿主显示名（握手里的 `host.name`）。 */
   readonly name: string
@@ -101,6 +131,13 @@ export interface PairingPageHost {
   readonly port: number
   /** UDP 局域网发现状态（只是展示，页面不控制它）。 */
   readonly discovery: { readonly enabled: boolean; readonly port: number }
+  /**
+   * wss 监听是否在服务。
+   *
+   * 控制面在页面被请求时已经起来，因此宿主装配方在页面生命周期内恒传 `true`；单独给字段
+   * 是为了让本机插件能明确读到「宿主在监听」，而不是从端口号是否大于 0 去猜。
+   */
+  readonly listening: boolean
 }
 
 /**
@@ -153,13 +190,33 @@ export type PairingPageStart =
   | { readonly listening: true; readonly port: number; readonly url: string }
   | { readonly listening: false }
 
+/**
+ * `/api/state` 里当前窗口的 JSON 投影。
+ *
+ * 四个字段在两种状态下都出现（关闭时是 `null`），本机控制面客户端因此不需要处理
+ * 缺失字段；`usbPairUrl` 与顶层同名字段是同一份事实，顶层那个是兼容旧消费者的副本。
+ */
+export type PairingPagePairingState =
+  | {
+    readonly open: false
+    readonly expiresAt: null
+    readonly pairUrl: null
+    readonly usbPairUrl: null
+  }
+  | {
+    readonly open: true
+    readonly expiresAt: number
+    readonly pairUrl: string
+    readonly usbPairUrl: string
+  }
+
 /** `/api/state` 的 JSON 内容；不包含设备令牌或令牌摘要。 */
 export interface PairingPageState {
+  /** 宿主身份、wss 监听端口、对外 origin 与发现状态（供本机控制面客户端使用）。 */
+  readonly host: PairingPageHost
   /** 当前配对窗口；`open: false` 表示没有可用窗口（未打开/已过期/已被消费）。 */
-  readonly pairing:
-    | { readonly open: false }
-    | { readonly open: true; readonly expiresAt: number; readonly pairUrl: string }
-  /** USB 回环配对链接；窗口未打开时为 null（它同样含一次性令牌）。 */
+  readonly pairing: PairingPagePairingState
+  /** USB 回环配对链接（`pairing.usbPairUrl` 的顶层兼容副本）；窗口未打开时为 null。 */
   readonly usbPairUrl: string | null
   /** 已配对设备摘要。 */
   readonly devices: readonly DeviceSummary[]
@@ -178,16 +235,19 @@ interface PageSnapshot {
 }
 
 /**
- * 表单体读取的结论。
+ * 请求体读取的结论。
  *
  * `too-large` 与 `read-failed` 分开：前者回 413、后者回 400，两者都不再读请求体。
  */
-type FormBodyRead =
+type BodyRead =
   | { readonly ok: true; readonly text: string }
   | { readonly ok: false; readonly reason: 'too-large' | 'read-failed' }
 
-/** 页面 POST 动作。 */
-type PageAction = 'pair-reopen' | 'device-revoke'
+/** 页面表单 POST 的动作名（日志 `pairing-page-action.fields.action`）。 */
+type FormAction = 'pair-reopen' | 'device-revoke'
+
+/** 控制 API 的动作名（日志 `pairing-page-action.fields.action`）。 */
+type ControlAction = 'api-pair' | 'api-device-revoke'
 
 /**
  * 本机配对设置页服务。
@@ -404,6 +464,29 @@ export class PairingPageServer {
         }
         this.sendJson(response, 200, this.buildState(this.snapshot()))
         return
+      case '/api/pair':
+        if (method !== 'POST') {
+          this.methodNotAllowed(response, 'POST')
+          return
+        }
+        if (!this.allowedControlHeader(request, response, method, 'api-pair')) return
+        await this.handleApiPair(request, response)
+        return
+      case '/api/devices/revoke':
+        if (method !== 'POST') {
+          this.methodNotAllowed(response, 'POST')
+          return
+        }
+        if (!this.allowedControlHeader(request, response, method, 'api-device-revoke')) return
+        await this.handleApiRevoke(request, response)
+        return
+      case '/qr.svg':
+        if (method !== 'GET') {
+          this.methodNotAllowed(response, 'GET')
+          return
+        }
+        this.handleQrSvg(response)
+        return
       case '/pair/reopen':
         if (method !== 'POST') {
           this.methodNotAllowed(response, 'POST')
@@ -424,6 +507,205 @@ export class PairingPageServer {
   }
 
   /**
+   * 校验控制 API 的自定义头。
+   *
+   * 只对 `POST /api/pair` 与 `POST /api/devices/revoke` 生效：跨站表单无法设置自定义头，
+   * 跨站 fetch 设置它会先发本页不实现的 CORS 预检，两条路都到不了这里。这不是鉴权——
+   * 同机进程可以照抄这个头，威胁模型见模块注释。
+   * @param request - 入站请求。
+   * @param response - 待写响应。
+   * @param method - 请求方法（用于日志）。
+   * @param action - 动作名（用于日志）。
+   * @returns 通过时为 true；已写 403 响应时为 false。
+   */
+  private allowedControlHeader(
+    request: IncomingMessage,
+    response: ServerResponse,
+    method: string,
+    action: ControlAction,
+  ): boolean {
+    const value = request.headers[CONTROL_HEADER]
+    if (value === CONTROL_HEADER_VALUE) return true
+    this.logRejected(method, action, 'control-header')
+    this.sendJsonError(
+      response,
+      403,
+      'control-header-required',
+      `控制 API 需要请求头 ${CONTROL_HEADER}: ${CONTROL_HEADER_VALUE}。`,
+    )
+    return false
+  }
+
+  /**
+   * `POST /api/pair`：打开/重开配对窗口并回最新 state（本机插件用，等价页面表单 `/pair/reopen`）。
+   * @param request - 入站请求。
+   * @param response - 待写响应。
+   * @returns 响应写完后兑现。
+   */
+  private async handleApiPair(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    const body = await this.readControlBody(request, response, 'api-pair')
+    if (body === undefined) return
+    try {
+      this.source.pair()
+    } catch (error) {
+      this.log({
+        level: 'error',
+        event: 'pairing-page-action',
+        message: '控制 API 打开配对窗口失败。',
+        fields: { action: 'api-pair', method: 'POST', result: 'failed', error: describeRemoteError(error) },
+      })
+      this.sendJsonError(response, 500, 'pair-failed', '打开配对窗口失败，详情见宿主日志。')
+      return
+    }
+    this.log({
+      level: 'info',
+      event: 'pairing-page-action',
+      message: '控制 API 重新打开了配对窗口（配对令牌不写进日志）。',
+      fields: { action: 'api-pair', method: 'POST', result: 'ok' },
+    })
+    this.sendJson(response, 200, this.buildState(this.snapshot()))
+  }
+
+  /**
+   * `POST /api/devices/revoke`：撤销设备并回最新 state（本机插件用）。
+   *
+   * 与页面表单的差别只在响应体：表单 303 回页面，这里 200 回 state，并区分
+   * 「记录不存在」（404）与「已经撤销」（409），让插件能展示准确原因。
+   * @param request - 入站请求。
+   * @param response - 待写响应。
+   * @returns 响应写完后兑现。
+   */
+  private async handleApiRevoke(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    if (!isJsonContentType(request.headers['content-type'])) {
+      this.logRejected('POST', 'api-device-revoke', 'content-type')
+      this.sendJsonError(response, 415, 'unsupported-media-type', '只接受 application/json 请求体。')
+      return
+    }
+    const json = await this.readControlBody(request, response, 'api-device-revoke')
+    if (json === undefined) return
+    const deviceId = deviceIdFromJson(json)
+    if (deviceId === undefined) {
+      this.logRejected('POST', 'api-device-revoke', 'device-id')
+      this.sendJsonError(response, 400, 'invalid-request', 'deviceId 必须是 32 位小写十六进制。')
+      return
+    }
+    const existing = this.source.devices().find(device => device.id === deviceId)
+    if (existing !== undefined && existing.revokedAt !== undefined) {
+      this.logRejected('POST', 'api-device-revoke', 'already-revoked')
+      this.sendJsonError(response, 409, 'device-already-revoked', '这台设备已经撤销过了。')
+      return
+    }
+    let result: RemoteDeviceRevokeResult
+    try {
+      result = await this.source.revokeDevice(deviceId)
+    } catch (error) {
+      this.log({
+        level: 'error',
+        event: 'pairing-page-action',
+        message: '控制 API 撤销设备失败。',
+        fields: {
+          action: 'api-device-revoke',
+          method: 'POST',
+          result: 'failed',
+          deviceId,
+          error: describeRemoteError(error),
+        },
+      })
+      this.sendJsonError(response, 500, 'revoke-failed', '撤销设备失败，详情见宿主日志。')
+      return
+    }
+    if (!result.revoked) {
+      this.logRejected('POST', 'api-device-revoke', 'not-found')
+      this.sendJsonError(response, 404, 'device-not-found', '没有找到这台设备。')
+      return
+    }
+    this.log({
+      level: 'info',
+      event: 'pairing-page-action',
+      message: '控制 API 撤销了一台设备，已通知它的在线连接。',
+      fields: {
+        action: 'api-device-revoke',
+        method: 'POST',
+        result: 'revoked',
+        deviceId,
+        closedConnections: result.closed,
+      },
+    })
+    this.sendJson(response, 200, this.buildState(this.snapshot()))
+  }
+
+  /**
+   * 读取并校验控制 API 的请求体（空体视为 `{}`；非空必须是 JSON 对象）。
+   * @param request - 入站请求。
+   * @param response - 待写响应。
+   * @param action - 动作名（用于日志）。
+   * @returns 解析后的 JSON 对象；已经写过错误响应时为 undefined。
+   */
+  private async readControlBody(
+    request: IncomingMessage,
+    response: ServerResponse,
+    action: ControlAction,
+  ): Promise<Record<string, unknown> | undefined> {
+    const body = await readBody(request, MAXIMUM_CONTROL_BODY_BYTES)
+    if (!body.ok) {
+      const tooLarge = body.reason === 'too-large'
+      this.logRejected('POST', action, body.reason)
+      this.sendJsonError(
+        response,
+        tooLarge ? 413 : 400,
+        tooLarge ? 'body-too-large' : 'invalid-request',
+        tooLarge ? `请求体超过 ${MAXIMUM_CONTROL_BODY_BYTES} 字节上限。` : '请求体读取失败。',
+      )
+      return undefined
+    }
+    const text = body.text.trim()
+    if (text === '') return {}
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(text)
+    } catch {
+      this.logRejected('POST', action, 'json')
+      this.sendJsonError(response, 400, 'invalid-request', '请求体必须是 JSON 对象。')
+      return undefined
+    }
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      this.logRejected('POST', action, 'json')
+      this.sendJsonError(response, 400, 'invalid-request', '请求体必须是 JSON 对象。')
+      return undefined
+    }
+    return parsed as Record<string, unknown>
+  }
+
+  /**
+   * `GET /qr.svg`：当前打开窗口 pairUrl 的二维码 SVG。
+   *
+   * 供本机插件的设置页用 `<img src>` 直接展示（跨源 `<img>` 不需要 CORS，也不能带自定义头）；
+   * 只依赖 Host 校验，不要求控制头。窗口未打开时 404，页面本身与 /api/state 仍是权威来源。
+   * @param response - 待写响应。
+   */
+  private handleQrSvg(response: ServerResponse): void {
+    const pairing = this.source.currentPairing()
+    if (pairing === undefined) {
+      this.send(response, 404, TEXT_CONTENT_TYPE, '当前没有打开的配对窗口：请先在电脑上打开配对窗口。')
+      return
+    }
+    let svg: string
+    try {
+      svg = renderPairingQrSvg(pairing.pairUrl)
+    } catch (error) {
+      this.log({
+        level: 'warn',
+        event: 'pairing-page-failed',
+        message: '二维码端点没有生成二维码：配对链接超出内置编码器的容量。',
+        fields: { phase: 'qr', error: describeRemoteError(error) },
+      })
+      this.send(response, 500, TEXT_CONTENT_TYPE, '二维码没有生成：配对链接太长，请直接使用配对链接。')
+      return
+    }
+    this.send(response, 200, SVG_CONTENT_TYPE, svg)
+  }
+
+  /**
    * 处理两个 POST 动作的公共前置：表单类型 → 体积 → CSRF。
    * @param request - 入站请求。
    * @param response - 待写响应。
@@ -432,14 +714,14 @@ export class PairingPageServer {
   private async handleFormPost(
     request: IncomingMessage,
     response: ServerResponse,
-    action: PageAction,
+    action: FormAction,
   ): Promise<void> {
     if (!isFormContentType(request.headers['content-type'])) {
       this.logRejected('POST', action, 'content-type')
       this.send(response, 415, TEXT_CONTENT_TYPE, '只接受 application/x-www-form-urlencoded 表单提交。')
       return
     }
-    const body = await readFormBody(request)
+    const body = await readBody(request, MAXIMUM_FORM_BYTES)
     if (!body.ok) {
       const tooLarge = body.reason === 'too-large'
       this.logRejected('POST', action, body.reason)
@@ -587,8 +869,19 @@ export class PairingPageServer {
    * @param status - HTTP 状态码。
    * @param value - 要序列化的值。
    */
-  private sendJson(response: ServerResponse, status: number, value: PairingPageState): void {
+  private sendJson(response: ServerResponse, status: number, value: unknown): void {
     this.send(response, status, JSON_CONTENT_TYPE, JSON.stringify(value))
+  }
+
+  /**
+   * 写控制 API 的统一错误体 `{"error":{"code","message"}}`。
+   * @param response - 待写响应。
+   * @param status - HTTP 状态码。
+   * @param code - 稳定的机器可读错误码。
+   * @param message - 可直接展示的中文说明。
+   */
+  private sendJsonError(response: ServerResponse, status: number, code: string, message: string): void {
+    this.sendJson(response, status, { error: { code, message } })
   }
 
   /**
@@ -629,14 +922,25 @@ export class PairingPageServer {
    * @returns 不含令牌摘要的页面状态。
    */
   private buildState(snapshot: PageSnapshot): PairingPageState {
-    const pairing = snapshot.pairing
+    const { host, pairing, devices } = snapshot
     if (pairing === undefined) {
-      return { pairing: { open: false }, usbPairUrl: null, devices: snapshot.devices }
+      return {
+        host,
+        pairing: { open: false, expiresAt: null, pairUrl: null, usbPairUrl: null },
+        usbPairUrl: null,
+        devices,
+      }
     }
     return {
-      pairing: { open: true, expiresAt: pairing.expiresAt, pairUrl: pairing.pairUrl },
+      host,
+      pairing: {
+        open: true,
+        expiresAt: pairing.expiresAt,
+        pairUrl: pairing.pairUrl,
+        usbPairUrl: pairing.usbPairUrl,
+      },
       usbPairUrl: pairing.usbPairUrl,
-      devices: snapshot.devices,
+      devices,
     }
   }
 
@@ -821,7 +1125,7 @@ footer { margin-top: 24px; font-size: 12px; color: #6b7280; }
    */
   private renderPairingQr(pairUrl: string): string {
     try {
-      return renderQrSvg(encodeQrMatrix(pairUrl))
+      return renderPairingQrSvg(pairUrl)
     } catch (error) {
       this.log({
         level: 'warn',
@@ -902,12 +1206,35 @@ function isFormContentType(contentType: string | undefined): boolean {
 }
 
 /**
- * 读取表单请求体，超过 {@link MAXIMUM_FORM_BYTES} 或读取失败时提前结束。
+ * 判断请求体是不是 JSON。
+ * @param contentType - 请求的 `Content-Type` 头。
+ * @returns 以 `application/json` 开头时为 true。
+ */
+function isJsonContentType(contentType: string | undefined): boolean {
+  if (contentType === undefined) return false
+  const [mediaType] = contentType.split(';')
+  return mediaType?.trim().toLowerCase() === 'application/json'
+}
+
+/**
+ * 从已解析的 JSON 里取设备 id。
+ * @param value - `JSON.parse` 的结果。
+ * @returns 32 位小写十六进制设备 id；不是对象或字段形态不对时为 undefined。
+ */
+function deviceIdFromJson(value: unknown): string | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const deviceId = (value as Record<string, unknown>).deviceId
+  return typeof deviceId === 'string' && DEVICE_ID_PATTERN.test(deviceId) ? deviceId : undefined
+}
+
+/**
+ * 读取请求体，超过 `limit` 或读取失败时提前结束。
  * @param request - 入站请求。
+ * @param limit - 字节上限。
  * @returns 读取结论。
  */
-function readFormBody(request: IncomingMessage): Promise<FormBodyRead> {
-  return new Promise<FormBodyRead>((resolve) => {
+function readBody(request: IncomingMessage, limit: number): Promise<BodyRead> {
+  return new Promise<BodyRead>((resolve) => {
     const chunks: Buffer[] = []
     let size = 0
     let tooLarge = false
@@ -916,7 +1243,7 @@ function readFormBody(request: IncomingMessage): Promise<FormBodyRead> {
       // 超限后仍把剩余数据读完（丢弃不再累积），让 413 响应能正常写回。
       if (tooLarge) return
       size += chunk.length
-      if (size > MAXIMUM_FORM_BYTES) {
+      if (size > limit) {
         tooLarge = true
         settle({ ok: false, reason: 'too-large' })
         return
@@ -1007,6 +1334,19 @@ function formatTimestamp(value: number): string {
 }
 
 /**
+ * 把配对链接编码成二维码并渲染成内联 SVG。
+ *
+ * 页面内联二维码、`GET /qr.svg` 与宿主包根导出的同名函数都走这一条路径，避免三处各写
+ * 一遍编码 + 渲染；纯函数，无 I/O。
+ * @param pairUrl - 完整的配对链接（`wss://…#instance=…&token=…`）。
+ * @returns 内联 SVG 文本。
+ * @throws 链接超出内置编码器容量时抛出（由调用方决定降级方式）。
+ */
+export function renderPairingQrSvg(pairUrl: string): string {
+  return renderQrSvg(encodeQrMatrix(pairUrl))
+}
+
+/**
  * 把二维码模块矩阵渲染成内联 SVG。
  *
  * 只依赖矩阵本身：白色安静区 4 个模块，每行连续深色模块合并成一条 path，
@@ -1015,7 +1355,7 @@ function formatTimestamp(value: number): string {
  * @returns 内联 SVG 文本。
  * @throws 矩阵行数与边长不一致时抛出。
  */
-function renderQrSvg(matrix: QrMatrix): string {
+export function renderQrSvg(matrix: QrMatrix): string {
   const quiet = 4
   const side = matrix.size + quiet * 2
   const commands: string[] = []
@@ -1041,6 +1381,9 @@ function renderQrSvg(matrix: QrMatrix): string {
 
 /**
  * 渲染「窗口打开中」的主体：倒计时、二维码、链接、USB 段落。
+ *
+ * 窗口剩余时间超过 {@link LONG_LIVED_WINDOW_SECONDS} 时不再显示秒级倒计时，只展示真实
+ * 过期时间与「长期有效」——长期配对部署的窗口是数天到 90 天，逐秒倒计时没有信息量。
  * @param host - 宿主监听信息（USB 端口取自它）。
  * @param pairing - 打开中的窗口。
  * @param now - 当前时间（Unix 毫秒）。
@@ -1049,8 +1392,12 @@ function renderQrSvg(matrix: QrMatrix): string {
  */
 function renderPairingOpenBody(host: PairingPageHost, pairing: PairingPageTicket, now: number, qr: string): string {
   const remaining = Math.max(0, Math.ceil((pairing.expiresAt - now) / 1000))
+  const status = remaining > LONG_LIVED_WINDOW_SECONDS
+    ? `<p class="status">状态：<strong>打开中</strong> · <strong>长期有效</strong> · 过期时间 <code>${formatTimestamp(pairing.expiresAt)}</code>（本机时间）</p>
+<p class="muted">长期窗口等于长期可配对入口：链接发给谁，谁就能配对这台电脑。只适合个人可信网络；不用时关闭宿主或撤销不再使用的设备。</p>`
+    : `<p class="status">状态：<strong>打开中</strong> · 剩余 <strong id="remaining">${remaining}</strong> 秒 · 过期时间 <code>${formatTimestamp(pairing.expiresAt)}</code>（本机时间）</p>`
   const adbCommand = `adb reverse tcp:${host.port} tcp:${host.port}`
-  return `<p class="status">状态：<strong>打开中</strong> · 剩余 <strong id="remaining">${remaining}</strong> 秒 · 过期时间 <code>${formatTimestamp(pairing.expiresAt)}</code>（本机时间）</p>
+  return `${status}
 <p>手机 App →「添加连接」→「扫码配对」，扫描下面的二维码；或复制链接粘贴到 App 的配对页。</p>
 <div class="qr">${qr}</div>
 <textarea id="pair-link" readonly rows="3">${escapeHtml(pairing.pairUrl)}</textarea>

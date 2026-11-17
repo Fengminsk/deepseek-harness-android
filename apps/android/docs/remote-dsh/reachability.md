@@ -34,7 +34,7 @@
 | 兑换设备令牌 | `POST https://<host>:<port>/pair` | JSON `{token, deviceLabel, appVersion}` → `{deviceId, deviceToken, expiresAt}` | `apps/remote-host/src/server.ts:38`、`apps/remote-host/src/server.ts:1415-1487` |
 | 其它任何 HTTP 路径 | — | 404 | `apps/remote-host/src/server.ts:1350-1374` |
 
-默认监听 `0.0.0.0:4777`，可配置；配对窗口默认 120 s、设备令牌默认 180 天（`apps/remote-host/src/index.ts:121-129`）。
+默认监听 `0.0.0.0:4777`，可配置；配对窗口默认 120 s、单次有效，设备令牌默认 180 天（`apps/remote-host/src/index.ts:127-143`）。配对窗口有效期可配置到最长 90 天（`MAXIMUM_PAIRING_TTL_MS`，`apps/remote-host/src/pairing.ts:32`）；`pairingLongTerm: true` 时配对成功后会自动换下一张链接，构成「长期可配对入口」——只适合个人可信网络，安全取舍、控制面 API 与页面见 [pc-pairing-page.md](pc-pairing-page.md) §4–§5。
 一个端口同时是 https 与 wss：**配对和连接必须走同一个 `host:port`**（配对链接只有 host/port 两个字段，见 §1.3）。
 
 ### 1.2 一条连接上必须成立的四件事
@@ -50,7 +50,7 @@
 wss://<host>:<port>#instance=<64 位小写 hex>&token=<43 字符 base64url>
 ```
 
-- 生成 `apps/remote-host/src/pairing.ts:237-245`；`instance` 是 CA 指纹，`token` 单次有效。
+- 生成 `apps/remote-host/src/pairing.ts:253-261`；`instance` 是 CA 指纹，`token` 单次有效。
 - 端口省略时 App 按 **4777** 补（`apps/android/lib/remote_pairing.dart:34-35`、`apps/android/lib/remote_pairing.dart:163`）。
 - **不接受路径前缀、查询串、账号信息**：链接带路径时 App 直接报「v1 只接受直连的 wss://\<host>:\<port>」（`apps/android/lib/remote_pairing.dart:148-158`）；宿主侧 `publicOrigin` 也拒绝路径（`apps/remote-host/src/index.ts:892-920`，错误文案「反向代理请用 TCP 直通」）。
 
@@ -407,7 +407,8 @@ server {
 
 - **只暴露一个端口**：局域网直连暴露 4777；用反代/组网就只暴露那一个入口。宿主本身只有 `/app`、`/ca.cer`、`/pair` 三个端点，但不要额外假设「多开几个端口无所谓」——每多一个可达入口就多一份配对窗口暴露面。
 - **保留证书固定（默认入口）**：App 的 `withTrustedRoots: false` + 固定 CA 是直连语义唯一的中间人防线（`apps/android/lib/remote_transport.dart`）。任何时候都不要为了「能连上」换成接受任意证书；需要 TLS 终止型反代时走 §3.7 的显式入口，那里用的是系统根证书，同样不是「接受任意证书」。
-- **配对要在可信网络上做**：配对链接里带着一次性令牌，谁先拿到谁先配对。默认窗口 120 s、单次有效、失败按对端限速（5 次/分钟，对端表上限 256）（`apps/remote-host/src/pairing.ts:20-30`、`apps/remote-host/src/pairing.ts:131-166`）。配完把链接当密码看待，不要贴群聊。
+- **配对要在可信网络上做**：配对链接里带着一次性令牌，谁先拿到谁先配对。默认窗口 120 s、单次有效、失败按对端限速（5 次/分钟，对端表上限 256）（`apps/remote-host/src/pairing.ts:24-41`、`apps/remote-host/src/pairing.ts:138-205`）。配完把链接当密码看待，不要贴群聊。
+- **长期配对（`pairingLongTerm`）要更保守**：窗口有效期可以配到 90 天，且配对成功后会自动开下一张链接——等于把「可配对入口」长期挂在监听端口上。只允许在个人可信网络（局域网/组网）里开；必须配合设备撤销与不用时关闭宿主；启动日志会写 `pairing-longterm-enabled` / `pairing-window-long` warn，不要忽略（细节见 [pc-pairing-page.md](pc-pairing-page.md) §5）。
 - **设备表只存摘要**：`devices.json` 里只有令牌的 SHA-256，明文令牌只在配对应答里出现一次（`apps/remote-host/src/devices.ts:5-11`、`apps/remote-host/src/devices.ts:385-390`）。
 - **撤销走顺序**：先落盘删除、再推 `remote.deviceRevoked`、最后关闭连接（`apps/remote-host/src/server.ts:1500-1548`），App 收到即置为已撤销。
 - **反代只看字节**：L4 直通时反代不解析 Authorization/Origin；不要在反代上开 HTTP 日志记录请求头（若你把反代升级成 HTTP 层，就等于放弃了本方案的信任模型，见 §3.1）。
@@ -423,7 +424,7 @@ server {
 
 ### 6.3 公网暴露的额外风险（相对「仅局域网」）
 
-- **配对窗口对全世界可达**：`/pair` 有对端限速与单次令牌，但窗口开着就意味着任何能连到端口的人都能尝试。建议只在配对时开、配完撤设备或直接关宿主。
+- **配对窗口对全世界可达**：`/pair` 有对端限速与单次令牌，但窗口开着就意味着任何能连到端口的人都能尝试。建议只在配对时开、配完撤设备或直接关宿主。**长期配对（`pairingLongTerm`/长 `pairingTtlMs`）与公网暴露互斥**：窗口长期有效时，入口会一直暴露在可扫描范围里。
 - **升级端点可被扫描**：没有 per-IP 限速（见 §6.5），43 字符令牌在实践上不可爆破，但会产生日志噪音与资源占用；公网部署建议在网络层只允许自己常用的源地址段。
 - **暴露了你的电脑名/主机名**：握手响应里的 `host.name` 是宿主机器名（`apps/remote-host/src/index.ts` 的 `createHandshake`），只有通过鉴权的连接才看得到，但这仍是信息面。
 - **证书是自签的（直连）**：除 App 以外没有别的软件会信任它，这是特性，不是缺陷。§3.7 的反代模式下手机看到的是反代的公网证书，电脑自签证书只在「反代 → 电脑」这一跳出现，由反代按 `proxy_ssl_verify off` 跳过校验。
@@ -438,12 +439,12 @@ server {
 | 升级前：`Authorization: Bearer <43 base64url>` 形态 → 否则 401 | 已实现（不回显原值） | `apps/remote-host/src/server.ts:65`、`apps/remote-host/src/server.ts:1583-1593` |
 | 升级后：令牌摘要 `timingSafeEqual` → 失败 `-32001`/关闭 4000 | 已实现 | `apps/remote-host/src/devices.ts:418` 起、`apps/remote-host/src/server.ts:1683-1712` |
 | 升级后：设备已撤销 → `-32002`/关闭 4001 | 已实现 | 同上 |
-| `/pair` 401/403/429 语义 | 已实现（窗口关闭/过期/限速） | `apps/remote-host/src/index.ts:658-722`、`apps/remote-host/src/pairing.ts:143-166` |
+| `/pair` 401/403/429 语义 | 已实现（窗口关闭/过期/限速） | `apps/remote-host/src/index.ts`（`createPairingSurface`）、`apps/remote-host/src/pairing.ts:163-207` |
 | `/ca.cer` 回 CA DER 且不缓存 | 已实现 | `apps/remote-host/src/server.ts:1385-1403` |
 
 ### 6.5 已知缺口（写在这里，避免被当成「已实现」）
 
-1. **升级请求没有 per-IP 限速**：protocol §2.2 写的是「同一源地址 5 秒内最多 5 次尝试，超出回 HTTP 429」，当前宿主只对 `/pair` 做了对端限速（`apps/remote-host/src/pairing.ts:176-195`），WebSocket 升级的鉴权尝试没有限速分支（`apps/remote-host/src/server.ts` 全文无 429 逻辑）。公网暴露时请用网络层兜住。
+1. **升级请求没有 per-IP 限速**：protocol §2.2 写的是「同一源地址 5 秒内最多 5 次尝试，超出回 HTTP 429」，当前宿主只对 `/pair` 做了对端限速（`apps/remote-host/src/pairing.ts:193-207`），WebSocket 升级的鉴权尝试没有限速分支（`apps/remote-host/src/server.ts` 全文无 429 逻辑）。公网暴露时请用网络层兜住。
 2. ~~`publicOrigin` 不能用 443~~ **已修复（§3.5）**：显式 `:443` 会被保留，HTTPS 反代链接因此可用。
 3. **手机上不能改地址/不能删除已配对电脑**：§5，重新配对是当前唯一路径。
 4. **HTTPS 反代入口只在 Android App 提供**：旧版本 App 没有这个入口，遇到反代链接只会按默认入口失败（证书校验不过）；升级 App 后重新配对即可。
@@ -513,8 +514,8 @@ PC 侧配对界面（在电脑上重开配对窗口、显示二维码、管理/�
 | 撤销顺序与 `remote.deviceRevoked` | `apps/remote-host/src/server.ts:1489-1548` |
 | 宿主 CA/叶子生命周期与 SAN | `apps/remote-host/src/tls.ts:43-53`、`:258-277`、`:369-401` |
 | instanceId = CA 指纹、绑定与失配拒绝 | `apps/remote-host/src/tls.ts:350-367`、`apps/remote-host/src/identity.ts:198-209` |
-| 配对窗口 TTL/限速/单次 | `apps/remote-host/src/pairing.ts:20-30`、`:131-166` |
-| 配对链接生成与 origin 归一化 | `apps/remote-host/src/pairing.ts:198-245` |
+| 配对窗口 TTL/限速/单次 | `apps/remote-host/src/pairing.ts:24-41`、`:138-207` |
+| 配对链接生成与 origin 归一化 | `apps/remote-host/src/pairing.ts:219-261` |
 | 设备令牌摘要与 tombstone | `apps/remote-host/src/devices.ts:5-11`、`:385-390`、`:418` 起 |
 | `publicHost` / `publicOrigin` 语义与 SAN | `apps/remote-host/src/index.ts:96-117`、`:423-427`、`:892-919`、`:928-935` |
 | 终端配对二维码打印（仅 TTY） | `apps/remote-host/src/index.ts:568`、`:1645-1662` |

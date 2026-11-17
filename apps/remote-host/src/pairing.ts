@@ -8,7 +8,14 @@
  * - 对端表有容量上限，表满时一律拒绝（失败关闭），避免用伪造对端把内存撑爆；
  * - 只有本地（PC 界面）能 open / close，这两个动作会清空失败计数。
  *
- * PC 不生成二维码图片：{@link pairUrl} 只给出链接文本，由 App 用 qr_flutter 渲染。
+ * 有效期上限从 15 分钟放宽到 90 天，供设备互联插件等「长期配对」部署使用
+ * （`Config.pairingLongTerm`）。安全取舍：有效期越长，窗口开着的时间就越长，
+ * 期间任何能连到配对端口的人都能尝试兑换——长期窗口等于长期可配对入口，
+ * 只应出现在个人可信网络（局域网/组网）里，并配合设备撤销与不用时关闭宿主；
+ * 默认配置仍是 120 s，不受这次放宽影响。
+ *
+ * PC 侧页面与控制面把链接渲染成二维码（`./pairing-page.ts`），本模块只负责窗口与链接文本；
+ * 手机 App 侧仍用 qr_flutter 渲染宿主给出的链接。
  * @module remote-host/pairing
  */
 
@@ -17,8 +24,13 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 /** 配对令牌的线上形态：32 字节 base64url。 */
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/u
 
-/** 配对窗口的有效期上限（15 分钟）；再长就没有「当场配对」的意义了。 */
-const MAXIMUM_TTL_MS = 15 * 60 * 1000
+/**
+ * 配对窗口的有效期上限（90 天）。
+ *
+ * 上限本身不是安全护栏：`Config.pairingLongTerm` 之类的长期部署需要一张长期可用的
+ * 链接，安全边界由「只绑可信网络 + 设备撤销 + 用完关闭」承担，见模块注释。
+ */
+export const MAXIMUM_PAIRING_TTL_MS = 90 * 24 * 60 * 60 * 1000
 
 /** 每个对端在计数窗口内允许的尝试次数。 */
 const DEFAULT_MAXIMUM_ATTEMPTS = 5
@@ -124,13 +136,13 @@ export class PairingWindow {
 
   /**
    * 打开一个新的配对窗口，并使此前未用的窗口失效。
-   * @param ttlMs - 有效期毫秒数，1 毫秒到 15 分钟。
+   * @param ttlMs - 有效期毫秒数，1 毫秒到 {@link MAXIMUM_PAIRING_TTL_MS}（90 天）。
    * @returns 明文令牌与过期时间；令牌只在此处出现一次。
    * @throws ttlMs 越界时抛出。
    */
   open(ttlMs: number): PairingOpening {
-    if (!Number.isSafeInteger(ttlMs) || ttlMs <= 0 || ttlMs > MAXIMUM_TTL_MS) {
-      throw new Error(`配对窗口的有效期必须是 1 到 ${MAXIMUM_TTL_MS} 毫秒之间的整数。`)
+    if (!Number.isSafeInteger(ttlMs) || ttlMs <= 0 || ttlMs > MAXIMUM_PAIRING_TTL_MS) {
+      throw new Error(`配对窗口的有效期必须是 1 到 ${MAXIMUM_PAIRING_TTL_MS} 毫秒之间的整数。`)
     }
     const token = randomBytes(32).toString('base64url')
     const expiresAt = this.now() + ttlMs

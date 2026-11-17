@@ -1,0 +1,12 @@
+# Opt-in Device Interconnect bundle: the Settings page plus the child-process
+# supervisor for the PC-side remote host. Shipped profiles do not include this
+# layer; installing the bundle adds it, and the page's switch starts the remote
+# host only when the user turns it on.
+- insert:
+    - id: device-interconnect
+      name: '@deepseek-ai/dsh-device-interconnect'
+      config:
+        # First-run seed for $DSH_HOME/device-interconnect/config.json. After
+        # that file exists, it is the single source of truth and this value is
+        # ignored.
+        enabled: false

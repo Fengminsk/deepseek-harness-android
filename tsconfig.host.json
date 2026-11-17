@@ -556,6 +556,7 @@
     { "path": "./packages/experimental/liveshare-protocol/tsconfig.host.json" },
     { "path": "./packages/team/tool-agent-team" },
     { "path": "./packages/experimental/liveshare/tsconfig.host.json" },
+    { "path": "./packages/experimental/device-interconnect/tsconfig.host.json" },
     { "path": "./packages/workflow/workflow" },
     { "path": "./packages/workflow/workflow-ptc" },
     { "path": "./packages/workflow/tool-workflow" },

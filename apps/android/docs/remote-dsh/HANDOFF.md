@@ -130,6 +130,7 @@ cd apps/android
 | P6 可达性 | **第三批完成**：扫码配对（真机解码 PASS）、局域网自动发现（PC 探测 PASS）、USB/adb reverse（真机连接 PASS）、手动地址覆盖、多台电脑管理与切换（真机 PASS）、后台通知步骤 (1)+(2)（宿主 §8 发送 + App 系统通知/点击深链，真机验证）、PC 配对设置页（浏览器验收）、App 拨号超时、wss 443 修复 | 待做：真机拍照扫码、无隔离网络发现直连、approvalPending 真机链路、步骤 (3) 前台服务持 WS、PC 分发决策。见 §3.2.10–§3.2.14、`reachability.md`、`discovery.md`、`pc-pairing-page.md` |
 | 会话洞察 UI | **完成（真机验证）**：远程会话页悬浮任务卡片（可展开 todos）+ 底部统计条（轮/步、tok 与缓存命中%、上下文%，点按详情弹层），数据来自 `session.projections` 四类投影，事件驱动刷新 | `remote_session_insights.dart`、`remote_todo_card.dart`、`remote_stats_bar.dart`；§3.2.15 |
 | 输入区重构（新） | **完成（真机验证）**：按官方 App 参照重做悬浮输入卡——缩小/展开/推理面板三态，**首页与远程会话页共用**，本地聊天页也接入；修复键盘不弹、picker 进不去、计划状态误报、模型页 debug 断言等问题 | `pocket_composer.dart`、`remote_dsh_widgets.dart`、`remote_dsh_conversation.dart`、`remote_dsh_page.dart`、`main.dart`；§3.2.16–§3.2.17 |
+| 设备互联插件（新） | **已实现并在本机官方 DSH 安装验证**：`packages/experimental/device-interconnect`（Settings→「设备互联」Tab；Host 以独立子进程托管 our-fork `remote-host`，通过本机配对页控制面 API 管理）；**长期配对**（30 天窗口、配对成功后自动续开、无倒计时）、端口/域名配置、设备列表/撤销、日志与运行器配置；配套 remote-host 控制面 JSON API 与 `/qr.svg` | 见 §3.2.18、`packages/experimental/device-interconnect/README.md`、`apps/remote-host/scripts/pairing-page-selfcheck.ts` |
 
 ### 3.2 已核验的通过项（本轮）
 
@@ -770,6 +771,18 @@ exit 0；oxlint 改动 3 文件 0 error；宿主冒烟 **14/14**。本轮未截�
   配对链接需先关 IME（`ime disable`）再用带单引号保护的 `input text`。
 - **测试**：首页 page/capabilities 51 项、page 73 项、组件 21 项及邻接批次全绿；全量 `flutter test`
   **2041+ 项通过**；analyze 11 条基线。改动提交 `7f814b1278`、`8da0e7493d`。
+
+#### 3.2.18 设备互联 DSH 插件 + 长期配对（官方 DSH 安装验证）
+
+用户要求把远程接入做成 PC 上的「插件」、在 DSH **设置**里开「设备互联」Tab，并且配对不要倒计时、要长期可用。
+
+- **新包** `packages/experimental/device-interconnect`（`@deepseek-ai/dsh-device-interconnect`，单包 host+client+bundle，`listedByDefault:false`）：Settings 注册 `settings.section` id `device-interconnect` / 标签「设备互联/Devices」，页面含运行状态与开关、长期配对二维码/链接（无倒计时）+ 重新生成、端口/对外域名/UDP 发现/配对页配置、已配对设备列表与撤销、运行器高级配置与子进程日志；文案 8 语言、原创 icon、中英 README。
+- **占用形态**：插件 Host 只做**独立子进程托管**（`<node> <pnpm.mjs> dsh --profile remote-host --patch <生成的 overlay> --no-open`，可配 runner 路径/DSH_HOME），通过 remote-host 的本机配对页控制面 `GET /api/state`、`POST /api/pair`、`POST /api/devices/revoke`、`GET /qr.svg` 通信；插件与 DSH 主进程同生命周期，子进程崩溃/退出可观测并重启，关闭开关即停子进程。插件不 import 我们 fork 的运行时，装到官方 DSH 即可用（子进程仍要求本机存在我们的 fork checkout，README 已注明分发边界）。
+- **长期配对**（remote-host）：`pairingTtlMs` 上限 900s → 90 天（默认仍 120s）；新增 `pairingLongTerm`：窗口按配置 TTL 保持、**每配对成功一台自动打开下一个窗口**（新 token），日志 warn 安全提示；配对页/控制 API 显示「长期有效」而非秒级倒计时；撤销设备仍自动重开。插件默认 `longTerm:true`、`pairingTtlMs:30 天`。
+- **控制面**（仅 127.0.0.1 配对页）：`GET /api/state` 增加 `host{port,origin,listening}` 与完整 `pairing{pairUrl,usbPairUrl,expiresAt}`；`POST /api/pair`、`POST /api/devices/revoke`（需 `x-dsh-pairing-control: 1`，同源 Host 守卫）；`GET /qr.svg` 返回当前窗口二维码 SVG；响应无 CORS、no-store、不含令牌/私钥。
+- **本机验证**（已安装到官方 DSH desktop profile）：`plugin_manager install_bundle` 从本地目录安装并 enable → Settings Tab 已注册；runner 指向本机 fork（node/pnpm/`repoDir`/profile=`remote-host`/`DSH_HOME=…\Temp\dsh-remote-m1`），开启后子进程启动，`/device-interconnect/api/state` 返回 running、`pairing.open=true`、`expiresAt≈30 天`、`qr.svg` 200（9.7KB SVG），子进程日志出现 `pairing-longterm-enabled`。设备列表沿用了原 remote-host 身份（34 台历史设备）。
+- **已知边界**：长窗口=长期可配对入口（仅个人可信网络），需配合撤销/不用时关闭；插件控制面只允许本机回环；官方 DSH 分发仍需把 fork 运行时打包（当前 runner 指向本机 checkout）。
+- **测试**：插件包 7 个测试文件 104 项、双 face tsc；remote-host `pairing-page-selfcheck` 30/30、`pairing-longterm-selfcheck` 8/8、`qr-selfcheck` 16/16、smoke 14/14；仓库 `typecheck` 5/5；`build:artifacts` 8/8；`pnpm run build:check` 待 lead 收尾。
 
 ### 3.4 远程宿主为什么能跑起来（三个非显然事实）
 

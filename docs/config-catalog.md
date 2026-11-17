@@ -390,7 +390,7 @@ export interface Config {
 
 ## `@deepseek-ai/dsh-attachment-local`
 
-- `source`: [`packages/attachment/attachment-local/src/index.ts:65`](../packages/attachment/attachment-local/src/index.ts)
+- `source`: [`packages/attachment/attachment-local/src/index.ts:67`](../packages/attachment/attachment-local/src/index.ts)
 
 ```ts config-catalog
 /** Local attachment backend configuration. */
@@ -859,7 +859,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-deepseek-account-platform`
 
 - `inject`: `credentials` · `authorization`
-- `source`: [`packages/credentials/deepseek-account-platform/src/index.ts:23`](../packages/credentials/deepseek-account-platform/src/index.ts)
+- `source`: [`packages/credentials/deepseek-account-platform/src/index.ts:42`](../packages/credentials/deepseek-account-platform/src/index.ts)
 
 ```ts config-catalog
 /** Deployment-specific platform and request deadlines. */
@@ -2535,7 +2535,7 @@ export interface Config {
 
 ## `@deepseek-ai/dsh-office-to-pdf`
 
-- `source`: [`packages/document/office-to-pdf/src/index.ts:31`](../packages/document/office-to-pdf/src/index.ts)
+- `source`: [`packages/document/office-to-pdf/src/index.ts:32`](../packages/document/office-to-pdf/src/index.ts)
 
 ```ts config-catalog
 /** Provider concurrency and kit rendering/font configuration. */
@@ -2578,6 +2578,8 @@ export interface Config {
   maxFontFileBytes: number
   /** Maximum original font bytes loaded for a conversion. */
   maxLoadedFontBytes: number
+  /** Run each conversion in a child process so WASM memory leaves the Host when it exits. */
+  subprocessConversions: boolean
 }
 ```
 <!-- END GENERATED config-catalog:@deepseek-ai/dsh-office-to-pdf -->
@@ -4092,7 +4094,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-tool-fs`
 
 - `inject`: `tools` · `fs` · `systemPrompt` · `workingDirectory`
-- `source`: [`packages/fs/tool-fs/src/index.ts:27`](../packages/fs/tool-fs/src/index.ts)
+- `source`: [`packages/fs/tool-fs/src/index.ts:31`](../packages/fs/tool-fs/src/index.ts)
 
 ```ts config-catalog
 /** Plugin config (all optional — `Config` supplies the defaults). */
@@ -4125,7 +4127,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-tool-fs-search`
 
 - `inject`: `tools` · `systemPrompt` · `subprocess` · `workingDirectory`
-- `source`: [`packages/fs/tool-fs-search/src/index.ts:74`](../packages/fs/tool-fs-search/src/index.ts)
+- `source`: [`packages/fs/tool-fs-search/src/index.ts:78`](../packages/fs/tool-fs-search/src/index.ts)
 
 ```ts config-catalog
 /** Plugin config; over-cap glob sampling is an explicit deployment choice and the remaining fields have defaults. */
@@ -4449,7 +4451,7 @@ export interface PresetSelectionConfig {
 ## `@deepseek-ai/dsh-tool-subagent-control`
 
 - `inject`: `tools` · `subagents` · `agents` · `systemPrompt`
-- `source`: [`packages/subagent/tool-subagent-control/src/index.ts:24`](../packages/subagent/tool-subagent-control/src/index.ts)
+- `source`: [`packages/subagent/tool-subagent-control/src/index.ts:26`](../packages/subagent/tool-subagent-control/src/index.ts)
 
 ```ts config-catalog
 /** Optional subagent control tools. */
@@ -4508,7 +4510,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-tool-web`
 
 - `inject`: `tools` · `web` · `systemPrompt`
-- `source`: [`packages/web/tool-web/src/index.ts:39`](../packages/web/tool-web/src/index.ts)
+- `source`: [`packages/web/tool-web/src/index.ts:43`](../packages/web/tool-web/src/index.ts)
 
 ```ts config-catalog
 /** Plugin config: which web tools to register, search bounds, per-tool budgets, and the fetch output cap. */
@@ -5061,6 +5063,7 @@ Imported as libraries by other packages; a `cordis.yml` cannot load them.
 | `@deepseek-ai/dsh-cmdline` | — | [`packages/boot/cmdline/src/index.ts`](../packages/boot/cmdline/src/index.ts) |
 | `@deepseek-ai/dsh-cua-bundle` | — | [`packages/experimental/cua-bundle/src/index.ts`](../packages/experimental/cua-bundle/src/index.ts) |
 | `@deepseek-ai/dsh-deque` | — | [`packages/util/deque/src/index.ts`](../packages/util/deque/src/index.ts) |
+| `@deepseek-ai/dsh-device-interconnect` | — | [`packages/experimental/device-interconnect/src/index.ts`](../packages/experimental/device-interconnect/src/index.ts) |
 | `@deepseek-ai/dsh-experimental-badge-skill-bundle` | — | [`packages/experimental/badge-skill-bundle/src/index.ts`](../packages/experimental/badge-skill-bundle/src/index.ts) |
 | `@deepseek-ai/dsh-experimental-browser-use-runtime` | — | [`packages/experimental/browser-use-runtime/src/index.ts`](../packages/experimental/browser-use-runtime/src/index.ts) |
 | `@deepseek-ai/dsh-experimental-cot-translation-bundle` | — | [`packages/experimental/cot-translation-bundle/src/index.ts`](../packages/experimental/cot-translation-bundle/src/index.ts) |

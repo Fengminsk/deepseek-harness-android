@@ -68,6 +68,7 @@ kind: "package-group"
 | [`plugin-market-bundle`](plugin-market-bundle/README.zh.md) | 默认禁用的可选自定义插件索引：索引服务和「发现」标签页 | — |
 | [`liveshare`](liveshare/README.zh.md) | 可选 LiveShare host bundle：通过 Relay 以 `view` 或 `write` 档分享会话，派生与附件上传为独立开关 | 注入 `connection`；通过宿主 Web 资源提供查看页 |
 | [`liveshare-protocol`](liveshare-protocol/README.zh.md) | owner bundle 与 Relay 共用的线路帧与身份契约 | 库与协议，不使用 ctx key |
+| [`device-interconnect`](device-interconnect/README.zh.md) | 可选「设备互联」设置页与 PC 侧远程宿主的子进程托管 | 在宿主 Web 服务器上提供 `/device-interconnect/api` |
 | [`voice-input-bundle`](voice-input-bundle/README.zh.md) | 默认禁用的可选语音输入组合 | — |
 | [`client-ui-stats`](client-ui-stats/README.zh.md) | Web 端按轮次与步骤展示上下文、耗时、缓存与工具成本 | — |
 | [`auto-review`](auto-review/README.zh.md) | 显式 Web 层，在每个原生或 PTC inner 工具调用前使用同一模型审查 | — |

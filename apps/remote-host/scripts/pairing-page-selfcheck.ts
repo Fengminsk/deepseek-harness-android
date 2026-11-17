@@ -1,5 +1,5 @@
 /**
- * 本机配对页自检：证明 `../src/pairing-page.ts` 的 HTML/JSON 契约与回环防护成立。
+ * 本机配对页自检：证明 `../src/pairing-page.ts` 的 HTML/JSON 契约、回环防护与控制 API 成立。
  *
  * 运行：`node --import tsx/esm apps/remote-host/scripts/pairing-page-selfcheck.ts`
  * 退出码：全部通过 0，任一断言失败 1。脚本只监听 127.0.0.1 的临时端口，不写文件、
@@ -9,19 +9,25 @@
  * 1. 启动绑定回环临时端口并记录 `pairing-page-ready`（URL 含完整端口，不含令牌）；
  * 2. `GET /` 单页 HTML：配对状态/倒计时/过期时间、内联二维码 SVG、明文链接、USB
  *    `adb reverse` 段落、设备列表（label / id 前缀 / 时间）、CSRF 隐藏字段；设备名按 HTML 转义；
- * 3. `GET /api/state` 的字段集合、窗口打开/关闭两种形态、不出现令牌摘要；
- * 4. 响应头：nosniff / no-store / CSP / 无 CORS；
- * 5. 窗口过期后页面与 JSON 都不再带配对链接；
+ *    长窗口（> 1 小时）显示「长期有效」而不是秒级倒计时；
+ * 3. `GET /api/state` 的字段集合（`host` / `pairing` / 顶层 `usbPairUrl` / `devices`）、
+ *    窗口打开/关闭两种形态、`host` 的监听事实、不出现令牌摘要；
+ * 4. 响应头：nosniff / no-store / CSP / 无 CORS（页面、JSON 与 `/qr.svg`）；
+ * 5. 窗口过期后页面、JSON 与 `/qr.svg` 都不再带配对链接；
  * 6. `POST /pair/reopen` 303 后窗口换新令牌；`POST /devices/revoke` 303 后调用撤销并
  *    模拟推送 `remote.deviceRevoked`，页面与 JSON 反映已撤销；
- * 7. 防护：伪造 `Host`（含缺 Host）/ 跨站 `Origin` / 缺或错 CSRF / 非表单内容 /
+ * 7. 控制 API：`GET /qr.svg` 返回与 `renderPairingQrSvg` 一致的内联 SVG（无需控制头、query 忽略）；
+ *    `POST /api/pair` 带 `x-dsh-pairing-control: 1` → 200 + 最新 state；缺头/错头 → 403 且无副作用；
+ *    `POST /api/devices/revoke` JSON → 200 + 最新 state，并区分 415/400/404/409；
+ * 8. 防护：伪造 `Host`（含缺 Host）/ 跨站 `Origin` / 缺或错 CSRF / 非表单内容 /
  *    超大表单体 / 方法错误 / 未知路径，全部 4xx，且被拒绝的动作不产生副作用；
- * 8. 动作失败回 500 且日志 `result=failed`；日志与两台实例的 CSRF token 都不外泄；
- * 9. 生命周期：stop 释放端口、重复 start 复用同一进程级 CSRF token；端口被占用时
+ * 9. 动作失败回 500 且日志 `result=failed`；日志与两台实例的 CSRF token 都不外泄；
+ * 10. 生命周期：stop 释放端口、重复 start 复用同一进程级 CSRF token；端口被占用时
  *    `start()` 返回 `listening:false` 且只记 warn，不抛错、不影响进程。
  *
- * 为什么用假数据源：本文件验证的是页面本身的路由、防护与渲染；宿主侧的窗口记账与撤销
- * 语义由 `apps/remote-host/scripts/smoke-remote-host.ts` 与真实 e2e 覆盖，这里不重复造栈。
+ * 为什么用假数据源：本文件验证的是页面本身的路由、防护与渲染；宿主侧的窗口记账、长期配对
+ * 自动续开与撤销语义由 `pairing-longterm-selfcheck.ts` 与 `smoke-remote-host.ts` 覆盖，
+ * 这里不重复造栈。
  * @module @deepseek-ai/dsh-remote-host/scripts/pairing-page-selfcheck
  */
 
@@ -34,7 +40,7 @@ import {
 import { connect as connectTcp } from 'node:net'
 import type { DeviceSummary } from '../src/devices.ts'
 import { encodeQrMatrix } from '../src/pairing-qr.ts'
-import { PairingPageServer, type PairingPageHost, type PairingPageSource, type PairingPageTicket } from '../src/pairing-page.ts'
+import { PairingPageServer, renderPairingQrSvg, type PairingPageHost, type PairingPageSource, type PairingPageTicket } from '../src/pairing-page.ts'
 import type { RemoteDeviceRevokeResult, RemoteLogRecord } from '../src/server.ts'
 
 /** 自检用的宿主显示名。 */
@@ -51,6 +57,12 @@ const SAMPLE_WSS_PORT = 4777
 
 /** 自检用的配对窗口有效期（毫秒）。 */
 const PAIRING_TTL_MS = 120_000
+
+/** 自检用的长期配对窗口有效期（30 天，远大于「长期有效」展示阈值）。 */
+const LONG_PAIRING_TTL_MS = 30 * 24 * 60 * 60 * 1000
+
+/** 控制 API 的自定义头（与 `../src/pairing-page.ts` 的常量一致）。 */
+const CONTROL_HEADER = 'x-dsh-pairing-control'
 
 /** 自检的起始时钟（Unix 毫秒）。 */
 const START_TIME = 1_700_000_000_000
@@ -245,6 +257,51 @@ function postForm(
 }
 
 /**
+ * 发一个控制 API 的 JSON POST。
+ * @param port - 目标端口。
+ * @param path - 请求路径。
+ * @param body - 请求体（对象会序列化成 JSON；`undefined` 表示空体）。
+ * @param headers - 额外请求头（默认已带控制头与 JSON 内容类型）。
+ * @returns 测试响应。
+ */
+function postControlJson(
+  port: number,
+  path: string,
+  body: unknown = undefined,
+  headers: Readonly<Record<string, string>> = {},
+): Promise<TestResponse> {
+  return httpRequest(port, {
+    method: 'POST',
+    path,
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    headers: {
+      [CONTROL_HEADER]: '1',
+      ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+      ...headers,
+    },
+  })
+}
+
+/**
+ * 断言响应是统一 JSON 错误体。
+ * @param response - 测试响应。
+ * @param status - 期望状态码。
+ * @param code - 期望错误码。
+ * @param label - 失败说明里的接口名。
+ * @returns 错误体的 message。
+ * @throws 状态码或错误体不符合时抛出。
+ */
+function checkJsonError(response: TestResponse, status: number, code: string, label: string): string {
+  check(response.status === status, `${label} 状态码期望 ${status}，实际 ${response.status}：${response.body.slice(0, 120)}`)
+  check(headerValue(response, 'content-type').startsWith('application/json'), `${label} 的 Content-Type 不是 JSON`)
+  const body = parseJsonObject(response.body, label)
+  const error = asRecord(body.error, `${label}.error`)
+  check(error.code === code, `${label} 的 error.code 期望 ${code}，实际 ${String(error.code)}`)
+  check(typeof error.message === 'string' && error.message.length > 0, `${label} 的 error.message 不是非空字符串`)
+  return error.message
+}
+
+/**
  * 用原始 TCP 发一帧 HTTP：覆盖「没有 Host 头」这种 http 客户端无法构造的请求。
  * @param port - 目标端口。
  * @param payload - 原始请求文本。
@@ -334,6 +391,18 @@ function tokenOf(ticket: PairingPageTicket): string {
   return ticket.pairUrl.slice(index + marker.length)
 }
 
+/**
+ * 按页面 `formatTimestamp` 的规则格式化 Unix 毫秒（本地时间 `YYYY-MM-DD HH:mm:ss`）。
+ * @param value - Unix 毫秒。
+ * @returns 与页面一致的本地时间文本。
+ */
+function formatPageTimestamp(value: number): string {
+  const date = new Date(value)
+  const pad = (part: number): string => String(part).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} `
+    + `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}
+
 /** 页面里展示的宿主信息。 */
 const SAMPLE_HOST: PairingPageHost = {
   name: SAMPLE_HOST_NAME,
@@ -341,6 +410,7 @@ const SAMPLE_HOST: PairingPageHost = {
   origin: SAMPLE_ORIGIN,
   port: SAMPLE_WSS_PORT,
   discovery: { enabled: true, port: 4778 },
+  listening: true,
 }
 
 /** 初始设备列表：有效两台、已撤销一台、已过期一台。 */
@@ -396,6 +466,8 @@ class FakePairingSource implements PairingPageSource {
   readonly deviceRevokedEvents: string[] = []
   /** 已签发过的全部配对令牌（用于断言日志不外泄）。 */
   readonly issuedTokens: string[] = []
+  /** 下一次 `pair()` 打开窗口用的有效期；默认 {@link PAIRING_TTL_MS}。 */
+  pairingTtlMs = PAIRING_TTL_MS
   private readonly clock: () => number
   private deviceRecords: DeviceSummary[]
   private ticket: PairingPageTicket | undefined
@@ -473,7 +545,7 @@ class FakePairingSource implements PairingPageSource {
     return {
       pairUrl: `${SAMPLE_ORIGIN}#instance=${SAMPLE_INSTANCE_ID}&token=${token}`,
       usbPairUrl: `wss://127.0.0.1:${SAMPLE_WSS_PORT}#instance=${SAMPLE_INSTANCE_ID}&token=${token}`,
-      expiresAt: this.clock() + PAIRING_TTL_MS,
+      expiresAt: this.clock() + this.pairingTtlMs,
     }
   }
 }
@@ -578,20 +650,33 @@ async function main(): Promise<number> {
       return '4 台设备（2 有效 / 1 已撤销 / 1 已过期），设备名完成 HTML 转义'
     })
 
-    await step('GET /api/state 字段集合与窗口打开形态正确，不含令牌摘要', async () => {
+    await step('GET /api/state 字段集合、host 监听事实与窗口打开形态，不含令牌摘要', async () => {
       const ticket = source.currentPairing()
       check(ticket !== undefined, '自检数据源没有打开中的窗口')
       const response = await httpRequest(port, { path: '/api/state' })
       check(response.status === 200, `状态码期望 200，实际 ${response.status}`)
       check(headerValue(response, 'content-type').startsWith('application/json'), 'Content-Type 不是 JSON')
       const state = parseJsonObject(response.body, '/api/state')
-      checkJsonEqual(Object.keys(state).sort(), ['devices', 'pairing', 'usbPairUrl'], '/api/state 字段集合')
+      checkJsonEqual(Object.keys(state).sort(), ['devices', 'host', 'pairing', 'usbPairUrl'], '/api/state 字段集合')
+      const host = asRecord(state.host, 'host')
+      checkJsonEqual(
+        Object.keys(host).sort(),
+        ['discovery', 'instanceId', 'listening', 'name', 'origin', 'port'],
+        'host 字段集合',
+      )
+      check(host.name === SAMPLE_HOST_NAME, 'host.name 不符')
+      check(host.instanceId === SAMPLE_INSTANCE_ID, 'host.instanceId 不符')
+      check(host.origin === SAMPLE_ORIGIN, 'host.origin 不符')
+      check(host.port === SAMPLE_WSS_PORT, 'host.port 不是 wss 监听端口')
+      check(host.listening === true, 'host.listening 不是 true')
+      checkJsonEqual(host.discovery, { enabled: true, port: 4778 }, 'host.discovery')
       const pairing = asRecord(state.pairing, 'pairing')
-      checkJsonEqual(Object.keys(pairing).sort(), ['expiresAt', 'open', 'pairUrl'], 'pairing 字段集合')
+      checkJsonEqual(Object.keys(pairing).sort(), ['expiresAt', 'open', 'pairUrl', 'usbPairUrl'], 'pairing 字段集合')
       check(pairing.open === true, 'pairing.open 不是 true')
       check(pairing.expiresAt === ticket.expiresAt, 'pairing.expiresAt 与票据不一致')
       check(pairing.pairUrl === ticket.pairUrl, 'pairing.pairUrl 与票据不一致')
-      check(state.usbPairUrl === ticket.usbPairUrl, 'usbPairUrl 与票据不一致')
+      check(pairing.usbPairUrl === ticket.usbPairUrl, 'pairing.usbPairUrl 与票据不一致')
+      check(state.usbPairUrl === ticket.usbPairUrl, '顶层 usbPairUrl（兼容字段）与票据不一致')
       const devices = asJsonArray(state.devices, 'devices')
       check(devices.length === 4, `设备数期望 4，实际 ${devices.length}`)
       const first = asRecord(devices[0], 'devices[0]')
@@ -600,13 +685,14 @@ async function main(): Promise<number> {
       check(first.label === 'OnePlus6', 'devices[0].label 不符')
       const serialized = JSON.stringify(state)
       check(!serialized.includes('tokenDigest'), '/api/state 泄漏了令牌摘要字段')
+      // 窗口打开时三处带 token 的链接：pairing.pairUrl / pairing.usbPairUrl / 顶层 usbPairUrl。
       const tokenOccurrences = serialized.split('&token=').length - 1
-      check(tokenOccurrences === 2, `窗口打开时 /api/state 应恰好含 2 条带令牌的链接（pairUrl + usbPairUrl），实际 ${tokenOccurrences} 条`)
-      return `${devices.length} 台设备 + pairing.open=true + usbPairUrl，无令牌摘要`
+      check(tokenOccurrences === 3, `窗口打开时 /api/state 应恰好含 3 条带令牌的链接，实际 ${tokenOccurrences} 条`)
+      return `${devices.length} 台设备 + host(listening) + pairing.open=true，无令牌摘要`
     })
 
     await step('响应头：nosniff / no-store / CSP / frame 拒绝 / 没有 CORS', async () => {
-      for (const path of ['/', '/api/state']) {
+      for (const path of ['/', '/api/state', '/qr.svg']) {
         const response = await httpRequest(port, { path })
         check(headerValue(response, 'x-content-type-options') === 'nosniff', `${path} 缺少 nosniff`)
         check(headerValue(response, 'cache-control') === 'no-store', `${path} 缺少 no-store`)
@@ -617,7 +703,7 @@ async function main(): Promise<number> {
         check(csp.includes("connect-src 'self'"), `${path} 的 CSP 缺少 connect-src 'self'（页面轮询需要）`)
         check(headerValue(response, 'access-control-allow-origin') === '', `${path} 返回了 CORS 头`)
       }
-      return '两个路径都带 nosniff/no-store/CSP，且没有任何 Access-Control-* 头'
+      return '页面 / JSON / QR SVG 都带 nosniff/no-store/CSP，且没有任何 Access-Control-* 头'
     })
 
     await step('没有设备时展示空态', async () => {
@@ -629,14 +715,18 @@ async function main(): Promise<number> {
       return '空列表显示空态文案，无撤销表单'
     })
 
-    await step('窗口过期后页面与 JSON 都不再带配对链接', async () => {
+    await step('窗口过期后页面、JSON 与 /qr.svg 都不再带配对链接', async () => {
       const expiredTicket = source.currentPairing()
       check(expiredTicket !== undefined, '过期前数据源没有窗口')
       const expiredToken = tokenOf(expiredTicket)
       fakeNow += PAIRING_TTL_MS + 1_000
       const response = await httpRequest(port, { path: '/api/state' })
       const state = parseJsonObject(response.body, '/api/state')
-      checkJsonEqual(state.pairing, { open: false }, '过期后的 pairing')
+      checkJsonEqual(
+        state.pairing,
+        { open: false, expiresAt: null, pairUrl: null, usbPairUrl: null },
+        '过期后的 pairing',
+      )
       check(state.usbPairUrl === null, '过期后 usbPairUrl 不是 null')
       const html = (await httpRequest(port, { path: '/' })).body
       check(/id="pairing-open" hidden/u.test(html), '过期后未隐藏二维码区块')
@@ -644,7 +734,11 @@ async function main(): Promise<number> {
       check(!html.includes(expiredToken), '过期后的页面仍出现旧配对令牌')
       check(!html.includes('#instance='), '过期后的页面仍出现配对链接')
       check(!html.includes(`adb reverse tcp:${SAMPLE_WSS_PORT}`), '过期后的页面仍展示 USB 配对链接')
-      return '窗口过期 → pairing={open:false}、usbPairUrl=null，页面隐藏二维码且无令牌'
+      const qr = await httpRequest(port, { path: '/qr.svg' })
+      check(qr.status === 404, `窗口关闭后 /qr.svg 期望 404，实际 ${qr.status}`)
+      check(!qr.body.includes('<svg'), '窗口关闭后 /qr.svg 仍返回了二维码')
+      check(!qr.body.includes('#instance='), '/qr.svg 的 404 响应泄漏了配对链接')
+      return '窗口过期 → pairing 四字段全 null、usbPairUrl=null，页面隐藏二维码，/qr.svg 404'
     })
 
     await step('POST /pair/reopen 带 CSRF → 303，窗口换新令牌与过期时间', async () => {
@@ -666,6 +760,81 @@ async function main(): Promise<number> {
       csrf = extractCsrf(html)
       return `303 → /，新令牌 ${tokenOf(after).slice(0, 4)}…，expiresAt=${after.expiresAt}`
     })
+
+    await step('GET /qr.svg 返回当前窗口二维码 SVG，无需控制头，query 忽略', async () => {
+      const ticket = source.currentPairing()
+      check(ticket !== undefined, '自检数据源没有打开中的窗口')
+      const response = await httpRequest(port, { path: '/qr.svg' })
+      check(response.status === 200, `状态码期望 200，实际 ${response.status}`)
+      check(
+        headerValue(response, 'content-type').startsWith('image/svg+xml'),
+        `Content-Type 不是 image/svg+xml：${headerValue(response, 'content-type')}`,
+      )
+      check(headerValue(response, 'cache-control') === 'no-store', '/qr.svg 缺少 no-store')
+      check(response.body.startsWith('<svg '), '/qr.svg 响应体不是内联 SVG')
+      check(
+        response.body === renderPairingQrSvg(ticket.pairUrl),
+        '/qr.svg 与导出的 renderPairingQrSvg(pairUrl) 不是同一份渲染结果',
+      )
+      const withQuery = await httpRequest(port, { path: '/qr.svg?v=123' })
+      check(withQuery.status === 200, `/qr.svg?v=123 期望 200，实际 ${withQuery.status}`)
+      check(withQuery.body === response.body, '/qr.svg 的 query 串影响了响应内容（应被忽略）')
+      const matrix = encodeQrMatrix(ticket.pairUrl)
+      check(response.body.includes(`viewBox="0 0 ${matrix.size + 8} ${matrix.size + 8}"`), 'QR SVG 的 viewBox 与矩阵不符')
+      return `image/svg+xml ${response.body.length} 字节，与 renderPairingQrSvg 完全一致，query 忽略`
+    })
+
+    await step('POST /api/pair 带控制头 → 200 + 最新 state，窗口换新令牌', async () => {
+      const before = source.currentPairing()
+      const pairCallsBefore = source.pairCalls
+      const response = await postControlJson(port, '/api/pair')
+      check(response.status === 200, `状态码期望 200，实际 ${response.status}: ${response.body.slice(0, 120)}`)
+      check(headerValue(response, 'content-type').startsWith('application/json'), 'Content-Type 不是 JSON')
+      const state = parseJsonObject(response.body, '/api/pair')
+      checkJsonEqual(Object.keys(state).sort(), ['devices', 'host', 'pairing', 'usbPairUrl'], '/api/pair 应返回完整 state')
+      check(source.pairCalls === pairCallsBefore + 1, `source.pair 调用次数期望 +1，实际 ${source.pairCalls - pairCallsBefore}`)
+      const after = source.currentPairing()
+      check(after !== undefined, '控制 API 重开后数据源仍没有窗口')
+      check(before === undefined || tokenOf(after) !== tokenOf(before), '控制 API 重开后令牌没有变化')
+      const pairing = asRecord(state.pairing, 'pairing')
+      check(pairing.open === true, '控制 API 重开后 pairing.open 不是 true')
+      check(pairing.pairUrl === after.pairUrl, '响应里的 pairing.pairUrl 不是新链接')
+      check(pairing.expiresAt === after.expiresAt, '响应里的 pairing.expiresAt 不是新窗口')
+      // 与随后 GET /api/state 的完整 state 完全一致：客户端可以直接用响应刷新 UI。
+      const fetched = parseJsonObject((await httpRequest(port, { path: '/api/state' })).body, '/api/state')
+      checkJsonEqual(state, fetched, 'POST /api/pair 的响应与随后 /api/state')
+      const action = logRecords.find(record => record.event === 'pairing-page-action'
+        && record.fields?.action === 'api-pair'
+        && record.fields?.result === 'ok')
+      check(action !== undefined, '控制 API 重开窗口缺少 result=ok 的动作日志')
+      return `200 + state，新令牌 ${tokenOf(after).slice(0, 4)}…，日志 result=ok`
+    })
+
+    await step('POST /api/pair 缺/错控制头 → 403 且无副作用', async () => {
+      const pairCallsBefore = source.pairCalls
+      const missing = await httpRequest(port, {
+        method: 'POST',
+        path: '/api/pair',
+        body: '{}',
+        headers: { 'Content-Type': 'application/json' },
+      })
+      checkJsonError(missing, 403, 'control-header-required', 'POST /api/pair 缺控制头')
+      const wrong = await httpRequest(port, {
+        method: 'POST',
+        path: '/api/pair',
+        body: '{}',
+        headers: { 'Content-Type': 'application/json', [CONTROL_HEADER]: 'yes' },
+      })
+      checkJsonError(wrong, 403, 'control-header-required', 'POST /api/pair 错控制头')
+      check(source.pairCalls === pairCallsBefore, '被拒绝的控制 API 请求仍打开了配对窗口')
+      const getPair = await httpRequest(port, { path: '/api/pair' })
+      check(getPair.status === 405, `GET /api/pair 期望 405，实际 ${getPair.status}`)
+      check(headerValue(getPair, 'allow') === 'POST', 'GET /api/pair 的 Allow 不是 POST')
+      const jsonBody = await postControlJson(port, '/api/pair', {})
+      check(jsonBody.status === 200, `带空 JSON 对象 body 的 /api/pair 期望 200，实际 ${jsonBody.status}`)
+      return '缺头/错值都是 403 + control-header-required，GET 405，空 JSON body 正常 200'
+    })
+
 
     await step('POST /devices/revoke 带 CSRF → 303，调用撤销并模拟 remote.deviceRevoked', async () => {
       const targetId = 'a'.repeat(32)
@@ -703,6 +872,64 @@ async function main(): Promise<number> {
       check(response.status === 400, `状态码期望 400，实际 ${response.status}`)
       check(source.revokeCalls.length === callsBefore, '非法 id 仍调用了 source.revokeDevice')
       return '非法 id → 400，撤销入口没有被调用'
+    })
+
+    await step('POST /api/devices/revoke 带控制头 + JSON → 200 最新 state，设备出现 revokedAt', async () => {
+      const targetId = 'b'.repeat(32)
+      const response = await postControlJson(port, '/api/devices/revoke', { deviceId: targetId })
+      check(response.status === 200, `状态码期望 200，实际 ${response.status}: ${response.body.slice(0, 160)}`)
+      check(headerValue(response, 'content-type').startsWith('application/json'), 'Content-Type 不是 JSON')
+      const state = parseJsonObject(response.body, '/api/devices/revoke')
+      checkJsonEqual(Object.keys(state).sort(), ['devices', 'host', 'pairing', 'usbPairUrl'], '/api/devices/revoke 应返回完整 state')
+      const devices = asJsonArray(state.devices, 'devices')
+      const revoked = devices.map(entry => asRecord(entry, 'devices[]')).find(device => device.id === targetId)
+      check(revoked !== undefined, '返回的 state 里没有目标设备')
+      check(typeof revoked.revokedAt === 'number', '撤销后 state 里没有 revokedAt')
+      check(source.revokeCalls.includes(targetId), '控制 API 没有调用 source.revokeDevice')
+      check(source.deviceRevokedEvents.includes(targetId), '控制 API 撤销后没有模拟 remote.deviceRevoked')
+      const action = logRecords.find(record => record.event === 'pairing-page-action'
+        && record.fields?.action === 'api-device-revoke'
+        && record.fields?.result === 'revoked')
+      check(action !== undefined, '控制 API 撤销缺少 result=revoked 的动作日志')
+      check(action.fields?.deviceId === targetId, '控制 API 撤销日志的 deviceId 不符')
+      return `200 + state，${targetId.slice(0, 8)}… 出现 revokedAt，日志 result=revoked`
+    })
+
+    await step('POST /api/devices/revoke 错误分支：缺头 403 / 非 JSON 415 / 非法请求 400 / 未知 404 / 已撤销 409', async () => {
+      const targetId = 'b'.repeat(32)
+      const revokeCallsBefore = source.revokeCalls.length
+      const missingHeader = await httpRequest(port, {
+        method: 'POST',
+        path: '/api/devices/revoke',
+        body: JSON.stringify({ deviceId: 'c'.repeat(32) }),
+        headers: { 'Content-Type': 'application/json' },
+      })
+      checkJsonError(missingHeader, 403, 'control-header-required', 'POST /api/devices/revoke 缺控制头')
+      const wrongType = await postControlJson(port, '/api/devices/revoke', { deviceId: 'c'.repeat(32) }, { 'Content-Type': 'text/plain' })
+      checkJsonError(wrongType, 415, 'unsupported-media-type', 'POST /api/devices/revoke 非 JSON 内容类型')
+      const badJson = await httpRequest(port, {
+        method: 'POST',
+        path: '/api/devices/revoke',
+        body: 'not-json',
+        headers: { 'Content-Type': 'application/json', [CONTROL_HEADER]: '1' },
+      })
+      checkJsonError(badJson, 400, 'invalid-request', 'POST /api/devices/revoke 非法 JSON')
+      const badId = await postControlJson(port, '/api/devices/revoke', { deviceId: '../../etc/passwd' })
+      checkJsonError(badId, 400, 'invalid-request', 'POST /api/devices/revoke 非法 deviceId')
+      const missingField = await postControlJson(port, '/api/devices/revoke', {})
+      checkJsonError(missingField, 400, 'invalid-request', 'POST /api/devices/revoke 缺 deviceId')
+      check(
+        source.revokeCalls.length === revokeCallsBefore,
+        `被前置校验拒绝的请求仍调用了 source.revokeDevice（多 ${source.revokeCalls.length - revokeCallsBefore} 次）`,
+      )
+      const unknown = await postControlJson(port, '/api/devices/revoke', { deviceId: 'f'.repeat(32) })
+      checkJsonError(unknown, 404, 'device-not-found', 'POST /api/devices/revoke 未知设备')
+      const alreadyRevoked = await postControlJson(port, '/api/devices/revoke', { deviceId: targetId })
+      checkJsonError(alreadyRevoked, 409, 'device-already-revoked', 'POST /api/devices/revoke 已撤销设备')
+      const getRevoke = await httpRequest(port, { path: '/api/devices/revoke' })
+      check(getRevoke.status === 405, `GET /api/devices/revoke 期望 405，实际 ${getRevoke.status}`)
+      check(headerValue(getRevoke, 'allow') === 'POST', 'GET /api/devices/revoke 的 Allow 不是 POST')
+      return '403/415/400×3/404/409 与 405 都符合，前置校验失败没有触发撤销'
     })
 
     await step('POST 缺 CSRF / 错 CSRF / 重复 CSRF 一律 403 且无副作用', async () => {
@@ -745,12 +972,20 @@ async function main(): Promise<number> {
     })
 
     await step('伪造 Host 头（DNS rebinding）→ 403', async () => {
-      for (const path of ['/', '/api/state']) {
+      for (const path of ['/', '/api/state', '/qr.svg']) {
         const response = await httpRequest(port, { path, headers: { Host: `evil.example:${port}` } })
         check(response.status === 403, `${path} 的伪造 Host 期望 403，实际 ${response.status}`)
         check(!response.body.includes('#instance='), `${path} 的 403 响应泄漏了配对链接`)
       }
-      return '/ 与 /api/state 的伪造 Host 都是 403'
+      const pairCallsBefore = source.pairCalls
+      const apiWithHeader = await httpRequest(port, {
+        method: 'POST',
+        path: '/api/pair',
+        headers: { Host: `evil.example:${port}`, [CONTROL_HEADER]: '1' },
+      })
+      check(apiWithHeader.status === 403, `POST /api/pair 的伪造 Host 期望 403，实际 ${apiWithHeader.status}`)
+      check(source.pairCalls === pairCallsBefore, '伪造 Host 的 POST /api/pair 仍打开了配对窗口')
+      return '/、/api/state、/qr.svg 与 POST /api/pair 的伪造 Host 都是 403，无副作用'
     })
 
     await step('Host 端口不符 → 403', async () => {
@@ -774,11 +1009,15 @@ async function main(): Promise<number> {
       const post = await postForm(port, '/pair/reopen', { csrf }, { Origin: 'http://evil.example' })
       check(post.status === 403, `跨站 POST 期望 403，实际 ${post.status}`)
       check(source.pairCalls === pairCallsBefore, '跨站 POST 仍打开了配对窗口')
+      // 控制 API：即使攻击者猜到了控制头，跨站 Origin 仍然先被拒绝。
+      const controlPost = await postControlJson(port, '/api/pair', undefined, { Origin: 'http://evil.example' })
+      check(controlPost.status === 403, `跨站控制 API 期望 403，实际 ${controlPost.status}`)
+      check(source.pairCalls === pairCallsBefore, '跨站控制 API 仍打开了配对窗口')
       const sameOrigin = await postForm(port, '/pair/reopen', { csrf }, { Origin: `http://127.0.0.1:${port}` })
       check(sameOrigin.status === 303, `同源 POST 期望 303，实际 ${sameOrigin.status}`)
       const html = (await httpRequest(port, { path: '/' })).body
       csrf = extractCsrf(html)
-      return '跨站 GET/POST 都是 403，同源 POST 正常 303'
+      return '跨站 GET/POST（表单与控制 API）都是 403，同源 POST 正常 303'
     })
 
     await step('方法错误回 405（带 Allow），未知路径回 404', async () => {
@@ -793,9 +1032,14 @@ async function main(): Promise<number> {
       })
       check(postPage.status === 405, `POST / 期望 405，实际 ${postPage.status}`)
       check(headerValue(postPage, 'allow') === 'GET', 'POST / 的 Allow 不是 GET')
+      const postState = await httpRequest(port, { method: 'POST', path: '/api/state' })
+      check(postState.status === 405, `POST /api/state 期望 405，实际 ${postState.status}`)
+      const postQr = await httpRequest(port, { method: 'POST', path: '/qr.svg' })
+      check(postQr.status === 405, `POST /qr.svg 期望 405，实际 ${postQr.status}`)
+      check(headerValue(postQr, 'allow') === 'GET', 'POST /qr.svg 的 Allow 不是 GET')
       const unknown = await httpRequest(port, { path: '/nope' })
       check(unknown.status === 404, `未知路径期望 404，实际 ${unknown.status}`)
-      return '405 + Allow / 404 都符合'
+      return '表单/JSON/QR 端点的 405 + Allow 与未知路径 404 都符合'
     })
 
     await step('没有 Host 头的原始请求 → 400/403', async () => {
@@ -817,7 +1061,29 @@ async function main(): Promise<number> {
         && record.fields?.action === 'pair-reopen'
         && record.fields?.result === 'failed')
       check(failed !== undefined, '失败路径没有 result=failed 的动作日志')
-      return '注入失败 → 500 + result=failed 日志'
+      source.failPairOnce = true
+      const apiResponse = await postControlJson(port, '/api/pair')
+      checkJsonError(apiResponse, 500, 'pair-failed', 'POST /api/pair 失败路径')
+      return '注入失败 → 表单 500 + 控制 API 500 pair-failed，均带 result=failed 日志'
+    })
+
+    await step('长窗口（> 1 小时）页面显示「长期有效」，不显示秒级倒计时', async () => {
+      source.pairingTtlMs = LONG_PAIRING_TTL_MS
+      source.pair()
+      const ticket = source.currentPairing()
+      check(ticket !== undefined, '长窗口自检数据源没有窗口')
+      check(ticket.expiresAt === fakeNow + LONG_PAIRING_TTL_MS, '长窗口有效期没有按数据源生效')
+      const html = (await httpRequest(port, { path: '/' })).body
+      check(html.includes('长期有效'), '长窗口页面没有「长期有效」文案')
+      check(!html.includes('id="remaining"'), '长窗口页面仍渲染秒级倒计时元素')
+      check(html.includes('长期窗口等于长期可配对入口'), '长窗口页面没有长期配对的提示')
+      check(html.includes(formatPageTimestamp(ticket.expiresAt)), '长窗口页面没有展示真实过期时间')
+      const state = parseJsonObject((await httpRequest(port, { path: '/api/state' })).body, '/api/state')
+      check(asRecord(state.pairing, 'pairing').expiresAt === ticket.expiresAt, '/api/state 没有反映长窗口到期时间')
+      // 恢复默认窗口，后续步骤（stop/端口占用）不依赖长 TTL。
+      source.pairingTtlMs = PAIRING_TTL_MS
+      source.pair()
+      return '30 天窗口 → 页面「长期有效」+ 过期时间，无 remaining 倒计时'
     })
 
     await step('CSRF 每个实例随机，日志里不出现任何令牌', async () => {
@@ -840,6 +1106,8 @@ async function main(): Promise<number> {
       const actions = logRecords.filter(record => record.event === 'pairing-page-action')
       check(actions.some(record => record.fields?.action === 'pair-reopen' && record.fields?.method === 'POST' && record.fields?.result === 'ok'), '成功重开窗口缺少动作日志')
       check(actions.some(record => record.fields?.action === 'device-revoke' && record.fields?.result === 'revoked'), '撤销成功缺少动作日志')
+      check(actions.some(record => record.fields?.action === 'api-pair' && record.fields?.result === 'ok'), '控制 API 重开窗口缺少动作日志')
+      check(actions.some(record => record.fields?.action === 'api-device-revoke' && record.fields?.result === 'revoked'), '控制 API 撤销缺少动作日志')
       check(actions.some(record => record.fields?.result === 'rejected'), '拒绝路径缺少动作日志')
       return `${actions.length} 条动作日志只有 action/method/result 与设备 id，无 CSRF、无配对令牌`
     })
@@ -914,7 +1182,7 @@ async function main(): Promise<number> {
     for (const failure of failures) console.log(`  - ${failure}`)
     return 1
   }
-  console.log(`PASS  ${passed}/${passed} 项全部通过（页面/JSON 契约 + Host/CSRF/CORS 防护 + 生命周期降级）`)
+  console.log(`PASS  ${passed}/${passed} 项全部通过（页面/JSON/QR 契约 + 控制 API + Host/CSRF/CORS 防护 + 生命周期降级）`)
   return 0
 }
 

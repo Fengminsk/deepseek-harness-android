@@ -1,0 +1,64 @@
+# Bilingual-pair consistency record for README.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write packages/experimental/device-interconnect/README.md
+/:
+  en: f8330ebb1a450de6
+  zh: 6fc32036d0c1b43e
+/deepseek-ai-dsh-device-interconnect:
+  en: d372934044c8e669
+  zh: 823d7ce7b1471b20
+/deepseek-ai-dsh-device-interconnect/summary:
+  en: f4b38cb0636eb1f4
+  zh: 19cd10afdc49497c
+/deepseek-ai-dsh-device-interconnect/table-of-contents:
+  en: d152484eb41ac6b4
+  zh: 405b30feaf48c087
+/deepseek-ai-dsh-device-interconnect/use-this-package:
+  en: bbff250eba0f1b89
+  zh: 0a618f05cc88ee2b
+/deepseek-ai-dsh-device-interconnect/use-this-package/install-and-enable-the-bundle:
+  en: 2dc9743e9cbe20d3
+  zh: ebedc396acad4986
+/deepseek-ai-dsh-device-interconnect/use-this-package/configure-the-runner:
+  en: 9b5ebb4bb3136445
+  zh: 13753f7017935685
+/deepseek-ai-dsh-device-interconnect/use-this-package/listener-and-pairing-settings:
+  en: 05723960a9ba2e24
+  zh: 13e5297cf71ceef2
+/deepseek-ai-dsh-device-interconnect/use-this-package/security-model:
+  en: 4d0fdeae6559f0b6
+  zh: cd87b93f27b7562b
+/deepseek-ai-dsh-device-interconnect/use-this-package/uninstall:
+  en: 5d8d78f162a44a1f
+  zh: 115e4a5bd1e93207
+/deepseek-ai-dsh-device-interconnect/understand-the-implementation:
+  en: ee4615a04fa6503d
+  zh: ee2c5fb2204a43cf
+/deepseek-ai-dsh-device-interconnect/understand-the-implementation/host-plugin-and-http-bridge:
+  en: 6a724c19ddb4c5f3
+  zh: bb87318a5a71a3c2
+/deepseek-ai-dsh-device-interconnect/understand-the-implementation/child-supervisor:
+  en: 4467f9781dc65418
+  zh: a2038a4822f4097b
+/deepseek-ai-dsh-device-interconnect/understand-the-implementation/loopback-control-plane-client:
+  en: 606387cebdd733a6
+  zh: 2d0087c539016989
+/deepseek-ai-dsh-device-interconnect/understand-the-implementation/browser-page:
+  en: d24c6f967677fe3b
+  zh: f286d2ef3d36c9bc
+/deepseek-ai-dsh-device-interconnect/further-exploration:
+  en: 78a36e25676961d1
+  zh: 2aff5af912f6f58c
+/deepseek-ai-dsh-device-interconnect/model-experience:
+  en: b0fa55647e81b208
+  zh: e7800b5209582969
+/deepseek-ai-dsh-device-interconnect/model-experience/kv-cache-effect:
+  en: 238a069a8c7659f3
+  zh: 9a7cb29b0ccae03d
+/deepseek-ai-dsh-device-interconnect/known-limitations-and-deferred-work:
+  en: 52bc9a2fe595676d
+  zh: 27eda84145099c9d
+/deepseek-ai-dsh-device-interconnect/known-limitations-and-deferred-work/dev-note:
+  en: 279d01435256cd2a
+  zh: 7c2ad2f568099e7f

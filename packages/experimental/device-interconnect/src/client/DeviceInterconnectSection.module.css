@@ -1,0 +1,285 @@
+/*
+ * Device Interconnect Settings page. One vertical stack of cards: the status
+ * card with the switch, the long-term pairing card with its QR code, the
+ * listener settings, paired devices, the collapsible runner paths, and the
+ * child output. Cards use the settings card fill and hairline; the two status
+ * colors appear only on state badges and failure text.
+ */
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.pageTitle {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 24px;
+  color: var(--dsw-alias-label-primary);
+}
+
+.pageDescription {
+  margin: 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 0.5px solid var(--dsw-alias-settings-card-stroke);
+  border-radius: var(--dsw-radius-lg);
+  background: var(--dsw-alias-settings-card-fill);
+}
+
+.cardTitle {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+  color: var(--dsw-alias-label-primary);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.statusValue {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-primary);
+}
+
+.statusDetail {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.danger {
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.success {
+  color: var(--dsw-alias-state-success-primary);
+}
+
+.muted {
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.mono {
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  font-size: 12px;
+  line-height: 18px;
+  word-break: break-all;
+}
+
+.pairing {
+  display: flex;
+  gap: 20px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.qr {
+  flex: none;
+  width: 216px;
+  height: 216px;
+  padding: 8px;
+  border-radius: var(--dsw-radius-md);
+  border: 0.5px solid var(--dsw-alias-border-l4);
+  background: #ffffff;
+}
+
+.pairingBody {
+  display: flex;
+  flex: 1 1 260px;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 240px;
+}
+
+.linkField {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.linkInput {
+  flex: 1 1 220px;
+  min-width: 180px;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 4px 20px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 0;
+}
+
+.fieldLabel {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.switchRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.table th {
+  padding: 6px 8px;
+  text-align: start;
+  font-weight: 500;
+  color: var(--dsw-alias-label-tertiary);
+  border-bottom: 0.5px solid var(--dsw-alias-border-l4);
+  white-space: nowrap;
+}
+
+.table td {
+  padding: 8px;
+  text-align: start;
+  color: var(--dsw-alias-label-primary);
+  border-bottom: 0.5px solid var(--dsw-alias-border-l4);
+  vertical-align: middle;
+}
+
+.table tr:last-child td {
+  border-bottom: none;
+}
+
+.deviceName {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.empty {
+  margin: 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.details {
+  border-top: 0.5px solid var(--dsw-alias-border-l4);
+  padding-top: 8px;
+}
+
+.detailsSummary {
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.detailsBody {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 10px;
+}
+
+.logs {
+  margin: 0;
+  padding: 10px;
+  max-height: 220px;
+  overflow: auto;
+  border-radius: var(--dsw-radius-sm);
+  background: var(--dsw-alias-bg-module-platform);
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--dsw-alias-label-secondary);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border-radius: var(--dsw-radius-md);
+  border: 0.5px solid var(--dsw-alias-border-l4);
+  background: var(--dsw-alias-bg-module-platform);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.noticeError {
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.noticeSuccess {
+  color: var(--dsw-alias-state-success-primary);
+}
+
+.problemList {
+  margin: 0;
+  padding-inline-start: 18px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-state-warn-label);
+}
+
+.select {
+  height: 30px;
+  padding: 0 8px;
+  border: 0.5px solid var(--dsw-alias-border-l4);
+  border-radius: var(--dsw-radius-sm);
+  background: var(--dsw-alias-bg-layer-3);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 12px;
+}
+
+.centered {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 16px;
+  font-size: 13px;
+  color: var(--dsw-alias-label-tertiary);
+}

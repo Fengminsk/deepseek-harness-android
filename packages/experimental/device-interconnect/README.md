@@ -1,0 +1,133 @@
+---
+description: "Run the PC-side remote host from Settings and pair phones with a long-lived QR code the page keeps available."
+kind: "package-bundle"
+---
+
+# @deepseek-ai/dsh-device-interconnect
+
+English | [中文](README.zh.md)
+
+## Summary
+
+An opt-in Settings page that supervises the PC-side remote DSH host. The page starts and stops that host as a separate child process, shows its long-lived pairing QR code and link, edits its listener settings, and lists paired phones with a revoke action. The remote host itself is not part of this bundle: the plugin talks to its loopback pairing-control HTTP API, so a stock DSH install can load this package without importing the remote host's packages.
+
+## Table of Contents
+
+- [Use this package](#use-this-package)
+- [Understand the implementation](#understand-the-implementation)
+- [Further Exploration](#further-exploration)
+- [Model Experience](#model-experience)
+- [Known Limitations and Deferred Work](#known-limitations-and-deferred-work)
+- [Dev Note](#dev-note)
+
+-----
+
+<a id="use-this-package"></a>
+## Use this package
+
+### Install and enable the bundle
+
+The manifest declares an installable `dsh.bundle` layer and a browser face. Install the bundle from its local directory with the plugin manager's `install_bundle` action, or install the published package and add it to the profile's `dsh.profile.bundles`. The bundle is `listedByDefault: false`, so it stays out of the shipped profile until the profile names it. The Settings page appears as **Devices**; the remote host stays off until its switch is turned on.
+
+The profile needs the standard Web composition for the page to render, and the remote host needs its own working profile (the launcher's `--profile` argument). The page has no effect on a profile without the Web server service: the plugin loads, logs one warning, and registers no bridge routes.
+
+### Configure the runner
+
+The plugin launches the remote host as `<node> <pnpm.mjs> dsh --profile <profile> --patch <generated overlay> --no-open` in the checkout directory, with `DSH_HOME` and the Node.js directory on `PATH`. The advanced runner section edits these fields:
+
+| Field | Meaning | First-run inference |
+| --- | --- | --- |
+| `nodePath` | Node.js executable that runs the launcher | `DSH_DEVICE_INTERCONNECT_NODE`, else the `node` under `$DSH_HOME/dsh-runtimes/*/dependencies/`, else the current executable when it is not Electron |
+| `pnpmPath` | `pnpm.mjs` the executable runs | `DSH_DEVICE_INTERCONNECT_PNPM`, else the managed runtime's `dependencies/pnpm/bin/pnpm.mjs` |
+| `repoDir` | Checkout the child runs from | `DSH_DEVICE_INTERCONNECT_REPO`, else empty |
+| `profile` | DSH profile the child launches | `remote-host` |
+| `patchPath` | Extra `--patch` applied after the generated overlay | empty |
+| `dshHome` | `DSH_HOME` given to the child | empty inherits the DSH host process's value |
+
+An empty or missing path is reported on the page, and the switch does not spawn a broken command. The generated overlay is rewritten on every child start from the listener settings, so the remote host never runs with a stale configuration.
+
+### Listener and pairing settings
+
+The page edits the remote host's `port`, `host`, `publicHost`, `publicOrigin`, UDP discovery switch and port, and the loopback pairing page switch and port. Saving validates the document, writes `$DSH_HOME/device-interconnect/config.json` atomically, and restarts the child when it is running. Long-term pairing stays on by default: the generated overlay requests a 30-day pairing window, and the remote host opens a fresh window after each successful pairing, so the page shows a QR code without a countdown and the next phone can pair without touching the page. **New pairing link** reopens the window on demand.
+
+`publicOrigin` accepts only `wss://host[:port]`, for a TLS-terminating reverse proxy or a domain-based deployment. Leaving it empty derives the origin from `publicHost` or the default-route IPv4 address.
+
+### Security model
+
+The remote host's control API binds `127.0.0.1` only, and this plugin's own bridge routes reject any non-loopback `Host` head and any cross-site `Origin`. Every read and write also requires the `x-dsh-device-interconnect: 1` header, which a cross-site page cannot set without a CORS preflight this Host never approves; no CORS header is returned. The one header-free route is the QR image, which an `<img>` element must be able to load and which reveals nothing the page does not already show. All responses are `Cache-Control: no-store`. The accepted local threat is the usual one: another process on the same computer can read the configuration file and the child's log.
+
+### Uninstall
+
+Remove the bundle in the plugin manager; the plugin stops the child process on disposal. `$DSH_HOME/device-interconnect/` (configuration and generated overlay) remains for a later reinstall and can be deleted by hand. Devices paired with the remote host are stored by that host, not by this bundle.
+
+-----
+
+<a id="understand-the-implementation"></a>
+## Understand the implementation
+
+### Host plugin and HTTP bridge
+
+`apply` reads the configuration file, builds one `Bridge`, registers one `prefix` route under `/device-interconnect/api` on `ctx.webServer` (read with `ctx.get`, so a profile without a Web server still loads), and registers the supervisor's disposal. Routes are loopback-only JSON; each action answers the complete runtime snapshot so the page never has to stitch a second read together:
+
+| Method and path | Body | Effect |
+| --- | --- | --- |
+| `GET /device-interconnect/api/state` | — | configuration, child state and log tail, control-plane facts, pairing view, devices, runner readiness |
+| `POST /device-interconnect/api/enabled` | `{enabled}` | persist the switch and start or stop the child |
+| `POST /device-interconnect/api/config` | `{config}` | validate the complete document, persist it, restart a running child |
+| `POST /device-interconnect/api/pair` | — | reopen the pairing window through the control plane |
+| `POST /device-interconnect/api/devices/revoke` | `{deviceId}` | revoke one paired device |
+| `GET /device-interconnect/api/logs` | — | child output tail |
+| `GET /device-interconnect/api/qr.svg` | — | proxy of the open window's QR SVG, same-origin for the page's `<img>` |
+
+Failures answer `{error: {code, message}}` with a stable code the page maps onto its dictionary.
+
+### Child supervisor
+
+`HostSupervisor` owns the one child process: piped stdout and stderr feed a 64 KiB combined tail, `start` is idempotent, `stop` kills the Windows process tree with `taskkill /T /F` (or signals the child elsewhere) and waits for the exit, `restart` applies a new configuration, and disposal stops the child. `/api/state` reads are cached for one second so several open pages polling at two seconds cannot multiply loopback requests.
+
+### Loopback control-plane client
+
+`createControlPlane` validates every field of the remote host's `/api/state` JSON at that process boundary and calls `/api/pair` and `/api/devices/revoke` with the control header. An unreachable control plane is a snapshot field, not an exception: the page shows the host as not running and says why.
+
+### Browser page
+
+The browser half registers the `settings.section` entry (id `device-interconnect`, order 15, label from its dictionary), its `settings.section.icon` glyph, and the en/zh dictionaries. `DeviceInterconnectController` holds the snapshot store and the polling driver: the mounted page calls `open`, the unmounting page calls `close`, polling pauses while the document is hidden, and every action refreshes the snapshot. The page shows the switch and status, the long-term pairing card, listener settings, paired devices with a confirmation dialog, the collapsible runner fields and child output.
+
+-----
+
+<a id="further-exploration"></a>
+## Further Exploration
+
+- [Remote host composition](../../../apps/remote-host/cordis.patch.yml) — the PC-side host this bundle supervises.
+- [Plugin Manager page](../../client/ui-plugin-manager/README.md) — installing, enabling, and removing bundles.
+- [Host Web server](../../host/webserver/README.md) — the route registry the bridge registers on.
+
+-----
+
+
+## Model Experience
+
+None, as the Settings page supervises a separate remote-host process and adds no model context, tools, or Session events.
+
+#### KV Cache effect
+
+The bundle adds no request content, so it neither grows nor invalidates a cached request prefix. Turning the switch changes only a separate child process; DSH Sessions on this Host are untouched.
+
+## Known Limitations and Deferred Work
+
+<a id="known-limitations-and-deferred-work"></a>
+
+- **The remote host is not distributed with this bundle** — the plugin launches a checkout that must already contain the remote host bundle and the profile that mounts it. A stock DSH installation can load this page but cannot start a host until such a checkout, or a packaged runtime, is available at the configured paths.
+- **The control API is the remote host's loopback page** — pairing-window state, long-term windows, `/api/pair`, `/api/devices/revoke`, and `/qr.svg` are contracts of `apps/remote-host`. A checkout whose pairing page lacks a contract endpoint degrades to the affected action reporting its failure; the rest of the page keeps working.
+- **The page has no remote access** — the bridge intentionally refuses non-loopback Host heads, so a DSH instance served on a non-loopback address cannot use this Settings page from another machine. That is the security boundary, not a missing feature.
+- **Windows process-tree kill is `taskkill`** — a platform where `taskkill` is unavailable leaves grandchild processes alive after a stop; the supervisor records the timeout rather than reporting a clean stop.
+
+<a id="dev-note"></a>
+### Dev Note
+
+<details>
+<summary>Maintainer context — click to expand</summary>
+
+None.
+
+</details>
