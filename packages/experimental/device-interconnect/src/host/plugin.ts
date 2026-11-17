@@ -19,7 +19,7 @@ import {
 } from './config.ts'
 import { createControlPlane } from './control-plane.ts'
 import { createApiHandler } from './routes.ts'
-import { HostSupervisor } from './supervisor.ts'
+import { ChildSupervisor } from './supervisor.ts'
 
 /** Plugin name shown in DSH diagnostics. */
 export const name = 'device-interconnect'
@@ -32,8 +32,9 @@ export const name = 'device-interconnect'
 export type Config = Partial<import('../types.ts').DeviceInterconnectConfig>
 
 /**
- * Register the Settings page bridge and start the supervised remote host when
- * the persisted configuration has it enabled.
+ * Register the Settings page bridge and start the supervised children when the
+ * persisted configuration has them enabled: the remote host first, then the
+ * managed NAT-traversal tunnel once that host is ready.
  * @param ctx - Host context; the web server service is read optionally so a
  * profile without a browser surface still loads this plugin.
  * @param config - first-run seed from the bundle row.
@@ -47,11 +48,13 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
   if (!seed.ok) throw new Error(`device-interconnect: invalid bundle configuration: ${seed.problems.join('; ')}`)
   const dataDir = dataDirectory(inference.env)
   const store = new ConfigStore({ file: join(dataDir, CONFIG_FILE_NAME), fallback: seed.config, logger })
-  const supervisor = new HostSupervisor({ logger })
+  const supervisor = new ChildSupervisor({ logger })
+  const tunnelSupervisor = new ChildSupervisor({ logger, label: 'frpc 隧道' })
   const bridge = new Bridge({
     dataDir,
     store,
     supervisor,
+    tunnelSupervisor,
     controlPlane: baseUrl => createControlPlane({ baseUrl }),
     logger,
   })
@@ -64,10 +67,11 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
       'device-interconnect: settings-page bridge routes',
     )
   }
-  // The supervisor owns the child, so it is registered before the initial
-  // start: a plugin unload during activation still stops the process.
+  // The bridge owns both children, so it is registered before the initial
+  // start: a plugin unload during activation still stops the tunnel and then
+  // the remote host.
   ctx.effect(() => {
     void bridge.initialize()
     return () => bridge.dispose()
-  }, 'device-interconnect: remote-host supervisor')
+  }, 'device-interconnect: child supervisors')
 }

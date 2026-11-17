@@ -9,7 +9,7 @@ kind: "package-bundle"
 
 ## 概述
 
-一个 opt-in（默认不启用）的设置页：托管 PC 侧的远程 DSH 宿主。页面把远程宿主作为独立子进程启动和停止，展示长期有效的配对二维码与链接，编辑宿主的监听设置，并列出已配对手机、支持撤销。远程宿主本身不属于本包：插件只通过它只监听回环地址的配对控制 HTTP API 通信，因此官方 DSH 安装无需导入远程宿主的包即可加载本插件。
+一个 opt-in（默认不启用）的设置页：托管 PC 侧的远程 DSH 宿主。页面把宿主作为独立子进程启动和停止，展示长期有效的配对二维码与链接，编辑监听设置，并列出已配对手机、支持撤销。页面还可以托管 SakuraFrp `frpc` 子进程，通过 TCP 隧道把宿主的 TLS 端口发布到公网，并按隧道公网地址推导配对链接的对外地址。宿主本身不属于本包：插件只通过它只监听回环地址的配对控制 HTTP API 通信，因此官方 DSH 安装无需导入宿主的包即可加载本插件。
 
 ## 目录
 
@@ -52,13 +52,34 @@ kind: "package-bundle"
 
 `publicOrigin` 只接受 `wss://host[:端口]`，用于 TLS 终止反向代理或按域名部署；留空时按 `publicHost` 或默认路由 IPv4 地址生成。
 
+### SakuraFrp TCP 隧道
+
+页面可以托管 [SakuraFrp](https://www.natfrp.com/) 的 `frpc` 子进程，把远程宿主的 TLS 端口映射到公网，使不在同一局域网的手机也能配对。**必须使用 TCP 隧道**：远程宿主用固定 CA 自己做 TLS 终止，HTTP/HTTPS 隧道会在服务商侧终止 TLS，导致 App 的固定证书校验失败、永远连不上。隧道卡会写明这一限制，并拒绝以 `https://` 形式粘贴的公网地址。
+
+1. 在 SakuraFrp 面板创建一条 **TCP** 隧道，本地目标填 `127.0.0.1:<远程宿主端口>`（默认 4777）。面板会分配节点域名与远程端口。
+2. 在设置页打开「内网穿透（SakuraFrp）」，选择 **SakuraFrp** 并填写：
+
+   | 字段 | 取值 |
+   | --- | --- |
+   | frpc 可执行文件 | 你从 SakuraFrp 获取的 `frpc`/`frpc.exe` 完整路径。插件只校验文件存在，不会自动下载。 |
+   | 访问密钥 | SakuraFrp 面板 →「查看访问密钥」（与账户密码不同）。以明文保存在本插件配置文件中，且不会回传给页面。 |
+   | 隧道 ID | 一条或多条 TCP 隧道 ID，英文逗号分隔：`114514` 或 `114514,114516`。 |
+   | 公网地址 | 面板显示的 `<节点域名>:<远程端口>`，例如 `cn-xx.natfrp.cloud:12345`。不要带 `https://` 前缀；显式端口（如 `:443`）会保留。 |
+
+3. **保存内网穿透设置**。页面推导 `publicOrigin = wss://<节点域名>:<远程端口>` 并写入生成的远程宿主 overlay；远程宿主正在运行时会自动重启，使新的配对链接使用该地址。配置了公网地址时它会覆盖上面的手填 `publicOrigin`，卡片会回显最终生效值。
+4. **启动隧道** 会在远程宿主确认监听端口后启动 frpc 子进程。卡片显示子进程状态、最近输出，按钮变为 **停止隧道** / **重试**。停止隧道不会停止远程宿主。插件激活时，已配置的隧道会在远程宿主就绪后自动启动；关闭远程宿主开关或卸载 bundle 时会先停隧道。
+
+必填项可以先留空保存——页面会列出缺失项并阻止启动，插件激活也不会 spawn 坏命令。高级区提供自定义 `frpc.ini`（以 `frpc -c <ini> -n` 启动，替代访问密钥与隧道 ID，但公网地址仍需填写以推导对外地址）与附加 frpc 参数。frpc 以 `-n --disable_log_color` 运行，不自动更新且日志无颜色控制符。
+
 ### 安全模型
 
 远程宿主的控制 API 只绑定 `127.0.0.1`；本插件的桥接路由拒绝任何非回环 `Host` 头与跨站 `Origin`。每个读写还必须带 `x-dsh-device-interconnect: 1` 头——跨站页面要设置它就必须通过本 Host 从不批准的 CORS 预检；响应不返回任何 CORS 头。唯一免该头的是二维码图片路由：`<img>` 必须能加载它，而它不泄露页面本已展示之外的信息。所有响应都带 `Cache-Control: no-store`。接受的本地威胁是常规情况：同一台电脑上的其它进程本就能读取配置文件与子进程日志。
 
+SakuraFrp 访问密钥在桥接上是只写的：state 只返回 `tokenConfigured: true`，页面不会再次显示密钥，也不会写进日志。但它仍以明文保存在 `$DSH_HOME/device-interconnect/config.json`，同样适用本地读取威胁；页面留空表示保留已存密钥，清除需要显式的 `clearToken`/`null` 写入。插件从不下载 frpc：可执行文件路径由用户提供，只做存在性校验。
+
 ### 卸载
 
-在插件管理器中移除该 bundle；插件在卸载时停止子进程。`$DSH_HOME/device-interconnect/`（配置与生成的 overlay）会保留以便重新安装，可手动删除。已配对设备保存在远程宿主一侧，不在本包内。
+在插件管理器中移除该 bundle；插件在卸载时先停止隧道、再停止远程宿主。`$DSH_HOME/device-interconnect/`（配置——含已保存的访问密钥——与生成的 overlay）会保留以便重新安装，可手动删除。已配对设备保存在远程宿主一侧，不在本包内。
 
 -----
 
@@ -67,23 +88,25 @@ kind: "package-bundle"
 
 ### Host 插件与 HTTP 桥
 
-`apply` 读取配置文件、构建一个 `Bridge`、在 `ctx.webServer` 上注册一个 `/device-interconnect/api` 前缀路由（用 `ctx.get` 读取，因此没有 Web 服务的 profile 也能加载），并注册 supervisor 的清理。路由只接受本机回环的 JSON；每个动作都返回完整运行时快照，页面无需再拼接第二次读取：
+`apply` 读取配置文件、构建一个 `Bridge`、在 `ctx.webServer` 上注册一个 `/device-interconnect/api` 前缀路由（用 `ctx.get` 读取，因此没有 Web 服务的 profile 也能加载），并注册两个子进程 supervisor 的清理。路由只接受本机回环的 JSON；每个动作都返回完整运行时快照，页面无需再拼接第二次读取：
 
 | 方法与路径 | 请求体 | 效果 |
 | --- | --- | --- |
-| `GET /device-interconnect/api/state` | — | 配置、子进程状态与日志尾部、控制面事实、配对视图、设备、运行器就绪状态 |
-| `POST /device-interconnect/api/enabled` | `{enabled}` | 持久化开关并启动或停止子进程 |
-| `POST /device-interconnect/api/config` | `{config}` | 校验完整配置文档、持久化，运行中则重启子进程 |
+| `GET /device-interconnect/api/state` | — | 配置（不含访问密钥）、远程宿主子进程状态与日志尾部、隧道子进程状态、推导出的对外地址与就绪状态、控制面事实、配对视图、设备、运行器就绪状态 |
+| `POST /device-interconnect/api/enabled` | `{enabled}` | 持久化远程宿主开关并启动或停止该子进程 |
+| `POST /device-interconnect/api/tunnel` | `{enabled}` | 启动或停止隧道子进程，不改变远程宿主开关 |
+| `POST /device-interconnect/api/config` | `{config}` | 校验完整配置文档、持久化，运行中则重启子进程；`tunnel.token` 只写（`null` 或 `clearToken` 清除） |
 | `POST /device-interconnect/api/pair` | — | 通过控制面重开配对窗口 |
 | `POST /device-interconnect/api/devices/revoke` | `{deviceId}` | 撤销一台已配对设备 |
-| `GET /device-interconnect/api/logs` | — | 子进程输出尾部 |
+| `GET /device-interconnect/api/logs` | — | 远程宿主子进程输出尾部 |
+| `GET /device-interconnect/api/tunnel/logs` | — | 隧道子进程输出尾部 |
 | `GET /device-interconnect/api/qr.svg` | — | 代理当前窗口的二维码 SVG，页面 `<img>` 同源加载 |
 
 失败返回 `{error: {code, message}}`，稳定 code 由页面映射到自己的字典文案。
 
 ### 子进程 supervisor
 
-`HostSupervisor` 独占那一个子进程：stdout 与 stderr 汇入 64 KiB 的日志尾部；`start` 幂等；`stop` 在 Windows 用 `taskkill /T /F` 结束进程树（其它平台发信号）并等待退出；`restart` 应用新配置；清理时停止子进程。`/api/state` 的读取缓存一秒，多个已打开页面按两秒轮询也不会成倍增加回环请求。
+每个子进程（远程宿主与 frpc）各由一个 `ChildSupervisor` 实例独占：stdout 与 stderr 汇入 64 KiB 的日志尾部；`start` 幂等；`stop` 在 Windows 用 `taskkill /T /F` 结束进程树（其它平台发信号）并等待退出；`restart` 应用新配置；清理时停止子进程。启动顺序由 bridge 保证：远程宿主的控制面报告 `listener` 就绪后才启动隧道；远程宿主重启或停止时先停隧道；隧道失败不会停掉远程宿主。`/api/state` 的读取缓存一秒，多个已打开页面按两秒轮询也不会成倍增加回环请求。
 
 ### 回环控制面客户端
 
@@ -91,7 +114,7 @@ kind: "package-bundle"
 
 ### 浏览器页面
 
-浏览器半注册 `settings.section` 条目（id `device-interconnect`，order 15，label 来自字典）、对应的 `settings.section.icon` 图标，以及 en/zh 字典。`DeviceInterconnectController` 持有快照 store 与轮询驱动：挂载的页面调用 `open`，卸载时调用 `close`，文档隐藏时暂停轮询，每个动作后刷新快照。页面展示开关与状态、长期配对卡、监听设置、已配对设备（含确认弹层）、可折叠的运行器字段与子进程输出。
+浏览器半注册 `settings.section` 条目（id `device-interconnect`，order 15，label 来自字典）、对应的 `settings.section.icon` 图标，以及 en/zh 字典。`DeviceInterconnectController` 持有快照 store 与轮询驱动：挂载的页面调用 `open`，卸载时调用 `close`，文档隐藏时暂停轮询，每个动作后刷新快照。页面展示开关与状态、长期配对卡、监听设置、已配对设备（含确认弹层）、可折叠的内网穿透卡（服务商选择、frpc 字段、生效对外地址、隧道状态与输出）、可折叠的运行器字段与远程宿主输出。
 
 -----
 
@@ -107,11 +130,11 @@ kind: "package-bundle"
 <a id="model-experience"></a>
 ## 模型体验
 
-None, as 本设置页只托管独立的远程宿主进程，不向模型上下文、工具或 Session 事件添加任何内容。
+None, as 本设置页只托管独立子进程（远程宿主与可选的 frpc 隧道），不向模型上下文、工具或 Session 事件添加任何内容。
 
 #### KV Cache effect
 
-本包不添加请求内容，因此既不增长也不使已缓存请求前缀失效。切换开关只影响一个独立的子进程，本 Host 上的 DSH Session 不受影响。
+本包不添加请求内容，因此既不增长也不使已缓存请求前缀失效。切换开关只影响独立的子进程，本 Host 上的 DSH Session 不受影响。
 
 <a id="known-limitations-and-deferred-work"></a>
 ## 已知限制与后续工作
@@ -120,6 +143,10 @@ None, as 本设置页只托管独立的远程宿主进程，不向模型上下�
 - **控制 API 就是远程宿主的本机配对页** —— 配对窗口状态、长期窗口、`/api/pair`、`/api/devices/revoke` 与 `/qr.svg` 都是 `apps/remote-host` 的契约。配对页缺少某个契约端点的 checkout 只会让对应动作报告失败，页面其余部分照常工作。
 - **页面没有远程访问** —— 桥接有意拒绝非回环 `Host` 头，因此监听非回环地址的 DSH 实例无法从另一台机器使用本设置页。这是安全边界，不是缺失功能。
 - **Windows 进程树结束依赖 `taskkill`** —— 在没有 `taskkill` 的平台上，停止后孙进程可能仍存活；supervisor 会记录超时，而不是报告一次干净停止。
+- **只有 TCP 隧道能保留远程宿主的 TLS** —— App 固定信任远程宿主的 CA，因此 HTTP/HTTPS 类型的 SakuraFrp 隧道（TLS 在服务商处终止）无法工作。隧道卡会拒绝 `https://` 公网地址并说明限制，不会自动回退到其它隧道类型。
+- **SakuraFrp 访问密钥明文存储** —— 桥接不回传、日志不记录，但 `$DSH_HOME/device-interconnect/config.json` 中以明文保存，可被本机其它进程读取。按与配对配置相同的本地读取威胁接受。
+- **frpc 由用户自备** —— 插件不自动下载隧道客户端（供应链安全），因此由用户填写 SakuraFrp 提供方的可执行文件路径；文件不存在时隧道无法启动。
+- **隧道推导出的对外地址会覆盖手填值** —— 配置了公网地址时，上面的手填 `publicOrigin` 被忽略，改用 `wss://<节点域名>:<端口>`；清空公网地址后，下次保存或启动会恢复手填值。
 
 <a id="dev-note"></a>
 ### 开发备注

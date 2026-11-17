@@ -14,7 +14,7 @@ import {
 } from '../src/client/DeviceInterconnectSection.tsx'
 import type { DeviceInterconnectActions, SectionSnapshot } from '../src/client/controller.ts'
 import { en } from '../src/client/locales.ts'
-import type { DeviceInterconnectConfig, RuntimeState } from '../src/types.ts'
+import type { DeviceInterconnectView, RuntimeState, TunnelState } from '../src/types.ts'
 
 afterEach(cleanup)
 
@@ -25,7 +25,7 @@ const t: DeviceInterconnectSectionProps['t'] = (key, params) =>
     params !== undefined && name in params ? String(params[name]) : match)
 
 /** One complete configuration document. */
-function config(overrides: Partial<DeviceInterconnectConfig> = {}): DeviceInterconnectConfig {
+function config(overrides: Partial<DeviceInterconnectView> = {}): DeviceInterconnectView {
   return {
     enabled: true,
     runner: { nodePath: 'C:\\node\\node.exe', pnpmPath: 'C:\\pnpm\\pnpm.mjs', repoDir: 'D:\\repo', profile: 'remote-host', patchPath: '', dshHome: '' },
@@ -34,6 +34,28 @@ function config(overrides: Partial<DeviceInterconnectConfig> = {}): DeviceInterc
       discoveryEnabled: true, discoveryPort: 4_778, pagesEnabled: true, pagesPort: 4_780,
     },
     pairing: { longTerm: true, pairingTtlMs: 2_592_000_000 },
+    tunnel: {
+      provider: 'sakurafrp',
+      frpcPath: 'C:\\frpc\\frpc.exe',
+      tunnelIds: '114514',
+      publicAddress: 'cn-xx.natfrp.cloud:12345',
+      iniPath: '',
+      extraArgs: '',
+      tokenConfigured: true,
+    },
+    ...overrides,
+  }
+}
+
+/** One tunnel runtime state. */
+function tunnelState(overrides: Partial<TunnelState> = {}): TunnelState {
+  return {
+    provider: 'sakurafrp',
+    running: false,
+    ready: true,
+    problems: [],
+    derivedPublicOrigin: 'wss://cn-xx.natfrp.cloud:12345',
+    logsTail: '',
     ...overrides,
   }
 }
@@ -43,6 +65,7 @@ function runtime(overrides: Partial<RuntimeState> = {}): RuntimeState {
   return {
     config: config(),
     child: { running: true, pid: 42, startedAt: 1, logsTail: 'remote host listening on 4777\n' },
+    tunnel: tunnelState(),
     controlPlane: {
       reachable: true,
       host: {
@@ -74,6 +97,8 @@ function draft(): NonNullable<SectionSnapshot['draft']> {
     discoveryEnabled: true, discoveryPort: '4778', pagesEnabled: true, pagesPort: '4780',
     longTerm: true, nodePath: 'C:\\node\\node.exe', pnpmPath: 'C:\\pnpm\\pnpm.mjs',
     repoDir: 'D:\\repo', profile: 'remote-host', patchPath: '', dshHome: '',
+    tunnelProvider: 'sakurafrp', frpcPath: 'C:\\frpc\\frpc.exe', tunnelToken: '',
+    tunnelIds: '114514', publicAddress: 'cn-xx.natfrp.cloud:12345', tunnelIniPath: '', tunnelExtraArgs: '',
   }
 }
 
@@ -84,8 +109,10 @@ function stubActions(overrides: Partial<DeviceInterconnectActions> = {}): Device
     close: vi.fn(),
     refresh: vi.fn(async () => {}),
     setEnabled: vi.fn(async () => {}),
+    setTunnelEnabled: vi.fn(async () => {}),
     edit: vi.fn(),
     toggle: vi.fn(),
+    selectTunnelProvider: vi.fn(),
     save: vi.fn(async () => {}),
     regeneratePairing: vi.fn(async () => {}),
     revokeDevice: vi.fn(async () => {}),
@@ -256,5 +283,108 @@ describe('Device Interconnect Settings page', () => {
     expect(actions.open).toHaveBeenCalledOnce()
     unmount()
     expect(actions.close).toHaveBeenCalledOnce()
+  })
+})
+
+describe('Device Interconnect tunnel card', () => {
+  it('renders the provider, the frpc fields, the TCP-only warning, and the derived origin', () => {
+    renderPage()
+    expect(screen.getByText('NAT traversal (SakuraFrp)')).toBeTruthy()
+    expect(screen.getByText(/Use a TCP tunnel/u)).toBeTruthy()
+    expect((screen.getByLabelText('Tunnel provider') as HTMLSelectElement).value).toBe('sakurafrp')
+    expect((screen.getByLabelText('frpc executable') as HTMLInputElement).value).toBe('C:\\frpc\\frpc.exe')
+    expect((screen.getByLabelText('Tunnel IDs') as HTMLInputElement).value).toBe('114514')
+    expect((screen.getByLabelText('Public address') as HTMLInputElement).value).toBe('cn-xx.natfrp.cloud:12345')
+    expect((screen.getByLabelText('Effective public origin') as HTMLInputElement).value)
+      .toBe('wss://cn-xx.natfrp.cloud:12345')
+  })
+
+  it('keeps the access key write-only with a stored placeholder', () => {
+    renderPage()
+    const token = screen.getByLabelText('Access key') as HTMLInputElement
+    expect(token.type).toBe('password')
+    expect(token.value).toBe('')
+    expect(token.placeholder).toBe('Stored - leave empty to keep it')
+  })
+
+  it('stages every tunnel field and saves the page', () => {
+    const { actions } = renderPage()
+    fireEvent.change(screen.getByLabelText('frpc executable'), { target: { value: 'C:\\other\\frpc.exe' } })
+    expect(actions.edit).toHaveBeenCalledWith('frpcPath', 'C:\\other\\frpc.exe')
+    fireEvent.change(screen.getByLabelText('Access key'), { target: { value: 'new-key' } })
+    expect(actions.edit).toHaveBeenCalledWith('tunnelToken', 'new-key')
+    fireEvent.change(screen.getByLabelText('Tunnel IDs'), { target: { value: '114514,114516' } })
+    expect(actions.edit).toHaveBeenCalledWith('tunnelIds', '114514,114516')
+    fireEvent.change(screen.getByLabelText('Public address'), { target: { value: 'node.example.test:443' } })
+    expect(actions.edit).toHaveBeenCalledWith('publicAddress', 'node.example.test:443')
+    fireEvent.change(screen.getByLabelText('Custom frpc.ini (optional)'), { target: { value: 'C:\\frpc\\frpc.ini' } })
+    expect(actions.edit).toHaveBeenCalledWith('tunnelIniPath', 'C:\\frpc\\frpc.ini')
+    fireEvent.change(screen.getByLabelText('Extra frpc arguments'), { target: { value: '--log_level debug' } })
+    expect(actions.edit).toHaveBeenCalledWith('tunnelExtraArgs', '--log_level debug')
+    fireEvent.click(screen.getByRole('button', { name: 'Save tunnel settings' }))
+    expect(actions.save).toHaveBeenCalled()
+  })
+
+  it('changes the provider selection', () => {
+    const { actions } = renderPage()
+    fireEvent.change(screen.getByLabelText('Tunnel provider'), { target: { value: 'none' } })
+    expect(actions.selectTunnelProvider).toHaveBeenCalledWith('none')
+  })
+
+  it('hides the tunnel fields while the provider is off', () => {
+    renderPage({ draft: { ...draft(), tunnelProvider: 'none' } })
+    expect(screen.queryByLabelText('frpc executable')).toBeNull()
+    expect(screen.queryByText(/Use a TCP tunnel/u)).toBeNull()
+  })
+
+  it('starts and stops the tunnel from the status row', () => {
+    const idle = renderPage()
+    fireEvent.click(screen.getByRole('button', { name: 'Start tunnel' }))
+    expect(idle.actions.setTunnelEnabled).toHaveBeenCalledWith(true)
+    cleanup()
+    const running = renderPage({ state: runtime({ tunnel: tunnelState({ running: true, pid: 7, startedAt: 1 }) }) })
+    fireEvent.click(screen.getByRole('button', { name: 'Stop tunnel' }))
+    expect(running.actions.setTunnelEnabled).toHaveBeenCalledWith(false)
+  })
+
+  it('disables the start action while the settings are incomplete', () => {
+    renderPage({
+      state: runtime({
+        tunnel: tunnelState({
+          ready: false,
+          problems: [{ code: 'tunnel-frpc-missing', message: 'frpc 可执行文件不存在：C:\\frpc\\frpc.exe' }],
+        }),
+      }),
+    })
+    expect(screen.getByText('Settings incomplete')).toBeTruthy()
+    expect(screen.getByText(/The tunnel settings are incomplete/u)).toBeTruthy()
+    const start = screen.getByRole('button', { name: 'Start tunnel' }) as HTMLButtonElement
+    expect(start.disabled).toBe(true)
+  })
+
+  it('shows a failed tunnel and offers a retry', () => {
+    const { actions } = renderPage({
+      state: runtime({ tunnel: tunnelState({ running: false, error: 'frpc 隧道子进程退出（代码 1）' }) }),
+    })
+    expect(screen.getByText('Failed to start')).toBeTruthy()
+    expect(screen.getByText('frpc 隧道子进程退出（代码 1）')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(actions.setTunnelEnabled).toHaveBeenCalledWith(true)
+  })
+
+  it('reveals the frpc output', () => {
+    renderPage({ state: runtime({ tunnel: tunnelState({ running: true, logsTail: 'start proxy success\n' }) }) })
+    fireEvent.click(screen.getByText('frpc output'))
+    expect(screen.getByText(/start proxy success/u)).toBeTruthy()
+  })
+
+  it('falls back to the pending-origin hint when no address is configured', () => {
+    renderPage({
+      state: runtime({
+        config: config({ tunnel: { ...config().tunnel, publicAddress: '' } }),
+        tunnel: tunnelState({ ready: false, problems: [], derivedPublicOrigin: '' }),
+      }),
+    })
+    expect(screen.getByText(/Fill in the public address/u)).toBeTruthy()
   })
 })

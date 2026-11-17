@@ -20,11 +20,17 @@ export const CONFIG_ROUTE = `${API_PREFIX}/config`
 /** `POST` reopen the long-term pairing window. */
 export const PAIR_ROUTE = `${API_PREFIX}/pair`
 
+/** `POST` start or stop the managed NAT-traversal tunnel. */
+export const TUNNEL_ROUTE = `${API_PREFIX}/tunnel`
+
 /** `POST` revoke one paired device. */
 export const REVOKE_ROUTE = `${API_PREFIX}/devices/revoke`
 
 /** `GET` the child's log tail. */
 export const LOGS_ROUTE = `${API_PREFIX}/logs`
+
+/** `GET` the tunnel child's log tail. */
+export const TUNNEL_LOGS_ROUTE = `${API_PREFIX}/tunnel/logs`
 
 /** `GET` the proxied QR SVG of the open pairing window. */
 export const QR_ROUTE = `${API_PREFIX}/qr.svg`

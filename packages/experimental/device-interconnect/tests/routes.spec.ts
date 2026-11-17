@@ -8,18 +8,19 @@ import type { AddressInfo } from 'node:net'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   API_PREFIX, BRIDGE_HEADER, BRIDGE_HEADER_VALUE, CONFIG_ROUTE, ENABLED_ROUTE, LOGS_ROUTE, PAIR_ROUTE,
-  QR_ROUTE, REVOKE_ROUTE, STATE_ROUTE,
+  QR_ROUTE, REVOKE_ROUTE, STATE_ROUTE, TUNNEL_LOGS_ROUTE, TUNNEL_ROUTE,
 } from '../src/api.ts'
 import { ConfigValidationError } from '../src/host/config.ts'
 import { ControlPlaneError } from '../src/host/control-plane.ts'
 import {
   MAXIMUM_BODY_BYTES, createApiHandler, hasBridgeHeader, isLoopbackHostHeader, isSameOrigin, type BridgeApi,
 } from '../src/host/routes.ts'
-import type { DeviceInterconnectConfig, RuntimeState } from '../src/types.ts'
+import { TunnelError } from '../src/host/tunnel.ts'
+import type { DeviceInterconnectView, RuntimeState } from '../src/types.ts'
 
 /** One runtime snapshot double. */
 function snapshot(overrides: Partial<RuntimeState> = {}): RuntimeState {
-  const config: DeviceInterconnectConfig = {
+  const config: DeviceInterconnectView = {
     enabled: true,
     runner: { nodePath: 'n', pnpmPath: 'p', repoDir: 'r', profile: 'remote-host', patchPath: '', dshHome: '' },
     host: {
@@ -27,10 +28,17 @@ function snapshot(overrides: Partial<RuntimeState> = {}): RuntimeState {
       discoveryEnabled: true, discoveryPort: 4_778, pagesEnabled: true, pagesPort: 4_780,
     },
     pairing: { longTerm: true, pairingTtlMs: 2_592_000_000 },
+    tunnel: {
+      provider: 'none', frpcPath: '', tunnelIds: '', publicAddress: '', iniPath: '', extraArgs: '',
+      tokenConfigured: false,
+    },
   }
   return {
     config,
     child: { running: true, pid: 12, startedAt: 1, logsTail: 'ready\n' },
+    tunnel: {
+      provider: 'none', running: false, ready: false, problems: [], derivedPublicOrigin: '', logsTail: '',
+    },
     controlPlane: { reachable: true },
     pairing: { open: false, longTerm: true },
     devices: [],
@@ -45,27 +53,33 @@ function bridge(): {
   api: BridgeApi
   state: ReturnType<typeof vi.fn>
   setEnabled: ReturnType<typeof vi.fn>
+  setTunnelEnabled: ReturnType<typeof vi.fn>
   saveConfig: ReturnType<typeof vi.fn>
   pair: ReturnType<typeof vi.fn>
   revoke: ReturnType<typeof vi.fn>
   logs: ReturnType<typeof vi.fn>
+  tunnelLogs: ReturnType<typeof vi.fn>
   qrSvg: ReturnType<typeof vi.fn>
 } {
   const state = vi.fn(async () => snapshot())
   const setEnabled = vi.fn(async () => snapshot())
+  const setTunnelEnabled = vi.fn(async () => snapshot())
   const saveConfig = vi.fn(async () => snapshot())
   const pair = vi.fn(async () => snapshot())
   const revoke = vi.fn(async () => snapshot())
   const logs = vi.fn(() => 'child output')
+  const tunnelLogs = vi.fn(() => 'frpc output')
   const qrSvg = vi.fn(async () => '<svg xmlns="http://www.w3.org/2000/svg"></svg>')
   return {
-    api: { state, setEnabled, saveConfig, pair, revoke, logs, qrSvg },
+    api: { state, setEnabled, setTunnelEnabled, saveConfig, pair, revoke, logs, tunnelLogs, qrSvg },
     state,
     setEnabled,
+    setTunnelEnabled,
     saveConfig,
     pair,
     revoke,
     logs,
+    tunnelLogs,
     qrSvg,
   }
 }
@@ -181,6 +195,30 @@ describe('bridge routes', () => {
     const url = await serve(fake.api)
     const response = await call(url, LOGS_ROUTE)
     expect(await response.json()).toEqual({ logsTail: 'child output' })
+  })
+
+  it('serves the tunnel output tail', async () => {
+    const fake = bridge()
+    const url = await serve(fake.api)
+    const response = await call(url, TUNNEL_LOGS_ROUTE)
+    expect(await response.json()).toEqual({ logsTail: 'frpc output' })
+  })
+
+  it('starts and stops the tunnel and passes the parsed boolean', async () => {
+    const fake = bridge()
+    const url = await serve(fake.api)
+    const response = await post(url, TUNNEL_ROUTE, { enabled: true })
+    expect(response.status).toBe(200)
+    expect(fake.setTunnelEnabled).toHaveBeenCalledWith(true)
+    await post(url, TUNNEL_ROUTE, { enabled: false })
+    expect(fake.setTunnelEnabled).toHaveBeenLastCalledWith(false)
+  })
+
+  it('rejects a non-object tunnel body', async () => {
+    const fake = bridge()
+    const url = await serve(fake.api)
+    const response = await post(url, TUNNEL_ROUTE, [true])
+    expect(response.status).toBe(400)
   })
 
   it('switches the child and passes the parsed boolean', async () => {
@@ -332,6 +370,15 @@ describe('bridge routes', () => {
     const response = await call(url, PAIR_ROUTE, { method: 'POST' })
     expect(response.status).toBe(502)
     expect((await response.json() as { error: { code: string } }).error.code).toBe('pair-failed')
+  })
+
+  it('maps a refused tunnel start onto its status and code', async () => {
+    const fake = bridge()
+    fake.setTunnelEnabled.mockRejectedValue(new TunnelError('tunnel-host-not-running', 409, '远程宿主未运行。'))
+    const url = await serve(fake.api)
+    const response = await post(url, TUNNEL_ROUTE, { enabled: true })
+    expect(response.status).toBe(409)
+    expect((await response.json() as { error: { code: string } }).error.code).toBe('tunnel-host-not-running')
   })
 
   it('maps an unexpected failure onto 500', async () => {

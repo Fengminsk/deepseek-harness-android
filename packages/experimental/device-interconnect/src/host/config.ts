@@ -13,7 +13,10 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { mkdir, rename, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
-import type { DeviceInterconnectConfig, PairingSettings, RemoteHostSettings, RunnerConfig } from '../types.ts'
+import type {
+  DeviceInterconnectConfig, PairingSettings, RemoteHostSettings, RunnerConfig, TunnelProvider, TunnelSettings,
+} from '../types.ts'
+import { isSafeTunnelExtraArgs, isTunnelPublicAddress } from './tunnel.ts'
 
 /** Directory under `DSH_HOME` holding this bundle's configuration and generated overlay. */
 export const DATA_DIRECTORY_NAME = 'device-interconnect'
@@ -44,6 +47,21 @@ export const DEFAULT_PAGES_PORT = 4_780
 
 /** Default remote host profile launched by the supervised child. */
 export const DEFAULT_PROFILE = 'remote-host'
+
+/** Longest accepted access key, in characters. */
+const MAXIMUM_TUNNEL_TOKEN_LENGTH = 512
+
+/** SakuraFrp tunnel ids: one or more decimal ids separated by commas. */
+const TUNNEL_IDS_PATTERN = /^\d+(,\d+)*$/u
+
+/** An address carrying a URL scheme, which a tunnel public address never has. */
+const SCHEME_PATTERN = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//u
+
+/** Whitespace and control characters a single-line setting value may not contain. */
+const SINGLE_LINE_VIOLATION = /[\u0000-\u001f\u007f]/u
+
+/** Whitespace or control characters inside an access key. */
+const TOKEN_VIOLATION = /\s|[\u0000-\u001f\u007f]/u
 
 /** Largest accepted device id length (32 hexadecimal characters). */
 const DEVICE_ID_PATTERN = /^[0-9a-f]{32}$/u
@@ -136,6 +154,15 @@ export function defaultConfig(environment: InferenceEnvironment = processInferen
       pagesPort: DEFAULT_PAGES_PORT,
     },
     pairing: { longTerm: true, pairingTtlMs: DEFAULT_PAIRING_TTL_MS },
+    tunnel: {
+      provider: 'none',
+      frpcPath: '',
+      token: '',
+      tunnelIds: '',
+      publicAddress: '',
+      iniPath: '',
+      extraArgs: '',
+    },
   }
 }
 
@@ -205,8 +232,9 @@ export function normalizeConfig(candidate: unknown, fallback: DeviceInterconnect
   const runner = readRunner(candidate['runner'], fallback.runner, problems)
   const host = readHost(candidate['host'], fallback.host, problems)
   const pairing = readPairing(candidate['pairing'], fallback.pairing, problems)
+  const tunnel = readTunnel(candidate['tunnel'], fallback.tunnel, problems)
   if (problems.length > 0) return { ok: false, problems }
-  return { ok: true, config: { enabled, runner, host, pairing } }
+  return { ok: true, config: { enabled, runner, host, pairing, tunnel } }
 }
 
 /**
@@ -458,6 +486,75 @@ function readPairing(value: unknown, fallback: PairingSettings, problems: string
       problems,
     ),
   }
+}
+
+/**
+ * Read the managed-tunnel section.
+ *
+ * Required-for-launch facts (executable, access key, tunnel ids, public
+ * address) may stay empty so the page can persist partial work; the tunnel
+ * readiness check reports them before any spawn. Formats are validated here,
+ * strictly, because a wrong value would only fail once frpc runs.
+ */
+function readTunnel(value: unknown, fallback: TunnelSettings, problems: string[]): TunnelSettings {
+  if (value === undefined) return fallback
+  if (!isRecord(value)) {
+    problems.push('tunnel 必须是一个 JSON 对象。')
+    return fallback
+  }
+  const provider = readTunnelProvider(value['provider'], fallback.provider, problems)
+  const frpcPath = readString(value['frpcPath'], 'tunnel.frpcPath', fallback.frpcPath, problems)
+  if (SINGLE_LINE_VIOLATION.test(frpcPath)) problems.push('tunnel.frpcPath 不能包含换行或控制字符。')
+  const token = readTunnelToken(value['token'], value['clearToken'], fallback.token, problems)
+  const tunnelIds = readString(value['tunnelIds'], 'tunnel.tunnelIds', fallback.tunnelIds, problems, 512)
+  if (tunnelIds !== '' && !TUNNEL_IDS_PATTERN.test(tunnelIds)) {
+    problems.push('tunnel.tunnelIds 必须是数字隧道 ID，用英文逗号分隔（如 114514 或 114514,114516）。')
+  }
+  const publicAddress = readString(value['publicAddress'], 'tunnel.publicAddress', fallback.publicAddress, problems, 255)
+  if (publicAddress !== '') {
+    if (SCHEME_PATTERN.test(publicAddress)) {
+      problems.push('tunnel.publicAddress 只填写「节点域名:远程端口」。HTTPS 隧道会在服务端终止 TLS，无法配合远程宿主的固定证书，必须使用 TCP 隧道。')
+    } else if (!isTunnelPublicAddress(publicAddress)) {
+      problems.push('tunnel.publicAddress 必须是 节点域名:远程端口 形式（如 cn-xx.natfrp.cloud:12345）。')
+    }
+  }
+  const iniPath = readString(value['iniPath'], 'tunnel.iniPath', fallback.iniPath, problems)
+  if (SINGLE_LINE_VIOLATION.test(iniPath)) problems.push('tunnel.iniPath 不能包含换行或控制字符。')
+  const extraArgs = readString(value['extraArgs'], 'tunnel.extraArgs', fallback.extraArgs, problems)
+  if (extraArgs !== '' && !isSafeTunnelExtraArgs(extraArgs)) {
+    problems.push('tunnel.extraArgs 只能包含空白分隔的 frpc 参数，不能包含 shell 元字符或换行。')
+  }
+  return { provider, frpcPath, token, tunnelIds, publicAddress, iniPath, extraArgs }
+}
+
+/** Read the tunnel provider, or the fallback when absent. */
+function readTunnelProvider(value: unknown, fallback: TunnelProvider, problems: string[]): TunnelProvider {
+  if (value === undefined) return fallback
+  if (value !== 'none' && value !== 'sakurafrp') {
+    problems.push('tunnel.provider 必须是 none 或 sakurafrp。')
+    return fallback
+  }
+  return value
+}
+
+/**
+ * Read the write-only access key: absent or empty keeps the stored key, `null`
+ * or `clearToken: true` clears it, and any other value replaces it.
+ */
+function readTunnelToken(value: unknown, clearFlag: unknown, fallback: string, problems: string[]): string {
+  const clear = readBoolean(clearFlag, 'tunnel.clearToken', false, problems)
+  if (clear) return ''
+  if (value === undefined || value === '') return fallback
+  if (value === null) return ''
+  if (typeof value !== 'string' || value.length > MAXIMUM_TUNNEL_TOKEN_LENGTH) {
+    problems.push(`tunnel.token 必须是不超过 ${String(MAXIMUM_TUNNEL_TOKEN_LENGTH)} 个字符的字符串或 null。`)
+    return fallback
+  }
+  if (TOKEN_VIOLATION.test(value)) {
+    problems.push('tunnel.token（访问密钥）不能包含空白或控制字符。')
+    return fallback
+  }
+  return value
 }
 
 /**

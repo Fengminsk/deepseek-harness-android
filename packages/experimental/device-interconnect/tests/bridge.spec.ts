@@ -1,7 +1,7 @@
 /**
- * The bridge between the Settings page and the supervised remote host:
- * snapshot assembly, control-plane caching and failure reporting, runner
- * readiness, child start/stop/restart, and the page actions.
+ * The bridge between the Settings page and the supervised children: snapshot
+ * assembly, control-plane caching and failure reporting, runner and tunnel
+ * readiness, child start/stop/restart order, and the page actions.
  */
 
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
@@ -12,11 +12,27 @@ import { Bridge } from '../src/host/bridge.ts'
 import { ConfigStore, ConfigValidationError, defaultConfig, processInferenceEnvironment } from '../src/host/config.ts'
 import { ControlPlaneError, type ControlPlane } from '../src/host/control-plane.ts'
 import { OVERLAY_FILE_NAME } from '../src/host/config.ts'
-import type { ChildState, ControlPlaneState, DeviceInterconnectConfig } from '../src/types.ts'
+import { TunnelError } from '../src/host/tunnel.ts'
+import type { ChildState, ControlPlaneState, DeviceInterconnectConfig, TunnelSettings } from '../src/types.ts'
 import type { LaunchCommand, SupervisorApi } from '../src/host/supervisor.ts'
+
+/** One complete SakuraFrp tunnel configuration. */
+function tunnel(overrides: Partial<TunnelSettings> = {}): TunnelSettings {
+  return {
+    provider: 'sakurafrp',
+    frpcPath: 'C:\\frpc\\frpc.exe',
+    token: 'sakura-access-key',
+    tunnelIds: '114514',
+    publicAddress: 'cn-xx.natfrp.cloud:12345',
+    iniPath: '',
+    extraArgs: '',
+    ...overrides,
+  }
+}
 
 /** One configuration document with every runner path present. */
 function configuration(overrides: Partial<DeviceInterconnectConfig> = {}): DeviceInterconnectConfig {
+  const defaults = defaultConfig(processInferenceEnvironment())
   return {
     enabled: false,
     runner: {
@@ -38,6 +54,7 @@ function configuration(overrides: Partial<DeviceInterconnectConfig> = {}): Devic
       pagesPort: 4_780,
     },
     pairing: { longTerm: true, pairingTtlMs: 2_592_000_000 },
+    tunnel: defaults.tunnel,
     ...overrides,
   }
 }
@@ -67,31 +84,40 @@ function controlState(overrides: Partial<ControlPlaneState> = {}): ControlPlaneS
 }
 
 /** Supervisor double recording every command. */
-function supervisor() {
+function supervisor(options: { readonly name?: string; readonly calls?: string[] } = {}) {
+  const name = options.name ?? 'host'
+  const calls = options.calls ?? []
+  const pid = name === 'tunnel' ? 11 : 9
   let status = child()
-  const start = vi.fn((_command: LaunchCommand) => { status = child({ running: true, pid: 9, startedAt: 5 }) })
-  const stop = vi.fn(async () => { status = child() })
-  const restart = vi.fn(async (command: LaunchCommand) => { start(command) })
-  const dispose = vi.fn(async () => {})
-  const api: SupervisorApi = {
-    status: () => status,
-    start,
-    stop,
-    restart,
-    dispose,
-  }
-  return { api, start, stop, restart, dispose, setStatus: (next: ChildState) => { status = next } }
+  const start = vi.fn((_command: LaunchCommand) => {
+    calls.push(`${name}.start`)
+    status = child({ running: true, pid, startedAt: 5 })
+  })
+  const stop = vi.fn(async () => {
+    calls.push(`${name}.stop`)
+    status = child()
+  })
+  const restart = vi.fn(async (command: LaunchCommand) => {
+    calls.push(`${name}.restart`)
+    start(command)
+  })
+  const dispose = vi.fn(async () => {
+    calls.push(`${name}.dispose`)
+    status = child()
+  })
+  const api: SupervisorApi = { status: () => status, start, stop, restart, dispose }
+  return { api, start, stop, restart, dispose, calls, status: () => status, setStatus: (next: ChildState) => { status = next } }
 }
 
 /** Control-plane double. */
-function controlPlane(state = controlState()) {
+function controlPlane(state = controlState(), stateImplementation?: () => Promise<ControlPlaneState>) {
   const cp: ControlPlane & {
     state: ReturnType<typeof vi.fn>
     pair: ReturnType<typeof vi.fn>
     revoke: ReturnType<typeof vi.fn>
     qrSvg: ReturnType<typeof vi.fn>
   } = {
-    state: vi.fn(async () => state),
+    state: stateImplementation === undefined ? vi.fn(async () => state) : vi.fn(stateImplementation),
     pair: vi.fn(async () => state),
     revoke: vi.fn(async () => state),
     qrSvg: vi.fn(async () => '<svg/>'),
@@ -120,28 +146,52 @@ afterEach(async () => {
 async function bench(overrides: {
   config?: DeviceInterconnectConfig
   supervisor?: ReturnType<typeof supervisor>
+  tunnelSupervisor?: ReturnType<typeof supervisor>
   controlPlane?: ReturnType<typeof controlPlane>
   exists?: (path: string) => boolean
   now?: () => number
+  readinessPollMs?: number
+  readinessTimeoutMs?: number
 } = {}) {
   const directory = await dataDirectory()
   const fallback = overrides.config ?? configuration()
   const store = new ConfigStore({ file: join(directory, 'config.json'), fallback })
-  const supervisorDouble = overrides.supervisor ?? supervisor()
+  const calls: string[] = []
+  const supervisorDouble = overrides.supervisor ?? supervisor({ calls })
+  const tunnelSupervisorDouble = overrides.tunnelSupervisor ?? supervisor({ name: 'tunnel', calls })
   const controlPlaneDouble = overrides.controlPlane ?? controlPlane()
   const factory = vi.fn(() => controlPlaneDouble)
+  const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
   const bridge = new Bridge({
     dataDir: directory,
     store,
     supervisor: supervisorDouble.api,
+    tunnelSupervisor: tunnelSupervisorDouble.api,
     controlPlane: factory,
     env: { PATH: 'C:\\bin', DSH_HOME: 'C:\\parent-home' },
     now: overrides.now ?? (() => 100),
     stateCacheMs: 10,
     exists: overrides.exists ?? (() => true),
-    logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    readinessPollMs: overrides.readinessPollMs ?? 1,
+    readinessTimeoutMs: overrides.readinessTimeoutMs ?? 100,
+    logger,
   })
-  return { bridge, store, directory, supervisor: supervisorDouble, controlPlane: controlPlaneDouble, factory }
+  return {
+    bridge,
+    store,
+    directory,
+    supervisor: supervisorDouble,
+    tunnelSupervisor: tunnelSupervisorDouble,
+    controlPlane: controlPlaneDouble,
+    factory,
+    calls,
+    logger,
+  }
+}
+
+/** Wait until a deferred tunnel start reached the tunnel supervisor. */
+async function waitForTunnelStart(tunnelSupervisor: ReturnType<typeof supervisor>): Promise<void> {
+  await vi.waitFor(() => { expect(tunnelSupervisor.start).toHaveBeenCalled() }, { timeout: 5_000 })
 }
 
 describe('snapshot assembly', () => {
@@ -204,20 +254,69 @@ describe('snapshot assembly', () => {
     ])
   })
 
-  it('serves the child output tail and the proxied QR SVG', async () => {
-    const { bridge, controlPlane: control, supervisor } = await bench()
+  it('serves the child output tails and the proxied QR SVG', async () => {
+    const { bridge, controlPlane: control, supervisor, tunnelSupervisor } = await bench()
     supervisor.setStatus(child({ logsTail: 'listening on 4777\n' }))
+    tunnelSupervisor.setStatus(child({ logsTail: 'start proxy success\n' }))
     expect(bridge.logs()).toBe('listening on 4777\n')
+    expect(bridge.tunnelLogs()).toBe('start proxy success\n')
     expect(await bridge.qrSvg()).toBe('<svg/>')
     expect(control.qrSvg).toHaveBeenCalledOnce()
   })
 })
 
+describe('tunnel snapshot', () => {
+  it('serves the tunnel state with the derived origin and readiness', async () => {
+    const { bridge } = await bench({ config: configuration({ tunnel: tunnel() }) })
+    const state = await bridge.state()
+    expect(state.tunnel).toMatchObject({
+      provider: 'sakurafrp',
+      running: false,
+      ready: true,
+      derivedPublicOrigin: 'wss://cn-xx.natfrp.cloud:12345',
+      problems: [],
+      logsTail: 'ready\n',
+    })
+  })
+
+  it('never serves the access key back to the page', async () => {
+    const { bridge } = await bench({ config: configuration({ tunnel: tunnel() }) })
+    const state = await bridge.state()
+    expect(state.config.tunnel).toMatchObject({ provider: 'sakurafrp', tokenConfigured: true })
+    expect(JSON.stringify(state)).not.toContain('sakura-access-key')
+  })
+
+  it('reports an incomplete tunnel configuration without spawning it', async () => {
+    const { bridge, tunnelSupervisor } = await bench({
+      config: configuration({ enabled: true, tunnel: tunnel({ frpcPath: '' }) }),
+    })
+    await bridge.initialize()
+    const state = await bridge.state()
+    expect(state.tunnel.ready).toBe(false)
+    expect(state.tunnel.problems.map(problem => problem.code)).toEqual(['tunnel-frpc-missing'])
+    expect(tunnelSupervisor.start).not.toHaveBeenCalled()
+  })
+
+  it('reports a tunnel child failure without touching the remote host', async () => {
+    const { bridge, supervisor, tunnelSupervisor } = await bench({
+      config: configuration({ enabled: true, tunnel: tunnel() }),
+    })
+    await bridge.initialize()
+    await waitForTunnelStart(tunnelSupervisor)
+    tunnelSupervisor.setStatus(child({ running: false, exitCode: 1, error: 'frpc 隧道子进程退出（代码 1）' }))
+    const state = await bridge.state()
+    expect(state.tunnel).toMatchObject({ running: false, exitCode: 1, error: 'frpc 隧道子进程退出（代码 1）' })
+    expect(supervisor.stop).not.toHaveBeenCalled()
+    expect(supervisor.status().running).toBe(true)
+  })
+})
+
 describe('child lifecycle', () => {
   it('starts nothing while the switch is off', async () => {
-    const { bridge, supervisor } = await bench()
+    const { bridge, supervisor, tunnelSupervisor } = await bench()
     await bridge.initialize()
     expect(supervisor.start).not.toHaveBeenCalled()
+    expect(tunnelSupervisor.start).not.toHaveBeenCalled()
   })
 
   it('writes the overlay and starts the child when enabled with a ready runner', async () => {
@@ -237,6 +336,16 @@ describe('child lifecycle', () => {
     // The inherited DSH_HOME stays when the runner does not override it.
     expect(command?.env['DSH_HOME']).toBe('C:\\parent-home')
     expect(command?.env['PATH']?.startsWith('C:\\node')).toBe(true)
+  })
+
+  it('writes the tunnel public origin into the remote-host overlay', async () => {
+    const { bridge, directory } = await bench({
+      config: configuration({ enabled: true, host: { ...configuration().host, publicOrigin: 'wss://manual.test:443' }, tunnel: tunnel() }),
+    })
+    await bridge.initialize()
+    const overlay = await readFile(join(directory, OVERLAY_FILE_NAME), 'utf8')
+    expect(overlay).toContain('publicOrigin: "wss://cn-xx.natfrp.cloud:12345"')
+    expect(overlay).not.toContain('manual.test')
   })
 
   it('passes an extra patch and a runner DSH_HOME through', async () => {
@@ -271,6 +380,7 @@ describe('child lifecycle', () => {
         fallback: configuration({ enabled: true }),
       }),
       supervisor: supervisor().api,
+      tunnelSupervisor: supervisor({ name: 'tunnel' }).api,
       controlPlane: vi.fn(() => controlPlane()),
       env: {},
       exists: () => true,
@@ -278,6 +388,141 @@ describe('child lifecycle', () => {
     })
     await broken.initialize()
     expect((await broken.state()).problems.some(problem => problem.code === 'config-apply-failed')).toBe(true)
+  })
+})
+
+describe('tunnel lifecycle', () => {
+  it('starts the tunnel after the remote host became ready', async () => {
+    let calls = 0
+    const control = controlPlane(controlState(), () => {
+      calls += 1
+      return calls < 3
+        ? Promise.reject(new ControlPlaneError('control-unreachable', '还没起来。'))
+        : Promise.resolve(controlState())
+    })
+    const { bridge, supervisor, tunnelSupervisor, calls: order } = await bench({
+      config: configuration({ enabled: true, tunnel: tunnel() }),
+      controlPlane: control,
+    })
+    await bridge.initialize()
+    await waitForTunnelStart(tunnelSupervisor)
+    expect(order.indexOf('host.start')).toBeLessThan(order.indexOf('tunnel.start'))
+    expect(supervisor.status().running).toBe(true)
+    const command = tunnelSupervisor.start.mock.calls[0]?.[0]
+    expect(command?.file).toBe('C:\\frpc\\frpc.exe')
+    expect(command?.args).toEqual(['-f', 'sakura-access-key:114514', '-n', '--disable_log_color'])
+  })
+
+  it('does not start the tunnel when the remote host never becomes ready', async () => {
+    const control = controlPlane()
+    control.state.mockRejectedValue(new ControlPlaneError('control-unreachable', '还没起来。'))
+    const { bridge, tunnelSupervisor, logger } = await bench({
+      config: configuration({ enabled: true, tunnel: tunnel() }),
+      controlPlane: control,
+      readinessPollMs: 1,
+      readinessTimeoutMs: 3,
+    })
+    await bridge.initialize()
+    await vi.waitFor(() => { expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('did not become ready')) }, { timeout: 5_000 })
+    expect(tunnelSupervisor.start).not.toHaveBeenCalled()
+  })
+
+  it('stops the tunnel before the remote host when the switch turns off', async () => {
+    const { bridge, tunnelSupervisor, calls } = await bench({ config: configuration({ enabled: true, tunnel: tunnel() }) })
+    await bridge.initialize()
+    await waitForTunnelStart(tunnelSupervisor)
+    await bridge.setEnabled(false)
+    const tunnelStop = calls.indexOf('tunnel.stop')
+    const hostStop = calls.indexOf('host.stop')
+    expect(tunnelStop).toBeGreaterThanOrEqual(0)
+    expect(tunnelStop).toBeLessThan(hostStop)
+    expect(tunnelSupervisor.status().running).toBe(false)
+  })
+
+  it('restarts the tunnel around a remote-host restart', async () => {
+    const { bridge, supervisor, tunnelSupervisor, calls } = await bench({
+      config: configuration({ enabled: true, tunnel: tunnel() }),
+    })
+    await bridge.initialize()
+    await waitForTunnelStart(tunnelSupervisor)
+    const base = configuration({ enabled: true, tunnel: tunnel() })
+    await bridge.saveConfig({ ...base, host: { ...base.host, port: 5_000 } })
+    expect(supervisor.restart).toHaveBeenCalled()
+    expect(calls.indexOf('tunnel.stop')).toBeGreaterThanOrEqual(0)
+    expect(calls.indexOf('tunnel.stop')).toBeLessThan(calls.indexOf('host.restart'))
+    await vi.waitFor(() => { expect(tunnelSupervisor.start.mock.calls.length).toBeGreaterThanOrEqual(2) }, { timeout: 5_000 })
+  })
+
+  it('starts and stops the tunnel without touching the remote host switch', async () => {
+    const { bridge, supervisor, tunnelSupervisor } = await bench({
+      config: configuration({ enabled: true, tunnel: tunnel() }),
+    })
+    await bridge.initialize()
+    await waitForTunnelStart(tunnelSupervisor)
+    supervisor.start.mockClear()
+    supervisor.stop.mockClear()
+    await bridge.setTunnelEnabled(false)
+    expect(tunnelSupervisor.stop).toHaveBeenCalled()
+    expect(supervisor.stop).not.toHaveBeenCalled()
+    await bridge.setTunnelEnabled(true)
+    expect(tunnelSupervisor.start.mock.calls.length).toBeGreaterThanOrEqual(2)
+    expect(supervisor.stop).not.toHaveBeenCalled()
+  })
+
+  it('refuses a manual start while the provider is off', async () => {
+    const { bridge } = await bench()
+    await expect(bridge.setTunnelEnabled(true)).rejects.toMatchObject({ code: 'tunnel-provider-off' })
+  })
+
+  it('refuses a manual start with an incomplete configuration', async () => {
+    const { bridge } = await bench({ config: configuration({ enabled: true, tunnel: tunnel({ frpcPath: '' }) }) })
+    await expect(bridge.setTunnelEnabled(true)).rejects.toMatchObject({ code: 'tunnel-not-ready' })
+  })
+
+  it('refuses a manual start while the remote host is stopped', async () => {
+    const { bridge } = await bench({ config: configuration({ enabled: true, tunnel: tunnel() }) })
+    await expect(bridge.setTunnelEnabled(true)).rejects.toMatchObject({ code: 'tunnel-host-not-running' })
+  })
+
+  it('refuses a manual start when the host does not confirm its listener', async () => {
+    const control = controlPlane()
+    control.state.mockRejectedValue(new ControlPlaneError('control-unreachable', '还没起来。'))
+    const { bridge, supervisor } = await bench({
+      config: configuration({ enabled: true, tunnel: tunnel() }),
+      controlPlane: control,
+      readinessTimeoutMs: 3,
+    })
+    supervisor.setStatus(child({ running: true, pid: 9, startedAt: 5 }))
+    await expect(bridge.setTunnelEnabled(true)).rejects.toMatchObject({ code: 'tunnel-host-not-ready' })
+  })
+
+  it('relaunches the remote host when the derived origin was not applied yet', async () => {
+    const { bridge, supervisor, tunnelSupervisor } = await bench({
+      config: configuration({ enabled: true, tunnel: tunnel() }),
+    })
+    supervisor.setStatus(child({ running: true, pid: 9, startedAt: 5 }))
+    await bridge.setTunnelEnabled(true)
+    expect(supervisor.restart).toHaveBeenCalledOnce()
+    expect(tunnelSupervisor.start).toHaveBeenCalledOnce()
+  })
+
+  it('rejects a non-boolean tunnel switch and refuses later starts after disposal', async () => {
+    const { bridge, tunnelSupervisor } = await bench()
+    await expect(bridge.setTunnelEnabled('yes')).rejects.toBeInstanceOf(ConfigValidationError)
+    await bridge.dispose()
+    await expect(bridge.setTunnelEnabled(true)).rejects.toBeInstanceOf(TunnelError)
+    expect(tunnelSupervisor.start).not.toHaveBeenCalled()
+  })
+
+  it('stops the tunnel and then the remote host on disposal', async () => {
+    const { bridge, tunnelSupervisor, calls } = await bench({ config: configuration({ enabled: true, tunnel: tunnel() }) })
+    await bridge.initialize()
+    await waitForTunnelStart(tunnelSupervisor)
+    await bridge.dispose()
+    const tunnelDispose = calls.indexOf('tunnel.dispose')
+    const hostDispose = calls.indexOf('host.dispose')
+    expect(tunnelDispose).toBeGreaterThanOrEqual(0)
+    expect(tunnelDispose).toBeLessThan(hostDispose)
   })
 })
 
@@ -304,6 +549,23 @@ describe('page actions', () => {
     expect(store.current().host.port).toBe(5_000)
     expect(saved.config.host.port).toBe(5_000)
     expect(supervisor.restart).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the stored access key when the page saves without one', async () => {
+    const { bridge, store } = await bench({ config: configuration({ enabled: true, tunnel: tunnel() }) })
+    const saved = configuration({ enabled: true, tunnel: tunnel() })
+    const { token: _token, ...withoutToken } = saved.tunnel
+    const result = await bridge.saveConfig({ ...saved, tunnel: withoutToken })
+    expect(store.current().tunnel.token).toBe('sakura-access-key')
+    expect(result.config.tunnel.tokenConfigured).toBe(true)
+  })
+
+  it('clears the stored access key on request', async () => {
+    const { bridge, store } = await bench({ config: configuration({ enabled: true, tunnel: tunnel() }) })
+    const saved = configuration({ enabled: true, tunnel: tunnel() })
+    const result = await bridge.saveConfig({ ...saved, tunnel: { ...saved.tunnel, clearToken: true } })
+    expect(store.current().tunnel.token).toBe('')
+    expect(result.config.tunnel.tokenConfigured).toBe(false)
   })
 
   it('rejects an invalid saved configuration without touching the stored one', async () => {
@@ -337,6 +599,7 @@ describe('page actions', () => {
       dataDir: directory,
       store: new ConfigStore({ file, fallback: configuration(), logger: { warn: vi.fn() } }),
       supervisor: supervisor().api,
+      tunnelSupervisor: supervisor({ name: 'tunnel' }).api,
       controlPlane: vi.fn(() => controlPlane()),
       env: {},
       exists: () => true,
@@ -346,9 +609,10 @@ describe('page actions', () => {
     expect(state.problems[0]).toMatchObject({ code: 'config-unreadable' })
   })
 
-  it('stops the child on disposal', async () => {
-    const { bridge, supervisor } = await bench()
+  it('stops the children on disposal', async () => {
+    const { bridge, supervisor, tunnelSupervisor } = await bench()
     await bridge.dispose()
+    expect(tunnelSupervisor.dispose).toHaveBeenCalledOnce()
     expect(supervisor.dispose).toHaveBeenCalledOnce()
   })
 

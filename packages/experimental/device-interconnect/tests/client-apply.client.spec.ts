@@ -46,7 +46,10 @@ describe('device-interconnect client apply', () => {
     expect(resolveSlotLabel(icon?.options.label)).toBe('设备互联')
     const face = (section?.inject as () => { hooks: { deviceInterconnect: unknown }; actions: Record<string, unknown> })()
     expect(typeof (face.hooks.deviceInterconnect as { getSnapshot?: unknown }).getSnapshot).toBe('function')
-    for (const action of ['open', 'close', 'refresh', 'setEnabled', 'edit', 'toggle', 'save', 'regeneratePairing', 'revokeDevice', 'dismissNotice']) {
+    for (const action of [
+      'open', 'close', 'refresh', 'setEnabled', 'setTunnelEnabled', 'edit', 'toggle', 'selectTunnelProvider',
+      'save', 'regeneratePairing', 'revokeDevice', 'dismissNotice',
+    ]) {
       expect(typeof face.actions[action]).toBe('function')
     }
     // The inject face is rebuilt per render but hands out the same observable.

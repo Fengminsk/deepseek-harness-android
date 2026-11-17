@@ -11,11 +11,11 @@
 
 import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import {
-  BRIDGE_HEADER, BRIDGE_HEADER_VALUE, CONFIG_ROUTE, ENABLED_ROUTE, PAIR_ROUTE, REVOKE_ROUTE, STATE_ROUTE,
+  BRIDGE_HEADER, BRIDGE_HEADER_VALUE, CONFIG_ROUTE, ENABLED_ROUTE, PAIR_ROUTE, REVOKE_ROUTE, STATE_ROUTE, TUNNEL_ROUTE,
 } from '../api.ts'
 import type {
-  ChildState, DeviceInterconnectConfig, Diagnostic, PairingView, RemoteDevice, RemoteHostFacts,
-  RuntimeState,
+  ChildState, DeviceInterconnectConfigInput, DeviceInterconnectView, Diagnostic, PairingView, RemoteDevice,
+  RemoteHostFacts, RuntimeState, TunnelProvider, TunnelState,
 } from '../types.ts'
 
 /** Configuration text staged by the page until the user saves it. */
@@ -50,6 +50,20 @@ export interface ConfigDraft {
   patchPath: string
   /** Child `DSH_HOME` text. */
   dshHome: string
+  /** Selected tunnel provider. */
+  tunnelProvider: TunnelProvider
+  /** frpc executable path text. */
+  frpcPath: string
+  /** Staged replacement access key; empty keeps the stored one. */
+  tunnelToken: string
+  /** SakuraFrp tunnel ids text. */
+  tunnelIds: string
+  /** Public `<node-domain>:<port>` text. */
+  publicAddress: string
+  /** Custom `frpc.ini` path text. */
+  tunnelIniPath: string
+  /** Extra frpc arguments text. */
+  tunnelExtraArgs: string
 }
 
 /** One actionable message the page shows after an operation. */
@@ -57,7 +71,7 @@ export interface Notice {
   /** Whether the operation succeeded. */
   kind: 'success' | 'error'
   /** Either a dictionary key (success) or a Host diagnostic (failure). */
-  text: { key: 'saved' | 'regenerated' | 'revoked' } | { diagnostic: Diagnostic }
+  text: { key: 'saved' | 'regenerated' | 'revoked' | 'tunnelStarted' | 'tunnelStopped' } | { diagnostic: Diagnostic }
 }
 
 /** What the page renders. */
@@ -80,6 +94,7 @@ export interface SectionSnapshot {
 export type DraftField =
   | 'port' | 'listenHost' | 'publicHost' | 'publicOrigin' | 'discoveryPort' | 'pagesPort'
   | 'nodePath' | 'pnpmPath' | 'repoDir' | 'profile' | 'patchPath' | 'dshHome'
+  | 'frpcPath' | 'tunnelToken' | 'tunnelIds' | 'publicAddress' | 'tunnelIniPath' | 'tunnelExtraArgs'
 
 /** The page's action surface, passed to the component through the inject face. */
 export interface DeviceInterconnectActions {
@@ -91,10 +106,14 @@ export interface DeviceInterconnectActions {
   refresh(): Promise<void>
   /** Switch the supervised child on or off. */
   setEnabled(enabled: boolean): Promise<void>
+  /** Start or stop the managed tunnel. */
+  setTunnelEnabled(enabled: boolean): Promise<void>
   /** Stage one editable field. */
   edit(field: DraftField, value: string): void
   /** Stage one boolean toggle. */
   toggle(field: 'discoveryEnabled' | 'pagesEnabled' | 'longTerm', value: boolean): void
+  /** Stage the tunnel provider selection. */
+  selectTunnelProvider(provider: TunnelProvider): void
   /** Validate and persist the staged configuration. */
   save(): Promise<void>
   /** Reopen the pairing window. */
@@ -159,8 +178,10 @@ export class DeviceInterconnectController {
       close: () => { this.close() },
       refresh: () => this.refresh(),
       setEnabled: enabled => this.setEnabled(enabled),
+      setTunnelEnabled: enabled => this.setTunnelEnabled(enabled),
       edit: (field, value) => { this.edit(field, value) },
       toggle: (field, value) => { this.toggle(field, value) },
+      selectTunnelProvider: provider => { this.selectTunnelProvider(provider) },
       save: () => this.save(),
       regeneratePairing: () => this.regeneratePairing(),
       revokeDevice: deviceId => this.revokeDevice(deviceId),
@@ -209,6 +230,31 @@ export class DeviceInterconnectController {
     await this.runAction(async () => {
       this.applyState(await this.actionState(ENABLED_ROUTE, { enabled }))
     })
+  }
+
+  /**
+   * Start or stop the managed tunnel.
+   * @param enabled - whether the frpc child should run.
+   * @returns completion once the Host answered.
+   */
+  async setTunnelEnabled(enabled: boolean): Promise<void> {
+    await this.runAction(async () => {
+      this.applyState(await this.actionState(TUNNEL_ROUTE, { enabled }))
+      this.store.update((snapshot) => {
+        snapshot.notice = { kind: 'success', text: { key: enabled ? 'tunnelStarted' : 'tunnelStopped' } }
+      })
+    })
+  }
+
+  /**
+   * Stage the tunnel provider selection.
+   * @param provider - the selected provider.
+   */
+  selectTunnelProvider(provider: TunnelProvider): void {
+    const draft = this.store.getSnapshot().draft
+    if (draft === undefined) return
+    this.draftDirty = true
+    this.store.update((state) => { state.draft = { ...draft, tunnelProvider: provider } })
   }
 
   /**
@@ -370,23 +416,25 @@ export function parseRuntimeState(value: unknown): RuntimeState | undefined {
   if (!isRecord(value)) return undefined
   const config = parseConfig(value['config'])
   const child = parseChild(value['child'])
+  const tunnel = parseTunnel(value['tunnel'])
   const pairing = parsePairing(value['pairing'])
   const controlPlane = parseControlPlane(value['controlPlane'])
   const devices = parseDevices(value['devices'])
   const runner = parseRunner(value['runner'])
   const problems = parseDiagnostics(value['problems'])
-  if (config === undefined || child === undefined || pairing === undefined) return undefined
+  if (config === undefined || child === undefined || tunnel === undefined || pairing === undefined) return undefined
   if (controlPlane === undefined || devices === undefined || runner === undefined || problems === undefined) return undefined
-  return { config, child, controlPlane, pairing, devices, runner, problems }
+  return { config, child, tunnel, controlPlane, pairing, devices, runner, problems }
 }
 
-/** Parse the configuration document. */
-function parseConfig(value: unknown): DeviceInterconnectConfig | undefined {
+/** Parse the configuration document, including the write-only access-key flag. */
+function parseConfig(value: unknown): DeviceInterconnectView | undefined {
   if (!isRecord(value)) return undefined
   const runner = value['runner']
   const host = value['host']
   const pairing = value['pairing']
-  if (!isRecord(runner) || !isRecord(host) || !isRecord(pairing)) return undefined
+  const tunnel = parseTunnelSettings(value['tunnel'])
+  if (!isRecord(runner) || !isRecord(host) || !isRecord(pairing) || tunnel === undefined) return undefined
   const enabled = value['enabled']
   const bootstrap = (key: string): string | undefined => {
     const text = runner[key]
@@ -420,7 +468,38 @@ function parseConfig(value: unknown): DeviceInterconnectConfig | undefined {
     runner: { nodePath, pnpmPath, repoDir, profile, patchPath, dshHome },
     host: { port, host: listenHost, publicHost, publicOrigin, discoveryEnabled, discoveryPort, pagesEnabled, pagesPort },
     pairing: { longTerm, pairingTtlMs },
+    tunnel,
   }
+}
+
+/** Parse the tunnel settings block served by the Host. */
+function parseTunnelSettings(value: unknown): DeviceInterconnectView['tunnel'] | undefined {
+  if (!isRecord(value)) return undefined
+  const provider = value['provider']
+  const frpcPath = value['frpcPath']
+  const tunnelIds = value['tunnelIds']
+  const publicAddress = value['publicAddress']
+  const iniPath = value['iniPath']
+  const extraArgs = value['extraArgs']
+  const tokenConfigured = value['tokenConfigured']
+  if (provider !== 'none' && provider !== 'sakurafrp') return undefined
+  if (typeof frpcPath !== 'string' || typeof tunnelIds !== 'string' || typeof publicAddress !== 'string') return undefined
+  if (typeof iniPath !== 'string' || typeof extraArgs !== 'string' || typeof tokenConfigured !== 'boolean') return undefined
+  return { provider, frpcPath, tunnelIds, publicAddress, iniPath, extraArgs, tokenConfigured }
+}
+
+/** Parse the tunnel runtime block. */
+function parseTunnel(value: unknown): TunnelState | undefined {
+  if (!isRecord(value)) return undefined
+  const child = parseChild(value)
+  if (child === undefined) return undefined
+  const provider = value['provider']
+  const ready = value['ready']
+  const derivedPublicOrigin = value['derivedPublicOrigin']
+  const problems = parseDiagnostics(value['problems'])
+  if ((provider !== 'none' && provider !== 'sakurafrp') || typeof ready !== 'boolean') return undefined
+  if (typeof derivedPublicOrigin !== 'string' || problems === undefined) return undefined
+  return { ...child, provider, ready, problems, derivedPublicOrigin }
 }
 
 /** Parse the child-state block. */
@@ -551,7 +630,8 @@ function parseDiagnostic(value: unknown): Diagnostic | undefined {
 }
 
 /** Build the configuration the Host persists from the staged draft. */
-function configOf(base: DeviceInterconnectConfig, draft: ConfigDraft): DeviceInterconnectConfig {
+function configOf(base: DeviceInterconnectView, draft: ConfigDraft): DeviceInterconnectConfigInput {
+  const token = draft.tunnelToken.trim()
   return {
     enabled: base.enabled,
     runner: {
@@ -573,11 +653,21 @@ function configOf(base: DeviceInterconnectConfig, draft: ConfigDraft): DeviceInt
       pagesPort: Number(draft.pagesPort),
     },
     pairing: { longTerm: draft.longTerm, pairingTtlMs: base.pairing.pairingTtlMs },
+    tunnel: {
+      provider: draft.tunnelProvider,
+      frpcPath: draft.frpcPath,
+      tunnelIds: draft.tunnelIds,
+      publicAddress: draft.publicAddress,
+      iniPath: draft.tunnelIniPath,
+      extraArgs: draft.tunnelExtraArgs,
+      // An empty field keeps the stored access key; the page never receives it.
+      ...(token === '' ? {} : { token }),
+    },
   }
 }
 
 /** Build the staged draft from one configuration. */
-function draftOf(config: DeviceInterconnectConfig): ConfigDraft {
+function draftOf(config: DeviceInterconnectView): ConfigDraft {
   return {
     port: String(config.host.port),
     listenHost: config.host.host,
@@ -594,6 +684,13 @@ function draftOf(config: DeviceInterconnectConfig): ConfigDraft {
     profile: config.runner.profile,
     patchPath: config.runner.patchPath,
     dshHome: config.runner.dshHome,
+    tunnelProvider: config.tunnel.provider,
+    frpcPath: config.tunnel.frpcPath,
+    tunnelToken: '',
+    tunnelIds: config.tunnel.tunnelIds,
+    publicAddress: config.tunnel.publicAddress,
+    tunnelIniPath: config.tunnel.iniPath,
+    tunnelExtraArgs: config.tunnel.extraArgs,
   }
 }
 

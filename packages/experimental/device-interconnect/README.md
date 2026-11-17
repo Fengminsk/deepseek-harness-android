@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-An opt-in Settings page that supervises the PC-side remote DSH host. The page starts and stops that host as a separate child process, shows its long-lived pairing QR code and link, edits its listener settings, and lists paired phones with a revoke action. The remote host itself is not part of this bundle: the plugin talks to its loopback pairing-control HTTP API, so a stock DSH install can load this package without importing the remote host's packages.
+An opt-in Settings page that supervises the PC-side remote DSH host. It starts and stops the host as a child process, shows its long-lived pairing code, edits listener settings, and lists paired phones with a revoke action. It can also supervise a SakuraFrp `frpc` child that publishes the host's TLS port through a TCP tunnel and derives the pairing origin from the tunnel's public address. The host itself is not part of this bundle: the plugin talks to its loopback pairing-control HTTP API, so a stock DSH install can load this package.
 
 ## Table of Contents
 
@@ -52,13 +52,34 @@ The page edits the remote host's `port`, `host`, `publicHost`, `publicOrigin`, U
 
 `publicOrigin` accepts only `wss://host[:port]`, for a TLS-terminating reverse proxy or a domain-based deployment. Leaving it empty derives the origin from `publicHost` or the default-route IPv4 address.
 
+### SakuraFrp TCP tunnel
+
+The page can run a [SakuraFrp](https://www.natfrp.com/) `frpc` child that maps the remote host's TLS port to the internet, so a phone outside the LAN can pair. Only a **TCP tunnel** works: the remote host terminates TLS itself with its fixed CA, so an HTTP or HTTPS tunnel — which terminates TLS at the provider — makes every pinned-certificate connection fail. The tunnel card states that limit and rejects a public address pasted as an `https://` URL.
+
+1. In the SakuraFrp panel, create a **TCP** tunnel whose local target is `127.0.0.1:<the remote host port>` (default 4777). The panel assigns a node domain and remote port.
+2. Open **NAT traversal (SakuraFrp)** on the page, choose **SakuraFrp**, and fill in:
+
+   | Field | Value |
+   | --- | --- |
+   | frpc executable | Full path of the `frpc`/`frpc.exe` you obtained from SakuraFrp. The plugin checks that it exists and never downloads it. |
+   | Access key | SakuraFrp panel → **View access key** (different from the account password). Stored in plain text in this plugin's configuration file and never served back to the page. |
+   | Tunnel IDs | One or more TCP tunnel ids, comma separated: `114514` or `114514,114516`. |
+   | Public address | `<node-domain>:<remote-port>` as the panel shows it, for example `cn-xx.natfrp.cloud:12345`. No `https://` prefix; an explicit port such as `:443` is kept. |
+
+3. **Save tunnel settings.** The page derives `publicOrigin = wss://<node-domain>:<remote-port>` and writes it into the generated remote-host overlay, restarting a running remote host so new pairing links use it. While a public address is configured it overrides the manual `publicOrigin` field above; the card echoes the effective origin.
+4. **Start tunnel** starts the frpc child once the remote host reports its listener. The card shows the child state, its recent output, and the action becomes **Stop tunnel** / **Retry**. Stopping the tunnel leaves the remote host running. When the plugin activates, a configured tunnel starts again after the remote host is ready; disabling the remote host or uninstalling the bundle stops the tunnel first.
+
+Required facts may be saved while still empty — readiness lists what is missing and neither the button nor the plugin activation spawns a broken command. The advanced disclosure offers a custom `frpc.ini` (`frpc -c <ini> -n`, replacing the access key and tunnel ids, though the public address is still required for the derived origin) and extra frpc arguments. frpc runs with `-n --disable_log_color` so it does not self-update and its output stays readable.
+
 ### Security model
 
-The remote host's control API binds `127.0.0.1` only, and this plugin's own bridge routes reject any non-loopback `Host` head and any cross-site `Origin`. Every read and write also requires the `x-dsh-device-interconnect: 1` header, which a cross-site page cannot set without a CORS preflight this Host never approves; no CORS header is returned. The one header-free route is the QR image, which an `<img>` element must be able to load and which reveals nothing the page does not already show. All responses are `Cache-Control: no-store`. The accepted local threat is the usual one: another process on the same computer can read the configuration file and the child's log.
+The remote host's control API binds `127.0.0.1` only, and this plugin's own bridge routes reject any non-loopback `Host` head and any cross-site `Origin`. Every read and write also requires the `x-dsh-device-interconnect: 1` header, which a cross-site page cannot set without a CORS preflight this Host never approves; no CORS header is returned. The one header-free route is the QR image, which an `<img>` element must be able to load and which reveals nothing the page does not already show. All responses are `Cache-Control: no-store`. The accepted local threat is the usual one: another process on the same computer can read the configuration file and the children's logs.
+
+The SakuraFrp access key is write-only over the bridge: state reports only `tokenConfigured: true`, the page never displays it again, and it is not logged. It is still stored in plain text in `$DSH_HOME/device-interconnect/config.json`, so the same local-read threat applies; an empty staged field keeps the stored key, and clearing it requires an explicit `clearToken`/`null` write. The plugin never downloads frpc: the executable path is user-supplied and only checked for existence.
 
 ### Uninstall
 
-Remove the bundle in the plugin manager; the plugin stops the child process on disposal. `$DSH_HOME/device-interconnect/` (configuration and generated overlay) remains for a later reinstall and can be deleted by hand. Devices paired with the remote host are stored by that host, not by this bundle.
+Remove the bundle in the plugin manager; the plugin stops the tunnel and then the remote host on disposal. `$DSH_HOME/device-interconnect/` (configuration, including the stored access key, and the generated overlay) remains for a later reinstall and can be deleted by hand. Devices paired with the remote host are stored by that host, not by this bundle.
 
 -----
 
@@ -67,23 +88,25 @@ Remove the bundle in the plugin manager; the plugin stops the child process on d
 
 ### Host plugin and HTTP bridge
 
-`apply` reads the configuration file, builds one `Bridge`, registers one `prefix` route under `/device-interconnect/api` on `ctx.webServer` (read with `ctx.get`, so a profile without a Web server still loads), and registers the supervisor's disposal. Routes are loopback-only JSON; each action answers the complete runtime snapshot so the page never has to stitch a second read together:
+`apply` reads the configuration file, builds one `Bridge`, registers one `prefix` route under `/device-interconnect/api` on `ctx.webServer` (read with `ctx.get`, so a profile without a Web server still loads), and registers the disposal of both child supervisors. Routes are loopback-only JSON; each action answers the complete runtime snapshot so the page never has to stitch a second read together:
 
 | Method and path | Body | Effect |
 | --- | --- | --- |
-| `GET /device-interconnect/api/state` | — | configuration, child state and log tail, control-plane facts, pairing view, devices, runner readiness |
-| `POST /device-interconnect/api/enabled` | `{enabled}` | persist the switch and start or stop the child |
-| `POST /device-interconnect/api/config` | `{config}` | validate the complete document, persist it, restart a running child |
+| `GET /device-interconnect/api/state` | — | configuration (without the access key), remote-host child state and log tail, tunnel child state, derived origin and readiness, control-plane facts, pairing view, devices, runner readiness |
+| `POST /device-interconnect/api/enabled` | `{enabled}` | persist the remote-host switch and start or stop that child |
+| `POST /device-interconnect/api/tunnel` | `{enabled}` | start or stop the tunnel child without changing the remote-host switch |
+| `POST /device-interconnect/api/config` | `{config}` | validate the complete document, persist it, restart a running child; `tunnel.token` is write-only (`null` or `clearToken` clears it) |
 | `POST /device-interconnect/api/pair` | — | reopen the pairing window through the control plane |
 | `POST /device-interconnect/api/devices/revoke` | `{deviceId}` | revoke one paired device |
-| `GET /device-interconnect/api/logs` | — | child output tail |
+| `GET /device-interconnect/api/logs` | — | remote-host child output tail |
+| `GET /device-interconnect/api/tunnel/logs` | — | tunnel child output tail |
 | `GET /device-interconnect/api/qr.svg` | — | proxy of the open window's QR SVG, same-origin for the page's `<img>` |
 
 Failures answer `{error: {code, message}}` with a stable code the page maps onto its dictionary.
 
-### Child supervisor
+### Child supervisors
 
-`HostSupervisor` owns the one child process: piped stdout and stderr feed a 64 KiB combined tail, `start` is idempotent, `stop` kills the Windows process tree with `taskkill /T /F` (or signals the child elsewhere) and waits for the exit, `restart` applies a new configuration, and disposal stops the child. `/api/state` reads are cached for one second so several open pages polling at two seconds cannot multiply loopback requests.
+One `ChildSupervisor` instance owns each child (remote host and frpc): piped stdout and stderr feed a 64 KiB combined tail, `start` is idempotent, `stop` kills the Windows process tree with `taskkill /T /F` (or signals the child elsewhere) and waits for the exit, `restart` applies a new configuration, and disposal stops the child. The bridge enforces the order: the tunnel starts only after the remote host's control plane reports its `listener` up, the tunnel stops first when the host restarts or stops, and a tunnel failure never stops the remote host. `/api/state` reads are cached for one second so several open pages polling at two seconds cannot multiply loopback requests.
 
 ### Loopback control-plane client
 
@@ -91,7 +114,7 @@ Failures answer `{error: {code, message}}` with a stable code the page maps onto
 
 ### Browser page
 
-The browser half registers the `settings.section` entry (id `device-interconnect`, order 15, label from its dictionary), its `settings.section.icon` glyph, and the en/zh dictionaries. `DeviceInterconnectController` holds the snapshot store and the polling driver: the mounted page calls `open`, the unmounting page calls `close`, polling pauses while the document is hidden, and every action refreshes the snapshot. The page shows the switch and status, the long-term pairing card, listener settings, paired devices with a confirmation dialog, the collapsible runner fields and child output.
+The browser half registers the `settings.section` entry (id `device-interconnect`, order 15, label from its dictionary), its `settings.section.icon` glyph, and the en/zh dictionaries. `DeviceInterconnectController` holds the snapshot store and the polling driver: the mounted page calls `open`, the unmounting page calls `close`, polling pauses while the document is hidden, and every action refreshes the snapshot. The page shows the switch and status, the long-term pairing card, listener settings, paired devices with a confirmation dialog, the collapsible NAT-traversal card (provider, frpc fields, effective origin, tunnel state and output), the collapsible runner fields, and the remote-host output.
 
 -----
 
@@ -107,11 +130,11 @@ The browser half registers the `settings.section` entry (id `device-interconnect
 
 ## Model Experience
 
-None, as the Settings page supervises a separate remote-host process and adds no model context, tools, or Session events.
+None, as the Settings page supervises separate child processes and adds no model context, tools, or Session events.
 
 #### KV Cache effect
 
-The bundle adds no request content, so it neither grows nor invalidates a cached request prefix. Turning the switch changes only a separate child process; DSH Sessions on this Host are untouched.
+The bundle adds no request content, so it neither grows nor invalidates a cached request prefix. Changing the switches affects only separate child processes; DSH Sessions on this Host are untouched.
 
 ## Known Limitations and Deferred Work
 
@@ -121,6 +144,10 @@ The bundle adds no request content, so it neither grows nor invalidates a cached
 - **The control API is the remote host's loopback page** — pairing-window state, long-term windows, `/api/pair`, `/api/devices/revoke`, and `/qr.svg` are contracts of `apps/remote-host`. A checkout whose pairing page lacks a contract endpoint degrades to the affected action reporting its failure; the rest of the page keeps working.
 - **The page has no remote access** — the bridge intentionally refuses non-loopback Host heads, so a DSH instance served on a non-loopback address cannot use this Settings page from another machine. That is the security boundary, not a missing feature.
 - **Windows process-tree kill is `taskkill`** — a platform where `taskkill` is unavailable leaves grandchild processes alive after a stop; the supervisor records the timeout rather than reporting a clean stop.
+- **Only TCP tunnels preserve the remote host's TLS** — the App pins the remote host's CA, so an HTTP/HTTPS SakuraFrp tunnel (TLS terminated at the provider) cannot work. The tunnel card rejects an `https://` public address and states the limit; there is no automatic fallback to another tunnel type.
+- **The SakuraFrp access key is stored in plain text** — the bridge never serves it back and it is not logged, but `$DSH_HOME/device-interconnect/config.json` holds it in cleartext for other local processes to read. Accepted under the same local-read threat as the pairing configuration.
+- **frpc is user-supplied** — the plugin never downloads a tunnel client (supply-chain safety), so the user provides the executable path from SakuraFrp and the tunnel cannot start until that file exists.
+- **The tunnel-derived origin overrides the manual one** — while a public address is configured, the manual `publicOrigin` field is ignored and the derived `wss://<node-domain>:<port>` is announced. Clearing the public address restores the manual origin on the next save or start.
 
 <a id="dev-note"></a>
 ### Dev Note

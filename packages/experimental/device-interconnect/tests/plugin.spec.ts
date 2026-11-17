@@ -58,6 +58,10 @@ afterEach(async () => {
 
 /**
  * Activate the plugin against a temporary DSH home and one recorded route.
+ *
+ * The listener ports are seeded away from the product defaults so an unrelated
+ * remote host running on this machine cannot answer this fixture's control
+ * plane reads.
  * @param bundleConfig - first-run seed from the bundle row.
  * @returns the context, the fiber, the recorded routes, the route disposer, and the bridge URL.
  */
@@ -67,10 +71,23 @@ async function activate(bundleConfig: Config = {}) {
   const server = webServer()
   const ctx = new Context()
   ctx.provide('webServer', server.service)
+  const seed: Config = {
+    host: {
+      port: 4_777,
+      host: '0.0.0.0',
+      publicHost: '',
+      publicOrigin: '',
+      discoveryEnabled: false,
+      discoveryPort: 1,
+      pagesEnabled: true,
+      pagesPort: 1,
+    },
+    ...bundleConfig,
+  }
   const fiber = ctx.plugin({
     name,
     inject: [],
-    apply: (pluginContext: Context) => apply(pluginContext, bundleConfig),
+    apply: (pluginContext: Context) => apply(pluginContext, seed),
   })
   await fiber.await()
   const route = server.routes[0]
@@ -121,7 +138,9 @@ describe('device-interconnect host plugin', () => {
     expect(response.status).toBe(200)
     const state = await response.json() as RuntimeState
     expect(state.config.enabled).toBe(false)
+    expect(state.config.tunnel).toMatchObject({ provider: 'none', tokenConfigured: false })
     expect(state.child.running).toBe(false)
+    expect(state.tunnel).toMatchObject({ provider: 'none', running: false, ready: false })
     expect(state.controlPlane.reachable).toBe(false)
     expect(state.runner.ready).toBe(false)
     expect(state.runner.problems.map(problem => problem.code)).toContain('runner-pnpm-missing')
@@ -150,6 +169,47 @@ describe('device-interconnect host plugin', () => {
     expect(response.status).toBe(200)
     const state = await response.json() as RuntimeState
     expect(state.config.host.port).toBe(5_100)
+  })
+
+  it('persists the tunnel access key and only reports that it is configured', async () => {
+    const plugin = await activate()
+    const first = await (await call(plugin.url, STATE_ROUTE)).json() as RuntimeState
+    const response = await post(plugin.url, `${API_PREFIX}/config`, {
+      config: {
+        ...first.config,
+        tunnel: {
+          provider: 'sakurafrp',
+          frpcPath: 'C:\\frpc\\frpc.exe',
+          token: 'sakura-access-key',
+          tunnelIds: '114514',
+          publicAddress: 'cn-xx.natfrp.cloud:12345',
+          iniPath: '',
+          extraArgs: '',
+        },
+      },
+    })
+    expect(response.status).toBe(200)
+    const state = await response.json() as RuntimeState
+    expect(state.config.tunnel).toMatchObject({ provider: 'sakurafrp', tokenConfigured: true, tunnelIds: '114514' })
+    expect(state.tunnel).toMatchObject({
+      provider: 'sakurafrp',
+      ready: false,
+      derivedPublicOrigin: 'wss://cn-xx.natfrp.cloud:12345',
+    })
+    // The access key is stored in the configuration file but never served back.
+    const file = join(plugin.dshHome, 'device-interconnect', 'config.json')
+    const persisted = JSON.parse(await readFile(file, 'utf8')) as RuntimeState['config'] & {
+      tunnel: { token: string }
+    }
+    expect(persisted.tunnel.token).toBe('sakura-access-key')
+    expect(JSON.stringify(state)).not.toContain('sakura-access-key')
+  })
+
+  it('refuses a tunnel start while the provider is off', async () => {
+    const plugin = await activate()
+    const response = await post(plugin.url, `${API_PREFIX}/tunnel`, { enabled: true })
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({ error: { code: 'tunnel-provider-off' } })
   })
 
   it('refuses an invalid configuration document', async () => {

@@ -9,8 +9,8 @@
   en: d372934044c8e669
   zh: 823d7ce7b1471b20
 /deepseek-ai-dsh-device-interconnect/summary:
-  en: f4b38cb0636eb1f4
-  zh: 19cd10afdc49497c
+  en: 87490703fd7a95c2
+  zh: 06e09c55846b64c6
 /deepseek-ai-dsh-device-interconnect/table-of-contents:
   en: d152484eb41ac6b4
   zh: 405b30feaf48c087
@@ -26,39 +26,42 @@
 /deepseek-ai-dsh-device-interconnect/use-this-package/listener-and-pairing-settings:
   en: 05723960a9ba2e24
   zh: 13e5297cf71ceef2
+/deepseek-ai-dsh-device-interconnect/use-this-package/sakurafrp-tcp-tunnel:
+  en: 501cf81ec577f991
+  zh: 906f6b16369d553d
 /deepseek-ai-dsh-device-interconnect/use-this-package/security-model:
-  en: 4d0fdeae6559f0b6
-  zh: cd87b93f27b7562b
+  en: bf6c394eb065bcfd
+  zh: 7d1a04d374559642
 /deepseek-ai-dsh-device-interconnect/use-this-package/uninstall:
-  en: 5d8d78f162a44a1f
-  zh: 115e4a5bd1e93207
+  en: 50b2e818821c31a7
+  zh: d06f150bbd7eae73
 /deepseek-ai-dsh-device-interconnect/understand-the-implementation:
   en: ee4615a04fa6503d
   zh: ee2c5fb2204a43cf
 /deepseek-ai-dsh-device-interconnect/understand-the-implementation/host-plugin-and-http-bridge:
-  en: 6a724c19ddb4c5f3
-  zh: bb87318a5a71a3c2
-/deepseek-ai-dsh-device-interconnect/understand-the-implementation/child-supervisor:
-  en: 4467f9781dc65418
-  zh: a2038a4822f4097b
+  en: 56ac1872c0ebfc43
+  zh: 4c5a89271657a20a
+/deepseek-ai-dsh-device-interconnect/understand-the-implementation/child-supervisors:
+  en: 8be84aa04ab778c3
+  zh: dee59dab7bd38c87
 /deepseek-ai-dsh-device-interconnect/understand-the-implementation/loopback-control-plane-client:
   en: 606387cebdd733a6
   zh: 2d0087c539016989
 /deepseek-ai-dsh-device-interconnect/understand-the-implementation/browser-page:
-  en: d24c6f967677fe3b
-  zh: f286d2ef3d36c9bc
+  en: 807d2b1c18fec9c7
+  zh: d8c1a1699e26fa20
 /deepseek-ai-dsh-device-interconnect/further-exploration:
   en: 78a36e25676961d1
   zh: 2aff5af912f6f58c
 /deepseek-ai-dsh-device-interconnect/model-experience:
-  en: b0fa55647e81b208
-  zh: e7800b5209582969
+  en: ef1df12c211c2624
+  zh: 6db2a5815dc441e1
 /deepseek-ai-dsh-device-interconnect/model-experience/kv-cache-effect:
-  en: 238a069a8c7659f3
-  zh: 9a7cb29b0ccae03d
+  en: f3a70883399ebc2f
+  zh: e64cd073ace5cfa4
 /deepseek-ai-dsh-device-interconnect/known-limitations-and-deferred-work:
-  en: 52bc9a2fe595676d
-  zh: 27eda84145099c9d
+  en: b6e05b968c53bcd0
+  zh: a9445d2f5786a11b
 /deepseek-ai-dsh-device-interconnect/known-limitations-and-deferred-work/dev-note:
   en: 279d01435256cd2a
   zh: 7c2ad2f568099e7f

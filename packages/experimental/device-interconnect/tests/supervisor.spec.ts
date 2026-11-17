@@ -1,12 +1,14 @@
 /**
  * Child supervisor: spawn arguments, status, the bounded log tail, exit
- * handling, idempotent start/stop, restart, and disposal.
+ * handling, idempotent start/stop, restart, disposal, and the process-tree kill
+ * of both platforms.
  */
 
 import { PassThrough } from 'node:stream'
 import { describe, expect, it, vi } from 'vitest'
 import {
-  HostSupervisor, LOG_TAIL_BYTES, type KillTree, type ManagedChild, type SpawnChild, type SupervisorLogger,
+  ChildSupervisor, LOG_TAIL_BYTES, killProcessTree, type KillTree, type KillerChild, type ManagedChild,
+  type SpawnChild, type SupervisorLogger,
 } from '../src/host/supervisor.ts'
 
 /** A child double whose streams the test drives. */
@@ -75,7 +77,14 @@ const command = {
  * @param overrides - supervisor seams to replace.
  * @returns the supervisor, the spawned children, and the kill double.
  */
-function bench(overrides: { spawned?: FakeChild[]; killTree?: KillTree; errors?: Error[]; logLimitBytes?: number; stopTimeoutMs?: number } = {}) {
+function bench(overrides: {
+  spawned?: FakeChild[]
+  killTree?: KillTree
+  errors?: Error[]
+  logLimitBytes?: number
+  stopTimeoutMs?: number
+  label?: string
+} = {}) {
   const spawned = overrides.spawned ?? []
   const spawn: SpawnChild = vi.fn(() => {
     const next = spawned.shift()
@@ -88,7 +97,7 @@ function bench(overrides: { spawned?: FakeChild[]; killTree?: KillTree; errors?:
     }
   })
   const children: FakeChild[] = []
-  const supervisor = new HostSupervisor({
+  const supervisor = new ChildSupervisor({
     spawn: (launch) => {
       const child = spawn(launch) as FakeChild
       children.push(child)
@@ -96,6 +105,7 @@ function bench(overrides: { spawned?: FakeChild[]; killTree?: KillTree; errors?:
     },
     killTree,
     now: () => 1_000,
+    ...(overrides.label === undefined ? {} : { label: overrides.label }),
     ...(overrides.logLimitBytes === undefined ? {} : { logLimitBytes: overrides.logLimitBytes }),
     ...(overrides.stopTimeoutMs === undefined ? {} : { stopTimeoutMs: overrides.stopTimeoutMs }),
     logger: logger(),
@@ -108,7 +118,7 @@ function settle(): Promise<void> {
   return new Promise(resolve => setImmediate(resolve))
 }
 
-describe('HostSupervisor', () => {
+describe('ChildSupervisor', () => {
   it('spawns the command and reports a running child', () => {
     const child = new FakeChild(4_242)
     const { supervisor, spawn } = bench({ spawned: [child] })
@@ -249,5 +259,73 @@ describe('HostSupervisor', () => {
 
   it('keeps the documented default log ceiling', () => {
     expect(LOG_TAIL_BYTES).toBe(64 * 1_024)
+  })
+
+  it('names the child with its configured label in failure messages', async () => {
+    const child = new FakeChild(4_242)
+    const { supervisor } = bench({ spawned: [child], label: 'frpc 隧道' })
+    supervisor.start(command)
+    child.emitExit(9)
+    expect(supervisor.status().error).toContain('frpc 隧道子进程退出（代码 9）')
+  })
+})
+
+describe('killProcessTree', () => {
+  /** One fake `taskkill` child whose events the test emits. */
+  function killerChild(): KillerChild & { emitError: () => void; emitExit: () => void } {
+    const errorListeners: (() => void)[] = []
+    const exitListeners: (() => void)[] = []
+    return {
+      on(event: 'error' | 'exit', listener: () => void) {
+        if (event === 'error') errorListeners.push(listener)
+        else exitListeners.push(listener)
+      },
+      emitError: () => { for (const listener of errorListeners) listener() },
+      emitExit: () => { for (const listener of exitListeners) listener() },
+    }
+  }
+
+  it('runs taskkill with the process-tree flags on Windows', async () => {
+    const calls: { command: string; args: readonly string[] }[] = []
+    const child = killerChild()
+    const promise = killProcessTree(4_242, {
+      platform: 'win32',
+      spawnProcess: (command, args) => {
+        calls.push({ command, args })
+        return child
+      },
+    })
+    child.emitExit()
+    await promise
+    expect(calls).toEqual([{ command: 'taskkill', args: ['/PID', '4242', '/T', '/F'] }])
+  })
+
+  it('settles a Windows kill whose taskkill fails to spawn', async () => {
+    const child = killerChild()
+    const promise = killProcessTree(4_242, { platform: 'win32', spawnProcess: () => child })
+    child.emitError()
+    await expect(promise).resolves.toBeUndefined()
+  })
+
+  it('signals the process off Windows', async () => {
+    const sent: { pid: number; signal: NodeJS.Signals }[] = []
+    await killProcessTree(4_242, {
+      platform: 'linux',
+      signalProcess: (pid, signal) => { sent.push({ pid, signal }) },
+    })
+    expect(sent).toEqual([{ pid: 4_242, signal: 'SIGTERM' }])
+  })
+
+  it('ignores a process that already exited and reports other failures', async () => {
+    const gone = Object.assign(new Error('gone'), { code: 'ESRCH' })
+    await expect(killProcessTree(4_242, {
+      platform: 'linux',
+      signalProcess: () => { throw gone },
+    })).resolves.toBeUndefined()
+    const denied = Object.assign(new Error('denied'), { code: 'EPERM' })
+    await expect(killProcessTree(4_242, {
+      platform: 'linux',
+      signalProcess: () => { throw denied },
+    })).rejects.toThrow('denied')
   })
 })

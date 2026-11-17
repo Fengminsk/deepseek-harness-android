@@ -9,18 +9,20 @@
  * cross-site request that sets the custom header needs a preflight this server
  * never approves. The one exception is the QR image, which an `<img>` element
  * loads without custom headers; it carries no secret beyond the pairing link
- * the page itself already displays.
+ * the page itself already displays. The SakuraFrp access key is write-only: no
+ * route here returns it.
  * @module @deepseek-ai/dsh-device-interconnect/host/routes
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import {
   API_PREFIX, BRIDGE_HEADER, BRIDGE_HEADER_VALUE, CONFIG_ROUTE, ENABLED_ROUTE, LOGS_ROUTE,
-  PAIR_ROUTE, QR_ROUTE, REVOKE_ROUTE, STATE_ROUTE,
+  PAIR_ROUTE, QR_ROUTE, REVOKE_ROUTE, STATE_ROUTE, TUNNEL_LOGS_ROUTE, TUNNEL_ROUTE,
 } from '../api.ts'
 import type { ErrorBody, RuntimeState } from '../types.ts'
 import { ConfigValidationError } from './config.ts'
 import { ControlPlaneError } from './control-plane.ts'
+import { TunnelError } from './tunnel.ts'
 
 /** Largest accepted JSON request body; the complete configuration fits far below it. */
 export const MAXIMUM_BODY_BYTES = 64 * 1_024
@@ -31,6 +33,8 @@ export interface BridgeApi {
   state(): Promise<RuntimeState>
   /** Switch the supervised child on or off. */
   setEnabled(enabled: unknown): Promise<RuntimeState>
+  /** Start or stop the managed NAT-traversal tunnel. */
+  setTunnelEnabled(enabled: unknown): Promise<RuntimeState>
   /** Validate and persist one configuration. */
   saveConfig(candidate: unknown): Promise<RuntimeState>
   /** Reopen the pairing window. */
@@ -39,6 +43,8 @@ export interface BridgeApi {
   revoke(deviceId: unknown): Promise<RuntimeState>
   /** @returns the child's output tail. */
   logs(): string
+  /** @returns the tunnel child's output tail. */
+  tunnelLogs(): string
   /** @returns the proxied QR SVG. */
   qrSvg(): Promise<string>
 }
@@ -142,6 +148,10 @@ async function route(
       if (!requireMethod(method, 'GET', response)) return
       sendJson(response, 200, { logsTail: bridge.logs() })
       return
+    case TUNNEL_LOGS_ROUTE:
+      if (!requireMethod(method, 'GET', response)) return
+      sendJson(response, 200, { logsTail: bridge.tunnelLogs() })
+      return
     case ENABLED_ROUTE: {
       if (!requireMethod(method, 'POST', response)) return
       const body = await readJsonBody(request, response)
@@ -151,6 +161,17 @@ async function route(
         return
       }
       sendJson(response, 200, await bridge.setEnabled((body as { readonly enabled?: unknown }).enabled))
+      return
+    }
+    case TUNNEL_ROUTE: {
+      if (!requireMethod(method, 'POST', response)) return
+      const body = await readJsonBody(request, response)
+      if (body === undefined) return
+      if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+        sendJson(response, 400, { error: { code: 'invalid-body', message: '请求体必须是一个 JSON 对象。' } })
+        return
+      }
+      sendJson(response, 200, await bridge.setTunnelEnabled((body as { readonly enabled?: unknown }).enabled))
       return
     }
     case CONFIG_ROUTE: {
@@ -356,6 +377,9 @@ function describeError(error: unknown): string {
 export function classifyBridgeError(error: unknown): { readonly status: number; readonly body: ErrorBody } | undefined {
   if (error instanceof ConfigValidationError) {
     return { status: 400, body: { error: { code: 'invalid-config', message: error.problems.join('；') } } }
+  }
+  if (error instanceof TunnelError) {
+    return { status: error.status, body: { error: { code: error.code, message: error.message } } }
   }
   if (error instanceof ControlPlaneError) {
     return { status: 502, body: { error: { code: error.code, message: error.message } } }

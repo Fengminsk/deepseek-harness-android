@@ -1,7 +1,11 @@
 /**
- * Lifetime of the one supervised remote-host child process: spawn with piped
- * output, a 64 KiB combined log tail, idempotent start/stop/restart, and a
- * tree kill so a launcher that spawned its own children releases the ports.
+ * Lifetime of one supervised child process: spawn with piped output, a 64 KiB
+ * combined log tail, idempotent start/stop/restart, and a tree kill so a
+ * launcher that spawned its own children releases the ports.
+ *
+ * The Device Interconnect bundle owns two children with this supervisor: the
+ * remote host and the NAT-traversal frpc. `label` names the child in the
+ * user-facing failure messages.
  *
  * The supervisor owns no timer of its own: the exit event and the stop timeout
  * are the only asynchronous edges, and disposal awaits both.
@@ -46,6 +50,32 @@ export type SpawnChild = (command: LaunchCommand) => ManagedChild
 /** Kills one process tree; injectable so unit tests need no real process. */
 export type KillTree = (pid: number) => Promise<void>
 
+/** The slice of a spawned `taskkill` {@link killProcessTree} waits on. */
+export interface KillerChild {
+  /** Listen for the spawn failure or the process exit. */
+  on(event: 'error' | 'exit', listener: () => void): void
+}
+
+/** Spawns `taskkill`; injectable so the Windows arm is unit-testable. */
+export type KillerSpawner = (
+  command: string,
+  args: readonly string[],
+  options: { readonly stdio: 'ignore'; readonly windowsHide: true },
+) => KillerChild
+
+/** Sends the non-Windows termination signal; injectable for tests. */
+export type SignalSender = (pid: number, signal: NodeJS.Signals) => void
+
+/** How {@link killProcessTree} reaches the operating system. */
+export interface KillProcessTreeOptions {
+  /** Platform that selects the strategy; defaults to `process.platform`. */
+  readonly platform?: NodeJS.Platform
+  /** Spawner used for `taskkill` on Windows; defaults to `node:child_process.spawn`. */
+  readonly spawnProcess?: KillerSpawner
+  /** Signal sender used elsewhere; defaults to `process.kill`. */
+  readonly signalProcess?: SignalSender
+}
+
 /** Longest combined log tail the supervisor retains. */
 export const LOG_TAIL_BYTES = 64 * 1_024
 
@@ -72,6 +102,10 @@ export interface SupervisorOptions {
   readonly logLimitBytes?: number
   /** Stop grace period; defaults to {@link STOP_TIMEOUT_MS}. */
   readonly stopTimeoutMs?: number
+  /** Platform that selects the default process-tree kill; defaults to `process.platform`. */
+  readonly platform?: NodeJS.Platform
+  /** User-facing name of this child in failure messages; defaults to the remote host. */
+  readonly label?: string
   /** Lifecycle log sink. */
   readonly logger?: SupervisorLogger
 }
@@ -113,7 +147,7 @@ class LogTail {
   }
 }
 
-/** The supervisor actions the bridge drives; {@link HostSupervisor} is the production implementation. */
+/** The supervisor actions the bridge drives; {@link ChildSupervisor} is the production implementation. */
 export interface SupervisorApi {
   /** @returns the current child state with its log tail. */
   status(): ChildState
@@ -134,11 +168,12 @@ export interface SupervisorApi {
 }
 
 /** The supervised child's lifetime. */
-export class HostSupervisor implements SupervisorApi {
+export class ChildSupervisor implements SupervisorApi {
   private readonly spawnChild: SpawnChild
   private readonly killTree: KillTree
   private readonly now: () => number
   private readonly stopTimeoutMs: number
+  private readonly label: string
   private readonly logger: SupervisorLogger
   private readonly logs: LogTail
   private child: ManagedChild | undefined
@@ -152,9 +187,12 @@ export class HostSupervisor implements SupervisorApi {
   /** @param options - launch, kill, clock, and log seams. */
   constructor(options: SupervisorOptions = {}) {
     this.spawnChild = options.spawn ?? spawnChild
-    this.killTree = options.killTree ?? killProcessTree
+    this.killTree = options.killTree ?? (pid => killProcessTree(pid, {
+      ...(options.platform === undefined ? {} : { platform: options.platform }),
+    }))
     this.now = options.now ?? Date.now
     this.stopTimeoutMs = options.stopTimeoutMs ?? STOP_TIMEOUT_MS
+    this.label = options.label ?? '远程宿主'
     this.logger = options.logger ?? console
     this.logs = new LogTail(options.logLimitBytes ?? LOG_TAIL_BYTES)
   }
@@ -197,7 +235,7 @@ export class HostSupervisor implements SupervisorApi {
       return
     }
     this.child = child
-    this.logger.info('device-interconnect: remote host child started (pid %s)', String(child.pid ?? 'unknown'))
+    this.logger.info('device-interconnect: supervised child started (pid %s)', String(child.pid ?? 'unknown'))
     child.stdout?.on('data', (chunk: Buffer | string) => {
       this.logs.append(typeof chunk === 'string' ? chunk : chunk.toString('utf8'))
     })
@@ -210,11 +248,11 @@ export class HostSupervisor implements SupervisorApi {
       this.exitCode = code ?? undefined
       this.exitedAt = this.now()
       if (code !== 0 && code !== null) {
-        this.error = `远程宿主子进程退出（代码 ${String(code)}）`
-        this.logger.warn('device-interconnect: remote host child exited with code %s', String(code))
+        this.error = `${this.label}子进程退出（代码 ${String(code)}）`
+        this.logger.warn('device-interconnect: child exited with code %s', String(code))
       } else if (signal !== null) {
-        this.error = `远程宿主子进程被信号 ${signal} 结束`
-        this.logger.warn('device-interconnect: remote host child exited by signal %s', signal)
+        this.error = `${this.label}子进程被信号 ${signal} 结束`
+        this.logger.warn('device-interconnect: child exited by signal %s', signal)
       }
       this.settleExit()
     })
@@ -246,10 +284,10 @@ export class HostSupervisor implements SupervisorApi {
     }
     const withinGrace = await this.waitForExit(exited)
     if (!withinGrace) {
-      this.logger.warn('device-interconnect: remote host child did not exit within %s ms; stopping supervision', String(this.stopTimeoutMs))
+      this.logger.warn('device-interconnect: child did not exit within %s ms; stopping supervision', String(this.stopTimeoutMs))
       this.child = undefined
       this.exitedAt = this.now()
-      this.error = '远程宿主子进程未在停止等待时间内退出'
+      this.error = `${this.label}子进程未在停止等待时间内退出`
       this.settleExit()
     }
   }
@@ -279,7 +317,7 @@ export class HostSupervisor implements SupervisorApi {
     this.exitCode = undefined
     this.exitedAt = this.now()
     this.error = message
-    this.logger.warn('device-interconnect: remote host child failed: %s', message)
+    this.logger.warn('device-interconnect: child failed: %s', message)
     this.settleExit()
   }
 
@@ -323,18 +361,41 @@ function spawnChild(command: LaunchCommand): ManagedChild {
   })
 }
 
-/** Default process-tree killer: `taskkill /T /F` on Windows, SIGTERM elsewhere. */
-async function killProcessTree(pid: number): Promise<void> {
-  if (process.platform === 'win32') {
+/** Default Windows `taskkill` spawner: forwards the two events the killer waits on. */
+function spawnKiller(
+  command: string,
+  args: readonly string[],
+  options: { readonly stdio: 'ignore'; readonly windowsHide: true },
+): KillerChild {
+  const killer = spawn(command, [...args], options)
+  return {
+    on(event: 'error' | 'exit', listener: () => void) {
+      if (event === 'error') killer.on('error', () => { listener() })
+      else killer.on('exit', () => { listener() })
+    },
+  }
+}
+
+/**
+ * Kill one process tree: `taskkill /T /F` on Windows, so a launcher's own
+ * children are terminated too, and SIGTERM elsewhere.
+ * @param pid - process id to terminate.
+ * @param options - platform and operating-system seams.
+ * @returns completion once `taskkill` answered or the signal was sent.
+ */
+export async function killProcessTree(pid: number, options: KillProcessTreeOptions = {}): Promise<void> {
+  if ((options.platform ?? process.platform) === 'win32') {
+    const spawnProcess = options.spawnProcess ?? spawnKiller
     await new Promise<void>((resolve) => {
-      const killer = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true })
+      const killer = spawnProcess('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true })
       killer.on('error', () => { resolve() })
       killer.on('exit', () => { resolve() })
     })
     return
   }
+  const signalProcess = options.signalProcess ?? ((target, signal) => { process.kill(target, signal) })
   try {
-    process.kill(pid, 'SIGTERM')
+    signalProcess(pid, 'SIGTERM')
   } catch (error) {
     // A child that already exited needs no signal; permission failures are reported by the caller's timeout.
     if (!isMissingProcess(error)) throw error

@@ -50,6 +50,33 @@ export interface PairingSettings {
   readonly pairingTtlMs: number
 }
 
+/** Tunnel providers a managed NAT-traversal child can use. */
+export type TunnelProvider = 'none' | 'sakurafrp'
+
+/**
+ * SakuraFrp TCP tunnel settings.
+ *
+ * The remote host terminates TLS itself with a fixed CA, so only a TCP tunnel
+ * works: an HTTP or HTTPS tunnel would terminate TLS at the provider and every
+ * pinned-certificate connection would fail.
+ */
+export interface TunnelSettings {
+  /** Which tunnel provider to manage; `none` keeps the frpc child stopped. */
+  readonly provider: TunnelProvider
+  /** Local frpc executable; empty means not configured. The plugin never downloads it. */
+  readonly frpcPath: string
+  /** SakuraFrp access key; write-only, so the bridge never serves it back. */
+  readonly token: string
+  /** SakuraFrp tunnel ids, comma separated: `114514` or `114514,114516`. */
+  readonly tunnelIds: string
+  /** Public `<node-domain>:<remote-port>` of the TCP tunnel, as the panel shows it. */
+  readonly publicAddress: string
+  /** Custom `frpc.ini`; when set it replaces the access-key command. */
+  readonly iniPath: string
+  /** Additional whitespace-separated frpc arguments; empty for none. */
+  readonly extraArgs: string
+}
+
 /** Everything the Host plugin persists in `<DSH_HOME>/device-interconnect/config.json`. */
 export interface DeviceInterconnectConfig {
   /** Whether the supervised remote host child should be running. */
@@ -60,6 +87,79 @@ export interface DeviceInterconnectConfig {
   readonly host: RemoteHostSettings
   /** Long-term pairing settings. */
   readonly pairing: PairingSettings
+  /** Managed NAT-traversal tunnel settings. */
+  readonly tunnel: TunnelSettings
+}
+
+/** The tunnel settings the Settings page sees: the access key is reduced to a presence flag. */
+export interface TunnelSettingsView {
+  /** Which tunnel provider is configured. */
+  readonly provider: TunnelProvider
+  /** Local frpc executable. */
+  readonly frpcPath: string
+  /** SakuraFrp tunnel ids. */
+  readonly tunnelIds: string
+  /** Public `<node-domain>:<remote-port>`. */
+  readonly publicAddress: string
+  /** Custom `frpc.ini`, or empty. */
+  readonly iniPath: string
+  /** Additional whitespace-separated frpc arguments. */
+  readonly extraArgs: string
+  /** Whether an access key is stored; the key itself is never served. */
+  readonly tokenConfigured: boolean
+}
+
+/** The configuration as the Settings page sees it, with the write-only access key removed. */
+export interface DeviceInterconnectView {
+  /** Whether the supervised remote host child should be running. */
+  readonly enabled: boolean
+  /** Child-process launch settings. */
+  readonly runner: RunnerConfig
+  /** Remote host listener settings. */
+  readonly host: RemoteHostSettings
+  /** Long-term pairing settings. */
+  readonly pairing: PairingSettings
+  /** Tunnel settings without the access key. */
+  readonly tunnel: TunnelSettingsView
+}
+
+/**
+ * One tunnel block submitted by the Settings page.
+ *
+ * The access key is write-only: an absent or empty `token` keeps the stored
+ * key, `null` clears it, and `clearToken: true` clears it without a value.
+ */
+export interface TunnelSettingsInput {
+  /** Which tunnel provider the page selected; absent keeps the stored value. */
+  readonly provider?: TunnelProvider
+  /** Local frpc executable path. */
+  readonly frpcPath?: string
+  /** Replacement access key; absent or empty keeps the stored one, `null` clears it. */
+  readonly token?: string | null
+  /** Clear the stored access key instead of replacing it. */
+  readonly clearToken?: boolean
+  /** SakuraFrp tunnel ids. */
+  readonly tunnelIds?: string
+  /** Public `<node-domain>:<remote-port>`. */
+  readonly publicAddress?: string
+  /** Custom `frpc.ini`. */
+  readonly iniPath?: string
+  /** Additional whitespace-separated frpc arguments. */
+  readonly extraArgs?: string
+}
+
+/** One complete configuration document submitted by the Settings page. */
+export interface DeviceInterconnectConfigInput {
+  /** Whether the supervised remote host child should be running. */
+  readonly enabled?: boolean
+  /** Child-process launch settings. */
+  readonly runner?: RunnerConfig
+  /** Remote host listener settings. */
+  readonly host?: RemoteHostSettings
+  /** Long-term pairing settings. */
+  readonly pairing?: PairingSettings
+  /** Tunnel settings, whose access key is write-only. */
+  readonly tunnel?: TunnelSettingsInput
 }
 
 /** One paired device as the remote host reports it, without any token material. */
@@ -147,6 +247,26 @@ export interface Diagnostic {
   readonly message: string
 }
 
+/** Whether the saved tunnel can launch its frpc child, and what is missing if it cannot. */
+export interface TunnelReadiness {
+  /** Every required setting is present and its executable path exists. */
+  readonly ready: boolean
+  /** Missing or invalid tunnel facts, in display order. */
+  readonly problems: readonly Diagnostic[]
+}
+
+/** The tunnel child state plus the facts the page derives from its settings. */
+export interface TunnelState extends ChildState {
+  /** Configured provider. */
+  readonly provider: TunnelProvider
+  /** Whether the saved tunnel settings can launch. */
+  readonly ready: boolean
+  /** Missing or invalid tunnel facts, in display order. */
+  readonly problems: readonly Diagnostic[]
+  /** Origin derived from the public address (`wss://…`); empty when none applies. */
+  readonly derivedPublicOrigin: string
+}
+
 /** Whether the saved runner can launch, and what is missing if it cannot. */
 export interface RunnerReadiness {
   /** Every executable path and the repository directory exists. */
@@ -165,10 +285,12 @@ export interface PairingView extends PairingWindow {
 
 /** The complete snapshot the Host bridge serves to the Settings page. */
 export interface RuntimeState {
-  /** The persisted configuration in force. */
-  readonly config: DeviceInterconnectConfig
+  /** The persisted configuration in force, with the write-only access key removed. */
+  readonly config: DeviceInterconnectView
   /** Supervised child state and its log tail. */
   readonly child: ChildState
+  /** The managed tunnel child state and the origin derived from its settings. */
+  readonly tunnel: TunnelState
   /** Whether the loopback control API answered, plus host facts when it did. */
   readonly controlPlane: {
     /** Whether the last control-plane read succeeded. */
@@ -200,10 +322,16 @@ export interface EnabledRequest {
   readonly enabled: boolean
 }
 
+/** `POST /device-interconnect/api/tunnel` body. */
+export interface TunnelRequest {
+  /** Whether the tunnel child should run. */
+  readonly enabled: boolean
+}
+
 /** `POST /device-interconnect/api/config` body. */
 export interface ConfigRequest {
-  /** The complete edited configuration. */
-  readonly config: DeviceInterconnectConfig
+  /** The complete edited configuration, including the write-only access key rules. */
+  readonly config: DeviceInterconnectConfigInput
 }
 
 /** `POST /device-interconnect/api/devices/revoke` body. */
@@ -215,5 +343,11 @@ export interface RevokeRequest {
 /** `GET /device-interconnect/api/logs` body. */
 export interface LogsResponse {
   /** Tail of the child's combined output. */
+  readonly logsTail: string
+}
+
+/** `GET /device-interconnect/api/tunnel/logs` body. */
+export interface TunnelLogsResponse {
+  /** Tail of the frpc child's combined output. */
   readonly logsTail: string
 }

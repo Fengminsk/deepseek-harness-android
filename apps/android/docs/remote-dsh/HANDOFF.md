@@ -784,6 +784,14 @@ exit 0；oxlint 改动 3 文件 0 error；宿主冒烟 **14/14**。本轮未截�
 - **已知边界**：长窗口=长期可配对入口（仅个人可信网络），需配合撤销/不用时关闭；插件控制面只允许本机回环；官方 DSH 分发仍需把 fork 运行时打包（当前 runner 指向本机 checkout）。
 - **测试**：插件包 7 个测试文件 104 项、双 face tsc；remote-host `pairing-page-selfcheck` 30/30、`pairing-longterm-selfcheck` 8/8、`qr-selfcheck` 16/16、smoke 14/14；仓库 `typecheck` 5/5；`build:artifacts` 8/8；`pnpm run build:check` 待 lead 收尾。
 
+#### 3.2.19 设备互联插件接入 SakuraFrp TCP 隧道
+
+- 插件设置页新增「内网穿透（SakuraFrp）」卡：配置 frpc 路径（用户自备，不自动下载）、访问密钥（写-only：state 只回 `tokenConfigured`、不回显明文）、隧道 ID（逗号分隔多隧道）、公网地址（`节点域名:远程端口`）、可选自定义 `frpc.ini` 与附加参数；支持启动/停止/重试，展示子进程状态与最近日志。
+- 隧道以**独立 frpc 子进程**托管（`frpc -f <token>:<tunnelIds> -n --disable_log_color`，或 `-c frpc.ini`），在 remote-host 就绪后启动、停止时先停隧道；隧道失败不影响 remote-host。
+- **只支持 TCP 隧道**：我们的宿主固定自签 CA、端到端 TLS，HTTP/HTTPS 隧道在 frps 侧终止 TLS 会让固定证书校验失败；公网地址填 `https://` 会被拒绝/提示。
+- 保存/启动时由公网地址推导 `publicOrigin = wss://<节点域名>:<远程端口>`（显式 443 保留）写入 remote-host overlay，运行中自动重启宿主，使配对链接与叶子证书 SAN 直接可用。
+- 测试：插件包 9 文件 **185 tests**（config/tunnel/supervisor/routes/bridge/client 等）、双 face tsc、`verify-client-ui-i18n`/`verify-export-jsdoc`/`verify-package-meta`/README 摘要与 translation-pairing 均绿；仓库 `typecheck` 5/5；`build:artifacts`/`build:check` 见提交记录。
+- 使用前需**完全重启 DSH**（宿主插件 JS 在启动时加载）才能看到新卡片；配置完成后用手机扫长期配对二维码（链接会变成 SakuraFrp 节点域名地址）。
 ### 3.4 远程宿主为什么能跑起来（三个非显然事实）
 
 1. **profile 是 shipped 模板**：`packages/util/official-bundles/src/bundles.ts` 的
@@ -1080,6 +1088,12 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
 
 ## 9. 变更日志（append-only，最新在最上面）
 
+### 2026-11-17 21:10 · lead（设备互联插件接入 SakuraFrp TCP 隧道）
+
+- 插件 `packages/experimental/device-interconnect` 新增 SakuraFrp 隧道托管：frpc 子进程管理、长期配对、公网地址自动推导 publicOrigin；仅支持 TCP 隧道（固定 CA 需要端到端 TLS）。
+- 验证：插件 185 tests、双 face tsc、typecheck 5/5、README/i18n 门禁绿；需重启 DSH 加载新 host 插件。
+- 边界：frpc 用户自备、token 明文存于插件 config.json；HTTPS 隧道不可用。
+- **提交**：见本次 commit。
 ### 2026-11-17 12:45 · lead（设备互联 DSH 插件 + 长期配对 + 官方 DSH 安装验证）
 
 - **用户反馈**：要把远程接入做成 PC 上的 DSH 插件，在设置里开「设备互联」Tab；配对不要倒计时，要长期可用。

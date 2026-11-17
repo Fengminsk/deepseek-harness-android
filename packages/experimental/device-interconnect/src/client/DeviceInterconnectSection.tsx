@@ -16,7 +16,7 @@ import {
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { DeviceInterconnectActions, SectionSnapshot } from './controller.ts'
 import { diagnosticText } from './locales.ts'
-import type { Diagnostic, RemoteDevice, RuntimeState } from '../types.ts'
+import type { Diagnostic, RemoteDevice, RuntimeState, TunnelProvider } from '../types.ts'
 import styles from './DeviceInterconnectSection.module.css'
 
 /** Registrant-private reactive facts plus the page's action surface. */
@@ -82,6 +82,8 @@ function TextField(props: {
   label: string
   value: string
   hint?: string
+  placeholder?: string
+  password?: boolean
   numeric?: boolean
   disabled: boolean
   onEdit: (value: string) => void
@@ -91,6 +93,9 @@ function TextField(props: {
     <div className={styles.field}>
       <label className={styles.fieldLabel} htmlFor={id}>{props.label}</label>
       <Input id={id} value={props.value} disabled={props.disabled}
+        type={props.password === true ? 'password' : undefined}
+        autoComplete={props.password === true ? 'off' : undefined}
+        placeholder={props.placeholder}
         inputMode={props.numeric === true ? 'numeric' : undefined}
         onChange={(event) => { props.onEdit(event.currentTarget.value) }} />
       {props.hint !== undefined && <p className={styles.hint}>{props.hint}</p>}
@@ -142,6 +147,125 @@ function CopyField(props: { label: string; text: string; copyLabel: string; copi
  */
 function DiagnosticLine(props: { diagnostic: Diagnostic; t: T }) {
   return <p className={`${styles.hint} ${styles.danger}`}>{diagnosticText(props.t, props.diagnostic)}</p>
+}
+
+/**
+ * The managed NAT-traversal card: provider choice, frpc settings, the derived
+ * public origin, the child status, its output, and the start/stop action.
+ * @param props - the runtime snapshot, the staged configuration, and the page actions.
+ * @returns the collapsible tunnel card.
+ */
+function TunnelCard(props: {
+  runtime: RuntimeState
+  draft: NonNullable<SectionSnapshot['draft']>
+  actions: DeviceInterconnectActions
+  busy: boolean
+  t: T
+}) {
+  const { runtime, draft, actions, busy, t } = props
+  const tunnel = runtime.tunnel
+  const sakurafrp = draft.tunnelProvider === 'sakurafrp'
+  const canStart = tunnel.ready && runtime.child.running
+  const status = !sakurafrp
+    ? { label: t('tunnelStatusOff'), tone: 'neutral' as const }
+    : tunnel.running
+      ? { label: t('statusRunning'), tone: 'success' as const }
+      : tunnel.error !== undefined
+        ? { label: t('statusFailed'), tone: 'danger' as const }
+        : tunnel.ready
+          ? { label: t('statusStopped'), tone: 'neutral' as const }
+          : { label: t('tunnelStatusIncomplete'), tone: 'warning' as const }
+  const actionLabel = tunnel.running ? t('tunnelStop') : tunnel.error !== undefined ? t('tunnelRetry') : t('tunnelStart')
+  const providerOptions: readonly { value: TunnelProvider; label: string }[] = [
+    { value: 'none', label: t('tunnelProviderNone') },
+    { value: 'sakurafrp', label: t('tunnelProviderSakuraFrp') },
+  ]
+  const providerId = useId()
+  return (
+    <section className={styles.card} aria-labelledby="device-interconnect-tunnel">
+      <details>
+        <summary id="device-interconnect-tunnel" className={styles.detailsSummary}>{t('tunnelTitle')}</summary>
+        <div className={styles.detailsBody}>
+          <p className={styles.hint}>{t('tunnelHint')}</p>
+          <div className={styles.row}>
+            <div className={styles.switchRow}>
+              <label className={styles.fieldLabel} htmlFor={providerId}>{t('tunnelProvider')}</label>
+              <select id={providerId} className={styles.select} value={draft.tunnelProvider} disabled={busy}
+                onChange={(event) => { actions.selectTunnelProvider(event.currentTarget.value as TunnelProvider) }}>
+                {providerOptions.map(option => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </div>
+            {sakurafrp && (
+              <div className={styles.actions}>
+                <Tag tone={status.tone}>{status.label}</Tag>
+                <Button variant="outline" size="sm" disabled={busy || (!tunnel.running && !canStart)}
+                  onClick={() => { void actions.setTunnelEnabled(!tunnel.running) }}>
+                  {actionLabel}
+                </Button>
+              </div>
+            )}
+          </div>
+          {sakurafrp && <p className={styles.hint}>{t('tunnelTcpOnly')}</p>}
+          {sakurafrp && tunnel.error !== undefined && (
+            <p className={`${styles.hint} ${styles.danger}`}>{tunnel.error}</p>
+          )}
+          {sakurafrp && (
+            <>
+              <div className={styles.grid}>
+                <TextField label={t('tunnelFrpcPath')} value={draft.frpcPath} hint={t('tunnelFrpcPathHint')}
+                  disabled={busy} onEdit={value => { actions.edit('frpcPath', value) }} />
+                <TextField label={t('tunnelAccessKey')} value={draft.tunnelToken} password
+                  hint={t('tunnelAccessKeyHint')} disabled={busy}
+                  placeholder={runtime.config.tunnel.tokenConfigured ? t('tunnelAccessKeyStoredPlaceholder') : t('tunnelAccessKeyPlaceholder')}
+                  onEdit={value => { actions.edit('tunnelToken', value) }} />
+                <TextField label={t('tunnelIds')} value={draft.tunnelIds} hint={t('tunnelIdsHint')}
+                  disabled={busy} onEdit={value => { actions.edit('tunnelIds', value) }} />
+                <TextField label={t('tunnelPublicAddress')} value={draft.publicAddress}
+                  hint={t('tunnelPublicAddressHint')} disabled={busy}
+                  onEdit={value => { actions.edit('publicAddress', value) }} />
+              </div>
+              {tunnel.derivedPublicOrigin !== ''
+                ? (
+                  <CopyField label={t('tunnelDerivedOrigin')} text={tunnel.derivedPublicOrigin}
+                    copyLabel={t('copyLink')} copiedLabel={t('copied')} />
+                )
+                : <p className={styles.hint}>{t('tunnelDerivedOriginPending')}</p>}
+              <p className={styles.hint}>{t('tunnelDerivedOriginHint')}</p>
+              {tunnel.problems.length > 0 && (
+                <p className={`${styles.hint} ${styles.danger}`}>
+                  {t('tunnelNotReady', { problems: tunnel.problems.map(problem => problem.message).join(' / ') })}
+                </p>
+              )}
+              <details className={styles.details}>
+                <summary className={styles.detailsSummary}>{t('tunnelAdvanced')}</summary>
+                <div className={styles.detailsBody}>
+                  <TextField label={t('tunnelIniPath')} value={draft.tunnelIniPath} hint={t('tunnelIniPathHint')}
+                    disabled={busy} onEdit={value => { actions.edit('tunnelIniPath', value) }} />
+                  <TextField label={t('tunnelExtraArgs')} value={draft.tunnelExtraArgs} hint={t('tunnelExtraArgsHint')}
+                    disabled={busy} onEdit={value => { actions.edit('tunnelExtraArgs', value) }} />
+                </div>
+              </details>
+              <div className={styles.actions}>
+                <Button variant="primary" size="sm" disabled={busy} onClick={() => { void actions.save() }}>
+                  {busy ? t('saving') : t('tunnelSave')}
+                </Button>
+              </div>
+              <details className={styles.details}>
+                <summary className={styles.detailsSummary}>{t('tunnelLogsTitle')}</summary>
+                <div className={styles.detailsBody}>
+                  {tunnel.logsTail === ''
+                    ? <p className={styles.empty}>{t('tunnelLogsEmpty')}</p>
+                    : <pre className={styles.logs}>{tunnel.logsTail}</pre>}
+                </div>
+              </details>
+            </>
+          )}
+        </div>
+      </details>
+    </section>
+  )
 }
 
 /**
@@ -344,6 +468,7 @@ function LoadedPage(props: {
             </table>
           )}
       </section>
+      <TunnelCard runtime={runtime} draft={draft} actions={actions} busy={busy} t={t} />
       <section className={styles.card} aria-labelledby="device-interconnect-runner">
         <details>
           <summary id="device-interconnect-runner" className={styles.detailsSummary}>{t('runnerTitle')}</summary>
