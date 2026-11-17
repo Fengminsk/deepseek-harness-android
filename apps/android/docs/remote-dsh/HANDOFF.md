@@ -1080,6 +1080,13 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
 
 ## 9. 变更日志（append-only，最新在最上面）
 
+### 2026-11-17 12:45 · lead（设备互联 DSH 插件 + 长期配对 + 官方 DSH 安装验证）
+
+- **用户反馈**：要把远程接入做成 PC 上的 DSH 插件，在设置里开「设备互联」Tab；配对不要倒计时，要长期可用。
+- **交付**：新增 `packages/experimental/device-interconnect`（opt-in bundle，Settings→设备互联；独立子进程托管 remote-host；通过本机配对页控制面管理）；remote-host 支持 `pairingLongTerm` + TTL 上限 90 天 + `/api/state`/`/api/pair`/`/api/devices/revoke`/`/qr.svg`；配对页显示「长期有效」。
+- **验证**：本机官方 DSH desktop profile 安装并 enable，子进程 running、长期窗口 open、qr.svg 200；插件 104 tests、remote-host selfcheck 30/30+8/8+16/16、smoke 14/14、typecheck 5/5、build:artifacts 8/8、build:check 2/2。
+- **边界**：插件控制面仅本机回环；官方发行仍需打包 fork 运行时；长期窗口=长期可配对入口（配合撤销/关闭宿主）。
+- **提交**：`14efcf996a`。
 ### 2026-11-16 17:00 · lead（首页输入条三态 + 视觉收敛 + 新机复验）
 
 - **用户反馈**：远程 DSH 首页输入条仍是旧的一行、不悬浮、无三态；缩小态不应出现审核权限；展开后的
