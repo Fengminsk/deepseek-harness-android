@@ -1101,6 +1101,14 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
 
 ## 9. 变更日志（append-only，最新在最上面）
 
+### 2026-11-18 13:58 · lead（App 远程会话本地缓存 + 后台同步服务 + 推送，已推送真机）
+
+- 用户反馈：每次点开对话先「正在读取会话」；要求本地缓存、点开先显示并持续拉最新；PC 连接在后台也要同步消息流；任务完成/询问要有推送。
+- 缓存：新增 `RemoteConversationCache`（deviceId+sessionId；窗口 events/throughSeq/firstSeq/hasMore；version 1；单会话 256KB、单设备 2MB/10 会话 LRU；不存附件字节/令牌）；原生 `dsh/runtime` 新增 `remote.conversation.read/save`（MainActivity，SharedPreferences `device:<id>`，≤2MB）。会话页先读缓存立即渲染（顶部细提示「已显示本地缓存，正在同步最新内容…」），缓存空才回退原加载态；实时快照覆盖并仅在接近底部时滚动；1s 节流写回 + dispose 刷盘；断线仍可看缓存。
+- 后台/推送：新增主进程前台服务 `RemoteSyncService`（specialUse、低优先级「与电脑保持同步」、START_STICKY；无 UI 时自停防假同步）+ `remote.sync.start/stop/status` 通道；Dart `RemoteSyncLifecycle` 在会话页 mounted 且连接 ready（前台）时 start，dispose/failed/idle/切设备时 stop；结合既有 `RemoteNotificationDispatcher`（remote.taskCompleted/approvalPending 解析/去重/前台抑制/深链）实现后台任务完成与询问推送。
+- 验证：flutter analyze 仅既有 11 条基线告警；缓存 5 + 会话页 88（新增缓存/同步 5）+ 邻接 98 项全绿；debug APK 构建成功并安装到 3B162D00E1K00000（lastUpdate 13:56）。
+- 边界：后台保活按会话页生命周期（从首页退回会 dispose 并停服务）；系统强杀后 START_STICKY 不重建 Flutter 引擎，服务检测无 UI 自停，重开 App 后恢复。全局级常驻（首页/多会话后台同步）留待后续。
+- **提交**：见本次 commit。
 ### 2026-11-18 13:46 · lead（App 远程会话页：工作状态条 + 排队消息同步/删除，已推送真机）
 
 - 用户反馈：点进正在工作的远程会话看不到工作状态；待发送/待执行的排队消息没有同步。

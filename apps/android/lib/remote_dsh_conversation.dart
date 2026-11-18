@@ -107,12 +107,15 @@ import 'pocket_composer.dart';
 import 'remote_attachments.dart';
 import 'remote_commands.dart';
 import 'remote_connection.dart';
+import 'remote_conversation_cache.dart';
+import 'remote_conversation_live_source.dart';
 import 'remote_conversation_source.dart';
 import 'remote_dsh_widgets.dart';
 import 'remote_goal_plan.dart';
 import 'remote_permissions.dart';
 import 'remote_session_insights.dart';
 import 'remote_stats_bar.dart';
+import 'remote_sync_service.dart';
 import 'remote_terminal_page.dart';
 import 'remote_todo_card.dart';
 import 'remote_workspace_diff_page.dart';
@@ -281,6 +284,9 @@ class RemoteDshConversationPage extends StatefulWidget {
     required this.projectName,
     required this.title,
     this.terminalConnection,
+    this.deviceId,
+    this.conversationCache,
+    this.syncLifecycle,
   });
 
   /// 会话目的地标识的前缀。
@@ -310,6 +316,16 @@ class RemoteDshConversationPage extends StatefulWidget {
   /// 由打开会话的首页传入，与数据源共用同一条连接，不新建第二条连接；为 null 时
   /// （例如测试里单独构造本页）「终端」入口按「这台电脑不支持终端」置灰。
   final RemoteTerminalConnection? terminalConnection;
+
+  /// 缓存用的电脑标识；为 null 时从实时数据源的连接里取（同
+  /// `RemoteConnectionController.activeDevice`）。测试单独构造页面时可直接给。
+  final String? deviceId;
+
+  /// 会话本地缓存；为 null 时用 `dsh/runtime` 的默认通道。测试可注入假缓存。
+  final RemoteConversationCache? conversationCache;
+
+  /// 后台同步服务的生命周期控制；为 null 时用 `dsh/runtime` 的默认通道。
+  final RemoteSyncLifecycle? syncLifecycle;
 
   @override
   State<RemoteDshConversationPage> createState() =>
@@ -350,6 +366,31 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
   Timer? _statusTimer;
   late String _title;
   StreamSubscription<RemoteConversationUpdate>? _updates;
+
+  /// 会话本地缓存（点开先渲染，随后由实时窗口覆盖）与同步服务。
+  late final RemoteConversationCache _conversationCache =
+      widget.conversationCache ?? const RemoteConversationCache();
+  late final RemoteSyncLifecycle _syncLifecycle =
+      widget.syncLifecycle ?? MethodChannelRemoteSyncLifecycle();
+
+  /// 缓存 key 里的电脑标识；测试或只读数据源可能没有，此时不做本地缓存。
+  String? _cacheDeviceId;
+
+  /// 本地缓存读取尚未完成：先显示紧凑的「正在读取本地缓存…」，不要闪大空态。
+  bool _cacheRestorePending = false;
+
+  /// 当前时间线来自本地缓存、实时快照还没到；用于显示「同步中」细提示。
+  bool _showingCachedWindow = false;
+
+  /// 缓存写回节的流；1s 节流，页面 dispose 时立即刷一次。
+  Timer? _cacheWriteTimer;
+  RemoteConversationWindow? _pendingCacheWindow;
+
+  /// 实时窗口的日志切点（缓存写回用）。
+  int _windowThroughSeq = 0;
+
+  /// 后台同步前台服务是否已启动（由本页生命周期控制）。
+  bool _syncStarted = false;
 
   /// 轮询 `tasks.session` 的定时器；页面销毁或退后台时取消。
   Timer? _sessionTasksTimer;
@@ -495,8 +536,14 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     _permissions.addListener(_onPermissionsChanged);
     unawaited(_permissions.start());
     // 更新流先订阅、再开始读首屏：首屏快照不会落在订阅建立之前。
+    _cacheDeviceId = _resolveCacheDeviceId();
+    if (_cacheDeviceId != null) {
+      _cacheRestorePending = true;
+      unawaited(_restoreConversationCache());
+    }
     unawaited(_source.start());
     if (_source.phase == RemoteConnectionPhase.ready) {
+      _startRemoteSync();
       _startSessionTasksPolling();
     }
   }
@@ -508,6 +555,13 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     _statusTimer?.cancel();
     _sessionTasksTimer?.cancel();
     _sessionTasksTimer = null;
+    _cacheWriteTimer?.cancel();
+    _cacheWriteTimer = null;
+    // 页面销毁时尽力把最后一次窗口写回缓存；不 await，避免阻塞路由退出。
+    if (_pendingCacheWindow != null || _events.isNotEmpty) {
+      unawaited(_flushConversationCache());
+    }
+    _stopRemoteSync();
     final updates = _updates;
     _updates = null;
     if (updates != null) unawaited(updates.cancel());
@@ -615,10 +669,116 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
       }
     });
     if (_source.phase == RemoteConnectionPhase.ready) {
+      _startRemoteSync();
       _startSessionTasksPolling();
     } else {
+      // 连接终止才停服务；connecting/reconnecting 继续跑，后台才有机会重连。
+      if (_source.phase == RemoteConnectionPhase.failed ||
+          _source.phase == RemoteConnectionPhase.idle) {
+        _stopRemoteSync();
+      }
       _stopSessionTasksPolling();
     }
+  }
+
+  /// 主进程前台同步服务：进入 ready 时在前台启动，页面销毁/连接终止时停止。
+  void _startRemoteSync() {
+    if (_syncStarted) return;
+    _syncStarted = true;
+    unawaited(_syncLifecycle.start());
+  }
+
+  void _stopRemoteSync() {
+    if (!_syncStarted) return;
+    _syncStarted = false;
+    unawaited(_syncLifecycle.stop());
+  }
+
+  /// 缓存 key 的电脑标识：显式参数优先，其次实时数据源的活动设备。
+  String? _resolveCacheDeviceId() {
+    final explicit = widget.deviceId?.trim() ?? '';
+    if (explicit.isNotEmpty) return explicit;
+    final source = widget.source;
+    if (source is RemoteConversationLiveSource) {
+      final connection = source.connection;
+      if (connection is RemoteControllerConnection) {
+        return connection.controller.activeDevice?.id;
+      }
+    }
+    return null;
+  }
+
+  /// 读取本地缓存并先渲染时间线；实时快照随后覆盖，断线时仍可阅读。
+  Future<void> _restoreConversationCache() async {
+    final deviceId = _cacheDeviceId;
+    if (deviceId == null) return;
+    RemoteConversationCacheEntry? cached;
+    try {
+      cached = await _conversationCache.read(deviceId, _source.sessionId);
+    } on Object {
+      cached = null;
+    }
+    if (!mounted) return;
+    if (cached == null || cached.window.events.isEmpty) {
+      if (_cacheRestorePending) {
+        setState(() => _cacheRestorePending = false);
+      }
+      return;
+    }
+    if (_events.isNotEmpty) {
+      // 实时快照已经先到：缓存不再覆盖页面，只用于后续断线兜底。
+      setState(() => _cacheRestorePending = false);
+      return;
+    }
+    setState(() {
+      _cacheRestorePending = false;
+      _showingCachedWindow = true;
+      _loading = false;
+      _events = List<Json>.of(cached!.window.events);
+      _seenSeqs
+        ..clear()
+        ..addAll([
+          for (final event in _events)
+            if (event['seq'] case final int seq) seq,
+        ]);
+      _projection.reconcile(_events);
+      _windowThroughSeq = cached.window.throughSeq;
+      final cachedTitle = cached.title.trim();
+      if (cachedTitle.isNotEmpty && _title == widget.title.trim()) {
+        _title = cachedTitle;
+      }
+    });
+    _scheduleScrollToEnd();
+  }
+
+  /// 收到新快照/事件后节流写回缓存；页面 dispose 时再立即刷一次。
+  void _scheduleConversationCacheWrite() {
+    if (_cacheDeviceId == null || _events.isEmpty) return;
+    _pendingCacheWindow = RemoteConversationWindow(
+      events: List<Json>.of(_events),
+      throughSeq: _windowThroughSeq > 0
+          ? _windowThroughSeq
+          : (_events.last['seq'] as int? ?? 0),
+      firstSeq: _events.first['seq'] as int?,
+      hasMore: false,
+    );
+    _cacheWriteTimer?.cancel();
+    _cacheWriteTimer = Timer(const Duration(seconds: 1), () {
+      unawaited(_flushConversationCache());
+    });
+  }
+
+  Future<void> _flushConversationCache() async {
+    final window = _pendingCacheWindow;
+    final deviceId = _cacheDeviceId;
+    _pendingCacheWindow = null;
+    if (window == null || deviceId == null || window.events.isEmpty) return;
+    await _conversationCache.save(
+      deviceId: deviceId,
+      sessionId: _source.sessionId,
+      window: window,
+      title: _title,
+    );
   }
 
   // ------------------------------------------------------------ 工作状态与队列
@@ -752,12 +912,15 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
         setState(() {
           _loading = false;
           _loadError = null;
+          _showingCachedWindow = false;
           _events = List<Json>.of(window.events);
           _seenSeqs
             ..clear()
             ..addAll([for (final event in _events) event['seq'] as int]);
+          _windowThroughSeq = window.throughSeq;
           _projection.reconcile(_events);
         });
+        _scheduleConversationCacheWrite();
         _scheduleScrollToEnd();
       case RemoteConversationEvents(:final events):
         final added = <Json>[];
@@ -769,8 +932,10 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
         if (added.isEmpty) return;
         setState(() {
           _events = [..._events, ...added]..sort(_bySeq);
+          _windowThroughSeq = _events.last['seq'] as int? ?? _windowThroughSeq;
           _projection.reconcile(_events);
         });
+        _scheduleConversationCacheWrite();
         _scheduleScrollToEnd();
       case RemoteConversationLive(:final value):
         setState(() => _live = _liveMessage(value));
@@ -960,6 +1125,12 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
         onAction: _canRetryRead ? () => unawaited(_reload()) : null,
       );
     }
+    if (_showingCachedWindow && _source.phase == RemoteConnectionPhase.ready) {
+      return const _RemoteNoticeBar(
+        key: ValueKey('remote-conversation-cache-syncing'),
+        message: '已显示本地缓存，正在同步最新内容…',
+      );
+    }
     switch (_source.phase) {
       case RemoteConnectionPhase.ready:
         break;
@@ -996,6 +1167,28 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
 
   Widget _transcript(BuildContext context) {
     if (_loading) {
+      // 先给本地缓存一个读取窗口：缓存命中会马上替换成时间线，避免闪一下大空态。
+      if (_cacheRestorePending) {
+        return PocketEmpty(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                '正在读取本地缓存…',
+                style: AppTextStyle.footnote.of(context).copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+        );
+      }
       return const PocketEmpty(
         child: _RemoteNotice(
           icon: Icons.hourglass_top_rounded,

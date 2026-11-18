@@ -12,10 +12,12 @@ import 'package:dsh_android/chat_execution_chain.dart';
 import 'package:dsh_android/pocket_composer.dart';
 import 'package:dsh_android/remote_attachments.dart';
 import 'package:dsh_android/remote_connection.dart';
+import 'package:dsh_android/remote_conversation_cache.dart';
 import 'package:dsh_android/remote_conversation_live_source.dart';
 import 'package:dsh_android/remote_conversation_source.dart';
 import 'package:dsh_android/remote_dsh_conversation.dart';
 import 'package:dsh_android/remote_dsh_widgets.dart';
+import 'package:dsh_android/remote_sync_service.dart';
 import 'package:dsh_android/remote_permissions.dart';
 import 'package:dsh_android/remote_session_insights.dart';
 import 'package:dsh_android/remote_stats_bar.dart';
@@ -24,6 +26,7 @@ import 'package:dsh_android/remote_workspace_diff_page.dart';
 import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/runtime_transport.dart';
 import 'package:dsh_android/ui.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
@@ -2650,6 +2653,123 @@ void main() {
     );
   });
 
+  group('会话缓存与后台同步', () {
+    testWidgets('缓存命中时立即渲染消息，不显示读取会话空态', (tester) async {
+      final cache = _PageCacheFixture(warm: true);
+      final source = FakeRemoteConversationSource(window: null);
+      await tester.pumpWidget(
+        _hostWithCache(
+          source,
+          deviceId: 'pc-1',
+          cache: cache.cache,
+          sync: _FakeSyncLifecycle(),
+        ),
+      );
+      await _settleCache(tester);
+
+      expect(find.text('正在读取会话'), findsNothing);
+      expect(find.textContaining('你好'), findsWidgets);
+      expect(
+        find.byKey(const ValueKey('remote-conversation-cache-syncing')),
+        findsOneWidget,
+      );
+      expect(cache.reads, greaterThan(0));
+    });
+
+    testWidgets('缓存为空时仍显示原读取空态', (tester) async {
+      final cache = _PageCacheFixture();
+      final source = FakeRemoteConversationSource(window: null);
+      await tester.pumpWidget(
+        _hostWithCache(
+          source,
+          deviceId: 'pc-1',
+          cache: cache.cache,
+          sync: _FakeSyncLifecycle(),
+        ),
+      );
+      await _settleCache(tester);
+
+      expect(find.text('正在读取会话'), findsOneWidget);
+    });
+
+    testWidgets('收到实时快照后覆盖缓存时间线并写回缓存', (tester) async {
+      final cache = _PageCacheFixture();
+      final source = FakeRemoteConversationSource(window: null);
+      await tester.pumpWidget(
+        _hostWithCache(
+          source,
+          deviceId: 'pc-1',
+          cache: cache.cache,
+          sync: _FakeSyncLifecycle(),
+        ),
+      );
+      await _settleCache(tester);
+      expect(cache.saves, 0);
+
+      source.emit(RemoteConversationSnapshot(_window(conversationEvents())));
+      await tester.pump();
+      expect(
+        find.byKey(const ValueKey('remote-conversation-cache-syncing')),
+        findsNothing,
+      );
+      await tester.pump(const Duration(seconds: 2));
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await tester.pump();
+      expect(cache.saves, greaterThan(0));
+    });
+
+    testWidgets('后台同步服务随连接 ready 启动、终止停止、页面销毁停止', (tester) async {
+      final sync = _FakeSyncLifecycle();
+      final source = FakeRemoteConversationSource(window: _window(conversationEvents()));
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: pocketTheme(Brightness.light),
+          home: RemoteDshConversationPage(
+            source: source,
+            deviceName: '客厅的电脑',
+            projectName: 'Pocket',
+            title: '修复登录',
+            syncLifecycle: sync,
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(sync.starts, 1);
+
+      source.setPhase(RemoteConnectionPhase.failed, lastError: '断线');
+      await tester.pump();
+      expect(sync.stops, 1);
+
+      source.setPhase(RemoteConnectionPhase.ready);
+      await tester.pump();
+      expect(sync.starts, 2);
+
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump();
+      expect(sync.stops, 2);
+    });
+
+    testWidgets('MethodChannelRemoteSyncLifecycle 调用 remote.sync.start/stop 且幂等', (
+      tester,
+    ) async {
+      const channel = MethodChannel('remote-sync-lifecycle-test');
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      final calls = <String>[];
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        calls.add(call.method);
+        return true;
+      });
+      addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+      final lifecycle = MethodChannelRemoteSyncLifecycle(channel: channel);
+      await lifecycle.start();
+      await lifecycle.start();
+      await lifecycle.stop();
+      await lifecycle.stop();
+      expect(calls, <String>['remote.sync.start', 'remote.sync.stop']);
+    });
+  });
+
   group('工作状态与排队消息', () {
     testWidgets('进入正在工作的会话时由 tasks.session 补出工作状态', (tester) async {
       final fixture = _tasksFixture(status: 'running');
@@ -2882,6 +3002,105 @@ Future<void> _flushTasks(WidgetTester tester) async {
   await tester.runAsync(() => Future<void>.delayed(Duration.zero));
   await tester.pump();
   await tester.pump(const Duration(milliseconds: 50));
+}
+
+/// 会话页缓存测试用的假原生通道：按 deviceId 存一份文档并记录读写次数。
+class _PageCacheFixture {
+  _PageCacheFixture({bool warm = false}) {
+    if (warm) stored['pc-1'] = _cacheDocument();
+    _messenger.setMockMethodCallHandler(channel, (call) async {
+      final arguments = call.arguments as Map<Object?, Object?>;
+      final deviceId = arguments['deviceId'] as String;
+      switch (call.method) {
+        case 'remote.conversation.read':
+          reads++;
+          return stored[deviceId];
+        case 'remote.conversation.save':
+          saves++;
+          stored[deviceId] = arguments['value'] as String;
+          return null;
+        default:
+          throw MissingPluginException();
+      }
+    });
+    addTearDown(() => _messenger.setMockMethodCallHandler(channel, null));
+  }
+
+  static final TestDefaultBinaryMessenger _messenger =
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+  static int _instances = 0;
+
+  final MethodChannel channel = MethodChannel(
+    'remote-conversation-page-cache-${_instances++}',
+  );
+  final Map<String, String> stored = <String, String>{};
+  late final RemoteConversationCache cache = RemoteConversationCache(
+    channel: channel,
+  );
+  int reads = 0;
+  int saves = 0;
+}
+
+/// 一份会话缓存文档（version 1，单条 s-1 会话）。
+String _cacheDocument() {
+  final events = conversationEvents();
+  return jsonEncode(<String, dynamic>{
+    'version': 1,
+    'sessions': <Map<String, dynamic>>[
+      <String, dynamic>{
+        'sessionId': 's-1',
+        'title': '缓存标题',
+        'throughSeq': events.last['seq'],
+        'firstSeq': events.first['seq'],
+        'hasMore': false,
+        'updatedAt': 1,
+        'events': events,
+      },
+    ],
+  });
+}
+
+/// 记录 start/stop 次数的假后台同步实现。
+class _FakeSyncLifecycle implements RemoteSyncLifecycle {
+  int starts = 0;
+  int stops = 0;
+
+  @override
+  Future<void> start() async {
+    starts++;
+  }
+
+  @override
+  Future<void> stop() async {
+    stops++;
+  }
+}
+
+/// 带缓存与同步注入的会话页。
+Widget _hostWithCache(
+  RemoteConversationSource source, {
+  required String? deviceId,
+  required RemoteConversationCache cache,
+  required RemoteSyncLifecycle sync,
+}) => MaterialApp(
+  theme: pocketTheme(Brightness.light),
+  home: RemoteDshConversationPage(
+    source: source,
+    deviceName: '客厅的电脑',
+    projectName: 'Pocket',
+    title: '修复登录',
+    deviceId: deviceId,
+    conversationCache: cache,
+    syncLifecycle: sync,
+  ),
+);
+
+/// 让缓存读取/节流写回这类真实异步完成并渲染一帧。
+Future<void> _settleCache(WidgetTester tester) async {
+  await tester.pump();
+  await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 100));
 }
 
 /// 把会话页推到一个首页之上，用来验证「归档成功后返回上一页」与目的地路由名。

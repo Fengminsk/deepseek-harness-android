@@ -43,6 +43,12 @@
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="User-started local AI agent tasks and optional local Web interface" />
         </service>
+        <!-- 主进程前台服务：App 退后台时保持远程连接，任务/审批通知才能推送。 -->
+        <service android:name=".RemoteSyncService" android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keeps the remote DSH connection alive while backgrounded so task completion and approval notifications can be delivered" />
+        </service>
         <service android:name=".IsolatedWorkerService" android:exported="false"
             android:isolatedProcess="true" android:process=":ptc_isolated" />
         <service android:name=".IsolatedGuestService" android:exported="false"

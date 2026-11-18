@@ -31,6 +31,16 @@ private object LocalPreferenceIo {
 
 /** Flutter talks to the service over Binder; no HTTP listener is needed by the App. */
 class MainActivity : FlutterActivity() {
+    companion object {
+        /** 主界面/FlutterEngine 是否存活；后台同步服务据此避免「空转」的常驻通知。 */
+        @Volatile
+        var uiAlive: Boolean = false
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        uiAlive = true
+    }
     private var service: Messenger? = null
     private var events: EventChannel.EventSink? = null
     private var documentPreviews: DocumentPreviewFactory? = null
@@ -554,6 +564,46 @@ class MainActivity : FlutterActivity() {
                     }
                     null
                 }
+                // 会话缓存：按设备存一份有界 JSON（设备内最多 10 个会话，Dart 侧淘汰，
+                // 原生只做大小/合法性校验，防止一个坏 payload 让之后的冷启动失败）。
+                "remote.conversation.read" -> LocalPreferenceIo.call(result, "remote-conversation") {
+                    val deviceId = call.argument<String>("deviceId")
+                    require(deviceId != null && deviceId.isNotBlank() && deviceId.length <= 512) {
+                        "Remote conversation cache needs a valid deviceId"
+                    }
+                    preferenceContext.getSharedPreferences("remote-conversation", MODE_PRIVATE)
+                        .getString("device:$deviceId", null)
+                }
+                "remote.conversation.save" -> LocalPreferenceIo.call(result, "remote-conversation") {
+                    val deviceId = call.argument<String>("deviceId")
+                    require(deviceId != null && deviceId.isNotBlank() && deviceId.length <= 512) {
+                        "Remote conversation cache needs a valid deviceId"
+                    }
+                    val raw = call.argument<String>("value") ?: ""
+                    require(raw.toByteArray(Charsets.UTF_8).size <= 2097152) {
+                        "Remote conversation cache too large"
+                    }
+                    JSONObject(raw)
+                    check(preferenceContext.getSharedPreferences("remote-conversation", MODE_PRIVATE)
+                        .edit().putString("device:$deviceId", raw).commit()) {
+                        "Remote conversation cache could not be saved"
+                    }
+                    null
+                }
+                // 后台同步前台服务：仅由 Dart 在远程连接 ready 且页面仍打开时启动。
+                "remote.sync.start" -> try {
+                    RemoteSyncService.start(this@MainActivity)
+                    result.success(true)
+                } catch (failure: Exception) {
+                    result.error("remote-sync-start", failure.message ?: "无法启动后台同步", null)
+                }
+                "remote.sync.stop" -> try {
+                    RemoteSyncService.stop(this@MainActivity)
+                    result.success(false)
+                } catch (failure: Exception) {
+                    result.error("remote-sync-stop", failure.message ?: "无法停止后台同步", null)
+                }
+                "remote.sync.status" -> result.success(RemoteSyncService.running)
                 "network.proxy.test" -> try {
                     NetworkProxyPreferences.testAsync(preferenceContext, JSONObject(call.arguments as String), result)
                 } catch (failure: Exception) { result.error("proxy-test", failure.message, null) }
@@ -1033,6 +1083,10 @@ class MainActivity : FlutterActivity() {
         transfers.onActivityResult(requestCode, resultCode, data)
     }
     override fun onDestroy() {
+        uiAlive = false
+        // 主进程前台服务随界面销毁一起停掉：Dart isolate 已不存在，留着服务只会
+        // 留下一条永远不再同步的常驻通知。
+        stopService(Intent(this@MainActivity, RemoteSyncService::class.java))
         documentPreviews?.close()
         documentPreviews = null
         bindingHandshake.close()

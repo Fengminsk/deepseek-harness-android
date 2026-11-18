@@ -1,0 +1,134 @@
+// 会话本地缓存：按设备隔离、版本/损坏降级、条数与大小上限淘汰。
+import 'dart:convert';
+
+import 'package:dsh_android/remote_conversation_cache.dart';
+import 'package:dsh_android/remote_conversation_source.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  const channel = MethodChannel('remote-conversation-cache-test');
+  final messenger =
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+
+  late Map<String, String> stored;
+  var saves = 0;
+
+  setUp(() {
+    stored = <String, String>{};
+    saves = 0;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      final arguments = call.arguments as Map<Object?, Object?>;
+      final deviceId = arguments['deviceId'] as String;
+      switch (call.method) {
+        case 'remote.conversation.read':
+          return stored[deviceId];
+        case 'remote.conversation.save':
+          stored[deviceId] = arguments['value'] as String;
+          saves++;
+          return null;
+        default:
+          throw MissingPluginException();
+      }
+    });
+  });
+
+  tearDown(() => messenger.setMockMethodCallHandler(channel, null));
+
+  RemoteConversationWindow window(
+    List<int> seqs, {
+    bool hasMore = false,
+  }) => RemoteConversationWindow(
+    events: <Map<String, dynamic>>[
+      for (final seq in seqs)
+        <String, dynamic>{'seq': seq, 'kind': 'message', 'text': 'event-$seq'},
+    ],
+    throughSeq: seqs.isEmpty ? 0 : seqs.last,
+    firstSeq: seqs.isEmpty ? null : seqs.first,
+    hasMore: hasMore,
+  );
+
+  test('caches and restores one conversation window per device', () async {
+    const cache = RemoteConversationCache(channel: channel);
+    await cache.save(
+      deviceId: 'pc-1',
+      sessionId: 's-1',
+      window: window(<int>[1, 2, 3], hasMore: true),
+      title: '修复登录',
+    );
+    await cache.save(
+      deviceId: 'pc-1',
+      sessionId: 's-2',
+      window: window(<int>[10]),
+    );
+    final restored = await cache.read('pc-1', 's-1');
+    expect(restored, isNotNull);
+    expect(restored!.title, '修复登录');
+    expect(restored.window.throughSeq, 3);
+    expect(restored.window.firstSeq, 1);
+    expect(restored.window.hasMore, isTrue);
+    expect(restored.window.events.map((event) => event['seq']), <int>[1, 2, 3]);
+    final other = await cache.read('pc-1', 's-2');
+    expect(other!.window.events.single['seq'], 10);
+  });
+
+  test('keeps devices isolated', () async {
+    const cache = RemoteConversationCache(channel: channel);
+    await cache.save(
+      deviceId: 'pc-1',
+      sessionId: 's-1',
+      window: window(<int>[1]),
+    );
+    expect(await cache.read('pc-2', 's-1'), isNull);
+    expect(await cache.read('pc-1', 's-1'), isNotNull);
+  });
+
+  test('damaged or unknown-version documents degrade to empty', () async {
+    const cache = RemoteConversationCache(channel: channel);
+    stored['pc-1'] = '{bad json';
+    expect(await cache.read('pc-1', 's-1'), isNull);
+    stored['pc-1'] = jsonEncode(<String, dynamic>{
+      'version': 99,
+      'sessions': <Object?>[],
+    });
+    expect(await cache.read('pc-1', 's-1'), isNull);
+  });
+
+  test('evicts least recently saved sessions beyond the per-device limit', () async {
+    const cache = RemoteConversationCache(channel: channel);
+    for (var index = 0; index < RemoteConversationCache.maxSessionsPerDevice + 1; index++) {
+      await cache.save(
+        deviceId: 'pc-1',
+        sessionId: 's-$index',
+        window: window(<int>[index]),
+      );
+    }
+    expect(await cache.read('pc-1', 's-0'), isNull, reason: '最早的会话被淘汰');
+    for (var index = 1;
+        index <= RemoteConversationCache.maxSessionsPerDevice;
+        index++) {
+      expect(await cache.read('pc-1', 's-$index'), isNotNull);
+    }
+    expect(saves, RemoteConversationCache.maxSessionsPerDevice + 1);
+  });
+
+  test('trims oversized windows to the newest events that still fit', () async {
+    const cache = RemoteConversationCache(channel: channel);
+    final oversized = RemoteConversationWindow(
+      events: <Map<String, dynamic>>[
+        <String, dynamic>{'seq': 1, 'text': 'x' * 300000},
+        <String, dynamic>{'seq': 2, 'text': 'tail'},
+      ],
+      throughSeq: 2,
+      firstSeq: 1,
+    );
+    await cache.save(deviceId: 'pc-1', sessionId: 's-1', window: oversized);
+    final restored = await cache.read('pc-1', 's-1');
+    expect(restored, isNotNull);
+    expect(restored!.window.events.map((event) => event['seq']), <int>[2]);
+    expect(utf8.encode(stored['pc-1']!).length, lessThanOrEqualTo(
+      RemoteConversationCache.maxDeviceBytes,
+    ));
+  });
+}
