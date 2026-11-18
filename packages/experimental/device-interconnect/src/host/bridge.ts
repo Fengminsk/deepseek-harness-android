@@ -16,12 +16,13 @@ import { existsSync } from 'node:fs'
 import { dirname } from 'node:path'
 import type {
   ControlPlaneState, DeviceInterconnectConfig, DeviceInterconnectView, Diagnostic, PairingView, ProvisionRequest,
-  ProvisionStep, RuntimeState, TunnelAccount, TunnelFrpcInfo, TunnelInfo, TunnelNodeInfo, TunnelReadiness,
-  TunnelSettings, TunnelSettingsView, TunnelState,
+  ProvisionStep, RemoteHostMode, RuntimeState, TunnelAccount, TunnelFrpcInfo, TunnelInfo, TunnelNodeInfo,
+  TunnelReadiness, TunnelSettings, TunnelSettingsView, TunnelState,
 } from '../types.ts'
 import { QR_ROUTE } from '../api.ts'
 import { ConfigStore, ConfigValidationError, isDeviceId } from './config.ts'
 import { ControlPlaneError, type ControlPlane } from './control-plane.ts'
+import type { EmbeddedHostHandle, EmbeddedHostLoader } from './embedded.ts'
 import { downloadFrpc as downloadFrpcBinary } from './frpc-download.ts'
 import { createTcpLatencyProbe, type LatencySample, type LatencyTarget } from './node-latency.ts'
 import { overlayPath, writeOverlay } from './overlay.ts'
@@ -77,6 +78,11 @@ export interface BridgeOptions {
   readonly restartDelaysMs?: readonly number[]
   /** A restarted child is considered healthy after this long; defaults to 10s. */
   readonly restartHealthyMs?: number
+  /**
+   * Experimental embedded-host loader. When absent, the `embedded` runner mode
+   * reports `embedded-host-unavailable` and falls back to the child process.
+   */
+  readonly embeddedHost?: EmbeddedHostLoader
   /** Lifecycle log sink. */
   readonly logger?: {
     info(message: string, ...rest: unknown[]): void
@@ -128,8 +134,19 @@ export class Bridge {
   private readonly arch: string
   private readonly restartDelaysMs: readonly number[]
   private readonly restartHealthyMs: number
+  private readonly embeddedHost: EmbeddedHostLoader | undefined
   private readonly hostRecovery: ChildRecovery = Bridge.recovery()
   private readonly tunnelRecovery: ChildRecovery = Bridge.recovery()
+  /** Which mode the remote host is actually running in; child until proven otherwise. */
+  private hostMode: RemoteHostMode = 'child'
+  /** Live embedded generation; absent while the child mode runs. */
+  private embeddedHandle: EmbeddedHostHandle | undefined
+  /** Last embedded failure reason, kept for the page after a fallback. */
+  private embeddedReason: string | undefined
+  /** Whether the active child process is a fallback from a failed embedded load. */
+  private fallbackFromEmbedded = false
+  /** One-shot problem announced after falling back from embedded mode. */
+  private embeddedProblem: Diagnostic | undefined
   /** Intent state: true when the child is supposed to run (unexpected exit means restart). */
   private hostDesired = false
   private tunnelDesired = false
@@ -176,6 +193,7 @@ export class Bridge {
     this.latencyProbe = options.latencyProbe ?? createTcpLatencyProbe()
     this.restartDelaysMs = options.restartDelaysMs ?? DEFAULT_RESTART_DELAYS_MS
     this.restartHealthyMs = options.restartHealthyMs ?? DEFAULT_RESTART_HEALTHY_MS
+    this.embeddedHost = options.embeddedHost
     this.activationProblems = this.store.problems().map(message => ({ code: 'config-unreadable', message }))
     this.supervisor.on('exit', () => { this.onChildExit('host') })
     this.tunnelSupervisor.on('exit', () => { this.onChildExit('tunnel') })
@@ -493,6 +511,7 @@ export class Bridge {
     const pending = this.tunnelStartupTask
     if (pending !== undefined) await pending
     await this.tunnelSupervisor.dispose()
+    await this.stopEmbedded()
     await this.supervisor.dispose()
   }
 
@@ -546,6 +565,11 @@ export class Bridge {
     const config = this.store.current()
     try {
       if (kind === 'host') {
+        if (this.hostMode === 'embedded') {
+          await this.stopEmbedded()
+          await this.startEmbeddedOrFallback(config)
+          return
+        }
         if (!config.enabled || !this.runnerReadiness(config).ready) {
           this.hostDesired = false
           info.attempts = 0
@@ -567,7 +591,7 @@ export class Bridge {
         if (this.tunnelWanted(config)) this.deferTunnelStart()
         return
       }
-      if (!this.tunnelWanted(config) || !this.supervisor.status().running) {
+      if (!this.tunnelWanted(config) || !this.hostRunning()) {
         this.tunnelDesired = false
         info.attempts = 0
         return
@@ -627,20 +651,38 @@ export class Bridge {
     }
   }
 
-  /** Start, stop, or restart both children so the current configuration is in force. */
+  /** Start, stop, or restart the configured host mode and its tunnel dependency. */
   private async apply(restart: boolean): Promise<void> {
     const config = this.store.current()
-    // A restarted or disabled remote host invalidates the tunnel mapping, so the
-    // tunnel always stops first; the callers start it again once the host is ready.
-    if (restart || !this.tunnelWanted(config)) {
+    const wanted = config.runner.mode
+    const modeChanged = this.hostMode !== wanted
+    const hostRestart = restart || modeChanged
+    // A restarted host or a mode switch invalidates the tunnel mapping; stop it first.
+    if (hostRestart || !this.tunnelWanted(config)) {
       this.tunnelDesired = false
       this.cancelTunnelStartup()
       await this.stopTunnelChild()
     }
     if (!config.enabled) {
       this.hostDesired = false
-      await this.stopHostChild()
+      await this.stopHost()
       return
+    }
+    if (wanted === 'embedded') {
+      // Exactly one host generation: stop the child before loading into this process.
+      if (hostRestart) {
+        this.hostDesired = false
+        await this.stopHost()
+      }
+      if (this.hostMode !== 'embedded' || this.embeddedHandle === undefined) {
+        await this.startEmbeddedOrFallback(config)
+      }
+      return
+    }
+    // Child mode: dispose an embedded generation before binding the child ports.
+    if (this.hostMode === 'embedded' || this.embeddedHandle !== undefined) {
+      this.hostDesired = false
+      await this.stopEmbedded()
     }
     const readiness = this.runnerReadiness(config)
     if (!readiness.ready) {
@@ -649,15 +691,108 @@ export class Bridge {
     }
     await this.applyOverlay(config)
     const command = this.launchCommand(config)
-    if (restart) {
+    if (hostRestart) {
       this.hostDesired = true
       await this.restartHostChild(command)
+      this.hostMode = 'child'
       if (this.supervisor.status().running) this.scheduleHealthyReset('host')
       return
     }
     if (!this.supervisor.status().running) this.supervisor.start(command)
+    this.hostMode = 'child'
     this.hostDesired = this.supervisor.status().running
     if (this.hostDesired) this.scheduleHealthyReset('host')
+  }
+
+  /**
+   * Load the embedded host, or fall back to the supervised child on any failure.
+   * Never throws: a failed load must not disable the desktop client.
+   * @param config - configuration in force.
+   */
+  private async startEmbeddedOrFallback(config: DeviceInterconnectConfig): Promise<void> {
+    if (this.embeddedHost === undefined) {
+      await this.embeddedFallback(config, '插件没有提供内嵌宿主加载器。')
+      return
+    }
+    try {
+      const effective = withTunnelOrigin(config)
+      const handle = await this.embeddedHost.start({
+        repoDir: config.runner.repoDir,
+        host: effective.host,
+        pairing: config.pairing,
+      })
+      this.embeddedHandle = handle
+      this.hostMode = 'embedded'
+      this.hostDesired = true
+      this.embeddedReason = undefined
+      this.embeddedProblem = undefined
+      this.fallbackFromEmbedded = false
+      this.logger.info('device-interconnect: embedded remote host loaded')
+    } catch (error) {
+      await this.embeddedFallback(config, error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  /**
+   * Fall back to the child process after an embedded load failure.
+   * @param config - configuration in force.
+   * @param reason - readable embedded failure reason.
+   */
+  private async embeddedFallback(config: DeviceInterconnectConfig, reason: string): Promise<void> {
+    await this.stopEmbedded()
+    this.embeddedReason = reason
+    this.fallbackFromEmbedded = true
+    this.embeddedProblem = {
+      code: 'embedded-host-unavailable',
+      message: `内嵌远程宿主不可用，已回退子进程：${reason}`,
+    }
+    this.logger.warn('device-interconnect: embedded remote host unavailable; falling back to the child: %s', reason)
+    const readiness = this.runnerReadiness(config)
+    this.hostMode = 'child'
+    if (!readiness.ready) {
+      this.hostDesired = false
+      return
+    }
+    await this.applyOverlay(config)
+    if (!this.supervisor.status().running) this.supervisor.start(this.launchCommand(config))
+    this.hostDesired = this.supervisor.status().running
+    if (this.hostDesired) this.scheduleHealthyReset('host')
+  }
+
+  /** Whether the active host generation is running, in either mode. */
+  private hostRunning(): boolean {
+    if (this.hostMode === 'embedded') return this.embeddedHandle?.status.loaded === true
+    return this.supervisor.status().running
+  }
+
+  /** Stop whichever host generation is active and leave the bridge in child mode. */
+  private async stopHost(): Promise<void> {
+    await this.stopEmbedded()
+    await this.stopHostChild()
+    this.hostMode = 'child'
+    this.hostDesired = false
+  }
+
+  /** Dispose the embedded generation; no-op while the child mode is active. */
+  private async stopEmbedded(): Promise<void> {
+    const handle = this.embeddedHandle
+    this.embeddedHandle = undefined
+    if (this.hostMode === 'embedded') this.hostMode = 'child'
+    if (handle === undefined) return
+    try {
+      await handle.stop()
+    } catch (error) {
+      this.logger.warn('device-interconnect: embedded host disposal failed: %s', describeError(error))
+    }
+  }
+
+  /** Project the embedded state the page shows on the child card. */
+  private embeddedView(): NonNullable<RuntimeState['child']['embedded']> {
+    return {
+      loaded: this.hostMode === 'embedded' && this.embeddedHandle?.status.loaded === true,
+      fallbackFromEmbedded: this.fallbackFromEmbedded,
+      ...(this.embeddedReason === undefined ? {} : { reason: this.embeddedReason }),
+    }
   }
 
   /** Write the generated overlay, recording the origin the child will announce. */
@@ -673,9 +808,15 @@ export class Bridge {
     const controlPlane: RuntimeState['controlPlane'] = read.ok
       ? { reachable: true, ...(cpState?.host === undefined ? {} : { host: cpState.host }) }
       : { reachable: false, error: read.error }
+    const childStatus = this.supervisor.status()
     return {
       config: this.view(config),
-      child: this.supervisor.status(),
+      child: {
+        ...childStatus,
+        running: this.hostRunning(),
+        mode: this.hostMode,
+        embedded: this.embeddedView(),
+      },
       tunnel: this.tunnelState(config),
       controlPlane,
       pairing: this.pairingView(config, cpState),
@@ -685,7 +826,11 @@ export class Bridge {
         host: this.recoveryView(this.hostRecovery),
         tunnel: this.recoveryView(this.tunnelRecovery),
       },
-      problems: [...this.activationProblems, ...this.recoveryProblems()],
+      problems: [
+        ...this.activationProblems,
+        ...(this.embeddedProblem === undefined ? [] : [this.embeddedProblem]),
+        ...this.recoveryProblems(),
+      ],
     }
   }
 
@@ -852,7 +997,7 @@ export class Bridge {
   private deferTunnelStart(): void {
     if (this.disposed) return
     const config = this.store.current()
-    if (!this.tunnelWanted(config) || !this.supervisor.status().running) return
+    if (!this.tunnelWanted(config) || !this.hostRunning()) return
     const { task } = this.startTunnelStartup(signal => this.startTunnelWhenReady(signal))
     void task.catch((error: unknown) => {
       this.logger.warn('device-interconnect: deferred frpc tunnel start failed: %s', describeError(error))
@@ -900,7 +1045,7 @@ export class Bridge {
       )
     }
     if (!config.enabled) throw new TunnelError('tunnel-host-not-running', 409, '远程宿主开关未开启，请先启用远程宿主。')
-    if (!this.supervisor.status().running) {
+    if (!this.hostRunning()) {
       throw new TunnelError('tunnel-host-not-running', 409, '远程宿主未运行，请先启用远程宿主后再启动隧道。')
     }
     await this.syncHostOrigin(config)
@@ -916,9 +1061,17 @@ export class Bridge {
 
   /** Restart the remote host when the announced origin differs from the overlay it runs. */
   private async syncHostOrigin(config: DeviceInterconnectConfig): Promise<void> {
-    if (!this.supervisor.status().running) return
+    if (!this.hostRunning()) return
     const effective = withTunnelOrigin(config)
     if (this.appliedPublicOrigin === effective.host.publicOrigin) return
+    if (this.hostMode === 'embedded') {
+      this.appliedPublicOrigin = effective.host.publicOrigin
+      this.embeddedReason = undefined
+      await this.stopEmbedded()
+      await this.startEmbeddedOrFallback(config)
+      this.logger.info('device-interconnect: embedded remote host reloaded to apply the tunnel public origin')
+      return
+    }
     await this.applyOverlay(config)
     this.hostDesired = true
     await this.restartHostChild(this.launchCommand(config))
@@ -948,7 +1101,7 @@ export class Bridge {
    * @returns whether the host is ready to accept a tunnel mapping.
    */
   private async probeHostReady(config: DeviceInterconnectConfig): Promise<boolean> {
-    if (!this.supervisor.status().running) return false
+    if (!this.hostRunning()) return false
     // Without the local pairing page there is no control plane to ask; the
     // running child is the strongest fact available.
     if (!config.host.pagesEnabled) return true

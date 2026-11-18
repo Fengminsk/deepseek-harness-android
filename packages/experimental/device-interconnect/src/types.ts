@@ -7,7 +7,33 @@
  */
 
 /** How the supervised remote host child process is launched. */
+/** How the remote host runs relative to the DSH Host process. */
+export type RemoteHostMode = 'child' | 'embedded'
+
+/** One child state as the page reads it, including which host mode produced it. */
+export interface RuntimeChildState extends ChildState {
+  /** Which remote-host mode the bridge is currently running. */
+  readonly mode?: RemoteHostMode
+  /** Embedded-mode facts; present once the bridge attempted the embedded host. */
+  readonly embedded?: EmbeddedHostState
+}
+
+/** Embedded-mode load facts reported to the page. */
+export interface EmbeddedHostState {
+  /** Whether the embedded remote host is loaded and serving. */
+  readonly loaded: boolean
+  /** Whether the bridge fell back to the child process after a failed load. */
+  readonly fallbackFromEmbedded: boolean
+  /** Readable reason for the last failed load. */
+  readonly reason?: string
+}
+
 export interface RunnerConfig {
+  /**
+   * How the remote host runs: the stable supervised child (default) or the
+   * embedded experimental mode inside this DSH Host process.
+   */
+  readonly mode: RemoteHostMode
   /** Node.js executable that runs the launcher. */
   readonly nodePath: string
   /** `pnpm.mjs` executed by that Node.js executable. */
@@ -404,7 +430,7 @@ export interface RuntimeState {
   /** The persisted configuration in force, with the write-only access key removed. */
   readonly config: DeviceInterconnectView
   /** Supervised child state and its log tail. */
-  readonly child: ChildState
+  readonly child: RuntimeChildState
   /** The managed tunnel child state and the origin derived from its settings. */
   readonly tunnel: TunnelState
   /** Whether the loopback control API answered, plus host facts when it did. */

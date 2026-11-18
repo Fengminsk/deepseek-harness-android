@@ -133,6 +133,7 @@ describe('defaults and inference', () => {
       tunnelId: null,
     })
     expect(config.runner).toEqual({
+      mode: 'child',
       nodePath: 'C:\\nodejs\\node.exe',
       pnpmPath: '',
       repoDir: '',
@@ -211,6 +212,16 @@ describe('validation', () => {
     })
   })
 
+  it('accepts embedded mode and defaults old documents to the child process', () => {
+    const document = validDocument()
+    const embedded = normalizeConfig({ ...document, runner: { ...document['runner'] as object, mode: 'embedded' } }, fallback)
+    expect(embedded.ok).toBe(true)
+    if (embedded.ok) expect(embedded.config.runner.mode).toBe('embedded')
+    const legacy = normalizeConfig({ ...document, runner: { ...document['runner'] as object, mode: undefined } }, fallback)
+    expect(legacy.ok).toBe(true)
+    if (legacy.ok) expect(legacy.config.runner.mode).toBe('child')
+  })
+
   it('fills absent fields from the fallback so a bundle row can seed only enabled', () => {
     const read = normalizeConfig({ enabled: true }, fallback)
     expect(read.ok).toBe(true)
@@ -225,7 +236,7 @@ describe('validation', () => {
     const read = normalizeConfig({
       ...document,
       enabled: 1,
-      runner: { ...document['runner'] as object, profile: '../escape' },
+      runner: { ...document['runner'] as object, profile: '../escape', mode: 'turbo' },
       host: {
         ...document['host'] as object,
         port: 70_000,
@@ -249,6 +260,7 @@ describe('validation', () => {
     expect(read.problems).toEqual(expect.arrayContaining([
       'enabled 必须是 true 或 false。',
       'runner.profile 只能包含字母、数字、点、下划线和连字符。',
+      'runner.mode 只能是 child 或 embedded。',
       'host.port 必须是 1–65535 的整数。',
       'host.host 必须是一个非空、不含首尾空白的地址。',
       'host.publicOrigin 必须是 wss://主机名[:端口] 形式的地址，可留空。',

@@ -43,8 +43,13 @@ The plugin launches the remote host as `<node> <pnpm.mjs> dsh --profile <profile
 | `profile` | DSH profile the child launches | `remote-host` |
 | `patchPath` | Extra `--patch` applied after the generated overlay | empty |
 | `dshHome` | `DSH_HOME` given to the child | empty inherits the DSH host process's value |
+| `mode` | `child` (stable child process) or `embedded` (experimental: loaded inside this DSH host process) | `child` |
 
 An empty or missing path is reported on the page, and the switch does not spawn a broken command. The generated overlay is rewritten on every child start from the listener settings, so the remote host never runs with a stale configuration.
+
+#### Embedded mode (experimental)
+
+Selecting `embedded` loads the repository's `android-runtime` and `remote-host` plugins into this DSH host process with `ctx.plugin` instead of spawning a child. The runtime sees the desktop agents and sessions, so the remote host answers for the same process that owns the sessions; no profile, bundle, or `cordis.patch.yml` file is changed. The listener and pairing settings are passed directly to the loaded plugin. Any import or activation failure (missing build output, changed plugin interface after a DSH upgrade, or a port already in use) is caught: the bridge records an `embedded-host-unavailable` problem, falls back to the child process, and the desktop client keeps running. Switching back to `child` disposes the embedded generation before the child binds the ports. `child` remains the default.
 
 ### Listener and pairing settings
 
@@ -166,6 +171,7 @@ The bundle adds no request content, so it neither grows nor invalidates a cached
 - **The SakuraFrp access key is stored in plain text** — the bridge never serves it back and it is not logged, but `$DSH_HOME/device-interconnect/config.json` holds it in cleartext for other local processes to read. Accepted under the same local-read threat as the pairing configuration.
 - **frpc is downloaded only on an explicit click** — the one-click setup may fetch the SakuraFrp frpc build from `https://getfr.sh/d/…`, falling back to the versioned Nyatwork CDN mirror when that service is unreachable, and reusing an installed binary that passes `frpc -V`; a mismatch asks for a manual path. Manual mode never downloads.
 - **The one-click setup depends on a third-party API** — SakuraFrp API v4, its node flags, and the account's tunnel quota are external contracts. An API or quota change fails the setup with a readable reason, and the saved configuration plus the retry path stay usable.
+- **Embedded mode is experimental and repo-dependent** — it dynamically imports the built `apps/android/runtime/index.mjs` and `apps/remote-host/lib/index.js` from the configured checkout inside the DSH host process; a missing build or a changed plugin interface after a DSH upgrade makes the bridge fall back to the child process with a visible problem. Embedded listeners share the host process, so a hung embedded plugin can only be recovered by disabling or switching the mode, not by a supervisor restart.
 - **The tunnel-derived origin overrides the manual one** — while a public address is configured, the manual `publicOrigin` field is ignored and the derived `wss://<node-domain>:<port>` is announced. Clearing the public address restores the manual origin on the next save or start.
 
 <a id="dev-note"></a>

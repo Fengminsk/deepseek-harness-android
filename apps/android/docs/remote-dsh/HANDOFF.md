@@ -1101,6 +1101,15 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
 
 ## 9. 变更日志（append-only，最新在最上面）
 
+### 2026-11-18 15:52 · lead（内嵌远程宿主模式：desktop 同进程动态加载 + 失败自动回退）
+
+- 用户批准方案 A，要求不影响 DSH PC 客户端/升级不翻车/安装方便/安全可回退。
+- 插件新增 `runner.mode: 'child'|'embedded'`（默认 child，旧配置兼容）。embedded 由插件在**自己的 Cordis context** 动态 import `<repoDir>/apps/android/runtime/index.mjs`（platform:'desktop'、attachmentFileMaxBytes 2GiB）与 `<repoDir>/apps/remote-host/lib/index.js`（沿用插件 host/pairing 配置），`ctx.plugin` 加载并等待 `appRuntimeFacade`/`remoteHost` 服务；与 desktop 共享 agents/sessions → 消除跨进程写句柄与 desktop 任务通知缺失。
+- 安全：不改 desktop profile/bundle/核心包；动态 import 失败或激活失败 → 记录 `embedded-host-unavailable` problem 并自动回退 child；模式切换先停旧宿主/释放 4777/4780 再起新宿主；卸载/切回逆序 dispose；同进程运行期异常无 supervisor 重启（只能切回 child），已写入已知限制。
+- UI：运行器高级区新增模式选择与回退说明，status 显示 mode/embedded 信息；client controller/locale 同步。
+- 验证：插件 13 文件 **267 tests**、typecheck 5/5、build:check 2/2、bundle 通过（host 155KB/client 196KB）；build:artifacts 本环境仍卡 Host Typert。
+- 下一步：lead 手动切换到 embedded 做真机验收（桌面 UI、手机发送到 desktop 活动会话、通知、切回），失败可回退。
+- **提交**：见本次 commit。
 ### 2026-11-18 15:33 · lead（手机端从日志推导电脑正在执行并显示工具进度，已推送真机）
 
 - 用户反馈：PC 在「正在调用工具 · wait_agent」，手机却显示「工作异常结束」。

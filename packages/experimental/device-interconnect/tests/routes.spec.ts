@@ -22,7 +22,7 @@ import type { DeviceInterconnectView, RuntimeState } from '../src/types.ts'
 function snapshot(overrides: Partial<RuntimeState> = {}): RuntimeState {
   const config: DeviceInterconnectView = {
     enabled: true,
-    runner: { nodePath: 'n', pnpmPath: 'p', repoDir: 'r', profile: 'remote-host', patchPath: '', dshHome: '' },
+    runner: { mode: 'child', nodePath: 'n', pnpmPath: 'p', repoDir: 'r', profile: 'remote-host', patchPath: '', dshHome: '' },
     host: {
       port: 4_777, host: '0.0.0.0', publicHost: '', publicOrigin: '',
       discoveryEnabled: true, discoveryPort: 4_778, pagesEnabled: true, pagesPort: 4_780,
