@@ -1101,6 +1101,13 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
 
 ## 9. 变更日志（append-only，最新在最上面）
 
+### 2026-11-18 13:46 · lead（App 远程会话页：工作状态条 + 排队消息同步/删除，已推送真机）
+
+- 用户反馈：点进正在工作的远程会话看不到工作状态；待发送/待执行的排队消息没有同步。
+- 协议：宿主已有 `tasks.session`（live.status running/waiting/queued/idle + queued/blockingRequests + pending 列表：target next-turn/next-step、prompt、status、cancellable）与 `tasks.removeQueued`；`RemoteConversationSource.request()` 可直接透传。
+- 实现：会话页进入 ready 后立即读一次并每 2s 轮询 `tasks.session`（前台才跑、dispose 停止、失败静默、unsupported 隐藏）；用 `live.status` 补 `_running` 初始值，修复「进入已在运行会话没有状态」；输入卡上方显示紧凑状态条（running「电脑正在工作…」+小转圈；waiting「等待你在电脑上的操作」；queued「N 条消息排队中」）与队列坞（0 条不渲染；1 条直出；>1 折叠「N 条排队消息」，next-turn「排队 · 待执行」/next-step「插话 · 待发送」，suspended 标记；cancellable 删除→确认→`tasks.removeQueued`→刷新+提示，失败保留列表）；排队消息不插入时间线；断线/旧宿主隐藏面板不阻断。
+- 验证：flutter analyze 仅既有 11 条基线告警；会话页测试 83 项（新增 8：running 状态、队列折叠/删除、断线降级、空队列等）+ 邻接 47 项全绿；debug APK 构建成功并 push+`pm install -r -t` 到 3B162D00E1K00000（lastUpdate 13:45）。
+- **提交**：见本次 commit。
 ### 2026-11-18 13:35 · lead（App 远程首页：running 绿点 + 项目折叠记忆 + 折叠密度，已推送真机）
 
 - 用户反馈：正在工作的会话应点亮绿点；项目折叠要有记忆（现在刷新又全展开）；折叠态列表间距太大。

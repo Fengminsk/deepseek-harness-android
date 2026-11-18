@@ -126,6 +126,147 @@ const double _followThreshold = 120;
 /// 指令提示里回显输入的字符上限；超出截断，避免输入区被撑成多行。
 const int _commandPreviewLength = 48;
 
+/// `tasks.session` 里的一条排队消息（Agent Inbox）。
+///
+/// [target] 为 `next-turn` 时是当前回合结束后执行的排队消息，`next-step` 是插到
+/// 下一步之前的插话；两者在输入卡上方的队列坞里用不同标签区分。
+class RemoteQueuedMessage {
+  const RemoteQueuedMessage({
+    required this.itemId,
+    required this.id,
+    required this.target,
+    required this.prompt,
+    required this.status,
+    required this.cancellable,
+  });
+
+  /// 删除这条消息时传给 `tasks.removeQueued` 的标识。
+  final String itemId;
+
+  /// 宿主给的展示标识（`queued:<id>`）。
+  final String id;
+
+  /// `next-turn` 或 `next-step`。
+  final String target;
+
+  /// 消息文本预览；宿主没有给出时为空字符串。
+  final String prompt;
+
+  /// `queued` 或 `suspended`。
+  final String status;
+
+  /// 是否允许删除（宿主有活动 Agent 且这条消息可撤回）。
+  final bool cancellable;
+
+  /// 是否因宿主恢复执行而处于 suspended 状态。
+  bool get suspended => status == 'suspended';
+
+  /// 是否是插到下一步之前的消息。
+  bool get nextStep => target == 'next-step';
+}
+
+/// `tasks.session` 的工作状态与排队消息快照。
+class RemoteSessionTasks {
+  const RemoteSessionTasks({
+    this.status = 'idle',
+    this.queued = 0,
+    this.blockingRequests = 0,
+    this.pending = const <RemoteQueuedMessage>[],
+  });
+
+  /// `live.status`：running / waiting / queued / idle / failed。
+  final String status;
+
+  /// 队列里的消息条数（以 `live.queued` 为准，缺失时退回 `pending.length`）。
+  final int queued;
+
+  /// 正在阻塞 Agent 的请求数（审批/提问等）。
+  final int blockingRequests;
+
+  /// Agent Inbox 里的排队消息，按宿主给出的顺序。
+  final List<RemoteQueuedMessage> pending;
+
+  /// 从 `tasks.session` 的应答里解析；顶层不是对象时返回 null（按未读取处理）。
+  ///
+  /// 单条 pending 坏记录跳过；`itemId` 缺失的条目无法删除，但只要有 `id` 仍可
+  /// 展示（`cancellable` 会按宿主值走，不会伪造删除能力）。
+  static RemoteSessionTasks? parse(Object? raw) {
+    if (raw is! Map) return null;
+    var status = 'idle';
+    var queued = 0;
+    var blocking = 0;
+    final live = raw['live'];
+    if (live is Map) {
+      final liveStatus = live['status'];
+      if (liveStatus is String && liveStatus.isNotEmpty) status = liveStatus;
+      final liveQueued = live['queued'];
+      if (liveQueued is int && liveQueued >= 0) queued = liveQueued;
+      final blockingRequests = live['blockingRequests'];
+      if (blockingRequests is int && blockingRequests >= 0) {
+        blocking = blockingRequests;
+      }
+    }
+    final pending = <RemoteQueuedMessage>[];
+    final rows = raw['pending'];
+    if (rows is List) {
+      for (final row in rows) {
+        if (row is! Map) continue;
+        final id = row['id'];
+        final itemId = row['itemId'];
+        final itemKey = itemId is String && itemId.isNotEmpty
+            ? itemId
+            : (id is String && id.startsWith('queued:')
+                  ? id.substring('queued:'.length)
+                  : null);
+        if (itemKey == null || itemKey.isEmpty) continue;
+        final target = row['target'] is String
+            ? row['target'] as String
+            : 'next-turn';
+        pending.add(
+          RemoteQueuedMessage(
+            itemId: itemKey,
+            id: id is String ? id : 'queued:$itemKey',
+            target: target,
+            prompt: row['prompt'] is String ? row['prompt'] as String : '',
+            status: row['status'] is String
+                ? row['status'] as String
+                : 'queued',
+            cancellable: row['cancellable'] == true,
+          ),
+        );
+      }
+    }
+    return RemoteSessionTasks(
+      status: status,
+      queued: queued > 0 ? queued : pending.length,
+      blockingRequests: blocking,
+      pending: pending,
+    );
+  }
+
+  /// 两份快照是否等价；用于轮询时跳过没有变化的 setState。
+  bool sameAs(RemoteSessionTasks other) {
+    if (status != other.status ||
+        queued != other.queued ||
+        blockingRequests != other.blockingRequests ||
+        pending.length != other.pending.length) {
+      return false;
+    }
+    for (var index = 0; index < pending.length; index++) {
+      final left = pending[index];
+      final right = other.pending[index];
+      if (left.itemId != right.itemId ||
+          left.target != right.target ||
+          left.prompt != right.prompt ||
+          left.status != right.status ||
+          left.cancellable != right.cancellable) {
+        return false;
+      }
+    }
+    return true;
+  }
+}
+
 /// 远程 DSH 的会话页。
 ///
 /// [source] 由调用方创建并交给本页持有：页面在 [State.dispose] 里释放它。
@@ -182,6 +323,7 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
 
   /// 消息列表的滚动位置：进入会话后停在最新内容。
   final _scroll = ScrollController();
+  bool _scrollToEndScheduled = false;
 
   /// 会话事件的投影与原始事件。两者一起交给 [ChatTimeline]。
   final _projection = ChatProjection();
@@ -189,7 +331,17 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
   final Set<int> _seenSeqs = <int>{};
 
   ChatLiveMessage? _live;
-  bool _running = false;
+
+  /// 事件流最近一次给出的运行状态；null 表示还没收到过 `session.status`。
+  ///
+  /// 运行状态优先以事件流为准，避免轮询与事件互相抖动；进入一个已经在工作的
+  /// 会话时通常收不到初始事件，此时由 `tasks.session` 的 `live.status` 补上。
+  bool? _runningFromEvents;
+
+  /// 事件流与轮询合并后的运行状态（[ChatTimeline] 用）。
+  bool get _running =>
+      _runningFromEvents ?? (_sessionTasks?.status == 'running');
+
   bool _loading = true;
   bool _sending = false;
   bool _draftEmpty = true;
@@ -198,6 +350,32 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
   Timer? _statusTimer;
   late String _title;
   StreamSubscription<RemoteConversationUpdate>? _updates;
+
+  /// 轮询 `tasks.session` 的定时器；页面销毁或退后台时取消。
+  Timer? _sessionTasksTimer;
+
+  /// 是否有一次 `tasks.session` 在途；防止轮询与手动刷新并发重入。
+  bool _sessionTasksInFlight = false;
+
+  /// 宿主明确不支持 `tasks.session`：隐藏状态条与队列坞，不报错。
+  bool _sessionTasksUnsupported = false;
+
+  /// 是否已经成功读到过一份 `tasks.session` 快照。
+  ///
+  /// 首次读取返回前不渲染面板，避免打开会话瞬间闪一个空状态条。
+  bool _sessionTasksLoaded = false;
+
+  /// 最近一次成功读取的任务快照；读取失败时保留上次数据，静默重试。
+  RemoteSessionTasks? _sessionTasks;
+
+  /// 队列坞是否展开（>1 条时默认收起，只用计数条）。
+  bool _queueExpanded = false;
+
+  /// 正在删除的排队消息 itemId；删除期间禁用那一行的删除按钮。
+  String? _removingQueuedId;
+
+  /// 应用是否在前台；退后台停止轮询，回前台立即刷新。
+  bool _appActive = true;
 
   /// 当前会话的待处理审批/提问（数据源已按会话过滤）。
   List<RemotePendingInteraction> _interactions =
@@ -318,6 +496,9 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     unawaited(_permissions.start());
     // 更新流先订阅、再开始读首屏：首屏快照不会落在订阅建立之前。
     unawaited(_source.start());
+    if (_source.phase == RemoteConnectionPhase.ready) {
+      _startSessionTasksPolling();
+    }
   }
 
   @override
@@ -325,6 +506,8 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     WidgetsBinding.instance.removeObserver(this);
     _focus.removeListener(_onFocusChanged);
     _statusTimer?.cancel();
+    _sessionTasksTimer?.cancel();
+    _sessionTasksTimer = null;
     final updates = _updates;
     _updates = null;
     if (updates != null) unawaited(updates.cancel());
@@ -346,6 +529,20 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     _focus.dispose();
     _input.dispose();
     super.dispose();
+  }
+
+  /// 退后台停止 `tasks.session` 轮询，回前台立即刷新并恢复周期读取。
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final active = state == AppLifecycleState.resumed;
+    if (_appActive == active) return;
+    _appActive = active;
+    if (!active) {
+      _sessionTasksTimer?.cancel();
+      _sessionTasksTimer = null;
+      return;
+    }
+    _startSessionTasksPolling();
   }
 
   @override
@@ -417,6 +614,120 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
         _loadError = _source.lastError ?? '没能连接到这台电脑，请回到首页重新连接。';
       }
     });
+    if (_source.phase == RemoteConnectionPhase.ready) {
+      _startSessionTasksPolling();
+    } else {
+      _stopSessionTasksPolling();
+    }
+  }
+
+  // ------------------------------------------------------------ 工作状态与队列
+
+  /// 启动（或补一次）`tasks.session` 轮询。
+  ///
+  /// 只在页面 mounted、应用前台、连接 ready 时运行；发送消息、收到运行状态变化
+  /// 与回到前台都调用它补一次即时刷新。
+  void _startSessionTasksPolling() {
+    if (!mounted || !_appActive) return;
+    if (_source.phase != RemoteConnectionPhase.ready) return;
+    unawaited(_refreshSessionTasks());
+    if (_sessionTasksTimer != null) return;
+    _sessionTasksTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      unawaited(_refreshSessionTasks());
+    });
+  }
+
+  void _stopSessionTasksPolling() {
+    _sessionTasksTimer?.cancel();
+    _sessionTasksTimer = null;
+  }
+
+  /// 读一次 `tasks.session` 快照。
+  ///
+  /// 失败静默保留上次读数（下一轮再试）；宿主明确不支持时隐藏面板，不打断会话。
+  Future<void> _refreshSessionTasks() async {
+    if (!mounted || _sessionTasksInFlight || !_appActive) return;
+    if (_source.phase != RemoteConnectionPhase.ready) return;
+    if (!_source.supports(remoteTasksSessionMethod)) {
+      if (!_sessionTasksUnsupported) {
+        setState(() => _sessionTasksUnsupported = true);
+      }
+      return;
+    }
+    _sessionTasksInFlight = true;
+    try {
+      final raw = await _source
+          .request(remoteTasksSessionMethod, {'sessionId': _source.sessionId})
+          .timeout(const Duration(seconds: 5));
+      final parsed = RemoteSessionTasks.parse(raw);
+      if (!mounted || parsed == null) return;
+      final previous = _sessionTasks;
+      final changed =
+          !_sessionTasksLoaded ||
+          _sessionTasksUnsupported ||
+          previous == null ||
+          !previous.sameAs(parsed);
+      if (!changed) return;
+      setState(() {
+        _sessionTasks = parsed;
+        _sessionTasksLoaded = true;
+        _sessionTasksUnsupported = false;
+      });
+    } on RuntimeTransportFailure catch (failure) {
+      if (!mounted) return;
+      if (failure.code == 'unsupported-method') {
+        setState(() => _sessionTasksUnsupported = true);
+      }
+      // 其它失败（断线、瞬时错误）静默：保留上次读数，下一轮再试。
+    } on Object {
+      // 解析之外的意外失败同样静默，不打断会话。
+    } finally {
+      _sessionTasksInFlight = false;
+    }
+  }
+
+  /// 删除一条可取消的排队消息；成功后立即刷新队列。
+  Future<void> _removeQueuedMessage(RemoteQueuedMessage message) async {
+    if (_removingQueuedId != null) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialog) => AlertDialog(
+        title: const Text('删除排队消息'),
+        content: Text(
+          message.nextStep
+              ? '删除后这条插话不再发送。'
+              : '删除后这条排队消息不再执行。',
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(dialog).pop(false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            key: const ValueKey('remote-queue-remove-confirm'),
+            onPressed: () => Navigator.of(dialog).pop(true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => _removingQueuedId = message.itemId);
+    try {
+      await _source.request(remoteTasksRemoveQueuedMethod, {
+        'sessionId': _source.sessionId,
+        'itemId': message.itemId,
+      });
+      if (!mounted) return;
+      await _refreshSessionTasks();
+      if (mounted) _showStatus('已删除排队消息');
+    } on RuntimeTransportFailure catch (failure) {
+      if (mounted) _showStatus('删除排队消息失败：${failure.message}');
+    } on Object catch (error) {
+      if (mounted) _showStatus('删除排队消息失败：$error');
+    } finally {
+      if (mounted) setState(() => _removingQueuedId = null);
+    }
   }
 
   /// 附件草稿状态（上传中 / 失败 / 移除）变化：发送按钮要看草稿才能决定是否出现。
@@ -465,8 +776,10 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
         setState(() => _live = _liveMessage(value));
         _scheduleScrollToEnd();
       case RemoteConversationRunning(:final running):
-        if (_running == running) return;
-        setState(() => _running = running);
+        if (_runningFromEvents == running) return;
+        setState(() => _runningFromEvents = running);
+        // 状态切换后尽快同步队列与 live.status，不必等下一轮 2s 轮询。
+        unawaited(_refreshSessionTasks());
       case RemoteConversationFailure(:final message, :final fatal):
         if (fatal) {
           setState(() => _loadError = message);
@@ -552,11 +865,16 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
   /// 跳到列表底部，并在下一帧再校正一次：懒加载列表的最大滚动距离要等新行布局
   /// 完才准确。
   void _scheduleScrollToEnd() {
-    if (!mounted) return;
+    if (!mounted || _scrollToEndScheduled) return;
+    _scrollToEndScheduled = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
+      if (!mounted) {
+        _scrollToEndScheduled = false;
+        return;
+      }
       _jumpToEnd();
       WidgetsBinding.instance.addPostFrameCallback((_) {
+        _scrollToEndScheduled = false;
         if (mounted) _jumpToEnd();
       });
     });
@@ -589,6 +907,7 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
   Widget build(BuildContext context) {
     return PocketScaffold(
       title: const SizedBox.shrink(),
+      ambientMotion: false,
       header: _header(context),
       headerHeight: 64,
       body: Listener(
@@ -624,6 +943,7 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
             padding: const EdgeInsets.fromLTRB(0, 8, 0, 2),
             child: RemoteStatsBar(insights: insights, onTap: _openStatsSheet),
           ),
+        ?_sessionTasksPanel(context),
         _composerArea(context),
       ],
     );
@@ -1078,6 +1398,239 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     );
   }
 
+  /// 输入卡上方的工作状态条 + 排队消息坞。
+  ///
+  /// 连接未就绪、宿主不支持 `tasks.session`、或首次读取还没返回时不渲染；读取失败
+  /// 静默保留上次读数。队列坞只在 pending 非空时出现（0 条完全不占位）。
+  Widget? _sessionTasksPanel(BuildContext context) {
+    if (_source.phase != RemoteConnectionPhase.ready) return null;
+    if (_sessionTasksUnsupported || !_sessionTasksLoaded) return null;
+    final tasks = _sessionTasks;
+    final running = tasks?.status == 'running';
+    final waiting =
+        tasks != null && (tasks.status == 'waiting' || tasks.blockingRequests > 0);
+    final pending = tasks?.pending ?? const <RemoteQueuedMessage>[];
+    final queued = tasks?.queued ?? 0;
+    // pending 非空时队列坞自己会显示「N 条排队消息」，不重复画一条计数状态条。
+    final showQueuedCount =
+        !running && !waiting && queued > 0 && pending.isEmpty;
+    if (!running && !waiting && !showQueuedCount && pending.isEmpty) return null;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (running || waiting) _workStatusRow(context, running: running),
+          if (showQueuedCount) _queuedCountRow(context, queued),
+          if (pending.isNotEmpty) _queueDock(context, pending),
+        ],
+      ),
+    );
+  }
+
+  /// 一行工作状态：运行中转圈，等待用户操作时给手势图标。
+  Widget _workStatusRow(BuildContext context, {required bool running}) {
+    final colors = Theme.of(context).colorScheme;
+    return Container(
+      key: const ValueKey('remote-work-status'),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+      decoration: BoxDecoration(
+        color: colors.surfaceContainerHighest.withValues(alpha: .6),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (running)
+            const SizedBox(
+              width: 14,
+              height: 14,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          else
+            Icon(
+              Icons.pan_tool_alt_outlined,
+              size: 15,
+              color: colors.primary,
+            ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              running ? '电脑正在工作…' : '等待你在电脑上的操作',
+              style: AppTextStyle.footnote
+                  .of(context)
+                  .copyWith(color: colors.onSurfaceVariant),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 队列里只有计数、没有可展示的 pending 行时的兜底状态条。
+  Widget _queuedCountRow(BuildContext context, int queued) {
+    final colors = Theme.of(context).colorScheme;
+    return Container(
+      key: const ValueKey('remote-queue-count'),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+      decoration: BoxDecoration(
+        color: colors.surfaceContainerHighest.withValues(alpha: .6),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.schedule_rounded, size: 15, color: colors.primary),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              '$queued 条消息排队中',
+              style: AppTextStyle.footnote
+                  .of(context)
+                  .copyWith(color: colors.onSurfaceVariant),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 队列坞：1 条直出；>1 条默认收起成「N 条排队消息」，点开看每一条。
+  Widget _queueDock(
+    BuildContext context,
+    List<RemoteQueuedMessage> pending,
+  ) {
+    final colors = Theme.of(context).colorScheme;
+    final collapsed = pending.length > 1 && !_queueExpanded;
+    return Container(
+      key: const ValueKey('remote-queue-dock'),
+      margin: const EdgeInsets.only(top: 6),
+      decoration: BoxDecoration(
+        color: colors.surfaceContainerHighest.withValues(alpha: .55),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (pending.length > 1)
+            InkWell(
+              key: const ValueKey('remote-queue-toggle'),
+              borderRadius: BorderRadius.circular(14),
+              onTap: () => setState(() => _queueExpanded = !_queueExpanded),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.inbox_rounded,
+                      size: 16,
+                      color: colors.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '${pending.length} 条排队消息',
+                        style: AppTextStyle.footnote
+                            .of(context)
+                            .copyWith(color: colors.onSurfaceVariant),
+                      ),
+                    ),
+                    Icon(
+                      _queueExpanded
+                          ? Icons.expand_less_rounded
+                          : Icons.expand_more_rounded,
+                      size: 18,
+                      color: colors.onSurfaceVariant,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          if (!collapsed)
+            for (final item in pending) _queueRow(context, item),
+        ],
+      ),
+    );
+  }
+
+  /// 队列坞里的一行：目标标签 + 文本预览 + suspended 标记 + 删除按钮。
+  Widget _queueRow(BuildContext context, RemoteQueuedMessage item) {
+    final colors = Theme.of(context).colorScheme;
+    final removing = _removingQueuedId == item.itemId;
+    return Padding(
+      key: ValueKey('remote-queue-item-${item.itemId}'),
+      padding: const EdgeInsets.fromLTRB(12, 4, 8, 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+            decoration: BoxDecoration(
+              color: colors.primary.withValues(alpha: .12),
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Text(
+              item.nextStep ? '插话 · 待发送' : '排队 · 待执行',
+              style: TextStyle(
+                fontSize: 11,
+                height: 1.5,
+                fontWeight: FontWeight.w600,
+                color: colors.primary,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  item.prompt.trim().isEmpty ? '附件或系统输入' : item.prompt.trim(),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: AppTextStyle.footnote.of(context),
+                ),
+                if (item.suspended)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Text(
+                      '未恢复执行',
+                      style: AppTextStyle.footnote
+                          .of(context)
+                          .copyWith(color: colors.error),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          if (item.cancellable)
+            SizedBox(
+              width: 32,
+              height: 32,
+              child: removing
+                  ? const Padding(
+                      padding: EdgeInsets.all(8),
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : IconButton(
+                      key: ValueKey('remote-queue-remove-${item.itemId}'),
+                      padding: EdgeInsets.zero,
+                      tooltip: '删除排队消息',
+                      onPressed: () => unawaited(_removeQueuedMessage(item)),
+                      icon: Icon(
+                        Icons.close_rounded,
+                        size: 18,
+                        color: colors.onSurfaceVariant,
+                      ),
+                    ),
+            ),
+        ],
+      ),
+    );
+  }
+
   /// 附件 rail 作为悬浮卡上方的插槽；没有草稿也不在选文件时返回 null。
   Widget? _attachmentRailSlot(BuildContext context, AttachmentDrafts? drafts) {
     if (drafts == null) return null;
@@ -1349,6 +1902,8 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
       if (mounted) {
         setState(() => _commandResult = null);
         _clearComposer(routeConfirmed: true);
+        // 发送后尽快同步排队消息与工作状态，不等下一轮 2s 轮询。
+        unawaited(_refreshSessionTasks());
       }
       await _consumeAttachments(attachedIds);
     } on RuntimeTransportFailure catch (failure) {
@@ -1551,6 +2106,7 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
       await _consumeAttachments(attachmentIds);
       return true;
     }
+    unawaited(_refreshSessionTasks());
     setState(() {
       _credentialHint = null;
       _persistentNotice =

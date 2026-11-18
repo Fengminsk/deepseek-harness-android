@@ -80,6 +80,12 @@ const String remoteWorkspaceChangesSummaryMethod = 'workspaceChanges.summary';
 /// 读取某轮单个文件差异的门面方法（`workspaceChanges.diff`）。
 const String remoteWorkspaceChangesDiffMethod = 'workspaceChanges.diff';
 
+/// 会话任务快照：工作状态（`live.status`）与 Agent Inbox 排队消息。
+const String remoteTasksSessionMethod = 'tasks.session';
+
+/// 删除一条可取消的排队消息（仅 `cancellable == true` 的行可用）。
+const String remoteTasksRemoveQueuedMethod = 'tasks.removeQueued';
+
 /// 取消一次在途变更读取的门面方法（`workspaceChanges.cancel`）。
 const String remoteWorkspaceChangesCancelMethod = 'workspaceChanges.cancel';
 

@@ -664,8 +664,14 @@ void main() {
     await tester.pumpAndSettle();
     final add = find.byTooltip('添加与指令');
     final field = find.byKey(PocketComposer.inputKey);
+    final hint = find.text('在 客厅的电脑 上工作');
     expect(
       (tester.getCenter(add).dy - tester.getCenter(field).dy).abs(),
+      lessThan(3),
+    );
+    expect(hint, findsOneWidget);
+    expect(
+      (tester.getCenter(add).dy - tester.getCenter(hint).dy).abs(),
       lessThan(3),
     );
   });
@@ -2643,6 +2649,239 @@ void main() {
       PocketComposerMode.browse,
     );
   });
+
+  group('工作状态与排队消息', () {
+    testWidgets('进入正在工作的会话时由 tasks.session 补出工作状态', (tester) async {
+      final fixture = _tasksFixture(status: 'running');
+      await tester.pumpWidget(_host(fixture.source));
+      await _flushTasks(tester);
+
+      expect(find.byKey(const ValueKey('remote-work-status')), findsOneWidget);
+      expect(find.text('电脑正在工作…'), findsOneWidget);
+      final reads = fixture.source.requests
+          .where((request) => request.method == remoteTasksSessionMethod)
+          .toList();
+      expect(reads, isNotEmpty);
+      expect(reads.first.params['sessionId'], 's-1');
+    });
+
+    testWidgets('等待用户在电脑上操作时状态条给出提示', (tester) async {
+      final fixture = _tasksFixture(status: 'waiting', blocking: 1);
+      await tester.pumpWidget(_host(fixture.source));
+      await _flushTasks(tester);
+
+      expect(find.text('等待你在电脑上的操作'), findsOneWidget);
+    });
+
+    testWidgets('单条排队消息直接显示一行，不折叠', (tester) async {
+      final fixture = _tasksFixture(
+        pending: <Map<String, dynamic>>[_queuedItem('q-1', prompt: '先跑测试')],
+      );
+      await tester.pumpWidget(_host(fixture.source));
+      await _flushTasks(tester);
+
+      expect(find.byKey(const ValueKey('remote-queue-dock')), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('remote-queue-toggle')),
+        findsNothing,
+        reason: '只有 1 条时不需要折叠开关',
+      );
+      expect(
+        find.byKey(const ValueKey('remote-queue-item-q-1')),
+        findsOneWidget,
+      );
+      expect(find.text('排队 · 待执行'), findsOneWidget);
+      expect(find.text('先跑测试'), findsOneWidget);
+    });
+
+    testWidgets('多条排队默认折叠，展开后列出每一条并区分插话/未恢复', (tester) async {
+      final fixture = _tasksFixture(
+        pending: <Map<String, dynamic>>[
+          _queuedItem('q-1', prompt: '先跑测试'),
+          _queuedItem(
+            'q-2',
+            target: 'next-step',
+            prompt: '补一句说明',
+            status: 'suspended',
+            cancellable: false,
+          ),
+        ],
+      );
+      await tester.pumpWidget(_host(fixture.source));
+      await _flushTasks(tester);
+
+      expect(find.text('2 条排队消息'), findsOneWidget);
+      expect(find.byKey(const ValueKey('remote-queue-item-q-1')), findsNothing);
+      expect(find.byKey(const ValueKey('remote-queue-item-q-2')), findsNothing);
+
+      await tester.tap(find.byKey(const ValueKey('remote-queue-toggle')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('remote-queue-item-q-1')), findsOneWidget);
+      expect(find.byKey(const ValueKey('remote-queue-item-q-2')), findsOneWidget);
+      expect(find.text('排队 · 待执行'), findsOneWidget);
+      expect(find.text('插话 · 待发送'), findsOneWidget);
+      expect(find.text('未恢复执行'), findsOneWidget);
+    });
+
+    testWidgets('删除可取消的排队消息：确认后调用 tasks.removeQueued 并刷新', (tester) async {
+      final fixture = _tasksFixture(
+        pending: <Map<String, dynamic>>[
+          _queuedItem('q-remove', prompt: '这条要撤掉'),
+        ],
+      );
+      await tester.pumpWidget(_host(fixture.source));
+      await _flushTasks(tester);
+
+      await tester.tap(find.byKey(const ValueKey('remote-queue-remove-q-remove')));
+      await tester.pumpAndSettle();
+      expect(find.text('删除后这条排队消息不再执行。'), findsOneWidget);
+
+      await tester.tap(find.byKey(const ValueKey('remote-queue-remove-confirm')));
+      await tester.pumpAndSettle();
+      await _flushTasks(tester);
+
+      expect(fixture.removed, hasLength(1));
+      expect(fixture.removed.single['sessionId'], 's-1');
+      expect(fixture.removed.single['itemId'], 'q-remove');
+      expect(fixture.queue, isEmpty);
+      expect(
+        find.byKey(const ValueKey('remote-queue-item-q-remove')),
+        findsNothing,
+      );
+      expect(find.byKey(const ValueKey('remote-queue-dock')), findsNothing);
+    });
+
+    testWidgets('断线时隐藏状态条与队列坞，恢复后重新出现', (tester) async {
+      final fixture = _tasksFixture(
+        status: 'running',
+        pending: <Map<String, dynamic>>[_queuedItem('q-1', prompt: '等恢复')],
+      );
+      await tester.pumpWidget(_host(fixture.source));
+      await _flushTasks(tester);
+      expect(find.byKey(const ValueKey('remote-work-status')), findsOneWidget);
+      expect(find.byKey(const ValueKey('remote-queue-dock')), findsOneWidget);
+
+      fixture.source.setPhase(RemoteConnectionPhase.reconnecting);
+      await tester.pump();
+      expect(find.byKey(const ValueKey('remote-work-status')), findsNothing);
+      expect(find.byKey(const ValueKey('remote-queue-dock')), findsNothing);
+      expect(
+        find.byKey(const ValueKey('remote-transcript')),
+        findsOneWidget,
+        reason: '断线不能阻断会话页',
+      );
+
+      fixture.source.setPhase(RemoteConnectionPhase.ready);
+      await tester.pump();
+      await _flushTasks(tester);
+      expect(find.byKey(const ValueKey('remote-work-status')), findsOneWidget);
+      expect(find.byKey(const ValueKey('remote-queue-dock')), findsOneWidget);
+    });
+
+    testWidgets('宿主不支持 tasks.session 时隐藏面板且不报错', (tester) async {
+      final fixture = _tasksFixture(status: 'running', supportsTasks: false);
+      await tester.pumpWidget(_host(fixture.source));
+      await _flushTasks(tester);
+
+      expect(find.byKey(const ValueKey('remote-work-status')), findsNothing);
+      expect(find.byKey(const ValueKey('remote-queue-dock')), findsNothing);
+      expect(
+        fixture.source.requests
+            .where((request) => request.method == remoteTasksSessionMethod),
+        isEmpty,
+      );
+      expect(find.byKey(const ValueKey('remote-transcript')), findsOneWidget);
+    });
+
+    testWidgets('队列为空且空闲时不渲染任何面板', (tester) async {
+      final fixture = _tasksFixture();
+      await tester.pumpWidget(_host(fixture.source));
+      await _flushTasks(tester);
+
+      expect(find.byKey(const ValueKey('remote-work-status')), findsNothing);
+      expect(find.byKey(const ValueKey('remote-queue-dock')), findsNothing);
+      expect(find.byKey(const ValueKey('remote-queue-count')), findsNothing);
+    });
+  });
+}
+
+/// 一条 `tasks.session.pending` 排队消息的宿主形状。
+Map<String, dynamic> _queuedItem(
+  String itemId, {
+  String target = 'next-turn',
+  String prompt = '排队内容',
+  String status = 'queued',
+  bool cancellable = true,
+}) => <String, dynamic>{
+  'id': 'queued:$itemId',
+  'kind': 'queued',
+  'itemId': itemId,
+  'target': target,
+  'prompt': prompt,
+  'status': status,
+  'cancellable': cancellable,
+};
+
+/// 带 `tasks.session` / `tasks.removeQueued` 应答的会话页假数据源。
+///
+/// 队列用可变的 [queue] 驱动：删除应答会真的把对应项从队列里移除，页面随后的
+/// 刷新因此能拿到删除后的快照，与真实宿主行为一致。
+({
+  FakeRemoteConversationSource source,
+  List<Map<String, dynamic>> queue,
+  List<Map<String, dynamic>> removed,
+})
+_tasksFixture({
+  String status = 'idle',
+  int blocking = 0,
+  List<Map<String, dynamic>> pending = const <Map<String, dynamic>>[],
+  bool supportsTasks = true,
+}) {
+  final queue = <Map<String, dynamic>>[...pending];
+  final removed = <Map<String, dynamic>>[];
+  final source = FakeRemoteConversationSource(
+    window: _window(conversationEvents()),
+    supported: <String>{
+      remoteConversationReadMethod,
+      remoteConversationSendMethod,
+      remoteConversationCommandMethod,
+      remoteConversationRenameMethod,
+      remoteConversationInteractionsListMethod,
+      remoteConversationInteractionsReplyMethod,
+      remoteConversationApiCallMethod,
+      remoteAttachmentPrepareMethod,
+      if (supportsTasks) remoteTasksSessionMethod,
+      if (supportsTasks) remoteTasksRemoveQueuedMethod,
+    },
+  );
+  if (supportsTasks) {
+    source.answers[remoteTasksSessionMethod] =
+        (Map<String, dynamic> params) => <String, dynamic>{
+          'sessionId': source.sessionId,
+          'live': <String, dynamic>{
+            'status': status,
+            'queued': queue.length,
+            'blockingRequests': blocking,
+          },
+          'pending': <Map<String, dynamic>>[
+            for (final item in queue) Map<String, dynamic>.of(item),
+          ],
+        };
+    source.answers[remoteTasksRemoveQueuedMethod] =
+        (Map<String, dynamic> params) {
+          removed.add(Map<String, dynamic>.of(params));
+          queue.removeWhere((item) => item['itemId'] == params['itemId']);
+          return <String, dynamic>{'removed': true};
+        };
+  }
+  return (source: source, queue: queue, removed: removed);
+}
+
+/// 推进一次异步读取：让假数据源应答落地并渲染一帧。
+Future<void> _flushTasks(WidgetTester tester) async {
+  await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 50));
 }
 
 /// 把会话页推到一个首页之上，用来验证「归档成功后返回上一页」与目的地路由名。
