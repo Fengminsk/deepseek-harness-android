@@ -1089,6 +1089,12 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
 
 ## 9. 变更日志（append-only，最新在最上面）
 
+### 2026-11-18 11:35 · lead（SakuraFrp 公网链路端到端验证 + 桥接错误码修正）
+
+- 用当前 SakuraFrp 公网配对链接跑 `apps/remote-host/scripts/e2e-remote-host.ts --pair-url wss://frp-act.com:35530/...`：**22/22 PASS**——解析配对链接、GET /ca.cer CA 指纹、POST /pair 单次令牌、wss 固定 CA 校验、protocol.hello（93 methods）、sessions.list/session.readWindow、workspace.files、terminal 全流程、附件 prepare/read、session.send + follow 流、host-local native 方法、清理；证明经 SakuraFrp TCP 隧道 + 自有 CA 的远端 DSH 手机链路可用。
+- e2e 产生的测试设备已用插件的**永久删除**接口清理（devices 35 → 34），实测删除链路 200。
+- 桥接错误映射修正：ControlPlaneError 携带控制面 HTTP status（如 404 device-not-found），routes 对 4xx 透传、其余 502，未知设备删除不再被抹成 502；新增 routes 单测；包级 241 tests、双 face tsc、bundle 通过。
+- **提交**：见本次 commit。
 ### 2026-11-18 11:35 · lead（设备互联页对齐 DSH + 设备底部折叠/删除 + 一键 SakuraFrp 真机跑通）
 
 - 用户反馈：设备互联页上下段没有间隙、不像 DSH 设计；已配对设备 34 台太多；需删除/折叠设备；frpc 路径点开关后丢失；口令需水平居中 `*` 掩码。

@@ -395,6 +395,15 @@ describe('bridge routes', () => {
     expect((await response.json() as { error: { code: string } }).error.code).toBe('pair-failed')
   })
 
+  it('keeps a control-plane client error status instead of collapsing it onto 502', async () => {
+    const fake = bridge()
+    fake.deleteDevice.mockRejectedValue(new ControlPlaneError('device-not-found', '没有找到这台设备。', 404))
+    const url = await serve(fake.api)
+    const response = await post(url, DELETE_ROUTE, { deviceId: 'b'.repeat(32) })
+    expect(response.status).toBe(404)
+    expect((await response.json() as { error: { code: string } }).error.code).toBe('device-not-found')
+  })
+
   it('maps a refused tunnel start onto its status and code', async () => {
     const fake = bridge()
     fake.setTunnelEnabled.mockRejectedValue(new TunnelError('tunnel-host-not-running', 409, '远程宿主未运行。'))

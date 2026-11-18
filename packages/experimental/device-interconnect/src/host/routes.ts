@@ -403,7 +403,9 @@ export function classifyBridgeError(error: unknown): { readonly status: number; 
     return { status: error.status, body: { error: { code: error.code, message: error.message } } }
   }
   if (error instanceof ControlPlaneError) {
-    return { status: 502, body: { error: { code: error.code, message: error.message } } }
+    const reported = error.status
+    const status = reported !== undefined && reported >= 400 && reported < 500 ? reported : 502
+    return { status, body: { error: { code: error.code, message: error.message } } }
   }
   return undefined
 }

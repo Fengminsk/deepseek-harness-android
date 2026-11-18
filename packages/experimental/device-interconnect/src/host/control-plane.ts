@@ -27,14 +27,19 @@ export class ControlPlaneError extends Error {
   /** Stable machine-readable code the Client maps onto its locale dictionary. */
   readonly code: string
 
+  /** HTTP status the control plane answered with, when it returned an error body. */
+  readonly status: number | undefined
+
   /**
    * @param code - stable failure code.
    * @param message - Chinese message usable as-is as a fallback.
+   * @param status - HTTP status of the refused control-plane response, when known.
    */
-  constructor(code: string, message: string) {
+  constructor(code: string, message: string, status?: number) {
     super(message)
     this.name = 'ControlPlaneError'
     this.code = code
+    this.status = status
   }
 }
 
@@ -151,16 +156,17 @@ async function readJson(response: Response): Promise<unknown> {
 }
 
 /** Rebuild the structured control-plane error a JSON body carries. */
-function errorFromBody(body: unknown, fallbackCode: string, fallbackMessage: string): ControlPlaneError {
+function errorFromBody(body: unknown, fallbackCode: string, fallbackMessage: string, status?: number): ControlPlaneError {
   if (isRecord(body) && isRecord(body['error'])) {
     const code = body['error']['code']
     const message = body['error']['message']
     return new ControlPlaneError(
       typeof code === 'string' ? code : fallbackCode,
       typeof message === 'string' ? message : fallbackMessage,
+      status,
     )
   }
-  return new ControlPlaneError(fallbackCode, fallbackMessage)
+  return new ControlPlaneError(fallbackCode, fallbackMessage, status)
 }
 
 /**
