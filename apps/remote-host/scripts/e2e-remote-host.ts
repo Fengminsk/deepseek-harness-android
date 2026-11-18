@@ -130,8 +130,8 @@ const TERMINAL_REQUEST_CAP_MS = 10_000
 /** The one §5.2 reverse method the design routes to the App: paged reads of a phone attachment draft (§3.4). */
 const ATTACHMENT_READ_METHOD = 'native.attachments.read'
 
-/** Fixed size of the fake App's attachment draft; three 256 KiB pages exercise pagination. */
-const ATTACHMENT_FIXTURE_BYTES = 600 * 1024
+/** Fixed size of the fake App's attachment draft; 64 pages exercise large-file pagination. */
+const ATTACHMENT_FIXTURE_BYTES = 16 * 1024 * 1024
 
 /** Host page size for `native.attachments.read` (design §3.4.2: 1–262144 bytes). */
 const ATTACHMENT_PAGE_BYTES = 262_144

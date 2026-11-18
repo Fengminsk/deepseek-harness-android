@@ -18,6 +18,7 @@ import 'package:flutter/foundation.dart';
 import 'attachment_surface.dart';
 import 'remote_connection.dart';
 import 'remote_native_bridge.dart';
+import 'remote_transport.dart';
 import 'runtime_transport.dart';
 
 /// 上传附件准备用的门面方法（参数 `{sessionId, id, name, mediaType, bytes}`）。
@@ -25,6 +26,25 @@ const String remoteAttachmentPrepareMethod = 'attachments.prepare';
 
 /// 释放附件草稿用的门面方法（参数 `{sessionId, id}`）。
 const String remoteAttachmentReleaseMethod = 'attachments.release';
+
+/// 附件大小上限（2 GiB）：与远程宿主 `attachmentFileMaxBytes` 的配置一致。
+const int remoteAttachmentMaxBytes = 2 * 1024 * 1024 * 1024;
+
+/// `attachments.prepare` 的长超时。
+///
+/// 宿主在 prepare 内分页拉完整份文件才返回，普通 90s 兜底不够用：
+/// `max(90s, 30s + ceil(bytes / 64KiB) * 1s)`，上限 2 小时。该公式按 64 KiB/s
+/// 的保守吞吐估算，普通请求仍然走传输层 90s 兜底。
+/// @param bytes 声明的附件字节数
+/// @returns 本次 prepare 应使用的超时
+Duration remoteAttachmentPrepareTimeout(int bytes) {
+  const chunkBytes = 64 * 1024;
+  const capSeconds = 2 * 60 * 60;
+  final chunks = bytes <= 0 ? 0 : (bytes + chunkBytes - 1) ~/ chunkBytes;
+  final seconds = 30 + chunks;
+  if (seconds < 90) return const Duration(seconds: 90);
+  return Duration(seconds: seconds > capSeconds ? capSeconds : seconds);
+}
 
 /// 远程附件调用面需要的那台电脑的只读连接面。
 ///
@@ -130,13 +150,28 @@ class RemoteAttachmentSurface extends ChangeNotifier
       );
     }
     final id = params['id'];
+    final declaredBytes = params['bytes'];
     // 宿主在 `attachments.prepare` 内分页拉取字节：先登记，再发请求，反向请求
     // 到达时这个 id 才在草稿集合里（§3.4.6）。
     final preparing = method == remoteAttachmentPrepareMethod && id is String;
+    if (preparing && declaredBytes is int && declaredBytes > remoteAttachmentMaxBytes) {
+      throw const RemoteAttachmentFailure(
+        'attachment-file/too-large',
+        '文件超过 2 GB，无法发送到电脑；请先压缩或拆分文件。',
+      );
+    }
     if (preparing) _bridge.allow(id);
     final dynamic result;
     try {
-      result = await transport.request(method, params);
+      if (preparing && declaredBytes is int && transport is RemoteRuntimeTransport) {
+        result = await transport.requestWithTimeout(
+          method,
+          remoteAttachmentPrepareTimeout(declaredBytes),
+          params,
+        );
+      } else {
+        result = await transport.request(method, params);
+      }
     } on RuntimeTransportFailure catch (failure) {
       throw _translate(failure);
     }

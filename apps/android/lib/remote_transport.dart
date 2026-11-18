@@ -387,7 +387,31 @@ class RemoteRuntimeTransport implements RemoteTransportLink {
   Future<dynamic> request(
     String method, [
     Map<String, dynamic> params = const <String, dynamic>{},
+  ]) => _sendWithTimeout(method, params, _requestTimeout);
+
+  /// 用显式超时发一次请求；只给 `attachments.prepare` 这类宿主长任务使用。
+  ///
+  /// 普通请求继续走 [request] 的 90s 兜底；断线/终止仍立即失败，不受长超时影响。
+  /// @param method 门面方法名
+  /// @param timeout 本次请求的截止时间；必须大于 0
+  /// @param params 请求参数
+  /// @returns 宿主的应答
+  Future<dynamic> requestWithTimeout(
+    String method,
+    Duration timeout, [
+    Map<String, dynamic> params = const <String, dynamic>{},
   ]) {
+    if (timeout <= Duration.zero) {
+      throw ArgumentError.value(timeout, 'timeout', '必须大于 0');
+    }
+    return _sendWithTimeout(method, params, timeout);
+  }
+
+  Future<dynamic> _sendWithTimeout(
+    String method,
+    Map<String, dynamic> params,
+    Duration timeout,
+  ) {
     if (_closed || _closing != null) {
       return Future<dynamic>.error(_cancelledFailure);
     }
@@ -413,7 +437,7 @@ class RemoteRuntimeTransport implements RemoteTransportLink {
       return Future<dynamic>.error(error, stackTrace);
     }
     return completer.future.timeout(
-      _requestTimeout,
+      timeout,
       onTimeout: () {
         _pending.remove(id);
         throw RuntimeTransportFailure(

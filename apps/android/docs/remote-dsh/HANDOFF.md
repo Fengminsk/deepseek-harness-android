@@ -1101,6 +1101,14 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
 
 ## 9. 变更日志（append-only，最新在最上面）
 
+### 2026-11-18 14:36 · lead（大文件附件传输加固 + 插件托管高可用，APK 构建待安装）
+
+- 用户要求远程体验等同原生、PC 会话高可用；几十~上百 MB 附件发 PC DSH 不能掉链子。
+- 附件：宿主 `attachments-desktop.mjs` 分页拉取增加可取消指数退避重试（300/600/1200/2400ms，5 次；`gateway/timeout|unavailable` 可重试，`gateway/cancelled`、`attachment-file/*`、对账失败立即失败，offset 只在整页校验后推进）；App `attachments.prepare` 改用按字节长超时 `max(90s, 30s + ceil(bytes/64KiB)*1s)` 上限 2h（普通请求仍 90s）；插件 overlay 增加 `android-runtime` 配置（重述 platform: desktop + `attachmentFileMaxBytes: 2GiB`，loader patch 为整对象替换）；App >2GiB 前置拒绝并提示；保持流式 generator→uploadStream，32MiB/128 页单测验证；e2e fixture 600KiB→16MiB（未实跑）。
+- 高可用：Bridge 监听 remote-host/frpc 异常退出，enabled 且非用户主动 stop 时自动重启（2/4/8/16/30s 退避、最多 5 次，耗尽写 state.problems；host ready 后才起 frpc）；`state.recovery.host/tunnel` 暴露 restartCount/nextRetryAt；插件包 262 tests、host 附件 38 tests、App 37 tests 全绿；typecheck 5/5、build:check 2/2。
+- 已重载插件并确认 overlay 含 android-runtime 2GiB、child/control/tunnel 正常、recovery 结构可读。
+- **待安装**：手机 USB 仍未连接；APK 14:33 已构建，重连后 push+install。遗留：无逐页百分比进度、无挂起健康探针、e2e 16MiB 未实跑、build:artifacts 本环境卡在 Host Typert。
+- **提交**：见本次 commit。
 ### 2026-11-18 14:20 · lead（后台同步提升到远程首页生命周期，APK 已构建待安装）
 
 - 反馈：上一轮后台保活挂在会话页，从会话页返回首页即停服务，停在首页退后台会错过任务完成/询问推送。

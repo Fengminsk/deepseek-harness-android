@@ -38,6 +38,13 @@ export function renderOverlay(config: DeviceInterconnectConfig): string {
     `    pagesPort: ${String(host.pagesPort)}`,
     `    pairingTtlMs: ${String(pairing.pairingTtlMs)}`,
     `    pairingLongTerm: ${String(pairing.longTerm)}`,
+    // The runtime row is also inserted by the remote-host profile; a patch
+    // replaces that row's complete config, so `platform: desktop` (set by the
+    // profile patch) must be restated next to the 2 GiB attachment limit.
+    '- id: android-runtime',
+    '  config:',
+    '    platform: desktop',
+    '    attachmentFileMaxBytes: 2147483648',
     '',
   ].join('\n')
 }

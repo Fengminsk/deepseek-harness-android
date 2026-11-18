@@ -165,6 +165,14 @@ export interface SupervisorApi {
   restart(command: LaunchCommand): Promise<void>
   /** Stop the child and refuse later starts. */
   dispose(): Promise<void>
+  /**
+   * Observe a child lifetime ending: a real process exit (including an
+   * intentional stop) or a spawn failure. The bridge distinguishes unexpected
+   * exits from its own stop/restart calls.
+   * @param event - the only supported event is `exit`.
+   * @param listener - called synchronously after the child is gone.
+   */
+  on(event: 'exit', listener: () => void): void
 }
 
 /** The supervised child's lifetime. */
@@ -183,6 +191,17 @@ export class ChildSupervisor implements SupervisorApi {
   private error: string | undefined
   private disposed = false
   private exitWaiters: (() => void)[] = []
+  private readonly exitListeners: (() => void)[] = []
+
+  /**
+   * Observe child exits. The bridge uses this to auto-restart unexpected exits.
+   * @param event - only `exit` is supported.
+   * @param listener - called after the child state is settled.
+   */
+  on(event: 'exit', listener: () => void): void {
+    if (event !== 'exit') return
+    this.exitListeners.push(listener)
+  }
 
   /** @param options - launch, kill, clock, and log seams. */
   constructor(options: SupervisorOptions = {}) {
@@ -255,6 +274,7 @@ export class ChildSupervisor implements SupervisorApi {
         this.logger.warn('device-interconnect: child exited by signal %s', signal)
       }
       this.settleExit()
+      this.notifyExit()
     })
     child.on('error', (cause) => {
       if (this.child !== child) return
@@ -319,6 +339,18 @@ export class ChildSupervisor implements SupervisorApi {
     this.error = message
     this.logger.warn('device-interconnect: child failed: %s', message)
     this.settleExit()
+    this.notifyExit()
+  }
+
+  /** Notify observers that the child lifetime ended. */
+  private notifyExit(): void {
+    for (const listener of this.exitListeners) {
+      try {
+        listener()
+      } catch (error) {
+        this.logger.warn('device-interconnect: exit observer failed: %s', describeError(error))
+      }
+    }
   }
 
   /** Resolve every waiter currently observing the exit. */

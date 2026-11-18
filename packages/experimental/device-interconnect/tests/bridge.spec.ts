@@ -115,8 +115,16 @@ function supervisor(options: { readonly name?: string; readonly calls?: string[]
     calls.push(`${name}.dispose`)
     status = child()
   })
-  const api: SupervisorApi = { status: () => status, start, stop, restart, dispose }
-  return { api, start, stop, restart, dispose, calls, status: () => status, setStatus: (next: ChildState) => { status = next } }
+  const exitListeners: (() => void)[] = []
+  const on = vi.fn((event: 'exit', listener: () => void) => {
+    if (event === 'exit') exitListeners.push(listener)
+  })
+  const emitExit = () => {
+    status = child()
+    for (const listener of exitListeners) listener()
+  }
+  const api: SupervisorApi = { status: () => status, start, stop, restart, dispose, on }
+  return { api, start, stop, restart, dispose, on, emitExit, calls, status: () => status, setStatus: (next: ChildState) => { status = next } }
 }
 
 /** Control-plane double. */
@@ -167,6 +175,8 @@ async function bench(overrides: {
   sakurafrpApi?: (token: string) => SakuraFrpApi
   downloadFrpc?: (dataDir: string) => Promise<{ readonly path: string; readonly version: string }>
   latencyProbe?: (targets: readonly LatencyTarget[]) => Promise<readonly LatencySample[]>
+  restartDelaysMs?: readonly number[]
+  restartHealthyMs?: number
 } = {}) {
   const directory = await dataDirectory()
   const fallback = overrides.config ?? configuration()
@@ -192,6 +202,8 @@ async function bench(overrides: {
     sakurafrpApi: overrides.sakurafrpApi ?? (() => fakeSakuraApi()),
     downloadFrpc: overrides.downloadFrpc ?? (async () => ({ path: 'C:\\managed\\frpc.exe', version: '0.51' })),
     latencyProbe: overrides.latencyProbe ?? (async targets => targets.map(target => ({ ...target, ms: 100 }))),
+    ...(overrides.restartDelaysMs === undefined ? {} : { restartDelaysMs: overrides.restartDelaysMs }),
+    ...(overrides.restartHealthyMs === undefined ? {} : { restartHealthyMs: overrides.restartHealthyMs }),
     logger,
   })
   return {
@@ -416,6 +428,8 @@ describe('child lifecycle', () => {
     expect(overlay).toContain('pairingLongTerm: true')
     expect(overlay).toContain('pairingTtlMs: 2592000000')
     expect(overlay).toContain('pagesPort: 4780')
+    expect(overlay).toContain('attachmentFileMaxBytes: 2147483648')
+    expect(overlay).toContain('platform: desktop')
     // The inherited DSH_HOME stays when the runner does not override it.
     expect(command?.env['DSH_HOME']).toBe('C:\\parent-home')
     expect(command?.env['PATH']?.startsWith('C:\\node')).toBe(true)
@@ -862,5 +876,70 @@ describe('provision dedup hardening', () => {
     const selectStep = state.tunnel.provision?.lastSteps.find(step => step.id === 'select-node')
     expect(selectStep?.message).toContain('实测 140 ms')
     expect(selectStep?.message).toContain('VIP 3 级节点')
+  })
+})
+
+describe('supervised child auto-restart', () => {
+  const sleep = (ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms) })
+  const fast = { restartDelaysMs: [1, 1, 1, 1, 1], restartHealthyMs: 1_000 }
+
+  it('restarts the remote host after an unexpected exit', async () => {
+    const config = configuration({ enabled: true, tunnel: tunnel({ frpcPath: '' }) })
+    const { bridge, supervisor } = await bench({ config, ...fast })
+    await bridge.initialize()
+    expect(supervisor.start).toHaveBeenCalledTimes(1)
+
+    supervisor.emitExit()
+    await sleep(25)
+    expect(supervisor.start).toHaveBeenCalledTimes(2)
+    const state = await bridge.state()
+    expect(state.recovery?.host.restartCount).toBe(1)
+    await bridge.dispose()
+  })
+
+  it('stops auto-restart after five consecutive crashes and reports a problem', async () => {
+    const config = configuration({ enabled: true, tunnel: tunnel({ frpcPath: '' }) })
+    const { bridge, supervisor } = await bench({ config, ...fast })
+    await bridge.initialize()
+    for (let attempt = 0; attempt < 5; attempt++) {
+      supervisor.emitExit()
+      await sleep(20)
+    }
+    // 第 6 次退出时已有 5 次重启尝试：停止自动重启并留下 problem。
+    supervisor.emitExit()
+    const state = await bridge.state()
+    expect(state.recovery?.host.exhausted).toBe(true)
+    expect(state.problems.map(problem => problem.code)).toContain('remote-host-restart-exhausted')
+    await bridge.dispose()
+  })
+
+  it('does not restart after the user disables the remote host', async () => {
+    const config = configuration({ enabled: true, tunnel: tunnel({ frpcPath: '' }) })
+    const { bridge, supervisor } = await bench({ config, ...fast })
+    await bridge.initialize()
+    expect(supervisor.start).toHaveBeenCalledTimes(1)
+
+    await bridge.setEnabled(false)
+    supervisor.emitExit()
+    await sleep(20)
+    expect(supervisor.start).toHaveBeenCalledTimes(1)
+    await bridge.dispose()
+  })
+
+  it('waits for the restarted host before starting frpc again', async () => {
+    const config = configuration({ enabled: true, tunnel: tunnel() })
+    const { bridge, supervisor, tunnelSupervisor, calls } = await bench({ config, ...fast })
+    await bridge.initialize()
+    await vi.waitFor(() => { expect(tunnelSupervisor.start).toHaveBeenCalled() }, { timeout: 3_000 })
+    calls.length = 0
+    const tunnelStarts = tunnelSupervisor.start.mock.calls.length
+
+    supervisor.emitExit()
+    await vi.waitFor(() => { expect(tunnelSupervisor.start.mock.calls.length).toBeGreaterThan(tunnelStarts) }, { timeout: 3_000 })
+    const hostStart = calls.indexOf('host.start')
+    const tunnelStart = calls.indexOf('tunnel.start')
+    expect(hostStart).toBeGreaterThanOrEqual(0)
+    expect(tunnelStart).toBeGreaterThan(hostStart)
+    await bridge.dispose()
   })
 })

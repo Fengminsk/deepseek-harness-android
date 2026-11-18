@@ -165,6 +165,7 @@ function createHost(options = {}) {
     request,
     ensureSession,
     limits: () => ({ maxFileBytes: options.maxFileBytes ?? 256 * 1024 * 1024 }),
+    retryDelaysMs: options.retryDelaysMs,
   })
   return { bridge, state, agents, fileUploads, imageStore, ensureSession }
 }
@@ -770,4 +771,82 @@ test('a wrapped-stream failure is cleared before an explicit retry uploads again
     assert.deepEqual(Buffer.concat(state.uploads[1].chunks), bytes)
     assert.equal((await bridge.content(SESSION, [id]))[0].receiptId, 'receipt-2')
   }, { wrapStreamingFailures: true })
+})
+
+test('file: a transient page failure is retried without advancing the offset', async () => {
+  await fixture(async ({ bridge, state }) => {
+    const id = randomUUID()
+    const bytes = Buffer.from('retry me\n'.repeat(2000))
+    let failures = 2
+    state.responder = params => {
+      if (failures > 0) {
+        failures -= 1
+        throw appFailure('gateway/timeout')
+      }
+      return serveBytes(bytes)(params)
+    }
+    const receipt = await bridge.prepare(fileMeta(id, bytes))
+    assert.equal(receipt.file.bytes, bytes.length)
+    assert.equal(state.reads.length, 3)
+    assert.ok(state.reads.every(read => read.params.offset === 0), '每次重试都从同一页起始位置重新读取')
+    assert.deepEqual(Buffer.concat(state.uploads[0].chunks), bytes)
+  }, { retryDelaysMs: [1, 1] })
+})
+
+test('file: permanent page failures are not retried', async () => {
+  await fixture(async ({ bridge, state }) => {
+    const id = randomUUID()
+    state.responder = () => {
+      throw appFailure('attachment-file/not-found')
+    }
+    await assert.rejects(bridge.prepare(fileMeta(id, Buffer.alloc(10))), { code: 'attachment-file/not-found' })
+    assert.equal(state.reads.length, 1)
+  }, { retryDelaysMs: [1, 1] })
+})
+
+test('file: retry budget is bounded and the last failure stays classifiable', async () => {
+  await fixture(async ({ bridge, state }) => {
+    const id = randomUUID()
+    state.responder = () => {
+      throw appFailure('gateway/timeout')
+    }
+    await assert.rejects(bridge.prepare(fileMeta(id, Buffer.alloc(10))), { code: 'gateway/timeout' })
+    assert.equal(state.reads.length, 5, '初始尝试 + 4 次重试')
+  }, { retryDelaysMs: [1, 1, 1, 1] })
+})
+
+test('file: cancellation during retry backoff aborts immediately', async () => {
+  await fixture(async ({ bridge, state }) => {
+    const id = randomUUID()
+    state.responder = () => {
+      throw appFailure('gateway/timeout')
+    }
+    const preparing = bridge.prepare(fileMeta(id, Buffer.alloc(10)))
+    const settled = preparing.catch(error => error)
+    await waitFor(() => state.reads.length === 1)
+    await bridge.release({ sessionId: SESSION, id })
+    const failure = await settled
+    assert.equal(failure.code, 'gateway/cancelled')
+    assert.equal(state.reads.length, 1, '取消后不再重试')
+  }, { retryDelaysMs: [20, 20] })
+})
+
+test('file: a 32MiB stream is pulled in bounded pages in exact order', async () => {
+  await fixture(async ({ bridge, state }) => {
+    const id = randomUUID()
+    const bytes = Buffer.alloc(32 * 1024 * 1024)
+    for (let index = 0; index < bytes.length; index += 4096) bytes[index] = index % 251
+    state.responder = serveBytes(bytes)
+    const receipt = await bridge.prepare(fileMeta(id, bytes))
+    assert.equal(receipt.file.bytes, bytes.length)
+    const pages = bytes.length / PAGE
+    assert.equal(state.reads.length, pages)
+    for (let index = 0; index < pages; index++) {
+      assert.equal(state.reads[index].params.offset, index * PAGE)
+    }
+    assert.equal(state.uploads[0].chunks.length, pages)
+    assert.ok(state.uploads[0].chunks.every(chunk => chunk.length <= PAGE), '单块不得超过一页')
+    assert.equal(receipt.file.attachmentId,
+      `sha256:${createHash('sha256').update(bytes).digest('hex')}`)
+  })
 })

@@ -535,3 +535,11 @@ C 的第二半（「是否允许按可用凭据自动选择默认模型」）**�
 | `packages/attachment/attachment-local/src/store.ts` | 349-388（流式入库与中止清理） |
 | `apps/remote-host/scripts/e2e-remote-host.ts` | 61-70（REQUIRED_METHODS）、89-99（本机拦截表）、972-991（反向请求应答） |
 | `apps/android/test/remote_conversation_page_test.dart` | 1070-1168（路由提示用例） |
+
+#### 3.4.7 大文件与弱网加固（task-48）
+
+- **宿主逐页重试**：`attachments-desktop.mjs` 的 `native.attachments.read` 分页拉取对可重试失败（`gateway/timeout`、`gateway/unavailable`）做指数退避：300ms→600→1200→2400，共 5 次尝试；`attachment-file/*`、unsupported、声明/对账失败立即失败；退避受记录 lifetime signal 取消。重试不写入额外数据，offset 只在本页校验成功后推进。
+- **prepare 长超时**：App 对 `attachments.prepare` 使用 `max(90s, 30s + ceil(bytes/64KiB)×1s)`、上限 2h（`remoteAttachmentPrepareTimeout`）；普通请求仍为 90s 兜底。
+- **大小上限**：宿主 `attachmentFileMaxBytes` 通过插件生成的 remote-host overlay 显式设为 2 GiB（`2147483648`），overlay 同时重述 `platform: desktop`，因为 loader patch 对同 id 的 `config` 是整体替换；App 侧超过 2 GiB 在选择后、发请求前给出「文件超过 2 GB」可读错误。
+- **流式与内存**：宿主保持 pull generator → `ctx.fileUploads.uploadStream`，不把整文件读进内存；App 侧从私有副本分页读取，不引入 base64 整包；32 MiB 单测验证 128 页顺序与每块 ≤256 KiB。
+- **进度与失败提示**：当前 prepare 仍是单个 RPC，App 没有逐页进度回调；失败沿用 `AttachmentDrafts` 的可重试错误态并保留草稿。断线由传输层立即以 `gateway/cancelled`/`gateway/unavailable` 结束，不会等满长超时。

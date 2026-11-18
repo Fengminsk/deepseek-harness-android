@@ -177,3 +177,4 @@ The bundle adds no request content, so it neither grows nor invalidates a cached
 None.
 
 </details>
+- **Supervised children restart after unexpected exits** — the bridge restarts the remote host or frpc child with 2s→30s capped exponential backoff (5 attempts) when the configuration is enabled and the user did not stop it; repeated crashes stop auto-restart and surface a `remote-host-restart-exhausted` / `frpc-restart-exhausted` problem with `restartCount` / `nextRetryAt` in the runtime state. A remote host restarted to apply a tunnel origin waits for host readiness before frpc starts again; there is no independent 30s control-plane health probe, so a hung (not exited) child is not restarted.

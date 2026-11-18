@@ -17,6 +17,10 @@ const READ_METHOD = 'native.attachments.read'
 const PAGE_BYTES = 256 * 1024
 /** 远程预览上限：下行单帧 16 MiB，8 MiB 原始字节 base64 后约 10.7 MiB，留出信封余量。 */
 const MAX_PREVIEW_BYTES = 8 * 1024 * 1024
+/** 单页反向请求的重试退避（毫秒）：共 5 次尝试，最后一次失败即整体失败。 */
+const DEFAULT_RETRY_DELAYS_MS = [300, 600, 1200, 2400]
+/** 可重试失败码：其它 `attachment-file/*`、unsupported 与对账失败都是永久失败。 */
+const RETRYABLE_CODES = new Set(['gateway/timeout', 'gateway/unavailable'])
 /** 与 `attachments.mjs` 相同的 uuid v4 语法：只接受 `attachment.pick` 产生的私有草稿标识。 */
 const attachmentId = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 const imageTypes = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif'])
@@ -133,6 +137,27 @@ function raceAbort(promise, signal) {
   return Promise.race([promise, aborted]).finally(() => signal.removeEventListener('abort', onAbort))
 }
 
+/**
+ * 可取消的退避等待：连接解绑/用户取消时立即以记录的中止原因失败，不等定时器。
+ * @param {number} delayMs 退避毫秒数
+ * @param {AbortSignal} signal 记录的生命周期信号
+ * @returns {Promise<void>} 等待完成
+ */
+function waitForRetry(delayMs, signal) {
+  signal.throwIfAborted()
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, delayMs)
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(signal.reason)
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
 /** 桌面宿主侧的附件适配器：字节只在手机上，宿主按页拉取后直接交给 DSH 附件入库。 */
 export class DesktopAppAttachments {
   /**
@@ -142,7 +167,7 @@ export class DesktopAppAttachments {
    * @param {(sessionId: string) => Promise<unknown>} deps.ensureSession 复用 `AppSessions.ensure`
    * @param {() => { maxFileBytes: number }} deps.limits 宿主附件大小配置（`attachmentFileMaxBytes`）
    */
-  constructor(ctx, { request, ensureSession, limits } = {}) {
+  constructor(ctx, { request, ensureSession, limits, retryDelaysMs } = {}) {
     if (typeof request !== 'function' || typeof ensureSession !== 'function' || typeof limits !== 'function') {
       throw new TypeError('DesktopAppAttachments requires request, ensureSession and limits')
     }
@@ -150,6 +175,10 @@ export class DesktopAppAttachments {
     this.request = request
     this.ensureSession = ensureSession
     this.limits = limits
+    // 测试可以缩短退避；生产固定 300→600→1200→2400ms（见 DEFAULT_RETRY_DELAYS_MS）。
+    this.retryDelaysMs = Array.isArray(retryDelaysMs) && retryDelaysMs.every(
+      delay => Number.isSafeInteger(delay) && delay >= 0,
+    ) ? [...retryDelaysMs] : DEFAULT_RETRY_DELAYS_MS
     this.records = new Map()
     this.closed = false
     // 与本地实现一致：一次只解码/校验一张图片，图片编解码策略仍由 DSH 附件服务拥有。
@@ -317,17 +346,27 @@ export class DesktopAppAttachments {
   async page(record, offset) {
     const signal = record.lifetime.signal
     signal.throwIfAborted()
-    const pending = Promise.resolve().then(() => this.request(READ_METHOD, {
-      id: record.id, offset, length: PAGE_BYTES,
-    }))
-    let response
-    try {
-      response = await raceAbort(pending, signal)
-    } catch (failure) {
-      throw this.readFailure(failure, record)
+    // 只重试「这一页的请求」：页面校验（对账/坏 payload）与 attachment-file/* 永久失败
+    // 直接抛出；重试期间没有写入任何字节，offset 仍停在本页起始位置。
+    let attempt = 0
+    for (;;) {
+      signal.throwIfAborted()
+      const pending = Promise.resolve().then(() => this.request(READ_METHOD, {
+        id: record.id, offset, length: PAGE_BYTES,
+      }))
+      let response
+      try {
+        response = await raceAbort(pending, signal)
+      } catch (failure) {
+        const mapped = this.readFailure(failure, record)
+        if (!RETRYABLE_CODES.has(mapped.code) || attempt >= this.retryDelaysMs.length) throw mapped
+        await waitForRetry(this.retryDelaysMs[attempt], signal)
+        attempt += 1
+        continue
+      }
+      signal.throwIfAborted()
+      return readPage(response, offset)
     }
-    signal.throwIfAborted()
-    return readPage(response, offset)
   }
 
   /**
@@ -363,6 +402,10 @@ export class DesktopAppAttachments {
       return attachmentFailure(code, '附件读取请求无效，请重新选择。')
     }
     if (code === 'gateway/cancelled') return attachmentFailure(code, '连接已断开，请重试。')
+    // 超时/暂不可用是可重试的传输错误：交给 page() 的退避重试，最终失败仍保留
+    // 可分类 code，App 提示「传输中断，可重试」。
+    if (code === 'gateway/timeout') return attachmentFailure(code, '电脑上的 DSH 响应超时，请重试。')
+    if (code === 'gateway/unavailable') return attachmentFailure(code, '与手机的连接暂不可用，请重试。')
     if (wire !== undefined || code !== undefined) {
       return attachmentFailure('attachment-file/unavailable', '手机没有返回可用的附件数据，请重试。')
     }

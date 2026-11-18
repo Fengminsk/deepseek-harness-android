@@ -650,6 +650,53 @@ void main() {
         ),
       );
     });
+
+    test('prepare 长超时按字节数计算并封顶 2 小时', () {
+      expect(remoteAttachmentPrepareTimeout(0), const Duration(seconds: 90));
+      expect(remoteAttachmentPrepareTimeout(1), const Duration(seconds: 90));
+      expect(remoteAttachmentPrepareTimeout(64 * 1024), const Duration(seconds: 90));
+      expect(
+        remoteAttachmentPrepareTimeout(32 * 1024 * 1024),
+        const Duration(seconds: 30 + 512),
+      );
+      expect(
+        remoteAttachmentPrepareTimeout(2 * 1024 * 1024 * 1024),
+        const Duration(hours: 2),
+      );
+    });
+
+    test('超过 2GB 的附件在发请求前给出可读错误', () async {
+      final transport = _RecordingTransport();
+      final bridge = RemoteNativeBridge(
+        invokeDevice: _DeviceCache(const []).invoke,
+      );
+      final surface = RemoteAttachmentSurface(
+        connection: _FakeAttachmentConnection(transport: transport),
+        bridge: bridge,
+      );
+      addTearDown(surface.dispose);
+
+      await expectLater(
+        surface.call(remoteAttachmentPrepareMethod, <String, dynamic>{
+          'sessionId': 's-1',
+          'id': _attachmentId,
+          'name': '超大文件.bin',
+          'mediaType': 'application/octet-stream',
+          'bytes': remoteAttachmentMaxBytes + 1,
+        }),
+        throwsA(
+          isA<RemoteAttachmentFailure>()
+              .having((failure) => failure.code, 'code', 'attachment-file/too-large')
+              .having(
+                (failure) => failure.message,
+                'message',
+                contains('2 GB'),
+              ),
+        ),
+      );
+      expect(transport.requests, isEmpty);
+      expect(bridge.allows(_attachmentId), isFalse);
+    });
   });
 
   // ------------------------------------------------------------ 草稿 + 上行链路

@@ -422,8 +422,28 @@ export interface RuntimeState {
   readonly devices: readonly RemoteDevice[]
   /** Whether the runner can start. */
   readonly runner: RunnerReadiness
+  /** Automatic-restart bookkeeping for the two supervised children. */
+  readonly recovery?: RuntimeRecovery
   /** Activation-time problems the page reports above the cards. */
   readonly problems: readonly Diagnostic[]
+}
+
+/** Auto-restart facts of one supervised child. */
+export interface RecoveryState {
+  /** How many automatic restarts have been started since the bridge began. */
+  readonly restartCount: number
+  /** Unix time of the next scheduled auto-restart; absent when none is pending. */
+  readonly nextRetryAt?: number
+  /** True when restarts stopped after repeated crashes. */
+  readonly exhausted?: boolean
+}
+
+/** Auto-restart facts for the remote host and the frpc tunnel. */
+export interface RuntimeRecovery {
+  /** Remote-host child recovery. */
+  readonly host: RecoveryState
+  /** Tunnel child recovery. */
+  readonly tunnel: RecoveryState
 }
 
 /** One JSON error body every Host bridge route returns on failure. */

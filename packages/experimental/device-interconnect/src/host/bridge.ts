@@ -73,6 +73,10 @@ export interface BridgeOptions {
   readonly platform?: NodeJS.Platform
   /** CPU architecture used for the frpc download; defaults to `process.arch`. */
   readonly arch?: string
+  /** Auto-restart backoff for an unexpected child exit; defaults to 2s→4s→…→30s. */
+  readonly restartDelaysMs?: readonly number[]
+  /** A restarted child is considered healthy after this long; defaults to 10s. */
+  readonly restartHealthyMs?: number
   /** Lifecycle log sink. */
   readonly logger?: {
     info(message: string, ...rest: unknown[]): void
@@ -85,6 +89,23 @@ export interface BridgeOptions {
 type ControlPlaneRead =
   | { readonly ok: true; readonly state: ControlPlaneState }
   | { readonly ok: false; readonly error: Diagnostic }
+
+/** Default auto-restart backoff: 2s, 4s, 8s, 16s, 30s (cap). */
+const DEFAULT_RESTART_DELAYS_MS: readonly number[] = [2_000, 4_000, 8_000, 16_000, 30_000]
+/** Consecutive restart attempts allowed before giving up. */
+const MAX_RESTART_ATTEMPTS = 5
+/** A restarted child that stays up this long resets the failure chain. */
+const DEFAULT_RESTART_HEALTHY_MS = 10_000
+
+/** One child's auto-restart bookkeeping. */
+interface ChildRecovery {
+  restartCount: number
+  attempts: number
+  nextRetryAt: number | undefined
+  exhausted: boolean
+  timer: NodeJS.Timeout | undefined
+  healthyTimer: NodeJS.Timeout | undefined
+}
 
 /** The Settings page bridge. */
 export class Bridge {
@@ -105,6 +126,16 @@ export class Bridge {
   private readonly latencyProbe: (targets: readonly LatencyTarget[]) => Promise<readonly LatencySample[]>
   private readonly platform: NodeJS.Platform
   private readonly arch: string
+  private readonly restartDelaysMs: readonly number[]
+  private readonly restartHealthyMs: number
+  private readonly hostRecovery: ChildRecovery = Bridge.recovery()
+  private readonly tunnelRecovery: ChildRecovery = Bridge.recovery()
+  /** Intent state: true when the child is supposed to run (unexpected exit means restart). */
+  private hostDesired = false
+  private tunnelDesired = false
+  /** Set while the bridge itself stops/restarts a child, so the exit is expected. */
+  private hostProgrammatic = false
+  private tunnelProgrammatic = false
   private readonly activationProblems: Diagnostic[]
   private cachedRead: { readonly at: number; readonly read: ControlPlaneRead } | undefined
   private appliedPublicOrigin: string | undefined
@@ -143,7 +174,11 @@ export class Bridge {
       arch: this.arch,
     }))
     this.latencyProbe = options.latencyProbe ?? createTcpLatencyProbe()
+    this.restartDelaysMs = options.restartDelaysMs ?? DEFAULT_RESTART_DELAYS_MS
+    this.restartHealthyMs = options.restartHealthyMs ?? DEFAULT_RESTART_HEALTHY_MS
     this.activationProblems = this.store.problems().map(message => ({ code: 'config-unreadable', message }))
+    this.supervisor.on('exit', () => { this.onChildExit('host') })
+    this.tunnelSupervisor.on('exit', () => { this.onChildExit('tunnel') })
   }
 
   /**
@@ -202,8 +237,9 @@ export class Bridge {
     if (typeof enabled !== 'boolean') throw new ConfigValidationError(['tunnel.enabled 必须是 true 或 false。'])
     this.cachedRead = undefined
     if (!enabled) {
+      this.tunnelDesired = false
       this.cancelTunnelStartup()
-      await this.tunnelSupervisor.stop()
+      await this.stopTunnelChild()
       return this.state()
     }
     const { task } = this.startTunnelStartup(signal => this.startTunnelNow(signal))
@@ -444,11 +480,151 @@ export class Bridge {
    */
   async dispose(): Promise<void> {
     this.disposed = true
+    this.hostDesired = false
+    this.tunnelDesired = false
+    for (const recovery of [this.hostRecovery, this.tunnelRecovery]) {
+      if (recovery.timer !== undefined) clearTimeout(recovery.timer)
+      recovery.timer = undefined
+      recovery.nextRetryAt = undefined
+      if (recovery.healthyTimer !== undefined) clearTimeout(recovery.healthyTimer)
+      recovery.healthyTimer = undefined
+    }
     this.cancelTunnelStartup()
     const pending = this.tunnelStartupTask
     if (pending !== undefined) await pending
     await this.tunnelSupervisor.dispose()
     await this.supervisor.dispose()
+  }
+
+  /** Empty auto-restart bookkeeping for one child. */
+  private static recovery(): ChildRecovery {
+    return { restartCount: 0, attempts: 0, nextRetryAt: undefined, exhausted: false, timer: undefined, healthyTimer: undefined }
+  }
+
+  private recoveryOf(kind: 'host' | 'tunnel'): ChildRecovery {
+    return kind === 'host' ? this.hostRecovery : this.tunnelRecovery
+  }
+
+  /**
+   * One supervised child ended. Unexpected exits of a child the configuration
+   * wants running are restarted with capped exponential backoff; intentional
+   * stops (user switch, restart, dispose) carry `programmatic` and are ignored.
+   * @param kind - which child ended.
+   */
+  private onChildExit(kind: 'host' | 'tunnel'): void {
+    if (this.disposed) return
+    const desired = kind === 'host' ? this.hostDesired : this.tunnelDesired
+    const programmatic = kind === 'host' ? this.hostProgrammatic : this.tunnelProgrammatic
+    if (!desired || programmatic) return
+    const info = this.recoveryOf(kind)
+    if (info.exhausted || info.timer !== undefined) return
+    if (info.attempts >= MAX_RESTART_ATTEMPTS) {
+      info.exhausted = true
+      info.nextRetryAt = undefined
+      this.logger.error('device-interconnect: %s child crashed %s times; auto-restart stopped', kind, String(info.attempts))
+      return
+    }
+    const delay = this.restartDelaysMs[Math.min(info.attempts, this.restartDelaysMs.length - 1)] ?? 30_000
+    info.attempts += 1
+    info.restartCount += 1
+    info.nextRetryAt = this.now() + delay
+    info.timer = setTimeout(() => { void this.attemptRestart(kind) }, delay)
+    info.timer.unref?.()
+    this.logger.warn('device-interconnect: %s child exited unexpectedly; restart in %s ms (attempt %s)', kind, String(delay), String(info.attempts))
+  }
+
+  /**
+   * Execute one scheduled auto-restart. The host restarts first, then the tunnel
+   * waits for host readiness again; the tunnel child restarts on its own.
+   * @param kind - which child to restart.
+   */
+  private async attemptRestart(kind: 'host' | 'tunnel'): Promise<void> {
+    const info = this.recoveryOf(kind)
+    info.timer = undefined
+    info.nextRetryAt = undefined
+    if (this.disposed || info.exhausted) return
+    const config = this.store.current()
+    try {
+      if (kind === 'host') {
+        if (!config.enabled || !this.runnerReadiness(config).ready) {
+          this.hostDesired = false
+          info.attempts = 0
+          return
+        }
+        await this.applyOverlay(config)
+        if (this.disposed) return
+        this.supervisor.start(this.launchCommand(config))
+        this.hostDesired = this.supervisor.status().running
+        if (!this.hostDesired) {
+          this.onChildExit('host')
+          return
+        }
+        this.scheduleHealthyReset('host')
+        // The new host generation has a fresh origin/listener: the tunnel waits again.
+        this.tunnelDesired = false
+        this.cancelTunnelStartup()
+        await this.stopTunnelChild()
+        if (this.tunnelWanted(config)) this.deferTunnelStart()
+        return
+      }
+      if (!this.tunnelWanted(config) || !this.supervisor.status().running) {
+        this.tunnelDesired = false
+        info.attempts = 0
+        return
+      }
+      this.tunnelSupervisor.start(tunnelLaunchCommand(config.tunnel, this.dataDir, this.env, this.frpcPathFor(config.tunnel)))
+      this.tunnelDesired = this.tunnelSupervisor.status().running
+      if (this.tunnelDesired) this.scheduleHealthyReset('tunnel')
+      else this.onChildExit('tunnel')
+    } catch (error) {
+      this.logger.warn('device-interconnect: %s auto-restart failed: %s', kind, describeError(error))
+      this.onChildExit(kind)
+    }
+  }
+
+  /** Reset the consecutive-failure chain once a restarted child stays up. */
+  private scheduleHealthyReset(kind: 'host' | 'tunnel'): void {
+    const info = this.recoveryOf(kind)
+    if (info.healthyTimer !== undefined) clearTimeout(info.healthyTimer)
+    info.healthyTimer = setTimeout(() => {
+      info.healthyTimer = undefined
+      const status = kind === 'host' ? this.supervisor.status() : this.tunnelSupervisor.status()
+      if (!this.disposed && status.running) {
+        info.attempts = 0
+        info.nextRetryAt = undefined
+      }
+    }, this.restartHealthyMs)
+    info.healthyTimer.unref?.()
+  }
+
+  /** Stop the host child without letting the exit trigger auto-restart. */
+  private async stopHostChild(): Promise<void> {
+    this.hostProgrammatic = true
+    try {
+      await this.supervisor.stop()
+    } finally {
+      this.hostProgrammatic = false
+    }
+  }
+
+  /** Restart the host child without letting the old exit trigger auto-restart. */
+  private async restartHostChild(command: LaunchCommand): Promise<void> {
+    this.hostProgrammatic = true
+    try {
+      await this.supervisor.restart(command)
+    } finally {
+      this.hostProgrammatic = false
+    }
+  }
+
+  /** Stop the tunnel child without letting the exit trigger auto-restart. */
+  private async stopTunnelChild(): Promise<void> {
+    this.tunnelProgrammatic = true
+    try {
+      await this.tunnelSupervisor.stop()
+    } finally {
+      this.tunnelProgrammatic = false
+    }
   }
 
   /** Start, stop, or restart both children so the current configuration is in force. */
@@ -457,22 +633,31 @@ export class Bridge {
     // A restarted or disabled remote host invalidates the tunnel mapping, so the
     // tunnel always stops first; the callers start it again once the host is ready.
     if (restart || !this.tunnelWanted(config)) {
+      this.tunnelDesired = false
       this.cancelTunnelStartup()
-      await this.tunnelSupervisor.stop()
+      await this.stopTunnelChild()
     }
     if (!config.enabled) {
-      await this.supervisor.stop()
+      this.hostDesired = false
+      await this.stopHostChild()
       return
     }
     const readiness = this.runnerReadiness(config)
-    if (!readiness.ready) return
+    if (!readiness.ready) {
+      this.hostDesired = false
+      return
+    }
     await this.applyOverlay(config)
     const command = this.launchCommand(config)
     if (restart) {
-      await this.supervisor.restart(command)
+      this.hostDesired = true
+      await this.restartHostChild(command)
+      if (this.supervisor.status().running) this.scheduleHealthyReset('host')
       return
     }
     if (!this.supervisor.status().running) this.supervisor.start(command)
+    this.hostDesired = this.supervisor.status().running
+    if (this.hostDesired) this.scheduleHealthyReset('host')
   }
 
   /** Write the generated overlay, recording the origin the child will announce. */
@@ -496,8 +681,43 @@ export class Bridge {
       pairing: this.pairingView(config, cpState),
       devices: cpState?.devices ?? [],
       runner: this.runnerReadiness(config),
-      problems: [...this.activationProblems],
+      recovery: {
+        host: this.recoveryView(this.hostRecovery),
+        tunnel: this.recoveryView(this.tunnelRecovery),
+      },
+      problems: [...this.activationProblems, ...this.recoveryProblems()],
     }
+  }
+
+  /** Project one child's auto-restart bookkeeping onto the wire document. */
+  private recoveryView(info: ChildRecovery): {
+    restartCount: number
+    nextRetryAt?: number
+    exhausted?: boolean
+  } {
+    return {
+      restartCount: info.restartCount,
+      ...(info.nextRetryAt === undefined ? {} : { nextRetryAt: info.nextRetryAt }),
+      ...(info.exhausted ? { exhausted: true } : {}),
+    }
+  }
+
+  /** Problems reported after auto-restart stopped retrying. */
+  private recoveryProblems(): Diagnostic[] {
+    const problems: Diagnostic[] = []
+    if (this.hostRecovery.exhausted) {
+      problems.push({
+        code: 'remote-host-restart-exhausted',
+        message: '远程宿主连续异常退出，已停止自动重启；请检查运行器配置或手动重新启用。',
+      })
+    }
+    if (this.tunnelRecovery.exhausted) {
+      problems.push({
+        code: 'frpc-restart-exhausted',
+        message: 'frpc 隧道子进程连续异常退出，已停止自动重启；请检查隧道配置后手动启动。',
+      })
+    }
+    return problems
   }
 
   /** Project the persisted configuration onto the wire document, dropping the access key. */
@@ -655,6 +875,8 @@ export class Bridge {
     const current = this.store.current()
     if (!this.tunnelWanted(current) || this.tunnelSupervisor.status().running) return
     this.tunnelSupervisor.start(tunnelLaunchCommand(current.tunnel, this.dataDir, this.env, this.frpcPathFor(current.tunnel)))
+    this.tunnelDesired = this.tunnelSupervisor.status().running
+    if (this.tunnelDesired) this.scheduleHealthyReset('tunnel')
     this.logger.info('device-interconnect: frpc tunnel child started')
   }
 
@@ -687,6 +909,8 @@ export class Bridge {
     if (!ready) throw new TunnelError('tunnel-host-not-ready', 409, '远程宿主尚未就绪（监听端口未确认），请稍后重试。')
     if (this.tunnelSupervisor.status().running) return
     this.tunnelSupervisor.start(tunnelLaunchCommand(config.tunnel, this.dataDir, this.env, this.frpcPathFor(config.tunnel)))
+    this.tunnelDesired = this.tunnelSupervisor.status().running
+    if (this.tunnelDesired) this.scheduleHealthyReset('tunnel')
     this.logger.info('device-interconnect: frpc tunnel child started')
   }
 
@@ -696,7 +920,9 @@ export class Bridge {
     const effective = withTunnelOrigin(config)
     if (this.appliedPublicOrigin === effective.host.publicOrigin) return
     await this.applyOverlay(config)
-    await this.supervisor.restart(this.launchCommand(config))
+    this.hostDesired = true
+    await this.restartHostChild(this.launchCommand(config))
+    if (this.supervisor.status().running) this.scheduleHealthyReset('host')
     this.logger.info('device-interconnect: remote host restarted to apply the tunnel public origin')
   }
 
