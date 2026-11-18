@@ -136,6 +136,7 @@ class RemoteDshCatalogSession {
     required this.id,
     this.cwd = '',
     this.title = '',
+    this.running = false,
   });
 
   /// 会话标识。
@@ -146,6 +147,9 @@ class RemoteDshCatalogSession {
 
   /// 会话标题；没有标题时为空字符串。
   final String title;
+
+  /// 目录行是否带 `running: true`；多数 `library.catalog` 应答不带这个字段。
+  final bool running;
 
   /// 展示用标题：没有标题时退回占位文案。
   String get displayTitle =>
@@ -247,6 +251,7 @@ RemoteDshCatalog parseRemoteDshCatalog(Object? raw) {
           id: id,
           cwd: _stringOf(entry['cwd']),
           title: _sessionTitleOf(entry),
+          running: entry['running'] == true,
         ),
       );
     }
@@ -1677,6 +1682,9 @@ class RemoteDshLiveSource
               // 本轮不接，页面因此不会把任何会话排进「优先级」。
               pendingCount: 0,
               updatedAt: _sessionUpdatedAt(raw),
+              // 宿主 `session.list` 行携带 running:true 表示该会话正在执行；缺失按
+              // 未运行处理。字符串 "true" 不算，避免把投影里的其它字段误读成状态。
+              running: _sessionRunning(raw),
             ),
           );
     }
@@ -1701,6 +1709,13 @@ class RemoteDshLiveSource
     }
     final id = row['sessionId'];
     return id is String && id.isNotEmpty ? id : null;
+  }
+
+  /// 会话是否正在工作：优先顶层 `running`，兼容放在 `header` 里的行形状。
+  static bool _sessionRunning(Map<dynamic, dynamic> row) {
+    if (row['running'] == true) return true;
+    final header = row['header'];
+    return header is Map && header['running'] == true;
   }
 
   static String _sessionTitle(Map<dynamic, dynamic> row) {

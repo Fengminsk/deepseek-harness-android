@@ -239,11 +239,13 @@ class RemoteSectionLabel extends StatelessWidget {
 /// 会话行：标题加可选右侧计数，带点击回调。
 ///
 /// 标题最多两行后省略；[trailingCount] 为 null 或不大于 0 时不显示计数。
+/// [running] 为 true 时在标题前放一个 8px 绿点，表示宿主上这个会话正在工作。
 class RemoteSessionRow extends StatelessWidget {
   const RemoteSessionRow({
     super.key,
     required this.title,
     this.trailingCount,
+    this.running = false,
     this.selected = false,
     this.plain = false,
     this.plainInset = 44,
@@ -256,6 +258,9 @@ class RemoteSessionRow extends StatelessWidget {
 
   /// 可选的右侧计数，例如待办数量。
   final int? trailingCount;
+
+  /// 宿主上这个会话是否正在执行（`sessions.list` 的 `running`）。
+  final bool running;
 
   /// 是否为当前会话。
   final bool selected;
@@ -271,6 +276,25 @@ class RemoteSessionRow extends StatelessWidget {
 
   /// 打开会话的回调；为 null 时不可点。
   final VoidCallback? onTap;
+
+  /// 标题（running 时前面带状态点）。
+  Widget _title(BuildContext context) {
+    final text = Text(
+      title,
+      maxLines: 2,
+      overflow: TextOverflow.ellipsis,
+      style: plain ? AppTextStyle.subheadline.of(context) : null,
+    );
+    if (!running) return text;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const _RunningDot(),
+        const SizedBox(width: 8),
+        Expanded(child: text),
+      ],
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -290,12 +314,7 @@ class RemoteSessionRow extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        title,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: AppTextStyle.subheadline.of(context),
-                      ),
+                      _title(context),
                       if (contextLabel != null) ...[
                         const SizedBox(height: 3),
                         Text(
@@ -333,7 +352,7 @@ class RemoteSessionRow extends StatelessWidget {
             vertical: 10,
           ),
           selected: selected,
-          title: Text(title, maxLines: 2, overflow: TextOverflow.ellipsis),
+          title: _title(context),
           trailing: count == null || count <= 0
               ? null
               : Text(
@@ -350,10 +369,38 @@ class RemoteSessionRow extends StatelessWidget {
   }
 }
 
+/// 正在工作的会话标题前的 8px 绿点。
+///
+/// 固定 8px、不参与行高；非 running 的行不渲染它，标题起点不会偏移。
+class _RunningDot extends StatelessWidget {
+  const _RunningDot();
+
+  /// 状态色：与系统「进行中」语义一致，深浅主题下都可见。
+  static const Color color = Color(0xFF34C759);
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      label: '正在工作',
+      child: Container(
+        key: const ValueKey('remote-running-dot'),
+        width: 8,
+        height: 8,
+        margin: const EdgeInsets.only(top: 7),
+        decoration: const BoxDecoration(
+          color: color,
+          shape: BoxShape.circle,
+        ),
+      ),
+    );
+  }
+}
+
 /// 可折叠的项目分组：文件夹图标、项目名与展开后的若干 [RemoteSessionRow]。
 ///
-/// 折叠状态属于本组件的展示状态，只在首次挂载时读取 [initiallyExpanded]；
-/// 之后完全由用户点按标题决定，不受父页面重建影响。
+/// 展开状态默认由本组件自己保存（[initiallyExpanded] 只在首次挂载时读取）；
+/// 同时传入 [expanded] 与 [onExpandedChanged] 时改为受控，由父页面持有并持久化
+/// 状态——首页的列表会因轮询、搜索、切换设备而重建/重排，状态不能只活在组件里。
 class RemoteProjectGroup extends StatefulWidget {
   const RemoteProjectGroup({
     super.key,
@@ -365,6 +412,8 @@ class RemoteProjectGroup extends StatefulWidget {
     this.onCreate,
     this.deviceLabel,
     this.trailing,
+    this.expanded,
+    this.onExpandedChanged,
   });
 
   /// 项目名，过长时单行省略。
@@ -373,7 +422,7 @@ class RemoteProjectGroup extends StatefulWidget {
   /// 展开后显示的内容，通常是若干 [RemoteSessionRow]。
   final List<Widget> children;
 
-  /// 首次挂载时是否展开。
+  /// 非受控模式下的首次展开状态。
   final bool initiallyExpanded;
 
   /// 首页参照图使用无卡片的项目分组。
@@ -391,32 +440,59 @@ class RemoteProjectGroup extends StatefulWidget {
   /// 标题右侧、折叠箭头之前的附加信息，例如会话数量。
   final Widget? trailing;
 
+  /// 受控展开状态；与 [onExpandedChanged] 同时提供时生效。
+  final bool? expanded;
+
+  /// 用户点按标题后的展开状态变化；与 [expanded] 同时提供时生效。
+  final ValueChanged<bool>? onExpandedChanged;
+
   @override
   State<RemoteProjectGroup> createState() => _RemoteProjectGroupState();
 }
 
 class _RemoteProjectGroupState extends State<RemoteProjectGroup> {
-  late bool _expanded = widget.initiallyExpanded;
+  late bool _localExpanded = widget.initiallyExpanded;
+
+  /// 受控模式要求两个参数都在；只给一个时保持旧的自管行为。
+  bool get _controlled =>
+      widget.expanded != null && widget.onExpandedChanged != null;
+
+  bool get _expanded => _controlled ? widget.expanded! : _localExpanded;
+
+  void _toggle() {
+    final next = !_expanded;
+    final callback = widget.onExpandedChanged;
+    if (_controlled) {
+      callback!(next);
+    } else {
+      setState(() => _localExpanded = next);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     final reduceMotion = MediaQuery.disableAnimationsOf(context);
     final trailing = widget.trailing;
+    final expanded = _expanded;
     if (widget.plain) {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Semantics(
-            expanded: _expanded,
+            expanded: expanded,
             button: true,
             child: InkWell(
-              onTap: () => setState(() => _expanded = !_expanded),
+              onTap: _toggle,
+              // 折叠态收紧整个列表：项目头 10/8、图标 20，展开态保留 16/10 与
+              // 22px 图标，给会话行留出呼吸空间。
               child: Padding(
-                padding: const EdgeInsets.fromLTRB(2, 16, 2, 10),
+                padding: expanded
+                    ? const EdgeInsets.fromLTRB(2, 16, 2, 10)
+                    : const EdgeInsets.fromLTRB(2, 10, 2, 8),
                 child: Row(
                   children: [
-                    const Icon(Icons.folder_outlined, size: 22),
-                    const SizedBox(width: 10),
+                    Icon(Icons.folder_outlined, size: expanded ? 22 : 20),
+                    SizedBox(width: expanded ? 10 : 8),
                     Expanded(
                       child: Text(
                         widget.name,
@@ -448,7 +524,7 @@ class _RemoteProjectGroupState extends State<RemoteProjectGroup> {
                         icon: const Icon(Icons.edit_square, size: 21),
                       ),
                     AnimatedRotation(
-                      turns: _expanded ? .25 : 0,
+                      turns: expanded ? .25 : 0,
                       duration: reduceMotion
                           ? Duration.zero
                           : const Duration(milliseconds: 200),
@@ -465,7 +541,7 @@ class _RemoteProjectGroupState extends State<RemoteProjectGroup> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: widget.children,
             ),
-            crossFadeState: _expanded
+            crossFadeState: expanded
                 ? CrossFadeState.showSecond
                 : CrossFadeState.showFirst,
             duration: reduceMotion
@@ -479,7 +555,7 @@ class _RemoteProjectGroupState extends State<RemoteProjectGroup> {
     return PocketSection(
       children: [
         Semantics(
-          expanded: _expanded,
+          expanded: expanded,
           child: PocketTile(
             contentPadding: const EdgeInsets.symmetric(
               horizontal: 14,
@@ -496,7 +572,7 @@ class _RemoteProjectGroupState extends State<RemoteProjectGroup> {
               children: [
                 if (trailing != null) ...[trailing, const SizedBox(width: 6)],
                 AnimatedRotation(
-                  turns: _expanded ? .25 : 0,
+                  turns: expanded ? .25 : 0,
                   duration: reduceMotion
                       ? Duration.zero
                       : const Duration(milliseconds: 200),
@@ -504,10 +580,10 @@ class _RemoteProjectGroupState extends State<RemoteProjectGroup> {
                 ),
               ],
             ),
-            onTap: () => setState(() => _expanded = !_expanded),
+            onTap: _toggle,
           ),
         ),
-        if (_expanded) ...widget.children,
+        if (expanded) ...widget.children,
       ],
     );
   }

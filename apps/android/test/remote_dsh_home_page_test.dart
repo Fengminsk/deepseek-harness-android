@@ -483,6 +483,20 @@ List<RemoteDshProject> _projects() => const <RemoteDshProject>[
 Finder _sessionRow(String id) =>
     find.byKey(ValueKey('remote-session-device-1-$id'));
 
+/// 项目折叠动画是否已经收到「只显示项目头」。
+///
+/// 不能用会话行不存在来断言折叠：AnimatedCrossFade 会同时保留两个 child，
+/// 折叠后的会话行仍在 widget 树里，只是被淡出并收成零高。
+bool _projectCollapsed(WidgetTester tester, String deviceProjectKey) {
+  final fade = tester.widget<AnimatedCrossFade>(
+    find.descendant(
+      of: find.byKey(ValueKey('remote-project-$deviceProjectKey')),
+      matching: find.byType(AnimatedCrossFade),
+    ),
+  );
+  return fade.crossFadeState == CrossFadeState.showFirst;
+}
+
 /// 输入卡里的文本框。
 Finder _composerField() => find.byKey(PocketComposer.inputKey);
 
@@ -704,6 +718,195 @@ void main() {
       expect(find.byType(CircularProgressIndicator), findsWidgets);
       expect(find.text('正在连接「新电脑」'), findsOneWidget);
       expect(find.byIcon(Icons.hourglass_top_rounded), findsNothing);
+    });
+  });
+
+  group('会话运行状态与项目折叠', () {
+    testWidgets('running 会话标题前显示绿点，非 running 不显示', (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: pocketTheme(Brightness.light),
+          home: Scaffold(
+            body: Column(
+              children: <Widget>[
+                RemoteSessionRow(title: '正在工作', running: true, plain: true),
+                RemoteSessionRow(title: '空闲', plain: true),
+              ],
+            ),
+          ),
+        ),
+      );
+      expect(
+        find.byKey(const ValueKey('remote-running-dot')),
+        findsOneWidget,
+      );
+      expect(
+        find.byWidgetPredicate(
+          (widget) =>
+              widget is Semantics && widget.properties.label == '正在工作',
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('空闲'), findsOneWidget);
+    });
+
+    testWidgets('sessions.list 的 running 行在首页点亮绿点', (tester) async {
+      final livingRoom = _livingRoom();
+      final harness = _HomeConnectionHarness(
+        devices: <paired.RemoteDevice>[livingRoom],
+        lastConnectedDeviceId: _livingRoomId,
+      );
+      addTearDown(harness.dispose);
+      harness.authorize(<paired.RemoteDevice>[livingRoom]);
+      await _showConnection(tester, harness);
+      harness.factory.links.single.sessions = <Map<String, dynamic>>[
+        <String, dynamic>{
+          'header': <String, dynamic>{
+            'id': 's-running',
+            'cwd': r'C:\Users\colin\Pocket',
+          },
+          'title': '运行中的会话',
+          'running': true,
+        },
+        <String, dynamic>{
+          'header': <String, dynamic>{
+            'id': 's-idle',
+            'cwd': r'C:\Users\colin\Pocket',
+          },
+          'title': '空闲会话',
+        },
+      ];
+      _completeHandshake(harness, 0, '客厅的电脑');
+      await _flushConnection(tester);
+
+      expect(find.text('运行中的会话'), findsWidgets);
+      expect(find.byKey(const ValueKey('remote-running-dot')), findsWidgets);
+    });
+
+    testWidgets('折叠项目后经过搜索过滤重建，仍然保持折叠', (tester) async {
+      await _show(tester, _HomeSource(projects: _projects()));
+      expect(_sessionRow('s-1'), findsOneWidget);
+
+      await tester.tap(find.text('Pocket'));
+      await tester.pumpAndSettle();
+      expect(_projectCollapsed(tester, 'device-1-cwd:Pocket'), isTrue);
+
+      await _openSearch(tester);
+      await _enterSearch(tester, 'Cars');
+      await tester.pump();
+      expect(find.text('CarsTool'), findsOneWidget);
+      await _enterSearch(tester, '');
+      await tester.pumpAndSettle();
+
+      expect(find.text('Pocket'), findsOneWidget);
+      expect(
+        _projectCollapsed(tester, 'device-1-cwd:Pocket'),
+        isTrue,
+        reason: '列表重建后折叠状态不能丢',
+      );
+    });
+
+    testWidgets('切换设备再切回「全部」后，折叠状态仍然保持', (tester) async {
+      final source = _HomeSource(
+        projects: <RemoteDshProject>[
+          ..._projects(),
+          const RemoteDshProject(
+            id: 'cwd:Study',
+            deviceId: 'device-2',
+            name: 'Study',
+            sessions: <RemoteDshSession>[
+              RemoteDshSession(id: 's-study', title: '书房会话'),
+            ],
+          ),
+        ],
+        devices: const <RemoteDshDevice>[
+          RemoteDshDevice(
+            id: 'device-1',
+            label: '客厅的电脑',
+            state: RemoteDshDeviceState.online,
+          ),
+          RemoteDshDevice(
+            id: 'device-2',
+            label: '书房的笔记本',
+            state: RemoteDshDeviceState.offline,
+          ),
+        ],
+      );
+      await _show(tester, source);
+      await tester.tap(find.text('Pocket'));
+      await tester.pumpAndSettle();
+      expect(_projectCollapsed(tester, 'device-1-cwd:Pocket'), isTrue);
+
+      await tester.tap(
+        find.descendant(
+          of: find.byType(RemoteDeviceRail),
+          matching: find.text('书房的笔记本'),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('全部'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Pocket'), findsOneWidget);
+      expect(find.text('Study'), findsOneWidget);
+      expect(
+        _projectCollapsed(tester, 'device-1-cwd:Pocket'),
+        isTrue,
+        reason: '切换设备后折叠状态不能丢',
+      );
+    });
+
+    testWidgets('折叠态项目头和外层间距明显收紧，展开态保持可读', (tester) async {
+      final group = find.byKey(
+        const ValueKey('remote-project-device-1-cwd:Pocket'),
+      );
+      await _show(tester, _HomeSource(projects: _projects()));
+      final expandedSize = tester.getSize(group);
+      expect(
+        find.descendant(
+          of: group,
+          matching: find.byWidgetPredicate(
+            (widget) =>
+                widget is Padding &&
+                widget.padding == const EdgeInsets.fromLTRB(2, 16, 2, 10),
+          ),
+        ),
+        findsOneWidget,
+      );
+
+      await tester.tap(find.text('Pocket'));
+      await tester.pumpAndSettle();
+      final collapsedSize = tester.getSize(group);
+      expect(
+        expandedSize.height - collapsedSize.height,
+        greaterThanOrEqualTo(60),
+        reason: '折叠后项目组高度应明显下降',
+      );
+      expect(collapsedSize.height, greaterThanOrEqualTo(40));
+      expect(
+        find.descendant(
+          of: group,
+          matching: find.byWidgetPredicate(
+            (widget) =>
+                widget is Padding &&
+                widget.padding == const EdgeInsets.fromLTRB(2, 10, 2, 8),
+          ),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.ancestor(
+          of: group,
+          matching: find.byWidgetPredicate(
+            (widget) =>
+                widget is Padding &&
+                widget.padding ==
+                    const EdgeInsets.symmetric(horizontal: 18, vertical: 2),
+          ),
+        ),
+        findsOneWidget,
+        reason: '折叠项目的外层垂直间距从 4 收紧到 2',
+      );
     });
   });
 

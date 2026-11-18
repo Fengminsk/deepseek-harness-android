@@ -102,6 +102,7 @@ class RemoteDshSession {
     required this.title,
     this.pendingCount = 0,
     this.updatedAt,
+    this.running = false,
   });
 
   /// 会话标识。
@@ -115,6 +116,9 @@ class RemoteDshSession {
 
   /// 最近更新的 Unix 毫秒；电脑没有给出更新时间时为 null。
   final int? updatedAt;
+
+  /// 宿主上这个会话是否正在执行（`sessions.list` 行的 `running`）。
+  final bool running;
 }
 
 /// 那台电脑上的一个项目，展开后是它的会话。
@@ -423,6 +427,13 @@ class _RemoteDshPageState extends State<RemoteDshPage>
   /// `_recentByDevice` 里没有这台设备，不能立刻显示「还没有项目」空态；只有
   /// `listProjects` 成功返回后才把设备记进来，`_content` 才允许渲染空态。
   final _projectsLoadedFor = <String>{};
+
+  /// 项目展开状态，key 为 `deviceId + '\u0000' + projectId`。
+  ///
+  /// 放在页面级而不是 `RemoteProjectGroup` 的局部 state 里：首页列表会因轮询、
+  /// 搜索过滤、切换设备而重建/重排，局部 state 会跟着元素位置被重置，表现为
+  /// 「折叠后刷新又全展开」。缺省视为展开；用户折叠后立即写回本地缓存。
+  final _projectExpanded = <String, bool>{};
   final _homeCache = const RemoteHomeCache();
   late final Future<void> _cacheRestore;
   String? _selectedDeviceId;
@@ -707,6 +718,9 @@ class _RemoteDshPageState extends State<RemoteDshPage>
         final pairedIds = devices.map((device) => device.id).toSet();
         _recentByDevice.removeWhere((id, _) => !pairedIds.contains(id));
         _projectsLoadedFor.removeWhere((id) => !pairedIds.contains(id));
+        _projectExpanded.removeWhere(
+          (key, _) => !pairedIds.contains(_projectExpansionDeviceId(key)),
+        );
       }
       setState(() {
         _view = RemoteDshView(
@@ -767,18 +781,21 @@ class _RemoteDshPageState extends State<RemoteDshPage>
     final saved = await _homeCache.read();
     if (!mounted || saved.isEmpty) return;
     setState(() {
-      for (final entry in saved.entries) {
+      for (final entry in saved.projects.entries) {
         if (!_deviceListLoaded ||
             _view.devices.any((device) => device.id == entry.key)) {
           _recentByDevice.putIfAbsent(entry.key, () => entry.value);
         }
+      }
+      for (final entry in saved.expanded.entries) {
+        _projectExpanded.putIfAbsent(entry.key, () => entry.value);
       }
     });
   }
 
   Future<void> _persistRecent() async {
     await _cacheRestore;
-    await _homeCache.write(_recentByDevice);
+    await _homeCache.write(_recentByDevice, expanded: _projectExpanded);
   }
 
   /// 通知深链：连接就绪后按会话标识打开会话；打不开时留在首页并给出可见原因。
@@ -2248,11 +2265,22 @@ class _RemoteDshPageState extends State<RemoteDshPage>
         ),
         for (final project in projects)
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 4),
+            // 外层也要稳定 key：列表刷新/重排时 Flutter 按位置匹配元素，外层没有
+            // key 会让内层项目组被当成新元素，展开状态随之丢失。
+            key: ValueKey(
+              'remote-project-shell-${project.deviceId}-${project.id}',
+            ),
+            padding: EdgeInsets.symmetric(
+              horizontal: 18,
+              vertical: _isProjectExpanded(project) ? 4 : 2,
+            ),
             child: RemoteProjectGroup(
               key: ValueKey('remote-project-${project.deviceId}-${project.id}'),
               name: project.name,
               plain: true,
+              expanded: _isProjectExpanded(project),
+              onExpandedChanged: (expanded) =>
+                  _setProjectExpanded(project, expanded),
               deviceLabel: _selectedDeviceId == null && view.devices.length > 1
                   ? _deviceName(view, project.deviceId)
                   : null,
@@ -2265,6 +2293,7 @@ class _RemoteDshPageState extends State<RemoteDshPage>
                       'remote-session-${project.deviceId}-${session.id}',
                     ),
                     title: session.title,
+                    running: session.running,
                     plain: true,
                     trailingCount: session.pendingCount,
                     onTap: () => _activateProjectItem(project, session),
@@ -2288,6 +2317,7 @@ class _RemoteDshPageState extends State<RemoteDshPage>
                   'remote-recent-${item.project.deviceId}-${item.session.id}',
                 ),
                 title: item.session.title,
+                running: item.session.running,
                 plain: true,
                 plainInset: 2,
                 contextLabel:
@@ -2306,6 +2336,31 @@ class _RemoteDshPageState extends State<RemoteDshPage>
     final selected = _selectedDeviceId;
     if (selected != null) return _recentByDevice[selected] ?? const [];
     return [for (final projects in _recentByDevice.values) ...projects];
+  }
+
+  /// 项目展开状态的 map key：设备标识与项目标识之间用 NUL 分隔，避免拼接歧义。
+  String _projectExpansionKey(RemoteDshProject project) =>
+      '${project.deviceId}\u0000${project.id}';
+
+  /// 从 [_projectExpansionKey] 的 key 里取回设备标识。
+  String _projectExpansionDeviceId(String key) {
+    final separator = key.indexOf('\u0000');
+    return separator < 0 ? key : key.substring(0, separator);
+  }
+
+  /// 项目当前是否展开；没有记忆时默认展开。
+  bool _isProjectExpanded(RemoteDshProject project) =>
+      _projectExpanded[_projectExpansionKey(project)] ?? true;
+
+  /// 记录一次用户折叠/展开，并写回本地缓存（下次启动仍记得）。
+  void _setProjectExpanded(RemoteDshProject project, bool expanded) {
+    setState(() {
+      _projectExpanded[_projectExpansionKey(project)] = expanded;
+    });
+    // 注入数据源的测试/替身没有真实本地缓存通道：只保留页面内状态。
+    if (widget.source == null && widget.connection == null) {
+      unawaited(_persistRecent());
+    }
   }
 
   /// 当前内容区对应的设备：选中的胶囊、活动连接，最后是设备表第一台。

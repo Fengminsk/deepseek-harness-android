@@ -169,6 +169,22 @@ void main() {
       expect(catalog.defaultDirectory, r'C:\work\pocket');
     });
 
+    test('目录行的 running 解析为会话运行状态，缺失按未运行', () {
+      final catalog = parseRemoteDshCatalog(
+        _catalog(
+          sessions: <Map<String, dynamic>>[
+            <String, dynamic>{
+              ..._session('s-run', '运行中'),
+              'running': true,
+            },
+            _session('s-idle', '空闲'),
+          ],
+        ),
+      );
+      expect(catalog.session('s-run')?.running, isTrue);
+      expect(catalog.session('s-idle')?.running, isFalse);
+    });
+
     test('跳过缺标识的坏记录，不让一条脏数据挡住整页', () {
       final catalog = parseRemoteDshCatalog(
         _catalog(

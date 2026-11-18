@@ -1101,6 +1101,14 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
 
 ## 9. 变更日志（append-only，最新在最上面）
 
+### 2026-11-18 13:35 · lead（App 远程首页：running 绿点 + 项目折叠记忆 + 折叠密度，已推送真机）
+
+- 用户反馈：正在工作的会话应点亮绿点；项目折叠要有记忆（现在刷新又全展开）；折叠态列表间距太大。
+- running：`sessions.list` 行已有 `running:true`，App 现解析到 `RemoteDshSession.running`/catalog；`RemoteSessionRow` 在标题前显示 8px 绿点（`Semantics('正在工作')`），plain/卡片两种形态支持；`RemoteHomeCache` 不缓存 running，避免离线显示旧绿点。
+- 折叠记忆：折叠状态提升到页面级 `Map<deviceId+'\0'+projectId,bool>`，`RemoteProjectGroup` 支持受控 `expanded/onExpandedChanged`，外层 Padding 补稳定 key（根因：内层 state 被列表重排重置）；轮询/搜索/切换设备保持；写回 `RemoteHomeCache`（schema v2，兼容 v1）实现 App 重启后恢复。
+- 密度：折叠态项目头 padding 16/10→10/8、图标 22→20、项目外层 vertical 4→2；实测项目组高度 178→66 px（仅头部），外层槽 186→70 px，点击区仍 66px。
+- 验证：flutter analyze 仅 11 条既有基线告警；相关测试 68+49 项全绿（新增绿点、折叠刷新/切换/缓存、密度断言）；debug APK 构建成功并 push+`pm install -r -t` 到 3B162D00E1K00000（lastUpdate 13:32）。
+- **提交**：见本次 commit。
 ### 2026-11-18 13:20 · lead（App 连接加载转圈 + 扫码拍照识别，已推送真机）
 
 - 用户反馈：连接新 PC 获取信息时应转圈，不要先显示“没有工作内容”；扫码要优化，拍完二维码照片也能识别，并推送到手机。

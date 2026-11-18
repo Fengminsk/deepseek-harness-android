@@ -1,5 +1,9 @@
 /// App-private snapshot of recent remote project and session labels.
-/// Connection credentials and Session contents are never stored here.
+///
+/// Connection credentials and Session contents are never stored here. The
+/// snapshot also remembers per-project expansion choices so a user who folded a
+/// project does not see it reopen after an App restart; `running` is deliberately
+/// not stored (a stale green dot would claim a session is working while offline).
 library;
 
 import 'dart:convert';
@@ -7,6 +11,24 @@ import 'dart:convert';
 import 'package:flutter/services.dart';
 
 import 'remote_dsh_page.dart';
+
+/// One restored home snapshot: cached project labels plus remembered project
+/// expansion choices keyed by `deviceId + '\u0000' + projectId`.
+class RemoteHomeSnapshot {
+  const RemoteHomeSnapshot({
+    this.projects = const <String, List<RemoteDshProject>>{},
+    this.expanded = const <String, bool>{},
+  });
+
+  /// Cached projects per computer.
+  final Map<String, List<RemoteDshProject>> projects;
+
+  /// Remembered project expansion choices; a missing key means expanded.
+  final Map<String, bool> expanded;
+
+  /// Whether the snapshot carries neither projects nor expansion choices.
+  bool get isEmpty => projects.isEmpty && expanded.isEmpty;
+}
 
 /// Bounded local snapshot used while a paired computer reconnects.
 class RemoteHomeCache {
@@ -16,16 +38,23 @@ class RemoteHomeCache {
   final MethodChannel _channel;
   static const _limit = 512 * 1024;
 
-  /// Reads valid saved rows. A corrupt or unavailable cache is treated as empty.
-  Future<Map<String, List<RemoteDshProject>>> read() async {
+  /// Maximum remembered expansion choices; far above the projects limit.
+  static const _expandedLimit = 2000;
+
+  /// Reads a valid saved snapshot. A corrupt or unavailable cache is treated as empty.
+  Future<RemoteHomeSnapshot> read() async {
     try {
       final raw = await _channel
           .invokeMethod<String>('remote.home.read')
           .timeout(const Duration(seconds: 5));
-      if (raw == null || raw.length > _limit) return {};
+      if (raw == null || raw.length > _limit) return const RemoteHomeSnapshot();
       final data = jsonDecode(raw);
-      if (data is! Map || data['version'] != 1 || data['devices'] is! Map) {
-        return {};
+      // Version 1 is the historical projects-only payload; version 2 adds the
+      // expansion map. Both are accepted, unknown versions are discarded.
+      if (data is! Map ||
+          (data['version'] != 1 && data['version'] != 2) ||
+          data['devices'] is! Map) {
+        return const RemoteHomeSnapshot();
       }
       final result = <String, List<RemoteDshProject>>{};
       for (final entry in (data['devices'] as Map).entries.take(20)) {
@@ -68,16 +97,27 @@ class RemoteHomeCache {
         }
         result[deviceId] = projects;
       }
-      return result;
+      final expanded = <String, bool>{};
+      if (data['expanded'] case final Map entries) {
+        for (final entry in entries.entries.take(_expandedLimit)) {
+          if (entry.key is String && entry.value is bool) {
+            expanded[entry.key as String] = entry.value as bool;
+          }
+        }
+      }
+      return RemoteHomeSnapshot(projects: result, expanded: expanded);
     } on Object {
-      return {};
+      return const RemoteHomeSnapshot();
     }
   }
 
   /// Saves a bounded snapshot. Failures leave the live page usable.
-  Future<void> write(Map<String, List<RemoteDshProject>> projects) async {
+  Future<void> write(
+    Map<String, List<RemoteDshProject>> projects, {
+    Map<String, bool> expanded = const <String, bool>{},
+  }) async {
     final payload = jsonEncode({
-      'version': 1,
+      'version': 2,
       'devices': {
         for (final entry in projects.entries.take(20))
           entry.key: [
@@ -95,6 +135,10 @@ class RemoteHomeCache {
                 ],
               },
           ],
+      },
+      'expanded': {
+        for (final entry in expanded.entries.take(_expandedLimit))
+          entry.key: entry.value,
       },
     });
     if (utf8.encode(payload).length > _limit) return;
