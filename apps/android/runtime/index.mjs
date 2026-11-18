@@ -652,9 +652,11 @@ export function apply(ctx, config) {
     }
   })
   // Connection needs the Keystore provider before the shared Session controller can activate.
+  process.env.DSH_EMBEDDED_DIAGNOSTIC === '1' && (globalThis.__dshEmbeddedProgress ??= []).push('scheduling facade injection')
   const facadeDependencies = ['sessionController', 'typertGateway', 'connection', 'accountCallback', 'fileUploads',
     'pluginManager', 'jobs', 'sessionProjections', 'subagents', 'workspaceRegistry']
   ctx.inject(facadeDependencies, ctx => {
+  process.env.DSH_EMBEDDED_DIAGNOSTIC === '1' && (globalThis.__dshEmbeddedProgress ??= []).push('facade callback start')
   try {
   // These Loader entries define the native carrier and App-controlled HTTP boundary.
   // The manager applies the same protection to App, Web, tools, and bundle overlays.
@@ -667,7 +669,10 @@ export function apply(ctx, config) {
     // Android lacks the original per-run OS confinement for these modules.
     'ptc-runtime', 'workflow-ptc', 'tool-workflow'])
   const loaderEntries = [...ctx.get('loader').entries()]
-  ctx.pluginManager.protectModules(loaderEntries.filter(entry => requiredEntries.has(entry.options.id))
+  // The official desktop plugin manager does not expose the Android-only
+  // protectModules capability; the App carrier's protection is unnecessary
+  // when the runtime runs inside the desktop Host.
+  ctx.pluginManager.protectModules?.(loaderEntries.filter(entry => requiredEntries.has(entry.options.id))
     .map(entry => entry.options.name))
   const web = new WebAccess(ctx, transport)
   let appPeer
@@ -1169,6 +1174,7 @@ export function apply(ctx, config) {
   // 实际可应答的面：缺失时把 terminal.* 从 methods 移除并列入 unsupported，避免 App 显示
   // 一个点击即失败的入口。getter 让每次握手都重新读取当前服务状态。
   const terminalSupported = () => android || ctx.get('terminalController') !== undefined
+  process.env.DSH_EMBEDDED_DIAGNOSTIC === '1' && (globalThis.__dshEmbeddedProgress ??= []).push('providing facade')
   ctx.provide('appRuntimeFacade', {
     ...createRemoteFacadeService({
       dispatch: facadeDispatch,
@@ -1195,6 +1201,10 @@ export function apply(ctx, config) {
     // 等下去，整条远程链路只剩「等待服务」。记录可读原因后重新抛出，让加载器把
     // 这次激活判为失败。
     ctx.logger.error(`Android 门面初始化失败：${error instanceof Error ? error.message : String(error)}`)
+    if (process.env.DSH_EMBEDDED_DIAGNOSTIC === '1') {
+      globalThis.__dshEmbeddedFacadeError = error instanceof Error ? (error.stack ?? error.message) : String(error)
+      ;(globalThis.__dshEmbeddedProgress ??= []).push('facade error: ' + (error instanceof Error ? error.message : String(error)))
+    }
     throw error
   }
   })

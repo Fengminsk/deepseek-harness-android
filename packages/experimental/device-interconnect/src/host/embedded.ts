@@ -87,6 +87,7 @@ interface PluginModule {
 /** One disposable plugin activation. */
 interface FiberHandle {
   dispose(): unknown
+  readonly state?: unknown
 }
 
 /** Runtime plugin config: desktop platform and the 2 GiB attachment ceiling. */
@@ -126,12 +127,47 @@ function repositoryPath(repoDir: string, relative: readonly string[]): string {
   return path
 }
 
+/** Runtime plugin services the embedded runtime depends on. */
+const RUNTIME_REQUIRED_SERVICES = [
+  'agents',
+  'sessions',
+  'workingDirectory',
+  'settings',
+  'tools',
+  'appReady',
+  'sessionPersistence',
+] as const
+
+/** Services the runtime facade waits for before it provides `appRuntimeFacade`. */
+const FACADE_REQUIRED_SERVICES = [
+  'sessionController',
+  'typertGateway',
+  'connection',
+  'fileUploads',
+  'pluginManager',
+  'jobs',
+  'sessionProjections',
+  'subagents',
+  'workspaceRegistry',
+] as const
+
+/** Return the services this desktop Host does not currently provide. */
+function missingServices(ctx: Context, names: readonly string[]): string[] {
+  return names.filter((name) => {
+    try {
+      return ctx.get(name) === undefined
+    } catch {
+      return true
+    }
+  })
+}
+
 /** Poll the plugin context for one provided service. */
 async function waitForService(ctx: Context, name: string): Promise<void> {
   const deadline = Date.now() + SERVICE_WAIT_TIMEOUT_MS
   while (Date.now() < deadline) {
     try {
-      if (ctx.get(name, false) !== undefined) return
+      if (ctx.get(name) !== undefined) return
     } catch {
       // The strict lookup throws before the service exists; keep waiting.
     }
@@ -157,27 +193,86 @@ class ContextEmbeddedHost implements EmbeddedHostHandle {
 
   async start(options: EmbeddedHostOptions): Promise<void> {
     if (this.loaded) return
+    // The official desktop Host exposes a different Agent service surface than
+    // the App carrier this runtime targets (for example `agents.roots` is
+    // unavailable). Loading it in-process crashed the desktop Host during
+    // development, so embedded mode stays behind an explicit development flag
+    // until the runtime is adapted and verified against the desktop surface.
+    if (process.env.DSH_DEVICE_INTERCONNECT_EMBEDDED !== '1') {
+      throw new EmbeddedHostError(
+        'embedded-disabled',
+        '内嵌远程宿主当前为开发者实验模式，官方桌面 DSH 的 Agent 服务接口尚未完全适配，已自动回退独立子进程（不影响电脑端使用）。',
+      )
+    }
+    const captured: string[] = []
+    const previousDiagnostic = process.env.DSH_EMBEDDED_DIAGNOSTIC
+    process.env.DSH_EMBEDDED_DIAGNOSTIC = '1'
+    const globalHost = globalThis as { __dshEmbeddedFacadeError?: string }
+    delete globalHost.__dshEmbeddedFacadeError
+    const originalError = console.error
+    const originalWarn = console.warn
+    const capture = (...args: unknown[]): void => {
+      captured.push(args.map(value => value instanceof Error ? value.message : String(value)).join(' '))
+      if (captured.length > 20) captured.shift()
+    }
+    console.error = capture
+    console.warn = capture
     try {
+      const missingRuntime = missingServices(this.ctx, RUNTIME_REQUIRED_SERVICES)
+      if (missingRuntime.length > 0) {
+        throw new EmbeddedHostError(
+          'embedded-desktop-services-missing',
+          `desktop 进程缺少内嵌运行时需要的服务：${missingRuntime.join('、')}。已回退独立子进程；如需内嵌模式，请检查 DSH 版本与服务组合。`,
+        )
+      }
+      const missingFacade = missingServices(this.ctx, FACADE_REQUIRED_SERVICES)
+      if (missingFacade.length > 0) {
+        throw new EmbeddedHostError(
+          'embedded-desktop-services-missing',
+          `desktop 进程缺少远程门面需要的服务：${missingFacade.join('、')}。已回退独立子进程；如需内嵌模式，请检查 DSH 版本与服务组合。`,
+        )
+      }
       const runtimePath = repositoryPath(options.repoDir, ['apps', 'android', 'runtime', 'index.mjs'])
       const remoteHostPath = repositoryPath(options.repoDir, ['apps', 'remote-host', 'lib', 'index.js'])
-      const runtimeModule = await import(pathToFileURL(runtimePath).href) as PluginModule
+      const runtimeModule = await import(`${pathToFileURL(runtimePath).href}?embedded=${String(Date.now())}`) as PluginModule
       const runtimeFiber = this.ctx.plugin(runtimeModule as Plugin, runtimeConfig())
       this.fibers.push(runtimeFiber)
-      await runtimeFiber
+      await runtimeFiber.await()
       await waitForService(this.ctx, 'appRuntimeFacade')
 
-      const remoteHostModule = await import(pathToFileURL(remoteHostPath).href) as PluginModule
+      const remoteHostModule = await import(`${pathToFileURL(remoteHostPath).href}?embedded=${String(Date.now())}`) as PluginModule
       const remoteHostFiber = this.ctx.plugin(remoteHostModule as Plugin, remoteHostConfig(options))
       this.fibers.push(remoteHostFiber)
-      await remoteHostFiber
+      await remoteHostFiber.await()
       await waitForService(this.ctx, 'remoteHost')
       this.loaded = true
       this.reason = undefined
     } catch (error) {
       this.reason = error instanceof Error ? error.message : String(error)
+      const states = this.fibers.map(fiber => String(fiber.state)).join(',')
+      this.reason = `${this.reason}（fiber 状态：${states || '无'}）`
+      const progress = (globalThis as { __dshEmbeddedProgress?: string[] }).__dshEmbeddedProgress
+      if (progress !== undefined && progress.length > 0) {
+        this.reason = `${this.reason}（内嵌进度：${progress.slice(-5).join(' → ')}）`
+      }
+      delete (globalThis as { __dshEmbeddedProgress?: string[] }).__dshEmbeddedProgress
+      const missingNow = [
+        ...missingServices(this.ctx, RUNTIME_REQUIRED_SERVICES),
+        ...missingServices(this.ctx, FACADE_REQUIRED_SERVICES),
+      ]
+      if (missingNow.length > 0) this.reason = `${this.reason}（当前缺少服务：${missingNow.join('、')}）`
+      if (captured.length > 0) this.reason = `${this.reason}（宿主日志：${captured.slice(-3).join('；')}）`
       await this.stop()
-      if (error instanceof EmbeddedHostError) throw error
+      if (error instanceof EmbeddedHostError) throw new EmbeddedHostError(error.code, this.reason)
       throw new EmbeddedHostError('embedded-load-failed', `内嵌远程宿主加载失败：${this.reason}`)
+    } finally {
+      console.error = originalError
+      console.warn = originalWarn
+      const diagnostic = globalHost.__dshEmbeddedFacadeError
+      delete globalHost.__dshEmbeddedFacadeError
+      if (process.env.DSH_EMBEDDED_DIAGNOSTIC === '1' && diagnostic !== undefined) captured.push(diagnostic)
+      if (previousDiagnostic === undefined) delete process.env.DSH_EMBEDDED_DIAGNOSTIC
+      else process.env.DSH_EMBEDDED_DIAGNOSTIC = previousDiagnostic
     }
   }
 

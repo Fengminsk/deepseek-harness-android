@@ -1101,6 +1101,14 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
 
 ## 9. 变更日志（append-only，最新在最上面）
 
+### 2026-11-18 16:12 · lead（内嵌宿主实机验证失败并已回滚：桌面 DSH 崩溃事件 + 安全闸）
+
+- 事故：lead 在真实 desktop DSH 中把 runner.mode 切到 embedded 实测。加载 runtime+remote-host 后桌面 host 进程因 `TypeError: this.ctx.agents.roots is not a function`（apps/android/runtime/interactions.mjs:185）未捕获异常退出 → 桌面弹出「应用无法启动或已意外停止」，用户看到崩溃对话框。DSH 重启后恢复。
+- 根因：App 运行时假设 Android 载体的 Agent 服务接口（`agents.roots` 等），官方 desktop Host 的 agents 服务表面不同；同进程加载后运行期异常无法由 supervisor 隔离。另有插件激活时服务未就绪导致加载过早的问题。
+- 已回滚：`~/.dsh/device-interconnect/config.json` runner.mode 改回 `child`；插件重载，child/control/tunnel 均正常，桌面稳定运行；配置备份 `config.json.bak-crash-20261118-1615`。
+- 安全闸：embedded 模式加入 `DSH_DEVICE_INTERCONNECT_EMBEDDED=1` 开发门控；默认直接拒绝加载并回退 child，提示「内嵌远程宿主当前为开发者实验模式…不影响电脑端使用」。运行时修复 `pluginManager.protectModules` 改为可选调用；新增 gated 诊断（fiber 状态/加载进度/具体错误）便于后续兼容性开发。
+- 结论：**方案 A 不能按当前实现上线**（违反“不影响 DSH PC 客户端”）。后续建议改为进程间中继（写句柄/通知/实时状态小范围 relay）或建立独立 profile 兼容测试环境后逐项适配 runtime 再尝试；不直接在同进程加载未适配运行时。
+- 提交：见本次 commit。
 ### 2026-11-18 15:52 · lead（内嵌远程宿主模式：desktop 同进程动态加载 + 失败自动回退）
 
 - 用户批准方案 A，要求不影响 DSH PC 客户端/升级不翻车/安装方便/安全可回退。
