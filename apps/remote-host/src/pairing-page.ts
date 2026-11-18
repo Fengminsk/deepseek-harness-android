@@ -65,6 +65,12 @@ const MAXIMUM_FORM_BYTES = 4 * 1024
 /** 控制 API JSON 请求体的字节上限；`/api/devices/revoke` 只有一个设备 id。 */
 const MAXIMUM_CONTROL_BODY_BYTES = 4 * 1024
 
+/** 通知中继请求体上限：一批最多 8 条 §8 通知。 */
+const MAXIMUM_NOTIFICATION_RELAY_BODY_BYTES = 32 * 1024
+
+/** 桌面插件允许中继的页面线通知方法名。 */
+const RELAY_NOTIFICATION_METHODS = new Set(['task.completed', 'interactions.changed', 'session.event'])
+
 /** 控制 API 的自定义请求头；本机插件用它标记「这是控制面客户端，不是浏览器表单」。 */
 const CONTROL_HEADER = 'x-dsh-pairing-control'
 
@@ -183,6 +189,14 @@ export interface PairingPageSource {
 }
 
 /** {@link PairingPageServer} 的构造参数。 */
+/** One page-line notification relayed by the desktop plugin. */
+export interface RelayNotificationInput {
+  /** Page-line method name (	ask.completed / interactions.changed / session.event). */
+  readonly method: string
+  /** Page-line params. */
+  readonly params: Record<string, unknown>
+}
+
 export interface PairingPageOptions {
   /** HTTP 端口；0 表示交给系统分配（只用于测试与本地调试）。 */
   readonly port: number
@@ -190,6 +204,11 @@ export interface PairingPageOptions {
   readonly source: PairingPageSource
   /** 结构化日志接收器；省略时写 stderr。 */
   readonly log?: RemoteLogger
+  /**
+   * Plan-B 通知中继：桌面插件经控制 API 投递页面线通知，宿主按 §8 广播。
+   * 缺省时 /api/notifications/relay 返回 503，其余控制 API 不受影响。
+   */
+  readonly onNotificationsRelay?: (notifications: readonly RelayNotificationInput[]) => void
   /** 时钟来源，默认 `Date.now`；自检可替换。 */
   readonly now?: () => number
 }
@@ -256,7 +275,7 @@ type BodyRead =
 type FormAction = 'pair-reopen' | 'device-revoke'
 
 /** 控制 API 的动作名（日志 `pairing-page-action.fields.action`）。 */
-type ControlAction = 'api-pair' | 'api-device-revoke' | 'api-device-delete'
+type ControlAction = 'api-pair' | 'api-device-revoke' | 'api-device-delete' | 'api-notifications-relay'
 
 /**
  * 本机配对设置页服务。
@@ -269,6 +288,7 @@ export class PairingPageServer {
   private readonly csrfToken = randomBytes(32).toString('base64url')
   private readonly requestedPort: number
   private readonly source: PairingPageSource
+  private readonly onNotificationsRelay: PairingPageOptions['onNotificationsRelay']
   private readonly log: RemoteLogger
   private readonly now: () => number
   private server: Server | undefined
@@ -284,6 +304,7 @@ export class PairingPageServer {
     }
     this.requestedPort = options.port
     this.source = options.source
+    this.onNotificationsRelay = options.onNotificationsRelay
     this.log = options.log ?? writeRemoteLog
     this.now = options.now ?? Date.now
   }
@@ -489,6 +510,14 @@ export class PairingPageServer {
         if (!this.allowedControlHeader(request, response, method, 'api-device-revoke')) return
         await this.handleApiRevoke(request, response)
         return
+      case '/api/notifications/relay':
+        if (method !== 'POST') {
+          this.methodNotAllowed(response, 'POST')
+          return
+        }
+        if (!this.allowedControlHeader(request, response, method, 'api-notifications-relay')) return
+        await this.handleApiNotificationsRelay(request, response)
+        return
       case '/api/devices/delete':
         if (method !== 'POST') {
           this.methodNotAllowed(response, 'POST')
@@ -521,6 +550,71 @@ export class PairingPageServer {
       default:
         this.send(response, 404, TEXT_CONTENT_TYPE, '没有这个页面。')
     }
+  }
+
+
+  /**
+   * `POST /api/notifications/relay`：接收桌面插件观察到的页面线通知并交给
+   * {@link PairingPageOptions.onNotificationsRelay}。没有已连接手机时宿主安全丢弃，
+   * 不缓存、不重放；响应只回本批接受条数。
+   * @param request - 入站请求。
+   * @param response - 待写响应。
+   * @returns 响应写完后兑现。
+   */
+  private async handleApiNotificationsRelay(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    if (!isJsonContentType(request.headers['content-type'])) {
+      this.logRejected('POST', 'api-notifications-relay', 'content-type')
+      this.sendJsonError(response, 415, 'unsupported-media-type', '只接受 application/json 请求体。')
+      return
+    }
+    const json = await this.readControlBody(request, response, 'api-notifications-relay', MAXIMUM_NOTIFICATION_RELAY_BODY_BYTES)
+    if (json === undefined) return
+    const notifications = json['notifications']
+    if (!Array.isArray(notifications) || notifications.length === 0 || notifications.length > 8) {
+      this.logRejected('POST', 'api-notifications-relay', 'notifications')
+      this.sendJsonError(response, 400, 'invalid-request', 'notifications 必须是 1–8 条记录的数组。')
+      return
+    }
+    const accepted: RelayNotificationInput[] = []
+    for (const notification of notifications) {
+      if (typeof notification !== 'object' || notification === null || Array.isArray(notification)) continue
+      const record = notification as Record<string, unknown>
+      const method = record['method']
+      const params = record['params']
+      if (typeof method !== 'string' || !RELAY_NOTIFICATION_METHODS.has(method)) continue
+      if (typeof params !== 'object' || params === null || Array.isArray(params)) continue
+      accepted.push({ method, params: params as Record<string, unknown> })
+    }
+    if (accepted.length === 0) {
+      this.logRejected('POST', 'api-notifications-relay', 'payload')
+      this.sendJsonError(response, 400, 'invalid-request', '没有可中继的页面线通知。')
+      return
+    }
+    const relay = this.onNotificationsRelay
+    if (relay === undefined) {
+      this.logRejected('POST', 'api-notifications-relay', 'disabled')
+      this.sendJsonError(response, 503, 'relay-disabled', '宿主没有配置桌面通知中继。')
+      return
+    }
+    try {
+      relay(accepted)
+    } catch (error) {
+      this.log({
+        level: 'error',
+        event: 'pairing-page-action',
+        message: '通知中继处理失败。',
+        fields: { action: 'api-notifications-relay', method: 'POST', result: 'failed', error: describeRemoteError(error) },
+      })
+      this.sendJsonError(response, 500, 'notification-relay-failed', '宿主处理桌面通知失败，详情见宿主日志。')
+      return
+    }
+    this.log({
+      level: 'info',
+      event: 'pairing-page-action',
+      message: '桌面中继通知已交给宿主 §8 通知线。',
+      fields: { action: 'api-notifications-relay', method: 'POST', result: 'ok', count: accepted.length },
+    })
+    this.sendJson(response, 200, { accepted: accepted.length })
   }
 
   /**
@@ -732,8 +826,9 @@ export class PairingPageServer {
     request: IncomingMessage,
     response: ServerResponse,
     action: ControlAction,
+    maximumBytes: number = MAXIMUM_CONTROL_BODY_BYTES,
   ): Promise<Record<string, unknown> | undefined> {
-    const body = await readBody(request, MAXIMUM_CONTROL_BODY_BYTES)
+    const body = await readBody(request, maximumBytes)
     if (!body.ok) {
       const tooLarge = body.reason === 'too-large'
       this.logRejected('POST', action, body.reason)

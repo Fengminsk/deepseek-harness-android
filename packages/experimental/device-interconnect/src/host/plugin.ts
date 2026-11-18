@@ -18,6 +18,8 @@ import {
   CONFIG_FILE_NAME, ConfigStore, dataDirectory, defaultConfig, normalizeConfig, processInferenceEnvironment,
 } from './config.ts'
 import { createControlPlane } from './control-plane.ts'
+import { DesktopNotifications, type RelayNotification } from './desktop-notifications.ts'
+import { createDesktopRelayExecutor, DesktopRelay } from './desktop-relay.ts'
 import { createApiHandler } from './routes.ts'
 import { ChildSupervisor } from './supervisor.ts'
 
@@ -51,12 +53,41 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
   const store = new ConfigStore({ file: join(dataDir, CONFIG_FILE_NAME), fallback: seed.config, logger })
   const supervisor = new ChildSupervisor({ logger })
   const tunnelSupervisor = new ChildSupervisor({ logger, label: 'frpc 隧道' })
+  // Plan-B desktop relay: loopback-only HTTP for the remote-host child. A start
+  // failure disables the relay and leaves the child host untouched.
+  const relay = new DesktopRelay({
+    dataDir,
+    executor: createDesktopRelayExecutor(ctx),
+    logger,
+  })
+  /**
+   * Forward desktop page-line notifications to the remote-host control API.
+   * @param notifications - mapped page-line notifications.
+   * @returns completion once the control API answered.
+   */
+  const postRelayNotifications = async (notifications: readonly RelayNotification[]): Promise<void> => {
+    const current = store.current()
+    if (!current.host.pagesEnabled) throw new Error('本机配对页已关闭，桌面通知中继没有投递端点。')
+    const response = await fetch(`http://127.0.0.1:${String(current.host.pagesPort)}/api/notifications/relay`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-dsh-pairing-control': '1' },
+      body: JSON.stringify({ notifications }),
+      signal: AbortSignal.timeout(3_000),
+    })
+    if (!response.ok) throw new Error(`桌面通知中继返回 HTTP ${String(response.status)}`)
+  }
+  const desktopNotifications = new DesktopNotifications({
+    ctx,
+    post: postRelayNotifications,
+    logger,
+  })
   const bridge = new Bridge({
     dataDir,
     store,
     supervisor,
     tunnelSupervisor,
     controlPlane: baseUrl => createControlPlane({ baseUrl }),
+    relay: () => relay.status(),
     logger,
   })
   // Activation order is not guaranteed: on a cold profile boot the web server
@@ -76,4 +107,14 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
     void bridge.initialize()
     return () => bridge.dispose()
   }, 'device-interconnect: child supervisors')
+  // The relay is additive: it starts even while the child is disabled and stops
+  // before the bridge releases the children on unload.
+  ctx.effect(() => {
+    void relay.start()
+    desktopNotifications.start()
+    return async () => {
+      desktopNotifications.stop()
+      await relay.stop()
+    }
+  }, 'device-interconnect: desktop relay')
 }

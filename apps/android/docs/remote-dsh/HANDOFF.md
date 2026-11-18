@@ -1101,6 +1101,15 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
 
 ## 9. 变更日志（append-only，最新在最上面）
 
+### 2026-11-18 16:35 · lead（方案 B 桌面中继实现并实机启用验证）
+
+- 方案 A 已安全回滚（c4eee2e880）；本轮实现 B：**不加载 App runtime/remote-host 进 desktop**，desktop 插件只做本机回环中继。
+- 桌面中继（插件 `desktop-relay.ts`）：127.0.0.1 随机端口 + 32 字节 token，descriptor `<DSH_HOME>/device-interconnect/relay.json`（0600 意图，原子写，dispose 删除）；端点 `/relay/health`、`/relay/session/send`（纯文本、无附件；写冲突时在 desktop 进程用 typertGateway/connection 以 owner peer 执行 session prompt，queue 模式）、`/relay/session/status`、`/relay/sessions/status`；所有 handler try/catch，异常不逃逸 desktop。
+- child 接入：remote-host 新增 `desktopRelayFile` 配置（overlay 自动写入）+ `desktop-relay-client.ts`/`session-relay.ts`；`session.send` 先本地，只有写句柄冲突且纯文本才中继一次，本地成功绝不中继；relay 失败保留原错误。通知：插件 `desktop-notifications.ts` 监听 desktop 事件映射 §8，经配对页控制 API 新端点 `POST /api/notifications/relay` 推给已认证手机连接；无连接安全丢弃。
+- 实机验证：插件重载后 `relay.available=true`（http://127.0.0.1:60741）、`/relay/health` ok、`/relay/sessions/status` 返回 desktop 正在运行的 `session-35a17f25...` status=running、overlay 含 desktopRelayFile、child/control/tunnel 正常；桌面稳定（未加载任何 runtime 进 desktop）。
+- 门禁：插件包 15 files **274 tests**、remote-host `relay-selfcheck` 全绿、typecheck 5/5、build:check 2/2、插件 bundle 与 remote-host lib 重建通过；README 中英更新。
+- 边界：附件不中继；审批目前只覆盖工具审批（ask_user/计划审核后续）；状态 relay 端点已提供但 App 仍用事件推导（后续可合并）；relay token 明文文件（同机读取威胁模型）。
+- **提交**：见本次 commit。
 ### 2026-11-18 16:17 · lead（安全回滚内嵌宿主实验；改走进程间中继方案 B）
 
 - **崩溃事故**：lead 在真实 desktop DSH 实测 embedded 模式时，同进程加载的 App 运行时调用 `this.ctx.agents.roots()`（apps/android/runtime/interactions.mjs）在官方 desktop Host 上不存在，未捕获异常导致桌面 host 退出（用户看到「应用无法启动或已意外停止」）。DSH 重启后恢复；无数据丢失。

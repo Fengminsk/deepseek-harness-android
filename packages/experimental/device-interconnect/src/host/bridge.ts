@@ -13,11 +13,11 @@
  */
 
 import { existsSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { dirname, join } from 'node:path'
 import type {
   ControlPlaneState, DeviceInterconnectConfig, DeviceInterconnectView, Diagnostic, PairingView, ProvisionRequest,
   ProvisionStep, RuntimeState, TunnelAccount, TunnelFrpcInfo, TunnelInfo, TunnelNodeInfo, TunnelReadiness,
-  TunnelSettings, TunnelSettingsView, TunnelState,
+  DesktopRelayState, TunnelSettings, TunnelSettingsView, TunnelState,
 } from '../types.ts'
 import { QR_ROUTE } from '../api.ts'
 import { ConfigStore, ConfigValidationError, isDeviceId } from './config.ts'
@@ -25,6 +25,7 @@ import { ControlPlaneError, type ControlPlane } from './control-plane.ts'
 import { downloadFrpc as downloadFrpcBinary } from './frpc-download.ts'
 import { createTcpLatencyProbe, type LatencySample, type LatencyTarget } from './node-latency.ts'
 import { overlayPath, writeOverlay } from './overlay.ts'
+import { RELAY_FILE_NAME } from './desktop-relay.ts'
 import { provisionSakuraFrpTunnel, withPendingSteps } from './provision.ts'
 import { createSakuraFrpApi, type SakuraFrpApi } from './sakurafrp-api.ts'
 import type { LaunchCommand, SupervisorApi } from './supervisor.ts'
@@ -77,6 +78,8 @@ export interface BridgeOptions {
   readonly restartDelaysMs?: readonly number[]
   /** A restarted child is considered healthy after this long; defaults to 10s. */
   readonly restartHealthyMs?: number
+  /** Desktop Plan-B relay availability; the plugin owns the server. */
+  readonly relay?: () => DesktopRelayState
   /** Lifecycle log sink. */
   readonly logger?: {
     info(message: string, ...rest: unknown[]): void
@@ -121,6 +124,7 @@ export class Bridge {
   private readonly readinessTimeoutMs: number
   private readonly exists: (path: string) => boolean
   private readonly logger: NonNullable<BridgeOptions['logger']>
+  private readonly relayStatus: (() => DesktopRelayState) | undefined
   private readonly sakurafrpApi: (token: string) => SakuraFrpApi
   private readonly downloadFrpcDependency: (dataDir: string) => Promise<{ readonly path: string; readonly version: string }>
   private readonly latencyProbe: (targets: readonly LatencyTarget[]) => Promise<readonly LatencySample[]>
@@ -165,6 +169,7 @@ export class Bridge {
     this.readinessTimeoutMs = options.readinessTimeoutMs ?? HOST_READY_TIMEOUT_MS
     this.exists = options.exists ?? existsSync
     this.logger = options.logger ?? console
+    this.relayStatus = options.relay
     this.sakurafrpApi = options.sakurafrpApi ?? (token => createSakuraFrpApi({ token }))
     this.platform = options.platform ?? process.platform
     this.arch = options.arch ?? process.arch
@@ -663,7 +668,7 @@ export class Bridge {
   /** Write the generated overlay, recording the origin the child will announce. */
   private async applyOverlay(config: DeviceInterconnectConfig): Promise<void> {
     const effective = withTunnelOrigin(config)
-    await writeOverlay(overlayPath(this.dataDir), effective)
+    await writeOverlay(overlayPath(this.dataDir), effective, join(this.dataDir, RELAY_FILE_NAME))
     this.appliedPublicOrigin = effective.host.publicOrigin
   }
 
@@ -681,6 +686,7 @@ export class Bridge {
       pairing: this.pairingView(config, cpState),
       devices: cpState?.devices ?? [],
       runner: this.runnerReadiness(config),
+      ...(this.relayStatus === undefined ? {} : { relay: this.relayStatus() }),
       recovery: {
         host: this.recoveryView(this.hostRecovery),
         tunnel: this.recoveryView(this.tunnelRecovery),

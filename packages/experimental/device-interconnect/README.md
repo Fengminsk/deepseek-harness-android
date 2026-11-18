@@ -154,6 +154,10 @@ None, as the Settings page supervises separate child processes and adds no model
 
 The bundle adds no request content, so it neither grows nor invalidates a cached request prefix. Changing the switches affects only separate child processes; DSH Sessions on this Host are untouched.
 
+### Desktop relay (Plan B, experimental)
+
+When a session is owned by the desktop DSH process, the remote-host child cannot write it. The desktop plugin now starts a loopback-only relay (`127.0.0.1`, random token, descriptor `<DSH_HOME>/device-interconnect/relay.json`) and the child's overlay points at it through `desktopRelayFile`. If the child's own `session.send` fails with a write-handle conflict, the child retries that text-only send through the relay; the desktop process executes it with the already-loaded `typertGateway`/`connection` services and returns the same result shape. Attachments and commands are not relayed in this phase. The desktop plugin also observes desktop task completions and approvals and posts the same page-line notifications to the child's control API (`POST /api/notifications/relay`), so §8 notifications reach the phone without loading any App runtime into the desktop process. Missing services, a stopped desktop relay, a bad token, or a timeout all leave the child's existing behaviour unchanged; nothing is added to the desktop profile or bundle list.
+
 ## Known Limitations and Deferred Work
 
 <a id="known-limitations-and-deferred-work"></a>

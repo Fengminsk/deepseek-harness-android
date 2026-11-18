@@ -399,6 +399,16 @@ export interface PairingView extends PairingWindow {
   readonly qrSvgUrl?: string
 }
 
+/** Desktop Plan-B relay availability shown on the Settings page (never the token). */
+export interface DesktopRelayState {
+  /** Whether the loopback relay is listening. */
+  readonly available: boolean
+  /** Loopback base URL when available. */
+  readonly url?: string
+  /** Readable failure reason when unavailable. */
+  readonly error?: string
+}
+
 /** The complete snapshot the Host bridge serves to the Settings page. */
 export interface RuntimeState {
   /** The persisted configuration in force, with the write-only access key removed. */
@@ -424,6 +434,8 @@ export interface RuntimeState {
   readonly runner: RunnerReadiness
   /** Automatic-restart bookkeeping for the two supervised children. */
   readonly recovery?: RuntimeRecovery
+  /** Desktop Plan-B relay availability. */
+  readonly relay?: DesktopRelayState
   /** Activation-time problems the page reports above the cards. */
   readonly problems: readonly Diagnostic[]
 }

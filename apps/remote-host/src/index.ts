@@ -40,6 +40,7 @@ import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import z from '@deepseek-ai/schemastery'
+import { DesktopRelayClient } from './desktop-relay-client.ts'
 import { DeviceStore, type DeviceAuthorization, type DeviceSummary } from './devices.ts'
 import { DEFAULT_DISCOVERY_PORT, DiscoveryResponder, type DiscoverySnapshot } from './discovery.ts'
 import { Identity } from './identity.ts'
@@ -55,6 +56,7 @@ import {
   PairingPageServer,
   type PairingPageSource,
   type PairingPageTicket,
+  type RelayNotificationInput,
 } from './pairing-page.ts'
 import { encodeQrMatrix, renderTerminalQr } from './pairing-qr.ts'
 import { MAXIMUM_PAIRING_TTL_MS, PairingWindow, pairUrl } from './pairing.ts'
@@ -74,6 +76,7 @@ import {
   type RemotePairOutcome,
   type RemotePairRequest,
 } from './server.ts'
+import { dispatchWithSessionRelay } from './session-relay.ts'
 import { ensureTlsMaterial } from './tls.ts'
 
 /**
@@ -192,6 +195,11 @@ export interface Config {
    * 页面只绑回环地址，不会对局域网开放。
    */
   pagesPort: number
+  /**
+   * Plan-B 桌面中继描述文件（<DSH_HOME>/device-interconnect/relay.json）。
+   * 空字符串表示禁用中继：写句柄冲突保持原错误，不去桌面进程重试。
+   */
+  desktopRelayFile: string
 }
 
 /** 配置校验：越界值在加载期就失败，不做静默兜底。 */
@@ -208,6 +216,7 @@ export const Config: z<Config> = z.object({
   discoveryPort: z.number().step(1).min(0).max(65535).default(DEFAULT_DISCOVERY_PORT),
   pagesEnabled: z.boolean().default(true),
   pagesPort: z.number().step(1).min(0).max(65535).default(DEFAULT_PAIRING_PAGE_PORT),
+  desktopRelayFile: z.string().default(''),
 })
 
 /** 服务器叶子证书的 CN；只影响证书展示，SAN 才是连得上与否的判据。 */
@@ -404,6 +413,12 @@ interface RemoteHostHandle {
    * @returns 交给 `./pairing-page.ts` 的数据源。
    */
   pages(): PairingPageSource
+
+  /**
+   * 把桌面插件中继来的页面线通知交给当前连接上的 §8 通知观察者；没有 ready 连接时安全丢弃。
+   * @param notifications - 已经过控制 API 形状校验的页面线通知。
+   */
+  relayNotifications(notifications: readonly RelayNotificationInput[]): void
 }
 
 /**
@@ -524,7 +539,12 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     })
     return
   }
-  const pages = new PairingPageServer({ port: config.pagesPort, source: handle.pages(), log: writeRemoteLog })
+  const pages = new PairingPageServer({
+    port: config.pagesPort,
+    source: handle.pages(),
+    log: writeRemoteLog,
+    onNotificationsRelay: notifications => { handle.relayNotifications(notifications) },
+  })
   ctx.effect(() => () => pages.stop(), 'remote-host: 本机配对页')
   await pages.start()
 }
@@ -619,6 +639,9 @@ async function startRemoteHost(
   }
   /** 查询会话标题与所属项目的宿主本地读（协议 §8.2 补全字段）。 */
   const lookupSession = createSessionFactsLookup(facade, writeRemoteLog)
+  const desktopRelay = config.desktopRelayFile === ''
+    ? undefined
+    : new DesktopRelayClient({ file: config.desktopRelayFile })
   const server = new RemoteHostServer({
     port: config.port,
     host: config.host,
@@ -678,7 +701,12 @@ async function startRemoteHost(
       const owner = randomUUID()
       binding = { connection, sink, notifications }
       facade.bind(sink, owner)
-      connection.onRequest((method, params) => facade.dispatch(method, params, owner))
+      connection.onRequest((method, params) => dispatchWithSessionRelay({
+        method,
+        params,
+        local: () => facade.dispatch(method, params, owner),
+        relay: desktopRelay,
+      }))
       writeRemoteLog({
         level: 'info',
         event: 'connection-ready',
@@ -885,6 +913,11 @@ async function startRemoteHost(
       revokeDevice,
       deleteDevice,
       pair: reopenPairing,
+      relayNotifications: notifications => {
+        const current = binding
+        if (current === undefined) return
+        for (const notification of notifications) current.notifications.observe(notification.method, notification.params)
+      },
       pages: () => ({
         currentPairing: currentPairingForPage,
         pair: reopenPairing,

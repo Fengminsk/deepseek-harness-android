@@ -155,6 +155,10 @@ None, as 本设置页只托管独立子进程（远程宿主与可选的 frpc �
 本包不添加请求内容，因此既不增长也不使已缓存请求前缀失效。切换开关只影响独立的子进程，本 Host 上的 DSH Session 不受影响。
 
 <a id="known-limitations-and-deferred-work"></a>
+### 桌面中继（方案 B，实验）
+
+当会话由 desktop DSH 进程持有时，remote-host 子进程无法写入。现在桌面插件会启动一个仅绑定回环地址的中继（`127.0.0.1`、随机令牌、描述文件 `<DSH_HOME>/device-interconnect/relay.json`），overlay 通过 `desktopRelayFile` 告诉子进程。子进程自己的 `session.send` 遇到写句柄冲突时，仅把纯文本重试转发给中继；桌面进程用已加载的 `typertGateway`/`connection` 服务执行并返回同形结果。本阶段不中继附件与命令。桌面插件还监听 desktop 任务完成与审批事件，把同样的页面线通知投递到子进程控制 API（`POST /api/notifications/relay`），从而把 §8 通知送到手机，而不在 desktop 进程加载任何 App 运行时。服务缺失、桌面中继停止、令牌错误或超时都保持子进程原有行为；不修改 desktop profile 或 bundle 名单。
+
 ## 已知限制与后续工作
 
 - **远程宿主不随本包分发** —— 插件启动的是一个已存在的 checkout，其中必须包含远程宿主 bundle 与挂载它的 profile。官方 DSH 安装可以加载本页面，但在配置路径上没有可用 checkout 或打包运行时之前无法启动宿主。
