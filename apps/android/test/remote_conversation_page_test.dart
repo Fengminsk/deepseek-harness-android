@@ -2744,6 +2744,149 @@ void main() {
 
   });
 
+/// 一个未结算的 turn + 工具调用窗口；[withResult]/[ended] 用来推进到结算态。
+///
+/// 工具名用 `wait_agent`，与 PC 上「正在调用工具 · wait_agent」的真实事件一致。
+List<Map<String, dynamic>> toolRunEvents({
+  bool withResult = false,
+  bool ended = false,
+  String reason = 'completed',
+  String tool = 'wait_agent',
+}) {
+  final events = <Map<String, dynamic>>[
+    fixture.event(1, 'turn/start', <String, dynamic>{'turn': 1}),
+    fixture.event(2, 'step/start', <String, dynamic>{'turn': 1, 'step': 1}),
+    fixture.event(3, 'tool/call', <String, dynamic>{
+      'callId': 'call-1',
+      'name': tool,
+      'turn': 1,
+      'step': 1,
+      'arguments': '{}',
+    }),
+  ];
+  var seq = 3;
+  if (withResult) {
+    events.add(fixture.event(++seq, 'tool/result', <String, dynamic>{
+      'turn': 1,
+      'step': 1,
+      'message': <String, dynamic>{
+        'source': <String, dynamic>{'callId': 'call-1'},
+      },
+    }));
+  }
+  if (ended) {
+    events.add(fixture.event(++seq, 'step/end', <String, dynamic>{
+      'turn': 1,
+      'step': 1,
+    }));
+    events.add(fixture.event(++seq, 'turn/end', <String, dynamic>{
+      'turn': 1,
+      'reason': <String, dynamic>{'kind': reason},
+    }));
+  }
+  return events;
+}
+
+/// 桌面进程在跑、remote-host 没有 live 的会话页假数据源。
+FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
+    FakeRemoteConversationSource(window: _window(events));
+
+/// 未结算工具事件推导出的运行态。
+  group('事件推导运行态', () {
+    Future<void> settle(WidgetTester tester) async {
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+    }
+
+    testWidgets('未结算工具且没有 live 时显示正在工作与工具名，不显示中断', (tester) async {
+      final source = noLiveSource(toolRunEvents());
+      await tester.pumpWidget(_host(source));
+      await settle(tester);
+
+      expect(find.textContaining('电脑正在工作'), findsOneWidget);
+      expect(find.textContaining('正在调用工具 wait_agent'), findsOneWidget);
+      expect(find.textContaining('回复已中断'), findsNothing);
+      expect(find.textContaining('工作异常结束'), findsNothing);
+      expect(find.textContaining('异常结束'), findsNothing);
+    });
+
+    testWidgets('补偿轮询读到 tool result 与 turn/end 后状态条消失并停止轮询', (tester) async {
+      final source = noLiveSource(toolRunEvents());
+      await tester.pumpWidget(_host(source));
+      await settle(tester);
+      expect(find.textContaining('正在调用工具 wait_agent'), findsOneWidget);
+
+      source.window = _window(toolRunEvents(withResult: true, ended: true));
+      await tester.pump(const Duration(milliseconds: 1600));
+      await settle(tester);
+      expect(source.reloads, greaterThan(0));
+      expect(find.byKey(const ValueKey('remote-work-status')), findsNothing);
+      expect(find.textContaining('回复已中断'), findsNothing);
+
+      final settled = source.reloads;
+      await tester.pump(const Duration(seconds: 4));
+      expect(source.reloads, settled, reason: '结算后停止补偿轮询');
+    });
+
+    testWidgets('明确 turn/end interrupted 时仍显示中断，不误判为工作中', (tester) async {
+      final source = noLiveSource(<Map<String, dynamic>>[
+        fixture.event(1, 'turn/start', <String, dynamic>{'turn': 1}),
+        fixture.event(2, 'step/start', <String, dynamic>{'turn': 1, 'step': 1}),
+        fixture.assistant(3, '半截回复'),
+        fixture.event(4, 'step/end', <String, dynamic>{'turn': 1, 'step': 1}),
+        fixture.event(5, 'turn/end', <String, dynamic>{
+          'turn': 1,
+          'reason': <String, dynamic>{'kind': 'interrupted'},
+        }),
+      ]);
+      await tester.pumpWidget(_host(source));
+      await settle(tester);
+
+      expect(find.byKey(const ValueKey('remote-work-status')), findsNothing);
+      expect(find.textContaining('本轮任务未完成'), findsOneWidget,
+          reason: '明确 interrupted 的 turn/end 仍按中断文案展示');
+      expect(find.textContaining('电脑正在工作'), findsNothing);
+    });
+
+    testWidgets('live.status=running 时不重复补偿轮询，状态条只出现一次', (tester) async {
+      final source = FakeRemoteConversationSource(
+        window: _window(toolRunEvents()),
+        supported: <String>{
+          remoteConversationReadMethod,
+          remoteConversationSendMethod,
+          remoteTasksSessionMethod,
+        },
+      );
+      source.answers[remoteTasksSessionMethod] =
+          (Map<String, dynamic> params) => <String, dynamic>{
+            'sessionId': source.sessionId,
+            'live': <String, dynamic>{
+              'status': 'running',
+              'queued': 0,
+              'blockingRequests': 0,
+            },
+            'pending': <Map<String, dynamic>>[],
+          };
+      await tester.pumpWidget(_host(source));
+      await settle(tester);
+
+      expect(find.byKey(const ValueKey('remote-work-status')), findsOneWidget);
+      expect(find.textContaining('正在调用工具 wait_agent'), findsOneWidget);
+      final reloads = source.reloads;
+      await tester.pump(const Duration(seconds: 4));
+      expect(source.reloads, reloads, reason: '宿主有 live running 时不补偿轮询');
+    });
+
+    testWidgets('页面销毁后停止补偿轮询', (tester) async {
+      final source = noLiveSource(toolRunEvents());
+      await tester.pumpWidget(_host(source));
+      await settle(tester);
+      await tester.pumpWidget(const SizedBox());
+      final reloads = source.reloads;
+      await tester.pump(const Duration(seconds: 4));
+      expect(source.reloads, reloads);
+    });
+  });
   group('工作状态与排队消息', () {
     testWidgets('进入正在工作的会话时由 tasks.session 补出工作状态', (tester) async {
       final fixture = _tasksFixture(status: 'running');

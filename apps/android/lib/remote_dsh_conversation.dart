@@ -139,6 +139,69 @@ String? remoteWriteHandleConflictMessage(String message) {
       '请在电脑上结束/关闭该会话后重试。';
 }
 
+/// 从会话事件推导「电脑还在执行」。
+///
+/// remote-host 进程里没有 desktop 进程正在运行的 Agent 时，`session.status` /
+/// `tasks.session.live` 都不会报 running；这时只能看日志窗口：
+///
+/// - 有 `turn/start` 没有对应 `turn/end`；或
+/// - 最后一次 `turn/end` 之后仍有未结算的 `tool/call`（没有 `tool/result`）；或
+/// - 同样的 open step（有 `step/start` 无 `step/end`）。
+///
+/// 明确 `turn/end`（含 interrupted/error）之后不再推导运行，交给 ChatTimeline
+/// 按既有中断/失败语义展示。返回最近的未结算工具名用于状态条。
+({bool running, String? toolName}) inferRemoteExecution(List<Json> events) {
+  final openTurns = <int>{};
+  final openSteps = <(int, int)>{};
+  final calls = <String, (int, String?)>{}; // callId -> (seq, name)
+  var lastTurnEndSeq = -1;
+  for (final event in events) {
+    final seq = event['seq'];
+    final data = event['data'];
+    if (seq is! int || data is! Map) continue;
+    final turn = data['turn'];
+    final step = data['step'];
+    switch (event['type']) {
+      case 'turn/start':
+        if (turn is int) openTurns.add(turn);
+      case 'turn/end':
+        if (turn is int) {
+          openTurns.remove(turn);
+          openSteps.removeWhere((key) => key.$1 == turn);
+        }
+        lastTurnEndSeq = seq;
+      case 'step/start':
+        if (turn is int && step is int) openSteps.add((turn, step));
+      case 'step/end':
+        if (turn is int && step is int) openSteps.remove((turn, step));
+      case 'tool/call':
+        final callId = data['callId'];
+        if (callId is String && callId.isNotEmpty) {
+          calls[callId] = (seq, data['name'] is String ? data['name'] as String : null);
+        }
+      case 'tool/result':
+        final message = data['message'];
+        final source = message is Map ? message['source'] : null;
+        final callId = source is Map ? source['callId'] : null;
+        if (callId is String) calls.remove(callId);
+    }
+  }
+  final pendingCalls = <(int, String?)>[
+    for (final call in calls.values)
+      if (call.$1 > lastTurnEndSeq) call,
+  ];
+  final running =
+      openTurns.isNotEmpty ||
+      openSteps.isNotEmpty ||
+      pendingCalls.isNotEmpty;
+  String? toolName;
+  if (pendingCalls.isNotEmpty) {
+    pendingCalls.sort((left, right) => right.$1.compareTo(left.$1));
+    toolName = pendingCalls.first.$2;
+  }
+  return (running: running, toolName: toolName);
+}
+
 /// `tasks.session` 里的一条排队消息（Agent Inbox）。
 ///
 /// [target] 为 `next-turn` 时是当前回合结束后执行的排队消息，`next-step` 是插到
@@ -373,8 +436,22 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
   bool? _runningFromEvents;
 
   /// 事件流与轮询合并后的运行状态（[ChatTimeline] 用）。
+  ///
+  /// 事件推导优先于「宿主没有 live」：remote-host 对 desktop 进程里的会话看不到
+  /// Agent，但窗口里未结算的 turn/tool 仍能证明电脑在干活，不能让 ChatTimeline
+  /// 把未结算工具误渲染成「回复已中断」。
   bool get _running =>
-      _runningFromEvents ?? (_sessionTasks?.status == 'running');
+      _inferredRunning ||
+      _runningFromEvents == true ||
+      _sessionTasks?.status == 'running';
+
+  /// 由窗口事件推导的运行态与最近未结算工具名。
+  bool _inferredRunning = false;
+  String? _inferredToolName;
+
+  /// inferredRunning 期间补偿拉取窗口的定时器（1.5s）。
+  Timer? _inferredRefreshTimer;
+  bool _inferredRefreshInFlight = false;
 
   bool _loading = true;
   bool _sending = false;
@@ -573,6 +650,8 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     _statusTimer?.cancel();
     _sessionTasksTimer?.cancel();
     _sessionTasksTimer = null;
+    _inferredRefreshTimer?.cancel();
+    _inferredRefreshTimer = null;
     _cacheWriteTimer?.cancel();
     _cacheWriteTimer = null;
     _queuedEditController?.dispose();
@@ -613,9 +692,12 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     if (!active) {
       _sessionTasksTimer?.cancel();
       _sessionTasksTimer = null;
+      _inferredRefreshTimer?.cancel();
+      _inferredRefreshTimer = null;
       return;
     }
     _startSessionTasksPolling();
+    if (_inferredRunning) _startInferredRefresh();
   }
 
   @override
@@ -689,8 +771,10 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     });
     if (_source.phase == RemoteConnectionPhase.ready) {
       _startSessionTasksPolling();
+      if (_inferredRunning) _startInferredRefresh();
     } else {
       _stopSessionTasksPolling();
+      _stopInferredRefresh();
     }
   }
 
@@ -749,6 +833,7 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
       }
     });
     _scheduleScrollToEnd();
+    _recomputeInferredRunning();
   }
 
   /// 收到新快照/事件后节流写回缓存；页面 dispose 时再立即刷一次。
@@ -802,6 +887,68 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     _sessionTasksTimer = null;
   }
 
+  /// 从当前窗口重新推导运行态；状态变化时刷新状态条并按需补偿轮询。
+  ///
+  /// 只在宿主没有可用的 live running 时补偿拉取窗口：remote-host 对 desktop
+  /// 进程里的会话不会推送追加事件，只能靠轮询读到 turn/end 与 tool/result。
+  void _recomputeInferredRunning() {
+    final inferred = inferRemoteExecution(_events);
+    final changed =
+        inferred.running != _inferredRunning ||
+        inferred.toolName != _inferredToolName;
+    if (changed && mounted) {
+      setState(() {
+        _inferredRunning = inferred.running;
+        _inferredToolName = inferred.toolName;
+      });
+    }
+    final needsRefresh =
+        inferred.running &&
+        _appActive &&
+        _source.phase == RemoteConnectionPhase.ready &&
+        _sessionTasks?.status != 'running' &&
+        _runningFromEvents != true;
+    if (needsRefresh) {
+      _startInferredRefresh();
+    } else {
+      _stopInferredRefresh();
+    }
+  }
+
+  /// 1.5s 补偿拉取：桌面进程在跑时 remote-host 没有 live 推送，只能重读窗口。
+  void _startInferredRefresh() {
+    if (!mounted || !_appActive) return;
+    if (_source.phase != RemoteConnectionPhase.ready) return;
+    if (_inferredRefreshTimer != null) return;
+    _inferredRefreshTimer = Timer.periodic(
+      const Duration(milliseconds: 1500),
+      (_) => unawaited(_pollInferredWindow()),
+    );
+  }
+
+  void _stopInferredRefresh() {
+    _inferredRefreshTimer?.cancel();
+    _inferredRefreshTimer = null;
+  }
+
+  /// 读一次窗口并合并；失败静默保留上次内容，不打断会话。
+  Future<void> _pollInferredWindow() async {
+    if (!mounted ||
+        !_appActive ||
+        _inferredRefreshInFlight ||
+        _source.phase != RemoteConnectionPhase.ready) {
+      return;
+    }
+    _inferredRefreshInFlight = true;
+    try {
+      await _source.reload();
+    } on Object {
+      // 补偿刷新失败：保留时间线，下一轮再试；错误不显示给用户。
+    } finally {
+      _inferredRefreshInFlight = false;
+    }
+  }
+
   /// 读一次 `tasks.session` 快照。
   ///
   /// 失败静默保留上次读数（下一轮再试）；宿主明确不支持时隐藏面板，不打断会话。
@@ -833,6 +980,8 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
         _sessionTasksLoaded = true;
         _sessionTasksUnsupported = false;
       });
+      // live 状态已知 running 时停止补偿轮询；反之继续。
+      _recomputeInferredRunning();
     } on RuntimeTransportFailure catch (failure) {
       if (!mounted) return;
       if (failure.code == 'unsupported-method') {
@@ -996,6 +1145,7 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
           _windowThroughSeq = window.throughSeq;
           _projection.reconcile(_events);
         });
+        _recomputeInferredRunning();
         _scheduleConversationCacheWrite();
         _scheduleScrollToEnd();
       case RemoteConversationEvents(:final events):
@@ -1011,6 +1161,7 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
           _windowThroughSeq = _events.last['seq'] as int? ?? _windowThroughSeq;
           _projection.reconcile(_events);
         });
+        _recomputeInferredRunning();
         _scheduleConversationCacheWrite();
         _scheduleScrollToEnd();
       case RemoteConversationLive(:final value):
@@ -1022,6 +1173,8 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
         // 状态切换后尽快同步队列与 live.status，不必等下一轮 2s 轮询。
         unawaited(_refreshSessionTasks());
       case RemoteConversationFailure(:final message, :final fatal):
+        // 补偿轮询的失败静默：保留上一次时间线，不弹提示。
+        if (_inferredRefreshInFlight) return;
         if (fatal) {
           setState(() => _loadError = message);
         } else {
@@ -1692,16 +1845,20 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
 
   Widget? _sessionTasksContent(BuildContext context) {
     if (_source.phase != RemoteConnectionPhase.ready) return null;
-    if (_sessionTasksUnsupported || !_sessionTasksLoaded) return null;
     final tasks = _sessionTasks;
-    final running = tasks?.status == 'running';
+    final hasTasks = !_sessionTasksUnsupported && _sessionTasksLoaded;
+    final running = _running;
     final waiting =
-        tasks != null && (tasks.status == 'waiting' || tasks.blockingRequests > 0);
-    final pending = tasks?.pending ?? const <RemoteQueuedMessage>[];
-    final queued = tasks?.queued ?? 0;
+        !running &&
+        hasTasks &&
+        (tasks?.status == 'waiting' || (tasks?.blockingRequests ?? 0) > 0);
+    final pending = hasTasks
+        ? tasks?.pending ?? const <RemoteQueuedMessage>[]
+        : const <RemoteQueuedMessage>[];
+    final queued = hasTasks ? tasks?.queued ?? 0 : 0;
     // pending 非空时队列坞自己会显示「N 条排队消息」，不重复画一条计数状态条。
     final showQueuedCount =
-        !running && !waiting && queued > 0 && pending.isEmpty;
+        hasTasks && !running && !waiting && queued > 0 && pending.isEmpty;
     if (!running && !waiting && !showQueuedCount && pending.isEmpty) return null;
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
@@ -1745,7 +1902,11 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              running ? '电脑正在工作…' : '等待你在电脑上的操作',
+              running
+                  ? (_inferredToolName == null || _inferredToolName!.isEmpty
+                        ? '电脑正在工作…'
+                        : '电脑正在工作… · 正在调用工具 $_inferredToolName')
+                  : '等待你在电脑上的操作',
               style: AppTextStyle.footnote
                   .of(context)
                   .copyWith(color: colors.onSurfaceVariant),

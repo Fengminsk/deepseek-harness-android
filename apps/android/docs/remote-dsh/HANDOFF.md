@@ -1101,6 +1101,14 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
 
 ## 9. 变更日志（append-only，最新在最上面）
 
+### 2026-11-18 15:33 · lead（手机端从日志推导电脑正在执行并显示工具进度，已推送真机）
+
+- 用户反馈：PC 在「正在调用工具 · wait_agent」，手机却显示「工作异常结束」。
+- 根因：desktop DSH 进程运行该会话，remote-host 子进程没有 Agent，session.status/tasks.live 均不报 running；App 依据事件窗口把未结算工具调用当成中断。
+- 实现：`inferRemoteExecution(events)` 从 `turn/start`/`step/start`/`tool/call` 与对应 end/result 推导运行态与当前未结算工具名；无 live 时置 `_running=true`，ChatTimeline 走运行中分支；状态条显示「电脑正在工作… · 正在调用工具 <name>」；仅明确 turn/end interrupted/error 才显示中断。inferredRunning 且无 live 时每 1.5s 左右补拉窗口合并，turn/end 或 result 到达后停止；dispose/退后台停止。
+- 验证：会话页 97/97 测试通过（新增未结算工具→运行中不出中断、结算→停止、明确中断仍显示、销毁停轮询）；flutter analyze 仅既有 11 条告警；debug APK 构建成功并安装到 3B162D00E1K00000（15:29）。
+- 备注：该轮 agent 中断但改动完整、测试/构建已由 lead 补齐验证；跨进程写句柄/桌面任务通知仍需架构级修复（用户已批准内嵌宿主方向，待实施）。
+- **提交**：见本次 commit。
 ### 2026-11-18 15:16 · lead（App 动画平滑 + 通知权限修复/诊断 + 写句柄冲突文案，APK 待安装）
 
 - 用户反馈：消息/项目展开折叠/排队坞动画一闪；手机收不到 DSH 通知；发送报 `session "..." is already owned by an active write handle`。
