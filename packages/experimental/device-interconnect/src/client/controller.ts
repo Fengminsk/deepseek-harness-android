@@ -15,9 +15,9 @@ import {
   REVOKE_ROUTE, STATE_ROUTE, TUNNEL_ROUTE,
 } from '../api.ts'
 import type {
-  DeviceInterconnectConfigInput, DeviceInterconnectView, Diagnostic, PairingView, ProvisionStep, RemoteDevice,
-  RemoteHostFacts, RemoteHostMode, RuntimeChildState, RuntimeState, TunnelAccount, TunnelFrpcInfo, TunnelInfo,
-  TunnelNodeInfo, TunnelProvider, TunnelProvisionState, TunnelState,
+  ChildState, DeviceInterconnectConfigInput, DeviceInterconnectView, Diagnostic, PairingView, ProvisionStep,
+  RemoteDevice, RemoteHostFacts, RuntimeState, TunnelAccount, TunnelFrpcInfo, TunnelInfo, TunnelNodeInfo,
+  TunnelProvider, TunnelProvisionState, TunnelState,
 } from '../types.ts'
 
 /** Configuration text staged by the page until the user saves it. */
@@ -40,8 +40,6 @@ export interface ConfigDraft {
   pagesPort: string
   /** Whether long-term pairing is on. */
   longTerm: boolean
-  /** Remote-host mode staged by the page. */
-  mode: RemoteHostMode
   /** Node.js executable path text. */
   nodePath: string
   /** `pnpm.mjs` path text. */
@@ -105,7 +103,7 @@ export interface SectionSnapshot {
 /** The editable field names of {@link ConfigDraft}. */
 export type DraftField =
   | 'port' | 'listenHost' | 'publicHost' | 'publicOrigin' | 'discoveryPort' | 'pagesPort'
-  | 'mode' | 'nodePath' | 'pnpmPath' | 'repoDir' | 'profile' | 'patchPath' | 'dshHome'
+  | 'nodePath' | 'pnpmPath' | 'repoDir' | 'profile' | 'patchPath' | 'dshHome'
   | 'frpcPath' | 'tunnelToken' | 'tunnelIds' | 'publicAddress' | 'tunnelIniPath' | 'tunnelExtraArgs'
   | 'nodeId' | 'tunnelName'
 
@@ -320,11 +318,7 @@ export class DeviceInterconnectController {
     if (draft === undefined) return
     this.draftDirty = true
     const next = { ...draft }
-    if (field === 'mode') {
-      next.mode = value === 'embedded' ? 'embedded' : 'child'
-    } else {
-      next[field] = value
-    }
+    next[field] = value
     this.store.update((state) => { state.draft = next })
   }
 
@@ -515,7 +509,6 @@ function parseConfig(value: unknown): DeviceInterconnectView | undefined {
   const profile = bootstrap('profile')
   const patchPath = bootstrap('patchPath')
   const dshHome = bootstrap('dshHome')
-  const mode = runner['mode']
   const port = host['port']
   const listenHost = host['host']
   const publicHost = host['publicHost']
@@ -533,11 +526,9 @@ function parseConfig(value: unknown): DeviceInterconnectView | undefined {
   if (typeof publicOrigin !== 'string' || typeof discoveryEnabled !== 'boolean') return undefined
   if (typeof discoveryPort !== 'number' || typeof pagesEnabled !== 'boolean' || typeof pagesPort !== 'number') return undefined
   if (typeof longTerm !== 'boolean' || typeof pairingTtlMs !== 'number') return undefined
-  const validatedMode = mode === undefined ? 'child' : mode
-  if (validatedMode !== 'child' && validatedMode !== 'embedded') return undefined
   return {
     enabled,
-    runner: { mode: validatedMode, nodePath, pnpmPath, repoDir, profile, patchPath, dshHome },
+    runner: { nodePath, pnpmPath, repoDir, profile, patchPath, dshHome },
     host: { port, host: listenHost, publicHost, publicOrigin, discoveryEnabled, discoveryPort, pagesEnabled, pagesPort },
     pairing: { longTerm, pairingTtlMs },
     tunnel,
@@ -716,12 +707,12 @@ function parseTunnelFrpc(value: unknown): TunnelFrpcInfo | undefined {
 }
 
 /** Parse the child-state block. */
-function parseChild(value: unknown): RuntimeChildState | undefined {
+function parseChild(value: unknown): ChildState | undefined {
   if (!isRecord(value)) return undefined
   const running = value['running']
   const logsTail = value['logsTail']
   if (typeof running !== 'boolean' || typeof logsTail !== 'string') return undefined
-  const child: { -readonly [K in keyof RuntimeChildState]: RuntimeChildState[K] } = { running, logsTail }
+  const child: { -readonly [K in keyof ChildState]: ChildState[K] } = { running, logsTail }
   const pid = value['pid']
   const startedAt = value['startedAt']
   const exitCode = value['exitCode']
@@ -732,25 +723,7 @@ function parseChild(value: unknown): RuntimeChildState | undefined {
   if (typeof exitCode === 'number') child.exitCode = exitCode
   if (typeof exitedAt === 'number') child.exitedAt = exitedAt
   if (typeof error === 'string') child.error = error
-  const mode = value['mode']
-  if (mode === 'child' || mode === 'embedded') child.mode = mode
-  const embedded = parseEmbedded(value['embedded'])
-  if (embedded !== undefined) child.embedded = embedded
   return child
-}
-
-/** Parse the embedded-host facts the child card shows. */
-function parseEmbedded(value: unknown): RuntimeChildState['embedded'] | undefined {
-  if (!isRecord(value)) return undefined
-  const loaded = value['loaded']
-  const fallbackFromEmbedded = value['fallbackFromEmbedded']
-  if (typeof loaded !== 'boolean' || typeof fallbackFromEmbedded !== 'boolean') return undefined
-  const reason = value['reason']
-  return {
-    loaded,
-    fallbackFromEmbedded,
-    ...(typeof reason === 'string' ? { reason } : {}),
-  }
 }
 
 /** Parse the pairing view. */
@@ -866,7 +839,6 @@ function configOf(base: DeviceInterconnectView, draft: ConfigDraft): DeviceInter
   return {
     enabled: base.enabled,
     runner: {
-      mode: draft.mode,
       nodePath: draft.nodePath,
       pnpmPath: draft.pnpmPath,
       repoDir: draft.repoDir,
@@ -914,7 +886,6 @@ function draftOf(config: DeviceInterconnectView): ConfigDraft {
     pagesEnabled: config.host.pagesEnabled,
     pagesPort: String(config.host.pagesPort),
     longTerm: config.pairing.longTerm,
-    mode: config.runner.mode,
     nodePath: config.runner.nodePath,
     pnpmPath: config.runner.pnpmPath,
     repoDir: config.runner.repoDir,

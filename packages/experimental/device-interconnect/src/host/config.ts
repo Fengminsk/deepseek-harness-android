@@ -14,7 +14,7 @@ import { mkdir, rename, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type {
-  DeviceInterconnectConfig, PairingSettings, RemoteHostMode, RemoteHostSettings, RunnerConfig, TunnelProvider, TunnelSettings,
+  DeviceInterconnectConfig, PairingSettings, RemoteHostSettings, RunnerConfig, TunnelProvider, TunnelSettings,
 } from '../types.ts'
 import { isSafeTunnelExtraArgs, isTunnelPublicAddress } from './tunnel.ts'
 
@@ -201,7 +201,6 @@ export function inferRunner(environment: InferenceEnvironment): RunnerConfig {
       ?? firstRuntimeFile(environment, runtimeDependencies, pnpmRelative)
       ?? '',
     repoDir: environment.env['DSH_DEVICE_INTERCONNECT_REPO'] ?? '',
-    mode: 'child',
     profile: DEFAULT_PROFILE,
     patchPath: '',
     dshHome: '',
@@ -444,7 +443,6 @@ function readRunner(value: unknown, fallback: RunnerConfig, problems: string[]):
     problems.push('runner.profile 只能包含字母、数字、点、下划线和连字符。')
   }
   return {
-    mode: readMode(value['mode'], 'runner.mode', fallback.mode, problems),
     nodePath: readString(value['nodePath'], 'runner.nodePath', fallback.nodePath, problems),
     pnpmPath: readString(value['pnpmPath'], 'runner.pnpmPath', fallback.pnpmPath, problems),
     repoDir: readString(value['repoDir'], 'runner.repoDir', fallback.repoDir, problems),
@@ -452,22 +450,6 @@ function readRunner(value: unknown, fallback: RunnerConfig, problems: string[]):
     patchPath: readString(value['patchPath'], 'runner.patchPath', fallback.patchPath, problems),
     dshHome: readString(value['dshHome'], 'runner.dshHome', fallback.dshHome, problems),
   }
-}
-
-/**
- * Read the remote-host mode. Absent values inherit the fallback so old
- * configuration files keep running the stable child process.
- * @param value - candidate value.
- * @param label - field label used in problems.
- * @param fallback - value used for an absent field.
- * @param problems - collected validation problems.
- * @returns the validated mode.
- */
-function readMode(value: unknown, label: string, fallback: RemoteHostMode, problems: string[]): RemoteHostMode {
-  if (value === undefined) return fallback
-  if (value === 'child' || value === 'embedded') return value
-  problems.push(`${label} 只能是 child 或 embedded。`)
-  return fallback
 }
 
 /** Read the remote host listener section. */

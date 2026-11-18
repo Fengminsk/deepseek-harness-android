@@ -28,7 +28,7 @@ const t: DeviceInterconnectSectionProps['t'] = (key, params) =>
 function config(overrides: Partial<DeviceInterconnectView> = {}): DeviceInterconnectView {
   return {
     enabled: true,
-    runner: { mode: 'child', nodePath: 'C:\\node\\node.exe', pnpmPath: 'C:\\pnpm\\pnpm.mjs', repoDir: 'D:\\repo', profile: 'remote-host', patchPath: '', dshHome: '' },
+    runner: { nodePath: 'C:\\node\\node.exe', pnpmPath: 'C:\\pnpm\\pnpm.mjs', repoDir: 'D:\\repo', profile: 'remote-host', patchPath: '', dshHome: '' },
     host: {
       port: 4_777, host: '0.0.0.0', publicHost: '', publicOrigin: '',
       discoveryEnabled: true, discoveryPort: 4_778, pagesEnabled: true, pagesPort: 4_780,
@@ -100,7 +100,7 @@ function draft(): NonNullable<SectionSnapshot['draft']> {
   return {
     port: '4777', listenHost: '0.0.0.0', publicHost: '', publicOrigin: '',
     discoveryEnabled: true, discoveryPort: '4778', pagesEnabled: true, pagesPort: '4780',
-    longTerm: true, mode: 'child', nodePath: 'C:\\node\\node.exe', pnpmPath: 'C:\\pnpm\\pnpm.mjs',
+    longTerm: true, nodePath: 'C:\\node\\node.exe', pnpmPath: 'C:\\pnpm\\pnpm.mjs',
     repoDir: 'D:\\repo', profile: 'remote-host', patchPath: '', dshHome: '',
     tunnelProvider: 'sakurafrp', frpcPath: 'C:\\frpc\\frpc.exe', tunnelToken: '',
     tunnelIds: '114514', publicAddress: 'cn-xx.natfrp.cloud:12345', tunnelIniPath: '', tunnelExtraArgs: '',

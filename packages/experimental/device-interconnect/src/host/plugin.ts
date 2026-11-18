@@ -1,13 +1,11 @@
 /**
  * Host half of the Device Interconnect bundle.
  *
- * The plugin lives in the DSH Host process and serves the Settings page's
- * bridge routes, then runs the remote host in one of two modes: the stable
- * supervised child process (default) or, when explicitly enabled in the
- * advanced runner settings, an experimental embedded load inside this Host
- * process. The embedded loader is created here from the plugin context; any
- * import or activation failure rejects and the bridge falls back to the child,
- * so a stock DSH distribution still loads this bundle unchanged.
+ * The plugin lives in the DSH Host process and does one of two things: it
+ * serves the Settings page's bridge routes, and it supervises a separate
+ * remote-host child process. The remote host itself is never imported here —
+ * it is reached only through its loopback pairing-control HTTP API, so this
+ * bundle stays loadable by a stock DSH distribution.
  * @module @deepseek-ai/dsh-device-interconnect/host/plugin
  */
 
@@ -20,7 +18,6 @@ import {
   CONFIG_FILE_NAME, ConfigStore, dataDirectory, defaultConfig, normalizeConfig, processInferenceEnvironment,
 } from './config.ts'
 import { createControlPlane } from './control-plane.ts'
-import { createContextEmbeddedLoader } from './embedded.ts'
 import { createApiHandler } from './routes.ts'
 import { ChildSupervisor } from './supervisor.ts'
 
@@ -59,7 +56,6 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
     store,
     supervisor,
     tunnelSupervisor,
-    embeddedHost: createContextEmbeddedLoader(ctx),
     controlPlane: baseUrl => createControlPlane({ baseUrl }),
     logger,
   })

@@ -706,26 +706,6 @@ function LoadedPage(props: {
           <summary id="device-interconnect-runner" className={styles.detailsSummary}>{t('runnerTitle')}</summary>
           <div className={styles.detailsBody}>
             <p className={styles.hint}>{t('runnerHint')}</p>
-            <label className={styles.hint} htmlFor="device-interconnect-runner-mode">{t('runnerMode')}</label>
-            <select id="device-interconnect-runner-mode" className={styles.select} value={draft.mode} disabled={busy}
-              onChange={(event) => { setDraft('mode', event.currentTarget.value) }}>
-              <option value="child">{t('runnerModeChild')}</option>
-              <option value="embedded">{t('runnerModeEmbedded')}</option>
-            </select>
-            <p className={styles.hint}>{t('runnerModeHint')}</p>
-            {draft.mode === 'embedded' && <p className={styles.hint}>{t('runnerModeEmbeddedHint')}</p>}
-            <p className={styles.hint}>
-              {t('runnerModeState', {
-                mode: runtime.child.mode === 'embedded'
-                  ? t('runnerModeEmbeddedLabel')
-                  : t('runnerModeChildLabel'),
-              })}
-            </p>
-            {runtime.child.embedded?.fallbackFromEmbedded === true && (
-              <p className={`${styles.hint} ${styles.danger}`}>
-                {t('runnerModeFallback', { reason: runtime.child.embedded?.reason ?? '' })}
-              </p>
-            )}
             <div className={styles.grid}>
               <TextField label={t('runnerNode')} value={draft.nodePath} disabled={busy}
                 onEdit={value => { setDraft('nodePath', value) }} />

@@ -46,7 +46,6 @@ function configuration(overrides: Partial<DeviceInterconnectConfig> = {}): Devic
   return {
     enabled: false,
     runner: {
-      mode: 'child',
       nodePath: 'C:\\node\\node.exe',
       pnpmPath: 'C:\\pnpm\\pnpm.mjs',
       repoDir: 'D:\\repo',
@@ -164,31 +163,6 @@ afterEach(async () => {
  * @param overrides - values replacing the defaults.
  * @returns the bridge, its store, and every double.
  */
-/** Fake embedded loader: records mode-switch ordering and can fail on demand. */
-function embeddedLoader(options: { calls?: string[]; fail?: string } = {}) {
-  const calls = options.calls ?? []
-  const start = vi.fn(async (_options: { repoDir: string; host: { port: number }; pairing: { longTerm: boolean } }) => {
-    calls.push('embedded.start')
-    if (options.fail !== undefined) throw new Error(options.fail)
-    return {
-      status: { loaded: true },
-      stop: async () => { calls.push('embedded.stop') },
-    }
-  })
-  const loader = { start }
-  return { loader, start, calls }
-}
-
-/** Configuration that explicitly selects the stable child mode (mode is explicit on saves). */
-function childConfiguration(overrides: Partial<DeviceInterconnectConfig> = {}): DeviceInterconnectConfig {
-  const base = configuration({ enabled: true })
-  return { ...base, ...overrides, runner: { ...base.runner, mode: 'child' } }
-}
-/** Configuration that explicitly selects the embedded remote-host mode. */
-function embeddedConfiguration(overrides: Partial<DeviceInterconnectConfig> = {}): DeviceInterconnectConfig {
-  const base = configuration({ enabled: true })
-  return { ...base, ...overrides, runner: { ...base.runner, mode: 'embedded', repoDir: 'D:\\repo' } }
-}
 async function bench(overrides: {
   config?: DeviceInterconnectConfig
   supervisor?: ReturnType<typeof supervisor>
@@ -203,13 +177,11 @@ async function bench(overrides: {
   latencyProbe?: (targets: readonly LatencyTarget[]) => Promise<readonly LatencySample[]>
   restartDelaysMs?: readonly number[]
   restartHealthyMs?: number
-  embeddedHost?: ReturnType<typeof embeddedLoader>
-  calls?: string[]
 } = {}) {
   const directory = await dataDirectory()
   const fallback = overrides.config ?? configuration()
   const store = new ConfigStore({ file: join(directory, 'config.json'), fallback })
-  const calls: string[] = overrides.calls ?? []
+  const calls: string[] = []
   const supervisorDouble = overrides.supervisor ?? supervisor({ calls })
   const tunnelSupervisorDouble = overrides.tunnelSupervisor ?? supervisor({ name: 'tunnel', calls })
   const controlPlaneDouble = overrides.controlPlane ?? controlPlane()
@@ -221,7 +193,6 @@ async function bench(overrides: {
     supervisor: supervisorDouble.api,
     tunnelSupervisor: tunnelSupervisorDouble.api,
     controlPlane: factory,
-    ...(overrides.embeddedHost === undefined ? {} : { embeddedHost: overrides.embeddedHost.loader }),
     env: { PATH: 'C:\\bin', DSH_HOME: 'C:\\parent-home' },
     now: overrides.now ?? (() => 100),
     stateCacheMs: 10,
@@ -970,71 +941,5 @@ describe('supervised child auto-restart', () => {
     expect(hostStart).toBeGreaterThanOrEqual(0)
     expect(tunnelStart).toBeGreaterThan(hostStart)
     await bridge.dispose()
-  })
-})
-
-describe('embedded remote host mode', () => {
-  it('loads the embedded host instead of starting the child process', async () => {
-    const embedded = embeddedLoader()
-    const { bridge, supervisor } = await bench({ config: embeddedConfiguration(), embeddedHost: embedded })
-    await bridge.initialize()
-
-    expect(embedded.start).toHaveBeenCalledOnce()
-    expect(embedded.start.mock.calls[0]?.[0]).toMatchObject({
-      repoDir: 'D:\\repo',
-      host: { port: 4_777 },
-      pairing: { longTerm: true },
-    })
-    expect(supervisor.start).not.toHaveBeenCalled()
-    const state = await bridge.state()
-    expect(state.child.mode).toBe('embedded')
-    expect(state.child.running).toBe(true)
-    expect(state.child.embedded?.loaded).toBe(true)
-    expect(state.problems.map(problem => problem.code)).not.toContain('embedded-host-unavailable')
-    await bridge.dispose()
-  })
-
-  it('falls back to the child and reports a problem when embedded loading fails', async () => {
-    const embedded = embeddedLoader({ fail: 'listen EADDRINUSE: address already in use 0.0.0.0:4777' })
-    const { bridge, supervisor, calls } = await bench({ config: embeddedConfiguration(), embeddedHost: embedded })
-    await bridge.initialize()
-
-    expect(embedded.start).toHaveBeenCalledOnce()
-    expect(supervisor.start).toHaveBeenCalled()
-    expect(calls).toContain('host.start')
-    const state = await bridge.state()
-    expect(state.child.mode).toBe('child')
-    expect(state.child.embedded?.fallbackFromEmbedded).toBe(true)
-    expect(state.child.embedded?.reason).toContain('EADDRINUSE')
-    expect(state.problems.map(problem => problem.code)).toContain('embedded-host-unavailable')
-    await bridge.dispose()
-  })
-
-  it('stops the old host before switching modes in either direction', async () => {
-    const calls: string[] = []
-    const embedded = embeddedLoader({ calls })
-    const { bridge } = await bench({ config: childConfiguration(), embeddedHost: embedded, calls })
-    await bridge.initialize()
-    expect(calls).toContain('host.start')
-
-    await bridge.saveConfig(embeddedConfiguration())
-    expect(calls.indexOf('host.stop')).toBeGreaterThanOrEqual(0)
-    expect(calls.indexOf('host.stop')).toBeLessThan(calls.indexOf('embedded.start'))
-    expect((await bridge.state()).child.mode).toBe('embedded')
-
-    await bridge.saveConfig(childConfiguration())
-    expect(calls.lastIndexOf('embedded.stop')).toBeGreaterThanOrEqual(0)
-    expect(calls.lastIndexOf('embedded.stop')).toBeLessThan(calls.lastIndexOf('host.restart'))
-    expect((await bridge.state()).child.mode).toBe('child')
-    await bridge.dispose()
-  })
-
-  it('disposes the embedded host when the bridge is disposed', async () => {
-    const calls: string[] = []
-    const embedded = embeddedLoader({ calls })
-    const { bridge } = await bench({ config: embeddedConfiguration(), embeddedHost: embedded, calls })
-    await bridge.initialize()
-    await bridge.dispose()
-    expect(calls).toContain('embedded.stop')
   })
 })

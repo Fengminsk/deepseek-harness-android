@@ -43,13 +43,8 @@ kind: "package-bundle"
 | `profile` | 子进程启动的 DSH profile | `remote-host` |
 | `patchPath` | 在生成的 overlay 之后追加的 `--patch` | 留空 |
 | `dshHome` | 传给子进程的 `DSH_HOME` | 留空则继承 DSH 主进程的值 |
-| `mode` | `child`（稳定独立子进程）或 `embedded`（实验：加载进当前 DSH 主进程） | `child` |
 
 路径为空或不存在时页面会如实报告，开关不会启动一条坏命令。生成的 overlay 在每次启动子进程时按监听设置重写，因此远程宿主不会以过期配置运行。
-
-#### 内嵌模式（实验）
-
-选择 `embedded` 时，插件不再启动子进程，而是用 `ctx.plugin` 把仓库里的 `android-runtime` 与 `remote-host` 插件加载进当前 DSH 主进程；运行时因此能看到 desktop 的 agents 与 sessions，远程宿主直接服务同一份会话，且不修改任何 profile、bundle 或 `cordis.patch.yml` 文件。监听与配对设置直接传给加载的插件。任何导入/激活失败（构建产物缺失、DSH 升级后插件接口变化、端口已被占用等）都会被捕获：桥接记录 `embedded-host-unavailable` 问题并自动回退独立子进程，桌面客户端继续正常工作。切回 `child` 时先 dispose 内嵌实例，再启动子进程绑定端口。默认仍是 `child`。
 
 ### 监听与配对设置
 
@@ -170,7 +165,6 @@ None, as 本设置页只托管独立子进程（远程宿主与可选的 frpc �
 - **SakuraFrp 访问密钥明文存储** —— 桥接不回传、日志不记录，但 `$DSH_HOME/device-interconnect/config.json` 中以明文保存，可被本机其它进程读取。按与配对配置相同的本地读取威胁接受。
 - **frpc 只在明确点击时下载** —— 一键创建可能从 `https://getfr.sh/d/…` 下载 SakuraFrp 版 frpc；该服务不可达时回退到 Nyatwork CDN 版本镜像，并复用已通过 `frpc -V` 校验的已安装二进制；输出不含 sakura 时要求手动填写路径。手动模式从不下载。
 - **一键创建依赖第三方 API** —— SakuraFrp API v4、节点 flag 与账号隧道额度都是外部契约。API 或额度变化会让创建以可读原因失败，已保存配置与重试路径保持可用。
-- **内嵌模式是实验性的且依赖仓库构建产物** —— 它从运行器配置的 checkout 动态导入已构建的 `apps/android/runtime/index.mjs` 与 `apps/remote-host/lib/index.js`；缺少构建产物或 DSH 升级改变插件接口时，桥接会回退子进程并在页面显示问题。内嵌监听与主进程同生共死，内嵌插件挂起时只能通过关闭/切换模式恢复，无法靠 supervisor 重启。
 - **隧道推导出的对外地址会覆盖手填值** —— 配置了公网地址时，上面的手填 `publicOrigin` 被忽略，改用 `wss://<节点域名>:<端口>`；清空公网地址后，下次保存或启动会恢复手填值。
 
 <a id="dev-note"></a>

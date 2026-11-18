@@ -1101,24 +1101,13 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
 
 ## 9. 变更日志（append-only，最新在最上面）
 
-### 2026-11-18 16:12 · lead（内嵌宿主实机验证失败并已回滚：桌面 DSH 崩溃事件 + 安全闸）
+### 2026-11-18 16:17 · lead（安全回滚内嵌宿主实验；改走进程间中继方案 B）
 
-- 事故：lead 在真实 desktop DSH 中把 runner.mode 切到 embedded 实测。加载 runtime+remote-host 后桌面 host 进程因 `TypeError: this.ctx.agents.roots is not a function`（apps/android/runtime/interactions.mjs:185）未捕获异常退出 → 桌面弹出「应用无法启动或已意外停止」，用户看到崩溃对话框。DSH 重启后恢复。
-- 根因：App 运行时假设 Android 载体的 Agent 服务接口（`agents.roots` 等），官方 desktop Host 的 agents 服务表面不同；同进程加载后运行期异常无法由 supervisor 隔离。另有插件激活时服务未就绪导致加载过早的问题。
-- 已回滚：`~/.dsh/device-interconnect/config.json` runner.mode 改回 `child`；插件重载，child/control/tunnel 均正常，桌面稳定运行；配置备份 `config.json.bak-crash-20261118-1615`。
-- 安全闸：embedded 模式加入 `DSH_DEVICE_INTERCONNECT_EMBEDDED=1` 开发门控；默认直接拒绝加载并回退 child，提示「内嵌远程宿主当前为开发者实验模式…不影响电脑端使用」。运行时修复 `pluginManager.protectModules` 改为可选调用；新增 gated 诊断（fiber 状态/加载进度/具体错误）便于后续兼容性开发。
-- 结论：**方案 A 不能按当前实现上线**（违反“不影响 DSH PC 客户端”）。后续建议改为进程间中继（写句柄/通知/实时状态小范围 relay）或建立独立 profile 兼容测试环境后逐项适配 runtime 再尝试；不直接在同进程加载未适配运行时。
-- 提交：见本次 commit。
-### 2026-11-18 15:52 · lead（内嵌远程宿主模式：desktop 同进程动态加载 + 失败自动回退）
-
-- 用户批准方案 A，要求不影响 DSH PC 客户端/升级不翻车/安装方便/安全可回退。
-- 插件新增 `runner.mode: 'child'|'embedded'`（默认 child，旧配置兼容）。embedded 由插件在**自己的 Cordis context** 动态 import `<repoDir>/apps/android/runtime/index.mjs`（platform:'desktop'、attachmentFileMaxBytes 2GiB）与 `<repoDir>/apps/remote-host/lib/index.js`（沿用插件 host/pairing 配置），`ctx.plugin` 加载并等待 `appRuntimeFacade`/`remoteHost` 服务；与 desktop 共享 agents/sessions → 消除跨进程写句柄与 desktop 任务通知缺失。
-- 安全：不改 desktop profile/bundle/核心包；动态 import 失败或激活失败 → 记录 `embedded-host-unavailable` problem 并自动回退 child；模式切换先停旧宿主/释放 4777/4780 再起新宿主；卸载/切回逆序 dispose；同进程运行期异常无 supervisor 重启（只能切回 child），已写入已知限制。
-- UI：运行器高级区新增模式选择与回退说明，status 显示 mode/embedded 信息；client controller/locale 同步。
-- 验证：插件 13 文件 **267 tests**、typecheck 5/5、build:check 2/2、bundle 通过（host 155KB/client 196KB）；build:artifacts 本环境仍卡 Host Typert。
-- 下一步：lead 手动切换到 embedded 做真机验收（桌面 UI、手机发送到 desktop 活动会话、通知、切回），失败可回退。
-- **提交**：见本次 commit。
-### 2026-11-18 15:33 · lead（手机端从日志推导电脑正在执行并显示工具进度，已推送真机）
+- **崩溃事故**：lead 在真实 desktop DSH 实测 embedded 模式时，同进程加载的 App 运行时调用 `this.ctx.agents.roots()`（apps/android/runtime/interactions.mjs）在官方 desktop Host 上不存在，未捕获异常导致桌面 host 退出（用户看到「应用无法启动或已意外停止」）。DSH 重启后恢复；无数据丢失。
+- **回滚**：撤销 embedded 实验提交（2300cee9f8）与安全闸提交（50cf46d53f），删除 `src/host/embedded.ts`、`runner.mode` 配置/UI/状态/测试及运行时诊断改动；配置 `runner.mode` 已改回/忽略，插件重载后以 child 模式运行（child/control/tunnel 正常，桌面稳定）。包级 262 tests 全绿、bundle 重建。
+- **结论**：方案 A（同进程加载 App 运行时）不满足“不影响 PC 客户端”要求，**不再采用**；未适配前不会再次在真实桌面进程加载该运行时。
+- **后续：方案 B（进程间中继）**：保留 child 宿主，在 desktop 进程内的 device-interconnect 插件加本机回环中继，只转发三类最小能力——①desktop 占用会话的文字发送/排队（session controller 在 desktop 进程执行，解决 `already owned by an active write handle`）；②desktop 任务完成/审批通知（插件监听桌面事件 → remote-host → 手机推送）；③桌面会话实时运行状态与工具进度。其它操作仍走现有子进程链路；中继失败只影响远程功能、不崩溃桌面；DSH 升级最多使中继失效并可回退当前 child 行为。
+- **提交**：见本次 commit。### 2026-11-18 15:33 · lead（手机端从日志推导电脑正在执行并显示工具进度，已推送真机）
 
 - 用户反馈：PC 在「正在调用工具 · wait_agent」，手机却显示「工作异常结束」。
 - 根因：desktop DSH 进程运行该会话，remote-host 子进程没有 Agent，session.status/tasks.live 均不报 running；App 依据事件窗口把未结算工具调用当成中断。

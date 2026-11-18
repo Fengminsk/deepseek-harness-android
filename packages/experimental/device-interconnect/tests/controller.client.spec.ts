@@ -13,7 +13,6 @@ function config(overrides: Partial<DeviceInterconnectView> = {}): DeviceIntercon
   return {
     enabled: true,
     runner: {
-      mode: 'child',
       nodePath: 'C:\\node\\node.exe', pnpmPath: 'C:\\pnpm\\pnpm.mjs', repoDir: 'D:\\repo',
       profile: 'remote-host', patchPath: '', dshHome: '',
     },
