@@ -39,6 +39,7 @@ class _HomeSource
     this.archived = const <RemoteDshArchivedSession>[],
     this.createGate,
     this.createError,
+    this.projectsGate,
     this.devices = const <RemoteDshDevice>[
       RemoteDshDevice(
         id: 'device-1',
@@ -60,6 +61,9 @@ class _HomeSource
   /// 新建会话的等待门；用来观察「新建中」的忙碌态。
   final Completer<void>? createGate;
 
+  /// 首次 `listProjects` 的等待门；用来观察首屏转圈。
+  final Completer<void>? projectsGate;
+
   /// 新建会话抛出的失败。
   Object? createError;
   final List<RemoteDshDevice> devices;
@@ -79,7 +83,11 @@ class _HomeSource
   Future<List<RemoteDshDevice>> listDevices() async => devices;
 
   @override
-  Future<List<RemoteDshProject>> listProjects() async => projects;
+  Future<List<RemoteDshProject>> listProjects() async {
+    final gate = projectsGate;
+    if (gate != null) await gate.future;
+    return projects;
+  }
 
   @override
   Future<RemoteDshCreatedSession> createSession({String? projectId}) async {
@@ -145,6 +153,30 @@ class _OfflineSource implements RemoteDshDataSource {
   @override
   Future<List<RemoteDshDevice>> listDevices() async =>
       const <RemoteDshDevice>[];
+
+  @override
+  Future<List<RemoteDshProject>> listProjects() async =>
+      const <RemoteDshProject>[];
+}
+
+/// 连接中的假数据源：没有可用的缓存与项目，内容区应当转圈而不是空态。
+class _ConnectingSource implements RemoteDshDataSource {
+  @override
+  RemoteDshConnectionState get connection =>
+      RemoteDshConnectionState.connecting;
+
+  @override
+  String? get hostName => '新电脑';
+
+  @override
+  Future<List<RemoteDshDevice>> listDevices() async =>
+      const <RemoteDshDevice>[
+        RemoteDshDevice(
+          id: 'device-new',
+          label: '新电脑',
+          state: RemoteDshDeviceState.connecting,
+        ),
+      ];
 
   @override
   Future<List<RemoteDshProject>> listProjects() async =>
@@ -477,6 +509,41 @@ Future<_RouteLog> _show(
   return log;
 }
 
+/// 推进到界面稳定；连接中的转圈是无限动画，`pumpAndSettle` 会等不到停止而
+/// 超时，因此给 settle 一个有界时间，超时后按固定帧收尾（不改变测试断言）。
+Future<void> _settle(WidgetTester tester) async {
+  try {
+    await tester.pumpAndSettle(
+      const Duration(milliseconds: 50),
+      EnginePhase.sendSemanticsUpdate,
+      const Duration(seconds: 2),
+    );
+  } on FlutterError {
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pump(const Duration(milliseconds: 100));
+  }
+}
+
+/// 只挂载首页、不等待首帧静止：用于观察一直转圈的首屏加载态。
+///
+/// `pumpAndSettle` 会等所有动画停止，而 [CircularProgressIndicator] 一直转，
+/// 因此这类用例只推进两帧看加载态，数据返回后再 `pumpAndSettle`。
+Future<void> _showRaw(
+  WidgetTester tester,
+  RemoteDshDataSource source,
+) async {
+  final runtime = LibraryRuntime();
+  addTearDown(runtime.dispose);
+  await tester.pumpWidget(
+    MaterialApp(
+      theme: pocketTheme(Brightness.light),
+      home: RemoteDshPage(runtime: runtime, source: source),
+    ),
+  );
+  await tester.pump();
+  await tester.pump();
+}
+
 Future<void> _openSearch(WidgetTester tester) async {
   await tester.tap(find.byTooltip('搜索会话'));
   await tester.pumpAndSettle();
@@ -507,7 +574,7 @@ Future<void> _showConnection(
       ),
     ),
   );
-  await tester.pumpAndSettle();
+  await _settle(tester);
 }
 
 /// 让第 [index] 条连接完成握手并进入宿主就绪态。
@@ -535,7 +602,7 @@ Future<void> _flushConnection(
     await tester.runAsync(() => Future<void>.delayed(Duration.zero));
     await tester.pump();
   }
-  await tester.pumpAndSettle();
+  await _settle(tester);
 }
 
 /// 设备胶囊（按名称找）。
@@ -562,6 +629,84 @@ Future<void> _enterSearch(WidgetTester tester, String query) async {
 }
 
 void main() {
+  group('连接与首次数据加载态', () {
+    Finder projectLoading() => find.byKey(
+      const ValueKey('remote-projects-loading'),
+    );
+
+    testWidgets('连接后等待项目返回时显示转圈而不是空态', (tester) async {
+      final gate = Completer<void>();
+      await _showRaw(
+        tester,
+        _HomeSource(projects: _projects(), projectsGate: gate),
+      );
+      expect(projectLoading(), findsOneWidget);
+      expect(find.text('正在获取电脑上的项目…'), findsOneWidget);
+      expect(find.byType(CircularProgressIndicator), findsWidgets);
+      expect(find.text('这台电脑上还没有项目'), findsNothing);
+
+      gate.complete();
+      await tester.pumpAndSettle();
+      expect(projectLoading(), findsNothing);
+      expect(find.text('Pocket'), findsOneWidget);
+      expect(find.text('这台电脑上还没有项目'), findsNothing);
+    });
+
+    testWidgets('项目列表成功返回空列表后才显示空态', (tester) async {
+      final gate = Completer<void>();
+      await _showRaw(
+        tester,
+        _HomeSource(projects: const <RemoteDshProject>[], projectsGate: gate),
+      );
+      expect(projectLoading(), findsOneWidget);
+      expect(find.text('这台电脑上还没有项目'), findsNothing);
+
+      gate.complete();
+      await tester.pumpAndSettle();
+      expect(projectLoading(), findsNothing);
+      expect(find.text('这台电脑上还没有项目'), findsOneWidget);
+    });
+
+    testWidgets('切换到尚未加载的设备时重新显示转圈', (tester) async {
+      final source = _HomeSource(
+        projects: _projects(),
+        devices: const <RemoteDshDevice>[
+          RemoteDshDevice(
+            id: 'device-1',
+            label: '客厅的电脑',
+            state: RemoteDshDeviceState.online,
+          ),
+          RemoteDshDevice(
+            id: 'device-2',
+            label: '书房的笔记本',
+            state: RemoteDshDeviceState.offline,
+          ),
+        ],
+      );
+      await _show(tester, source);
+      expect(find.text('Pocket'), findsOneWidget);
+
+      await tester.tap(
+        find.descendant(
+          of: find.byType(RemoteDeviceRail),
+          matching: find.text('书房的笔记本'),
+        ),
+      );
+      await tester.pump();
+      expect(projectLoading(), findsOneWidget);
+      expect(find.text('这台电脑上还没有项目'), findsNothing);
+      expect(find.text('Pocket'), findsNothing);
+    });
+
+    testWidgets('连接中显示转圈提示而不是沙漏空态', (tester) async {
+      await _showRaw(tester, _ConnectingSource());
+      expect(find.byKey(const ValueKey('remote-connecting')), findsOneWidget);
+      expect(find.byType(CircularProgressIndicator), findsWidgets);
+      expect(find.text('正在连接「新电脑」'), findsOneWidget);
+      expect(find.byIcon(Icons.hourglass_top_rounded), findsNothing);
+    });
+  });
+
   group('最近项目与会话', () {
     testWidgets('全部显示两台电脑，设备页签只显示对应电脑', (tester) async {
       final source = _HomeSource(

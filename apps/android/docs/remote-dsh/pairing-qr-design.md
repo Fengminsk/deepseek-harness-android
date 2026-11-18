@@ -1,7 +1,13 @@
 # 配对二维码：三条路线评估 + 终端字符画过渡实现
 
-状态：2026-11-16。读者：决定 P6 配对体验投入的 lead、后续做 PC 侧界面或 App 扫码的同学。
+状态：2026-11-16；2026-11-18 更新（路线 ① 已落地，见下方状态块）。读者：决定 P6 配对体验投入的 lead、后续做 PC 侧界面或 App 扫码的同学。
 相关：[reachability.md](reachability.md)（外网接入与安全边界）、[HANDOFF.md](HANDOFF.md) §4/§7、[protocol.md](protocol.md) §1.1/§2。
+
+> **2026-11-18 实现状态：路线 ① 已落地为应用内连续扫码。** 早期过渡实现是「系统相机 intent 拍一张照片 + ZXing 解码」，用户反馈拍照一次不能持续取景、照片识别失败，已替换为：
+> `apps/android/.../PairingScanActivity.kt` 用 CameraX 在应用内连续预览 + 逐帧分析（RGBA 帧转灰度后交给 ZXing），
+> `PairingQrDecoder.kt` 负责帧/图片解码；系统相机拍照只在应用内相机不可用时兜底，相册选图复用同一解码器。
+> 依赖为 Gradle 的 `androidx.camera:camera-{core,camera2,lifecycle,view}` 与工程已有的 `com.google.zxing:core`，**未新增 Flutter pub 依赖**；
+> 相机权限 `CAMERA` 在 `PairingScanActivity` 内运行时请求，拒绝时不自动改拍照并给出可操作文案。
 
 **结论先行**：
 
@@ -13,17 +19,15 @@
 
 ## 1. 三条路线
 
-### 1.1 路线 ①：App 内扫码（推荐，长期方案）
+### 1.1 路线 ①：App 内扫码（已落地，2026-11-18）
 
-要做什么：
+已落地的做法（`PairingScanActivity.kt` / `PairingQrDecoder.kt` / `PairingQrScan.kt`）：
 
-- 在 `apps/android/lib/remote_pairing_page.dart` 增加「扫描二维码」入口：相机预览 → 解码 → 交给现有 `RemotePairingFlow.pair(link, …)`（解析、取 CA、指纹校验、换令牌、落存储已经完全就绪，`apps/android/lib/remote_pairing_flow.dart:59-106`）。
-- 依赖选择（**需要 lead 批准后才能 `flutter pub get`**，本轮不动 pubspec）：
-  - `mobile_scanner`：Android 侧用 ML Kit，集成最省事；代价是 APK 体积增加（ML Kit 条码模块通常 1–3 MB 级别）与首次运行的模型下载行为（取决于配置）。
-  - `google_mlkit_barcode_scanning` + `camera`：更可控，但要自己接相机生命周期与预览。
-  - 纯 Dart 解码（`zxing2` 之类）+ `camera`：无原生模型、体积小，但解码速度与低光鲁棒性不如 ML Kit，需要自己实现取帧。
-- 权限与交互：相机权限（`CAMERA` + 运行时请求）、拒绝时给可操作文案、扫码页要有「改用粘贴」兜底。
-- 现有工程约束：App 已自带 `qr_flutter`（**只做编码渲染**，用在 Web 访问页：`apps/android/lib/settings.dart:5`、`apps/android/lib/settings.dart:686`），**没有任何解码依赖**，所以要新增一个。
+- 在 `apps/android/lib/remote_pairing_page.dart` 的「扫码配对」入口打开应用内相机页：CameraX 后置相机预览 → ImageAnalysis 逐帧（限速 350ms）用 ZXing 解二维码 → 成功后经 Activity Result 回到配对页，交给现有 `RemotePairingFlow.pair(link, …)`（解析、取 CA、指纹校验、换令牌、落存储已经完全就绪，`apps/android/lib/remote_pairing_flow.dart:59-106`）。
+- 连续取景而不是拍一张照片：模糊/反光的一帧只算未命中，下一帧继续；解出即自动返回。相机页内有「从相册选择」按钮，同一解码器也处理截图/照片里的二维码。
+- 相机权限 `CAMERA` 在扫码页内运行时请求；拒绝时回到配对页显示可操作中文并保留粘贴入口。应用内相机不可用（无相机硬件/驱动失败）时才退回系统相机 intent 拍照识别。
+- 相比当时评估的三条依赖路线，最终选 **CameraX + 已有 `com.google.zxing:core`**：App 的既有架构没有 Flutter 平台插件（全部走 `dsh/runtime` MethodChannel），CameraX 属于 AndroidX 常规依赖、不需要引入 ML Kit 模型与额外 Flutter 依赖；解码鲁棒性由 ZXing `TRY_HARDER` + 反色 + 多方向/多尺度（图片）保证。
+
 
 成本与风险：
 
@@ -34,7 +38,7 @@
 | 风险 | 新增原生依赖要 `pnpm install`/`pub get`（本轮禁止）、APK 体积、Android 11 真机相机兼容、权限弹窗文案 |
 | 收益 | 配对从「复制粘贴」变成一步；对 PC 终端二维码、未来 PC 配对界面都通用 |
 
-结论：**这是唯一值得投入的方向**，建议作为下一个 P6 批次，等 lead 批准依赖。
+结论：**这是唯一值得投入的方向**，已按 CameraX + ZXing 落地（见文首状态块与 §1.1）。
 
 ### 1.2 路线 ②：PC 侧配对界面显示二维码
 
@@ -144,7 +148,7 @@ node --import tsx/esm apps/remote-host/scripts/qr-selfcheck.ts
 
 | # | 任务 | 依赖 | 估时 | 验收判据 |
 |---|---|---|---|---|
-| QR-1 | App 内扫码（相机 + 解码） | 需批准新增 pub 依赖 | 1–2 天 | 真机扫 PC 终端二维码一步配对成功；相机权限拒绝时有兜底文案 |
+| QR-1 | App 内扫码（相机 + 解码） | 已落地（2026-11-18） | 完成 | 应用内连续取景自动识别；相机权限拒绝有兜底文案；相册图片可识别 |
 | QR-2 | 真机扫码工具清单验收（§4.3） | 无 | 0.5 小时 | 表格回填实测结果 |
 | QR-3 | PC 侧配对界面（显示二维码 + 设备列表/撤销/重开窗口） | PC UI 排期；复用 `pairingQrMatrix()` | 2–3 天 | 界面上能重开配对窗口并显示二维码；撤销设备后界面刷新 |
 | QR-4 | 若 lead 认为不需要 App 扫码：把终端二维码作为长期方案 | — | 0 | 文档（本文件 + reachability §7）已说明清楚 |

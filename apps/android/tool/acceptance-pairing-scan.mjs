@@ -2,13 +2,18 @@
 /**
  * 扫码配对真机验收驱动。
  *
- * 相机流程需要人手持手机对准二维码，自动化只能验证「解码链路 + 页面接线」：
+ * 应用内连续扫码（CameraX 预览 + 逐帧 ZXing）需要人手持手机对准屏幕，自动化只能
+ * 验证「解码链路 + 页面接线」：
  * 1. 用宿主同一个编码器（`apps/remote-host/src/pairing-qr.ts`）把一条配对链接
  *    编码成二维码矩阵，再零依赖手写灰度 PNG（node:zlib 压 IDAT，不自带依赖）；
  * 2. 把 PNG `adb push` 到手机上本 App 的 files 目录；
- * 3. `am start` 带 debug-only extra `dshPairingScanImage`，App 用与相机流程完全
- *    相同的 ZXing 解码实现读出文本，并以 logcat 标签 `DshPairingScan` 记录结果；
+ * 3. `am start` 带 debug-only extra `dshPairingScanImage`，App 用与扫码页
+ *    （`PairingQrDecoder.kt`）相同的 ZXing 解码实现读出文本，并以 logcat 标签
+ *    `DshPairingScan` 记录结果；
  * 4. 断言解出的文本逐字等于配对链接。
+ *
+ * 连续取景、相册选图、相机权限拒绝文案仍由 lead 用 debug APK 在真机手动验收；
+ * 本脚本只证明图片解码与 `dsh/runtime` 扫码通道。
  *
  * 前提：手机已安装 **debug** APK（`BuildConfig.DEBUG=true`；脚本会检查
  * `dumpsys package` 的 DEBUGGABLE 标志）。release 构建里解码调用点被编译期折叠，

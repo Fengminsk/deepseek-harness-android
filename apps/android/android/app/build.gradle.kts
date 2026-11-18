@@ -199,7 +199,13 @@ flutter {
 dependencies {
     implementation("androidx.browser:browser:1.10.0")
     implementation("androidx.webkit:webkit:1.15.0")
-    // 扫码配对：只用解码器（无相机/无 UI），相片由系统相机 intent 拍。
+    // 扫码配对：ZXing 解码；CameraX 在应用内连续取景并逐帧分析，
+    // 不再把拍照结果交给系统相机应用。
+    implementation("androidx.activity:activity:1.10.1")
+    implementation("androidx.camera:camera-core:1.4.2")
+    implementation("androidx.camera:camera-camera2:1.4.2")
+    implementation("androidx.camera:camera-lifecycle:1.4.2")
+    implementation("androidx.camera:camera-view:1.4.2")
     implementation("com.google.zxing:core:3.5.3")
 }
 

@@ -902,7 +902,7 @@ class _RemotePairingPageState extends State<RemotePairingPage> {
     if (error != null) {
       message = error;
     } else if (_scanning) {
-      message = '在相机里对准电脑上的配对二维码拍照，回到这里会自动填入链接。';
+      message = '正在打开相机：把电脑上的二维码放进取景框，识别后自动填入链接。';
     } else if (_discovering) {
       message = null;
     } else if (suggestProxy) {

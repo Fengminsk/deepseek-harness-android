@@ -1,9 +1,11 @@
-// 扫码配对：把系统相机拍到的二维码文本交给配对页。
+// 扫码配对：把应用内连续取景识别到的二维码文本交给配对页。
 //
-// 原生侧（`PairingQrScan.kt`）用系统相机 intent 拍照，在后台线程用 ZXing 解码，
-// 这里只做 MethodChannel 调用与错误翻译：配对协议、CA 指纹校验与设备令牌全部
-// 仍走 `remote_pairing.dart` / `remote_pairing_flow.dart`。扫码只是把二维码内容
-// 变成配对页输入框里的文本，不新增配对入口，也不改变「配对 = 完全信任」的语义。
+// 原生侧（`PairingScanActivity.kt` + `PairingQrDecoder.kt`）用 CameraX 打开应用内
+// 相机预览，逐帧用 ZXing 解码；识别慢时可以「拍照识别」抓一张高分辨率照片再解，
+// 也可以从相册选图。相机无法启动时才退回系统相机拍照识别。这里只做 MethodChannel
+// 调用与错误翻译：配对协议、CA 指纹校验与设备令牌全部仍走
+// `remote_pairing.dart` / `remote_pairing_flow.dart`。扫码只是把二维码内容变成
+// 配对页输入框里的文本，不新增配对入口，也不改变「配对 = 完全信任」的语义。
 //
 // [PairingScanner] 抽出来是为了页面测试能注入假实现：真实实现只有 `dsh/runtime`
 // 一条通道，测试不需要相机、图片或 Flutter 插件。
@@ -21,8 +23,9 @@ const String pairingScanImageMethod = 'remote.pairing.scanImage';
 
 /// 一次扫码失败。
 ///
-/// [code] 与原生错误码一致（`pairing/camera-unavailable`、`pairing/decode-failed`），
-/// [message] 是可直接展示的中文。
+/// [code] 与原生错误码一致（`pairing/camera-unavailable`、
+/// `pairing/permission-denied`、`pairing/decode-failed`），[message] 是可直接
+/// 展示的中文。
 class PairingScanFailure implements Exception {
   /// 记录失败类别与可展示文案。
   const PairingScanFailure(this.code, this.message, [this.details]);
@@ -103,17 +106,21 @@ class MethodChannelPairingScanner implements PairingScanner {
     return _textOf(raw);
   }
 
-  /// 原生错误码收敛到页面认识的两种失败；未知码按解码失败处理。
+  /// 原生错误码收敛到页面认识的失败；未知码按解码失败处理。
   static String _codeOf(String code) {
-    if (code == 'pairing/camera-unavailable') {
-      return 'pairing/camera-unavailable';
+    if (code == 'pairing/camera-unavailable' ||
+        code == 'pairing/permission-denied') {
+      return code;
     }
     return 'pairing/decode-failed';
   }
 
   static String _fallbackMessage(String code) {
     if (code == 'pairing/camera-unavailable') {
-      return '这台手机上没有可用的相机应用，请改为粘贴电脑上的配对链接。';
+      return '这台手机上没有可用的相机，请改为粘贴电脑上的配对链接。';
+    }
+    if (code == 'pairing/permission-denied') {
+      return '需要相机权限才能连续扫码：请在系统设置里允许相机权限，或改为粘贴电脑上的配对链接。';
     }
     return '扫码失败，请重试或改为粘贴电脑上的配对链接。';
   }

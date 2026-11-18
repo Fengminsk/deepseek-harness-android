@@ -1,6 +1,7 @@
 // 扫码配对：页面接线（扫码 → 填入输入框 → 既有配对流程）与原生通道错误翻译。
 //
-// 相机与 ZXing 在 Android 原生侧（`PairingQrScan.kt`），这里不碰真实相机：
+// 相机与 ZXing 在 Android 原生侧（`PairingScanActivity.kt` / `PairingQrDecoder.kt`），
+// 这里不碰真实相机：
 // - 页面测试注入假 [PairingScanner]，覆盖成功填入 / 取消 / 失败 / 相机不可用 /
 //   已有输入时覆盖确认 / 扫码中进度；
 // - 通道测试用 mock MethodChannel 验证 `remote.pairing.scan` 的回执与错误码翻译。
@@ -346,7 +347,7 @@ void main() {
       expect(enabled(tester, scanButton()), isFalse);
       expect(enabled(tester, submitButton()), isFalse);
       expect(find.byType(CircularProgressIndicator), findsOneWidget);
-      expect(find.textContaining('在相机里对准'), findsOneWidget);
+      expect(find.textContaining('正在打开相机'), findsOneWidget);
 
       pending.complete(_firstLink);
       await tester.pumpAndSettle();
@@ -417,6 +418,23 @@ void main() {
           isA<PairingScanFailure>()
               .having((f) => f.code, 'code', 'pairing/camera-unavailable')
               .having((f) => f.message, 'message', contains('没有可用的相机应用')),
+        ),
+      );
+    });
+
+    test('相机权限被拒绝时保留 permission-denied 错误码与可读原因', () async {
+      mock(
+        (_) async => throw PlatformException(
+          code: 'pairing/permission-denied',
+          message: '没有相机权限，无法在应用内连续扫码。请改为粘贴配对链接，或在系统设置里允许相机权限后重试。',
+        ),
+      );
+      await expectLater(
+        MethodChannelPairingScanner().scan(),
+        throwsA(
+          isA<PairingScanFailure>()
+              .having((f) => f.code, 'code', 'pairing/permission-denied')
+              .having((f) => f.message, 'message', contains('没有相机权限')),
         ),
       );
     });

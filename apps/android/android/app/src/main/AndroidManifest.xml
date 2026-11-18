@@ -8,6 +8,10 @@
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- 扫码配对：应用内连续取景需要相机权限；没有相机的设备仍可安装并用粘贴配对。 -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
     <application
         android:label="Pocket Harness"
         android:allowBackup="false"
@@ -78,6 +82,11 @@
                 <data android:scheme="dsh" android:host="open" />
             </intent-filter>
         </activity>
+        <!-- 扫码配对：应用内连续取景页；结果经 Activity Result 回到 MainActivity。 -->
+        <activity
+            android:name=".PairingScanActivity"
+            android:exported="false"
+            android:theme="@style/LaunchTheme" />
         <activity
             android:name=".MainActivity"
             android:exported="true"

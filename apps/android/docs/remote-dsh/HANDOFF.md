@@ -4,7 +4,7 @@
 > 每完成一轮交付，在 §9 追加一条记录；状态变化就改 §3，不要把过时结论留在正文里。
 >
 > 关键事实（2026-11-16 12:35）：**支持多种连接 DSH 的方式**已落地并完成真机验收：
-> ① 粘贴配对链接（原有）；② **扫码配对**（系统相机 intent + ZXing 3.5.3 解码，真机解码链路 PASS）；
+> ① 粘贴配对链接（原有）；② **扫码配对**（应用内连续取景：CameraX 预览 + ZXing 3.5.3 逐帧解码；相机不可用时回退系统相机拍照，相册图片可识别；真机连续扫码验收待补）；
 > ③ **局域网自动发现**（宿主 UDP 4778 广播应答，App「搜索局域网」一键配对；宿主侧 PC 探测 PASS，
 > 真机因 Wi-Fi AP 客户端隔离未拿到广播，UI/空态/回退已在真机验证）；④ **USB/adb reverse**（真机连接
 > PASS：host 日志 `peer/remoteAddress=127.0.0.1`）；⑤ **手动地址覆盖**（完整链接 + 可达地址，供反代/USB）。
@@ -127,7 +127,7 @@ cd apps/android
 | P4a 侧栏入口与组件 | 完成（含重复进入修复与回归测试） | `test/destination_navigation_test.dart` |
 | P4b 远程页面 | 完成：真实设备/项目/会话 + 真实会话页（读窗口/发消息/流式/审批/模型选择/变更/归档/终端入口） + 首页搜索/新建/归档/电脑文件/设置 | `remote_*` 数据源与页面 + 测试；真机证据见 §3.3 |
 | P5 能力补齐 | **六批完成**：审批与模型选择、搜索、新建、归档、电脑文件、远程设置、workspace diff、归档动作、能力三态、模型路由兜底、远程终端、附件上行（含 debug 旁路真机验收）、输入区 `+`/方案模式、模型路由前置提示（C3 真机）、**B3 审批预设（真机切换通过）**、首页输入条文案 + goal 行置灰 | §3.3 `p5-*`/`p5b-*`/`p5c-*` 截图；§3.2.2–§3.2.8 |
-| P6 可达性 | **第三批完成**：扫码配对（真机解码 PASS）、局域网自动发现（PC 探测 PASS）、USB/adb reverse（真机连接 PASS）、手动地址覆盖、多台电脑管理与切换（真机 PASS）、后台通知步骤 (1)+(2)（宿主 §8 发送 + App 系统通知/点击深链，真机验证）、PC 配对设置页（浏览器验收）、App 拨号超时、wss 443 修复 | 待做：真机拍照扫码、无隔离网络发现直连、approvalPending 真机链路、步骤 (3) 前台服务持 WS、PC 分发决策。见 §3.2.10–§3.2.14、`reachability.md`、`discovery.md`、`pc-pairing-page.md` |
+| P6 可达性 | **第三批完成**：扫码配对（应用内连续取景；真机解码链路 PASS，连续扫码待验收）、局域网自动发现（PC 探测 PASS）、USB/adb reverse（真机连接 PASS）、手动地址覆盖、多台电脑管理与切换（真机 PASS）、后台通知步骤 (1)+(2)（宿主 §8 发送 + App 系统通知/点击深链，真机验证）、PC 配对设置页（浏览器验收）、App 拨号超时、wss 443 修复 | 待做：真机连续扫码验收、无隔离网络发现直连、approvalPending 真机链路、步骤 (3) 前台服务持 WS、PC 分发决策。见 §3.2.10–§3.2.14、`reachability.md`、`discovery.md`、`pc-pairing-page.md` |
 | 会话洞察 UI | **完成（真机验证）**：远程会话页悬浮任务卡片（可展开 todos）+ 底部统计条（轮/步、tok 与缓存命中%、上下文%，点按详情弹层），数据来自 `session.projections` 四类投影，事件驱动刷新 | `remote_session_insights.dart`、`remote_todo_card.dart`、`remote_stats_bar.dart`；§3.2.15 |
 | 输入区重构（新） | **完成（真机验证）**：按官方 App 参照重做悬浮输入卡——缩小/展开/推理面板三态，**首页与远程会话页共用**，本地聊天页也接入；修复键盘不弹、picker 进不去、计划状态误报、模型页 debug 断言等问题 | `pocket_composer.dart`、`remote_dsh_widgets.dart`、`remote_dsh_conversation.dart`、`remote_dsh_page.dart`、`main.dart`；§3.2.16–§3.2.17 |
 | 设备互联插件（新） | **已实现并在本机官方 DSH 安装验证**：`packages/experimental/device-interconnect`（Settings→「设备互联」Tab；Host 以独立子进程托管 our-fork `remote-host`，通过本机配对页控制面 API 管理）；**长期配对**（30 天窗口、配对成功后自动续开、无倒计时）、端口/域名配置、设备列表/撤销、日志与运行器配置；配套 remote-host 控制面 JSON API 与 `/qr.svg` | 见 §3.2.18、`packages/experimental/device-interconnect/README.md`、`apps/remote-host/scripts/pairing-page-selfcheck.ts` |
@@ -350,7 +350,7 @@ permission patch（`git` 未提交状态）。
 可展开「手动地址与令牌（高级）」；三种方式最终都交给同一条 `RemotePairingFlow`（解析 → 取 CA →
 指纹校验 → `/pair` → 保存设备），协议与信任语义零改动。
 
-- **扫码配对**：系统相机 intent（FileProvider 授权缓存文件）+ ZXing core 3.5.3（Gradle 依赖，
+- **扫码配对**（2026-11-16 首批实现；2026-11-18 已改为应用内连续取景，见 §3.2.20）：系统相机 intent（FileProvider 授权缓存文件）+ ZXing core 3.5.3（Gradle 依赖，
   按最长边 1600/4096 两轮采样 + 0/90/180/270 旋转尝试，QR-only + TRY_HARDER + ALSO_INVERTED），
   Kotlin 侧解码后回填链接、由用户点「连接」；相机不可用/解码失败/取消都有可读降级文案。
   debug-only 图片解码通道（`dshPairingScanImage` 启动 extra + `remote.pairing.scanImage`）用于自动化；
@@ -793,6 +793,18 @@ exit 0；oxlint 改动 3 文件 0 error；宿主冒烟 **14/14**。本轮未截�
 - 测试：插件包 9 文件 **185 tests**（config/tunnel/supervisor/routes/bridge/client 等）、双 face tsc、`verify-client-ui-i18n`/`verify-export-jsdoc`/`verify-package-meta`/README 摘要与 translation-pairing 均绿；仓库 `typecheck` 5/5；`build:artifacts`/`build:check` 见提交记录。
 - 使用前需**完全重启 DSH**（宿主插件 JS 在启动时加载）才能看到新卡片；配置完成后用手机扫长期配对二维码（链接会变成 SakuraFrp 节点域名地址）。
 - **一键自动接入**（task-40）：用户只填 SakuraFrp 访问密钥（token），插件调用 SakuraFrp **API v4**（Bearer token：`GET /user/info` 校验账号/冻结/实名/额度 → `GET /nodes` 自动选节点（flag&4 允许创建、非离线、非 BETA、非 VIP）→ `GET /tunnels` 复用同名 TCP 隧道或 `POST /tunnels` 创建 → `POST /tunnel/edit` 对齐 `127.0.0.1:<host端口>` → 由节点 `host`+隧道 `remote` 推导 `publicAddress`/`publicOrigin` → 必要时下载 frpc（用户点击触发，`frpc -V` 校验含 `sakura`）→ 重启 remote-host → 启动隧道）；写回 `tunnelId/nodeId/publicAddress`，在页面展示步骤进度、账号/额度/节点/隧道 ID/生效地址、API `important_warning_for_ai`；手动模式保留为高级折叠。API 调用/错误映射/额度与 token 边界见 README。
+
+#### 3.2.20 扫码配对改为应用内连续取景（2026-11-18，用户反馈修复）
+
+用户反馈：App「扫码配对」只是调用系统相机拍一张照片，没有持续取景；拍下的二维码照片也识别失败。已替换为应用内连续扫码：
+
+- 新增 `PairingScanActivity.kt`：CameraX 后置相机连续预览 + ImageAnalysis 逐帧（350ms 限速、KEEP_ONLY_LATEST、RGBA_8888 帧折算灰度，分析帧请求 1280×720 以保证屏幕二维码像素）交给解码器；识别到即返回，用户不需要按快门，模糊/反光帧只算未命中并继续下一帧。
+- 新增 `PairingQrDecoder.kt`：实时帧、相册图片、调试图片文件共用 ZXing 提示（QR-only、TRY_HARDER、ALSO_INVERTED）；图片额外尝试 0/90/180/270 方向、两轮采样，整图未命中再解中央 66%/50% 裁切。
+- `PairingQrScan.kt`：优先启动应用内扫码页；相机初始化失败（无相机硬件/驱动异常）才退回系统相机 intent 拍照；`CAMERA` 权限在扫码页运行时请求，拒绝时回 `pairing/permission-denied` 且不自动改拍照；`remote.pairing.scan` 的 Dart 约定不变。
+- 扫码页内有「从相册选择」，可识别截图/照片里的二维码；识别失败时留在扫码页给提示，可继续对准或换图。
+- Manifest 增 `CAMERA` 权限（`uses-feature` 均为 `required=false`，无相机设备仍可安装并粘贴配对）与 `PairingScanActivity`；Gradle 增 CameraX 四个 artifact（`androidx.camera:*:1.4.2`），未新增 Flutter pub 依赖。
+- Dart：`remote_pairing_scan.dart` 增加 `pairing/permission-denied` 映射与兜底文案；扫码中提示改为「正在打开相机…识别后自动填入」。
+- 测试：`flutter analyze` 11 条既有告警无新增；`flutter test test/remote_pairing_scan_test.dart` 19 项通过（新增权限拒绝映射；页面取消/失败/覆盖确认等既有行为不回归）。**真机验收待 lead 构建 debug APK 后实际扫电脑屏幕二维码验证**（连续取景、相册选图、拒绝权限文案）。
 ### 3.4 远程宿主为什么能跑起来（三个非显然事实）
 
 1. **profile 是 shipped 模板**：`packages/util/official-bundles/src/bundles.ts` 的
@@ -1088,6 +1100,22 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
 ---
 
 ## 9. 变更日志（append-only，最新在最上面）
+
+### 2026-11-18 13:20 · lead（App 连接加载转圈 + 扫码拍照识别，已推送真机）
+
+- 用户反馈：连接新 PC 获取信息时应转圈，不要先显示“没有工作内容”；扫码要优化，拍完二维码照片也能识别，并推送到手机。
+- 加载态：远程首页对 per-device 首次数据加载增加状态——`connecting` 且无缓存时显示 `CircularProgressIndicator` +「正在连接…」；`connected` 但 `listProjects` 未返回且该设备从未成功读过项目时显示转圈 +「正在获取电脑上的项目…」，不再提前渲染「这台电脑上还没有项目」；只有成功返回（含空列表）后才记该设备已加载并允许空态；失败/切换设备/dispose 正确清理，已有缓存仍显示上次同步内容。
+- 扫码：`PairingScanActivity` 新增「拍照识别」主按钮（CameraX ImageCapture 最高分辨率拍照 → `PairingQrDecoder.decodePhoto` 两轮采样/四方向/中心裁切/反色解码），识别中/失败/重拍文案齐全，临时照片自动清理；有闪光灯时显示「手电筒」；保留连续取景、相册、取消；CameraX 三路绑定失败降级为取景+相册，完全不可用仍回退系统相机拍照。配对协议/CA 校验不变。
+- 验证：`flutter analyze` 11 条既有基线告警、相关测试 +93 项全绿；`flutter build apk --debug --target-platform android-arm64` 成功；APK 已 push+`pm install -r -t` 到 3B162D00E1K00000（versionCode 120、lastUpdate 13:19），启动截图正常。
+- **提交**：见本次 commit。
+### 2026-11-18 12:30 · sakurafrp-tunnel（扫码配对改为应用内连续取景 + 相册识别，用户反馈修复）
+
+- 用户反馈：App「扫码配对」只是调用系统相机拍一张照片、没有持续取景；拍下的二维码照片也识别失败。根因：原实现用 `MediaStore.ACTION_IMAGE_CAPTURE` 一次性拍照后等相机应用回执，真实照片质量/回执不可控，且自动化验收只覆盖 debug 图片解码通道、真实相机路径未验证。
+- 改为应用内连续扫码：新增 `PairingScanActivity.kt`（CameraX 后置相机连续预览 + ImageAnalysis 逐帧 350ms 限速，RGBA 帧转灰度后 ZXing 解码，命中即回传、无需按快门）与 `PairingQrDecoder.kt`（实时帧/相册/调试图片共用 ZXing；图片多方向 + 两轮采样 + 整图未命中再解中央 66%/50% 裁切）；`PairingQrScan.kt` 优先打开应用内扫码页，相机初始化失败才回退系统相机拍照，`CAMERA` 权限在扫码页运行时请求、拒绝返回 `pairing/permission-denied` 并保留粘贴入口。
+- Manifest 增 `CAMERA` 权限（相机 feature 均 `required=false`）与 `PairingScanActivity`；Gradle 增 `androidx.camera:*:1.4.2` 四个 artifact（未新增 Flutter pub 依赖）。Dart 增 `pairing/permission-denied` 映射与文案，扫码中提示改为「正在打开相机…」。
+- 验证：`flutter analyze` → 11 条既有告警、无新增；`flutter test` → **2076 项全通过**（含扫码 19 项）；`flutter build apk --debug --target-platform android-arm64` → **BUILD SUCCESSFUL**（APK `build/app/outputs/flutter-apk/app-debug.apk`；aapt2 确认 CAMERA 权限、`PairingScanActivity`、CameraX `MetadataHolderService` 已合入 manifest）。
+- 真机验收待 lead：安装该 debug APK → 添加连接 →「扫码配对」→ 对准电脑屏幕二维码应持续取景并自动填入；「从相册选择」可解截图/照片；首次使用授权相机；拒绝权限时应提示粘贴入口。
+- 边界：实时帧不做旋转尝试（QR 与旋转无关）；相册图片受采样上限（最长边 4096）与内存限制；扫码页保持亮屏；本轮未加手电筒/前后摄切换。
 
 ### 2026-11-18 12:15 · lead（SakuraFrp 去重审计 + 就近/VIP 节点选择 + 并发实测）
 

@@ -416,6 +416,13 @@ class _RemoteDshPageState extends State<RemoteDshPage>
 
   late RemoteDshView _view;
   final _recentByDevice = <String, List<RemoteDshProject>>{};
+
+  /// 已经成功读到过项目列表的设备（含返回空列表的情况）。
+  ///
+  /// 用来区分「还没读」与「读到了，只是没有项目」：连接刚刚 ready 时
+  /// `_recentByDevice` 里没有这台设备，不能立刻显示「还没有项目」空态；只有
+  /// `listProjects` 成功返回后才把设备记进来，`_content` 才允许渲染空态。
+  final _projectsLoadedFor = <String>{};
   final _homeCache = const RemoteHomeCache();
   late final Future<void> _cacheRestore;
   String? _selectedDeviceId;
@@ -699,6 +706,7 @@ class _RemoteDshPageState extends State<RemoteDshPage>
         _deviceListLoaded = true;
         final pairedIds = devices.map((device) => device.id).toSet();
         _recentByDevice.removeWhere((id, _) => !pairedIds.contains(id));
+        _projectsLoadedFor.removeWhere((id) => !pairedIds.contains(id));
       }
       setState(() {
         _view = RemoteDshView(
@@ -709,6 +717,11 @@ class _RemoteDshPageState extends State<RemoteDshPage>
         );
       });
       _maybeAutoConnect();
+      // 这次读取针对的设备：优先当前选中的胶囊，其次活动连接，最后是设备表
+      // 第一台（注入数据源的测试与只读替身没有连接控制器，仍能判断首屏加载）。
+      final contentDeviceId = _selectedDeviceId ??
+          _connection.activeDevice?.id ??
+          (devices.isEmpty ? null : devices.first.id);
       final projects = await _source.listProjects();
       if (!mounted || generation != _loadGeneration) return;
       if (_source.connection == RemoteDshConnectionState.connected) {
@@ -725,6 +738,11 @@ class _RemoteDshPageState extends State<RemoteDshPage>
       }
       setState(() {
         _error = null;
+        // 读取成功（含空列表）：这台设备之后可以显示真正的空态，而不是转圈。
+        if (contentDeviceId != null) _projectsLoadedFor.add(contentDeviceId);
+        for (final project in projects) {
+          _projectsLoadedFor.add(project.deviceId);
+        }
         _view = RemoteDshView(
           connection: _source.connection,
           hostName: _source.hostName,
@@ -2098,6 +2116,16 @@ class _RemoteDshPageState extends State<RemoteDshPage>
         ),
       );
     }
+    // 连接已建立、这台设备的项目列表还没返回：先转圈，不能抢先显示「还没有项目」。
+    if (_awaitingFirstProjects) {
+      return PocketEmpty(
+        child: _RemoteLoading(
+          key: const ValueKey('remote-projects-loading'),
+          title: '正在获取电脑上的项目…',
+          message: '连接已建立，正在读取那台电脑上的项目与会话。',
+        ),
+      );
+    }
     if (hasRecent) return _projects(view);
     final name = _activeComputerName(view);
     return switch (view.connection) {
@@ -2106,8 +2134,8 @@ class _RemoteDshPageState extends State<RemoteDshPage>
       RemoteDshConnectionState.notConnected =>
         view.devices.isEmpty ? _pairFirstNotice() : _disconnectedNotice(),
       RemoteDshConnectionState.connecting => PocketEmpty(
-        child: _RemoteNotice(
-          icon: Icons.hourglass_top_rounded,
+        child: _RemoteLoading(
+          key: const ValueKey('remote-connecting'),
           title: name == null ? '正在连接电脑' : '正在连接「$name」',
           message: '连接完成后，这里会显示那台电脑上的项目与会话。',
         ),
@@ -2280,6 +2308,32 @@ class _RemoteDshPageState extends State<RemoteDshPage>
     return [for (final projects in _recentByDevice.values) ...projects];
   }
 
+  /// 当前内容区对应的设备：选中的胶囊、活动连接，最后是设备表第一台。
+  ///
+  /// 注入数据源的测试与只读替身没有连接控制器（`activeDevice` 为空），仍要能判断
+  /// 「第一次读取还没有返回」。
+  String? get _contentDeviceId {
+    final selected = _selectedDeviceId;
+    if (selected != null) return selected;
+    final active = _connection.activeDevice?.id;
+    if (active != null) return active;
+    return _view.devices.isEmpty ? null : _view.devices.first.id;
+  }
+
+  /// 是否在等待这台设备的首次项目列表；为 true 时内容区显示转圈而不是空态。
+  ///
+  /// 只有 `listProjects` 成功返回（含空列表）后才把设备记进 [_projectsLoadedFor]；
+  /// 失败由 [_error] 走错误态，断开/未连接时连接状态本身决定空态，不显示转圈。
+  bool get _awaitingFirstProjects {
+    if (_source.connection != RemoteDshConnectionState.connected) return false;
+    if (_error != null) return false;
+    final deviceId = _contentDeviceId;
+    if (deviceId == null) return false;
+    if (_projectsLoadedFor.contains(deviceId)) return false;
+    if (_recentByDevice[deviceId]?.isNotEmpty ?? false) return false;
+    return true;
+  }
+
   String _deviceName(RemoteDshView view, String id) {
     for (final device in view.devices) {
       if (device.id == id) return device.label;
@@ -2392,6 +2446,52 @@ class _RemoteSearchHeader extends StatelessWidget {
 ///
 /// 最多两个动作：失败态用第二个动作给出「切换设备 / 添加连接」的可恢复路径。
 /// 文字按当前字号缩放换行，因此放大字体时仍能完整读到。
+/// 正在连接/首次读取数据时的转圈提示。
+///
+/// 与 [_RemoteNotice] 同一版式，但以 [CircularProgressIndicator] 明确表示还在等
+/// 电脑返回数据；真正的空态只在读取成功且结果为空后出现。
+class _RemoteLoading extends StatelessWidget {
+  const _RemoteLoading({super.key, required this.title, required this.message});
+
+  /// 提示标题，例如「正在获取电脑上的项目…」。
+  final String title;
+
+  /// 一段说明，不写营销语。
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        SizedBox(
+          width: 32,
+          height: 32,
+          child: CircularProgressIndicator(
+            strokeWidth: 2.5,
+            color: colors.primary,
+          ),
+        ),
+        const SizedBox(height: 16),
+        Text(
+          title,
+          textAlign: TextAlign.center,
+          style: AppTextStyle.title3.of(context, emphasized: true),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          message,
+          textAlign: TextAlign.center,
+          style: AppTextStyle.footnote
+              .of(context)
+              .copyWith(color: colors.onSurfaceVariant),
+        ),
+      ],
+    );
+  }
+}
+
 class _RemoteNotice extends StatelessWidget {
   const _RemoteNotice({
     required this.icon,

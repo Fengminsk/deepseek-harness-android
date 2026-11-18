@@ -295,7 +295,7 @@ class MainActivity : FlutterActivity() {
                     call.argument<String>("id"),
                     result,
                 )
-                // 扫码配对：系统相机拍照 → 原生 ZXing 解码 → 文本回 Dart；配对流程与信任语义不变。
+                // 扫码配对：应用内连续取景（CameraX + ZXing 逐帧）→ 文本回 Dart；配对流程与信任语义不变。
                 "remote.pairing.scan" -> pairingScan.scan(result)
                 // 验收旁路（仅 debug）：从 adb 推送的图片文件解码，证明 ZXing 解码链路。
                 "remote.pairing.scanImage" -> {
