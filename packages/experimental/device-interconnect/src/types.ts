@@ -470,6 +470,12 @@ export interface RevokeRequest {
   readonly deviceId: string
 }
 
+/** `POST /device-interconnect/api/devices/delete` body. */
+export interface DeleteRequest {
+  /** Device id whose record is removed permanently. */
+  readonly deviceId: string
+}
+
 /** `GET /device-interconnect/api/logs` body. */
 export interface LogsResponse {
   /** Tail of the child's combined output. */

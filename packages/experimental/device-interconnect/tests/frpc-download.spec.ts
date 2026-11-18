@@ -1,14 +1,17 @@
 /**
- * frpc download and version check: URL mapping, the installed file, and the
- * refusal of a binary that does not report itself as the SakuraFrp build.
+ * frpc download and version check: URL mapping, the installed file, the CDN
+ * fallback, the reuse of an installed executable, and the refusal of a binary
+ * that does not report itself as the SakuraFrp build.
  */
 
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { downloadFrpc, frpcDownloadUrl } from '../src/host/frpc-download.ts'
+import {
+  SAKURA_FRPC_CDN_BASE, downloadFrpc, frpcCdnUrl, frpcDownloadUrl,
+} from '../src/host/frpc-download.ts'
 import { frpcInstallPath } from '../src/host/tunnel.ts'
 
 const directories: string[] = []
@@ -40,6 +43,11 @@ describe('frpc download URL', () => {
     expect(frpcDownloadUrl('freebsd', 'x64')).toBeUndefined()
     expect(frpcDownloadUrl('win32', 'ia32')).toBeUndefined()
   })
+
+  it('maps a versioned CDN artifact', () => {
+    expect(frpcCdnUrl(SAKURA_FRPC_CDN_BASE, '0.51.0-sakura-15.1', 'frpc_windows_amd64', 'win32'))
+      .toBe('https://nya.globalslb.net/natfrp/client/frpc/0.51.0-sakura-15.1/frpc_windows_amd64.exe')
+  })
 })
 
 describe('downloadFrpc', () => {
@@ -55,6 +63,52 @@ describe('downloadFrpc', () => {
     expect(result).toEqual({ path: frpcInstallPath(dataDir, 'win32'), version: 'frpc version 0.51.0-sakura-4' })
     expect(existsSync(result.path)).toBe(true)
     expect([...await readFile(result.path)]).toEqual([1, 2, 3])
+  })
+
+  it('reuses an installed SakuraFrp executable without downloading', async () => {
+    const dataDir = await dataDirectory()
+    const target = frpcInstallPath(dataDir, 'win32')
+    await mkdir(dirname(target), { recursive: true })
+    await writeFile(target, new Uint8Array([7]))
+    const network = vi.fn<typeof fetch>(() => Promise.reject(new Error('must not download')))
+    const result = await downloadFrpc({
+      dataDir,
+      platform: 'win32',
+      arch: 'x64',
+      fetch: network,
+      versionCheck: async () => '0.51.0-sakura-15.1 (built: 2026-10-24)',
+    })
+    expect(result).toEqual({ path: target, version: '0.51.0-sakura-15.1 (built: 2026-10-24)' })
+    expect(network).not.toHaveBeenCalled()
+  })
+
+  it('falls back to the versioned CDN when the primary service fails', async () => {
+    const dataDir = await dataDirectory()
+    const listing = '<a href="0.51.0-sakura-15.1/">0.51.0-sakura-15.1</a><a href="0.51.0-sakura-14/">0.51.0-sakura-14</a>'
+    const requested: string[] = []
+    const relay: typeof fetch = async (input) => {
+      const url = String(input)
+      requested.push(url)
+      if (url === frpcDownloadUrl('win32', 'x64')) return new Response('blocked', { status: 503 })
+      if (url === `${SAKURA_FRPC_CDN_BASE}/`) return new Response(listing)
+      if (url === frpcCdnUrl(SAKURA_FRPC_CDN_BASE, '0.51.0-sakura-15.1', 'frpc_windows_amd64', 'win32')) {
+        return new Response(new Uint8Array([9, 9, 9]).buffer as ArrayBuffer)
+      }
+      return new Response('missing', { status: 404 })
+    }
+    const result = await downloadFrpc({
+      dataDir,
+      platform: 'win32',
+      arch: 'x64',
+      fetch: relay,
+      versionCheck: async () => '0.51.0-sakura-15.1 (built: 2026-10-24)',
+    })
+    expect(result.version).toBe('0.51.0-sakura-15.1 (built: 2026-10-24)')
+    expect([...await readFile(result.path)]).toEqual([9, 9, 9])
+    expect(requested).toHaveLength(3)
+    expect(requested[0]).toBe(`${SAKURA_FRPC_CDN_BASE}/`)
+    expect(requested[1]).toBe(frpcDownloadUrl('win32', 'x64'))
+    expect(requested[2]).toContain('0.51.0-sakura-15.1/frpc_windows_amd64.exe')
   })
 
   it('refuses a binary that is not the SakuraFrp build', async () => {

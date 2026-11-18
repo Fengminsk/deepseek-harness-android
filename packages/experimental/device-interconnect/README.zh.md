@@ -52,6 +52,13 @@ kind: "package-bundle"
 
 `publicOrigin` 只接受 `wss://host[:端口]`，用于 TLS 终止反向代理或按域名部署；留空时按 `publicHost` 或默认路由 IPv4 地址生成。
 
+### 管理已配对设备
+
+已配对设备卡位于页面最底部，有效设备排在前面、已撤销/已过期记录排在后面；设备多于 6 台时默认收起（点击卡头展开/收起，用户的选择在面板关闭前生效）。
+
+- **撤销**（仅有效设备）保留一条已撤销记录：手机的连接会以 `4001 auth-revoked` 关闭并立即失效，但记录仍以「已撤销」展示，宿主因此仍能区分「已撤销的令牌」与「未知令牌」。
+- **删除** 对任何状态都永久移除记录。删除有效设备时会先撤销（同样断开连接并推送 `remote.deviceRevoked`）再移除记录，手机必须重新配对且记录无法恢复；已撤销/已过期记录则直接移除。
+
 ### SakuraFrp TCP 隧道
 
 页面可以托管 [SakuraFrp](https://www.natfrp.com/) 的 `frpc` 子进程，把远程宿主的 TLS 端口映射到公网，使不在同一局域网的手机也能配对。**必须使用 TCP 隧道**：远程宿主用固定 CA 自己做 TLS 终止，HTTP/HTTPS 隧道会在服务商侧终止 TLS，导致 App 的固定证书校验失败、永远连不上。隧道卡会写明这一限制，并拒绝以 `https://` 形式粘贴的公网地址。
@@ -81,7 +88,7 @@ kind: "package-bundle"
 
 远程宿主的控制 API 只绑定 `127.0.0.1`；本插件的桥接路由拒绝任何非回环 `Host` 头与跨站 `Origin`。每个读写还必须带 `x-dsh-device-interconnect: 1` 头——跨站页面要设置它就必须通过本 Host 从不批准的 CORS 预检；响应不返回任何 CORS 头。唯一免该头的是二维码图片路由：`<img>` 必须能加载它，而它不泄露页面本已展示之外的信息。所有响应都带 `Cache-Control: no-store`。接受的本地威胁是常规情况：同一台电脑上的其它进程本就能读取配置文件与子进程日志。
 
-SakuraFrp 访问密钥在桥接上是只写的：state 只返回 `tokenConfigured: true`，页面不会再次显示密钥，也不会写进日志。但它仍以明文保存在 `$DSH_HOME/device-interconnect/config.json`，同样适用本地读取威胁；页面留空表示保留已存密钥，清除需要显式的 `clearToken`/`null` 写入。一键创建会用访问密钥以 Bearer 认证调用 `https://api.natfrp.com/v4`，读取账号/节点/隧道并创建或修改一条隧道；密钥不会出现在 URL、日志或错误信息里。点击一键创建后可能从 `https://getfr.sh/d/…` 下载 frpc 到 `<DSH_HOME>/device-interconnect/bin/`，随后执行 `frpc -V` 并要求输出包含 sakura，校验通过才会 spawn；插件激活时不会下载任何东西。
+SakuraFrp 访问密钥在桥接上是只写的：state 只返回 `tokenConfigured: true`，页面不会再次显示密钥，也不会写进日志。但它仍以明文保存在 `$DSH_HOME/device-interconnect/config.json`，同样适用本地读取威胁；页面留空表示保留已存密钥，清除需要显式的 `clearToken`/`null` 写入。一键创建会用访问密钥以 Bearer 认证调用 `https://api.natfrp.com/v4`，读取账号/节点/隧道并创建或修改一条隧道；密钥不会出现在 URL、日志或错误信息里。点击一键创建后可能从 `https://getfr.sh/d/…` 下载 frpc 到 `<DSH_HOME>/device-interconnect/bin/`，随后执行 `frpc -V` 并要求输出包含 sakura，校验通过才会 spawn；插件激活时不会下载任何东西。该服务不可达时回退到 SakuraFrp 的 Nyatwork CDN 版本镜像，并复用已安装且 `frpc -V` 含 sakura 的二进制。
 
 ### 卸载
 
@@ -152,7 +159,7 @@ None, as 本设置页只托管独立子进程（远程宿主与可选的 frpc �
 - **Windows 进程树结束依赖 `taskkill`** —— 在没有 `taskkill` 的平台上，停止后孙进程可能仍存活；supervisor 会记录超时，而不是报告一次干净停止。
 - **只有 TCP 隧道能保留远程宿主的 TLS** —— App 固定信任远程宿主的 CA，因此 HTTP/HTTPS 类型的 SakuraFrp 隧道（TLS 在服务商处终止）无法工作。隧道卡会拒绝 `https://` 公网地址并说明限制，不会自动回退到其它隧道类型。
 - **SakuraFrp 访问密钥明文存储** —— 桥接不回传、日志不记录，但 `$DSH_HOME/device-interconnect/config.json` 中以明文保存，可被本机其它进程读取。按与配对配置相同的本地读取威胁接受。
-- **frpc 只在明确点击时下载** —— 一键创建可能从 `https://getfr.sh/d/…` 下载 SakuraFrp 版 frpc；下载后用 `frpc -V` 校验，输出不含 sakura 时要求手动填写路径。手动模式从不下载。
+- **frpc 只在明确点击时下载** —— 一键创建可能从 `https://getfr.sh/d/…` 下载 SakuraFrp 版 frpc；该服务不可达时回退到 Nyatwork CDN 版本镜像，并复用已通过 `frpc -V` 校验的已安装二进制；输出不含 sakura 时要求手动填写路径。手动模式从不下载。
 - **一键创建依赖第三方 API** —— SakuraFrp API v4、节点 flag 与账号隧道额度都是外部契约。API 或额度变化会让创建以可读原因失败，已保存配置与重试路径保持可用。
 - **隧道推导出的对外地址会覆盖手填值** —— 配置了公网地址时，上面的手填 `publicOrigin` 被忽略，改用 `wss://<节点域名>:<端口>`；清空公网地址后，下次保存或启动会恢复手填值。
 

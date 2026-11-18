@@ -7,7 +7,7 @@ import { createServer, request as httpRequest, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
-  API_PREFIX, BRIDGE_HEADER, BRIDGE_HEADER_VALUE, CONFIG_ROUTE, ENABLED_ROUTE, LOGS_ROUTE, PAIR_ROUTE,
+  API_PREFIX, BRIDGE_HEADER, BRIDGE_HEADER_VALUE, CONFIG_ROUTE, DELETE_ROUTE, ENABLED_ROUTE, LOGS_ROUTE, PAIR_ROUTE,
   PROVISION_ROUTE, QR_ROUTE, REVOKE_ROUTE, STATE_ROUTE, TUNNEL_LOGS_ROUTE, TUNNEL_ROUTE,
 } from '../src/api.ts'
 import { ConfigValidationError } from '../src/host/config.ts'
@@ -59,6 +59,7 @@ function bridge(): {
   saveConfig: ReturnType<typeof vi.fn>
   pair: ReturnType<typeof vi.fn>
   revoke: ReturnType<typeof vi.fn>
+  deleteDevice: ReturnType<typeof vi.fn>
   logs: ReturnType<typeof vi.fn>
   tunnelLogs: ReturnType<typeof vi.fn>
   qrSvg: ReturnType<typeof vi.fn>
@@ -70,11 +71,12 @@ function bridge(): {
   const saveConfig = vi.fn(async () => snapshot())
   const pair = vi.fn(async () => snapshot())
   const revoke = vi.fn(async () => snapshot())
+  const deleteDevice = vi.fn(async () => snapshot())
   const logs = vi.fn(() => 'child output')
   const tunnelLogs = vi.fn(() => 'frpc output')
   const qrSvg = vi.fn(async () => '<svg xmlns="http://www.w3.org/2000/svg"></svg>')
   return {
-    api: { state, setEnabled, setTunnelEnabled, provisionTunnel, saveConfig, pair, revoke, logs, tunnelLogs, qrSvg },
+    api: { state, setEnabled, setTunnelEnabled, provisionTunnel, saveConfig, pair, revoke, deleteDevice, logs, tunnelLogs, qrSvg },
     state,
     setEnabled,
     setTunnelEnabled,
@@ -82,6 +84,7 @@ function bridge(): {
     saveConfig,
     pair,
     revoke,
+    deleteDevice,
     logs,
     tunnelLogs,
     qrSvg,
@@ -264,6 +267,14 @@ describe('bridge routes', () => {
     const response = await post(url, REVOKE_ROUTE, { deviceId: 'abc' })
     expect(response.status).toBe(200)
     expect(fake.revoke).toHaveBeenCalledWith('abc')
+  })
+
+  it('deletes one device record', async () => {
+    const fake = bridge()
+    const url = await serve(fake.api)
+    const response = await post(url, DELETE_ROUTE, { deviceId: 'abc' })
+    expect(response.status).toBe(200)
+    expect(fake.deleteDevice).toHaveBeenCalledWith('abc')
   })
 
   it('proxies the QR SVG for an image request without the custom header', async () => {

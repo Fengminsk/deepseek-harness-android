@@ -83,7 +83,6 @@ function TextField(props: {
   value: string
   hint?: string
   placeholder?: string
-  password?: boolean
   numeric?: boolean
   disabled: boolean
   onEdit: (value: string) => void
@@ -93,8 +92,6 @@ function TextField(props: {
     <div className={styles.field}>
       <label className={styles.fieldLabel} htmlFor={id}>{props.label}</label>
       <Input id={id} value={props.value} disabled={props.disabled}
-        type={props.password === true ? 'password' : undefined}
-        autoComplete={props.password === true ? 'off' : undefined}
         placeholder={props.placeholder}
         inputMode={props.numeric === true ? 'numeric' : undefined}
         onChange={(event) => { props.onEdit(event.currentTarget.value) }} />
@@ -114,6 +111,75 @@ function ToggleField(props: { label: string; checked: boolean; disabled: boolean
       <Switch checked={props.checked} disabled={props.disabled} label={props.label}
         onChange={(next) => { props.onChange(next) }} />
       <span className={styles.fieldLabel}>{props.label}</span>
+    </div>
+  )
+}
+
+/** Fixed mask shown for a stored secret the user has not typed again. */
+const SAVED_SECRET_MASK = '********'
+
+/**
+ * The masked display of one staged secret: a fixed marker while the stored
+ * secret is untouched, otherwise one star per typed character.
+ * @param value - staged secret text.
+ * @param saved - whether a secret is stored on the Host.
+ * @returns the text the input renders.
+ */
+function maskOfSecret(value: string, saved: boolean): string {
+  if (value === '' && saved) return SAVED_SECRET_MASK
+  return '*'.repeat(value.length)
+}
+
+/**
+ * Rebuild the raw secret after one edit of its masked display, so typing,
+ * backspace, selection replacement, and paste all keep the real value while the
+ * field only ever shows stars.
+ * @param raw - staged secret before the edit.
+ * @param display - the masked text the input now holds.
+ * @param saved - whether a secret is stored on the Host.
+ * @returns the staged secret after the edit.
+ */
+function diffSecretEdit(raw: string, display: string, saved: boolean): string {
+  const masked = maskOfSecret(raw, saved)
+  if (display === masked) return raw
+  let prefix = 0
+  while (prefix < masked.length && prefix < display.length && masked[prefix] === display[prefix]) prefix += 1
+  let suffix = 0
+  while (suffix < masked.length - prefix && suffix < display.length - prefix
+    && masked[masked.length - 1 - suffix] === display[display.length - 1 - suffix]) suffix += 1
+  const inserted = display.slice(prefix, display.length - suffix)
+  const keptPrefix = raw.slice(0, prefix)
+  const keptSuffix = suffix === 0 ? '' : raw.slice(raw.length - suffix)
+  return `${keptPrefix}${inserted}${keptSuffix}`
+}
+
+/**
+ * Render one labelled secret control whose field only ever shows a horizontal
+ * star mask; the real value stays in the staged draft and is submitted as-is.
+ * @param props - the label, staged value, saved state, hint, and edit callback.
+ * @returns the labelled secret row.
+ */
+function SecretField(props: {
+  label: string
+  value: string
+  saved: boolean
+  hint?: string
+  placeholder?: string
+  disabled: boolean
+  onEdit: (value: string) => void
+}) {
+  const id = useId()
+  return (
+    <div className={styles.field}>
+      <label className={styles.fieldLabel} htmlFor={id}>{props.label}</label>
+      <Input id={id} className={styles.secretField ?? ''} value={maskOfSecret(props.value, props.saved)}
+        disabled={props.disabled} autoComplete="off" spellCheck={false}
+        placeholder={props.placeholder}
+        data-secret-input="masked"
+        onChange={(event) => {
+          props.onEdit(diffSecretEdit(props.value, event.currentTarget.value, props.saved))
+        }} />
+      {props.hint !== undefined && <p className={styles.hint}>{props.hint}</p>}
     </div>
   )
 }
@@ -236,10 +302,12 @@ function TunnelCard(props: {
                 onChange={next => { actions.toggle('autoProvision', next) }} />
               <p className={styles.hint}>{draft.autoProvision ? t('tunnelAutoModeHint') : t('tunnelManualModeHint')}</p>
               <div className={styles.grid}>
-                <TextField label={t('tunnelAccessKey')} value={draft.tunnelToken} password
-                  hint={t('tunnelAccessKeyHint')} disabled={busy}
-                  placeholder={config.tunnel.tokenConfigured ? t('tunnelAccessKeyStoredPlaceholder') : t('tunnelAccessKeyPlaceholder')}
+                <SecretField label={t('tunnelAccessKey')} value={draft.tunnelToken}
+                  saved={config.tunnel.tokenConfigured} hint={t('tunnelAccessKeyHint')} disabled={busy}
+                  {...(config.tunnel.tokenConfigured ? {} : { placeholder: t('tunnelAccessKeyPlaceholder') })}
                   onEdit={value => { actions.edit('tunnelToken', value) }} />
+                <TextField label={t('tunnelFrpcPath')} value={draft.frpcPath} hint={t('tunnelFrpcPathHint')}
+                  disabled={busy} onEdit={value => { actions.edit('frpcPath', value) }} />
                 {draft.autoProvision
                   ? (
                     <TextField label={t('tunnelTunnelName')} value={draft.tunnelName} hint={t('tunnelTunnelNameHint')}
@@ -247,8 +315,6 @@ function TunnelCard(props: {
                   )
                   : (
                     <>
-                      <TextField label={t('tunnelFrpcPath')} value={draft.frpcPath} hint={t('tunnelFrpcPathHint')}
-                        disabled={busy} onEdit={value => { actions.edit('frpcPath', value) }} />
                       <TextField label={t('tunnelIds')} value={draft.tunnelIds} hint={t('tunnelIdsHint')}
                         disabled={busy} onEdit={value => { actions.edit('tunnelIds', value) }} />
                       <TextField label={t('tunnelPublicAddress')} value={draft.publicAddress}
@@ -328,10 +394,6 @@ function TunnelCard(props: {
                 <div className={styles.detailsBody}>
                   <div className={styles.grid}>
                     {draft.autoProvision && (
-                      <TextField label={t('tunnelFrpcPath')} value={draft.frpcPath} hint={t('tunnelFrpcPathHint')}
-                        disabled={busy} onEdit={value => { actions.edit('frpcPath', value) }} />
-                    )}
-                    {draft.autoProvision && (
                       <TextField label={t('tunnelNodeId')} value={draft.nodeId} numeric hint={t('tunnelNodeIdHint')}
                         disabled={busy} onEdit={value => { actions.edit('nodeId', value) }} />
                     )}
@@ -377,6 +439,119 @@ function TunnelCard(props: {
 }
 
 /**
+ * The paired-devices card: collapsible, active devices first, with the revoke
+ * action (keeps the record as a revoked tombstone) and the permanent delete
+ * action (removes the record after disconnecting an active device).
+ * @param props - the runtime snapshot and the page actions.
+ * @returns the card, its disclosure header, and both confirmation dialogs.
+ */
+function DevicesCard(props: {
+  runtime: RuntimeState
+  actions: DeviceInterconnectActions
+  busy: boolean
+  t: T
+}) {
+  const { runtime, actions, busy, t } = props
+  // Follow the default (expanded while few devices) until the user chooses; the
+  // user's choice then wins until the card unmounts.
+  const [expandedByUser, setExpandedByUser] = useState<boolean | undefined>(undefined)
+  const [pendingRevoke, setPendingRevoke] = useState<RemoteDevice | undefined>(undefined)
+  const [pendingDelete, setPendingDelete] = useState<RemoteDevice | undefined>(undefined)
+  const now = Date.now()
+  const devices = [...runtime.devices].sort((left, right) => {
+    const leftGroup = deviceState(left, now) === 'active' ? 0 : 1
+    const rightGroup = deviceState(right, now) === 'active' ? 0 : 1
+    return leftGroup - rightGroup || right.lastSeenAt - left.lastSeenAt || left.id.localeCompare(right.id)
+  })
+  const expanded = expandedByUser ?? devices.length <= 6
+  const deleteTargetActive = pendingDelete !== undefined && deviceState(pendingDelete, now) === 'active'
+  return (
+    <section className={styles.card} aria-labelledby="device-interconnect-devices">
+      <button type="button" className={styles.disclosureHeader} aria-expanded={expanded}
+        onClick={() => { setExpandedByUser(!expanded) }}>
+        <span aria-hidden="true" className={styles.chevron} data-open={expanded || undefined} />
+        <span id="device-interconnect-devices" className={styles.cardTitle}>
+          {t('devicesTitle')} ({String(devices.length)})
+        </span>
+      </button>
+      {expanded && (devices.length === 0
+        ? <p className={styles.empty}>{t('devicesEmpty')}</p>
+        : (
+          <ul className={styles.deviceList}>
+            {devices.map((device) => {
+              const state = deviceState(device, now)
+              const label = state === 'active'
+                ? t('deviceActive')
+                : state === 'revoked' ? t('deviceRevoked') : t('deviceExpired')
+              return (
+                <li key={device.id} className={styles.deviceRow}>
+                  <div className={styles.deviceIdentity}>
+                    <span className={styles.deviceName}>{device.label}</span>
+                    <span className={`${styles.hint} ${styles.mono}`}>
+                      {device.id.slice(0, 8)} · {t('devicePairedAt')} {formatInstant(device.createdAt)} · {t('deviceLastSeen')} {formatInstant(device.lastSeenAt)}
+                    </span>
+                  </div>
+                  <Tag tone={state === 'active' ? 'success' : 'neutral'}>{label}</Tag>
+                  <div className={styles.deviceActions}>
+                    {state === 'active' && (
+                      <Button variant="outline" size="sm" disabled={busy}
+                        onClick={() => { setPendingRevoke(device) }}>{t('revoke')}</Button>
+                    )}
+                    <Button variant="outline" size="sm" className={styles.deleteButton} disabled={busy}
+                      onClick={() => { setPendingDelete(device) }}>{t('delete')}</Button>
+                  </div>
+                </li>
+              )
+            })}
+          </ul>
+        ))}
+      <Modal
+        open={pendingRevoke !== undefined}
+        onClose={() => { setPendingRevoke(undefined) }}
+        title={t('revokeTitle')}
+        tone="warning"
+        closeLabel={t('close')}
+        {...(pendingRevoke === undefined ? {} : { description: t('revokeBody', { name: pendingRevoke.label }) })}
+        footer={(
+          <div className={styles.actions}>
+            <Button variant="outline" size="sm" onClick={() => { setPendingRevoke(undefined) }}>{t('cancel')}</Button>
+            <Button variant="primary" size="sm" disabled={busy}
+              onClick={() => {
+                const device = pendingRevoke
+                setPendingRevoke(undefined)
+                if (device !== undefined) void actions.revokeDevice(device.id)
+              }}>{t('confirmRevoke')}</Button>
+          </div>
+        )}
+      />
+      <Modal
+        open={pendingDelete !== undefined}
+        onClose={() => { setPendingDelete(undefined) }}
+        title={t('deleteTitle')}
+        tone="warning"
+        closeLabel={t('close')}
+        {...(pendingDelete === undefined ? {} : {
+          description: deleteTargetActive
+            ? t('deleteBodyActive', { name: pendingDelete.label })
+            : t('deleteBody', { name: pendingDelete.label }),
+        })}
+        footer={(
+          <div className={styles.actions}>
+            <Button variant="outline" size="sm" onClick={() => { setPendingDelete(undefined) }}>{t('cancel')}</Button>
+            <Button variant="outline" size="sm" className={styles.deleteConfirm} disabled={busy}
+              onClick={() => {
+                const device = pendingDelete
+                setPendingDelete(undefined)
+                if (device !== undefined) void actions.deleteDevice(device.id)
+              }}>{t('confirmDelete')}</Button>
+          </div>
+        )}
+      />
+    </section>
+  )
+}
+
+/**
  * The page body once a snapshot arrived.
  * @param props - the snapshot, the staged configuration, and the page actions.
  * @returns the full card stack.
@@ -389,10 +564,8 @@ function LoadedPage(props: {
   t: T
 }) {
   const { snapshot, runtime, draft, actions, t } = props
-  const [pendingRevoke, setPendingRevoke] = useState<RemoteDevice | undefined>(undefined)
   const busy = snapshot.busy
   const status = statusOf({ runtime, t })
-  const now = Date.now()
   const config = runtime.config
   const setDraft = (field: Parameters<DeviceInterconnectActions['edit']>[0], value: string): void => {
     actions.edit(field, value)
@@ -405,7 +578,7 @@ function LoadedPage(props: {
     ? undefined
     : 'key' in notice.text ? t(notice.text.key) : diagnosticText(t, notice.text.diagnostic)
   return (
-    <>
+    <div className={styles.page}>
       <h2 className={styles.pageTitle}>{t('title')}</h2>
       <p className={styles.pageDescription}>{t('description')}</p>
       {notice !== undefined && noticeText !== undefined && (
@@ -527,55 +700,6 @@ function LoadedPage(props: {
           </Button>
         </div>
       </section>
-      <section className={styles.card} aria-labelledby="device-interconnect-devices">
-        <h3 id="device-interconnect-devices" className={styles.cardTitle}>
-          {t('devicesTitle')} ({String(runtime.devices.length)})
-        </h3>
-        {runtime.devices.length === 0
-          ? <p className={styles.empty}>{t('devicesEmpty')}</p>
-          : (
-            <table className={styles.table}>
-              <thead>
-                <tr>
-                  <th>{t('deviceLabel')}</th>
-                  <th>{t('devicePairedAt')}</th>
-                  <th>{t('deviceLastSeen')}</th>
-                  <th>{t('status')}</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {runtime.devices.map((device) => {
-                  const state = deviceState(device, now)
-                  const label = state === 'active'
-                    ? t('deviceActive')
-                    : state === 'revoked' ? t('deviceRevoked') : t('deviceExpired')
-                  return (
-                    <tr key={device.id}>
-                      <td>
-                        <span className={styles.deviceName}>
-                          <span>{device.label}</span>
-                          <span className={`${styles.hint} ${styles.mono}`}>{device.id.slice(0, 8)}</span>
-                        </span>
-                      </td>
-                      <td className={styles.statusDetail}>{formatInstant(device.createdAt)}</td>
-                      <td className={styles.statusDetail}>{formatInstant(device.lastSeenAt)}</td>
-                      <td>
-                        <Tag tone={state === 'active' ? 'success' : 'neutral'}>{label}</Tag>
-                      </td>
-                      <td>
-                        {state === 'active' && (
-                          <Button variant="ghost" size="sm" disabled={busy}
-                            onClick={() => { setPendingRevoke(device) }}>{t('revoke')}</Button>
-                        )}
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          )}
-      </section>
       <TunnelCard runtime={runtime} draft={draft} actions={actions} busy={busy} t={t} />
       <section className={styles.card} aria-labelledby="device-interconnect-runner">
         <details>
@@ -614,26 +738,9 @@ function LoadedPage(props: {
           </div>
         </details>
       </section>
-      <Modal
-        open={pendingRevoke !== undefined}
-        onClose={() => { setPendingRevoke(undefined) }}
-        title={t('revokeTitle')}
-        tone="warning"
-        closeLabel={t('close')}
-        {...(pendingRevoke === undefined ? {} : { description: t('revokeBody', { name: pendingRevoke.label }) })}
-        footer={(
-          <div className={styles.actions}>
-            <Button variant="outline" size="sm" onClick={() => { setPendingRevoke(undefined) }}>{t('cancel')}</Button>
-            <Button variant="primary" size="sm" disabled={busy}
-              onClick={() => {
-                const device = pendingRevoke
-                setPendingRevoke(undefined)
-                if (device !== undefined) void actions.revokeDevice(device.id)
-              }}>{t('confirmRevoke')}</Button>
-          </div>
-        )}
-      />
-    </>
+      <DevicesCard runtime={runtime} actions={actions} busy={busy} t={t} />
+    </div>
+
   )
 }
 

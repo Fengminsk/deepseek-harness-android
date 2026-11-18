@@ -52,6 +52,12 @@ function tunnelState(overrides: Partial<TunnelState> = {}): TunnelState {
   }
 }
 
+/** One configuration document whose stored frpc path is the given value. */
+function configWithFrpcPath(frpcPath: string): DeviceInterconnectView {
+  const base = config()
+  return config({ tunnel: { ...base.tunnel, frpcPath } })
+}
+
 /** One runtime snapshot document. */
 function state(overrides: Partial<RuntimeState> = {}): RuntimeState {
   return {
@@ -169,6 +175,42 @@ describe('page actions', () => {
     expect(body?.config.tunnel).toMatchObject({ provider: 'sakurafrp', tunnelIds: '114514' })
   })
 
+  it('keeps the staged frpc path across toggles and polling', async () => {
+    const { controller } = bench()
+    await controller.refresh()
+    controller.actions.edit('frpcPath', 'C:\\tools\\frpc.exe')
+    controller.actions.toggle('autoProvision', false)
+    controller.actions.toggle('frpcAutoDownload', false)
+    await controller.refresh()
+    expect(controller.store.getSnapshot().draft?.frpcPath).toBe('C:\\tools\\frpc.exe')
+  })
+
+  it('keeps the staged frpc path through the one-click provision refresh', async () => {
+    const { controller, requests } = bench()
+    await controller.refresh()
+    controller.actions.edit('frpcPath', 'C:\\tools\\frpc.exe')
+    controller.actions.edit('tunnelToken', 'new-key')
+    await controller.actions.provision()
+    const provision = requests.find(request => request.url.endsWith('/tunnel/provision'))
+    expect(provision?.body).toMatchObject({ token: 'new-key', frpcPath: 'C:\\tools\\frpc.exe' })
+    const draft = controller.store.getSnapshot().draft
+    expect(draft?.frpcPath).toBe('C:\\tools\\frpc.exe')
+    expect(draft?.tunnelToken).toBe('')
+  })
+
+  it('sends the staged frpc path on save and echoes the saved one', async () => {
+    const { controller, requests } = bench()
+    await controller.refresh()
+    controller.actions.edit('frpcPath', 'C:\\tools\\frpc.exe')
+    await controller.save()
+    const save = requests.find(request => request.url.endsWith('/config'))
+    const body = save?.body as { config: { tunnel: Record<string, unknown> } } | undefined
+    expect(body?.config.tunnel.frpcPath).toBe('C:\\tools\\frpc.exe')
+    const echoing = bench({ state: state({ config: configWithFrpcPath('C:\\tools\\frpc.exe') }) })
+    await echoing.controller.refresh()
+    expect(echoing.controller.store.getSnapshot().draft?.frpcPath).toBe('C:\\tools\\frpc.exe')
+  })
+
   it('posts the one-click provision request with the staged access key', async () => {
     const { controller, requests } = bench()
     await controller.refresh()
@@ -182,6 +224,18 @@ describe('page actions', () => {
       body: { token: 'new-key', frpcAutoDownload: false, tunnelName: 'My tunnel' },
     })
     expect(controller.store.getSnapshot().notice).toEqual({ kind: 'success', text: { key: 'tunnelProvisioned' } })
+  })
+
+  it('permanently deletes a device record through the delete route', async () => {
+    const { controller, requests } = bench()
+    await controller.refresh()
+    await controller.actions.deleteDevice('0123456789abcdef0123456789abcdef')
+    const deletion = requests.find(request => request.url.endsWith('/devices/delete'))
+    expect(deletion).toMatchObject({
+      method: 'POST',
+      body: { deviceId: '0123456789abcdef0123456789abcdef' },
+    })
+    expect(controller.store.getSnapshot().notice).toEqual({ kind: 'success', text: { key: 'deleted' } })
   })
 
   it('starts and stops the tunnel through the tunnel route', async () => {

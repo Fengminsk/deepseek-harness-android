@@ -29,6 +29,9 @@ export const PROVISION_ROUTE = `${API_PREFIX}/tunnel/provision`
 /** `POST` revoke one paired device. */
 export const REVOKE_ROUTE = `${API_PREFIX}/devices/revoke`
 
+/** `POST` permanently delete one paired device record. */
+export const DELETE_ROUTE = `${API_PREFIX}/devices/delete`
+
 /** `GET` the child's log tail. */
 export const LOGS_ROUTE = `${API_PREFIX}/logs`
 

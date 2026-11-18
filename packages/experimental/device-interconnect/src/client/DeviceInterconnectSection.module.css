@@ -1,47 +1,54 @@
 /*
- * Device Interconnect Settings page. One vertical stack of cards: the status
- * card with the switch, the long-term pairing card with its QR code, the
- * listener settings, paired devices, the collapsible runner paths, and the
- * child output. Cards use the settings card fill and hairline; the two status
- * colors appear only on state badges and failure text.
+ * Device Interconnect Settings page, aligned with the shared DSH settings
+ * foundation (models: client/ui-settings-models/ModelsSection.module.css):
+ * a 12px stacked section capped at 720px, a 16/24 500 page title, a 14/22
+ * tertiary intro, and cards with the 0.5px settings-card stroke, settings-card
+ * fill, extra-large radius, and 12px/14px padding. Every color resolves through
+ * a --dsw-alias-* token. The one literal is the QR quiet zone, which must stay
+ * light in both themes: the host draws the QR black-on-transparent, so a dark
+ * quiet zone would stop scanning.
  */
 
 .page {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 12px;
+  max-width: 720px;
+  color: var(--dsw-alias-label-primary);
 }
 
 .pageTitle {
   margin: 0;
   font-size: 16px;
-  font-weight: 600;
   line-height: 24px;
+  font-weight: 500;
   color: var(--dsw-alias-label-primary);
 }
 
 .pageDescription {
   margin: 0;
-  font-size: 13px;
-  line-height: 20px;
-  color: var(--dsw-alias-label-secondary);
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--dsw-alias-label-tertiary);
 }
 
+/* Settings card: one material for every section, matching the shared settings
+   cards rather than the old per-card padding. */
 .card {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding: 16px;
+  padding: 12px 14px;
   border: 0.5px solid var(--dsw-alias-settings-card-stroke);
-  border-radius: var(--dsw-radius-lg);
+  border-radius: var(--dsw-radius-xl);
   background: var(--dsw-alias-settings-card-fill);
 }
 
 .cardTitle {
   margin: 0;
   font-size: 14px;
+  line-height: 22px;
   font-weight: 500;
-  line-height: 20px;
   color: var(--dsw-alias-label-primary);
 }
 
@@ -49,7 +56,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 12px;
   flex-wrap: wrap;
 }
 
@@ -60,8 +67,8 @@
 }
 
 .statusDetail {
-  font-size: 12px;
-  line-height: 18px;
+  font-size: 13px;
+  line-height: 20px;
   color: var(--dsw-alias-label-secondary);
 }
 
@@ -69,19 +76,147 @@
   color: var(--dsw-alias-state-error-primary);
 }
 
-.success {
-  color: var(--dsw-alias-state-success-primary);
-}
-
-.muted {
-  color: var(--dsw-alias-label-tertiary);
-}
-
 .mono {
-  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  font-family: var(--ds-font-family-code, ui-monospace, 'Cascadia Mono', Consolas, monospace);
   font-size: 12px;
   line-height: 18px;
   word-break: break-all;
+}
+
+.hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+/* Empty state: dashed "nothing here" affordance, matching the models settings. */
+.empty {
+  margin: 0;
+  padding: 12px;
+  border: 0.5px dashed var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-lg);
+  text-align: center;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+/* Controlled disclosure header for a settings card: the compact summary
+   pattern used by the models settings' customized block, with a token-colored
+   chevron instead of the engine-specific native marker. */
+.disclosureHeader {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  max-width: 100%;
+  margin: 0 0 0 -4px;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: var(--dsw-radius-sm);
+  background: transparent;
+  font: inherit;
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 500;
+  color: var(--dsw-alias-label-primary);
+  text-align: start;
+  cursor: pointer;
+}
+
+@media (hover: hover) {
+  .disclosureHeader:hover {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
+}
+
+.disclosureHeader:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+}
+
+.chevron {
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-right: 1.5px solid currentcolor;
+  border-bottom: 1.5px solid currentcolor;
+  transform: rotate(-45deg) translate(-1px, -1px);
+  transition: transform 120ms ease;
+}
+
+.chevron[data-open] {
+  transform: rotate(45deg) translate(-1px, -1px);
+}
+
+/* Device rows: 0.5px hairline separators with 10px vertical padding, the row
+   list treatment used inside settings cards; the first row needs no divider. */
+.deviceList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.deviceRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 10px 2px;
+  border-top: 0.5px solid var(--dsw-alias-border-l2);
+}
+
+.deviceList > .deviceRow:first-child {
+  border-top: none;
+  padding-top: 2px;
+}
+
+.deviceIdentity {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 220px;
+}
+
+.deviceName {
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 500;
+  color: var(--dsw-alias-label-primary);
+  overflow-wrap: anywhere;
+}
+
+.deviceActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.deleteButton:not(:disabled) {
+  color: var(--dsw-alias-state-error-primary);
+}
+
+@media (hover: hover) {
+  .deleteButton:hover:not(:disabled) {
+    background: var(--dsw-alias-interactive-bg-hover-danger);
+  }
+}
+
+.deleteConfirm:not(:disabled) {
+  border-color: var(--dsw-alias-state-error-primary);
+  color: var(--dsw-alias-state-error-primary);
+}
+
+@media (hover: hover) {
+  .deleteConfirm:hover:not(:disabled) {
+    background: var(--dsw-alias-interactive-bg-hover-danger);
+  }
 }
 
 .pairing {
@@ -96,8 +231,9 @@
   width: 216px;
   height: 216px;
   padding: 8px;
-  border-radius: var(--dsw-radius-md);
-  border: 0.5px solid var(--dsw-alias-border-l4);
+  border: 0.5px solid var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-lg);
+  /* Functional quiet zone; see the file header. */
   background: #ffffff;
 }
 
@@ -105,7 +241,7 @@
   display: flex;
   flex: 1 1 260px;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
   min-width: 240px;
 }
 
@@ -131,27 +267,29 @@
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 4px 20px;
+  gap: 12px 16px;
 }
 
 .field {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 6px 0;
+  gap: 6px;
 }
 
 .fieldLabel {
   font-size: 12px;
   line-height: 18px;
+  font-weight: 500;
   color: var(--dsw-alias-label-secondary);
 }
 
-.hint {
-  margin: 0;
-  font-size: 12px;
-  line-height: 18px;
-  color: var(--dsw-alias-label-tertiary);
+/* Secret field: the input renders only stars (the real value stays in the
+   staged draft) and keeps them horizontally centered, so a stored credential
+   reads as a mask instead of an ordinary text value. */
+.secretField input {
+  text-align: center;
+  letter-spacing: 2px;
+  font-family: var(--ds-font-family-code, ui-monospace, 'Cascadia Mono', Consolas, monospace);
 }
 
 .switchRow {
@@ -160,64 +298,81 @@
   gap: 10px;
 }
 
-.table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12px;
-  line-height: 18px;
-}
-
-.table th {
-  padding: 6px 8px;
-  text-align: start;
-  font-weight: 500;
-  color: var(--dsw-alias-label-tertiary);
-  border-bottom: 0.5px solid var(--dsw-alias-border-l4);
-  white-space: nowrap;
-}
-
-.table td {
-  padding: 8px;
-  text-align: start;
+.select {
+  box-sizing: border-box;
+  height: 32px;
+  padding: 0 8px;
+  border: 0.5px solid var(--dsw-alias-border-l4);
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-layer-1);
   color: var(--dsw-alias-label-primary);
-  border-bottom: 0.5px solid var(--dsw-alias-border-l4);
-  vertical-align: middle;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
 }
 
-.table tr:last-child td {
-  border-bottom: none;
+.select:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
-.deviceName {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.empty {
-  margin: 0;
-  font-size: 12px;
-  line-height: 18px;
-  color: var(--dsw-alias-label-tertiary);
-}
-
+/* Collapsible advanced blocks inside a card: hairline separator above the
+   summary and a 12px gap between summary and body. */
 .details {
-  border-top: 0.5px solid var(--dsw-alias-border-l4);
-  padding-top: 8px;
+  border-top: 0.5px solid var(--dsw-alias-border-l2);
+  padding-top: 10px;
 }
 
 .detailsSummary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  margin-left: -4px;
+  padding: 2px 4px;
+  border-radius: var(--dsw-radius-sm);
+  list-style: none;
   cursor: pointer;
-  font-size: 13px;
-  line-height: 20px;
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 500;
   color: var(--dsw-alias-label-secondary);
+}
+
+.detailsSummary::-webkit-details-marker {
+  display: none;
+}
+
+.detailsSummary::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-right: 1.5px solid currentcolor;
+  border-bottom: 1.5px solid currentcolor;
+  transform: rotate(-45deg) translate(-1px, -1px);
+  transition: transform 120ms ease;
+}
+
+.details[open] > .detailsSummary::before {
+  transform: rotate(45deg) translate(-1px, -1px);
+}
+
+@media (hover: hover) {
+  .detailsSummary:hover {
+    color: var(--dsw-alias-label-primary);
+  }
+}
+
+.detailsSummary:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
 }
 
 .detailsBody {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding-top: 10px;
+  gap: 12px;
+  padding-top: 12px;
 }
 
 .logs {
@@ -225,9 +380,9 @@
   padding: 10px;
   max-height: 220px;
   overflow: auto;
-  border-radius: var(--dsw-radius-sm);
+  border-radius: var(--dsw-radius-md);
   background: var(--dsw-alias-bg-module-platform);
-  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  font-family: var(--ds-font-family-code, ui-monospace, 'Cascadia Mono', Consolas, monospace);
   font-size: 11px;
   line-height: 16px;
   color: var(--dsw-alias-label-secondary);
@@ -240,9 +395,9 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 8px 12px;
-  border-radius: var(--dsw-radius-md);
-  border: 0.5px solid var(--dsw-alias-border-l4);
+  padding: 8px 10px;
+  border: 0.5px solid var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-lg);
   background: var(--dsw-alias-bg-module-platform);
   font-size: 12px;
   line-height: 18px;
@@ -264,22 +419,19 @@
   color: var(--dsw-alias-state-warn-label);
 }
 
-.select {
-  height: 30px;
-  padding: 0 8px;
-  border: 0.5px solid var(--dsw-alias-border-l4);
-  border-radius: var(--dsw-radius-sm);
-  background: var(--dsw-alias-bg-layer-3);
-  color: var(--dsw-alias-label-primary);
-  font: inherit;
-  font-size: 12px;
-}
-
 .centered {
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 48px 16px;
   font-size: 13px;
+  line-height: 20px;
   color: var(--dsw-alias-label-tertiary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chevron,
+  .detailsSummary::before {
+    transition: none;
+  }
 }

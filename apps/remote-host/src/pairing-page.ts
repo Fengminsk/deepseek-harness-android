@@ -10,7 +10,8 @@
  * - 所有请求校验 `Host` 头只能是 `127.0.0.1:<port>` / `localhost:<port>`，挡住 DNS rebinding；
  * - 带 `Origin` 的请求必须是同源，否则 403；不返回任何 CORS 头；
  * - POST 必须带本进程随机生成的 CSRF token（隐藏表单字段），缺失或不符一律 403；
- * - 控制 API（`POST /api/pair`、`POST /api/devices/revoke`）是给本机插件用的 JSON 端点：
+ * - 控制 API（`POST /api/pair`、`POST /api/devices/revoke`、`POST /api/devices/delete`）
+ *   是给本机插件用的 JSON 端点：
  *   除 Host/Origin 外还必须带固定控制头 {@link CONTROL_HEADER}: `1`，缺失或不符一律 403。
  *   它挡的是「浏览器里其它网页发起的 CSRF」——跨站表单不能加自定义头，跨站 fetch 加自定义头
  *   会先发预检，而本页不实现 OPTIONS、也不返回 CORS 头，预检必然失败。控制头不是鉴权：
@@ -44,6 +45,7 @@ import { encodeQrMatrix, type QrMatrix } from './pairing-qr.ts'
 import {
   describeRemoteError,
   writeRemoteLog,
+  type RemoteDeviceDeleteResult,
   type RemoteDeviceRevokeResult,
   type RemoteLogger,
 } from './server.ts'
@@ -169,6 +171,13 @@ export interface PairingPageSource {
    */
   revokeDevice(deviceId: string): Promise<RemoteDeviceRevokeResult>
 
+  /**
+   * 永久删除一台设备记录；有效设备由宿主先撤销并关闭连接，再移除记录。
+   * @param deviceId - 32 位小写十六进制设备 id。
+   * @returns 删除是否生效、删除前是否有效、被关闭的连接数。
+   */
+  deleteDevice(deviceId: string): Promise<RemoteDeviceDeleteResult>
+
   /** @returns 宿主身份、origin 与监听信息。 */
   host(): PairingPageHost
 }
@@ -247,7 +256,7 @@ type BodyRead =
 type FormAction = 'pair-reopen' | 'device-revoke'
 
 /** 控制 API 的动作名（日志 `pairing-page-action.fields.action`）。 */
-type ControlAction = 'api-pair' | 'api-device-revoke'
+type ControlAction = 'api-pair' | 'api-device-revoke' | 'api-device-delete'
 
 /**
  * 本机配对设置页服务。
@@ -480,6 +489,14 @@ export class PairingPageServer {
         if (!this.allowedControlHeader(request, response, method, 'api-device-revoke')) return
         await this.handleApiRevoke(request, response)
         return
+      case '/api/devices/delete':
+        if (method !== 'POST') {
+          this.methodNotAllowed(response, 'POST')
+          return
+        }
+        if (!this.allowedControlHeader(request, response, method, 'api-device-delete')) return
+        await this.handleApiDelete(request, response)
+        return
       case '/qr.svg':
         if (method !== 'GET') {
           this.methodNotAllowed(response, 'GET')
@@ -509,7 +526,8 @@ export class PairingPageServer {
   /**
    * 校验控制 API 的自定义头。
    *
-   * 只对 `POST /api/pair` 与 `POST /api/devices/revoke` 生效：跨站表单无法设置自定义头，
+   * 只对 `POST /api/pair`、`POST /api/devices/revoke` 与 `POST /api/devices/delete` 生效：
+   * 跨站表单无法设置自定义头，
    * 跨站 fetch 设置它会先发本页不实现的 CORS 预检，两条路都到不了这里。这不是鉴权——
    * 同机进程可以照抄这个头，威胁模型见模块注释。
    * @param request - 入站请求。
@@ -629,6 +647,75 @@ export class PairingPageServer {
         result: 'revoked',
         deviceId,
         closedConnections: result.closed,
+      },
+    })
+    this.sendJson(response, 200, this.buildState(this.snapshot()))
+  }
+
+  /**
+   * `POST /api/devices/delete`：永久删除设备记录并回最新 state（本机插件用）。
+   *
+   * 与 revoke 的差别：任何状态的记录都可删除；有效设备由宿主先走撤销路径关闭连接并推
+   * `remote.deviceRevoked`，再移除记录；记录不存在（含已被删除）一律 404，没有
+   * 「已撤销」冲突分支。
+   * @param request - 入站请求。
+   * @param response - 待写响应。
+   * @returns 响应写完后兑现。
+   */
+  private async handleApiDelete(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    if (!isJsonContentType(request.headers['content-type'])) {
+      this.logRejected('POST', 'api-device-delete', 'content-type')
+      this.sendJsonError(response, 415, 'unsupported-media-type', '只接受 application/json 请求体。')
+      return
+    }
+    const json = await this.readControlBody(request, response, 'api-device-delete')
+    if (json === undefined) return
+    const deviceId = deviceIdFromJson(json)
+    if (deviceId === undefined) {
+      this.logRejected('POST', 'api-device-delete', 'device-id')
+      this.sendJsonError(response, 400, 'invalid-request', 'deviceId 必须是 32 位小写十六进制。')
+      return
+    }
+    if (this.source.devices().every(device => device.id !== deviceId)) {
+      this.logRejected('POST', 'api-device-delete', 'not-found')
+      this.sendJsonError(response, 404, 'device-not-found', '没有找到这台设备。')
+      return
+    }
+    let result: RemoteDeviceDeleteResult
+    try {
+      result = await this.source.deleteDevice(deviceId)
+    } catch (error) {
+      this.log({
+        level: 'error',
+        event: 'pairing-page-action',
+        message: '控制 API 删除设备记录失败。',
+        fields: {
+          action: 'api-device-delete',
+          method: 'POST',
+          result: 'failed',
+          deviceId,
+          error: describeRemoteError(error),
+        },
+      })
+      this.sendJsonError(response, 500, 'delete-failed', '删除设备记录失败，详情见宿主日志。')
+      return
+    }
+    if (!result.deleted) {
+      this.logRejected('POST', 'api-device-delete', 'not-found')
+      this.sendJsonError(response, 404, 'device-not-found', '没有找到这台设备。')
+      return
+    }
+    this.log({
+      level: 'info',
+      event: 'pairing-page-action',
+      message: '控制 API 永久删除了一台设备记录。',
+      fields: {
+        action: 'api-device-delete',
+        method: 'POST',
+        result: 'deleted',
+        deviceId,
+        wasActive: result.wasActive,
+        closedConnections: result.closedConnections,
       },
     })
     this.sendJson(response, 200, this.buildState(this.snapshot()))

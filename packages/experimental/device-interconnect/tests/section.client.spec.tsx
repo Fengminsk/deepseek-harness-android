@@ -14,7 +14,7 @@ import {
 } from '../src/client/DeviceInterconnectSection.tsx'
 import type { DeviceInterconnectActions, SectionSnapshot } from '../src/client/controller.ts'
 import { en } from '../src/client/locales.ts'
-import type { DeviceInterconnectView, RuntimeState, TunnelState } from '../src/types.ts'
+import type { DeviceInterconnectView, RemoteDevice, RuntimeState, TunnelState } from '../src/types.ts'
 
 afterEach(cleanup)
 
@@ -128,6 +128,7 @@ function stubActions(overrides: Partial<DeviceInterconnectActions> = {}): Device
     save: vi.fn(async () => {}),
     regeneratePairing: vi.fn(async () => {}),
     revokeDevice: vi.fn(async () => {}),
+    deleteDevice: vi.fn(async () => {}),
     dismissNotice: vi.fn(),
     ...overrides,
   }
@@ -311,12 +312,22 @@ describe('Device Interconnect tunnel card', () => {
       .toBe('wss://cn-xx.natfrp.cloud:12345')
   })
 
-  it('keeps the access key write-only with a stored placeholder', () => {
-    renderPage()
+  it('shows a stored access key as a centered star mask and stages typed characters', () => {
+    const { actions } = renderPage()
     const token = screen.getByLabelText('Access key') as HTMLInputElement
-    expect(token.type).toBe('password')
-    expect(token.value).toBe('')
-    expect(token.placeholder).toBe('Stored - leave empty to keep it')
+    expect(token.value).toBe('********')
+    expect(token.getAttribute('data-secret-input')).toBe('masked')
+    expect(token.parentElement?.className).toContain('secretField')
+    expect(token.placeholder).toBe('')
+    fireEvent.change(token, { target: { value: '********x' } })
+    expect(actions.edit).toHaveBeenCalledWith('tunnelToken', 'x')
+  })
+
+  it('masks a staged access key with one star per character', () => {
+    renderPage({ draft: { ...manualDraft(), tunnelToken: 'abc' } })
+    const token = screen.getByLabelText('Access key') as HTMLInputElement
+    expect(token.value).toBe('***')
+    expect(token.getAttribute('data-secret-input')).toBe('masked')
   })
 
   it('stages every tunnel field and saves the page', () => {
@@ -430,6 +441,11 @@ describe('Device Interconnect tunnel card', () => {
     expect(screen.getByRole('button', { name: 'Retry automatic setup' })).toBeTruthy()
   })
 
+  it('keeps the frpc path field visible in the automatic mode', () => {
+    renderPage()
+    expect((screen.getByLabelText('frpc executable') as HTMLInputElement).value).toBe('C:\\frpc\\frpc.exe')
+  })
+
   it('falls back to the pending-origin hint when no address is configured', () => {
     renderPage({
       state: runtime({
@@ -438,5 +454,110 @@ describe('Device Interconnect tunnel card', () => {
       }),
     })
     expect(screen.getByText(/Fill in the public address/u)).toBeTruthy()
+  })
+})
+
+/** One paired-device fixture. */
+function device(overrides: Partial<RemoteDevice> & Pick<RemoteDevice, 'id' | 'label'>): RemoteDevice {
+  return {
+    createdAt: 1,
+    lastSeenAt: 2,
+    expiresAt: 1_900_000_000_000,
+    ...overrides,
+  }
+}
+
+describe('Device Interconnect paired-devices card', () => {
+  it('renders the cards in the DSH settings order with devices last', () => {
+    const { container } = renderPage()
+    const ids = [...container.querySelectorAll('section[aria-labelledby]')]
+      .map(section => section.getAttribute('aria-labelledby'))
+    expect(ids).toEqual([
+      'device-interconnect-status',
+      'device-interconnect-pairing',
+      'device-interconnect-config',
+      'device-interconnect-tunnel',
+      'device-interconnect-runner',
+      'device-interconnect-logs',
+      'device-interconnect-devices',
+    ])
+  })
+
+  it('stays expanded with few devices and collapses above six by default', () => {
+    const few = renderPage({ state: runtime({ devices: [device({ id: 'a'.repeat(32), label: 'Pixel' })] }) })
+    const fewHeader = screen.getByRole('button', { name: /Paired devices/u })
+    expect(fewHeader.getAttribute('aria-expanded')).toBe('true')
+    expect(screen.getByText('Pixel')).toBeTruthy()
+    few.unmount()
+
+    const many = Array.from({ length: 7 }, (_, index) => device({
+      id: String(index + 10).repeat(32).slice(0, 32),
+      label: `Phone ${String(index)}`,
+    }))
+    renderPage({ state: runtime({ devices: many }) })
+    const header = screen.getByRole('button', { name: /Paired devices \(7\)/u })
+    expect(header.getAttribute('aria-expanded')).toBe('false')
+    expect(screen.queryByText('Phone 0')).toBeNull()
+    fireEvent.click(header)
+    expect(header.getAttribute('aria-expanded')).toBe('true')
+    expect(screen.getByText('Phone 0')).toBeTruthy()
+  })
+
+  it('sorts active devices before revoked and expired ones', () => {
+    const { container } = renderPage({
+      state: runtime({
+        devices: [
+          device({ id: 'c'.repeat(32), label: 'RevokedPhone', lastSeenAt: 100, revokedAt: 150 }),
+          device({ id: 'd'.repeat(32), label: 'ExpiredPhone', lastSeenAt: 50, expiresAt: 60 }),
+          device({ id: 'b'.repeat(32), label: 'ActivePhone2', lastSeenAt: 200 }),
+          device({ id: 'a'.repeat(32), label: 'ActivePhone1', lastSeenAt: 300 }),
+        ],
+      }),
+    })
+    const labels = [...container.querySelectorAll('li')].map(row => row.textContent ?? '')
+    const names = labels.map(text => ['ActivePhone1', 'ActivePhone2', 'RevokedPhone', 'ExpiredPhone']
+      .find(name => text.includes(name)))
+    expect(names).toEqual(['ActivePhone1', 'ActivePhone2', 'RevokedPhone', 'ExpiredPhone'])
+  })
+
+  it('offers delete for every device and revoke only for active ones', () => {
+    renderPage({
+      state: runtime({
+        devices: [
+          device({ id: 'a'.repeat(32), label: 'Phone' }),
+          device({ id: 'b'.repeat(32), label: 'OldPhone', revokedAt: 5 }),
+        ],
+      }),
+    })
+    expect(screen.getAllByRole('button', { name: 'Revoke' })).toHaveLength(1)
+    expect(screen.getAllByRole('button', { name: 'Delete' })).toHaveLength(2)
+  })
+
+  it('deletes an active device after explaining the disconnect', async () => {
+    const { actions } = renderPage({
+      state: runtime({ devices: [device({ id: 'a'.repeat(32), label: 'Phone' })] }),
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    const dialog = screen.getByRole('dialog')
+    expect(within(dialog).getByText('Delete this device?')).toBeTruthy()
+    expect(within(dialog).getByText(/disconnected and must pair again/u)).toBeTruthy()
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Delete permanently' }))
+    })
+    expect(actions.deleteDevice).toHaveBeenCalledWith('a'.repeat(32))
+  })
+
+  it('deletes a revoked device without the disconnect warning', async () => {
+    const { actions } = renderPage({
+      state: runtime({ devices: [device({ id: 'b'.repeat(32), label: 'OldPhone', revokedAt: 5 })] }),
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    const dialog = screen.getByRole('dialog')
+    expect(within(dialog).getByText(/record of/u)).toBeTruthy()
+    expect(within(dialog).queryByText(/disconnected and must pair again/u)).toBeNull()
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Delete permanently' }))
+    })
+    expect(actions.deleteDevice).toHaveBeenCalledWith('b'.repeat(32))
   })
 })

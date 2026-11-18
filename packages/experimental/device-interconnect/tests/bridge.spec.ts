@@ -124,11 +124,13 @@ function controlPlane(state = controlState(), stateImplementation?: () => Promis
     state: ReturnType<typeof vi.fn>
     pair: ReturnType<typeof vi.fn>
     revoke: ReturnType<typeof vi.fn>
+    deleteDevice: ReturnType<typeof vi.fn>
     qrSvg: ReturnType<typeof vi.fn>
   } = {
     state: stateImplementation === undefined ? vi.fn(async () => state) : vi.fn(stateImplementation),
     pair: vi.fn(async () => state),
     revoke: vi.fn(async () => state),
+    deleteDevice: vi.fn(async () => state),
     qrSvg: vi.fn(async () => '<svg/>'),
   }
   return cp
@@ -619,6 +621,15 @@ describe('page actions', () => {
     const before = store.current()
     await expect(bridge.saveConfig({ ...configuration(), host: { port: 0 } })).rejects.toBeInstanceOf(ConfigValidationError)
     expect(store.current()).toEqual(before)
+  })
+
+  it('deletes a device record and rejects a malformed device id', async () => {
+    const control = controlPlane()
+    const { bridge } = await bench({ controlPlane: control })
+    await expect(bridge.deleteDevice('nope')).rejects.toBeInstanceOf(ControlPlaneError)
+    expect(control.deleteDevice).not.toHaveBeenCalled()
+    await bridge.deleteDevice('0123456789abcdef0123456789abcdef')
+    expect(control.deleteDevice).toHaveBeenCalledWith('0123456789abcdef0123456789abcdef')
   })
 
   it('reopens the pairing window through the control plane', async () => {

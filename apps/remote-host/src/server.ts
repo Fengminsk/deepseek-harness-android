@@ -266,6 +266,16 @@ export interface RemoteDeviceRevokeResult {
   readonly closed: number
 }
 
+/** 一次设备删除的结果。 */
+export interface RemoteDeviceDeleteResult {
+  /** 记录是否已从设备表删除。 */
+  readonly deleted: boolean
+  /** 删除前是否为有效设备；有效设备会先撤销并关闭连接。 */
+  readonly wasActive: boolean
+  /** 因撤销而被关闭的在线连接数。 */
+  readonly closedConnections: number
+}
+
 /** {@link RemoteConnection} 的构造依赖。 */
 export interface RemoteConnectionOptions {
   /** 进程内唯一的连接 id。 */

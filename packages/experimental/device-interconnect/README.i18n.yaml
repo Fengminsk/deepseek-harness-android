@@ -26,6 +26,9 @@
 /deepseek-ai-dsh-device-interconnect/use-this-package/listener-and-pairing-settings:
   en: 05723960a9ba2e24
   zh: 13e5297cf71ceef2
+/deepseek-ai-dsh-device-interconnect/use-this-package/manage-paired-devices:
+  en: e7bbfc6148a3ad10
+  zh: 53e7d99d68fe34b9
 /deepseek-ai-dsh-device-interconnect/use-this-package/sakurafrp-tcp-tunnel:
   en: 6d3a39c9286eec7b
   zh: 0497f65a394ba25a
@@ -36,8 +39,8 @@
   en: cae6a95f4c02b1bd
   zh: 8300be572ab7f126
 /deepseek-ai-dsh-device-interconnect/use-this-package/security-model:
-  en: 17e4b8788f56e71e
-  zh: 630c65e78cef5979
+  en: 6539183e34c62d1e
+  zh: 1fba235fd190afe5
 /deepseek-ai-dsh-device-interconnect/use-this-package/uninstall:
   en: 50b2e818821c31a7
   zh: d06f150bbd7eae73
@@ -66,8 +69,8 @@
   en: f3a70883399ebc2f
   zh: e64cd073ace5cfa4
 /deepseek-ai-dsh-device-interconnect/known-limitations-and-deferred-work:
-  en: 49dd615983a09a7c
-  zh: 5a7741270f672357
+  en: 3536e079878c8975
+  zh: 1b41ffefc7a06373
 /deepseek-ai-dsh-device-interconnect/known-limitations-and-deferred-work/dev-note:
   en: 279d01435256cd2a
   zh: 7c2ad2f568099e7f

@@ -349,6 +349,22 @@ export class Bridge {
   }
 
   /**
+   * Permanently delete one paired device record. An active device is revoked
+   * first by the remote host (its connections close and it must pair again), then
+   * the record is removed; the page keeps both actions distinct.
+   * @param deviceId - device id from the page.
+   * @returns the snapshot after the deletion.
+   * @throws {ControlPlaneError} when the id is malformed or the control API refuses.
+   */
+  async deleteDevice(deviceId: unknown): Promise<RuntimeState> {
+    if (!isDeviceId(deviceId)) throw new ControlPlaneError('invalid-device-id', '设备 id 不合法。')
+    const config = this.store.current()
+    await this.controlPlaneFor(config).deleteDevice(deviceId)
+    this.cachedRead = undefined
+    return this.state()
+  }
+
+  /**
    * The remote-host child's combined output tail, for the page's log disclosure.
    * @returns the retained output text.
    */

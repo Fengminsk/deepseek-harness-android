@@ -11,8 +11,8 @@
 
 import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import {
-  BRIDGE_HEADER, BRIDGE_HEADER_VALUE, CONFIG_ROUTE, ENABLED_ROUTE, PAIR_ROUTE, PROVISION_ROUTE, REVOKE_ROUTE,
-  STATE_ROUTE, TUNNEL_ROUTE,
+  BRIDGE_HEADER, BRIDGE_HEADER_VALUE, CONFIG_ROUTE, DELETE_ROUTE, ENABLED_ROUTE, PAIR_ROUTE, PROVISION_ROUTE,
+  REVOKE_ROUTE, STATE_ROUTE, TUNNEL_ROUTE,
 } from '../api.ts'
 import type {
   ChildState, DeviceInterconnectConfigInput, DeviceInterconnectView, Diagnostic, PairingView, ProvisionStep,
@@ -81,7 +81,7 @@ export interface Notice {
   /** Whether the operation succeeded. */
   kind: 'success' | 'error'
   /** Either a dictionary key (success) or a Host diagnostic (failure). */
-  text: { key: 'saved' | 'regenerated' | 'revoked' | 'tunnelStarted' | 'tunnelStopped' | 'tunnelProvisioned' } | { diagnostic: Diagnostic }
+  text: { key: 'saved' | 'regenerated' | 'revoked' | 'deleted' | 'tunnelStarted' | 'tunnelStopped' | 'tunnelProvisioned' } | { diagnostic: Diagnostic }
 }
 
 /** What the page renders. */
@@ -133,6 +133,8 @@ export interface DeviceInterconnectActions {
   regeneratePairing(): Promise<void>
   /** Revoke one paired device. */
   revokeDevice(deviceId: string): Promise<void>
+  /** Permanently delete one paired device record. */
+  deleteDevice(deviceId: string): Promise<void>
   /** Clear the last operation message. */
   dismissNotice(): void
 }
@@ -199,6 +201,7 @@ export class DeviceInterconnectController {
       save: () => this.save(),
       regeneratePairing: () => this.regeneratePairing(),
       revokeDevice: deviceId => this.revokeDevice(deviceId),
+      deleteDevice: deviceId => this.deleteDevice(deviceId),
       dismissNotice: () => { this.dismissNotice() },
     }
   }
@@ -282,16 +285,22 @@ export class DeviceInterconnectController {
     await this.runAction(async () => {
       const token = draft.tunnelToken.trim()
       const nodeId = draft.nodeId.trim()
+      const frpcPath = draft.frpcPath.trim()
       const state = await this.actionState(PROVISION_ROUTE, {
         ...(token === '' ? {} : { token }),
+        ...(frpcPath === '' ? {} : { frpcPath }),
         frpcAutoDownload: draft.frpcAutoDownload,
         ...(nodeId === '' ? {} : { nodeId: Number(nodeId) }),
         tunnelName: draft.tunnelName,
       })
-      this.draftDirty = false
+      // An unsaved draft keeps its staged values; only the access key that was
+      // just submitted is cleared, so the field falls back to the saved mask.
       this.applyState(state)
-      const error = state.tunnel.provision?.lastError
       this.store.update((snapshot) => {
+        if (snapshot.draft !== undefined) {
+          snapshot.draft = { ...snapshot.draft, tunnelToken: '' }
+        }
+        const error = state.tunnel.provision?.lastError
         snapshot.notice = error === undefined
           ? { kind: 'success', text: { key: 'tunnelProvisioned' } }
           : { kind: 'error', text: { diagnostic: error } }
@@ -364,6 +373,18 @@ export class DeviceInterconnectController {
     await this.runAction(async () => {
       this.applyState(await this.actionState(REVOKE_ROUTE, { deviceId }))
       this.store.update((snapshot) => { snapshot.notice = { kind: 'success', text: { key: 'revoked' } } })
+    })
+  }
+
+  /**
+   * Permanently delete one paired device record.
+   * @param deviceId - device id from the page.
+   * @returns completion once the Host answered.
+   */
+  async deleteDevice(deviceId: string): Promise<void> {
+    await this.runAction(async () => {
+      this.applyState(await this.actionState(DELETE_ROUTE, { deviceId }))
+      this.store.update((snapshot) => { snapshot.notice = { kind: 'success', text: { key: 'deleted' } } })
     })
   }
 

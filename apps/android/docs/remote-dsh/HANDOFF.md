@@ -1089,6 +1089,15 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
 
 ## 9. 变更日志（append-only，最新在最上面）
 
+### 2026-11-18 11:35 · lead（设备互联页对齐 DSH + 设备底部折叠/删除 + 一键 SakuraFrp 真机跑通）
+
+- 用户反馈：设备互联页上下段没有间隙、不像 DSH 设计；已配对设备 34 台太多；需删除/折叠设备；frpc 路径点开关后丢失；口令需水平居中 `*` 掩码。
+- UI：页面根节点此前**没有挂上 `.page` 类**（裸 fragment），导致卡片无间距；现按 `ui-settings-models/plugins` 基准重写：section gap 12/max-width 720、标题 16/24 500、intro 14/22、卡片 0.5px stroke + settings-card-fill + radius-xl + padding 12×14、卡片列表 gap 8/12，控件换用 primitives。设备卡移到最底部，可折叠（N>6 默认收起），active 在前、revoked/expired 在后，行间 hairline；保留撤销，并新增**永久删除**（active 先断连再删），撤销/删除各自确认。
+- 状态机：修复 frpc 路径丢失（provision 漏传路径 + 响应覆盖未保存 draft + 自动模式字段被藏进折叠区）；现在切换开关/2s 轮询/一键刷新都保留未保存输入，frpc 路径在自动/手动模式主区域可见。口令字段改为水平居中 `*` 掩码（已保存显示固定 `********`，输入逐字符 `*`，真实值只在内存/提交）。
+- frpc 下载：本机无法解析 `getfr.sh`；下载器增加 Nyatwork CDN 版本镜像回退（`nya.globalslb.net/natfrp/client/frpc/<version>/frpc_windows_amd64.exe`，读取目录选最新，失败用 pinned `0.51.0-sakura-15.1`），并复用已安装且 `frpc -V` 含 `sakura` 的二进制；已把官方 CDN 下载的 frpc 15.1 安装到 `~/.dsh/device-interconnect/bin/frpc.exe`。
+- **真机一键验证**：用面板已保存访问密钥成功执行 provision——账号 `jackWei`、自动选节点「天津联通PLUS1（frp-act.com）」、复用隧道 `DSH_CC #29890068` 并对齐 `127.0.0.1:4777`、公网 `frp-act.com:35530`、对外 `wss://frp-act.com:35530`、frpc 运行中；TLS 端口从本机可达，配对链接已切换为公网地址。
+- 测试/门禁：插件 12 文件（含新增 frpc 下载/复用/CDN 回退用例）237+ 全绿；remote-host selfcheck 33/33；typecheck 5/5、build:check 2/2；README/i18n/translation-pairing 绿。
+- **提交**：见本次 commit。
 ### 2026-11-18 10:45 · lead（修复设备互联冷启动时设置页桥接未注册）
 
 - 用户反馈：重启 DSH 后设置→设备互联显示「设备互联接口处理失败，详情见 DSH 宿主日志」。

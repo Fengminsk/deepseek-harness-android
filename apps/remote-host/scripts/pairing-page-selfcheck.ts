@@ -41,7 +41,7 @@ import { connect as connectTcp } from 'node:net'
 import type { DeviceSummary } from '../src/devices.ts'
 import { encodeQrMatrix } from '../src/pairing-qr.ts'
 import { PairingPageServer, renderPairingQrSvg, type PairingPageHost, type PairingPageSource, type PairingPageTicket } from '../src/pairing-page.ts'
-import type { RemoteDeviceRevokeResult, RemoteLogRecord } from '../src/server.ts'
+import type { RemoteDeviceDeleteResult, RemoteDeviceRevokeResult, RemoteLogRecord } from '../src/server.ts'
 
 /** 自检用的宿主显示名。 */
 const SAMPLE_HOST_NAME = 'DESKTOP-SELFCHECK'
@@ -462,6 +462,8 @@ class FakePairingSource implements PairingPageSource {
   failPairOnce = false
   /** 页面触发的撤销设备 id 顺序。 */
   readonly revokeCalls: string[] = []
+  /** 页面触发的永久删除设备 id 顺序。 */
+  readonly deleteCalls: string[] = []
   /** 模拟宿主推给在线连接的 `remote.deviceRevoked`。 */
   readonly deviceRevokedEvents: string[] = []
   /** 已签发过的全部配对令牌（用于断言日志不外泄）。 */
@@ -522,6 +524,26 @@ class FakePairingSource implements PairingPageSource {
     ))
     this.deviceRevokedEvents.push(deviceId)
     return { revoked: true, closed: 1 }
+  }
+
+  /**
+   * 永久删除设备记录；有效设备模拟先走撤销路径（断连 + 通知）再删除。
+   * @param deviceId - 设备 id。
+   * @returns 删除结果。
+   */
+  async deleteDevice(deviceId: string): Promise<RemoteDeviceDeleteResult> {
+    this.deleteCalls.push(deviceId)
+    const index = this.deviceRecords.findIndex(device => device.id === deviceId)
+    const target = this.deviceRecords[index]
+    if (index < 0 || target === undefined) return { deleted: false, wasActive: false, closedConnections: 0 }
+    const wasActive = target.revokedAt === undefined && target.expiresAt > this.clock()
+    let closedConnections = 0
+    if (wasActive) {
+      const revoked = await this.revokeDevice(deviceId)
+      closedConnections = revoked.closed
+    }
+    this.deviceRecords = this.deviceRecords.filter(device => device.id !== deviceId)
+    return { deleted: true, wasActive, closedConnections }
   }
 
   /** @returns 页面头部展示的宿主信息。 */
@@ -932,6 +954,88 @@ async function main(): Promise<number> {
       return '403/415/400×3/404/409 与 405 都符合，前置校验失败没有触发撤销'
     })
 
+
+    await step('POST /api/devices/delete 有效设备 → 先撤销断连再永久删除记录', async () => {
+      const activeId = 'e'.repeat(32)
+      source.setDevices([...source.devices(), {
+        id: activeId,
+        label: '要删除的手机',
+        createdAt: START_TIME,
+        lastSeenAt: START_TIME,
+        expiresAt: START_TIME + 90 * 24 * 3_600_000,
+      }])
+      const eventsBefore = source.deviceRevokedEvents.length
+      const response = await postControlJson(port, '/api/devices/delete', { deviceId: activeId })
+      check(response.status === 200, `状态码期望 200，实际 ${response.status}: ${response.body.slice(0, 160)}`)
+      check(headerValue(response, 'content-type').startsWith('application/json'), 'Content-Type 不是 JSON')
+      const state = parseJsonObject(response.body, '/api/devices/delete')
+      checkJsonEqual(Object.keys(state).sort(), ['devices', 'host', 'pairing', 'usbPairUrl'], '/api/devices/delete 应返回完整 state')
+      const devices = asJsonArray(state.devices, 'devices')
+      check(devices.every(entry => asRecord(entry, 'devices[]').id !== activeId), '删除后 state 仍包含该设备')
+      check(source.deleteCalls.includes(activeId), '控制 API 没有调用 source.deleteDevice')
+      check(source.deviceRevokedEvents.length === eventsBefore + 1, '有效设备删除前没有走撤销路径（remote.deviceRevoked 未推送）')
+      const action = logRecords.find(record => record.event === 'pairing-page-action'
+        && record.fields?.action === 'api-device-delete'
+        && record.fields?.deviceId === activeId)
+      check(action !== undefined, '控制 API 删除缺少动作日志')
+      check(action.fields?.result === 'deleted', `删除日志 result 期望 deleted，实际 ${String(action.fields?.result)}`)
+      check(action.fields?.wasActive === true, '删除日志没有如实标记 wasActive')
+      return `200 + state，${activeId.slice(0, 8)}… 先断连再消失，日志 wasActive=true`
+    })
+
+    await step('POST /api/devices/delete 已撤销/已过期 → 直接删除；未知与重复删除 → 404', async () => {
+      const revokedId = 'a'.repeat(32)
+      const expiredId = 'd'.repeat(32)
+      const eventsBefore = source.deviceRevokedEvents.length
+      const deletedRevoked = await postControlJson(port, '/api/devices/delete', { deviceId: revokedId })
+      check(deletedRevoked.status === 200, `删除已撤销设备期望 200，实际 ${deletedRevoked.status}`)
+      const state = parseJsonObject(deletedRevoked.body, '/api/devices/delete')
+      check(
+        asJsonArray(state.devices, 'devices').every(entry => asRecord(entry, 'devices[]').id !== revokedId),
+        '已撤销设备删除后仍在 state 里',
+      )
+      const deletedExpired = await postControlJson(port, '/api/devices/delete', { deviceId: expiredId })
+      check(deletedExpired.status === 200, `删除已过期设备期望 200，实际 ${deletedExpired.status}`)
+      check(source.deviceRevokedEvents.length === eventsBefore, '删除已撤销/已过期设备不应再触发撤销通知')
+      const unknown = await postControlJson(port, '/api/devices/delete', { deviceId: '9'.repeat(32) })
+      checkJsonError(unknown, 404, 'device-not-found', 'POST /api/devices/delete 未知设备')
+      const repeated = await postControlJson(port, '/api/devices/delete', { deviceId: revokedId })
+      checkJsonError(repeated, 404, 'device-not-found', 'POST /api/devices/delete 重复删除')
+      return '已撤销/已过期记录直接删除且不再断连；未知与重复删除 404'
+    })
+
+    await step('POST /api/devices/delete 防护：缺头 403 / 非 JSON 415 / 非法请求 400 / 方法 405，且无副作用', async () => {
+      const deletesBefore = source.deleteCalls.length
+      const missingHeader = await httpRequest(port, {
+        method: 'POST',
+        path: '/api/devices/delete',
+        body: JSON.stringify({ deviceId: 'c'.repeat(32) }),
+        headers: { 'Content-Type': 'application/json' },
+      })
+      checkJsonError(missingHeader, 403, 'control-header-required', 'POST /api/devices/delete 缺控制头')
+      const wrongType = await postControlJson(port, '/api/devices/delete', { deviceId: 'c'.repeat(32) }, { 'Content-Type': 'text/plain' })
+      checkJsonError(wrongType, 415, 'unsupported-media-type', 'POST /api/devices/delete 非 JSON 内容类型')
+      const badJson = await httpRequest(port, {
+        method: 'POST',
+        path: '/api/devices/delete',
+        body: 'not-json',
+        headers: { 'Content-Type': 'application/json', [CONTROL_HEADER]: '1' },
+      })
+      checkJsonError(badJson, 400, 'invalid-request', 'POST /api/devices/delete 非法 JSON')
+      const badId = await postControlJson(port, '/api/devices/delete', { deviceId: '../../etc/passwd' })
+      checkJsonError(badId, 400, 'invalid-request', 'POST /api/devices/delete 非法 deviceId')
+      const missingField = await postControlJson(port, '/api/devices/delete', {})
+      checkJsonError(missingField, 400, 'invalid-request', 'POST /api/devices/delete 缺 deviceId')
+      check(
+        source.deleteCalls.length === deletesBefore,
+        `被前置校验拒绝的请求仍调用了 source.deleteDevice（多 ${source.deleteCalls.length - deletesBefore} 次）`,
+      )
+      const getDelete = await httpRequest(port, { path: '/api/devices/delete' })
+      check(getDelete.status === 405, `GET /api/devices/delete 期望 405，实际 ${getDelete.status}`)
+      check(headerValue(getDelete, 'allow') === 'POST', 'GET /api/devices/delete 的 Allow 不是 POST')
+      return '403/415/400×3/405 全部符合，前置校验失败没有删除任何记录'
+    })
+
     await step('POST 缺 CSRF / 错 CSRF / 重复 CSRF 一律 403 且无副作用', async () => {
       const pairCallsBefore = source.pairCalls
       const missing = await postForm(port, '/pair/reopen', {})
@@ -1108,6 +1212,7 @@ async function main(): Promise<number> {
       check(actions.some(record => record.fields?.action === 'device-revoke' && record.fields?.result === 'revoked'), '撤销成功缺少动作日志')
       check(actions.some(record => record.fields?.action === 'api-pair' && record.fields?.result === 'ok'), '控制 API 重开窗口缺少动作日志')
       check(actions.some(record => record.fields?.action === 'api-device-revoke' && record.fields?.result === 'revoked'), '控制 API 撤销缺少动作日志')
+      check(actions.some(record => record.fields?.action === 'api-device-delete' && record.fields?.result === 'deleted'), '控制 API 删除缺少动作日志')
       check(actions.some(record => record.fields?.result === 'rejected'), '拒绝路径缺少动作日志')
       return `${actions.length} 条动作日志只有 action/method/result 与设备 id，无 CSRF、无配对令牌`
     })

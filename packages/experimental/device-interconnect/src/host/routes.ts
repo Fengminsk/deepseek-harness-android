@@ -16,7 +16,7 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import {
-  API_PREFIX, BRIDGE_HEADER, BRIDGE_HEADER_VALUE, CONFIG_ROUTE, ENABLED_ROUTE, LOGS_ROUTE,
+  API_PREFIX, BRIDGE_HEADER, BRIDGE_HEADER_VALUE, CONFIG_ROUTE, DELETE_ROUTE, ENABLED_ROUTE, LOGS_ROUTE,
   PAIR_ROUTE, PROVISION_ROUTE, QR_ROUTE, REVOKE_ROUTE, STATE_ROUTE, TUNNEL_LOGS_ROUTE, TUNNEL_ROUTE,
 } from '../api.ts'
 import type { ErrorBody, RuntimeState } from '../types.ts'
@@ -43,6 +43,8 @@ export interface BridgeApi {
   pair(): Promise<RuntimeState>
   /** Revoke one paired device. */
   revoke(deviceId: unknown): Promise<RuntimeState>
+  /** Permanently delete one paired device record. */
+  deleteDevice(deviceId: unknown): Promise<RuntimeState>
   /** @returns the child's output tail. */
   logs(): string
   /** @returns the tunnel child's output tail. */
@@ -206,6 +208,16 @@ async function route(
         ? (body as { readonly deviceId?: unknown }).deviceId
         : undefined
       sendJson(response, 200, await bridge.revoke(deviceId))
+      return
+    }
+    case DELETE_ROUTE: {
+      if (!requireMethod(method, 'POST', response)) return
+      const body = await readJsonBody(request, response)
+      if (body === undefined) return
+      const deviceId = typeof body === 'object' && body !== null && !Array.isArray(body)
+        ? (body as { readonly deviceId?: unknown }).deviceId
+        : undefined
+      sendJson(response, 200, await bridge.deleteDevice(deviceId))
       return
     }
     default:

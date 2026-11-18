@@ -13,6 +13,7 @@ import type { ControlPlaneState, PairingWindow, RemoteDevice, RemoteHostFacts } 
 const STATE_PATH = '/api/state'
 const PAIR_PATH = '/api/pair'
 const REVOKE_PATH = '/api/devices/revoke'
+const DELETE_PATH = '/api/devices/delete'
 const QR_PATH = '/qr.svg'
 
 /** Header that marks an action as coming from the local pairing control. */
@@ -49,6 +50,12 @@ export interface ControlPlane {
    * @returns the state after the revocation.
    */
   revoke(deviceId: string): Promise<ControlPlaneState>
+  /**
+   * Permanently delete one device record.
+   * @param deviceId - 32 lowercase hexadecimal device id.
+   * @returns the state after the deletion.
+   */
+  deleteDevice(deviceId: string): Promise<ControlPlaneState>
   /** @returns the QR SVG of the currently open window. */
   qrSvg(): Promise<string>
 }
@@ -107,6 +114,14 @@ export function createControlPlane(options: ControlPlaneOptions): ControlPlane {
     },
     async revoke(deviceId: string) {
       return readState(await request(REVOKE_PATH, {
+        method: 'POST',
+        cache: 'no-store',
+        headers: { [CONTROL_HEADER]: '1', 'content-type': 'application/json' },
+        body: JSON.stringify({ deviceId }),
+      }))
+    },
+    async deleteDevice(deviceId: string) {
+      return readState(await request(DELETE_PATH, {
         method: 'POST',
         cache: 'no-store',
         headers: { [CONTROL_HEADER]: '1', 'content-type': 'application/json' },

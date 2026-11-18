@@ -450,6 +450,24 @@ export class DeviceStore {
   }
 
   /**
+   * 永久删除一台设备记录。
+   *
+   * 与 {@link revoke} 的区别：撤销保留 `revokedAt` 墓碑，让宿主仍能把「令牌有效但已撤销」
+   * 与「令牌无效」区分成 `4001 auth-revoked` / `4000 auth-failed`；删除把记录从表中移除，
+   * 之后该 id 与令牌都按未知处理。删除有效设备前，调用方应先走撤销路径关闭连接。
+   * @param id - 设备 id。
+   * @returns 本次是否删除了记录；记录不存在时为 false。
+   */
+  async delete(id: string): Promise<boolean> {
+    return this.exclusive(async () => {
+      const next = this.devices.filter(record => record.id !== id)
+      if (next.length === this.devices.length) return false
+      await this.commit(next)
+      return true
+    })
+  }
+
+  /**
    * 列出全部设备（含已撤销与已过期），按配对时间升序。
    * @returns 不含令牌摘要的摘要列表。
    */

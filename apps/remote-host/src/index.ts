@@ -12,7 +12,8 @@
  *    `dispatch`，门面发起的反向请求与通知走这条连接；`native.*` 里语义属于 PC 的方法由
  *    `./native-desktop.ts` 就地应答，不上线；同一条连接上再经 `./notifications.ts` 把页面线的
  *    `task.completed` / `interactions.changed` / `session/title` 追加成协议 §8 的 `remote.*` 系统通知线；
- * 4. 提供 `remoteHost` 服务（`devices()` / `revokeDevice()` / `pair()`），作为 PC 侧设备管理、
+ * 4. 提供 `remoteHost` 服务（`devices()` / `revokeDevice()` / `deleteDevice()` / `pair()`），
+ *    作为 PC 侧设备管理、
  *    撤销设备与重新打开配对窗口的入口；
  * 5. 启用 UDP 局域网发现（`./discovery.ts`）：同网段的手机广播一帧探测就能拿到当前配对
  *    链接，省掉扫码与粘贴。发现端口绑定失败只记 warn，不影响宿主启动；
@@ -64,6 +65,7 @@ import {
   type RemoteAuthOutcome,
   type RemoteCloseOutcome,
   type RemoteConnection,
+  type RemoteDeviceDeleteResult,
   type RemoteDeviceRevokeResult,
   type RemoteHandshake,
   type RemoteLogger,
@@ -382,6 +384,14 @@ interface RemoteHostHandle {
   revokeDevice(deviceId: string): Promise<RemoteDeviceRevokeResult>
 
   /**
+   * 永久删除一台设备记录：有效设备先走撤销路径（关闭连接并推 `remote.deviceRevoked`），
+   * 再把它从设备表移除；已撤销/已过期的记录直接删除。
+   * @param deviceId - 设备 id。
+   * @returns 删除是否生效、删除前是否有效、被关闭的连接数。
+   */
+  deleteDevice(deviceId: string): Promise<RemoteDeviceDeleteResult>
+
+  /**
    * 打开一个新的配对窗口（有效期取 `Config.pairingTtlMs`，默认 120 s），并把链接写进日志。
    * 此前未用的窗口立即失效；PC 侧界面用它重新展示配对链接，不需要重启宿主。
    * @returns 配对链接与新窗口的过期时间。
@@ -501,6 +511,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   ctx.provide(REMOTE_HOST_SERVICE, {
     devices: () => handle.devices(),
     revokeDevice: (deviceId: string) => handle.revokeDevice(deviceId),
+    deleteDevice: (deviceId: string) => handle.deleteDevice(deviceId),
     pair: () => handle.pair(),
   })
   // 本机配对页：只绑 127.0.0.1 的增强能力。`start()` 自己把端口绑定失败降级成 warn，
@@ -829,6 +840,27 @@ async function startRemoteHost(
       }
       return result
     }
+    /** 永久删除设备：有效设备先按撤销路径断连并通知，再移除记录。 */
+    const deleteDevice = async (deviceId: string): Promise<RemoteDeviceDeleteResult> => {
+      const record = devices.list().find(candidate => candidate.id === deviceId)
+      if (record === undefined) return { deleted: false, wasActive: false, closedConnections: 0 }
+      const wasActive = record.revokedAt === undefined && record.expiresAt > Date.now()
+      let closedConnections = 0
+      if (wasActive) {
+        const revoked = await server.revokeDevice(devices, deviceId, 'user-revoked')
+        closedConnections = revoked.closed
+      }
+      const deleted = await devices.delete(deviceId)
+      if (deleted) {
+        writeRemoteLog({
+          level: 'info',
+          event: 'device-deleted',
+          message: '已永久删除一台设备记录（有效设备已先撤销并断开连接）。',
+          fields: { deviceId, wasActive, closedConnections },
+        })
+      }
+      return { deleted, wasActive, closedConnections }
+    }
     /**
      * 本机配对页看到的「当前窗口」：过期或被消费的窗口如实返回 undefined，
      * 页面据此显示「已过期/已使用」而不是继续展示一张扫了也会失败的二维码。
@@ -851,12 +883,14 @@ async function startRemoteHost(
       },
       devices: () => devices.list(),
       revokeDevice,
+      deleteDevice,
       pair: reopenPairing,
       pages: () => ({
         currentPairing: currentPairingForPage,
         pair: reopenPairing,
         devices: () => devices.list(),
         revokeDevice,
+        deleteDevice,
         host: () => ({
           name: identity.displayName,
           instanceId: identity.instanceId,
