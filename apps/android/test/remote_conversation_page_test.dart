@@ -17,7 +17,6 @@ import 'package:dsh_android/remote_conversation_live_source.dart';
 import 'package:dsh_android/remote_conversation_source.dart';
 import 'package:dsh_android/remote_dsh_conversation.dart';
 import 'package:dsh_android/remote_dsh_widgets.dart';
-import 'package:dsh_android/remote_sync_service.dart';
 import 'package:dsh_android/remote_permissions.dart';
 import 'package:dsh_android/remote_session_insights.dart';
 import 'package:dsh_android/remote_stats_bar.dart';
@@ -2662,7 +2661,6 @@ void main() {
           source,
           deviceId: 'pc-1',
           cache: cache.cache,
-          sync: _FakeSyncLifecycle(),
         ),
       );
       await _settleCache(tester);
@@ -2684,7 +2682,6 @@ void main() {
           source,
           deviceId: 'pc-1',
           cache: cache.cache,
-          sync: _FakeSyncLifecycle(),
         ),
       );
       await _settleCache(tester);
@@ -2700,7 +2697,6 @@ void main() {
           source,
           deviceId: 'pc-1',
           cache: cache.cache,
-          sync: _FakeSyncLifecycle(),
         ),
       );
       await _settleCache(tester);
@@ -2718,56 +2714,6 @@ void main() {
       expect(cache.saves, greaterThan(0));
     });
 
-    testWidgets('后台同步服务随连接 ready 启动、终止停止、页面销毁停止', (tester) async {
-      final sync = _FakeSyncLifecycle();
-      final source = FakeRemoteConversationSource(window: _window(conversationEvents()));
-      await tester.pumpWidget(
-        MaterialApp(
-          theme: pocketTheme(Brightness.light),
-          home: RemoteDshConversationPage(
-            source: source,
-            deviceName: '客厅的电脑',
-            projectName: 'Pocket',
-            title: '修复登录',
-            syncLifecycle: sync,
-          ),
-        ),
-      );
-      await tester.pump();
-      expect(sync.starts, 1);
-
-      source.setPhase(RemoteConnectionPhase.failed, lastError: '断线');
-      await tester.pump();
-      expect(sync.stops, 1);
-
-      source.setPhase(RemoteConnectionPhase.ready);
-      await tester.pump();
-      expect(sync.starts, 2);
-
-      await tester.pumpWidget(const SizedBox());
-      await tester.pump();
-      expect(sync.stops, 2);
-    });
-
-    testWidgets('MethodChannelRemoteSyncLifecycle 调用 remote.sync.start/stop 且幂等', (
-      tester,
-    ) async {
-      const channel = MethodChannel('remote-sync-lifecycle-test');
-      final messenger =
-          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-      final calls = <String>[];
-      messenger.setMockMethodCallHandler(channel, (call) async {
-        calls.add(call.method);
-        return true;
-      });
-      addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
-      final lifecycle = MethodChannelRemoteSyncLifecycle(channel: channel);
-      await lifecycle.start();
-      await lifecycle.start();
-      await lifecycle.stop();
-      await lifecycle.stop();
-      expect(calls, <String>['remote.sync.start', 'remote.sync.stop']);
-    });
   });
 
   group('工作状态与排队消息', () {
@@ -3060,28 +3006,11 @@ String _cacheDocument() {
   });
 }
 
-/// 记录 start/stop 次数的假后台同步实现。
-class _FakeSyncLifecycle implements RemoteSyncLifecycle {
-  int starts = 0;
-  int stops = 0;
-
-  @override
-  Future<void> start() async {
-    starts++;
-  }
-
-  @override
-  Future<void> stop() async {
-    stops++;
-  }
-}
-
-/// 带缓存与同步注入的会话页。
+/// 带缓存注入的会话页。
 Widget _hostWithCache(
   RemoteConversationSource source, {
   required String? deviceId,
   required RemoteConversationCache cache,
-  required RemoteSyncLifecycle sync,
 }) => MaterialApp(
   theme: pocketTheme(Brightness.light),
   home: RemoteDshConversationPage(
@@ -3091,7 +3020,6 @@ Widget _hostWithCache(
     title: '修复登录',
     deviceId: deviceId,
     conversationCache: cache,
-    syncLifecycle: sync,
   ),
 );
 

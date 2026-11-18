@@ -115,7 +115,6 @@ import 'remote_goal_plan.dart';
 import 'remote_permissions.dart';
 import 'remote_session_insights.dart';
 import 'remote_stats_bar.dart';
-import 'remote_sync_service.dart';
 import 'remote_terminal_page.dart';
 import 'remote_todo_card.dart';
 import 'remote_workspace_diff_page.dart';
@@ -286,7 +285,6 @@ class RemoteDshConversationPage extends StatefulWidget {
     this.terminalConnection,
     this.deviceId,
     this.conversationCache,
-    this.syncLifecycle,
   });
 
   /// 会话目的地标识的前缀。
@@ -323,9 +321,6 @@ class RemoteDshConversationPage extends StatefulWidget {
 
   /// 会话本地缓存；为 null 时用 `dsh/runtime` 的默认通道。测试可注入假缓存。
   final RemoteConversationCache? conversationCache;
-
-  /// 后台同步服务的生命周期控制；为 null 时用 `dsh/runtime` 的默认通道。
-  final RemoteSyncLifecycle? syncLifecycle;
 
   @override
   State<RemoteDshConversationPage> createState() =>
@@ -370,9 +365,6 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
   /// 会话本地缓存（点开先渲染，随后由实时窗口覆盖）与同步服务。
   late final RemoteConversationCache _conversationCache =
       widget.conversationCache ?? const RemoteConversationCache();
-  late final RemoteSyncLifecycle _syncLifecycle =
-      widget.syncLifecycle ?? MethodChannelRemoteSyncLifecycle();
-
   /// 缓存 key 里的电脑标识；测试或只读数据源可能没有，此时不做本地缓存。
   String? _cacheDeviceId;
 
@@ -388,9 +380,6 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
 
   /// 实时窗口的日志切点（缓存写回用）。
   int _windowThroughSeq = 0;
-
-  /// 后台同步前台服务是否已启动（由本页生命周期控制）。
-  bool _syncStarted = false;
 
   /// 轮询 `tasks.session` 的定时器；页面销毁或退后台时取消。
   Timer? _sessionTasksTimer;
@@ -543,7 +532,6 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     }
     unawaited(_source.start());
     if (_source.phase == RemoteConnectionPhase.ready) {
-      _startRemoteSync();
       _startSessionTasksPolling();
     }
   }
@@ -561,7 +549,6 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     if (_pendingCacheWindow != null || _events.isNotEmpty) {
       unawaited(_flushConversationCache());
     }
-    _stopRemoteSync();
     final updates = _updates;
     _updates = null;
     if (updates != null) unawaited(updates.cancel());
@@ -669,29 +656,10 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
       }
     });
     if (_source.phase == RemoteConnectionPhase.ready) {
-      _startRemoteSync();
       _startSessionTasksPolling();
     } else {
-      // 连接终止才停服务；connecting/reconnecting 继续跑，后台才有机会重连。
-      if (_source.phase == RemoteConnectionPhase.failed ||
-          _source.phase == RemoteConnectionPhase.idle) {
-        _stopRemoteSync();
-      }
       _stopSessionTasksPolling();
     }
-  }
-
-  /// 主进程前台同步服务：进入 ready 时在前台启动，页面销毁/连接终止时停止。
-  void _startRemoteSync() {
-    if (_syncStarted) return;
-    _syncStarted = true;
-    unawaited(_syncLifecycle.start());
-  }
-
-  void _stopRemoteSync() {
-    if (!_syncStarted) return;
-    _syncStarted = false;
-    unawaited(_syncLifecycle.stop());
   }
 
   /// 缓存 key 的电脑标识：显式参数优先，其次实时数据源的活动设备。

@@ -18,6 +18,7 @@ import 'package:dsh_android/remote_dsh_widgets.dart';
 import 'package:dsh_android/remote_notification_navigation.dart';
 import 'package:dsh_android/remote_notifications.dart';
 import 'package:dsh_android/remote_pairing.dart';
+import 'package:dsh_android/remote_sync_service.dart';
 import 'package:dsh_android/remote_transport.dart';
 import 'package:dsh_android/ui.dart';
 import 'package:flutter/services.dart';
@@ -181,6 +182,22 @@ class _ConnectingSource implements RemoteDshDataSource {
   @override
   Future<List<RemoteDshProject>> listProjects() async =>
       const <RemoteDshProject>[];
+}
+
+/// 记录后台同步 start/stop 次数的假实现。
+class _FakeSyncLifecycle implements RemoteSyncLifecycle {
+  int starts = 0;
+  int stops = 0;
+
+  @override
+  Future<void> start() async {
+    starts++;
+  }
+
+  @override
+  Future<void> stop() async {
+    stops++;
+  }
 }
 
 /// 记录每次推入的路由名。
@@ -574,6 +591,7 @@ Future<void> _showConnection(
   NavigatorObserver? observer,
   RemoteNotificationLaunch? launch,
   LibraryRuntime? runtime,
+  RemoteSyncLifecycle? syncLifecycle,
 }) async {
   final controller = runtime ?? LibraryRuntime();
   if (runtime == null) addTearDown(controller.dispose);
@@ -585,6 +603,7 @@ Future<void> _showConnection(
         runtime: controller,
         connection: harness.controller,
         notificationLaunch: launch,
+        syncLifecycle: syncLifecycle,
       ),
     ),
   );
@@ -907,6 +926,97 @@ void main() {
         findsOneWidget,
         reason: '折叠项目的外层垂直间距从 4 收紧到 2',
       );
+    });
+  });
+
+  group('后台同步服务生命周期', () {
+    Future<_HomeConnectionHarness> harnessFor() async {
+      final livingRoom = _livingRoom();
+      final harness = _HomeConnectionHarness(
+        devices: <paired.RemoteDevice>[livingRoom],
+        lastConnectedDeviceId: _livingRoomId,
+      );
+      addTearDown(harness.dispose);
+      harness.authorize(<paired.RemoteDevice>[livingRoom]);
+      return harness;
+    }
+
+    testWidgets('连接 ready 启动后台同步，退后台不停止，销毁时停止', (tester) async {
+      final sync = _FakeSyncLifecycle();
+      final harness = await harnessFor();
+      await _showConnection(tester, harness, syncLifecycle: sync);
+      expect(sync.starts, 0, reason: '连接尚未就绪时不启动');
+
+      _completeHandshake(harness, 0, '客厅的电脑');
+      await _flushConnection(tester);
+      expect(sync.starts, 1);
+
+      // 合法生命周期路径：resumed → inactive → hidden → paused，再逐级恢复。
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      await tester.pump();
+      expect(sync.stops, 0, reason: '退后台不停止后台同步');
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pump();
+      expect(sync.stops, 0);
+
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump();
+      expect(sync.stops, 1);
+    });
+
+    testWidgets('连接 failed 时停止后台同步', (tester) async {
+      final sync = _FakeSyncLifecycle();
+      final harness = await harnessFor();
+      await _showConnection(tester, harness, syncLifecycle: sync);
+      _completeHandshake(harness, 0, '客厅的电脑');
+      await _flushConnection(tester);
+      expect(sync.starts, 1);
+
+      harness.factory.links.first.lost('remote/tls', '连接已断开');
+      await _flushConnection(
+        tester,
+        until: () => harness.controller.phase == RemoteConnectionPhase.failed,
+      );
+      expect(sync.stops, 1);
+    });
+
+    testWidgets('用户断开连接回到 idle 时停止后台同步', (tester) async {
+      final sync = _FakeSyncLifecycle();
+      final harness = await harnessFor();
+      await _showConnection(tester, harness, syncLifecycle: sync);
+      _completeHandshake(harness, 0, '客厅的电脑');
+      await _flushConnection(tester);
+      expect(sync.starts, 1);
+
+      unawaited(harness.controller.disconnect());
+      await _flushConnection(
+        tester,
+        until: () => harness.controller.phase == RemoteConnectionPhase.idle,
+      );
+      expect(sync.stops, 1);
+    });
+    testWidgets('MethodChannelRemoteSyncLifecycle 调用 native 并保持幂等', (
+      tester,
+    ) async {
+      const channel = MethodChannel('remote-sync-lifecycle-home-test');
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      final calls = <String>[];
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        calls.add(call.method);
+        return true;
+      });
+      addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+      final lifecycle = MethodChannelRemoteSyncLifecycle(channel: channel);
+      await lifecycle.start();
+      await lifecycle.start();
+      await lifecycle.stop();
+      await lifecycle.stop();
+      expect(calls, <String>['remote.sync.start', 'remote.sync.stop']);
     });
   });
 

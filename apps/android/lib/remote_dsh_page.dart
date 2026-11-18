@@ -54,6 +54,7 @@ import 'remote_dsh_settings_page.dart';
 import 'remote_dsh_widgets.dart';
 import 'remote_notification_navigation.dart';
 import 'remote_pairing_page.dart';
+import 'remote_sync_service.dart';
 import 'remote_terminal_page.dart';
 import 'remote_workspace_files_page.dart';
 import 'runtime.dart';
@@ -270,6 +271,7 @@ class RemoteDshPage extends StatefulWidget {
     this.connection,
     this.archivedSource,
     this.notificationLaunch,
+    this.syncLifecycle,
   });
 
   /// 本页作为全屏目的地的标识（见 [openDestination]）。
@@ -301,6 +303,13 @@ class RemoteDshPage extends StatefulWidget {
   /// （已归档/已删除/属于另一台电脑）或连接失败时留在远程首页，并用可见提示说明
   /// 原因，不把用户留在 loading。来源设备的限制见 [RemoteNotificationLaunch]。
   final RemoteNotificationLaunch? notificationLaunch;
+
+  /// 后台同步服务的生命周期控制；为 null 时用 `dsh/runtime` 的默认通道。
+  ///
+  /// 首页持有远程连接控制器：连接 ready 时在前台启动主进程前台服务，连接
+  /// failed/idle 或页面销毁时停止。App 退后台不停止，让 `session.follow` 与
+  /// `remote.*` 通知在后台继续到达；只在测试/组合时注入假实现。
+  final RemoteSyncLifecycle? syncLifecycle;
 
   @override
   State<RemoteDshPage> createState() => _RemoteDshPageState();
@@ -414,6 +423,13 @@ class _RemoteDshPageState extends State<RemoteDshPage>
 
   /// [connection] 是否由本页创建；为 true 时由本页负责 [RemoteConnectionController.dispose]。
   bool _ownsConnection = false;
+
+  /// 后台同步前台服务：首页连接生命周期驱动，App 退后台不停止。
+  late final RemoteSyncLifecycle _syncLifecycle =
+      widget.syncLifecycle ?? MethodChannelRemoteSyncLifecycle();
+
+  /// 是否已经向平台请求启动后台同步；重复 start/stop 由 RemoteSyncLifecycle 幂等处理。
+  bool _syncStarted = false;
 
   /// 数据源：显式 [RemoteDshPage.source] 优先，否则按 [_connection] 建实时源。
   RemoteDshDataSource _source = const RemoteDshPlaceholderSource();
@@ -581,6 +597,7 @@ class _RemoteDshPageState extends State<RemoteDshPage>
       _catalogSource = catalog;
     }
     _connection.addListener(_onConnectionChanged);
+    _syncRemoteForConnection();
     _homeEvents = _connection.events.listen(_onHomeEvent);
     widget.runtime.addListener(_onRuntimeChanged);
     WidgetsBinding.instance.addObserver(this);
@@ -604,6 +621,8 @@ class _RemoteDshPageState extends State<RemoteDshPage>
 
   @override
   void dispose() {
+    // 首页是远程连接的持有者：连接随页面一起消失时，后台同步服务也停止。
+    _stopRemoteSync();
     _connection.removeListener(_onConnectionChanged);
     unawaited(_homeEvents?.cancel());
     _recentRefresh?.cancel();
@@ -636,6 +655,9 @@ class _RemoteDshPageState extends State<RemoteDshPage>
   ///   逐条重读会让首页持续打 `runtime.info` + `sessions.list`。
   void _onConnectionChanged() {
     if (!mounted) return;
+    // 后台同步跟着连接阶段走：ready 启动；failed/idle 停止；connecting/
+    // reconnecting 保持运行，后台才有机会完成重连。
+    _syncRemoteForConnection();
     final snapshot = _connectionSnapshot();
     if (_visibleConnection != snapshot) {
       _visibleConnection = snapshot;
@@ -652,6 +674,39 @@ class _RemoteDshPageState extends State<RemoteDshPage>
     if (_loadedConnection == loaded) return;
     _loadedConnection = loaded;
     unawaited(_load());
+  }
+
+  /// 按连接阶段启动/停止主进程后台同步服务。
+  ///
+  /// 只在首页仍挂载时调用；重复调用是幂等的。App 退到后台不会触发停止：前台
+  /// 服务让主进程与 Dart isolate 存活，`session.follow` 和 `remote.*` 通知才能
+  /// 在后台继续到达。
+  void _syncRemoteForConnection() {
+    if (!mounted) return;
+    switch (_connection.phase) {
+      case RemoteConnectionPhase.ready:
+        _startRemoteSync();
+      case RemoteConnectionPhase.failed:
+      case RemoteConnectionPhase.idle:
+        _stopRemoteSync();
+      case RemoteConnectionPhase.connecting:
+      case RemoteConnectionPhase.handshaking:
+      case RemoteConnectionPhase.reconnecting:
+      case RemoteConnectionPhase.lost:
+        break;
+    }
+  }
+
+  void _startRemoteSync() {
+    if (_syncStarted) return;
+    _syncStarted = true;
+    unawaited(_syncLifecycle.start());
+  }
+
+  void _stopRemoteSync() {
+    if (!_syncStarted) return;
+    _syncStarted = false;
+    unawaited(_syncLifecycle.stop());
   }
 
   /// Refresh recents only for catalog changes, not for the token-by-token live stream.
