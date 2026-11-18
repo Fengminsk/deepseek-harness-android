@@ -35,8 +35,9 @@ export type Config = Partial<import('../types.ts').DeviceInterconnectConfig>
  * Register the Settings page bridge and start the supervised children when the
  * persisted configuration has them enabled: the remote host first, then the
  * managed NAT-traversal tunnel once that host is ready.
- * @param ctx - Host context; the web server service is read optionally so a
- * profile without a browser surface still loads this plugin.
+ * @param ctx - Host context; the web server service is awaited through
+ * declaration-aware injection so the bridge routes register once the browser
+ * surface exists, while a profile without one still loads this plugin.
  * @param config - first-run seed from the bundle row.
  * @returns completion once the registration and the initial start were attempted.
  */
@@ -58,15 +59,16 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
     controlPlane: baseUrl => createControlPlane({ baseUrl }),
     logger,
   })
-  const webServer = ctx.get('webServer')
-  if (webServer === undefined) {
-    logger.warn('device-interconnect: the web server service is unavailable, so the Settings page bridge was not registered')
-  } else {
-    ctx.effect(
-      () => webServer.register({ kind: 'prefix', path: API_PREFIX, handler: createApiHandler(bridge, logger) }),
+  // Activation order is not guaranteed: on a cold profile boot the web server
+  // may appear after this plugin activates. Declaration-aware injection defers
+  // the route registration until the service exists instead of dropping the
+  // whole Settings page bridge for the process lifetime.
+  ctx.inject(['webServer'], (scope) => {
+    scope.effect(
+      () => scope.webServer.register({ kind: 'prefix', path: API_PREFIX, handler: createApiHandler(bridge, logger) }),
       'device-interconnect: settings-page bridge routes',
     )
-  }
+  })
   // The bridge owns both children, so it is registered before the initial
   // start: a plugin unload during activation still stops the tunnel and then
   // the remote host.

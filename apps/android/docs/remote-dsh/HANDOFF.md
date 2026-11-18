@@ -1089,6 +1089,12 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
 
 ## 9. 变更日志（append-only，最新在最上面）
 
+### 2026-11-18 10:45 · lead（修复设备互联冷启动时设置页桥接未注册）
+
+- 用户反馈：重启 DSH 后设置→设备互联显示「设备互联接口处理失败，详情见 DSH 宿主日志」。
+- 根因：Host 插件在冷启动时可能先于 `webServer` 服务激活；旧实现用 `ctx.get('webServer')` 一次性读取，服务尚未出现时直接跳过注册（仅 warn），整个进程生命周期内 `/device-interconnect/api/*` 都是 404，客户端页面因此报接口失败。
+- 修复：改为 `ctx.inject(['webServer'], scope => scope.effect(register…))` 声明式等待，服务出现后再注册路由（无 browser surface 的 profile 仍可加载插件）；新增回归测试「web server 后出现时仍注册/随 fiber 释放」；已通过 plugin_manager 对当前实例执行 disable/enable 触发重载，`/device-interconnect/api/state` 已恢复 200（无需重启 DSH，页面刷新即可）；插件 223 tests、host tsc、bundle 重建通过。
+- **提交**：见本次 commit。
 ### 2026-11-17 21:30 · lead（SakuraFrp 一键接入：token → 自动建隧道 → 启动）
 
 - 设备互联插件内网穿透升级：只填 SakuraFrp 访问密钥即自动完成「校验账号 → 选节点 → 创建/复用 TCP 隧道 → 对齐本地端口 → 推导公网地址/publicOrigin → 下载并校验 frpc → 重启 remote-host → 启动隧道」；手动模式保留为高级项。

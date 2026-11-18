@@ -226,13 +226,20 @@ describe('device-interconnect host plugin', () => {
     expect([404, 502]).toContain(response.status)
   })
 
-  it('loads without a web server service', async () => {
+  it('waits for the web server service before registering the bridge route', async () => {
     const dshHome = await temporaryDshHome()
     vi.stubEnv('DSH_HOME', dshHome)
     const ctx = new Context()
+    const server = webServer()
     const fiber = ctx.plugin({ name, inject: [], apply: (pluginContext: Context) => apply(pluginContext, {}) })
     await expect(fiber.await()).resolves.toBeDefined()
+    // A cold profile may activate this plugin before its browser surface exists:
+    // the route must not be dropped for the process lifetime.
+    expect(server.routes).toHaveLength(0)
+    ctx.provide('webServer', server.service)
+    await vi.waitFor(() => { expect(server.routes).toHaveLength(1) })
     await fiber.dispose()
+    expect(server.dispose).toHaveBeenCalledOnce()
   })
 
   it('fails loudly on an invalid bundle configuration', async () => {
