@@ -1101,6 +1101,13 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
 
 ## 9. 变更日志（append-only，最新在最上面）
 
+### 2026-11-18 18:06 · lead（聊天 markdown 排版对齐 DSH Web token，已装真机）
+
+- 用户反馈：手机远程会话正文排版乱/阅读费劲，要求参考 DSH 手机尺寸的 markdown 排版。
+- 从 `MarkdownText.module.css`/`AssistantMarkdown.module.css`/`MessageItem.module.css`/`CodeBlock.module.css` 抽取 token 并对齐：正文 14/24、块间距 16、h1 21/30 h2 19/28 h3 18/26 h4 14/24（h1–h3 上 32 下 16）、列表 indent 18/marker secondary、引用左 2px 线 padding 14 无底色、hr 0.5px、行内 code 0.875em chip、代码块 radius 12/padding 16/**自动换行**（移除横向滚动）、表格单元格 16/10 横向滚动、链接 link 色 500 点状下划线、辅助文字 13/18 secondary、assistant 全宽 + 16px gutter、用户气泡右对齐 max 82%。标题不再用 Material 巨大 headline。
+- 测试：chat_messages 24/24（新增 token 断言/窄屏代码换行无横向滚动/宽表格滚动不溢出）、邻接 142/142、analyze 仅既有 11 条基线告警；APK 18:04 构建并安装到 3B162D00E1K00000（lastUpdate 18:05）。
+- 边界：flutter_markdown_plus 不暴露 li 6px/嵌套 4px/li>p 8px 等逐元素间距，本轮做到块节奏/行高/缩进对齐，未伪称精确。
+- **提交**：见本次 commit。
 ### 2026-11-18 17:52 · lead（推送优先：长连接有推送时不再轮询，已装真机）
 
 - 用户问「不是长连接推送吗」：确认手机↔remote-host 是持久 WSS；desktop 事件经本机 relay 到 remote-host 后立即经 WSS 页面线推送，App 收到 session.event/status 立即 setState（无节流）。

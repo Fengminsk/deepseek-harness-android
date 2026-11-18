@@ -808,4 +808,105 @@ void main() {
       expect(scroll.position.maxScrollExtent, greaterThan(0));
     },
   );
+  testWidgets('PocketMarkdown 对齐 DSH 手机排版 token', (tester) async {
+    await tester.pumpWidget(
+      host(
+        const PocketMarkdown(
+          data:
+              '# 一级\n\n## 二级\n\n### 三级\n\n#### 四级\n\n正文段落。\n\n- 列表项\n\n> 引用\n\n`inline`\n\n```\ncode\n```',
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final body = tester.widget<MarkdownBody>(find.byType(MarkdownBody));
+    final style = body.styleSheet!;
+    expect(style.p!.fontSize, 14);
+    expect(style.p!.height, closeTo(24 / 14, .001));
+    expect(style.blockSpacing, 16);
+    expect(style.listIndent, 18);
+    expect(style.listBulletPadding, const EdgeInsets.only(right: 6));
+    expect(style.h1!.fontSize, 21);
+    expect(style.h1!.height, closeTo(30 / 21, .001));
+    expect(style.h1!.fontWeight, FontWeight.w700);
+    expect(style.h2!.fontSize, 19);
+    expect(style.h3!.fontSize, 18);
+    expect(style.h4!.fontSize, 14);
+    expect(style.h4!.fontWeight, FontWeight.w600);
+    expect(style.h1Padding?.top, 16);
+    expect(style.h4Padding, EdgeInsets.zero);
+    expect(style.code!.fontFamily, 'monospace');
+    expect(style.code!.fontSize, closeTo(14 * .875, .001));
+    expect(style.codeblockPadding, const EdgeInsets.all(16));
+    expect(
+      (style.codeblockDecoration! as BoxDecoration).borderRadius,
+      BorderRadius.circular(12),
+    );
+    final quote = style.blockquoteDecoration! as BoxDecoration;
+    expect(quote.color, isNull);
+    final quoteBorder = quote.border! as Border;
+    expect(quoteBorder.left.width, 2);
+    expect(style.blockquotePadding, const EdgeInsets.fromLTRB(14, 0, 0, 0));
+    expect(style.tableCellsPadding, const EdgeInsets.symmetric(horizontal: 16, vertical: 10));
+    expect(style.tableHead!.fontWeight, FontWeight.w600);
+    expect(style.a!.fontWeight, FontWeight.w500);
+    expect(chatMessageGutter, 16);
+    expect(chatUserBubbleMaxWidthFactor, .82);
+    final aux = chatAuxiliaryTextStyle(
+      tester.element(find.byType(MarkdownBody)),
+    );
+    expect(aux.fontSize, 13);
+    expect(aux.height, closeTo(18 / 13, .001));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('窄屏代码块按 DSH 自动换行，不出现横向滚动', (tester) async {
+    final longLine = 'https://example.com/${'a' * 240}';
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: pocketTheme(Brightness.light),
+        home: MediaQuery(
+          data: const MediaQueryData(size: Size(320, 640)),
+          child: Scaffold(
+            body: SingleChildScrollView(
+              child: PocketMarkdown(data: '```\n$longLine\n```'),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.textContaining('https://example.com/'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byType(MarkdownBody),
+        matching: find.byType(SingleChildScrollView),
+      ),
+      findsNothing,
+      reason: '代码块必须 pre-wrap/break，不提供横向滚动',
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('宽表格在窄屏走横向滚动且不溢出', (tester) async {
+    const table =
+        '| 列一 | 列二 | 列三 | 列四 | 列五 |\n'
+        '| --- | --- | --- | --- | --- |\n'
+        '| 很长的单元格内容一 | 很长的内容二 | 很长的内容三 | 很长的内容四 | 很长的内容五 |';
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: pocketTheme(Brightness.light),
+        home: MediaQuery(
+          data: const MediaQueryData(size: Size(320, 640)),
+          child: Scaffold(
+            body: SingleChildScrollView(
+              child: PocketMarkdown(data: table),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.textContaining('很长的单元格内容一'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 }

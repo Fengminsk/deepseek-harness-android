@@ -32,6 +32,18 @@ import 'tool_activity.dart';
 import 'ui.dart';
 import 'workspace_changes.dart';
 
+/// 消息列左右 gutter（DSH Web `ChatView` 手机尺寸）。
+const double chatMessageGutter = 16;
+
+/// 用户气泡最大宽度占消息列比例（DSH Web `MessageItem` 约 82%）。
+const double chatUserBubbleMaxWidthFactor = .82;
+
+/// 过程/工具/元信息辅助文字：13/18、次要色（对齐 DSH 手机 token）。
+TextStyle chatAuxiliaryTextStyle(BuildContext context) => TextStyle(
+  fontSize: 13,
+  height: 18 / 13,
+  color: Theme.of(context).colorScheme.onSurfaceVariant,
+);
 typedef ChatOpenLink = Future<void> Function(Uri uri);
 typedef ChatOpenFile = Future<void> Function(ChatFileLink file);
 typedef ChatOpenAttachment = Future<void> Function(Json attachment);
@@ -193,6 +205,8 @@ class _ChatTimelineState extends State<ChatTimeline>
   final _motions = <String, AnimationController>{};
   List<ChatExecutionDisplay> _groups = const [];
   List<ChatExecutionDisplay> _display = const [];
+  List<Json>? _reconciledEvents;
+  int? _reconciledProcessedCount, _reconciledEntryCount;
   bool _hasActiveExecution = false;
   final _positions = <String, int>{};
   final _displayKeys = <String, String>{};
@@ -291,6 +305,9 @@ class _ChatTimelineState extends State<ChatTimeline>
       _observed = null;
     }
     if (oldWidget.sessionId != widget.sessionId) {
+      _reconciledEvents = null;
+      _reconciledProcessedCount = null;
+      _reconciledEntryCount = null;
       _listAnchor.cancel(discardSpace: true);
       _loadingEarlier = false;
       _olderError = null;
@@ -339,11 +356,24 @@ class _ChatTimelineState extends State<ChatTimeline>
 
   void _synchronize() {
     final projection = widget.projection;
-    _artifacts.reconcile(widget.events);
-    _changes.reconcile(widget.events);
-    _references.reconcile(entries: projection.entries, events: widget.events);
-    _workflows.reconcile(widget.events);
-    _extras.reconcile(widget.events, widget.projection.entries);
+    // A remote live token rebuilds this widget without changing its durable
+    // events. Replaying every event through five projections per token makes
+    // long sessions stutter on older phones. Local timelines keep their
+    // existing reconciliation behavior because their event list can mutate.
+    final durableChanged =
+        !identical(_reconciledEvents, widget.events) ||
+        _reconciledProcessedCount != projection.processedEventCount ||
+        _reconciledEntryCount != projection.entries.length;
+    if (!widget.compactTurns || durableChanged) {
+      _artifacts.reconcile(widget.events);
+      _changes.reconcile(widget.events);
+      _references.reconcile(entries: projection.entries, events: widget.events);
+      _workflows.reconcile(widget.events);
+      _extras.reconcile(widget.events, projection.entries);
+      _reconciledEvents = widget.events;
+      _reconciledProcessedCount = projection.processedEventCount;
+      _reconciledEntryCount = projection.entries.length;
+    }
     final live = widget.live;
     final liveReasoning =
         live != null &&
@@ -712,7 +742,7 @@ class _ChatTimelineState extends State<ChatTimeline>
       endAnchorKey: _submittedKey == null
           ? null
           : ValueKey((sessionId, _submittedKey!)),
-      padding: const EdgeInsets.symmetric(horizontal: 24),
+      padding: const EdgeInsets.symmetric(horizontal: chatMessageGutter),
       itemCount: count + headerCount,
       findChildIndexCallback: (key) {
         if (key is! ValueKey<(String, String)> || key.value.$1 != sessionId) {
@@ -935,12 +965,12 @@ class _ChatTimelineState extends State<ChatTimeline>
                   if (stream.unconfirmed)
                     Text(
                       '回复状态待确认',
-                      style: Theme.of(context).textTheme.labelSmall,
+                      style: chatAuxiliaryTextStyle(context),
                     )
                   else if (stream.interrupted)
                     Text(
                       '回复已中断',
-                      style: Theme.of(context).textTheme.labelSmall,
+                      style: chatAuxiliaryTextStyle(context),
                     ),
                 ],
               ),
@@ -1093,7 +1123,9 @@ class ChatMessage extends StatelessWidget {
           alignment: user ? Alignment.centerRight : Alignment.centerLeft,
           child: Container(
             constraints: BoxConstraints(
-              maxWidth: MediaQuery.sizeOf(context).width * (user ? .8 : 1),
+              maxWidth:
+                  MediaQuery.sizeOf(context).width *
+                  (user ? chatUserBubbleMaxWidthFactor : 1),
             ),
             margin: EdgeInsets.only(
               top: compact ? 3 : 10,
@@ -1142,7 +1174,7 @@ class ChatMessage extends StatelessWidget {
                   if (entry.interrupted)
                     Text(
                       '回复已中断',
-                      style: Theme.of(context).textTheme.labelSmall,
+                      style: chatAuxiliaryTextStyle(context),
                     ),
                 ],
               ),
@@ -1469,11 +1501,11 @@ class ChatContent extends StatelessWidget {
                     : selectable
                     ? SelectableText(
                         text,
-                        style: const TextStyle(fontSize: 16, height: 1.6),
+                        style: const TextStyle(fontSize: 14, height: 24 / 14),
                       )
                     : Text(
                         text,
-                        style: const TextStyle(fontSize: 16, height: 1.6),
+                        style: const TextStyle(fontSize: 14, height: 24 / 14),
                       )
               : streaming
               ? ChatStreamReveal(
@@ -1535,6 +1567,99 @@ class ChatContent extends StatelessWidget {
         );
     }
   }
+}
+
+/// DSH Web 手机尺寸的 markdown 排版 token。
+///
+/// 正文 14/24（compact 13/20）、块间距 16（compact 12）、标题固定字号而非
+/// Material 大标题、列表缩进 18、引用左细线、代码块自动换行。字号仍受
+/// [MediaQuery.textScalerOf] 缩放。
+MarkdownStyleSheet pocketMarkdownStyleSheet(
+  BuildContext context, {
+  required bool compact,
+}) {
+  final theme = Theme.of(context);
+  final colors = theme.colorScheme;
+  final baseSize = compact ? 13.0 : 14.0;
+  final baseLine = compact ? 20.0 : 24.0;
+  final body = TextStyle(
+    fontSize: baseSize,
+    height: baseLine / baseSize,
+    color: colors.onSurface,
+    fontFamily: theme.textTheme.bodyMedium?.fontFamily,
+  );
+  TextStyle heading(double size, double line, FontWeight weight) =>
+      body.copyWith(fontSize: size, height: line / size, fontWeight: weight);
+  final h1Size = compact ? 18.0 : 21.0;
+  final h2Size = compact ? 17.0 : 19.0;
+  final h3Size = compact ? 16.0 : 18.0;
+  final h4Size = compact ? 13.0 : 14.0;
+  final headingTop = compact ? 12.0 : 16.0;
+  final codeFont = body.copyWith(
+    fontFamily: 'monospace',
+    fontSize: baseSize * .875,
+    height: 1.6,
+  );
+  return MarkdownStyleSheet(
+    p: body,
+    pPadding: EdgeInsets.zero,
+    a: body.copyWith(
+      color: colors.primary,
+      fontWeight: FontWeight.w500,
+      decoration: TextDecoration.underline,
+      decorationStyle: TextDecorationStyle.dotted,
+    ),
+    h1: heading(h1Size, compact ? 26 : 30, FontWeight.w700),
+    h1Padding: EdgeInsets.only(top: headingTop),
+    h2: heading(h2Size, compact ? 24 : 28, FontWeight.w700),
+    h2Padding: EdgeInsets.only(top: headingTop),
+    h3: heading(h3Size, compact ? 22 : 26, FontWeight.w700),
+    h3Padding: EdgeInsets.only(top: headingTop),
+    h4: heading(h4Size, compact ? 20 : 24, FontWeight.w600),
+    h4Padding: EdgeInsets.zero,
+    h5: heading(h4Size, compact ? 20 : 24, FontWeight.w600),
+    h5Padding: EdgeInsets.zero,
+    h6: heading(h4Size, compact ? 20 : 24, FontWeight.w600),
+    h6Padding: EdgeInsets.zero,
+    strong: body.copyWith(fontWeight: FontWeight.w700),
+    em: const TextStyle(fontStyle: FontStyle.italic),
+    del: const TextStyle(decoration: TextDecoration.lineThrough),
+    code: codeFont,
+    codeblockPadding: const EdgeInsets.all(16),
+    codeblockDecoration: BoxDecoration(
+      color: colors.surfaceContainer,
+      borderRadius: BorderRadius.circular(12),
+    ),
+    codeblockAlign: WrapAlignment.start,
+    blockquote: body.copyWith(color: colors.onSurfaceVariant),
+    blockquotePadding: const EdgeInsets.fromLTRB(14, 0, 0, 0),
+    blockquoteDecoration: BoxDecoration(
+      border: Border(left: BorderSide(color: colors.outlineVariant, width: 2)),
+    ),
+    blockquoteAlign: WrapAlignment.start,
+    listBullet: body.copyWith(color: colors.onSurfaceVariant),
+    listBulletPadding: const EdgeInsets.only(right: 6),
+    listIndent: 18,
+    orderedListAlign: WrapAlignment.start,
+    unorderedListAlign: WrapAlignment.start,
+    tableHead: body.copyWith(fontWeight: FontWeight.w600),
+    tableBody: body,
+    tableBorder: TableBorder.all(color: colors.outlineVariant, width: .5),
+    tableCellsPadding: const EdgeInsets.symmetric(
+      horizontal: 16,
+      vertical: 10,
+    ),
+    tableHeadCellsDecoration: BoxDecoration(
+      color: colors.surfaceContainerHighest.withValues(alpha: .5),
+    ),
+    tableHeadAlign: TextAlign.left,
+    tableScrollbarThumbVisibility: false,
+    horizontalRuleDecoration: BoxDecoration(
+      border: Border(top: BorderSide(color: colors.outlineVariant, width: .5)),
+    ),
+    textScaler: MediaQuery.textScalerOf(context),
+    blockSpacing: compact ? 12 : 16,
+  );
 }
 
 /// Markdown images use the explicit Session-scoped image reader only after a
@@ -1599,68 +1724,7 @@ class _PocketMarkdownState extends State<PocketMarkdown> {
   }
 
   void _updateStyle() {
-    final theme = Theme.of(context), colors = theme.colorScheme;
-    final compact = widget.compact;
-    final base = compact
-        ? theme.textTheme.bodySmall!
-        : theme.textTheme.bodyLarge!;
-    final body = base.copyWith(
-      color: colors.onSurface,
-      fontSize: compact ? base.fontSize : 16,
-      height: compact ? 1.45 : 1.6,
-    );
-    final compactHeading = body.copyWith(fontWeight: FontWeight.w600);
-    // Keep this object stable across delta-only rebuilds. MarkdownBody reparses
-    // changed text, while settled rows reuse their parsed widget trees.
-    _style = MarkdownStyleSheet(
-      p: body,
-      a: body.copyWith(
-        color: colors.primary,
-        decoration: TextDecoration.underline,
-      ),
-      h1: compact
-          ? compactHeading
-          : theme.textTheme.headlineMedium?.copyWith(color: colors.onSurface),
-      h2: compact
-          ? compactHeading
-          : theme.textTheme.headlineSmall?.copyWith(color: colors.onSurface),
-      h3: compact
-          ? compactHeading
-          : theme.textTheme.titleLarge?.copyWith(color: colors.onSurface),
-      h4: compact
-          ? compactHeading
-          : theme.textTheme.titleMedium?.copyWith(color: colors.onSurface),
-      h5: body.copyWith(fontWeight: FontWeight.w600),
-      h6: body.copyWith(fontWeight: FontWeight.w600),
-      strong: const TextStyle(fontWeight: FontWeight.w700),
-      em: const TextStyle(fontStyle: FontStyle.italic),
-      del: const TextStyle(decoration: TextDecoration.lineThrough),
-      code: body.copyWith(
-        fontFamily: 'monospace',
-        fontSize: compact ? base.fontSize : 14,
-      ),
-      codeblockPadding: const EdgeInsets.all(14),
-      codeblockDecoration: BoxDecoration(
-        color: colors.surfaceContainer,
-        borderRadius: BorderRadius.circular(16),
-      ),
-      blockquote: body.copyWith(color: colors.onSurfaceVariant),
-      blockquotePadding: const EdgeInsets.fromLTRB(14, 8, 10, 8),
-      blockquoteDecoration: BoxDecoration(
-        border: Border(left: BorderSide(color: colors.primary, width: 3)),
-      ),
-      listBullet: body,
-      listIndent: 22,
-      tableHead: body.copyWith(fontWeight: FontWeight.w600),
-      tableBody: body,
-      tableBorder: TableBorder.all(color: colors.outlineVariant),
-      tableCellsPadding: const EdgeInsets.all(8),
-      horizontalRuleDecoration: BoxDecoration(
-        border: Border(top: BorderSide(color: colors.outlineVariant)),
-      ),
-      textScaler: MediaQuery.textScalerOf(context),
-      blockSpacing: compact ? 8 : 12,
-    );
+    _style = pocketMarkdownStyleSheet(context, compact: widget.compact);
   }
 
   ChatFileLink? _file(String destination) => widget.sessionId == null
@@ -1730,6 +1794,26 @@ class _PocketMarkdownState extends State<PocketMarkdown> {
                           ..onTap = () => unawaited(_open(destination)),
                   ),
           ),
+          'pre': _PocketCodeBlockBuilder(
+            style: _style.code!,
+            decoration:
+                _style.codeblockDecoration as BoxDecoration? ??
+                const BoxDecoration(),
+          ),
+          'code': _PocketInlineCodeBuilder(
+            style: _style.code!,
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.surfaceContainerHighest,
+              border: Border.all(
+                color: Theme.of(context).colorScheme.outlineVariant,
+                width: .5,
+              ),
+              borderRadius: BorderRadius.circular(4),
+            ),
+          ),
+          'hr': _PocketRuleBuilder(
+            color: Theme.of(context).colorScheme.outlineVariant,
+          ),
         },
         onTapLink: (_, href, _) {
           if (href != null) unawaited(_open(href));
@@ -1774,6 +1858,78 @@ class _PocketMarkdownState extends State<PocketMarkdown> {
         ),
     ],
   );
+}
+
+/// Fenced code uses the DSH mobile style: padded rounded block, `pre-wrap` so
+/// long lines wrap instead of forcing a horizontal drag.
+class _PocketCodeBlockBuilder extends MarkdownElementBuilder {
+  _PocketCodeBlockBuilder({required this.style, required this.decoration});
+
+  final TextStyle style;
+  final BoxDecoration decoration;
+
+  @override
+  bool isBlockElement() => true;
+
+  @override
+  Widget? visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    final text = element.textContent.replaceFirst(RegExp(r'\n$'), '');
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: decoration,
+      child: Text(text, style: style, softWrap: true),
+    );
+  }
+}
+
+/// Horizontal rules use the DSH 32px vertical rhythm around a 0.5px line.
+class _PocketRuleBuilder extends MarkdownElementBuilder {
+  _PocketRuleBuilder({required this.color});
+
+  final Color color;
+
+  @override
+  bool isBlockElement() => true;
+
+  @override
+  Widget? visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 16),
+    child: Container(height: .5, color: color),
+  );
+}
+
+/// Inline code gets the DSH chip treatment: 0.875em monospace, subtle fill,
+/// 0.5px border, radius 4 and horizontal padding 5.
+class _PocketInlineCodeBuilder extends MarkdownElementBuilder {
+  _PocketInlineCodeBuilder({required this.style, required this.decoration});
+
+  final TextStyle style;
+  final BoxDecoration decoration;
+
+  @override
+  Widget? visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 5),
+      decoration: decoration,
+      child: Text(element.textContent, style: style),
+    );
+  }
 }
 
 /// Unavailable links keep their inline formatting, without a link gesture or
