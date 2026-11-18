@@ -36,10 +36,55 @@ library;
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
 import 'runtime.dart';
+
+/// Android 13+ 通知运行时权限（`POST_NOTIFICATIONS`）的请求入口。
+///
+/// 远程连接 ready、准备启动后台同步服务时调用一次；实现内部保证每个进程最多
+/// 主动请求一次，用户拒绝后不无限弹（再次打开设置页仍可走既有入口）。
+abstract class RemoteNotificationPermission {
+  /// 如尚未授予则请求一次；已授予/已请求过时是空操作。
+  Future<void> ensureRequested();
+}
+
+/// `dsh/runtime` 的 `notifications.request` 实现。
+class MethodChannelRemoteNotificationPermission
+    implements RemoteNotificationPermission {
+  /// 创建设备通道实现。
+  MethodChannelRemoteNotificationPermission({MethodChannel? channel})
+    : _channel = channel ?? const MethodChannel('dsh/runtime');
+
+  final MethodChannel _channel;
+  bool _requested = false;
+
+  /// 是否已经主动发起过请求（无论用户最终是否授予）。
+  bool get requested => _requested;
+
+  @override
+  Future<void> ensureRequested() async {
+    if (_requested) return;
+    _requested = true;
+    try {
+      await _channel.invokeMethod<void>('notifications.request');
+      if (kDebugMode) {
+        debugPrint('[remote-notify] permission request delivered');
+      }
+    } on PlatformException catch (error) {
+      // `busy`：已有权限弹窗；`closed`：请求期间页面销毁。都不重复打扰。
+      if (kDebugMode) {
+        debugPrint('[remote-notify] permission request skipped: ${error.code}');
+      }
+    } on MissingPluginException {
+      if (kDebugMode) {
+        debugPrint('[remote-notify] permission channel unavailable');
+      }
+    }
+  }
+}
 
 /// `remote.taskCompleted` 通知的方法名（协议 §8.2）。
 const String remoteTaskCompletedMethod = 'remote.taskCompleted';
@@ -475,10 +520,22 @@ class RemoteNotificationDispatcher {
       _ => null,
     };
     if (notification == null) return false;
-    if (!_remember(notification.dedupeKey)) return false;
+    if (!_remember(notification.dedupeKey)) {
+      if (kDebugMode) {
+        debugPrint('[remote-notify] duplicate method=$method');
+      }
+      return false;
+    }
     if (!_notifications.isClosed) _notifications.add(notification);
     // 前台由页面线呈现，只有不在前台才弹系统通知（协议 §8.1 的唯一一条线）。
-    if (!_isAppForeground()) unawaited(_show(notification));
+    final foreground = _isAppForeground();
+    if (kDebugMode) {
+      debugPrint(
+        '[remote-notify] received method=$method foreground=$foreground '
+        'decision=${foreground ? 'suppressed' : 'show'}',
+      );
+    }
+    if (!foreground) unawaited(_show(notification));
     return true;
   }
 
@@ -508,8 +565,15 @@ class RemoteNotificationDispatcher {
   }
 
   Future<void> _show(RemoteNotification notification) async {
+    if (kDebugMode) {
+      debugPrint(
+        '[remote-notify] bridge show kind=${notification.kind.name} '
+        'session=${notification.sessionId}',
+      );
+    }
     try {
       await bridge.show(notification);
+      if (kDebugMode) debugPrint('[remote-notify] bridge show done');
     } on Object catch (error) {
       // 设备侧桥已经自己吞错；这里兜底注入实现抛错的测试/未来实现。
       debugPrint('弹出远程系统通知失败：$error');

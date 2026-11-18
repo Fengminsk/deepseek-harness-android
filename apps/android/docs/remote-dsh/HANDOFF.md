@@ -1101,6 +1101,16 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
 
 ## 9. 变更日志（append-only，最新在最上面）
 
+### 2026-11-18 15:16 · lead（App 动画平滑 + 通知权限修复/诊断 + 写句柄冲突文案，APK 待安装）
+
+- 用户反馈：消息/项目展开折叠/排队坞动画一闪；手机收不到 DSH 通知；发送报 `session "..." is already owned by an active write handle`。
+- 动画：项目分组改为稳定挂载 + ClipRect + AnimatedSize(200ms easeInOutCubic)，折叠态零高，保留滚动与折叠记忆；队列坞 AnimatedSize(190ms) + chevron AnimatedRotation；工作状态条/队列计数放稳定槽位，输入卡平滑移动；时间线外包 RepaintBoundary + 稳定 key；减少动态效果时瞬时。
+- 通知：发现远程 ready 路径从未申请 Android 13 `POST_NOTIFICATIONS`；新增 `RemoteNotificationPermission`（复用 `notifications.request`，每进程最多请求一次，拒绝不再自动弹；busy/closed 静默降级），在远程首页 ready+启动后台同步时申请；`RemoteNotificationDispatcher` 增加 kDebugMode `[remote-notify]` 日志（received/duplicate/foreground decision/bridge show），便于真机区分帧未到 vs 权限抑制；前台抑制/深链不变。
+- 写句柄：新增 `remoteWriteHandleConflictMessage` 映射原始英文为「这个会话正在电脑上使用（电脑端持有写入），手机暂时不能发送；请在电脑上结束/关闭该会话后重试。」，失败保留草稿；不做跨进程抢锁。
+- 验证：flutter analyze 仅既有 11 条告警；会话页 92/92、首页 52/52、通知 25/25 全绿；debug APK 构建成功（15:14）。
+- **待安装**：手机 USB 仍断开；待重连安装最新 APK。
+- 架构边界（重要）：desktop DSH 与 remote-host 是**两个进程共用真实 DSH_HOME**；desktop 持有会话写句柄时手机无法写入；desktop 进程跑的任务也不会发 `remote.taskCompleted` 给手机。真正“原生客户端体验”需把远程宿主搬到 desktop DSH 进程内（或建立进程间会话/通知中继），待用户确认方向。
+- **提交**：见本次 commit。
 ### 2026-11-18 14:48 · lead（队列消息编辑/删除/插话发送 + 复用 DSH 图标，APK 待安装）
 
 - 用户要求排队待执行消息与 PC 一致：可再次编辑、删除、插话发送（steer），图标复用 DSH。

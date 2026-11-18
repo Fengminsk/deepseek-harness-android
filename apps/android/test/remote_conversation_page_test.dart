@@ -1349,6 +1349,33 @@ void main() {
     expect(source.sent, isEmpty);
   });
 
+  testWidgets('电脑端写句柄占用时映射成可读中文并保留草稿', (tester) async {
+    final source =
+        FakeRemoteConversationSource(
+            window: _window(conversationEvents()),
+            modelChoice: _flash,
+          )
+          ..sendFailure = const RuntimeTransportFailure(
+            code: 'gateway/internal',
+            message:
+                'session "s-1" is already owned by an active write handle',
+          );
+    await tester.pumpWidget(_host(source));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byType(TextField), '写了一半的草稿');
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('remote-send')));
+    await tester.pumpAndSettle();
+
+    expect(source.sendCalls, 1);
+    expect(find.textContaining('这个会话正在电脑上使用'), findsOneWidget);
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller?.text,
+      '写了一半的草稿',
+      reason: '写句柄冲突不清空草稿',
+    );
+  });
   // -------------------------------------------------- 会话指令
 
   testWidgets('输入以 / 开头时提示会在电脑上执行，提交走 session.command 并清空草稿', (tester) async {
@@ -2956,6 +2983,29 @@ void main() {
       expect(assets, contains('assets/icons/dsh/edit.svg'));
       expect(assets, contains('assets/icons/dsh/trash.svg'));
     });
+    testWidgets('队列坞使用 AnimatedSize 平滑展开/收起且内容不丢失', (tester) async {
+      final fixture = _tasksFixture(
+        pending: <Map<String, dynamic>>[
+          _queuedItem('q-1'),
+          _queuedItem('q-2', target: 'next-step'),
+        ],
+      );
+      await tester.pumpWidget(_host(fixture.source));
+      await _flushTasks(tester);
+      expect(find.byType(AnimatedSize), findsWidgets);
+      expect(find.byKey(const ValueKey('remote-queue-item-q-1')), findsNothing);
+
+      await tester.tap(find.byKey(const ValueKey('remote-queue-toggle')));
+      await tester.pump(const Duration(milliseconds: 60));
+      expect(find.byKey(const ValueKey('remote-queue-item-q-1')), findsOneWidget);
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('remote-queue-item-q-2')), findsOneWidget);
+
+      await tester.tap(find.byKey(const ValueKey('remote-queue-toggle')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('remote-queue-item-q-1')), findsNothing);
+      expect(find.byKey(const ValueKey('remote-queue-dock')), findsOneWidget);
+    });
     testWidgets('队列为空且空闲时不渲染任何面板', (tester) async {
       final fixture = _tasksFixture();
       await tester.pumpWidget(_host(fixture.source));
@@ -3079,6 +3129,8 @@ Future<void> _flushTasks(WidgetTester tester) async {
   await tester.runAsync(() => Future<void>.delayed(Duration.zero));
   await tester.pump();
   await tester.pump(const Duration(milliseconds: 50));
+  // 队列坞/状态条用 AnimatedSize（190ms）出现；等动画完成再点按，避免命中被裁剪。
+  await tester.pump(const Duration(milliseconds: 250));
 }
 
 /// 会话页缓存测试用的假原生通道：按 deviceId 存一份文档并记录读写次数。

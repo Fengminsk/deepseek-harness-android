@@ -184,6 +184,16 @@ class _ConnectingSource implements RemoteDshDataSource {
       const <RemoteDshProject>[];
 }
 
+/// 记录通知权限请求次数的假实现。
+class _FakeNotificationPermission implements RemoteNotificationPermission {
+  int requests = 0;
+
+  @override
+  Future<void> ensureRequested() async {
+    requests++;
+  }
+}
+
 /// 记录后台同步 start/stop 次数的假实现。
 class _FakeSyncLifecycle implements RemoteSyncLifecycle {
   int starts = 0;
@@ -502,16 +512,19 @@ Finder _sessionRow(String id) =>
 
 /// 项目折叠动画是否已经收到「只显示项目头」。
 ///
-/// 不能用会话行不存在来断言折叠：AnimatedCrossFade 会同时保留两个 child，
-/// 折叠后的会话行仍在 widget 树里，只是被淡出并收成零高。
+/// AnimatedSize 的展开态 child 是会话列表、折叠态是零高 SizedBox；动画期间
+/// child 已经是目标状态，只是高度在过渡，因此可以立即断言。
 bool _projectCollapsed(WidgetTester tester, String deviceProjectKey) {
-  final fade = tester.widget<AnimatedCrossFade>(
-    find.descendant(
-      of: find.byKey(ValueKey('remote-project-$deviceProjectKey')),
-      matching: find.byType(AnimatedCrossFade),
-    ),
+  final size = tester.widget<AnimatedSize>(
+    find
+        .descendant(
+          of: find.byKey(ValueKey('remote-project-$deviceProjectKey')),
+          matching: find.byType(AnimatedSize),
+        )
+        .first,
   );
-  return fade.crossFadeState == CrossFadeState.showFirst;
+  final child = size.child;
+  return child is SizedBox && child.height == 0;
 }
 
 /// 输入卡里的文本框。
@@ -592,6 +605,7 @@ Future<void> _showConnection(
   RemoteNotificationLaunch? launch,
   LibraryRuntime? runtime,
   RemoteSyncLifecycle? syncLifecycle,
+  RemoteNotificationPermission? notificationPermission,
 }) async {
   final controller = runtime ?? LibraryRuntime();
   if (runtime == null) addTearDown(controller.dispose);
@@ -604,6 +618,7 @@ Future<void> _showConnection(
         connection: harness.controller,
         notificationLaunch: launch,
         syncLifecycle: syncLifecycle,
+        notificationPermission: notificationPermission,
       ),
     ),
   );
@@ -968,6 +983,22 @@ void main() {
       expect(sync.stops, 1);
     });
 
+    testWidgets('连接 ready 时申请一次通知权限', (tester) async {
+      final sync = _FakeSyncLifecycle();
+      final permission = _FakeNotificationPermission();
+      final harness = await harnessFor();
+      await _showConnection(
+        tester,
+        harness,
+        syncLifecycle: sync,
+        notificationPermission: permission,
+      );
+      expect(permission.requests, 0, reason: '连接尚未就绪时不申请');
+
+      _completeHandshake(harness, 0, '客厅的电脑');
+      await _flushConnection(tester);
+      expect(permission.requests, 1);
+    });
     testWidgets('连接 failed 时停止后台同步', (tester) async {
       final sync = _FakeSyncLifecycle();
       final harness = await harnessFor();
@@ -1088,13 +1119,7 @@ void main() {
       expect(_sessionRow('s-1'), findsOneWidget);
       await tester.tap(find.text('Pocket'));
       await tester.pump();
-      final fade = tester.widget<AnimatedCrossFade>(
-        find.descendant(
-          of: find.byKey(const ValueKey('remote-project-device-1-cwd:Pocket')),
-          matching: find.byType(AnimatedCrossFade),
-        ),
-      );
-      expect(fade.crossFadeState, CrossFadeState.showFirst);
+      expect(_projectCollapsed(tester, 'device-1-cwd:Pocket'), isTrue);
       await tester.pumpAndSettle();
       expect(tester.getSize(group).height, lessThan(expandedHeight));
 

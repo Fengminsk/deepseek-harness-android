@@ -129,6 +129,16 @@ const double _followThreshold = 120;
 /// 指令提示里回显输入的字符上限；超出截断，避免输入区被撑成多行。
 const int _commandPreviewLength = 48;
 
+/// 电脑端 DSH 持有会话写句柄时宿主返回的错误文本。
+///
+/// 根因是 desktop DSH 与 remote-host 两个进程共用真实 DSH_HOME，手机端不抢锁；
+/// 这里只把原始英文映射成用户可读的中文，草稿仍保留可重试。
+String? remoteWriteHandleConflictMessage(String message) {
+  if (!message.contains('already owned by an active write handle')) return null;
+  return '这个会话正在电脑上使用（电脑端持有写入），手机暂时不能发送；'
+      '请在电脑上结束/关闭该会话后重试。';
+}
+
 /// `tasks.session` 里的一条排队消息（Agent Inbox）。
 ///
 /// [target] 为 `next-turn` 时是当前回合结束后执行的排队消息，`next-step` 是插到
@@ -1174,7 +1184,7 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
             padding: const EdgeInsets.fromLTRB(0, 8, 0, 2),
             child: RemoteStatsBar(insights: insights, onTap: _openStatsSheet),
           ),
-        ?_sessionTasksPanel(context),
+        _sessionTasksPanel(context),
         _composerArea(context),
       ],
     );
@@ -1284,14 +1294,17 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
         ),
       );
     }
-    return ChatTimeline(
-      sessionId: _source.sessionId,
-      projection: _projection,
-      controller: _scroll,
-      events: _events,
-      live: _live,
-      running: _running,
-      compactTurns: true,
+    return RepaintBoundary(
+      key: const ValueKey('remote-conversation-transcript'),
+      child: ChatTimeline(
+        sessionId: _source.sessionId,
+        projection: _projection,
+        controller: _scroll,
+        events: _events,
+        live: _live,
+        running: _running,
+        compactTurns: true,
+      ),
     );
   }
 
@@ -1661,7 +1674,23 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
   ///
   /// 连接未就绪、宿主不支持 `tasks.session`、或首次读取还没返回时不渲染；读取失败
   /// 静默保留上次读数。队列坞只在 pending 非空时出现（0 条完全不占位）。
-  Widget? _sessionTasksPanel(BuildContext context) {
+  ///
+  /// 始终占一个稳定的 widget 槽位，用 [AnimatedSize] 让状态条/队列坞出现与消失时
+  /// 输入卡平滑过渡，避免整块面板插入/移除造成的跳动。
+  Widget _sessionTasksPanel(BuildContext context) {
+    final content = _sessionTasksContent(context);
+    return ClipRect(
+      child: AnimatedSize(
+        duration: _remoteAnimationDuration(context),
+        curve: Curves.easeInOutCubic,
+        alignment: Alignment.topCenter,
+        child:
+            content ?? const SizedBox(width: double.infinity, height: 0),
+      ),
+    );
+  }
+
+  Widget? _sessionTasksContent(BuildContext context) {
     if (_source.phase != RemoteConnectionPhase.ready) return null;
     if (_sessionTasksUnsupported || !_sessionTasksLoaded) return null;
     final tasks = _sessionTasks;
@@ -1755,6 +1784,12 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     );
   }
 
+  /// 动画时长：跟随系统的「减少动态效果」，普通情况下 190ms。
+  Duration _remoteAnimationDuration(BuildContext context) =>
+      MediaQuery.disableAnimationsOf(context)
+      ? Duration.zero
+      : const Duration(milliseconds: 190);
+
   /// DSH 产品图标（`apps/android/assets/icons/dsh` 取自仓库
   /// `packages/client/ui-primitives/src/icons/artwork.ts`）；颜色跟随当前文字色。
   Widget _dshIcon(
@@ -1782,43 +1817,52 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
         color: colors.surfaceContainerHighest.withValues(alpha: .55),
         borderRadius: BorderRadius.circular(14),
       ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          if (pending.length > 1)
-            InkWell(
-              key: const ValueKey('remote-queue-toggle'),
-              borderRadius: BorderRadius.circular(14),
-              onTap: () => setState(() => _queueExpanded = !_queueExpanded),
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
-                child: Row(
-                  children: [
-                    _dshIcon('queue.svg', size: 16, color: colors.onSurfaceVariant),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        '${pending.length} 条排队消息',
-                        style: AppTextStyle.footnote
-                            .of(context)
-                            .copyWith(color: colors.onSurfaceVariant),
-                      ),
+      child: ClipRect(
+        child: AnimatedSize(
+          duration: _remoteAnimationDuration(context),
+          curve: Curves.easeInOutCubic,
+          alignment: Alignment.topCenter,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (pending.length > 1)
+                InkWell(
+                  key: const ValueKey('remote-queue-toggle'),
+                  borderRadius: BorderRadius.circular(14),
+                  onTap: () => setState(() => _queueExpanded = !_queueExpanded),
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+                    child: Row(
+                      children: [
+                        _dshIcon('queue.svg', size: 16, color: colors.onSurfaceVariant),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            '${pending.length} 条排队消息',
+                            style: AppTextStyle.footnote
+                                .of(context)
+                                .copyWith(color: colors.onSurfaceVariant),
+                          ),
+                        ),
+                        AnimatedRotation(
+                          turns: _queueExpanded ? .5 : 0,
+                          duration: _remoteAnimationDuration(context),
+                          child: Icon(
+                            Icons.expand_more_rounded,
+                            size: 18,
+                            color: colors.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
                     ),
-                    Icon(
-                      _queueExpanded
-                          ? Icons.expand_less_rounded
-                          : Icons.expand_more_rounded,
-                      size: 18,
-                      color: colors.onSurfaceVariant,
-                    ),
-                  ],
+                  ),
                 ),
-              ),
-            ),
-          if (!collapsed)
-            for (final item in pending) _queueRow(context, item),
-        ],
+              if (!collapsed)
+                for (final item in pending) _queueRow(context, item),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -2291,6 +2335,11 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
       await _consumeAttachments(attachedIds);
     } on RuntimeTransportFailure catch (failure) {
       if (!mounted) return;
+      final writeConflict = remoteWriteHandleConflictMessage(failure.message);
+      if (writeConflict != null) {
+        _showStatus(writeConflict);
+        return;
+      }
       if (isRemoteCredentialFailure(failure.message)) {
         final recovered = await _recoverCredentialFailure(
           text,
@@ -2306,7 +2355,11 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
       }
       _showStatus(failure.message);
     } on Object catch (error) {
-      if (mounted) _showStatus('发送失败：$error');
+      if (mounted) {
+        _showStatus(
+          remoteWriteHandleConflictMessage(error.toString()) ?? '发送失败：$error',
+        );
+      }
     } finally {
       if (mounted) setState(() => _sending = false);
     }
@@ -2360,7 +2413,9 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
       setState(
         () => _commandResult = (
           line: line,
-          result: RemoteCommandResult.error(failure.message),
+          result: RemoteCommandResult.error(
+            remoteWriteHandleConflictMessage(failure.message) ?? failure.message,
+          ),
         ),
       );
     } on Object catch (error) {
@@ -2626,7 +2681,9 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
       setState(
         () => _commandResult = (
           line: line,
-          result: RemoteCommandResult.error(failure.message),
+          result: RemoteCommandResult.error(
+            remoteWriteHandleConflictMessage(failure.message) ?? failure.message,
+          ),
         ),
       );
     } on Object catch (error) {

@@ -535,19 +535,20 @@ class _RemoteProjectGroupState extends State<RemoteProjectGroup> {
               ),
             ),
           ),
-          AnimatedCrossFade(
-            firstChild: const SizedBox.shrink(),
-            secondChild: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: widget.children,
+          ClipRect(
+            child: AnimatedSize(
+              duration: reduceMotion
+                  ? Duration.zero
+                  : const Duration(milliseconds: 200),
+              curve: Curves.easeInOutCubic,
+              alignment: Alignment.topCenter,
+              child: expanded
+                  ? Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: widget.children,
+                    )
+                  : const SizedBox(width: double.infinity, height: 0),
             ),
-            crossFadeState: expanded
-                ? CrossFadeState.showSecond
-                : CrossFadeState.showFirst,
-            duration: reduceMotion
-                ? Duration.zero
-                : const Duration(milliseconds: 220),
-            sizeCurve: Curves.easeInOutCubic,
           ),
         ],
       );
@@ -583,7 +584,21 @@ class _RemoteProjectGroupState extends State<RemoteProjectGroup> {
             onTap: _toggle,
           ),
         ),
-        if (expanded) ...widget.children,
+        ClipRect(
+          child: AnimatedSize(
+            duration: reduceMotion
+                ? Duration.zero
+                : const Duration(milliseconds: 200),
+            curve: Curves.easeInOutCubic,
+            alignment: Alignment.topCenter,
+            child: expanded
+                ? Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: widget.children,
+                  )
+                : const SizedBox(width: double.infinity, height: 0),
+          ),
+        ),
       ],
     );
   }

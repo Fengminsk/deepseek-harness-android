@@ -678,4 +678,40 @@ void main() {
       await expectLater(bridge.cancelAll(), completes);
     });
   });
+  group('通知权限请求', () {
+    testWidgets('未授予时只主动请求一次，重复调用不再打扰', (tester) async {
+      const channel = MethodChannel('notification-permission-test');
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      final calls = <String>[];
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        calls.add(call.method);
+        return null;
+      });
+      addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+
+      final permission = MethodChannelRemoteNotificationPermission(
+        channel: channel,
+      );
+      await permission.ensureRequested();
+      await permission.ensureRequested();
+      expect(calls, <String>['notifications.request']);
+      expect(permission.requested, isTrue);
+    });
+
+    testWidgets('平台拒绝或已有弹窗时静默降级', (tester) async {
+      const channel = MethodChannel('notification-permission-busy');
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        throw PlatformException(code: 'busy', message: '通知权限请求已经打开');
+      });
+      addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+      final permission = MethodChannelRemoteNotificationPermission(
+        channel: channel,
+      );
+      await expectLater(permission.ensureRequested(), completes);
+      expect(permission.requested, isTrue);
+    });
+  });
 }

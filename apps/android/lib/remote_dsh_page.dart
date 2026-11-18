@@ -53,6 +53,7 @@ import 'remote_home_cache.dart';
 import 'remote_dsh_settings_page.dart';
 import 'remote_dsh_widgets.dart';
 import 'remote_notification_navigation.dart';
+import 'remote_notifications.dart';
 import 'remote_pairing_page.dart';
 import 'remote_sync_service.dart';
 import 'remote_terminal_page.dart';
@@ -272,6 +273,7 @@ class RemoteDshPage extends StatefulWidget {
     this.archivedSource,
     this.notificationLaunch,
     this.syncLifecycle,
+    this.notificationPermission,
   });
 
   /// 本页作为全屏目的地的标识（见 [openDestination]）。
@@ -310,6 +312,12 @@ class RemoteDshPage extends StatefulWidget {
   /// failed/idle 或页面销毁时停止。App 退后台不停止，让 `session.follow` 与
   /// `remote.*` 通知在后台继续到达；只在测试/组合时注入假实现。
   final RemoteSyncLifecycle? syncLifecycle;
+
+  /// Android 13+ 通知运行时权限请求入口；为 null 时走 `dsh/runtime` 默认实现。
+  ///
+  /// 连接 ready、启动后台同步服务时调用一次 `ensureRequested`：未授予则弹系统
+  /// 权限框，已授予/拒绝过则不再重复打扰。测试可注入假实现。
+  final RemoteNotificationPermission? notificationPermission;
 
   @override
   State<RemoteDshPage> createState() => _RemoteDshPageState();
@@ -430,6 +438,11 @@ class _RemoteDshPageState extends State<RemoteDshPage>
 
   /// 是否已经向平台请求启动后台同步；重复 start/stop 由 RemoteSyncLifecycle 幂等处理。
   bool _syncStarted = false;
+
+  /// 通知权限请求：与后台同步一起在连接 ready 时触发一次。
+  late final RemoteNotificationPermission _notificationPermission =
+      widget.notificationPermission ??
+      MethodChannelRemoteNotificationPermission();
 
   /// 数据源：显式 [RemoteDshPage.source] 优先，否则按 [_connection] 建实时源。
   RemoteDshDataSource _source = const RemoteDshPlaceholderSource();
@@ -701,6 +714,8 @@ class _RemoteDshPageState extends State<RemoteDshPage>
     if (_syncStarted) return;
     _syncStarted = true;
     unawaited(_syncLifecycle.start());
+    // Android 13+ 首次 ready 时申请一次通知权限；拒绝后实现内部不再自动弹。
+    unawaited(_notificationPermission.ensureRequested());
   }
 
   void _stopRemoteSync() {
