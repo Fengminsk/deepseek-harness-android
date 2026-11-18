@@ -16,6 +16,13 @@ import { readFile } from 'node:fs/promises'
 /** Default request timeout for one relay call. */
 export const DESKTOP_RELAY_TIMEOUT_MS = 4_000
 
+/**
+ * Default timeout for the read-only status calls. They run on the request path of
+ * `sessions.list` / `tasks.session`, so a slow desktop must never delay the list
+ * response by the full action timeout.
+ */
+export const DESKTOP_RELAY_STATUS_TIMEOUT_MS = 800
+
 /** Descriptor published by the desktop plugin. */
 export interface DesktopRelayDescriptor {
   /** Loopback base URL, e.g. `http://127.0.0.1:53421`. */
@@ -76,6 +83,8 @@ export interface DesktopRelayClientOptions {
   readonly file: string
   /** Per-request timeout; defaults to {@link DESKTOP_RELAY_TIMEOUT_MS}. */
   readonly timeoutMs?: number
+  /** Status-read timeout; defaults to {@link DESKTOP_RELAY_STATUS_TIMEOUT_MS}. */
+  readonly statusTimeoutMs?: number
   /** Fetch implementation; defaults to the global one (tests inject a local server). */
   readonly fetch?: typeof fetch
 }
@@ -132,7 +141,10 @@ export class DesktopRelayClient {
    */
   async sessionStatus(sessionId: string): Promise<DesktopRelaySessionStatus> {
     try {
-      const envelope = await this.get(`/relay/session/status?sessionId=${encodeURIComponent(sessionId)}`)
+      const envelope = await this.get(
+        `/relay/session/status?sessionId=${encodeURIComponent(sessionId)}`,
+        this.options.statusTimeoutMs ?? DESKTOP_RELAY_STATUS_TIMEOUT_MS,
+      )
       return statusOf(envelope)
     } catch {
       return { status: 'unknown' }
@@ -145,7 +157,10 @@ export class DesktopRelayClient {
    */
   async sessionsStatus(): Promise<Readonly<Record<string, DesktopRelaySessionStatus>>> {
     try {
-      const envelope = await this.get('/relay/sessions/status')
+      const envelope = await this.get(
+        '/relay/sessions/status',
+        this.options.statusTimeoutMs ?? DESKTOP_RELAY_STATUS_TIMEOUT_MS,
+      )
       const sessions = envelope.sessions
       if (typeof sessions !== 'object' || sessions === null || Array.isArray(sessions)) return {}
       const result: Record<string, DesktopRelaySessionStatus> = {}
@@ -194,12 +209,12 @@ export class DesktopRelayClient {
   }
 
   /** Send one authenticated GET request. */
-  private async get(path: string): Promise<RelayEnvelope> {
-    return this.request(path, { method: 'GET' })
+  private async get(path: string, timeoutMs?: number): Promise<RelayEnvelope> {
+    return this.request(path, { method: 'GET' }, timeoutMs)
   }
 
   /** Perform one authenticated request with a bounded timeout. */
-  private async request(path: string, init: { method: string; body?: string }): Promise<RelayEnvelope> {
+  private async request(path: string, init: { method: string; body?: string }, timeoutMs?: number): Promise<RelayEnvelope> {
     const descriptor = await this.descriptor()
     const doFetch = this.options.fetch ?? fetch
     let response: Response
@@ -211,7 +226,7 @@ export class DesktopRelayClient {
           ...(init.body === undefined ? {} : { 'content-type': 'application/json' }),
         },
         ...(init.body === undefined ? {} : { body: init.body }),
-        signal: AbortSignal.timeout(this.options.timeoutMs ?? DESKTOP_RELAY_TIMEOUT_MS),
+        signal: AbortSignal.timeout(timeoutMs ?? this.options.timeoutMs ?? DESKTOP_RELAY_TIMEOUT_MS),
       })
     } catch (error) {
       const timeout = error instanceof Error && error.name === 'TimeoutError'

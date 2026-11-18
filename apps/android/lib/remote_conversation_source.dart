@@ -174,6 +174,7 @@ class RemoteConversationWindow {
     required this.throughSeq,
     this.firstSeq,
     this.hasMore = false,
+    this.resetRequired = false,
   });
 
   /// 会话事件，按 `seq` 升序。
@@ -187,6 +188,9 @@ class RemoteConversationWindow {
 
   /// 更早是否还有内容。
   final bool hasMore;
+
+  /// 增量读取发现 `afterSeq` 与返回窗口之间的缺口无法桥接；页面应整窗重读。
+  final bool resetRequired;
 }
 
 /// 会话数据源推给页面的一次更新。
@@ -837,6 +841,25 @@ abstract class RemoteConversationSource extends ChangeNotifier {
 
   /// 重新读取窗口；读取失败后的「重试」用它。
   Future<void> reload();
+
+  /// 首屏页大小：只取最近一小段，避免长会话首帧重建整窗。
+  static const int firstPageMaxEvents = 120;
+
+  /// 首屏页字节省数上限（1 MiB）。
+  static const int firstPageMaxBytes = 1024 * 1024;
+
+  /// 增量读取 `seq > afterSeq` 的较新事件，供补偿轮询/发送后合并。
+  ///
+  /// 默认返回 null：只读/测试实现可以不具备增量能力，页面会回退到整窗 reload。
+  /// 支持的实现不得漏事件；`hasMore` 表示此窗口之前仍有更早历史可加载。
+  Future<RemoteConversationWindow?> readNewer(int afterSeq) async => null;
+
+  /// 读取更早一页历史；[beforeSeq] 为当前窗口最早事件的 seq（不含），
+  /// [throughSeq] 固定本次日志切点。默认 null 表示不支持分页。
+  Future<RemoteConversationWindow?> readOlder({
+    required int beforeSeq,
+    required int throughSeq,
+  }) async => null;
 
   /// 发送一条消息；空白文本由调用方过滤，这里不再兜底。
   ///

@@ -21,6 +21,10 @@
  *    USB 提示与设备撤销都能在电脑浏览器里完成，不需要读终端日志；同一服务器还提供本机
  *    控制面 JSON API（`/api/state`、`/api/pair`、`/api/devices/revoke`、`/qr.svg`）供设备互联
  *    插件等本机程序读取状态、长期配对与撤销设备；页面端口绑定失败同样只记 warn。
+ * 7. 在桌面插件投递实时事件时把它们广播给已认证手机（`./session-events-relay.ts`）：
+ *    `session.event` / `session.status` 走页面线，`sessions.changed` 触发首页重读；同一实例
+ *    还把桌面进程的运行状态合并进 `sessions.list` / `tasks.session` 的只读应答，中继不可用
+ *    或超时则原样返回子进程结果。
  *
  * 注册即 effect：插件卸载时关闭配对窗口、断开全部连接、停止发现、停止配对页并停止监听。
  *
@@ -57,6 +61,7 @@ import {
   type PairingPageSource,
   type PairingPageTicket,
   type RelayNotificationInput,
+  type SessionEventsRelayInput,
 } from './pairing-page.ts'
 import { encodeQrMatrix, renderTerminalQr } from './pairing-qr.ts'
 import { MAXIMUM_PAIRING_TTL_MS, PairingWindow, pairUrl } from './pairing.ts'
@@ -77,6 +82,11 @@ import {
   type RemotePairRequest,
 } from './server.ts'
 import { dispatchWithSessionRelay } from './session-relay.ts'
+import {
+  desktopStatusEntries,
+  SessionEventBroadcaster,
+  withDesktopSessionFacts,
+} from './session-events-relay.ts'
 import { ensureTlsMaterial } from './tls.ts'
 
 /**
@@ -419,6 +429,13 @@ interface RemoteHostHandle {
    * @param notifications - 已经过控制 API 形状校验的页面线通知。
    */
   relayNotifications(notifications: readonly RelayNotificationInput[]): void
+
+  /**
+   * 把桌面插件中继来的实时会话事件与 agent 状态广播成页面线通知；没有 ready 连接时整批安全丢弃，
+   * 不写 Session、也不产生 `remote.*` 系统通知。
+   * @param input - 已经过控制 API 形状校验的事件与状态。
+   */
+  relaySessionEvents(input: SessionEventsRelayInput): void
 }
 
 /**
@@ -544,6 +561,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     source: handle.pages(),
     log: writeRemoteLog,
     onNotificationsRelay: notifications => { handle.relayNotifications(notifications) },
+    onSessionEventsRelay: (input) => { handle.relaySessionEvents(input) },
   })
   ctx.effect(() => () => pages.stop(), 'remote-host: 本机配对页')
   await pages.start()
@@ -642,6 +660,8 @@ async function startRemoteHost(
   const desktopRelay = config.desktopRelayFile === ''
     ? undefined
     : new DesktopRelayClient({ file: config.desktopRelayFile })
+  // 桌面实时事件只广播给当前绑定的那条连接；没有连接时 broadcaster 安全丢弃。
+  const sessionEvents = new SessionEventBroadcaster({ log: writeRemoteLog })
   const server = new RemoteHostServer({
     port: config.port,
     host: config.host,
@@ -701,12 +721,30 @@ async function startRemoteHost(
       const owner = randomUUID()
       binding = { connection, sink, notifications }
       facade.bind(sink, owner)
-      connection.onRequest((method, params) => dispatchWithSessionRelay({
-        method,
-        params,
-        local: () => facade.dispatch(method, params, owner),
-        relay: desktopRelay,
-      }))
+      connection.onRequest(async (method, params) => {
+        const result = await dispatchWithSessionRelay({
+          method,
+          params,
+          local: () => facade.dispatch(method, params, owner),
+          relay: desktopRelay,
+        })
+        // 桌面进程的运行状态不在子进程门面的结果里：只读列表按需补一次，失败/超时原样返回。
+        return withDesktopSessionFacts(method, params, result, desktopRelay, { log: writeRemoteLog })
+      })
+      // 手机连上时补发一次桌面运行状态：进入会话页即可显示正在工作的桌面 Agent，
+      // 不必等下一次状态变化；没有中继或读取失败时什么都不发。
+      if (desktopRelay !== undefined) {
+        void desktopRelay.sessionsStatus()
+          .then((statuses) => {
+            const entries = desktopStatusEntries(statuses)
+            const current = binding
+            if (entries.length === 0 || current === undefined || current.connection !== connection) return
+            sessionEvents.broadcast({ sessions: [], statuses: entries }, connection)
+          })
+          .catch(() => {
+            // 补发是增强路径：读取失败只意味着手机晚一点由页面线或轮询拿到状态。
+          })
+      }
       writeRemoteLog({
         level: 'info',
         event: 'connection-ready',
@@ -901,7 +939,8 @@ async function startRemoteHost(
     }
     return {
       stop: async () => {
-        // 先停通知观察者：连接关闭过程中门面可能还在收尾，不再追加 `remote.*` 帧。
+        // 先停通知观察者与页面线广播：连接关闭过程中门面可能还在收尾，不再追加帧。
+        sessionEvents.dispose()
         binding?.notifications.dispose()
         if (discovery !== undefined) await discovery.stop()
         pairing.close()
@@ -917,6 +956,10 @@ async function startRemoteHost(
         const current = binding
         if (current === undefined) return
         for (const notification of notifications) current.notifications.observe(notification.method, notification.params)
+      },
+      relaySessionEvents: (input) => {
+        const current = binding
+        sessionEvents.broadcast(input, current === undefined ? undefined : current.connection)
       },
       pages: () => ({
         currentPairing: currentPairingForPage,

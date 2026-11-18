@@ -80,6 +80,11 @@ export interface BridgeOptions {
   readonly restartHealthyMs?: number
   /** Desktop Plan-B relay availability; the plugin owns the server. */
   readonly relay?: () => DesktopRelayState
+  /**
+   * Problem of the desktop real-time session event relay; absent when that relay
+   * works. The plugin owns the observer and reports here after it disables itself.
+   */
+  readonly desktopEvents?: () => Diagnostic | undefined
   /** Lifecycle log sink. */
   readonly logger?: {
     info(message: string, ...rest: unknown[]): void
@@ -125,6 +130,7 @@ export class Bridge {
   private readonly exists: (path: string) => boolean
   private readonly logger: NonNullable<BridgeOptions['logger']>
   private readonly relayStatus: (() => DesktopRelayState) | undefined
+  private readonly desktopEventsProblem: (() => Diagnostic | undefined) | undefined
   private readonly sakurafrpApi: (token: string) => SakuraFrpApi
   private readonly downloadFrpcDependency: (dataDir: string) => Promise<{ readonly path: string; readonly version: string }>
   private readonly latencyProbe: (targets: readonly LatencyTarget[]) => Promise<readonly LatencySample[]>
@@ -170,6 +176,7 @@ export class Bridge {
     this.exists = options.exists ?? existsSync
     this.logger = options.logger ?? console
     this.relayStatus = options.relay
+    this.desktopEventsProblem = options.desktopEvents
     this.sakurafrpApi = options.sakurafrpApi ?? (token => createSakuraFrpApi({ token }))
     this.platform = options.platform ?? process.platform
     this.arch = options.arch ?? process.arch
@@ -691,7 +698,7 @@ export class Bridge {
         host: this.recoveryView(this.hostRecovery),
         tunnel: this.recoveryView(this.tunnelRecovery),
       },
-      problems: [...this.activationProblems, ...this.recoveryProblems()],
+      problems: [...this.activationProblems, ...this.recoveryProblems(), ...this.desktopEventProblems()],
     }
   }
 
@@ -724,6 +731,21 @@ export class Bridge {
       })
     }
     return problems
+  }
+
+  /** Problem of the desktop real-time event relay, when it disabled itself. */
+  private desktopEventProblems(): Diagnostic[] {
+    const report = this.desktopEventsProblem
+    if (report === undefined) return []
+    try {
+      const problem = report()
+      return problem === undefined ? [] : [problem]
+    } catch (error) {
+      return [{
+        code: 'desktop-session-events-report-failed',
+        message: `读取桌面实时会话事件中继状态失败：${error instanceof Error ? error.message : String(error)}`,
+      }]
+    }
   }
 
   /** Project the persisted configuration onto the wire document, dropping the access key. */

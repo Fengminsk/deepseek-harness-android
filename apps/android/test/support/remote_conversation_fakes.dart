@@ -309,6 +309,41 @@ class FakeRemoteConversationSource extends RemoteConversationSource {
     if (window != null) emit(RemoteConversationSnapshot(window));
   }
 
+  /// 下一次 readNewer 返回的窗口；null 时按「不支持增量」退回整窗 reload。
+  RemoteConversationWindow? nextNewerWindow;
+
+  /// 下一次 readOlder 返回的窗口。
+  RemoteConversationWindow? nextOlderWindow;
+
+  int readNewerCalls = 0;
+  final List<int> readNewerAfterSeqs = <int>[];
+  int readOlderCalls = 0;
+  final List<({int beforeSeq, int throughSeq})> readOlderRequests =
+      <({int beforeSeq, int throughSeq})>[];
+
+  @override
+  Future<RemoteConversationWindow?> readNewer(int afterSeq) async {
+    readNewerCalls++;
+    readNewerAfterSeqs.add(afterSeq);
+    final next = nextNewerWindow;
+    if (next == null) return null;
+    nextNewerWindow = null;
+    return next;
+  }
+
+  @override
+  Future<RemoteConversationWindow?> readOlder({
+    required int beforeSeq,
+    required int throughSeq,
+  }) async {
+    readOlderCalls++;
+    readOlderRequests.add((beforeSeq: beforeSeq, throughSeq: throughSeq));
+    final next = nextOlderWindow;
+    if (next == null) return null;
+    nextOlderWindow = null;
+    return next;
+  }
+
   @override
   Future<void> send(
     String text, {

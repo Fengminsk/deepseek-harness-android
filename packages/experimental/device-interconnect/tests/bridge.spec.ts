@@ -486,6 +486,32 @@ describe('child lifecycle', () => {
     await broken.initialize()
     expect((await broken.state()).problems.some(problem => problem.code === 'config-apply-failed')).toBe(true)
   })
+
+  it('reports and contains the desktop real-time relay problem', async () => {
+    const directory = await dataDirectory()
+    const build = (desktopEvents: () => { code: string; message: string } | undefined) => new Bridge({
+      dataDir: directory,
+      store: new ConfigStore({
+        file: join(directory, 'config.json'),
+        fallback: configuration({ enabled: false }),
+      }),
+      supervisor: supervisor().api,
+      tunnelSupervisor: supervisor({ name: 'tunnel' }).api,
+      controlPlane: vi.fn(() => controlPlane()),
+      env: {},
+      exists: () => true,
+      desktopEvents,
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    })
+    const reported = build(() => ({ code: 'desktop-session-events-disabled', message: '已停用。' }))
+    expect((await reported.state()).problems.map(problem => problem.code))
+      .toContain('desktop-session-events-disabled')
+    const healthy = build(() => undefined)
+    expect((await healthy.state()).problems.some(problem => problem.code.startsWith('desktop-session'))).toBe(false)
+    const failing = build(() => { throw new Error('report failed') })
+    expect((await failing.state()).problems.map(problem => problem.code))
+      .toContain('desktop-session-events-report-failed')
+  })
 })
 
 describe('tunnel lifecycle', () => {

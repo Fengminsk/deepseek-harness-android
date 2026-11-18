@@ -68,6 +68,18 @@ const MAXIMUM_CONTROL_BODY_BYTES = 4 * 1024
 /** 通知中继请求体上限：一批最多 8 条 §8 通知。 */
 const MAXIMUM_NOTIFICATION_RELAY_BODY_BYTES = 32 * 1024
 
+/** 实时会话事件中继请求体上限：一批最多 32 条事件，远小于此值。 */
+const MAXIMUM_SESSION_EVENTS_RELAY_BODY_BYTES = 128 * 1024
+
+/** 一批实时会话事件中继允许的事件总数。 */
+const MAXIMUM_SESSION_EVENTS_PER_RELAY = 32
+
+/** 一批实时会话事件中继允许的状态总数。 */
+const MAXIMUM_SESSION_STATUSES_PER_RELAY = 32
+
+/** 事件中继里 sessionId 的字符上限（与桌面中继端点一致）。 */
+const MAXIMUM_RELAY_SESSION_ID_LENGTH = 512
+
 /** 桌面插件允许中继的页面线通知方法名。 */
 const RELAY_NOTIFICATION_METHODS = new Set(['task.completed', 'interactions.changed', 'session.event'])
 
@@ -197,6 +209,30 @@ export interface RelayNotificationInput {
   readonly params: Record<string, unknown>
 }
 
+/** One desktop session's raw events as relayed through the control API. */
+export interface SessionEventsRelayGroup {
+  /** Desktop session the events belong to. */
+  readonly sessionId: string
+  /** Raw Session events with ascending `seq`. */
+  readonly events: readonly Record<string, unknown>[]
+}
+
+/** One desktop agent status change as relayed through the control API. */
+export interface SessionStatusRelayEntry {
+  /** Desktop session whose agent changed status. */
+  readonly sessionId: string
+  /** Desktop agent status; only these two states exist on the Host. */
+  readonly status: 'running' | 'idle'
+}
+
+/** One validated desktop real-time event batch. */
+export interface SessionEventsRelayInput {
+  /** Raw events grouped by session, in arrival order. */
+  readonly sessions: readonly SessionEventsRelayGroup[]
+  /** Coalesced agent status transitions. */
+  readonly statuses: readonly SessionStatusRelayEntry[]
+}
+
 export interface PairingPageOptions {
   /** HTTP 端口；0 表示交给系统分配（只用于测试与本地调试）。 */
   readonly port: number
@@ -209,6 +245,13 @@ export interface PairingPageOptions {
    * 缺省时 /api/notifications/relay 返回 503，其余控制 API 不受影响。
    */
   readonly onNotificationsRelay?: (notifications: readonly RelayNotificationInput[]) => void
+  /**
+   * Plan-B real-time event relay: the desktop plugin posts raw desktop Session
+   * events and agent statuses, and the host broadcasts them as page-line
+   * notifications without writing any session. Missing means 503 for this
+   * endpoint only; other control API actions stay unchanged.
+   */
+  readonly onSessionEventsRelay?: (input: SessionEventsRelayInput) => void
   /** 时钟来源，默认 `Date.now`；自检可替换。 */
   readonly now?: () => number
 }
@@ -275,7 +318,7 @@ type BodyRead =
 type FormAction = 'pair-reopen' | 'device-revoke'
 
 /** 控制 API 的动作名（日志 `pairing-page-action.fields.action`）。 */
-type ControlAction = 'api-pair' | 'api-device-revoke' | 'api-device-delete' | 'api-notifications-relay'
+type ControlAction = 'api-pair' | 'api-device-revoke' | 'api-device-delete' | 'api-notifications-relay' | 'api-session-events-relay'
 
 /**
  * 本机配对设置页服务。
@@ -289,6 +332,7 @@ export class PairingPageServer {
   private readonly requestedPort: number
   private readonly source: PairingPageSource
   private readonly onNotificationsRelay: PairingPageOptions['onNotificationsRelay']
+  private readonly onSessionEventsRelay: PairingPageOptions['onSessionEventsRelay']
   private readonly log: RemoteLogger
   private readonly now: () => number
   private server: Server | undefined
@@ -305,6 +349,7 @@ export class PairingPageServer {
     this.requestedPort = options.port
     this.source = options.source
     this.onNotificationsRelay = options.onNotificationsRelay
+    this.onSessionEventsRelay = options.onSessionEventsRelay
     this.log = options.log ?? writeRemoteLog
     this.now = options.now ?? Date.now
   }
@@ -518,6 +563,14 @@ export class PairingPageServer {
         if (!this.allowedControlHeader(request, response, method, 'api-notifications-relay')) return
         await this.handleApiNotificationsRelay(request, response)
         return
+      case '/api/session/events/relay':
+        if (method !== 'POST') {
+          this.methodNotAllowed(response, 'POST')
+          return
+        }
+        if (!this.allowedControlHeader(request, response, method, 'api-session-events-relay')) return
+        await this.handleApiSessionEventsRelay(request, response)
+        return
       case '/api/devices/delete':
         if (method !== 'POST') {
           this.methodNotAllowed(response, 'POST')
@@ -615,6 +668,78 @@ export class PairingPageServer {
       fields: { action: 'api-notifications-relay', method: 'POST', result: 'ok', count: accepted.length },
     })
     this.sendJson(response, 200, { accepted: accepted.length })
+  }
+
+  /**
+   * `POST /api/session/events/relay`：接收桌面插件采集的实时会话事件与 agent 状态，
+   * 交给 {@link PairingPageOptions.onSessionEventsRelay} 立即广播给已认证手机。
+   *
+   * 与通知中继的区别：这批数据只用于页面线 `session.event` / `session.status` 广播，
+   * 不写 Session、不产生 `remote.*` 通知。没有已连接手机时宿主安全丢弃；响应只回本批
+   * 接受的条数，不含事件正文。
+   * @param request - 入站请求。
+   * @param response - 待写响应。
+   * @returns 响应写完后兑现。
+   */
+  private async handleApiSessionEventsRelay(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    if (!isJsonContentType(request.headers['content-type'])) {
+      this.logRejected('POST', 'api-session-events-relay', 'content-type')
+      this.sendJsonError(response, 415, 'unsupported-media-type', '只接受 application/json 请求体。')
+      return
+    }
+    const json = await this.readControlBody(
+      request,
+      response,
+      'api-session-events-relay',
+      MAXIMUM_SESSION_EVENTS_RELAY_BODY_BYTES,
+    )
+    if (json === undefined) return
+    const input = parseSessionEventsRelay(json)
+    if (input === undefined) {
+      this.logRejected('POST', 'api-session-events-relay', 'payload')
+      this.sendJsonError(
+        response,
+        400,
+        'invalid-request',
+        `sessions 必须是 1–${String(MAXIMUM_SESSION_EVENTS_PER_RELAY)} 条事件的数组，statuses 最多 `
+          + `${String(MAXIMUM_SESSION_STATUSES_PER_RELAY)} 条 running/idle 状态，且事件必须是 JSON 对象。`,
+      )
+      return
+    }
+    const relay = this.onSessionEventsRelay
+    if (relay === undefined) {
+      this.logRejected('POST', 'api-session-events-relay', 'disabled')
+      this.sendJsonError(response, 503, 'relay-disabled', '宿主没有配置桌面实时会话事件中继。')
+      return
+    }
+    const eventCount = input.sessions.reduce((total, group) => total + group.events.length, 0)
+    try {
+      relay(input)
+    } catch (error) {
+      this.log({
+        level: 'error',
+        event: 'pairing-page-action',
+        message: '实时会话事件中继处理失败。',
+        fields: {
+          action: 'api-session-events-relay', method: 'POST', result: 'failed', error: describeRemoteError(error),
+        },
+      })
+      this.sendJsonError(response, 500, 'session-events-relay-failed', '宿主处理桌面会话事件失败，详情见宿主日志。')
+      return
+    }
+    this.log({
+      level: 'info',
+      event: 'pairing-page-action',
+      message: '桌面实时会话事件已交给宿主页面线广播。',
+      fields: {
+        action: 'api-session-events-relay',
+        method: 'POST',
+        result: 'ok',
+        events: eventCount,
+        statuses: input.statuses.length,
+      },
+    })
+    this.sendJson(response, 200, { accepted: { events: eventCount, statuses: input.statuses.length } })
   }
 
   /**
@@ -836,7 +961,7 @@ export class PairingPageServer {
         response,
         tooLarge ? 413 : 400,
         tooLarge ? 'body-too-large' : 'invalid-request',
-        tooLarge ? `请求体超过 ${MAXIMUM_CONTROL_BODY_BYTES} 字节上限。` : '请求体读取失败。',
+        tooLarge ? `请求体超过 ${String(maximumBytes)} 字节上限。` : '请求体读取失败。',
       )
       return undefined
     }
@@ -1407,6 +1532,62 @@ function deviceIdFromJson(value: unknown): string | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
   const deviceId = (value as Record<string, unknown>).deviceId
   return typeof deviceId === 'string' && DEVICE_ID_PATTERN.test(deviceId) ? deviceId : undefined
+}
+
+/**
+ * 从控制 API 的 JSON 解析一批实时会话事件中继。
+ *
+ * 只做协议形态校验：事件对象本身原样交给广播层（它按 `seq` 去重并做 presentation），
+ * 宿主不解释、不写盘。任何一项不合法都返回 undefined，由调用方回 400。
+ * @param json - 已解析的控制 API 请求体。
+ * @returns 校验后的批次；形态不合法时为 undefined。
+ */
+function parseSessionEventsRelay(json: Record<string, unknown>): SessionEventsRelayInput | undefined {
+  const rawSessions = json['sessions']
+  const rawStatuses = json['statuses']
+  const sessions: SessionEventsRelayGroup[] = []
+  let eventCount = 0
+  if (rawSessions !== undefined) {
+    if (!Array.isArray(rawSessions) || rawSessions.length > MAXIMUM_SESSION_EVENTS_PER_RELAY) return undefined
+    for (const candidate of rawSessions) {
+      if (!isRecord(candidate)) return undefined
+      const sessionId = candidate['sessionId']
+      const events = candidate['events']
+      if (!isSessionIdText(sessionId) || !Array.isArray(events) || events.length === 0) return undefined
+      eventCount += events.length
+      if (eventCount > MAXIMUM_SESSION_EVENTS_PER_RELAY) return undefined
+      const accepted: Record<string, unknown>[] = []
+      for (const event of events) {
+        if (!isRecord(event)) return undefined
+        accepted.push(event)
+      }
+      sessions.push({ sessionId, events: accepted })
+    }
+  }
+  const statuses: SessionStatusRelayEntry[] = []
+  if (rawStatuses !== undefined) {
+    if (!Array.isArray(rawStatuses) || rawStatuses.length > MAXIMUM_SESSION_STATUSES_PER_RELAY) return undefined
+    for (const candidate of rawStatuses) {
+      if (!isRecord(candidate)) return undefined
+      const sessionId = candidate['sessionId']
+      const status = candidate['status']
+      if (!isSessionIdText(sessionId)) return undefined
+      if (status !== 'running' && status !== 'idle') return undefined
+      statuses.push({ sessionId, status })
+    }
+  }
+  if (eventCount === 0 && statuses.length === 0) return undefined
+  return { sessions, statuses }
+}
+
+/** 事件中继的 sessionId 形态：非空、去空白后非空、长度受限。 */
+function isSessionIdText(value: unknown): value is string {
+  return typeof value === 'string' && value.trim() !== '' && value.length <= MAXIMUM_RELAY_SESSION_ID_LENGTH
+}
+
+/** 记录守卫：协议边界上的 JSON 值。 */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 /**

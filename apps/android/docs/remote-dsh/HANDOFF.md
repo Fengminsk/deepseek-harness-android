@@ -1101,6 +1101,14 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
 
 ## 9. 变更日志（append-only，最新在最上面）
 
+### 2026-11-18 17:38 · lead（增量分页 + desktop 实时事件中继 + App 去缓存提示/错误脱敏/统计折叠持久化，已装真机）
+
+- 用户反馈：卡顿/未响应、接收要分段、同步不即时、首页看不到哪些会话在工作、不要「已显示本地缓存」、不要显示 `session "session-..."` 原始错误、统计 bar 收起后要保持。
+- **增量/分页**（task-54）：宿主 `session.readWindow` 新增 `afterSeq`/`maxEvents`/`maxBytes`（缺省不变；afterSeq 返回最早连续较新段，truncated/resetRequired 语义）；App 首屏小页（120 事件/1 MiB）、`readNewer/readOlder`、inferred 轮询改 2.5s 增量（无新事件不 setState）、「加载更早」前插不跳、内存上限 1200 事件。Node 16/16、live source 27/27、会话页 100/100。
+- **desktop 实时事件中继**（task-55）：插件 `desktop-session-events.ts` 订阅 desktop `session/event`、`agent/status`，150ms 批/≤32 条/≤64KiB/积压 512 投递到 remote-host 新 `POST /api/session/events/relay`；remote-host 广播页面线 `session.event`（presentSessionEvent）、`session.status`、`sessions.changed`（500ms 节流），双端 seq 去重；`sessions.list` 合并 desktop `running:true`、`tasks.session` 补 live，首页绿点与进入会话即时显示。插件 297 tests、selfcheck 62/62、typecheck 5/5、build:artifacts 8/8、build:check 2/2。
+- **App UI**（task-56）：删除「已显示本地缓存…」banner（仅瞬时转圈）；新增 `sanitizeRemoteUiMessage`（写句柄冲突→中文，移除 `session-`/原始英文 ID；所有会话页 notice/错误统一脱敏）；统计 bar 受控 + 缓存 `statsExpanded` 按设备+会话持久化（收起后重进保持，首次默认展开）；确认 `session.event` 无节流立即 setState（单帧测试）。
+- 已安装最新 APK（17:02 构建，adb lastUpdate 17:36）到 3B162D00E1K00000；插件重载后 child/control/tunnel 正常、relay available、事件端点存在、桌面稳定。
+- **提交**：见本次 commit。
 ### 2026-11-18 16:35 · lead（方案 B 桌面中继实现并实机启用验证）
 
 - 方案 A 已安全回滚（c4eee2e880）；本轮实现 B：**不加载 App runtime/remote-host 进 desktop**，desktop 插件只做本机回环中继。

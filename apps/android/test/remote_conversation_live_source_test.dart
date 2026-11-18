@@ -172,6 +172,38 @@ _attachSource(
 }
 
 void main() {
+  test('增量读与加载更早使用 afterSeq/beforeSeq 和小页参数', () async {
+    final transport = FakeRemoteTransport();
+    transport.answers['session.readWindow'] = (params) => {
+      'events': [fixture.input((params['afterSeq'] as int?) ?? 20, '增量')],
+      'throughSeq': 30,
+      'firstSeq': (params['afterSeq'] as int?) ?? 20,
+      'hasMore': true,
+    };
+    final events = StreamController<Map<String, dynamic>>.broadcast(sync: true);
+    final harness = _attachSource(transport, events);
+    addTearDown(events.close);
+
+    final newer = await harness.source.readNewer(20);
+    expect(newer?.throughSeq, 30);
+    expect(newer?.hasMore, isTrue);
+    await harness.source.readOlder(beforeSeq: 20, throughSeq: 30);
+
+    final requests = transport.paramsOf('session.readWindow');
+    expect(requests[0], {
+      'sessionId': 's-1',
+      'afterSeq': 20,
+      'maxEvents': RemoteConversationSource.firstPageMaxEvents,
+      'maxBytes': RemoteConversationSource.firstPageMaxBytes,
+    });
+    expect(requests[1], {
+      'sessionId': 's-1',
+      'throughSeq': 30,
+      'beforeSeq': 20,
+      'maxEvents': RemoteConversationSource.firstPageMaxEvents,
+      'maxBytes': RemoteConversationSource.firstPageMaxBytes,
+    });
+  });
   test('首屏读窗口、follow 订阅、发消息带窗口里的模型路由', () async {
     final transport = FakeRemoteTransport();
     transport.answers['session.readWindow'] = (_) =>
@@ -202,6 +234,8 @@ void main() {
 
     expect(transport.paramsOf('session.readWindow').first, {
       'sessionId': 's-1',
+      'maxEvents': RemoteConversationSource.firstPageMaxEvents,
+      'maxBytes': RemoteConversationSource.firstPageMaxBytes,
     });
     final subscribe = transport.paramsOf('api.subscribe').single;
     expect(subscribe['namespace'], remoteConversationFollowNamespace);

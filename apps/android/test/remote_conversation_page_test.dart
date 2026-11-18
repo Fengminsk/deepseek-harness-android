@@ -2680,6 +2680,117 @@ void main() {
     );
   });
 
+  group('文案脱敏、统计条持久化与即时事件', () {
+    test('sanitizeRemoteUiMessage 去掉原始 ID/英文冲突并保留普通文案', () {
+      final writeHandle = sanitizeRemoteUiMessage(
+        'session "session-123e4567-e89b-42d3-a456-426614174000" is already owned by an active write handle',
+      );
+      expect(writeHandle, contains('这个会话正在电脑上使用'));
+      expect(writeHandle, isNot(contains('session-')));
+      expect(writeHandle, isNot(contains('already owned')));
+
+      final bare = sanitizeRemoteUiMessage(
+        '操作失败：session-123e4567-e89b-42d3-a456-426614174000 不存在',
+      );
+      expect(bare, isNot(contains('session-')));
+      expect(bare, contains('不存在'));
+
+      expect(
+        sanitizeRemoteUiMessage('与电脑的连接已断开，正在重连…'),
+        '与电脑的连接已断开，正在重连…',
+      );
+      final long = sanitizeRemoteUiMessage('长' * 400);
+      expect(long.length, lessThanOrEqualTo(241));
+      expect(long, endsWith('…'));
+    });
+
+    testWidgets('写句柄原始错误在页面上显示中文且不出现原始 session ID', (tester) async {
+      final source = FakeRemoteConversationSource(
+        window: _window(conversationEvents()),
+        modelChoice: _flash,
+      )..sendFailure = const RuntimeTransportFailure(
+          code: 'gateway/internal',
+          message:
+              'session "session-123e4567-e89b-42d3-a456-426614174000" is already owned by an active write handle',
+        );
+      await tester.pumpWidget(_host(source));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), '写了一半的草稿');
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('remote-send')));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('这个会话正在电脑上使用'), findsOneWidget);
+      expect(find.textContaining('session-'), findsNothing);
+      expect(find.textContaining('already owned'), findsNothing);
+    });
+
+    testWidgets('统计条收起后重进同会话保持收起，展开同理', (tester) async {
+      final cache = _PageCacheFixture();
+      RemoteSessionInsights insights() =>
+          RemoteSessionInsights.fromProjectionValues(<String, dynamic>{
+            'sessionStats': <String, dynamic>{'turns': 2, 'steps': 3},
+          });
+
+      Future<void> showPage() async {
+        final source = FakeRemoteConversationSource(
+          window: _window(conversationEvents()),
+          insights: insights(),
+        );
+        await tester.pumpWidget(
+          _hostWithCache(
+            source,
+            deviceId: 'pc-1',
+            cache: cache.cache,
+          ),
+        );
+        await _settleCache(tester);
+      }
+
+      await showPage();
+      expect(find.text('轮 2 · 步 3'), findsOneWidget);
+      await tester.drag(
+        find.byKey(RemoteStatsBar.barKey),
+        const Offset(-160, 0),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('remote-stats-ball')), findsOneWidget);
+      await _settleCache(tester);
+
+      await tester.pumpWidget(const SizedBox());
+      await showPage();
+      expect(
+        find.byKey(const ValueKey('remote-stats-ball')),
+        findsOneWidget,
+        reason: '同一设备+会话应保持收起',
+      );
+
+      // 再次展开并重进，状态保持展开。
+      await tester.tap(find.byKey(const ValueKey('remote-stats-ball')));
+      await tester.pumpAndSettle();
+      await _settleCache(tester);
+      await tester.pumpWidget(const SizedBox());
+      await showPage();
+      expect(find.text('轮 2 · 步 3'), findsOneWidget);
+    });
+
+    testWidgets('session.event 到达立即追加显示，不依赖轮询定时器', (tester) async {
+      final source = FakeRemoteConversationSource(
+        window: _window(conversationEvents()),
+      );
+      await tester.pumpWidget(_host(source));
+      await tester.pumpAndSettle();
+
+      source.emit(
+        RemoteConversationEvents(<Map<String, dynamic>>[
+          fixture.input(99, '即时到达的消息'),
+        ]),
+      );
+      // 只推进一帧：没有等待 2.5s 的增量轮询。
+      await tester.pump();
+      expect(find.textContaining('即时到达的消息'), findsOneWidget);
+    });
+  });
   group('会话缓存与后台同步', () {
     testWidgets('缓存命中时立即渲染消息，不显示读取会话空态', (tester) async {
       final cache = _PageCacheFixture(warm: true);
@@ -2697,7 +2808,8 @@ void main() {
       expect(find.textContaining('你好'), findsWidgets);
       expect(
         find.byKey(const ValueKey('remote-conversation-cache-syncing')),
-        findsOneWidget,
+        findsNothing,
+        reason: '缓存命中不显示任何缓存来源 banner',
       );
       expect(cache.reads, greaterThan(0));
     });
@@ -2817,7 +2929,7 @@ FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
       expect(find.textContaining('正在调用工具 wait_agent'), findsOneWidget);
 
       source.window = _window(toolRunEvents(withResult: true, ended: true));
-      await tester.pump(const Duration(milliseconds: 1600));
+      await tester.pump(const Duration(milliseconds: 2700));
       await settle(tester);
       expect(source.reloads, greaterThan(0));
       expect(find.byKey(const ValueKey('remote-work-status')), findsNothing);
@@ -2885,6 +2997,69 @@ FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
       final reloads = source.reloads;
       await tester.pump(const Duration(seconds: 4));
       expect(source.reloads, reloads);
+    });
+  });
+  group('增量接收与分页', () {
+    testWidgets('首屏 hasMore 显示加载更早，点击按 beforeSeq 分页前插', (tester) async {
+      final source = FakeRemoteConversationSource(
+        window: RemoteConversationWindow(
+          events: <Map<String, dynamic>>[fixture.input(10, '当前消息')],
+          throughSeq: 10,
+          firstSeq: 10,
+          hasMore: true,
+        ),
+      );
+      await tester.pumpWidget(_host(source));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.byKey(const ValueKey('remote-load-older')), findsOneWidget);
+
+      source.nextOlderWindow = RemoteConversationWindow(
+        events: <Map<String, dynamic>>[fixture.input(5, '更早消息')],
+        throughSeq: 10,
+        firstSeq: 5,
+        hasMore: false,
+      );
+      await tester.tap(find.byKey(const ValueKey('remote-load-older')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(source.readOlderRequests.single, (beforeSeq: 10, throughSeq: 10));
+      expect(find.textContaining('更早消息'), findsOneWidget);
+      expect(find.textContaining('当前消息'), findsOneWidget);
+      expect(find.byKey(const ValueKey('remote-load-older')), findsNothing);
+    });
+
+    testWidgets('inferred 轮询用 afterSeq 增量合并，去重后停止状态条', (tester) async {
+      final source = FakeRemoteConversationSource(
+        window: _window(toolRunEvents()),
+      );
+      await tester.pumpWidget(_host(source));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.textContaining('正在调用工具 wait_agent'), findsOneWidget);
+      final baseline = source.window!.throughSeq;
+
+      // 增量窗口故意把已见过的 1–3 再带回一次，只应合并 4、5。
+      source.nextNewerWindow = _window(toolRunEvents(withResult: true, ended: true));
+      await tester.pump(const Duration(milliseconds: 2700));
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(source.readNewerAfterSeqs.last, baseline);
+      expect(source.readNewerCalls, greaterThan(0));
+      expect(find.byKey(const ValueKey('remote-work-status')), findsNothing);
+      expect(find.textContaining('回复已中断'), findsNothing);
+    });
+
+    test('历史保留上限裁剪最旧事件', () {
+      final events = <Map<String, dynamic>>[
+        for (var seq = 0; seq < 1300; seq++) <String, dynamic>{'seq': seq},
+      ];
+      final trimmed = trimRemoteConversationEvents(events, 1200);
+      expect(trimmed.length, 1200);
+      expect(trimmed.first['seq'], 100);
+      expect(trimmed.last['seq'], 1299);
+      expect(identical(trimRemoteConversationEvents(events, 2000), events), isTrue);
     });
   });
   group('工作状态与排队消息', () {

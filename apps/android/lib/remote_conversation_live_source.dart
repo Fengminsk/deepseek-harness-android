@@ -651,6 +651,9 @@ class RemoteConversationLiveSource extends RemoteConversationSource {
     try {
       final result = await _request(remoteConversationReadMethod, {
         'sessionId': sessionId,
+        // 首屏只取最近一页；更早历史由「加载更早」按需分页。
+        'maxEvents': RemoteConversationSource.firstPageMaxEvents,
+        'maxBytes': RemoteConversationSource.firstPageMaxBytes,
       });
       if (_disposed || generation != _readGeneration) return;
       _applyWindow(_windowOf(result));
@@ -678,6 +681,34 @@ class RemoteConversationLiveSource extends RemoteConversationSource {
     _modelProjection.reconcile(_events);
     _emitModelSelection();
     _emit(RemoteConversationSnapshot(window));
+  }
+
+  /// 增量读取 `seq > afterSeq` 的较新事件；不触碰时间线，由页面合并去重。
+  @override
+  Future<RemoteConversationWindow?> readNewer(int afterSeq) async {
+    final result = await _request(remoteConversationReadMethod, {
+      'sessionId': sessionId,
+      'afterSeq': afterSeq,
+      'maxEvents': RemoteConversationSource.firstPageMaxEvents,
+      'maxBytes': RemoteConversationSource.firstPageMaxBytes,
+    });
+    return _windowOf(result);
+  }
+
+  /// 读取更早一页；不替换页面当前窗口。
+  @override
+  Future<RemoteConversationWindow?> readOlder({
+    required int beforeSeq,
+    required int throughSeq,
+  }) async {
+    final result = await _request(remoteConversationReadMethod, {
+      'sessionId': sessionId,
+      'throughSeq': throughSeq,
+      'beforeSeq': beforeSeq,
+      'maxEvents': RemoteConversationSource.firstPageMaxEvents,
+      'maxBytes': RemoteConversationSource.firstPageMaxBytes,
+    });
+    return _windowOf(result);
   }
 
   // ------------------------------------------------------------ 待处理交互
@@ -1166,6 +1197,7 @@ class RemoteConversationLiveSource extends RemoteConversationSource {
           ? firstSeq
           : (events.isEmpty ? null : events.first['seq'] as int?),
       hasMore: result['hasMore'] == true,
+      resetRequired: result['resetRequired'] == true,
     );
   }
 

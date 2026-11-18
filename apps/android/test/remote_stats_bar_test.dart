@@ -252,11 +252,16 @@ void main() {
     expect(find.text('步 23'), findsOneWidget);
     expect(find.text('缓存 95%'), findsOneWidget);
     expect(find.text('上下文 2%'), findsOneWidget);
+    final expandedSize = tester.getSize(find.byType(GlassSurface));
+    expect(expandedSize.height, 40);
+    expect(expandedSize.width, 344);
     final bar = find.byKey(RemoteStatsBar.barKey);
     await tester.drag(bar, const Offset(-150, 0));
     await tester.pumpAndSettle();
     final ball = find.byKey(const ValueKey('remote-stats-ball'));
     expect(ball, findsOneWidget);
+    expect(tester.getSize(ball).height, expandedSize.height);
+    expect(tester.getSize(ball).width, expandedSize.height);
     expect(find.text('2%'), findsOneWidget);
     final left = tester.getTopLeft(ball).dx;
 

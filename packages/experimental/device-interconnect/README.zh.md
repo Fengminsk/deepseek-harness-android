@@ -92,6 +92,8 @@ kind: "package-bundle"
 
 远程宿主的控制 API 只绑定 `127.0.0.1`；本插件的桥接路由拒绝任何非回环 `Host` 头与跨站 `Origin`。每个读写还必须带 `x-dsh-device-interconnect: 1` 头——跨站页面要设置它就必须通过本 Host 从不批准的 CORS 预检；响应不返回任何 CORS 头。唯一免该头的是二维码图片路由：`<img>` 必须能加载它，而它不泄露页面本已展示之外的信息。所有响应都带 `Cache-Control: no-store`。接受的本地威胁是常规情况：同一台电脑上的其它进程本就能读取配置文件与子进程日志。
 
+方案 B 桌面中继——文字发送中继、通知中继与实时会话事件中继——都是本插件创建的回环 HTTP 服务：只接受 `127.0.0.1` 对端，每个请求用进程内随机的 32 字节令牌鉴权，描述文件以 `0600` 权限写入，令牌与任何中继正文都不进日志。它投递到的 remote-host 控制端点使用配对页的 `x-dsh-pairing-control` 头——那是 CSRF 防护而非鉴权：同机其它进程可以照抄，属于同一个已接受的本地威胁。事件批次在两端都有上限，子进程不可达时直接丢弃，不缓存也不重放。
+
 SakuraFrp 访问密钥在桥接上是只写的：state 只返回 `tokenConfigured: true`，页面不会再次显示密钥，也不会写进日志。但它仍以明文保存在 `$DSH_HOME/device-interconnect/config.json`，同样适用本地读取威胁；页面留空表示保留已存密钥，清除需要显式的 `clearToken`/`null` 写入。一键创建会用访问密钥以 Bearer 认证调用 `https://api.natfrp.com/v4`，读取账号/节点/隧道并创建或修改一条隧道；密钥不会出现在 URL、日志或错误信息里。点击一键创建后可能从 `https://getfr.sh/d/…` 下载 frpc 到 `<DSH_HOME>/device-interconnect/bin/`，随后执行 `frpc -V` 并要求输出包含 sakura，校验通过才会 spawn；插件激活时不会下载任何东西。该服务不可达时回退到 SakuraFrp 的 Nyatwork CDN 版本镜像，并复用已安装且 `frpc -V` 含 sakura 的二进制。
 
 ### 卸载
@@ -159,6 +161,10 @@ None, as 本设置页只托管独立子进程（远程宿主与可选的 frpc �
 
 当会话由 desktop DSH 进程持有时，remote-host 子进程无法写入。现在桌面插件会启动一个仅绑定回环地址的中继（`127.0.0.1`、随机令牌、描述文件 `<DSH_HOME>/device-interconnect/relay.json`），overlay 通过 `desktopRelayFile` 告诉子进程。子进程自己的 `session.send` 遇到写句柄冲突时，仅把纯文本重试转发给中继；桌面进程用已加载的 `typertGateway`/`connection` 服务执行并返回同形结果。本阶段不中继附件与命令。桌面插件还监听 desktop 任务完成与审批事件，把同样的页面线通知投递到子进程控制 API（`POST /api/notifications/relay`），从而把 §8 通知送到手机，而不在 desktop 进程加载任何 App 运行时。服务缺失、桌面中继停止、令牌错误或超时都保持子进程原有行为；不修改 desktop profile 或 bundle 名单。
 
+同一个桌面观察器还会把桌面进程运行中会话的原始 Session 事件与 agent 状态转发给子进程，手机因此不再等日志读取才看到新消息、工具步骤、推理与运行状态。第一批事件入队 150 ms 后冲刷，单批最多 32 条事件、64 KiB；投递失败的批次直接丢弃、绝不重放，日志里没有消息正文、事件内容或令牌。子进程未运行时观察器不订阅任何事件；连续 20 次投递失败后它自行停用，并在设置页 state 里报告 `desktop-session-events-disabled` 问题，子进程照常运行。
+
+子进程在回环控制 API 上接收这条流（`POST /api/session/events/relay`，要求控制头，单批不超过 128 KiB、32 条事件与 32 条状态），只向已认证的那条手机连接广播页面线通知：`session.event`（用运行时同一个 `presentSessionEvent` 生成）、状态变化的 `session.status`，以及节流的 `sessions.changed` 触发器让首页重读运行标记。没有连接就整批丢弃；同一会话重复或回退的 `seq` 在两端都会丢弃；不写 Session，也不产生 `remote.*` 系统通知——审批与完成已经走通知中继。子进程还会从 `GET /relay/sessions/status` 读取桌面状态，把 `running` 合并进 `sessions.list` 的会话行（并给 `tasks.session` 补一条运行中的 `live` 记录）；读取上限 800 ms，中继不可达时原样返回，因此首页与会话状态条能反映桌面进程的工作，而 `readWindow`/`session.follow` 仍是权威来源。
+
 ## 已知限制与后续工作
 
 - **远程宿主不随本包分发** —— 插件启动的是一个已存在的 checkout，其中必须包含远程宿主 bundle 与挂载它的 profile。官方 DSH 安装可以加载本页面，但在配置路径上没有可用 checkout 或打包运行时之前无法启动宿主。
@@ -170,6 +176,7 @@ None, as 本设置页只托管独立子进程（远程宿主与可选的 frpc �
 - **frpc 只在明确点击时下载** —— 一键创建可能从 `https://getfr.sh/d/…` 下载 SakuraFrp 版 frpc；该服务不可达时回退到 Nyatwork CDN 版本镜像，并复用已通过 `frpc -V` 校验的已安装二进制；输出不含 sakura 时要求手动填写路径。手动模式从不下载。
 - **一键创建依赖第三方 API** —— SakuraFrp API v4、节点 flag 与账号隧道额度都是外部契约。API 或额度变化会让创建以可读原因失败，已保存配置与重试路径保持可用。
 - **隧道推导出的对外地址会覆盖手填值** —— 配置了公网地址时，上面的手填 `publicOrigin` 被忽略，改用 `wss://<节点域名>:<端口>`；清空公网地址后，下次保存或启动会恢复手填值。
+- **实时中继按设计允许丢弃** —— 单条事件或单批超过 64 KiB / 32 条上限、remote-host 子进程未运行、或观察器在连续 20 次投递失败后自行停用时，桌面 Session 事件会被丢弃。手机通过 `readWindow` / `session.follow` 收敛，因此丢批只会让某次更新晚到，不会破坏会话内容。
 
 <a id="dev-note"></a>
 ### 开发备注

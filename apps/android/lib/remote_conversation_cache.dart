@@ -50,6 +50,74 @@ class RemoteConversationCache {
 
   static const int _version = 1;
 
+  /// 保存 [window] 时保留同一会话已存的 UI 偏好（如统计条展开状态）。
+  static const String _statsExpandedKey = 'statsExpanded';
+
+  /// 读取统计条展开偏好；旧缓存/无记录/损坏时返回 null（调用方用默认展开）。
+  Future<bool?> readStatsExpanded(String deviceId, String sessionId) async {
+    if (deviceId.trim().isEmpty || sessionId.trim().isEmpty) return null;
+    final sessions = await _loadSessions(deviceId);
+    for (final item in sessions) {
+      if (item['sessionId'] != sessionId) continue;
+      final value = item[_statsExpandedKey];
+      return value is bool ? value : null;
+    }
+    return null;
+  }
+
+  /// 保存统计条展开偏好；即使该会话还没有事件缓存也能保存。
+  Future<void> saveStatsExpanded({
+    required String deviceId,
+    required String sessionId,
+    required bool expanded,
+  }) async {
+    if (deviceId.trim().isEmpty || sessionId.trim().isEmpty) return;
+    try {
+      final sessions = await _loadSessions(deviceId);
+      final index = sessions.indexWhere((item) => item['sessionId'] == sessionId);
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final base = index >= 0
+          ? Map<String, dynamic>.from(sessions[index])
+          : <String, dynamic>{
+              'sessionId': sessionId,
+              'title': '',
+              'throughSeq': 0,
+              'firstSeq': null,
+              'hasMore': false,
+              'events': <dynamic>[],
+            };
+      base[_statsExpandedKey] = expanded;
+      base['updatedAt'] = now;
+      if (index >= 0) {
+        sessions[index] = base;
+      } else {
+        sessions.insert(0, base);
+      }
+      await _writeSessions(deviceId, sessions);
+    } on Object {
+      // UI 偏好保存失败不影响会话内容；下次进入退回默认展开。
+    }
+  }
+
+  /// 写入一份已裁剪的设备文档；超限时放弃（偏好不是关键路径）。
+  Future<void> _writeSessions(
+    String deviceId,
+    List<Map<String, dynamic>> sessions,
+  ) async {
+    final bounded = _boundSessions(sessions);
+    final payload = jsonEncode(<String, dynamic>{
+      'version': _version,
+      'sessions': bounded,
+    });
+    if (utf8.encode(payload).length > maxDeviceBytes) return;
+    await _channel
+        .invokeMethod<void>('remote.conversation.save', <String, dynamic>{
+          'deviceId': deviceId,
+          'value': payload,
+        })
+        .timeout(const Duration(seconds: 5));
+  }
+
   /// Reads the cached window for [sessionId] on [deviceId].
   ///
   /// Missing, corrupt or unavailable caches return null; callers fall back to the
@@ -83,20 +151,15 @@ class RemoteConversationCache {
       final sessions = await _loadSessions(deviceId);
       final entry = _encodeEntry(deviceId, sessionId, window, title);
       if (entry == null) return;
+      for (final item in sessions) {
+        if (item['sessionId'] != sessionId) continue;
+        final stats = item[_statsExpandedKey];
+        if (stats is bool) entry[_statsExpandedKey] = stats;
+        break;
+      }
       sessions.removeWhere((item) => item['sessionId'] == sessionId);
       sessions.insert(0, entry);
-      final bounded = _boundSessions(sessions);
-      final payload = jsonEncode(<String, dynamic>{
-        'version': _version,
-        'sessions': bounded,
-      });
-      if (utf8.encode(payload).length > maxDeviceBytes) return;
-      await _channel
-          .invokeMethod<void>('remote.conversation.save', <String, dynamic>{
-            'deviceId': deviceId,
-            'value': payload,
-          })
-          .timeout(const Duration(seconds: 5));
+      await _writeSessions(deviceId, sessions);
     } on Object {
       // Cached conversation content is optional; the next snapshot still shows.
     }

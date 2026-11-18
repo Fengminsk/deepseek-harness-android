@@ -20,6 +20,7 @@ import {
 import { createControlPlane } from './control-plane.ts'
 import { DesktopNotifications, type RelayNotification } from './desktop-notifications.ts'
 import { createDesktopRelayExecutor, DesktopRelay } from './desktop-relay.ts'
+import { DesktopSessionEvents, type DesktopSessionEventsBatch } from './desktop-session-events.ts'
 import { createApiHandler } from './routes.ts'
 import { ChildSupervisor } from './supervisor.ts'
 
@@ -81,6 +82,32 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
     post: postRelayNotifications,
     logger,
   })
+  /**
+   * Forward one desktop session event batch to the remote-host control API.
+   * A disabled pairing page or a stopped child only fails this post; the
+   * observer then drops the batch instead of replaying it.
+   * @param batch - raw events grouped by session plus coalesced agent statuses.
+   * @returns completion once the control API answered with success.
+   */
+  const postSessionEvents = async (batch: DesktopSessionEventsBatch): Promise<void> => {
+    const current = store.current()
+    if (!current.host.pagesEnabled) throw new Error('本机配对页已关闭，桌面会话事件中继没有投递端点。')
+    if (!supervisor.status().running) throw new Error('远程宿主子进程未运行，桌面会话事件中继没有投递端点。')
+    const response = await fetch(`http://127.0.0.1:${String(current.host.pagesPort)}/api/session/events/relay`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-dsh-pairing-control': '1' },
+      body: JSON.stringify(batch),
+      signal: AbortSignal.timeout(3_000),
+    })
+    if (!response.ok) throw new Error(`桌面会话事件中继返回 HTTP ${String(response.status)}`)
+  }
+  const desktopSessionEvents = new DesktopSessionEvents({
+    ctx,
+    post: postSessionEvents,
+    logger,
+    // The child owns the phone connections; nothing to relay while it is off.
+    available: () => store.current().host.pagesEnabled && supervisor.status().running,
+  })
   const bridge = new Bridge({
     dataDir,
     store,
@@ -88,6 +115,7 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
     tunnelSupervisor,
     controlPlane: baseUrl => createControlPlane({ baseUrl }),
     relay: () => relay.status(),
+    desktopEvents: () => desktopSessionEvents.problem(),
     logger,
   })
   // Activation order is not guaranteed: on a cold profile boot the web server
@@ -108,11 +136,14 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
     return () => bridge.dispose()
   }, 'device-interconnect: child supervisors')
   // The relay is additive: it starts even while the child is disabled and stops
-  // before the bridge releases the children on unload.
+  // before the bridge releases the children on unload. The session event observer
+  // subscribes only while the child runs, so a disabled remote host costs nothing.
   ctx.effect(() => {
     void relay.start()
     desktopNotifications.start()
+    desktopSessionEvents.start()
     return async () => {
+      desktopSessionEvents.stop()
       desktopNotifications.stop()
       await relay.stop()
     }

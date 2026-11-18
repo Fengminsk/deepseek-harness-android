@@ -39,8 +39,8 @@
   en: cae6a95f4c02b1bd
   zh: 8300be572ab7f126
 /deepseek-ai-dsh-device-interconnect/use-this-package/security-model:
-  en: 6539183e34c62d1e
-  zh: 1fba235fd190afe5
+  en: 305a2b032c7afe4c
+  zh: 9f60bb630180506a
 /deepseek-ai-dsh-device-interconnect/use-this-package/uninstall:
   en: 50b2e818821c31a7
   zh: d06f150bbd7eae73
@@ -68,9 +68,12 @@
 /deepseek-ai-dsh-device-interconnect/model-experience/kv-cache-effect:
   en: f3a70883399ebc2f
   zh: e64cd073ace5cfa4
+/deepseek-ai-dsh-device-interconnect/model-experience/desktop-relay-plan-b-experimental:
+  en: dc967b10e59c526e
+  zh: b715bc586dd83bf1
 /deepseek-ai-dsh-device-interconnect/known-limitations-and-deferred-work:
-  en: 3536e079878c8975
-  zh: 1b41ffefc7a06373
+  en: a94cb71210d33365
+  zh: b87f44f1de57fc08
 /deepseek-ai-dsh-device-interconnect/known-limitations-and-deferred-work/dev-note:
-  en: 279d01435256cd2a
+  en: 763c2dcf14efec22
   zh: 7c2ad2f568099e7f

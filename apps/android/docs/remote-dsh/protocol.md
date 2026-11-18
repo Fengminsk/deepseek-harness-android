@@ -522,6 +522,24 @@ App 收到自己不认识的 `native.*` 请求，必须回：
 
 ---
 
+### 7.4 `session.readWindow` 的增量与分页参数
+
+`session.readWindow` 的参数保持向后兼容：不传新参数时行为与旧版一致（最新一窗，宿主内部默认上限）。
+
+| 参数 | 类型 | 语义 |
+| --- | --- | --- |
+| `sessionId` | string | 必填 |
+| `throughSeq` / `beforeSeq` | int | 可选；读取严格早于 `throughSeq`、从 `beforeSeq`（不含）开始的更早一页。`beforeSeq` 必须同时给 `throughSeq` |
+| `afterSeq` | int | 可选；只返回 `seq > afterSeq` 的较新事件。与 `beforeSeq`/`throughSeq` 互斥 |
+| `maxEvents` | int | 可选，1–500；单次响应的事件条数上限。App 首屏/增量默认传 120 |
+| `maxBytes` | int | 可选，1–4194304；单次响应的事件字节上限。App 首屏/增量默认传 1 MiB |
+
+响应：`{ events, throughSeq, firstSeq, hasMore, truncated?, resetRequired? }`。
+
+- `afterSeq` 语义：返回**从 `afterSeq` 之后开始的最早一段连续较新事件**，按 `seq` 升序；`throughSeq` 为本次观察到的日志切点，`firstSeq` 为返回首条的 `seq`（空为 `null`）。`hasMore` 仍表示「窗口之前还有更早历史」（用于「加载更早」）。
+- 若较新事件超过 `maxEvents`/`maxBytes`，只返回最早一段并置 `truncated: true`；客户端可继续用新的 `afterSeq` 拉下一段，不丢事件。
+- 若宿主无法把 `afterSeq` 与当前日志衔接（增量缺口超过内部扫描上限），返回空 `events` 且 `resetRequired: true`；客户端应改用整窗首屏重读。
+- 更早分页同样受 `maxEvents`/`maxBytes` 限制；`beforeSeq` 必须让窗口向前推进，否则宿主报 `SESSION_HISTORY_INVALID_PAGE`。
 ## 8. 远程推送通知
 
 ### 8.1 通则

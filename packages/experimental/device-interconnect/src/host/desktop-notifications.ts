@@ -14,6 +14,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import { onDesktopEvent } from './desktop-events.ts'
 
 /** One page-line notification posted to the remote host's control API. */
 export interface RelayNotification {
@@ -254,19 +255,6 @@ export class DesktopNotifications {
       error instanceof Error ? error.message : String(error),
     )
   }
-}
-
-/** Subscribe to a DSH Host event; the plugin package does not own the merged event map. */
-function onDesktopEvent(
-  ctx: Context,
-  event: string,
-  listener: (...args: readonly unknown[]) => void,
-): () => void {
-  const on = ctx.on as unknown as (
-    name: string,
-    callback: (...args: never[]) => void,
-  ) => () => void
-  return on(event, listener as (...args: never[]) => void)
 }
 
 /** Projected turn row read by completion delivery. */

@@ -199,3 +199,94 @@ test('malformed projection and stalled older page fail without an invented navig
     await assert.rejects(history.readWindow({ sessionId: 's', beforeSeq: 10 }), TypeError)
   } finally { history.close() }
 })
+
+/** Fake controller for readWindow incremental tests; `pageSize` simulates the controller page cap. */
+function windowController(total, { pageSize = 200 } = {}) {
+  const events = Array.from({ length: total }, (_, seq) => ({ seq, type: 'session/title', data: { title: `e-${seq}` } }))
+  return {
+    async projections() { return { kind: 'sequenced', asOfSeq: events.length - 1, values: {} } },
+    async page({ throughSeq, beforeSeq, maxMessages }) {
+      const end = Math.min((throughSeq ?? events.length - 1) + 1, beforeSeq ?? (throughSeq ?? events.length - 1) + 1)
+      const start = Math.max(0, end - pageSize)
+      return { records: events.slice(start, end).map(event => ({ type: 'event', event })), hasMore: start > 0 }
+    },
+    events,
+  }
+}
+
+test('readWindow afterSeq returns only newer events, ascending and bounded', async () => {
+  const history = new AppSessionHistory(windowController(250))
+  try {
+    const page = await history.readWindow({ sessionId: 's', afterSeq: 100 })
+    assert.equal(page.firstSeq, 101)
+    assert.ok(page.events.every(event => event.seq > 100))
+    assert.deepEqual(page.events.map(event => event.seq), Array.from({ length: page.events.length }, (_, index) => 101 + index))
+    assert.equal(page.throughSeq, 249)
+    assert.equal(page.hasMore, true, 'older history before the first page still exists')
+    assert.equal(page.truncated, true, 'default incremental budget truncates newer events')
+  } finally { history.close() }
+})
+
+test('readWindow afterSeq honours maxEvents and maxBytes', async () => {
+  const history = new AppSessionHistory(windowController(300))
+  try {
+    const small = await history.readWindow({ sessionId: 's', afterSeq: 10, maxEvents: 5 })
+    assert.deepEqual(small.events.map(event => event.seq), [11, 12, 13, 14, 15])
+    assert.equal(small.truncated, true)
+    const byteBound = await history.readWindow({ sessionId: 's', afterSeq: 10, maxBytes: 300 })
+    assert.ok(byteBound.events.length > 0 && byteBound.events.length < 120)
+    assert.equal(byteBound.truncated, true)
+    await assert.rejects(history.readWindow({ sessionId: 's', afterSeq: 10, maxBytes: 1 }),
+      error => error.code === 'SESSION_HISTORY_EVENT_TOO_LARGE')
+  } finally { history.close() }
+})
+
+test('readWindow afterSeq bridges a large gap across multiple pages without dropping events', async () => {
+  const history = new AppSessionHistory(windowController(500, { pageSize: 50 }))
+  try {
+    const page = await history.readWindow({ sessionId: 's', afterSeq: 10, maxEvents: 200 })
+    assert.equal(page.firstSeq, 11)
+    assert.deepEqual(page.events.map(event => event.seq), Array.from({ length: 200 }, (_, index) => 11 + index))
+    assert.equal(page.truncated, true)
+  } finally { history.close() }
+})
+
+test('readWindow afterSeq reports resetRequired when the gap cannot be bridged', async () => {
+  const history = new AppSessionHistory(windowController(5_000, { pageSize: 50 }))
+  try {
+    const page = await history.readWindow({ sessionId: 's', afterSeq: 0, maxEvents: 500 })
+    assert.deepEqual(page.events, [])
+    assert.equal(page.resetRequired, true)
+    assert.equal(page.hasMore, true)
+  } finally { history.close() }
+})
+
+test('readWindow afterSeq returns empty for a caught-up cursor and rejects invalid combinations', async () => {
+  const history = new AppSessionHistory(windowController(10))
+  try {
+    const caughtUp = await history.readWindow({ sessionId: 's', afterSeq: 9 })
+    assert.deepEqual(caughtUp.events, [])
+    assert.equal(caughtUp.firstSeq, null)
+    assert.equal(caughtUp.throughSeq, 9)
+    await assert.rejects(history.readWindow({ sessionId: 's', afterSeq: 1, beforeSeq: 5, throughSeq: 9 }), TypeError)
+    await assert.rejects(history.readWindow({ sessionId: 's', afterSeq: 1, throughSeq: 9 }), TypeError)
+    await assert.rejects(history.readWindow({ sessionId: 's', afterSeq: -1 }), TypeError)
+    await assert.rejects(history.readWindow({ sessionId: 's', afterSeq: 1.5 }), TypeError)
+    await assert.rejects(history.readWindow({ sessionId: 's', afterSeq: 1, maxEvents: 0 }), TypeError)
+    await assert.rejects(history.readWindow({ sessionId: 's', afterSeq: 1, maxEvents: 501 }), TypeError)
+    await assert.rejects(history.readWindow({ sessionId: 's', afterSeq: 1, maxBytes: 0 }), TypeError)
+  } finally { history.close() }
+})
+
+test('readWindow older pages honour explicit maxEvents and keep a backward cursor', async () => {
+  const history = new AppSessionHistory(windowController(400))
+  try {
+    const latest = await history.readWindow({ sessionId: 's' })
+    const older = await history.readWindow({
+      sessionId: 's', throughSeq: latest.throughSeq, beforeSeq: latest.firstSeq, maxEvents: 3,
+    })
+    assert.equal(older.events.length, 3)
+    assert.equal(older.firstSeq, latest.firstSeq - 3)
+    assert.equal(older.hasMore, true)
+  } finally { history.close() }
+})

@@ -10,6 +10,11 @@ const WINDOW_MESSAGES = 80
 const WINDOW_MAX_MESSAGES = 200
 const WINDOW_MAX_EVENTS = 500
 const WINDOW_MAX_BYTES = 4 * 1024 * 1024
+/** Incremental (afterSeq) defaults: one small newest chunk per poll. */
+const INCREMENTAL_MAX_EVENTS = 120
+const INCREMENTAL_MAX_BYTES = 1024 * 1024
+/** Upper bound of older pages scanned to bridge a large afterSeq gap. */
+const MAX_INCREMENTAL_SCAN_PAGES = 20
 
 function validateAddress(params) {
   if (typeof params?.sessionId !== 'string' || !params.sessionId.trim()) {
@@ -46,7 +51,7 @@ function validateWindowAddress(params) {
   if (typeof params?.sessionId !== 'string' || !params.sessionId.trim()) {
     throw new TypeError('sessionId must be a non-empty string')
   }
-  for (const field of ['beforeSeq', 'throughSeq']) {
+  for (const field of ['beforeSeq', 'throughSeq', 'afterSeq']) {
     const value = params[field]
     if (value !== undefined && (!Number.isSafeInteger(value) || value < 0 || Object.is(value, -0))) {
       throw new TypeError(`${field} must be a non-negative safe integer`)
@@ -55,7 +60,36 @@ function validateWindowAddress(params) {
   if (params.beforeSeq !== undefined && params.throughSeq === undefined) {
     throw new TypeError('throughSeq is required when reading an older window')
   }
-  return params
+  if (params.afterSeq !== undefined && params.beforeSeq !== undefined) {
+    throw new TypeError('afterSeq and beforeSeq are mutually exclusive')
+  }
+  if (params.afterSeq !== undefined && params.throughSeq !== undefined) {
+    throw new TypeError('afterSeq reads to the observed log end; omit throughSeq')
+  }
+  const limits = windowLimits(params, params.afterSeq !== undefined)
+  return { ...params, ...limits }
+}
+
+/**
+ * Resolve optional per-request window limits.
+ * @param params - request parameters.
+ * @param incremental - whether this is an afterSeq read (smaller defaults).
+ * @returns validated maxEvents/maxBytes.
+ */
+function windowLimits(params, incremental) {
+  const maxEvents = params.maxEvents === undefined
+    ? (incremental ? INCREMENTAL_MAX_EVENTS : WINDOW_MAX_EVENTS)
+    : params.maxEvents
+  const maxBytes = params.maxBytes === undefined
+    ? (incremental ? INCREMENTAL_MAX_BYTES : WINDOW_MAX_BYTES)
+    : params.maxBytes
+  if (!Number.isSafeInteger(maxEvents) || maxEvents < 1 || maxEvents > WINDOW_MAX_EVENTS) {
+    throw new TypeError(`maxEvents must be an integer in 1..${WINDOW_MAX_EVENTS}`)
+  }
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > WINDOW_MAX_BYTES) {
+    throw new TypeError(`maxBytes must be an integer in 1..${WINDOW_MAX_BYTES}`)
+  }
+  return { maxEvents, maxBytes }
 }
 
 function outlineFrom(snapshot) {
@@ -78,7 +112,7 @@ function outlineFrom(snapshot) {
   return turns
 }
 
-function boundedWindow(records, hasMore) {
+function boundedWindow(records, hasMore, maxEvents = WINDOW_MAX_EVENTS, maxBytes = WINDOW_MAX_BYTES) {
   const events = []
   let bytes = 0
   let nextSeq = Number.MAX_SAFE_INTEGER
@@ -89,10 +123,10 @@ function boundedWindow(records, hasMore) {
     }
     const presented = presentSessionEvent(event)
     const size = Buffer.byteLength(JSON.stringify(presented), 'utf8')
-    if (size > WINDOW_MAX_BYTES) {
+    if (size > maxBytes) {
       throw historyError('SESSION_HISTORY_EVENT_TOO_LARGE', 'One Session event exceeds the reading window budget.')
     }
-    if (events.length >= WINDOW_MAX_EVENTS || bytes + size > WINDOW_MAX_BYTES) break
+    if (events.length >= maxEvents || bytes + size > maxBytes) break
     events.push(presented)
     bytes += size
     nextSeq = event.seq
@@ -257,8 +291,11 @@ export class AppSessionHistory {
 
   /** A bounded native window from the original cold-safe, Turn-aware page service. */
   async readWindow(params) {
-    const { sessionId, beforeSeq } = validateWindowAddress(params)
+    const { sessionId, beforeSeq, afterSeq, maxEvents, maxBytes } = validateWindowAddress(params)
     if (this.#closed) throw historyError('SESSION_HISTORY_UNAVAILABLE', 'Session history reader has closed.')
+    if (afterSeq !== undefined) {
+      return this.readNewerWindow({ sessionId, afterSeq, maxEvents, maxBytes })
+    }
     let throughSeq = params.throughSeq
     let turns
     if (throughSeq === undefined) {
@@ -281,13 +318,90 @@ export class AppSessionHistory {
       turnWindow: { minMessages: WINDOW_MESSAGES, minTurns: 2 },
     }, new AbortController().signal)
     if (this.#closed) throw historyError('SESSION_HISTORY_UNAVAILABLE', 'Session history reader has closed.')
-    const bounded = boundedWindow(page.records, page.hasMore)
+    const bounded = boundedWindow(page.records, page.hasMore, maxEvents, maxBytes)
     if (beforeSeq !== undefined && bounded.firstSeq !== null && bounded.firstSeq >= beforeSeq) {
       throw historyError('SESSION_HISTORY_INVALID_PAGE', 'An older Session page did not move backward.')
     }
     return { ...bounded, throughSeq, ...(turns === undefined ? {} : { turns }) }
   }
 
+
+  /**
+   * Read the contiguous newer events after `afterSeq` without re-reading the
+   * window the App already has. Newest page first, then older pages only when
+   * the newest page does not reach `afterSeq`; a gap that cannot be bridged is
+   * reported as `resetRequired` so the App falls back to a full first page.
+   * @param params - validated session, afterSeq and per-request limits.
+   * @returns `{events, throughSeq, firstSeq, hasMore, truncated?, resetRequired?}`.
+   */
+  async readNewerWindow({ sessionId, afterSeq, maxEvents, maxBytes }) {
+    if (this.#closed) throw historyError('SESSION_HISTORY_UNAVAILABLE', 'Session history reader has closed.')
+    const signal = new AbortController().signal
+    const snapshot = await this.controller.projections({ sessionId: SessionId(sessionId) }, signal)
+    if (snapshot?.kind !== 'sequenced') {
+      throw historyError('SESSION_HISTORY_PROJECTION_UNAVAILABLE', 'An exact Session history cursor is unavailable.')
+    }
+    const throughSeq = snapshot.asOfSeq
+    if (!Number.isSafeInteger(throughSeq) || throughSeq < -1) {
+      throw historyError('SESSION_HISTORY_INVALID_CURSOR', 'The Session projection cursor is invalid.')
+    }
+    if (this.#closed) throw historyError('SESSION_HISTORY_UNAVAILABLE', 'Session history reader has closed.')
+    const address = { kind: 'session', sessionId: SessionId(sessionId) }
+    const turnWindow = { minMessages: WINDOW_MESSAGES, minTurns: 2 }
+    let page = await this.controller.page({
+      address, throughSeq, maxMessages: WINDOW_MAX_MESSAGES, turnWindow,
+    }, signal)
+    let records = page?.records ?? []
+    let moreOlder = page?.hasMore === true
+    let scans = 0
+    let first = records[0]?.event?.seq
+    while (first !== undefined && first > afterSeq + 1 && moreOlder && scans < MAX_INCREMENTAL_SCAN_PAGES) {
+      const older = await this.controller.page({
+        address, throughSeq, beforeSeq: first, maxMessages: WINDOW_MAX_MESSAGES, turnWindow,
+      }, signal)
+      const olderRecords = older?.records ?? []
+      if (olderRecords.length === 0) break
+      const olderFirst = olderRecords[0].event.seq
+      if (olderFirst >= first) {
+        throw historyError('SESSION_HISTORY_INVALID_PAGE', 'An older Session page did not move backward.')
+      }
+      records = [...olderRecords, ...records]
+      moreOlder = older.hasMore === true
+      first = olderFirst
+      scans += 1
+    }
+    if (first !== undefined && first > afterSeq + 1 && moreOlder) {
+      return { events: [], throughSeq, firstSeq: null, hasMore: true, resetRequired: true }
+    }
+    const events = []
+    let bytes = 0
+    let truncated = false
+    for (const record of records) {
+      const event = record?.event
+      if (!event || !Number.isSafeInteger(event.seq) || event.seq < 0) {
+        throw historyError('SESSION_HISTORY_INVALID_PAGE', 'The original Session page contains an invalid event.')
+      }
+      if (event.seq <= afterSeq) continue
+      const presented = presentSessionEvent(event)
+      const size = Buffer.byteLength(JSON.stringify(presented), 'utf8')
+      if (size > maxBytes) {
+        throw historyError('SESSION_HISTORY_EVENT_TOO_LARGE', 'One Session event exceeds the reading window budget.')
+      }
+      if (events.length >= maxEvents || bytes + size > maxBytes) {
+        truncated = true
+        break
+      }
+      events.push(presented)
+      bytes += size
+    }
+    return {
+      events,
+      throughSeq,
+      firstSeq: events[0]?.seq ?? null,
+      hasMore: moreOlder,
+      ...(truncated ? { truncated: true } : {}),
+    }
+  }
   release(params) {
     const { sessionId, snapshot } = validateAddress(params)
     if (snapshot === undefined) throw new TypeError('snapshot is required')

@@ -131,4 +131,56 @@ void main() {
       RemoteConversationCache.maxDeviceBytes,
     ));
   });
+  test('统计条展开偏好按设备+会话持久化，并在事件写回后保留', () async {
+    const cache = RemoteConversationCache(channel: channel);
+    await cache.saveStatsExpanded(
+      deviceId: 'pc-1',
+      sessionId: 's-1',
+      expanded: false,
+    );
+    expect(await cache.readStatsExpanded('pc-1', 's-1'), isFalse);
+    expect(await cache.readStatsExpanded('pc-1', 's-2'), isNull);
+    expect(await cache.readStatsExpanded('pc-2', 's-1'), isNull);
+
+    await cache.save(
+      deviceId: 'pc-1',
+      sessionId: 's-1',
+      window: window(<int>[1, 2]),
+      title: '保留偏好',
+    );
+    expect(await cache.readStatsExpanded('pc-1', 's-1'), isFalse);
+    expect(await cache.read('pc-1', 's-1'), isNotNull);
+
+    await cache.saveStatsExpanded(
+      deviceId: 'pc-1',
+      sessionId: 's-1',
+      expanded: true,
+    );
+    expect(await cache.readStatsExpanded('pc-1', 's-1'), isTrue);
+  });
+
+  test('旧缓存文档没有统计偏好时返回 null（默认展开）', () async {
+    const cache = RemoteConversationCache(channel: channel);
+    stored['pc-1'] = jsonEncode(<String, dynamic>{
+      'version': 1,
+      'sessions': <Map<String, dynamic>>[
+        <String, dynamic>{
+          'sessionId': 's-1',
+          'title': '旧会话',
+          'throughSeq': 1,
+          'firstSeq': 1,
+          'hasMore': false,
+          'updatedAt': 1,
+          'events': <dynamic>[],
+        },
+      ],
+    });
+    expect(await cache.readStatsExpanded('pc-1', 's-1'), isNull);
+    await cache.saveStatsExpanded(
+      deviceId: 'pc-1',
+      sessionId: 's-1',
+      expanded: false,
+    );
+    expect(await cache.readStatsExpanded('pc-1', 's-1'), isFalse);
+  });
 }

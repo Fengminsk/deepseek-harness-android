@@ -34,16 +34,34 @@ const double _statsLineInset = 8;
 /// 一行读数的测量余量：字形宽度相加与 Row 排版的取整误差。
 const double _statsFitMargin = 4;
 
+/// 展开胶囊与收纳圆球共用高度。
+const double _statsDockHeight = 40;
+
+/// 长胶囊相对输入框两侧各退让的宽度。
+const double _statsSideInset = 8;
+
 /// 远程会话的底部统计条：一行紧凑读数，点按打开详情弹层。
 class RemoteStatsBar extends StatefulWidget {
   /// 创建统计条。
-  const RemoteStatsBar({super.key, required this.insights, this.onTap});
+  const RemoteStatsBar({
+    super.key,
+    required this.insights,
+    this.onTap,
+    this.expanded = true,
+    this.onExpandedChanged,
+  });
 
   /// 当前会话洞察读数；没有可展示的读数时整条不渲染。
   final RemoteSessionInsights insights;
 
   /// 点按回调（打开详情弹层）；null 时只展示不可点。
   final VoidCallback? onTap;
+
+  /// 当前是否展开成长胶囊；false 时显示为收纳圆球。
+  final bool expanded;
+
+  /// 展开/收起变化回调；页面据此按设备+会话持久化偏好。
+  final ValueChanged<bool>? onExpandedChanged;
 
   /// 统计条根节点的测试与无障碍标识。
   static const Key barKey = ValueKey('remote-stats-bar');
@@ -68,8 +86,22 @@ class RemoteStatsBar extends StatefulWidget {
 enum _DockSide { expanded, left, right }
 
 class _RemoteStatsBarState extends State<RemoteStatsBar> {
-  _DockSide _side = _DockSide.expanded;
+  late _DockSide _side = widget.expanded ? _DockSide.expanded : _DockSide.left;
   double _dragDistance = 0;
+
+  @override
+  void didUpdateWidget(RemoteStatsBar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.expanded == widget.expanded) return;
+    _side = widget.expanded ? _DockSide.expanded : _DockSide.left;
+  }
+
+  /// 切换到紧凑圆球并上报；重复收起不重复写偏好。
+  void _collapse(_DockSide side) {
+    if (_side == side) return;
+    setState(() => _side = side);
+    if (side != _DockSide.expanded) widget.onExpandedChanged?.call(false);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -102,9 +134,7 @@ class _RemoteStatsBarState extends State<RemoteStatsBar> {
                 ? details.primaryVelocity!
                 : 0;
             if (movement == 0) return;
-            setState(
-              () => _side = movement < 0 ? _DockSide.left : _DockSide.right,
-            );
+            _collapse(movement < 0 ? _DockSide.left : _DockSide.right);
           },
           child: LayoutBuilder(
             builder: (context, constraints) => AnimatedAlign(
@@ -139,7 +169,9 @@ class _RemoteStatsBarState extends State<RemoteStatsBar> {
     List<String> segments,
     TextStyle style,
   ) {
-    final width = available.clamp(0.0, 480.0).toDouble();
+    final width = (available - _statsSideInset * 2)
+        .clamp(0.0, 480.0)
+        .toDouble();
     final fits =
         _lineWidth(context, segments, style) +
             _statsLineInset * 2 +
@@ -153,6 +185,7 @@ class _RemoteStatsBarState extends State<RemoteStatsBar> {
         width;
     return SizedBox(
       width: width,
+      height: _statsDockHeight,
       child: GlassSurface(
         radius: AppCorner.full,
         child: Material(
@@ -161,10 +194,7 @@ class _RemoteStatsBarState extends State<RemoteStatsBar> {
             customBorder: AppShape.full,
             onTap: widget.onTap,
             child: Padding(
-              padding: const EdgeInsets.symmetric(
-                horizontal: _statsLineInset,
-                vertical: 10,
-              ),
+              padding: const EdgeInsets.symmetric(horizontal: _statsLineInset),
               child: Center(
                 child: shortFits
                     ? _line(shortSegments, style)
@@ -179,7 +209,7 @@ class _RemoteStatsBarState extends State<RemoteStatsBar> {
 
   Widget _ball(BuildContext context, int? percent, TextStyle style) =>
       SizedBox.square(
-        dimension: 52,
+        dimension: _statsDockHeight,
         child: GlassSurface(
           key: const ValueKey('remote-stats-ball'),
           radius: AppCorner.full,
@@ -187,7 +217,10 @@ class _RemoteStatsBarState extends State<RemoteStatsBar> {
             type: MaterialType.transparency,
             child: InkWell(
               customBorder: AppShape.full,
-              onTap: () => setState(() => _side = _DockSide.expanded),
+              onTap: () {
+                setState(() => _side = _DockSide.expanded);
+                widget.onExpandedChanged?.call(true);
+              },
               child: Center(
                 child: Text(
                   percent == null ? '—' : '$percent%',

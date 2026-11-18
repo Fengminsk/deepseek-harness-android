@@ -129,6 +129,44 @@ const double _followThreshold = 120;
 /// 指令提示里回显输入的字符上限；超出截断，避免输入区被撑成多行。
 const int _commandPreviewLength = 48;
 
+/// 把宿主/传输原始错误转成用户可读中文，并移除 `session-...` 等内部标识。
+///
+/// 协议原始英文（如写句柄冲突）映射为固定中文；其余消息保留原文但截断。
+/// debug 日志仍由调用方保留原始 message，本函数只用于可见文案。
+String sanitizeRemoteUiMessage(String message, {int maxLength = 240}) {
+  final raw = message.trim();
+  if (raw.isEmpty) return '操作失败，请稍后重试。';
+  final lower = raw.toLowerCase();
+  if (lower.contains('already owned by an active write handle') ||
+      lower.contains('session/write-conflict') ||
+      lower.contains('session/already-owned') ||
+      lower.contains('write handle')) {
+    return '这个会话正在电脑上使用，手机暂时不能发送；请在电脑上结束/关闭该会话后重试。';
+  }
+  if (lower.contains('unsupported-method')) {
+    return '这台电脑暂不支持该操作。';
+  }
+  var text = raw
+      .replaceAll(
+        RegExp(r'''session\s*["'][^"']*["']''', caseSensitive: false),
+        '',
+      )
+      .replaceAll(RegExp(r'session[-_][0-9a-fA-F-]{8,}', caseSensitive: false), '')
+      .replaceAll(RegExp(r'\s{2,}'), ' ')
+      .replaceFirst(RegExp(r'^[\s:：,，;；.\-]+'), '')
+      .trim();
+  if (text.isEmpty) return '操作失败，请稍后重试。';
+  if (text.length > maxLength) text = '${text.substring(0, maxLength)}…';
+  return text;
+}
+
+/// 有界时间线：只保留最近 [max] 条事件，返回裁剪后的列表（最旧事件被丢弃）。
+///
+/// 用于把长会话的内存占用固定住；页面在裁剪后仍保留「加载更早」入口。
+List<Json> trimRemoteConversationEvents(List<Json> events, int max) {
+  if (events.length <= max) return events;
+  return events.sublist(events.length - max);
+}
 /// 电脑端 DSH 持有会话写句柄时宿主返回的错误文本。
 ///
 /// 根因是 desktop DSH 与 remote-host 两个进程共用真实 DSH_HOME，手机端不抢锁；
@@ -453,6 +491,13 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
   Timer? _inferredRefreshTimer;
   bool _inferredRefreshInFlight = false;
 
+  /// 是否还有更早历史可加载（窗口 `hasMore`），以及当前是否在加载。
+  bool _hasOlder = false;
+  bool _loadingOlder = false;
+
+  /// 时间线保留的事件上限；超出后丢弃最旧事件，仍可通过「加载更早」重新分页。
+  static const int _maxRetainedEvents = 1200;
+
   bool _loading = true;
   bool _sending = false;
   bool _draftEmpty = true;
@@ -468,11 +513,12 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
   /// 缓存 key 里的电脑标识；测试或只读数据源可能没有，此时不做本地缓存。
   String? _cacheDeviceId;
 
-  /// 本地缓存读取尚未完成：先显示紧凑的「正在读取本地缓存…」，不要闪大空态。
+  /// 本地缓存读取尚未完成：只显示一个紧凑转圈，不渲染任何缓存来源说明。
   bool _cacheRestorePending = false;
 
-  /// 当前时间线来自本地缓存、实时快照还没到；用于显示「同步中」细提示。
-  bool _showingCachedWindow = false;
+  /// 统计条展开状态：默认展开；异步恢复用户偏好前先用默认值。
+  bool _statsExpanded = true;
+  bool _statsUserChanged = false;
 
   /// 缓存写回节的流；1s 节流，页面 dispose 时立即刷一次。
   Timer? _cacheWriteTimer;
@@ -636,6 +682,7 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     if (_cacheDeviceId != null) {
       _cacheRestorePending = true;
       unawaited(_restoreConversationCache());
+      unawaited(_restoreStatsExpanded());
     }
     unawaited(_source.start());
     if (_source.phase == RemoteConnectionPhase.ready) {
@@ -766,7 +813,9 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
       // 不要把加载指示永远挂在那里。
       if (_loading && _source.phase == RemoteConnectionPhase.failed) {
         _loading = false;
-        _loadError = _source.lastError ?? '没能连接到这台电脑，请回到首页重新连接。';
+        _loadError = sanitizeRemoteUiMessage(
+          _source.lastError ?? '没能连接到这台电脑，请回到首页重新连接。',
+        );
       }
     });
     if (_source.phase == RemoteConnectionPhase.ready) {
@@ -816,7 +865,6 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     }
     setState(() {
       _cacheRestorePending = false;
-      _showingCachedWindow = true;
       _loading = false;
       _events = List<Json>.of(cached!.window.events);
       _seenSeqs
@@ -836,6 +884,41 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     _recomputeInferredRunning();
   }
 
+  /// 异步恢复统计条展开偏好；用户已手动切换时不再覆盖。
+  Future<void> _restoreStatsExpanded() async {
+    final deviceId = _cacheDeviceId;
+    if (deviceId == null) return;
+    bool? expanded;
+    try {
+      expanded = await _conversationCache.readStatsExpanded(
+        deviceId,
+        _source.sessionId,
+      );
+    } on Object {
+      expanded = null;
+    }
+    if (!mounted || expanded == null || _statsUserChanged) return;
+    setState(() => _statsExpanded = expanded!);
+  }
+
+  /// 用户切换统计条展开状态：立即生效并异步持久化（按设备+会话隔离）。
+  void _onStatsExpandedChanged(bool expanded) {
+    if (_statsExpanded == expanded) return;
+    setState(() {
+      _statsExpanded = expanded;
+      _statsUserChanged = true;
+    });
+    final deviceId = _cacheDeviceId;
+    if (deviceId == null) return;
+    unawaited(
+      _conversationCache.saveStatsExpanded(
+        deviceId: deviceId,
+        sessionId: _source.sessionId,
+        expanded: expanded,
+      ),
+    );
+  }
+
   /// 收到新快照/事件后节流写回缓存；页面 dispose 时再立即刷一次。
   void _scheduleConversationCacheWrite() {
     if (_cacheDeviceId == null || _events.isEmpty) return;
@@ -845,7 +928,7 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
           ? _windowThroughSeq
           : (_events.last['seq'] as int? ?? 0),
       firstSeq: _events.first['seq'] as int?,
-      hasMore: false,
+      hasMore: _hasOlder,
     );
     _cacheWriteTimer?.cancel();
     _cacheWriteTimer = Timer(const Duration(seconds: 1), () {
@@ -921,7 +1004,7 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     if (_source.phase != RemoteConnectionPhase.ready) return;
     if (_inferredRefreshTimer != null) return;
     _inferredRefreshTimer = Timer.periodic(
-      const Duration(milliseconds: 1500),
+      const Duration(milliseconds: 2500),
       (_) => unawaited(_pollInferredWindow()),
     );
   }
@@ -941,12 +1024,130 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     }
     _inferredRefreshInFlight = true;
     try {
-      await _source.reload();
+      final newer = await _source.readNewer(_windowThroughSeq);
+      if (newer == null) {
+        // 不支持增量读的数据源退回整窗 reload（测试替身/旧宿主）。
+        await _source.reload();
+        return;
+      }
+      await _mergeNewer(newer);
     } on Object {
       // 补偿刷新失败：保留时间线，下一轮再试；错误不显示给用户。
     } finally {
       _inferredRefreshInFlight = false;
     }
+  }
+
+  /// 合并一次增量读到的较新窗口：按 seq 去重升序，只有真正新增才重建。
+  Future<void> _mergeNewer(RemoteConversationWindow window) async {
+    if (!mounted || window.events.isEmpty) {
+      if (mounted && window.hasMore != _hasOlder) {
+        setState(() => _hasOlder = window.hasMore);
+      }
+      return;
+    }
+    if (window.resetRequired) {
+      // 增量缺口无法桥接：整窗首屏重读一次，仍只取最新一页。
+      await _source.reload();
+      return;
+    }
+    final added = <Json>[];
+    for (final event in window.events) {
+      final seq = event['seq'];
+      if (seq is! int || !_seenSeqs.add(seq)) continue;
+      added.add(event);
+    }
+    if (added.isEmpty) {
+      if (window.hasMore != _hasOlder) {
+        setState(() => _hasOlder = window.hasMore);
+      }
+      return;
+    }
+    setState(() {
+      _events = [..._events, ...added]..sort(_bySeq);
+      if (window.throughSeq > _windowThroughSeq) {
+        _windowThroughSeq = window.throughSeq;
+      }
+      _hasOlder = window.hasMore;
+      _projection.reconcile(_events);
+      _trimRetainedEvents();
+    });
+    _scheduleConversationCacheWrite();
+    _scheduleScrollToEnd();
+    _recomputeInferredRunning();
+  }
+
+  /// 发送成功/事件到达后主动补一次增量；失败静默，下一轮轮询或事件会补上。
+  Future<void> _pullNewer() async {
+    if (!mounted || _source.phase != RemoteConnectionPhase.ready) return;
+    try {
+      final newer = await _source.readNewer(_windowThroughSeq);
+      if (newer != null) await _mergeNewer(newer);
+    } on Object {
+      // 增量补拉失败不打断发送，现有事件流仍会送达后续事件。
+    }
+  }
+
+  /// 加载更早一页；前插时保持当前阅读位置，不跳到底部。
+  Future<void> _loadOlder() async {
+    if (!mounted || _loadingOlder || !_hasOlder || _events.isEmpty) return;
+    final firstSeq = _events.first['seq'];
+    if (firstSeq is! int) return;
+    final hadScroll = _scroll.hasClients;
+    final previousPixels = hadScroll ? _scroll.position.pixels : 0.0;
+    final previousMax = hadScroll ? _scroll.position.maxScrollExtent : 0.0;
+    setState(() => _loadingOlder = true);
+    try {
+      final older = await _source.readOlder(
+        beforeSeq: firstSeq,
+        throughSeq: _windowThroughSeq,
+      );
+      if (!mounted) return;
+      if (older == null) {
+        setState(() => _hasOlder = false);
+        return;
+      }
+      final added = <Json>[];
+      for (final event in older.events) {
+        final seq = event['seq'];
+        if (seq is! int || _seenSeqs.add(seq)) added.add(event);
+      }
+      if (added.isEmpty) {
+        setState(() => _hasOlder = older.hasMore);
+        return;
+      }
+      setState(() {
+        _events = [...added, ..._events]..sort(_bySeq);
+        _hasOlder = older.hasMore;
+        _projection.reconcile(_events);
+        _trimRetainedEvents();
+      });
+      if (hadScroll) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted || !_scroll.hasClients) return;
+          final nextMax = _scroll.position.maxScrollExtent;
+          final target = (previousPixels + (nextMax - previousMax))
+              .clamp(0.0, nextMax);
+          _scroll.jumpTo(target);
+        });
+      }
+      _scheduleConversationCacheWrite();
+    } on RuntimeTransportFailure catch (failure) {
+      if (mounted) _showStatus('加载更早消息失败：${failure.message}');
+    } on Object catch (error) {
+      if (mounted) _showStatus('加载更早消息失败：$error');
+    } finally {
+      if (mounted) setState(() => _loadingOlder = false);
+    }
+  }
+
+  /// 有界内存：只保留最近 [_maxRetainedEvents] 条事件，丢弃最旧并保持可再分页。
+  void _trimRetainedEvents() {
+    if (_events.length <= _maxRetainedEvents) return;
+    _events = trimRemoteConversationEvents(_events, _maxRetainedEvents);
+    final oldest = _events.first['seq'];
+    if (oldest is int) _seenSeqs.removeWhere((seq) => seq < oldest);
+    _hasOlder = true;
   }
 
   /// 读一次 `tasks.session` 快照。
@@ -1137,13 +1338,14 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
         setState(() {
           _loading = false;
           _loadError = null;
-          _showingCachedWindow = false;
           _events = List<Json>.of(window.events);
           _seenSeqs
             ..clear()
             ..addAll([for (final event in _events) event['seq'] as int]);
           _windowThroughSeq = window.throughSeq;
+          _hasOlder = window.hasMore;
           _projection.reconcile(_events);
+          _trimRetainedEvents();
         });
         _recomputeInferredRunning();
         _scheduleConversationCacheWrite();
@@ -1176,7 +1378,7 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
         // 补偿轮询的失败静默：保留上一次时间线，不弹提示。
         if (_inferredRefreshInFlight) return;
         if (fatal) {
-          setState(() => _loadError = message);
+          setState(() => _loadError = sanitizeRemoteUiMessage(message));
         } else {
           _showStatus(message);
         }
@@ -1335,7 +1537,12 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
         if (insights != null && RemoteStatsBar.hasReadings(insights))
           Padding(
             padding: const EdgeInsets.fromLTRB(0, 8, 0, 2),
-            child: RemoteStatsBar(insights: insights, onTap: _openStatsSheet),
+            child: RemoteStatsBar(
+              insights: insights,
+              onTap: _openStatsSheet,
+              expanded: _statsExpanded,
+              onExpandedChanged: _onStatsExpandedChanged,
+            ),
           ),
         _sessionTasksPanel(context),
         _composerArea(context),
@@ -1354,19 +1561,15 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
         onAction: _canRetryRead ? () => unawaited(_reload()) : null,
       );
     }
-    if (_showingCachedWindow && _source.phase == RemoteConnectionPhase.ready) {
-      return const _RemoteNoticeBar(
-        key: ValueKey('remote-conversation-cache-syncing'),
-        message: '已显示本地缓存，正在同步最新内容…',
-      );
-    }
     switch (_source.phase) {
       case RemoteConnectionPhase.ready:
         break;
       case RemoteConnectionPhase.failed:
         return _RemoteNoticeBar(
           key: const ValueKey('remote-conversation-failed'),
-          message: _source.lastError ?? '没能连接到这台电脑，请回到首页重新连接。',
+          message: sanitizeRemoteUiMessage(
+            _source.lastError ?? '没能连接到这台电脑，请回到首页重新连接。',
+          ),
           actionLabel: '重新连接',
           onAction: () => unawaited(_source.retry()),
         );
@@ -1398,23 +1601,12 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     if (_loading) {
       // 先给本地缓存一个读取窗口：缓存命中会马上替换成时间线，避免闪一下大空态。
       if (_cacheRestorePending) {
-        return PocketEmpty(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const SizedBox(
-                width: 18,
-                height: 18,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              ),
-              const SizedBox(height: 12),
-              Text(
-                '正在读取本地缓存…',
-                style: AppTextStyle.footnote.of(context).copyWith(
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                ),
-              ),
-            ],
+        // 不展示任何缓存来源说明：只给一个紧凑转圈，命中后立即显示内容。
+        return const PocketEmpty(
+          child: SizedBox(
+            width: 18,
+            height: 18,
+            child: CircularProgressIndicator(strokeWidth: 2),
           ),
         );
       }
@@ -1447,17 +1639,71 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
         ),
       );
     }
-    return RepaintBoundary(
-      key: const ValueKey('remote-conversation-transcript'),
-      child: ChatTimeline(
-        sessionId: _source.sessionId,
-        projection: _projection,
-        controller: _scroll,
-        events: _events,
-        live: _live,
-        running: _running,
-        compactTurns: true,
-      ),
+    final colors = Theme.of(context).colorScheme;
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: RepaintBoundary(
+            key: const ValueKey('remote-conversation-transcript'),
+            child: ChatTimeline(
+              sessionId: _source.sessionId,
+              projection: _projection,
+              controller: _scroll,
+              events: _events,
+              live: _live,
+              running: _running,
+              compactTurns: true,
+            ),
+          ),
+        ),
+        if (_hasOlder || _loadingOlder)
+          Positioned(
+            top: 6,
+            left: 0,
+            right: 0,
+            child: Center(
+              child: Material(
+                color: colors.surfaceContainerHighest.withValues(alpha: .92),
+                borderRadius: BorderRadius.circular(14),
+                child: InkWell(
+                  key: const ValueKey('remote-load-older'),
+                  borderRadius: BorderRadius.circular(14),
+                  onTap: _loadingOlder ? null : () => unawaited(_loadOlder()),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 6,
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (_loadingOlder)
+                          const SizedBox(
+                            width: 13,
+                            height: 13,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        else
+                          Icon(
+                            Icons.expand_less_rounded,
+                            size: 16,
+                            color: colors.onSurfaceVariant,
+                          ),
+                        const SizedBox(width: 6),
+                        Text(
+                          _loadingOlder ? '正在加载更早消息…' : '加载更早消息',
+                          style: AppTextStyle.footnote.of(context).copyWith(
+                            color: colors.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+      ],
     );
   }
 
@@ -2490,8 +2736,9 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
       if (mounted) {
         setState(() => _commandResult = null);
         _clearComposer(routeConfirmed: true);
-        // 发送后尽快同步排队消息与工作状态，不等下一轮 2s 轮询。
+        // 发送后尽快同步排队消息与工作状态，不等下一轮 2s 轮询；同时增量补拉新事件。
         unawaited(_refreshSessionTasks());
+        unawaited(_pullNewer());
       }
       await _consumeAttachments(attachedIds);
     } on RuntimeTransportFailure catch (failure) {
@@ -3081,7 +3328,11 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
                     key: ValueKey('${request.id}:${request.version}'),
                     request: request,
                     busy: _busyInteractionId == request.id,
-                    error: _interactionErrors[request.id],
+                    error: _interactionErrors[request.id] == null
+                        ? null
+                        : sanitizeRemoteUiMessage(
+                            _interactionErrors[request.id]!,
+                          ),
                     onApprove: (allow) =>
                         unawaited(_replyApproval(request, allow: allow)),
                     onAnswer: (answers) =>
@@ -3164,7 +3415,7 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
   static String _commandMessage(String line, RemoteCommandResult result) =>
       result.kind == RemoteCommandKind.unrecognized
       ? '电脑上没有这条指令：$line。它没有发给模型。'
-      : result.displayText;
+      : sanitizeRemoteUiMessage(result.displayText);
 
   /// 常驻的可见说明：自动切换模型成功，或切换/重发仍失败时同时给出两次原因。
   ///
@@ -3175,7 +3426,7 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     if (notice == null) return null;
     return _RemoteNoticeBar(
       key: const ValueKey('remote-conversation-fallback-notice'),
-      message: notice,
+      message: sanitizeRemoteUiMessage(notice),
       actionLabel: '知道了',
       onAction: () => setState(() => _persistentNotice = null),
     );
@@ -3635,8 +3886,11 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
   }
 
   void _showStatus(String message) {
+    // 诊断日志保留原始错误；用户可见文案统一脱敏。
+    debugPrint('remote-ui-status(raw): $message');
+    final visible = sanitizeRemoteUiMessage(message);
     _statusTimer?.cancel();
-    setState(() => _status = message);
+    setState(() => _status = visible);
     _statusTimer = Timer(const Duration(seconds: 3), () {
       if (!mounted) return;
       setState(() => _status = null);
