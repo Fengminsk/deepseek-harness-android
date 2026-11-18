@@ -590,20 +590,52 @@ class MainActivity : FlutterActivity() {
                     }
                     null
                 }
-                // 后台同步前台服务：仅由 Dart 在远程连接 ready 且页面仍打开时启动。
+                // 后台同步前台服务：应用级远程连接需要后台运行时启动；reason 会写进
+                // 服务诊断（区分 App 启动自动连接、页面就绪、恢复通知点击后的重建）。
                 "remote.sync.start" -> try {
-                    RemoteSyncService.start(this@MainActivity)
+                    RemoteSyncService.start(this@MainActivity, call.argument<String>("reason") ?: "dart")
                     result.success(true)
                 } catch (failure: Exception) {
                     result.error("remote-sync-start", failure.message ?: "无法启动后台同步", null)
                 }
                 "remote.sync.stop" -> try {
-                    RemoteSyncService.stop(this@MainActivity)
+                    RemoteSyncService.stop(this@MainActivity, call.argument<String>("reason") ?: "dart")
                     result.success(false)
                 } catch (failure: Exception) {
                     result.error("remote-sync-stop", failure.message ?: "无法停止后台同步", null)
                 }
-                "remote.sync.status" -> result.success(RemoteSyncService.running)
+                // 诊断快照：服务/唤醒锁/电池优化/心跳/上次运行是否被系统杀死。
+                "remote.sync.status" -> try {
+                    result.success(RemoteSyncService.statusJson(this, uiAlive).toString())
+                } catch (failure: Exception) {
+                    result.error("remote-sync-status", failure.message ?: "无法读取后台同步状态", null)
+                }
+                // Dart 每 30 秒心跳：服务据此判断「继续同步」还是改成可点按恢复的通知。
+                "remote.sync.heartbeat" -> result.success(RemoteSyncService.recordHeartbeat())
+                "remote.sync.preferences.read" -> result.success(JSONObject()
+                    .put("backgroundSync", RemoteSyncPreferences.backgroundSync(this))
+                    .put("batteryGuideShown", RemoteSyncPreferences.batteryGuideShown(this))
+                    .toString())
+                "remote.sync.preferences.write" -> {
+                    val enabled = call.argument<Boolean>("backgroundSync")
+                    if (enabled == null) result.error("remote-sync-preferences", "缺少 backgroundSync 设置", null)
+                    else result.success(RemoteSyncPreferences.setBackgroundSync(this, enabled))
+                }
+                // 一次性电池优化引导：第一次返回 true，之后返回 false，避免反复打扰。
+                "remote.sync.guide.consume" -> result.success(RemoteSyncPreferences.consumeBatteryGuide(this))
+                "remote.sync.batteryOptimization.request" -> {
+                    if (!foreground) result.error("remote-sync-background", "请在 App 前台打开电池优化设置", null)
+                    else result.success(BatteryOptimizationSettings.request(this))
+                }
+                // 厂商（ColorOS/EMUI/MIUI 等）自启动与耗电管理页的启发式跳转。
+                "remote.sync.oem.backgroundSettings" -> {
+                    if (!foreground) result.error("remote-sync-background", "请在 App 前台打开厂商后台设置", null)
+                    else try {
+                        result.success(OemBackgroundSettings.open(this))
+                    } catch (failure: Exception) {
+                        result.error("remote-sync-oem", failure.message ?: "无法打开厂商后台设置", null)
+                    }
+                }
                 "network.proxy.test" -> try {
                     NetworkProxyPreferences.testAsync(preferenceContext, JSONObject(call.arguments as String), result)
                 } catch (failure: Exception) { result.error("proxy-test", failure.message, null) }
@@ -1084,9 +1116,10 @@ class MainActivity : FlutterActivity() {
     }
     override fun onDestroy() {
         uiAlive = false
-        // 主进程前台服务随界面销毁一起停掉：Dart isolate 已不存在，留着服务只会
-        // 留下一条永远不再同步的常驻通知。
-        stopService(Intent(this@MainActivity, RemoteSyncService::class.java))
+        // 不随界面销毁停止远程后台同步：应用级连接与前台服务由 Dart 的
+        // RemoteBackgroundSync 决定起停（用户关闭后台同步、断开电脑或连接终止才停）。
+        // 划掉最近任务由服务的 onTaskRemoved 处理；进程被系统杀死（含 ANR）后
+        // START_STICKY 会重启服务并显示可点按恢复的通知。
         documentPreviews?.close()
         documentPreviews = null
         bindingHandshake.close()

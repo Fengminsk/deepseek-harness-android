@@ -274,6 +274,7 @@ class RemoteDshPage extends StatefulWidget {
     this.notificationLaunch,
     this.syncLifecycle,
     this.notificationPermission,
+    this.backgroundSync,
   });
 
   /// 本页作为全屏目的地的标识（见 [openDestination]）。
@@ -318,6 +319,13 @@ class RemoteDshPage extends StatefulWidget {
   /// 连接 ready、启动后台同步服务时调用一次 `ensureRequested`：未授予则弹系统
   /// 权限框，已授予/拒绝过则不再重复打扰。测试可注入假实现。
   final RemoteNotificationPermission? notificationPermission;
+
+  /// 应用级远程后台同步（共享连接 + 前台服务）；为 null 时用全局
+  /// [RemoteBackgroundSync.instance]。
+  ///
+  /// 只在调用方没有注入 [source]/[connection] 的真实 App 路径生效：页面借用共享连接
+  /// 并登记页面计数，销毁时不再停止服务/断开连接。测试可注入假实现验证导航语义。
+  final RemoteBackgroundConnectionHost? backgroundSync;
 
   @override
   State<RemoteDshPage> createState() => _RemoteDshPageState();
@@ -423,7 +431,8 @@ class _RemoteDshPageState extends State<RemoteDshPage>
   /// 默认模型候选（模型目录）的来源；为 null 时设置页退回手动填写。
   RemoteDshModelCatalogSource? _catalogSource;
 
-  /// 页面实际使用的连接控制器：注入的优先，未注入时由本页创建。
+  /// 页面实际使用的连接控制器：注入的优先；显式 [RemoteDshPage.source] 时由本页创建；
+  /// 否则借用应用级共享连接（[RemoteBackgroundSync]），页面销毁不释放。
   ///
   /// 未注入也必须有一个：否则数据源会退回占位源，页面既读不到本机已配对的电脑，
   /// 也没有对象可以发起连接与配对。
@@ -432,7 +441,17 @@ class _RemoteDshPageState extends State<RemoteDshPage>
   /// [connection] 是否由本页创建；为 true 时由本页负责 [RemoteConnectionController.dispose]。
   bool _ownsConnection = false;
 
-  /// 后台同步前台服务：首页连接生命周期驱动，App 退后台不停止。
+  /// 应用级连接宿主：真实 App 里是 [RemoteBackgroundSync.instance]，测试可注入假实现。
+  late final RemoteBackgroundConnectionHost _backgroundHost =
+      widget.backgroundSync ?? RemoteBackgroundSync.instance;
+
+  /// 本页是否使用应用级共享连接（未显式给 source/connection 的真实 App 路径）。
+  ///
+  /// 为 true 时连接与服务由 [RemoteBackgroundSync] 跨页面持有：本页只是视图，销毁不再
+  /// 停止服务/断开连接；只有用户移除电脑或关闭「后台保持连接」才停。
+  bool _sharedConnection = false;
+
+  /// 后台同步前台服务（页面自查路径）：仅在没有共享连接时使用，App 退后台不停止。
   late final RemoteSyncLifecycle _syncLifecycle =
       widget.syncLifecycle ?? MethodChannelRemoteSyncLifecycle();
 
@@ -578,13 +597,19 @@ class _RemoteDshPageState extends State<RemoteDshPage>
   void initState() {
     super.initState();
     final injected = widget.connection;
-    if (injected == null) {
+    if (injected != null) {
+      _connection = injected;
+    } else if (widget.source != null) {
+      // 只读替身/显式数据源：保持页面自查语义，不进应用级共享连接。
       _connection = RemoteConnectionController(
         store: paired.RemoteDeviceStore(runtime: widget.runtime),
       );
       _ownsConnection = true;
     } else {
-      _connection = injected;
+      // 真实 App：连接跨页面存活在应用级协调器里，本页只借用（不释放）。
+      _sharedConnection = true;
+      _connection = _backgroundHost.connection(widget.runtime);
+      _backgroundHost.attachPage();
     }
     _source = _resolveSource();
     // 能力接口与只读数据源没有继承关系，因此逐个做类型测试；只读替身没有实现
@@ -634,8 +659,14 @@ class _RemoteDshPageState extends State<RemoteDshPage>
 
   @override
   void dispose() {
-    // 首页是远程连接的持有者：连接随页面一起消失时，后台同步服务也停止。
-    _stopRemoteSync();
+    if (_sharedConnection) {
+      // 共享连接（应用级）：页面只是视图，返回本地首页/切到别的全屏页都不停止同步；
+      // 只有用户移除电脑、关闭「后台保持连接」或连接自身终止时才停。
+      _backgroundHost.detachPage();
+    } else {
+      // 页面自查路径（测试/只读数据源）：沿用「连接随页面消失」的语义。
+      _stopRemoteSync();
+    }
     _connection.removeListener(_onConnectionChanged);
     unawaited(_homeEvents?.cancel());
     _recentRefresh?.cancel();
@@ -691,11 +722,17 @@ class _RemoteDshPageState extends State<RemoteDshPage>
 
   /// 按连接阶段启动/停止主进程后台同步服务。
   ///
-  /// 只在首页仍挂载时调用；重复调用是幂等的。App 退到后台不会触发停止：前台
-  /// 服务让主进程与 Dart isolate 存活，`session.follow` 和 `remote.*` 通知才能
-  /// 在后台继续到达。
+  /// 只在页面自查路径使用；共享连接由 [RemoteBackgroundSync] 统一按连接阶段决定
+  /// 服务起停（页面销毁不影响）。App 退到后台不会触发停止：前台服务让主进程与
+  /// Dart isolate 存活，`session.follow` 和 `remote.*` 通知才能在后台继续到达。
   void _syncRemoteForConnection() {
     if (!mounted) return;
+    if (_sharedConnection) {
+      if (_connection.phase == RemoteConnectionPhase.ready) {
+        _maybeShowBackgroundGuide();
+      }
+      return;
+    }
     switch (_connection.phase) {
       case RemoteConnectionPhase.ready:
         _startRemoteSync();
@@ -708,6 +745,17 @@ class _RemoteDshPageState extends State<RemoteDshPage>
       case RemoteConnectionPhase.lost:
         break;
     }
+  }
+
+  /// 首连后展示一次性电池优化引导（只提示，不声称能绕过系统限制）。
+  void _maybeShowBackgroundGuide() {
+    final host = _backgroundHost;
+    if (host is! RemoteBackgroundSync) return;
+    unawaited(() async {
+      final notice = await host.takeBatteryGuideNotice();
+      if (!mounted || notice == null) return;
+      _notice(notice);
+    }());
   }
 
   void _startRemoteSync() {
@@ -1662,6 +1710,8 @@ class _RemoteDshPageState extends State<RemoteDshPage>
     if (_connection.activeDevice?.id == device.id) {
       // 先断开：移除后阶段机回到 idle，界面与「没有当前电脑」保持一致。
       await _connection.disconnect();
+      final host = _backgroundHost;
+      if (host is RemoteBackgroundSync) host.recordDisconnectReason('已移除「$name」');
       if (!mounted) return;
     }
     try {

@@ -2788,8 +2788,10 @@ void main() {
           fixture.input(99, '即时到达的消息'),
         ]),
       );
-      // 只推进一帧：没有等待 2.5s 的增量轮询。
+      // 合并刷新窗口内先不重建，160–250ms 后一次刷新出现。
       await tester.pump();
+      expect(find.textContaining('即时到达的消息'), findsNothing);
+      await tester.pump(const Duration(milliseconds: 200));
       expect(find.textContaining('即时到达的消息'), findsOneWidget);
     });
   });
@@ -2934,7 +2936,7 @@ FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
       source.window = _window(toolRunEvents(withResult: true, ended: true));
       // 推送优先：先让推送窗口过期，才允许整窗兜底。
       now = now.add(const Duration(seconds: 9));
-      await tester.pump(const Duration(milliseconds: 2700));
+      await tester.pump(const Duration(milliseconds: 5200));
       await settle(tester);
       expect(source.reloads, greaterThan(0));
       expect(find.byKey(const ValueKey('remote-work-status')), findsNothing);
@@ -2988,7 +2990,7 @@ FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
       await settle(tester);
 
       expect(find.byKey(const ValueKey('remote-work-status')), findsOneWidget);
-      expect(find.textContaining('正在调用工具 wait_agent'), findsOneWidget);
+      expect(find.textContaining('电脑正在工作'), findsOneWidget);
       final reloads = source.reloads;
       await tester.pump(const Duration(seconds: 4));
       expect(source.reloads, reloads, reason: '宿主有 live running 时不补偿轮询');
@@ -3049,7 +3051,7 @@ FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
       // 增量窗口故意把已见过的 1–3 再带回一次，只应合并 4、5。
       source.nextNewerWindow = _window(toolRunEvents(withResult: true, ended: true));
       now = now.add(const Duration(seconds: 9));
-      await tester.pump(const Duration(milliseconds: 2700));
+      await tester.pump(const Duration(milliseconds: 5200));
       await tester.pump(const Duration(milliseconds: 300));
 
       expect(source.readNewerAfterSeqs.last, baseline);
@@ -3075,7 +3077,7 @@ FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
       );
       await tester.pump();
       now = now.add(const Duration(seconds: 3));
-      await tester.pump(const Duration(milliseconds: 2700));
+      await tester.pump(const Duration(milliseconds: 5200));
 
       expect(
         source.readNewerCalls,
@@ -3094,12 +3096,12 @@ FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
       await tester.pump(const Duration(milliseconds: 300));
 
       now = now.add(const Duration(seconds: 9));
-      await tester.pump(const Duration(milliseconds: 2700));
+      await tester.pump(const Duration(milliseconds: 5200));
       await tester.pump(const Duration(milliseconds: 300));
       expect(source.readNewerCalls, 1, reason: '静默超 8s 后兜底一次');
 
       now = now.add(const Duration(seconds: 2));
-      await tester.pump(const Duration(milliseconds: 2700));
+      await tester.pump(const Duration(milliseconds: 5200));
       expect(
         source.readNewerCalls,
         1,
@@ -3120,7 +3122,7 @@ FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
         toolRunEvents(withResult: true, ended: true),
       );
       now = now.add(const Duration(seconds: 9));
-      await tester.pump(const Duration(milliseconds: 2700));
+      await tester.pump(const Duration(milliseconds: 5200));
       await tester.pump(const Duration(milliseconds: 300));
       expect(source.readNewerCalls, 1);
       expect(find.byKey(const ValueKey('remote-work-status')), findsNothing);
@@ -3414,6 +3416,153 @@ FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
       expect(find.byKey(const ValueKey('remote-queue-count')), findsNothing);
     });
   });
+  group('运行态轻量化与合并刷新', () {
+    FakeRemoteConversationSource runningSource() {
+      final source = FakeRemoteConversationSource(
+        window: _window(toolRunEvents()),
+        supported: <String>{
+          remoteConversationReadMethod,
+          remoteConversationSendMethod,
+          remoteTasksSessionMethod,
+        },
+      );
+      source.answers[remoteTasksSessionMethod] =
+          (Map<String, dynamic> params) => <String, dynamic>{
+            'sessionId': source.sessionId,
+            'live': <String, dynamic>{
+              'status': 'running',
+              'queued': 0,
+              'blockingRequests': 0,
+            },
+            'pending': <Map<String, dynamic>>[],
+          };
+      return source;
+    }
+
+    testWidgets('运行状态条是静态圆点，不常驻转圈', (tester) async {
+      final source = runningSource();
+      await tester.pumpWidget(_host(source));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.byKey(const ValueKey('remote-work-status')), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byKey(const ValueKey('remote-work-status')),
+          matching: find.byType(CircularProgressIndicator),
+        ),
+        findsNothing,
+      );
+      await tester.pump(const Duration(seconds: 3));
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('running 时输入与发送仍可用', (tester) async {
+      final source = runningSource();
+      await tester.pumpWidget(_host(source));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.byKey(const ValueKey('remote-work-status')), findsOneWidget);
+
+      await tester.enterText(find.byType(TextField), '运行中也能发送');
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('remote-send')));
+      await tester.pump();
+      expect(source.sent, contains('运行中也能发送'));
+    });
+
+    testWidgets('日志推导静默 25s 后隐藏状态条并停止兜底', (tester) async {
+      var now = DateTime(2026, 1, 1, 12);
+      final source = FakeRemoteConversationSource(
+        window: _window(toolRunEvents()),
+      );
+      await tester.pumpWidget(_host(source, now: () => now));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.byKey(const ValueKey('remote-work-status')), findsOneWidget);
+
+      now = now.add(const Duration(seconds: 30));
+      await tester.pump(const Duration(seconds: 5));
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.byKey(const ValueKey('remote-work-status')), findsNothing);
+      final calls = source.readNewerCalls;
+      await tester.pump(const Duration(seconds: 10));
+      expect(source.readNewerCalls, calls, reason: '静默超时后停止兜底轮询');
+    });
+
+    testWidgets('短时间多个 session.event 合并为一次刷新，关键 turn/end 立即生效', (tester) async {
+      final source = FakeRemoteConversationSource(
+        window: _window(conversationEvents()),
+      );
+      await tester.pumpWidget(_host(source));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      source.emit(
+        RemoteConversationEvents(<Map<String, dynamic>>[
+          fixture.input(90, '批量一'),
+          fixture.input(91, '批量二'),
+          fixture.input(92, '批量三'),
+        ]),
+      );
+      await tester.pump();
+      expect(find.textContaining('批量一'), findsNothing);
+      await tester.pump(const Duration(milliseconds: 220));
+      expect(find.textContaining('批量一'), findsOneWidget);
+      expect(find.textContaining('批量二'), findsOneWidget);
+      expect(find.textContaining('批量三'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('turn/end 关键事件不等合并窗口立即刷新', (tester) async {
+      final source = FakeRemoteConversationSource(
+        window: _window(toolRunEvents()),
+      );
+      await tester.pumpWidget(_host(source));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.byKey(const ValueKey('remote-work-status')), findsOneWidget);
+
+      source.emit(
+        RemoteConversationEvents(
+          toolRunEvents(withResult: true, ended: true).skip(3).toList(),
+        ),
+      );
+      await tester.pump();
+      expect(find.byKey(const ValueKey('remote-work-status')), findsNothing);
+    });
+
+    testWidgets('tasks.session 运行中 3s、空闲 6s 轮询', (tester) async {
+      final source = FakeRemoteConversationSource(
+        window: _window(conversationEvents()),
+        supported: <String>{
+          remoteConversationReadMethod,
+          remoteTasksSessionMethod,
+        },
+      );
+      source.answers[remoteTasksSessionMethod] =
+          (Map<String, dynamic> params) => <String, dynamic>{
+            'sessionId': source.sessionId,
+            'live': <String, dynamic>{
+              'status': 'idle',
+              'queued': 0,
+              'blockingRequests': 0,
+            },
+            'pending': <Map<String, dynamic>>[],
+          };
+      await tester.pumpWidget(_host(source));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      int taskReads() => source.requests
+          .where((item) => item.method == remoteTasksSessionMethod)
+          .length;
+      final initial = taskReads();
+      await tester.pump(const Duration(seconds: 4));
+      expect(taskReads(), initial, reason: '空闲轮询不早于 5s');
+      await tester.pump(const Duration(seconds: 3));
+      expect(taskReads(), initial + 1, reason: '空闲约 6s 拉一次');
+    });
+  });
+
 }
 
 /// 一条 `tasks.session.pending` 排队消息的宿主形状。

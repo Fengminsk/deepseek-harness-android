@@ -448,6 +448,14 @@ class _ToolBoundedTextState extends State<ToolBoundedText> {
     super.dispose();
   }
 
+  /// 超长工具输出只布局前 [_maxDisplayChars] 个字符；复制仍使用完整内容。
+  static const int _maxDisplayChars = 16000;
+
+  String get _displayText {
+    if (widget.text.length <= _maxDisplayChars) return widget.text;
+    return '${widget.text.substring(0, _maxDisplayChars)}\n…（已截断显示；复制可获取完整内容）';
+  }
+
   Future<void> _copy() async {
     if (_copying) return;
     final epoch = ++_copyEpoch;
@@ -524,7 +532,7 @@ class _ToolBoundedTextState extends State<ToolBoundedText> {
                   primary: false,
                   padding: const EdgeInsets.fromLTRB(12, 10, 18, 10),
                   child: SelectableText(
-                    widget.text.isEmpty ? '（空）' : widget.text,
+                    widget.text.isEmpty ? '（空）' : _displayText,
                     style: AppTextStyle.footnote
                         .of(context)
                         .copyWith(fontFamily: 'monospace', height: 1.45),

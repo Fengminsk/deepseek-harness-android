@@ -20,6 +20,7 @@ import 'package:dsh_android/remote_notifications.dart';
 import 'package:dsh_android/remote_pairing.dart';
 import 'package:dsh_android/remote_sync_service.dart';
 import 'package:dsh_android/remote_transport.dart';
+import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -625,6 +626,22 @@ Future<void> _showConnection(
   await _settle(tester);
 }
 
+/// 用应用级共享连接（真实 App 路径）打开首页：页面不持有连接与前台服务。
+Future<void> _showShared(
+  WidgetTester tester,
+  _HomeConnectionHarness harness,
+  _SharedBackgroundHost host,
+) async {
+  final runtime = LibraryRuntime();
+  addTearDown(runtime.dispose);
+  await tester.pumpWidget(
+    MaterialApp(
+      theme: pocketTheme(Brightness.light),
+      home: RemoteDshPage(runtime: runtime, backgroundSync: host),
+    ),
+  );
+  await _settle(tester);
+}
 /// 让第 [index] 条连接完成握手并进入宿主就绪态。
 void _completeHandshake(
   _HomeConnectionHarness harness,
@@ -676,6 +693,23 @@ Future<void> _enterSearch(WidgetTester tester, String query) async {
   await tester.pump();
 }
 
+/// 应用级共享连接宿主替身：页面只借用连接并登记页面计数，不持有/释放连接。
+class _SharedBackgroundHost implements RemoteBackgroundConnectionHost {
+  _SharedBackgroundHost(this.controller);
+
+  final RemoteConnectionController controller;
+  int attaches = 0;
+  int detaches = 0;
+
+  @override
+  RemoteConnectionController connection(RuntimeController runtime) => controller;
+
+  @override
+  void attachPage() => attaches++;
+
+  @override
+  void detachPage() => detaches++;
+}
 void main() {
   group('连接与首次数据加载态', () {
     Finder projectLoading() => find.byKey(
@@ -2142,6 +2176,74 @@ void main() {
 
       await tester.pumpWidget(const SizedBox());
       await tester.pumpAndSettle();
+    });
+  });
+  group('应用级共享连接的导航语义', () {
+    testWidgets('从远程页返回本地首页：不断开唯一连接、不停后台同步服务', (tester) async {
+      final livingRoom = _livingRoom();
+      final harness = _HomeConnectionHarness(
+        devices: <paired.RemoteDevice>[livingRoom],
+        lastConnectedDeviceId: _livingRoomId,
+      );
+      addTearDown(harness.dispose);
+      harness.authorize(<paired.RemoteDevice>[livingRoom]);
+      final host = _SharedBackgroundHost(harness.controller);
+      await _showShared(tester, harness, host);
+      expect(host.attaches, 1, reason: '页面打开时登记共享连接使用方');
+
+      _completeHandshake(harness, 0, '客厅的电脑');
+      await _flushConnection(tester);
+      expect(harness.controller.phase, RemoteConnectionPhase.ready);
+
+      // 返回本地首页（销毁远程页）：连接与服务生命周期归应用级协调器，页面不停。
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpAndSettle();
+      expect(host.detaches, 1);
+      expect(harness.controller.phase, RemoteConnectionPhase.ready);
+      expect(
+        harness.factory.links.single.isClosed,
+        isFalse,
+        reason: '页面销毁不能关掉唯一的远程连接',
+      );
+    });
+
+    testWidgets('进入会话页再返回远程首页：共享连接保持可用', (tester) async {
+      final livingRoom = _livingRoom();
+      final harness = _HomeConnectionHarness(
+        devices: <paired.RemoteDevice>[livingRoom],
+        lastConnectedDeviceId: _livingRoomId,
+      );
+      addTearDown(harness.dispose);
+      harness.authorize(<paired.RemoteDevice>[livingRoom]);
+      final host = _SharedBackgroundHost(harness.controller);
+      await _showShared(tester, harness, host);
+      harness.factory.links.single.sessions = <Map<String, dynamic>>[
+        <String, dynamic>{
+          'header': <String, dynamic>{
+            'id': 's-1',
+            'cwd': r'C:\Users\colin\Pocket',
+          },
+          'title': '会话 s-1',
+        },
+      ];
+      _completeHandshake(harness, 0, '客厅的电脑');
+      await _flushConnection(tester);
+
+      await tester.tap(find.text('会话 s-1').first);
+      await _flushConnection(tester);
+      expect(find.byType(RemoteDshConversationPage), findsOneWidget);
+      expect(host.detaches, 0, reason: '会话页只是远程首页之上的目的地');
+
+      await tester.binding.handlePopRoute();
+      await _flushConnection(tester);
+      expect(find.byType(RemoteDshConversationPage), findsNothing);
+      expect(host.detaches, 0);
+      expect(harness.controller.phase, RemoteConnectionPhase.ready);
+      expect(harness.factory.links.single.isClosed, isFalse);
+
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpAndSettle();
+      expect(host.detaches, 1);
     });
   });
 }

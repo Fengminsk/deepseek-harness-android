@@ -271,4 +271,49 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+  testWidgets('超长工具输出只布局预览，复制仍返回完整内容', (tester) async {
+    final huge = List.generate(2000, (i) => '输出行 $i ${'x' * 20}').join('\n');
+    expect(huge.length, greaterThan(16000));
+    final copied = <String>[];
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'Clipboard.setData') {
+          copied.add((call.arguments as Map)['text'] as String);
+        }
+        return null;
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        null,
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: ToolBoundedText(
+              identity: 'huge',
+              title: '输出',
+              text: huge,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    final selectable = tester.widget<SelectableText>(
+      find.descendant(
+        of: find.byKey(const ValueKey('inline-scroll:huge')),
+        matching: find.byType(SelectableText),
+      ),
+    );
+    expect(selectable.data!.length, lessThan(huge.length));
+    expect(selectable.data, contains('已截断显示'));
+    await tester.tap(find.byKey(const ValueKey('inline-copy:huge')));
+    await tester.pump();
+    expect(copied.single, huge);
+  });
 }

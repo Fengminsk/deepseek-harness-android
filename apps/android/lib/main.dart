@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'runtime.dart';
 import 'remote_dsh_page.dart';
 import 'remote_notification_navigation.dart';
+import 'remote_sync_service.dart';
 import 'runtime_selection.dart';
 import 'files.dart';
 import 'ui.dart';
@@ -96,6 +97,9 @@ class _PocketHarnessAppState extends State<PocketHarnessApp>
     WidgetsBinding.instance.addObserver(this);
     unawaited(appearance.load());
     unawaited(runtime.start().catchError(runtime.fail));
+    // 应用级远程后台同步：即使没进远程页，也按偏好恢复最近连接的电脑并启动前台
+    // 同步服务（进程被系统杀死后，打开 App 即恢复连接与推送）。
+    unawaited(RemoteBackgroundSync.instance.attach(runtime));
     // 冷启动由系统通知拉起时，启动 Intent 里的深链在第一帧之后取走。
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) unawaited(notificationNavigation.consume());
@@ -115,6 +119,8 @@ class _PocketHarnessAppState extends State<PocketHarnessApp>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       unawaited(runtime.resume());
+      // 进程被系统重启/连接在后台断开后，回到前台立即补心跳并尝试恢复连接。
+      unawaited(RemoteBackgroundSync.instance.onAppResumed());
       // App 存活时点通知：MainActivity.onNewIntent 已把 extra 存成 pending，
       // 回到前台后在这里取走；重复调用由平台侧 take 语义保证只导航一次。
       unawaited(notificationNavigation.consume());

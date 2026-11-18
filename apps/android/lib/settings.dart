@@ -35,6 +35,8 @@ import 'settings_general.dart';
 import 'session_log_upload_settings.dart';
 import 'manual_isolated_script.dart';
 import 'network_proxy_settings.dart';
+import 'remote_connection.dart';
+import 'remote_sync_service.dart';
 
 class SettingsPage extends StatelessWidget {
   const SettingsPage({required this.runtime, super.key});
@@ -216,6 +218,13 @@ class SettingsPage extends StatelessWidget {
                   title: '后台执行',
                   subtitle: '后台任务与系统电池限制',
                   onTap: () => open(BackgroundSettingsPage(runtime: runtime)),
+                ),
+                PocketRow(
+                  key: const ValueKey('remote-background-sync-settings'),
+                  icon: Icons.sync_rounded,
+                  title: '后台保活',
+                  subtitle: '远程连接在后台继续接收任务与审批通知',
+                  onTap: () => open(RemoteBackgroundSyncPage(runtime: runtime)),
                 ),
               ],
             ),
@@ -727,4 +736,347 @@ class _WebSettingsPageState extends State<WebSettingsPage> {
       ],
     ),
   );
+}
+
+/// 远程连接阶段的中文标签（后台保活页与诊断共用）。
+String remoteSyncPhaseLabel(RemoteConnectionPhase? phase) => switch (phase) {
+  null => '尚未建立远程连接',
+  RemoteConnectionPhase.idle => '未连接（空闲）',
+  RemoteConnectionPhase.connecting => '正在连接电脑',
+  RemoteConnectionPhase.handshaking => '正在握手',
+  RemoteConnectionPhase.ready => '连接就绪',
+  RemoteConnectionPhase.reconnecting => '连接断开，正在重连',
+  RemoteConnectionPhase.lost => '连接已丢失',
+  RemoteConnectionPhase.failed => '连接失败',
+};
+
+/// 前台同步服务状态的中文标签；只描述原生与 Dart 侧都确认过的事实。
+String remoteSyncServiceLabel(RemoteSyncDiagnostics diagnostics) {
+  final service = diagnostics.service;
+  if (service == null) {
+    return diagnostics.serviceRequested
+        ? '后台同步服务状态未确认（系统通道不可用）'
+        : '后台同步服务未运行';
+  }
+  if (service.running) return '后台同步运行中';
+  if (service.degraded || service.recoveryPending) {
+    return '后台同步已中断 · 可在通知栏点按恢复';
+  }
+  if (service.uiAlive) return '后台同步等待连接';
+  return '后台同步未运行';
+}
+
+String _remoteSyncAge(DateTime? time) {
+  if (time == null) return '—';
+  final delta = DateTime.now().difference(time);
+  if (delta.isNegative || delta.inSeconds < 5) return '刚刚';
+  if (delta.inMinutes < 1) return '${delta.inSeconds} 秒前';
+  if (delta.inHours < 1) return '${delta.inMinutes} 分钟前';
+  if (delta.inDays < 1) return '${delta.inHours} 小时前';
+  return '${delta.inDays} 天前';
+}
+
+/// 远程后台保活设置与诊断页。
+///
+/// 只展示与操作手机侧策略：连接由应用级 [RemoteBackgroundSync] 持有，唤醒锁、心跳与
+/// 电池优化状态来自 Kotlin 服务（`remote.sync.status`）。页面不会声称能绕过主线程
+/// 无响应（ANR）或厂商（ColorOS 等）的后台清理：这些限制只能由用户手动选择放宽。
+class RemoteBackgroundSyncPage extends StatefulWidget {
+  const RemoteBackgroundSyncPage({required this.runtime, super.key});
+
+  /// 本机运行时；本页不依赖它发起连接，仅用于页面上下文与既有导航约定。
+  final RuntimeController runtime;
+
+  /// 页面作为全屏目的地的稳定标识（与设置入口共用）。
+  static const routeDestination = 'remote-background-sync';
+
+  @override
+  State<RemoteBackgroundSyncPage> createState() =>
+      _RemoteBackgroundSyncPageState();
+}
+
+class _RemoteBackgroundSyncPageState extends State<RemoteBackgroundSyncPage>
+    with WidgetsBindingObserver {
+  static const _adbCommands = '''
+# 进程与前台服务
+adb shell pidof com.minnnng.dsh_android
+adb shell dumpsys activity services com.minnnng.dsh_android | findstr RemoteSync
+# 唤醒锁（PAW 为 PARTIAL_WAKE_LOCK）
+adb shell dumpsys power | findstr RemoteSync
+# 电池优化白名单
+adb shell dumpsys deviceidle whitelist | findstr com.minnnng.dsh_android
+# 服务日志（ANR 重启、降级原因）
+adb logcat -s PocketRemoteSync PocketRemoteNotice flutter''';
+
+  RemoteBackgroundSync get _sync => RemoteBackgroundSync.instance;
+  RemoteSyncDiagnostics? diagnostics;
+  String? error;
+  String? actionMessage;
+  bool loading = false;
+  bool saving = false;
+  bool active = true;
+  int readAttempt = 0;
+  Timer? timer;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _sync.addListener(changed);
+    unawaited(refresh());
+    timer = Timer.periodic(const Duration(seconds: 5), (_) {
+      if (active) unawaited(refresh());
+    });
+  }
+
+  void changed() {
+    if (mounted) unawaited(refresh());
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    active = state == AppLifecycleState.resumed;
+    if (active) unawaited(refresh());
+  }
+
+  Future<void> refresh() async {
+    if (loading || saving) return;
+    final attempt = ++readAttempt;
+    setState(() => loading = true);
+    try {
+      final next = await _sync.diagnostics();
+      if (!mounted || attempt != readAttempt) return;
+      setState(() {
+        diagnostics = next;
+        error = null;
+        loading = false;
+      });
+    } catch (failure) {
+      if (!mounted || attempt != readAttempt) return;
+      setState(() {
+        error = '后台同步状态未确认：$failure';
+        loading = false;
+      });
+    }
+  }
+
+  Future<void> configure(bool enabled) async {
+    if (saving) return;
+    setState(() => saving = true);
+    try {
+      await _sync.setBackgroundSyncEnabled(enabled);
+      if (!mounted) return;
+      setState(() => actionMessage = enabled ? '已开启后台保持连接' : '已关闭后台保持连接');
+      await refresh();
+    } catch (failure) {
+      if (mounted) setState(() => error = '后台保活设置未保存：$failure');
+    } finally {
+      if (mounted) setState(() => saving = false);
+    }
+  }
+
+  Future<void> requestBatteryOptimization() async {
+    try {
+      final message = await _sync.requestBatteryOptimization();
+      if (mounted) setState(() => actionMessage = message);
+      await refresh();
+    } catch (failure) {
+      if (mounted) setState(() => error = '无法打开电池优化设置：$failure');
+    }
+  }
+
+  Future<void> openOemSettings() async {
+    try {
+      final message = await _sync.openOemBackgroundSettings();
+      if (mounted) setState(() => actionMessage = message);
+    } catch (failure) {
+      if (mounted) setState(() => error = '无法打开厂商后台设置：$failure');
+    }
+  }
+
+  @override
+  void dispose() {
+    timer?.cancel();
+    _sync.removeListener(changed);
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final data = diagnostics;
+    final service = data?.service;
+    final batteryIgnored = service?.batteryOptimizationsIgnored;
+    return PocketScaffold(
+      title: const Text('后台保活'),
+      trailing: GlassButton(
+        icon: Icons.refresh_rounded,
+        label: '刷新状态',
+        onPressed: loading || saving ? null : refresh,
+      ),
+      body: PocketList(
+        children: [
+          if (error != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 18),
+              child: Text(
+                error!,
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+            ),
+          PocketSection(
+            title: '与电脑保持同步',
+            children: [
+              PocketSwitchRow(
+                key: const ValueKey('remote-background-sync-switch'),
+                title: const Text('后台保持与电脑的连接'),
+                subtitle: const Text(
+                  '开启后 App 启动即连接上次的电脑，退到桌面/后台继续接收任务完成与审批通知；'
+                  '关闭后只在打开远程页面时连接。',
+                ),
+                value: data?.backgroundSyncEnabled ?? true,
+                onChanged: data == null || saving ? null : configure,
+              ),
+              PocketRow(
+                icon: Icons.sync_rounded,
+                title: remoteSyncServiceLabel(
+                  data ?? RemoteSyncDiagnostics.empty,
+                ),
+                subtitle: service == null
+                    ? '尚未读取到原生服务状态'
+                    : '启动于 ${_remoteSyncAge(service.startedAt)} · '
+                          '最近心跳 ${_remoteSyncAge(service.lastHeartbeatAt)} · '
+                          '停止原因 ${service.lastStopReason ?? '无'}',
+              ),
+              if (service != null)
+                PocketRow(
+                  icon: Icons.battery_saver_rounded,
+                  title: service.wakeLockHeld ? '正在持有 CPU 唤醒锁' : '当前未持有 CPU 唤醒锁',
+                  subtitle:
+                      '唤醒锁只避免 CPU 休眠后停止收帧，不能防止主线程无响应（ANR）被系统杀死；'
+                      '超时后重新获取 ${service.wakeLockExpiries} 次。',
+                ),
+            ],
+          ),
+          PocketSection(
+            title: '连接与诊断',
+            children: [
+              PocketRow(
+                icon: Icons.link_rounded,
+                title: remoteSyncPhaseLabel(data?.phase),
+                subtitle: data?.deviceLabel == null
+                    ? '已配对电脑 ${data?.pairedDeviceCount ?? 0} 台'
+                    : '当前电脑「${data!.deviceLabel}」· 已配对 ${data.pairedDeviceCount} 台',
+              ),
+              if (data?.lastDisconnectReason != null)
+                PocketRow(
+                  icon: Icons.link_off_rounded,
+                  title: '最后断开原因',
+                  subtitle: data!.lastDisconnectReason,
+                ),
+              if (data?.lastError != null)
+                PocketRow(
+                  icon: Icons.error_outline_rounded,
+                  title: '最近连接失败',
+                  subtitle: [data!.lastError, data.lastErrorCode]
+                      .whereType<String>()
+                      .join(' · '),
+                ),
+              if (data?.lastServiceError != null)
+                PocketRow(
+                  icon: Icons.warning_amber_rounded,
+                  title: '服务操作提示',
+                  subtitle: data!.lastServiceError,
+                ),
+              if (data?.lastRestoreError != null)
+                PocketRow(
+                  icon: Icons.warning_amber_rounded,
+                  title: '自动恢复提示',
+                  subtitle: data!.lastRestoreError,
+                ),
+              if (service?.previousRunAbnormal == true)
+                PocketRow(
+                  key: const ValueKey('remote-background-previous-abnormal'),
+                  icon: Icons.restart_alt_rounded,
+                  title: '上次运行曾被系统中断',
+                  subtitle:
+                      '进程在同步期间被系统杀死（常见原因：主线程无响应 ANR、低内存或厂商后台清理）。'
+                      '本轮已自动恢复连接；ANR 需要修复卡顿本身，唤醒锁与电池豁免无法避免。'
+                      '上次开始于 ${_remoteSyncAge(service!.previousRunStartedAt)}。',
+                ),
+              if (data != null)
+                PocketRow(
+                  icon: Icons.monitor_heart_outlined,
+                  title: 'Dart 侧服务控制',
+                  subtitle:
+                      '请求启动 ${data.serviceRequested ? '是' : '否'} · '
+                      '心跳 ${data.heartbeatActive ? '运行中' : '未运行'} · '
+                      '启动 ${data.serviceStarts} 次 / 停止 ${data.serviceStops} 次 · '
+                      '页面${data.pageOpen ? '打开中' : '未打开'}',
+                ),
+            ],
+          ),
+          PocketSection(
+            title: '电池与厂商设置',
+            children: [
+              PocketRow(
+                icon: Icons.battery_charging_full_rounded,
+                title: switch (batteryIgnored) {
+                  true => '已获得 Android 标准电池优化豁免',
+                  false => '仍受 Android 标准电池优化管理',
+                  _ => '电池优化状态尚未确认',
+                },
+                subtitle: service == null
+                    ? '刷新后读取'
+                    : '后台限制${service.backgroundRestricted ? '已报告' : '未报告'} · '
+                          '省电模式${service.powerSaveMode ? '开启' : '未开启'}',
+              ),
+              if (batteryIgnored != true)
+                PocketRow(
+                  key: const ValueKey('remote-background-request-battery'),
+                  icon: Icons.battery_saver_rounded,
+                  title: '允许电池优化豁免',
+                  subtitle: '打开系统电池优化请求页，由你决定是否允许；App 不修改任何策略。',
+                  onTap: requestBatteryOptimization,
+                ),
+              PocketRow(
+                key: const ValueKey('remote-background-oem-settings'),
+                icon: Icons.open_in_new_rounded,
+                title: '打开厂商后台设置',
+                subtitle:
+                    'ColorOS/EMUI/MIUI 等系统的自启动与耗电管理入口；名称与路径随手机和系统版本变化，找不到时退回应用详情页。',
+                onTap: openOemSettings,
+              ),
+              const PocketRow(
+                icon: Icons.info_outline_rounded,
+                title: '保活边界',
+                subtitle:
+                    '唤醒锁、电池豁免与前台服务只减少被系统回收的机会，不能绕过主线程无响应（ANR）或厂商后台清理；'
+                    'ColorOS 上请同时在「耗电管理」里允许后台活动，并按需锁定最近任务。',
+              ),
+              if (actionMessage != null)
+                PocketRow(
+                  key: const ValueKey('remote-background-action-message'),
+                  icon: Icons.check_circle_outline_rounded,
+                  title: actionMessage!,
+                ),
+            ],
+          ),
+          PocketSection(
+            title: '排查命令',
+            divided: true,
+            children: [
+              PocketDisclosure(
+                title: 'adb 检查进程 / 服务 / 唤醒锁 / 通知',
+                child: SelectableText(
+                  _adbCommands,
+                  style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
 }

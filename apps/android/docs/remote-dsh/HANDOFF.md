@@ -1101,6 +1101,14 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
 
 ## 9. 变更日志（append-only，最新在最上面）
 
+### 2026-11-18 18:34 · lead（会话页 ANR 降耗 + 应用级后台同步，已装真机）
+
+- **ANR 取证**：adb `dumpsys activity exit-info` 显示 17:58:12 进程因 `Input dispatching timed out ... MainActivity is not responding … FocusEvent ≥5s` 被杀，当时 PSS≈512MB；这才是「后台没消息、点开 App 重新开」的直接原因（电池优化白名单本来已包含 App）。「电脑正在工作」的常驻转圈 + 每事件 setState/全量 projection + 长工具输出整段布局是主线程/内存热点。
+- **会话页降耗/状态修复**（task-59）：工作状态改静态圆点+文案（去掉常驻 `CircularProgressIndicator`）；running 以 `session.status`/`tasks.live` 为权威，日志推导仅兜底且 25s 静默自动隐藏/停轮询；发送/排队不依赖 running；`session.event` 180ms 合并刷新（turn/end/error 立即）；`tasks.session` running 3s/空闲 6s，退后台停；inferred 兜底 5s；事件保留上限 500；超大工具输出只布局前 16000 字符预览（复制仍完整）。测试：会话页 113/113、邻接 182/182、工具输出 8/8、App analyze 仅既有基线，debug APK 18:22 构建。
+- **应用级后台同步**（task-60）：`RemoteBackgroundSync` 单例在 App 启动即恢复最近电脑连接并启动前台服务（不进远程页也生效）；页面 dispose/返回本地首页不再断开/停服务；`RemoteSyncService` 加 PARTIAL_WAKE_LOCK（30min+心跳续期、停止释放）、`stopWithTask=false`、START_STICKY 无 UI 时「后台同步已中断·点按恢复」通知、心跳 90s 降级、上次异常运行检测；设置→后台保活页显示服务/心跳/唤醒锁/电池优化/最后断开原因，提供电池优化豁免与 ColorOS 等厂商后台设置入口；Manifest 新增 REQUEST_IGNORE_BATTERY_OPTIMIZATIONS，MainActivity.onDestroy 不再停服务。测试：新增 20 用例、邻接 77/77+53/53 全绿，flutter analyze 11 条基线，debug APK 18:30 构建。
+- **真机验证**：安装 18:30 APK 后启动 App（停在本地首页），`RemoteSyncService` 自动启动、`channel=remote-sync` 前台通知、`PARTIAL_WAKE_LOCK com.minnnng.dsh_android:RemoteSync` 已获取、主机 devices lastSeen 刷新；按 Home 退桌面 25s 后进程/服务/wakelock 仍在（PSS≈406MB）。
+- **边界**：ANR 根因修复需持续真机观察；ColorOS 彻底杀进程后仍无 FCM/厂商推送通道，打开 App 才恢复；默认后台保持连接增加耗电，设置页可关闭。
+- **提交**：见本次 commit。
 ### 2026-11-18 18:06 · lead（聊天 markdown 排版对齐 DSH Web token，已装真机）
 
 - 用户反馈：手机远程会话正文排版乱/阅读费劲，要求参考 DSH 手机尺寸的 markdown 排版。

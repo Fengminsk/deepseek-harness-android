@@ -479,21 +479,44 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
 
   /// 事件流与轮询合并后的运行状态（[ChatTimeline] 用）。
   ///
-  /// 事件推导优先于「宿主没有 live」：remote-host 对 desktop 进程里的会话看不到
-  /// Agent，但窗口里未结算的 turn/tool 仍能证明电脑在干活，不能让 ChatTimeline
-  /// 把未结算工具误渲染成「回复已中断」。
+  /// 权威来源优先：`session.status`（推送）与 `tasks.session.live`（轮询）。
+  /// 日志推导只在两者都未知时兜底，且超过 [_inferredSilenceTimeout] 没有任何
+  /// 新证据就自动降级，避免窗口截断导致「永久工作中」。
   bool get _running =>
-      _inferredRunning ||
       _runningFromEvents == true ||
-      _sessionTasks?.status == 'running';
+      _sessionTasks?.status == 'running' ||
+      _inferredRunningActive;
 
   /// 由窗口事件推导的运行态与最近未结算工具名。
   bool _inferredRunning = false;
   String? _inferredToolName;
 
-  /// inferredRunning 期间补偿拉取窗口的定时器（1.5s）。
+  /// 日志推导的最近一次证据时间；静默超时后 [_inferredRunningActive] 为 false。
+  DateTime? _lastInferredEvidenceAt;
+
+  /// 日志推导的静默超时：20–30s 内没有新事件/状态就隐藏状态条并停止兜底轮询。
+  static const Duration _inferredSilenceTimeout = Duration(seconds: 25);
+
+  bool get _inferredRunningActive {
+    if (!_inferredRunning) return false;
+    final last = _lastInferredEvidenceAt;
+    if (last == null) return false;
+    return _now().difference(last) < _inferredSilenceTimeout;
+  }
+
+  /// inferredRunning 期间补偿拉取窗口的定时器（5s，仅推送静默时真正请求）。
   Timer? _inferredRefreshTimer;
   bool _inferredRefreshInFlight = false;
+
+  /// `session.event` 合并刷新：事件先入队，最多每 [_eventBatchWindow] 重建一次；
+  /// turn/end 等关键事件立即刷新。
+  final List<Json> _pendingEvents = <Json>[];
+  Timer? _eventFlushTimer;
+  static const Duration _eventBatchWindow = Duration(milliseconds: 180);
+  static const Set<String> _immediateEventTypes = <String>{
+    'turn/end',
+    'session/error',
+  };
 
   /// 最近一次收到该会话实时推送（snapshot/event/live/status）的时间。
   ///
@@ -509,7 +532,8 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
   bool _loadingOlder = false;
 
   /// 时间线保留的事件上限；超出后丢弃最旧事件，仍可通过「加载更早」重新分页。
-  static const int _maxRetainedEvents = 1200;
+  /// 400–600 是内存与回看舒适度的折中，避免长会话把整段输出常驻在 UI 层。
+  static const int _maxRetainedEvents = 500;
 
   bool _loading = true;
   bool _sending = false;
@@ -542,6 +566,9 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
 
   /// 轮询 `tasks.session` 的定时器；页面销毁或退后台时取消。
   Timer? _sessionTasksTimer;
+
+  /// 是否允许继续安排下一次 `tasks.session` 轮询（退后台/不支持时关闭）。
+  bool _sessionTasksPolling = false;
 
   /// 是否有一次 `tasks.session` 在途；防止轮询与手动刷新并发重入。
   bool _sessionTasksInFlight = false;
@@ -710,6 +737,9 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     _statusTimer?.cancel();
     _sessionTasksTimer?.cancel();
     _sessionTasksTimer = null;
+    _sessionTasksPolling = false;
+    _eventFlushTimer?.cancel();
+    _eventFlushTimer = null;
     _inferredRefreshTimer?.cancel();
     _inferredRefreshTimer = null;
     _cacheWriteTimer?.cancel();
@@ -967,43 +997,69 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
   /// 启动（或补一次）`tasks.session` 轮询。
   ///
   /// 只在页面 mounted、应用前台、连接 ready 时运行；发送消息、收到运行状态变化
-  /// 与回到前台都调用它补一次即时刷新。
+  /// 与回到前台都调用它补一次即时刷新。轮询是单次定时器：运行中 3s、空闲 6s。
   void _startSessionTasksPolling() {
     if (!mounted || !_appActive) return;
     if (_source.phase != RemoteConnectionPhase.ready) return;
+    _sessionTasksPolling = true;
     unawaited(_refreshSessionTasks());
-    if (_sessionTasksTimer != null) return;
-    _sessionTasksTimer = Timer.periodic(const Duration(seconds: 2), (_) {
-      unawaited(_refreshSessionTasks());
-    });
   }
 
   void _stopSessionTasksPolling() {
+    _sessionTasksPolling = false;
     _sessionTasksTimer?.cancel();
     _sessionTasksTimer = null;
   }
 
-  /// 从当前窗口重新推导运行态；状态变化时刷新状态条并按需补偿轮询。
-  ///
-  /// 只在宿主没有可用的 live running 时补偿拉取窗口：remote-host 对 desktop
-  /// 进程里的会话不会推送追加事件，只能靠轮询读到 turn/end 与 tool/result。
+  /// 一次 `tasks.session` 完成后按当前运行态安排下一次（运行 3s / 空闲 6s）。
+  void _scheduleNextSessionTasksPoll() {
+    _sessionTasksTimer?.cancel();
+    _sessionTasksTimer = null;
+    if (!_sessionTasksPolling || !mounted || !_appActive) return;
+    if (_source.phase != RemoteConnectionPhase.ready) return;
+    final seconds = _running ? 3 : 6;
+    _sessionTasksTimer = Timer(Duration(seconds: seconds), () {
+      _sessionTasksTimer = null;
+      unawaited(_refreshSessionTasks());
+    });
+  }
+
+  /// 日志推导只作兜底：权威 running/idle 已知时不再推导。
   void _recomputeInferredRunning() {
+    final authorityRunning =
+        _runningFromEvents == true || _sessionTasks?.status == 'running';
+    final tasksStatus = _sessionTasks?.status;
+    final authorityIdle =
+        _runningFromEvents == false ||
+        (_sessionTasksLoaded &&
+            _sessionTasks != null &&
+            tasksStatus != null &&
+            tasksStatus != 'running' &&
+            tasksStatus != 'unknown');
+    if (authorityRunning || authorityIdle) {
+      _clearInferredRunning();
+      return;
+    }
     final inferred = inferRemoteExecution(_events);
+    final stale =
+        inferred.running &&
+        (_lastInferredEvidenceAt == null ||
+            _now().difference(_lastInferredEvidenceAt!) >=
+                _inferredSilenceTimeout);
+    final nextRunning = inferred.running && !stale;
+    final nextToolName = nextRunning ? inferred.toolName : null;
     final changed =
-        inferred.running != _inferredRunning ||
-        inferred.toolName != _inferredToolName;
+        nextRunning != _inferredRunning || nextToolName != _inferredToolName;
     if (changed && mounted) {
       setState(() {
-        _inferredRunning = inferred.running;
-        _inferredToolName = inferred.toolName;
+        _inferredRunning = nextRunning;
+        _inferredToolName = nextToolName;
       });
     }
     final needsRefresh =
-        inferred.running &&
+        nextRunning &&
         _appActive &&
-        _source.phase == RemoteConnectionPhase.ready &&
-        _sessionTasks?.status != 'running' &&
-        _runningFromEvents != true;
+        _source.phase == RemoteConnectionPhase.ready;
     if (needsRefresh) {
       _startInferredRefresh();
     } else {
@@ -1011,13 +1067,30 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     }
   }
 
-  /// 1.5s 补偿拉取：桌面进程在跑时 remote-host 没有 live 推送，只能重读窗口。
+  /// 清掉日志推导状态；权威来源给出明确 idle 或静默超时时调用。
+  void _clearInferredRunning() {
+    final changed = _inferredRunning || _inferredToolName != null;
+    if (changed) {
+      if (mounted) {
+        setState(() {
+          _inferredRunning = false;
+          _inferredToolName = null;
+        });
+      } else {
+        _inferredRunning = false;
+        _inferredToolName = null;
+      }
+    }
+    _stopInferredRefresh();
+  }
+
+  /// 5s 兜底拉取：仅推送静默且日志推导仍活跃时真正请求。
   void _startInferredRefresh() {
     if (!mounted || !_appActive) return;
     if (_source.phase != RemoteConnectionPhase.ready) return;
     if (_inferredRefreshTimer != null) return;
     _inferredRefreshTimer = Timer.periodic(
-      const Duration(milliseconds: 2500),
+      const Duration(seconds: 5),
       (_) => unawaited(_pollInferredWindow()),
     );
   }
@@ -1033,6 +1106,11 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
         !_appActive ||
         _inferredRefreshInFlight ||
         _source.phase != RemoteConnectionPhase.ready) {
+      return;
+    }
+    // 日志推导静默超过 25s：隐藏状态条并停止兜底，避免永久「工作中」。
+    if (_inferredRunning && !_inferredRunningActive) {
+      _clearInferredRunning();
       return;
     }
     // 推送优先：8s 内收到过该会话的任何实时推送就跳过本次兜底。
@@ -1062,9 +1140,29 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
   /// 页面时钟（测试可注入）。
   DateTime _now() => widget.now?.call() ?? DateTime.now();
 
-  /// 记录一次实时推送，重置 inferred 轮询的兜底窗口。
+  /// 记录一次实时推送，重置 inferred 轮询的兜底窗口与推导证据时间。
   void _noteRemotePush() {
-    _lastRemotePushAt = _now();
+    final now = _now();
+    _lastRemotePushAt = now;
+    _lastInferredEvidenceAt = now;
+  }
+
+  /// 合并刷新：把一批 `session.event` 一次性并入时间线，避免每个事件都重建。
+  void _flushPendingEvents() {
+    _eventFlushTimer?.cancel();
+    _eventFlushTimer = null;
+    if (!mounted || _pendingEvents.isEmpty) return;
+    final batch = List<Json>.of(_pendingEvents);
+    _pendingEvents.clear();
+    setState(() {
+      _events = [..._events, ...batch]..sort(_bySeq);
+      _windowThroughSeq = _events.last['seq'] as int? ?? _windowThroughSeq;
+      _projection.reconcile(_events);
+      _trimRetainedEvents();
+    });
+    _recomputeInferredRunning();
+    _scheduleConversationCacheWrite();
+    _scheduleScrollToEnd();
   }
 
   /// 合并一次增量读到的较新窗口：按 seq 去重升序，只有真正新增才重建。
@@ -1092,6 +1190,7 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
       }
       return;
     }
+    _lastInferredEvidenceAt = _now();
     setState(() {
       _events = [..._events, ...added]..sort(_bySeq);
       if (window.throughSeq > _windowThroughSeq) {
@@ -1186,6 +1285,9 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     if (!mounted || _sessionTasksInFlight || !_appActive) return;
     if (_source.phase != RemoteConnectionPhase.ready) return;
     if (!_source.supports(remoteTasksSessionMethod)) {
+      _sessionTasksPolling = false;
+      _sessionTasksTimer?.cancel();
+      _sessionTasksTimer = null;
       if (!_sessionTasksUnsupported) {
         setState(() => _sessionTasksUnsupported = true);
       }
@@ -1222,6 +1324,7 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
       // 解析之外的意外失败同样静默，不打断会话。
     } finally {
       _sessionTasksInFlight = false;
+      _scheduleNextSessionTasksPoll();
     }
   }
 
@@ -1365,6 +1468,9 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     switch (update) {
       case RemoteConversationSnapshot(:final window):
         _noteRemotePush();
+        _eventFlushTimer?.cancel();
+        _eventFlushTimer = null;
+        _pendingEvents.clear();
         setState(() {
           _loading = false;
           _loadError = null;
@@ -1383,30 +1489,33 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
       case RemoteConversationEvents(:final events):
         // 推送本身（即使与已有 seq 重复）也视为推送活跃，重置兜底窗口。
         _noteRemotePush();
-        final added = <Json>[];
+        var immediate = false;
         for (final event in events) {
           final seq = event['seq'];
           if (seq is! int || !_seenSeqs.add(seq)) continue;
-          added.add(event);
+          _pendingEvents.add(event);
+          final type = event['type'];
+          if (type is String && _immediateEventTypes.contains(type)) {
+            immediate = true;
+          }
         }
-        if (added.isEmpty) return;
-        setState(() {
-          _events = [..._events, ...added]..sort(_bySeq);
-          _windowThroughSeq = _events.last['seq'] as int? ?? _windowThroughSeq;
-          _projection.reconcile(_events);
-        });
-        _recomputeInferredRunning();
-        _scheduleConversationCacheWrite();
-        _scheduleScrollToEnd();
+        if (_pendingEvents.isEmpty) return;
+        if (immediate) {
+          _flushPendingEvents();
+        } else {
+          _eventFlushTimer ??= Timer(_eventBatchWindow, _flushPendingEvents);
+        }
       case RemoteConversationLive(:final value):
         _noteRemotePush();
         setState(() => _live = _liveMessage(value));
         _scheduleScrollToEnd();
       case RemoteConversationRunning(:final running):
         _noteRemotePush();
+        if (!running) _clearInferredRunning();
         if (_runningFromEvents == running) return;
         setState(() => _runningFromEvents = running);
-        // 状态切换后尽快同步队列与 live.status，不必等下一轮 2s 轮询。
+        _recomputeInferredRunning();
+        // 状态切换后尽快同步队列与 live.status，不必等下一轮轮询。
         unawaited(_refreshSessionTasks());
       case RemoteConversationFailure(:final message, :final fatal):
         // 补偿轮询的失败静默：保留上一次时间线，不弹提示。
@@ -2154,7 +2263,7 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     );
   }
 
-  /// 一行工作状态：运行中转圈，等待用户操作时给手势图标。
+  /// 一行工作状态：静态圆点，不做常驻转圈/动画，避免长停留持续重绘发热。
   Widget _workStatusRow(BuildContext context, {required bool running}) {
     final colors = Theme.of(context).colorScheme;
     return Container(
@@ -2168,10 +2277,13 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
         mainAxisSize: MainAxisSize.min,
         children: [
           if (running)
-            const SizedBox(
-              width: 14,
-              height: 14,
-              child: CircularProgressIndicator(strokeWidth: 2),
+            Container(
+              width: 8,
+              height: 8,
+              decoration: BoxDecoration(
+                color: colors.primary,
+                shape: BoxShape.circle,
+              ),
             )
           else
             Icon(

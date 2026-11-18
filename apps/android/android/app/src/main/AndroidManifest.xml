@@ -5,6 +5,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 后台保活引导：由用户点击后打开系统的电池优化请求页；App 不修改任何策略。 -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
@@ -43,8 +45,11 @@
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="User-started local AI agent tasks and optional local Web interface" />
         </service>
-        <!-- 主进程前台服务：App 退后台时保持远程连接，任务/审批通知才能推送。 -->
+        <!-- 主进程前台服务：App 退后台时保持远程连接，任务/审批通知才能推送。
+             stopWithTask=false：划掉最近任务不连带停止服务，由服务的 onTaskRemoved
+             按心跳判断「继续同步」或「改成可点按恢复的通知」。 -->
         <service android:name=".RemoteSyncService" android:exported="false"
+            android:stopWithTask="false"
             android:foregroundServiceType="specialUse">
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Keeps the remote DSH connection alive while backgrounded so task completion and approval notifications can be delivered" />
