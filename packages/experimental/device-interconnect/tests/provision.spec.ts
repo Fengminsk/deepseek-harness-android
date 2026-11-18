@@ -6,9 +6,10 @@
 import { describe, expect, it } from 'vitest'
 import { SakuraFrpApiError, type CreateTunnelRequest, type EditTunnelRequest, type SakuraFrpApi, type SakuraFrpCreatedTunnel, type SakuraFrpNode, type SakuraFrpTunnel, type SakuraFrpUserInfo } from '../src/host/sakurafrp-api.ts'
 import {
-  NODE_FLAG_BETA, NODE_FLAG_CREATABLE, NODE_FLAG_OFFLINE, isNodeUsable, provisionSakuraFrpTunnel,
+  NODE_FLAG_BETA, NODE_FLAG_CREATABLE, NODE_FLAG_OFFLINE, isNodeUsable, provisionSakuraFrpTunnel, rankNodesByLatency,
   sakuraPublicAddress, selectSakuraFrpNode, toTunnelAccount,
 } from '../src/host/provision.ts'
+import type { LatencySample, LatencyTarget } from '../src/host/node-latency.ts'
 import { TunnelProvisionError } from '../src/host/tunnel.ts'
 import type { TunnelSettings } from '../src/types.ts'
 
@@ -90,7 +91,7 @@ class FakeApi implements SakuraFrpApi {
       name: request.name,
       remote: '23456',
     }
-    this.tunnels = [...this.tunnels, serviceTunnel({ id: 99, name: request.name, remote: '23456' })]
+    this.tunnels = [...this.tunnels, serviceTunnel({ id: 99, name: request.name, node: request.nodeId, remote: '23456' })]
     return this.created
   }
 
@@ -111,6 +112,9 @@ function bench(overrides: {
   frpcPath?: string
   downloadFrpc?: () => Promise<{ path: string; version: string }>
   reuseExisting?: boolean
+  explicitNodeId?: number | null
+  probeLatency?: (targets: readonly LatencyTarget[]) => Promise<readonly LatencySample[]>
+  resolved?: (resolved: { readonly id: number; readonly nodeId: number; readonly name: string; readonly created: boolean }) => void
 } = {}) {
   const api = overrides.api ?? new FakeApi()
   const downloads: boolean[] = []
@@ -121,6 +125,10 @@ function bench(overrides: {
       api,
       localPort: 5_001,
       ...(overrides.reuseExisting === undefined ? {} : { reuseExisting: overrides.reuseExisting }),
+      ...(overrides.explicitNodeId === undefined ? {} : { explicitNodeId: overrides.explicitNodeId }),
+      probeLatency: overrides.probeLatency
+        ?? (async targets => targets.map(target => ({ ...target, ms: 100 }))),
+      ...(overrides.resolved === undefined ? {} : { onTunnelResolved: overrides.resolved }),
       resolveFrpcPath: () => overrides.frpcPath ?? 'C:\\frpc\\frpc.exe',
       downloadFrpc: () => {
         downloads.push(true)
@@ -131,26 +139,100 @@ function bench(overrides: {
 }
 
 describe('node selection', () => {
-  it('prefers the first node that can create tunnels, in service order', () => {
-    const nodes = [
-      node({ id: 1, flag: NODE_FLAG_CREATABLE | NODE_FLAG_OFFLINE }),
-      node({ id: 2, vip: 1 }),
-      node({ id: 3, flag: NODE_FLAG_CREATABLE | NODE_FLAG_BETA }),
-      node({ id: 4, name: '可用节点' }),
-    ]
-    expect(isNodeUsable(nodes[0] as SakuraFrpNode)).toBe(false)
-    const selected = selectSakuraFrpNode(nodes, null)
-    expect(selected?.node.id).toBe(4)
-    expect(selected?.reason).toContain('自动选择节点 可用节点')
-    expect(selectSakuraFrpNode([node({ flag: 0 })], null)).toBeUndefined()
+  it('filters nodes by capability flags and the account VIP level', () => {
+    expect(isNodeUsable(node({ vip: 3 }), 3)).toBe(true)
+    expect(isNodeUsable(node({ vip: 4 }), 3)).toBe(false)
+    expect(isNodeUsable(node({ vip: 1 }), 0)).toBe(false)
+    expect(isNodeUsable(node({ flag: NODE_FLAG_CREATABLE | NODE_FLAG_OFFLINE }), 3)).toBe(false)
+    expect(isNodeUsable(node({ flag: NODE_FLAG_CREATABLE | NODE_FLAG_BETA }), 3)).toBe(false)
+    expect(isNodeUsable(node({ flag: 0 }), 3)).toBe(false)
   })
 
-  it('validates a pinned node', () => {
-    expect(selectSakuraFrpNode([node({ id: 11 })], 11)?.reason).toContain('使用指定节点')
-    expect(() => selectSakuraFrpNode([node({ id: 11, vip: 1 })], 11))
-      .toThrowError(/指定节点 节点 A 当前不可用/)
-    expect(() => selectSakuraFrpNode([node({ id: 11 })], 12))
-      .toThrowError(/指定节点 12 不存在/)
+  it('ranks reachable nodes by latency, preferring ordinary nodes on a tie', () => {
+    const nodes = [
+      node({ id: 1 }),
+      node({ id: 2, vip: 3 }),
+      node({ id: 3, vip: 1 }),
+      node({ id: 4, vip: 0 }),
+    ]
+    const ranked = rankNodesByLatency(nodes, [
+      { nodeId: 1, host: 'far', ms: 480 },
+      { nodeId: 2, host: 'b', ms: 140 },
+      { nodeId: 3, host: 'c', ms: 140 },
+      { nodeId: 4, host: 'd', ms: 140 },
+    ])
+    expect(ranked.map(entry => entry.node.id)).toEqual([4, 2, 3, 1])
+    expect(ranked[0]?.latencyMs).toBe(140)
+  })
+
+  it('selects the nearest reachable node automatically with a readable reason', async () => {
+    const nodes = [
+      node({ id: 1, name: '远节点', host: 'far.natfrp.cloud' }),
+      node({ id: 2, name: '天津联通PLUS1', host: 'frp-act.com', vip: 0 }),
+      node({ id: 3, name: '不可达节点', host: 'dead.natfrp.cloud' }),
+    ]
+    const selected = await selectSakuraFrpNode(nodes, {
+      maxVip: 3,
+      probeLatency: async targets => targets.map((target) => {
+        if (target.nodeId === 3) return { nodeId: target.nodeId, host: target.host }
+        return { nodeId: target.nodeId, host: target.host, ms: target.nodeId === 2 ? 140 : 480 }
+      }),
+    })
+    expect(selected?.node.id).toBe(2)
+    expect(selected?.latencyMs).toBe(140)
+    expect(selected?.reason).toContain('天津联通PLUS1')
+    expect(selected?.reason).toContain('普通节点')
+    expect(selected?.reason).toContain('140 ms')
+  })
+
+  it('allows VIP nodes within the account group level only', async () => {
+    const nodes = [node({ id: 1, name: 'VIP 节点', vip: 3, host: 'vip.natfrp.cloud' }), node({ id: 2, name: '普通节点', vip: 0 })]
+    const level3 = await selectSakuraFrpNode(nodes, {
+      maxVip: 3,
+      probeLatency: async targets => targets.map(target => ({ ...target, ms: target.nodeId === 1 ? 100 : 200 })),
+    })
+    expect(level3?.node.id).toBe(1)
+    const level0 = await selectSakuraFrpNode(nodes, {
+      maxVip: 0,
+      probeLatency: async targets => targets.map(target => ({ ...target, ms: 100 })),
+    })
+    expect(level0?.node.id).toBe(2)
+  })
+
+  it('falls back to the saved node when every probe fails, then to list order', async () => {
+    const nodes = [node({ id: 1 }), node({ id: 2 }), node({ id: 3 })]
+    const unreachable = async (targets: readonly LatencyTarget[]): Promise<readonly LatencySample[]> =>
+      targets.map(target => ({ nodeId: target.nodeId, host: target.host }))
+    const saved = await selectSakuraFrpNode(nodes, { maxVip: 0, probeLatency: unreachable, fallbackNodeId: 2 })
+    expect(saved?.node.id).toBe(2)
+    expect(saved?.reason).toContain('延迟探测全部失败')
+    expect(saved?.reason).toContain('已保存节点')
+    const ordered = await selectSakuraFrpNode(nodes, { maxVip: 0, probeLatency: unreachable })
+    expect(ordered?.node.id).toBe(1)
+    expect(ordered?.reason).toContain('按节点列表顺序回退')
+  })
+
+  it('respects an explicitly requested node without probing it', async () => {
+    const probes: number[] = []
+    const nodes = [node({ id: 1, name: '远节点' }), node({ id: 2, name: '指定节点' })]
+    const selected = await selectSakuraFrpNode(nodes, {
+      preferredId: 2,
+      maxVip: 0,
+      probeLatency: async (targets) => {
+        probes.push(targets.length)
+        return targets.map(target => ({ ...target, ms: 10 }))
+      },
+    })
+    expect(selected?.node.id).toBe(2)
+    expect(selected?.reason).toContain('使用指定节点')
+    expect(probes).toEqual([])
+  })
+
+  it('rejects a pinned node that is missing or above the account VIP level', async () => {
+    await expect(selectSakuraFrpNode([node({ id: 11 })], { preferredId: 12 }))
+      .rejects.toThrow(/指定节点 12 不存在/)
+    await expect(selectSakuraFrpNode([node({ id: 11, vip: 3 })], { preferredId: 11, maxVip: 0 }))
+      .rejects.toThrow(/指定节点 节点 A 当前不可用/)
   })
 
   it('derives the public address from the node host and the remote value', () => {
@@ -259,5 +341,82 @@ describe('provision flow', () => {
     fake.createTunnel = async () => ({ id: 99, name: 'DSH' })
     const error = await bench({ api: fake }).run().catch((caught: unknown) => caught)
     expect(error).toMatchObject({ code: 'sakura-bad-response' })
+  })
+})
+
+describe('dedup and nearest-node flow', () => {
+  it('reports the resolved tunnel id before the remaining steps run', async () => {
+    const fake = new FakeApi()
+    const events: string[] = []
+    const result = await bench({
+      api: fake,
+      resolved: (resolved) => { events.push(`resolved:${String(resolved.id)}:${String(resolved.nodeId)}:${String(resolved.created)}`) },
+    }).run()
+    expect(events).toEqual(['resolved:99:11:true'])
+    expect(result.tunnel.id).toBe(99)
+  })
+
+  it('persists the created id when a later step fails so a retry can reuse it', async () => {
+    const fake = new FakeApi()
+    const persisted: number[] = []
+    fake.createTunnel = async () => ({ id: 99, name: 'DSH' })
+    const first = await bench({
+      api: fake,
+      resolved: (resolved) => { persisted.push(resolved.id) },
+    }).run().catch((caught: unknown) => caught)
+    expect(first).toBeInstanceOf(TunnelProvisionError)
+    expect(persisted).toEqual([99])
+  })
+
+  it('hints without migrating when the reused tunnel sits on a farther node', async () => {
+    const fake = new FakeApi()
+    fake.tunnels = [serviceTunnel({ node: 2, remote: '23456' })]
+    fake.nodes = [
+      node({ id: 1, name: '天津联通PLUS1', host: 'frp-act.com' }),
+      node({ id: 2, name: '长沙三线PLUS2', host: 'cs.natfrp.cloud', vip: 3 }),
+    ]
+    fake.user = { id: 7, name: 'alice', frozen: false, tunnels: 5, group: { name: '青铜VIP', level: 3 } }
+    const result = await bench({
+      api: fake,
+      probeLatency: async targets => targets.map(target => ({
+        ...target,
+        ms: target.nodeId === 1 ? 140 : 480,
+      })),
+    }).run()
+    expect(fake.calls).not.toContain('createTunnel')
+    const hint = result.steps.find(step => step.id === 'node-distance')
+    expect(hint?.message).toContain('提示')
+    expect(hint?.message).toContain('未自动迁移')
+    expect(hint?.message).toContain('长沙三线PLUS2')
+    expect(hint?.message).toContain('天津联通PLUS1')
+  })
+
+  it('uses the reused tunnel node without a distance hint when it is nearest', async () => {
+    const fake = new FakeApi()
+    fake.tunnels = [serviceTunnel({ node: 11 })]
+    const result = await bench({ api: fake }).run()
+    expect(result.steps.some(step => step.id === 'node-distance')).toBe(false)
+  })
+
+  it('ignores the persisted node id in auto mode but honours an explicit one', async () => {
+    const fake = new FakeApi()
+    fake.nodes = [
+      node({ id: 1, name: '近节点', host: 'near.natfrp.cloud' }),
+      node({ id: 2, name: '保存节点', host: 'saved.natfrp.cloud' }),
+    ]
+    const auto = await bench({
+      api: fake,
+      tunnel: tunnel({ nodeId: 2 }),
+      probeLatency: async targets => targets.map(target => ({ ...target, ms: target.nodeId === 1 ? 100 : 300 })),
+    }).run()
+    expect(auto.settings.nodeId).toBe(1)
+    fake.calls.length = 0
+    fake.tunnels = []
+    const explicit = await bench({
+      api: fake,
+      explicitNodeId: 2,
+      probeLatency: async targets => targets.map(target => ({ ...target, ms: target.nodeId === 1 ? 100 : 300 })),
+    }).run()
+    expect(explicit.settings.nodeId).toBe(2)
   })
 })

@@ -12,6 +12,7 @@ import { Bridge } from '../src/host/bridge.ts'
 import { ConfigStore, ConfigValidationError, defaultConfig, processInferenceEnvironment } from '../src/host/config.ts'
 import { ControlPlaneError, type ControlPlane } from '../src/host/control-plane.ts'
 import { OVERLAY_FILE_NAME } from '../src/host/config.ts'
+import type { LatencySample, LatencyTarget } from '../src/host/node-latency.ts'
 import { TunnelError } from '../src/host/tunnel.ts'
 import {
   SakuraFrpApiError, type CreateTunnelRequest, type EditTunnelRequest, type SakuraFrpApi, type SakuraFrpCreatedTunnel,
@@ -165,6 +166,7 @@ async function bench(overrides: {
   readinessTimeoutMs?: number
   sakurafrpApi?: (token: string) => SakuraFrpApi
   downloadFrpc?: (dataDir: string) => Promise<{ readonly path: string; readonly version: string }>
+  latencyProbe?: (targets: readonly LatencyTarget[]) => Promise<readonly LatencySample[]>
 } = {}) {
   const directory = await dataDirectory()
   const fallback = overrides.config ?? configuration()
@@ -189,6 +191,7 @@ async function bench(overrides: {
     readinessTimeoutMs: overrides.readinessTimeoutMs ?? 100,
     sakurafrpApi: overrides.sakurafrpApi ?? (() => fakeSakuraApi()),
     downloadFrpc: overrides.downloadFrpc ?? (async () => ({ path: 'C:\\managed\\frpc.exe', version: '0.51' })),
+    latencyProbe: overrides.latencyProbe ?? (async targets => targets.map(target => ({ ...target, ms: 100 }))),
     logger,
   })
   return {
@@ -234,6 +237,38 @@ function fakeSakuraApi(overrides: {
       return created
     },
     editTunnel: async (_request: EditTunnelRequest) => {},
+  }
+}
+
+/** A scripted provision API whose tunnel list is controlled by the test. */
+function scriptedProvisionApi(options: {
+  readonly created: SakuraFrpCreatedTunnel
+  readonly omitCreatedFromList?: boolean
+}): { api: SakuraFrpApi; setTunnels: (tunnels: readonly SakuraFrpTunnel[]) => void } {
+  let tunnels: readonly SakuraFrpTunnel[] = []
+  const node: SakuraFrpNode = { id: 11, name: '节点 A', host: 'a.natfrp.cloud', vip: 0, flag: 4 }
+  return {
+    api: {
+      userInfo: async () => ({ id: 7, name: 'alice', frozen: false, tunnels: 5, traffic: [0, 100] }),
+      listNodes: async () => [node],
+      listTunnels: async () => tunnels,
+      createTunnel: async (request: CreateTunnelRequest) => {
+        if (options.omitCreatedFromList !== true) {
+          tunnels = [...tunnels, {
+            id: options.created.id,
+            name: request.name,
+            type: 'tcp',
+            node: request.nodeId,
+            localIp: request.localIp,
+            localPort: request.localPort,
+            remote: options.created.remote ?? '',
+          }]
+        }
+        return options.created
+      },
+      editTunnel: async () => {},
+    },
+    setTunnels: (next) => { tunnels = next },
   }
 }
 
@@ -746,3 +781,86 @@ describe('automatic tunnel provision', () => {
   })
 })
 
+
+describe('provision dedup hardening', () => {
+  /** One configuration in the one-click mode with a stored access key. */
+  function provisionConfig(): DeviceInterconnectConfig {
+    return configuration({
+      enabled: true,
+      tunnel: tunnel({ autoProvision: true, tunnelIds: '', publicAddress: '', tunnelId: null }),
+    })
+  }
+
+  it('shares one provision attempt when two requests arrive together', async () => {
+    const base = fakeSakuraApi()
+    const gate: { release: () => void } = { release: () => {} }
+    const opened = new Promise<void>((resolve) => { gate.release = resolve })
+    const createTunnel = vi.fn(base.createTunnel)
+    const api: SakuraFrpApi = {
+      ...base,
+      userInfo: async () => {
+        await opened
+        return base.userInfo()
+      },
+      createTunnel,
+    }
+    const { bridge, store } = await bench({ config: provisionConfig(), sakurafrpApi: () => api })
+    const first = bridge.provisionTunnel({ frpcPath: 'C:\\frpc\\frpc.exe' })
+    const second = bridge.provisionTunnel({ frpcPath: 'C:\\frpc\\frpc.exe' })
+    gate.release()
+    const [left, right] = await Promise.all([first, second])
+    expect(createTunnel).toHaveBeenCalledOnce()
+    expect(store.current().tunnel.tunnelId).toBe(99)
+    expect(left.config.tunnel.tokenConfigured).toBe(true)
+    expect(right.tunnel.provision?.lastSteps.some(step => step.id === 'start-tunnel' && step.status === 'done')).toBe(true)
+  })
+
+  it('persists a created tunnel id before a later failure and reuses it after a rename', async () => {
+    const scripted = scriptedProvisionApi({ created: { id: 99, name: 'DSH', remote: '23456' }, omitCreatedFromList: true })
+    const createTunnel = vi.fn(scripted.api.createTunnel)
+    const editTunnel = vi.fn(scripted.api.editTunnel)
+    const api: SakuraFrpApi = { ...scripted.api, createTunnel, editTunnel }
+    const { bridge, store } = await bench({ config: provisionConfig(), sakurafrpApi: () => api })
+    const failed = await bridge.provisionTunnel({ frpcPath: 'C:\\frpc\\frpc.exe' })
+    expect(failed.tunnel.provision?.lastError?.code).toBe('sakura-bad-response')
+    expect(store.current().tunnel.tunnelId).toBe(99)
+    expect(store.current().tunnel.nodeId).toBe(11)
+    expect(createTunnel).toHaveBeenCalledOnce()
+    // The tunnel becomes visible; a retry with a new name must reuse the saved id.
+    scripted.setTunnels([{
+      id: 99,
+      name: 'renamed',
+      type: 'tcp',
+      node: 11,
+      localIp: '127.0.0.1',
+      localPort: 4_777,
+      remote: '23456',
+    }])
+    const retried = await bridge.provisionTunnel({ frpcPath: 'C:\\frpc\\frpc.exe', tunnelName: '新名字' })
+    expect(createTunnel).toHaveBeenCalledOnce()
+    expect(editTunnel).toHaveBeenCalled()
+    expect(retried.tunnel.provision?.lastError).toBeUndefined()
+    expect(store.current().tunnel.tunnelId).toBe(99)
+  })
+
+  it('selects the nearest node with the account VIP level and records its latency', async () => {
+    const nodes: readonly SakuraFrpNode[] = [
+      { id: 11, name: '近节点', host: 'near.natfrp.cloud', vip: 3, flag: 4 },
+      { id: 12, name: '远节点', host: 'far.natfrp.cloud', vip: 0, flag: 4 },
+    ]
+    const api = fakeSakuraApi({
+      user: { id: 7, name: 'alice', frozen: false, tunnels: 5, group: { name: '青铜VIP', level: 3 } },
+      nodes,
+    })
+    const { bridge } = await bench({
+      config: provisionConfig(),
+      sakurafrpApi: () => api,
+      latencyProbe: async targets => targets.map(target => ({ ...target, ms: target.nodeId === 11 ? 140 : 480 })),
+    })
+    const state = await bridge.provisionTunnel({ frpcPath: 'C:\\frpc\\frpc.exe' })
+    expect(state.tunnel.node).toMatchObject({ id: 11, latencyMs: 140 })
+    const selectStep = state.tunnel.provision?.lastSteps.find(step => step.id === 'select-node')
+    expect(selectStep?.message).toContain('实测 140 ms')
+    expect(selectStep?.message).toContain('VIP 3 级节点')
+  })
+})

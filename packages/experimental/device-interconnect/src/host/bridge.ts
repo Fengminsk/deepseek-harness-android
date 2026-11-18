@@ -23,6 +23,7 @@ import { QR_ROUTE } from '../api.ts'
 import { ConfigStore, ConfigValidationError, isDeviceId } from './config.ts'
 import { ControlPlaneError, type ControlPlane } from './control-plane.ts'
 import { downloadFrpc as downloadFrpcBinary } from './frpc-download.ts'
+import { createTcpLatencyProbe, type LatencySample, type LatencyTarget } from './node-latency.ts'
 import { overlayPath, writeOverlay } from './overlay.ts'
 import { provisionSakuraFrpTunnel, withPendingSteps } from './provision.ts'
 import { createSakuraFrpApi, type SakuraFrpApi } from './sakurafrp-api.ts'
@@ -66,6 +67,8 @@ export interface BridgeOptions {
   readonly sakurafrpApi?: (token: string) => SakuraFrpApi
   /** Downloads frpc for the automatic provision; defaults to the SakuraFrp download. */
   readonly downloadFrpc?: (dataDir: string) => Promise<{ readonly path: string; readonly version: string }>
+  /** Node latency probe used by the automatic provision; defaults to a TCP connect probe. */
+  readonly latencyProbe?: (targets: readonly LatencyTarget[]) => Promise<readonly LatencySample[]>
   /** Platform used for the frpc install path; defaults to `process.platform`. */
   readonly platform?: NodeJS.Platform
   /** CPU architecture used for the frpc download; defaults to `process.arch`. */
@@ -99,6 +102,7 @@ export class Bridge {
   private readonly logger: NonNullable<BridgeOptions['logger']>
   private readonly sakurafrpApi: (token: string) => SakuraFrpApi
   private readonly downloadFrpcDependency: (dataDir: string) => Promise<{ readonly path: string; readonly version: string }>
+  private readonly latencyProbe: (targets: readonly LatencyTarget[]) => Promise<readonly LatencySample[]>
   private readonly platform: NodeJS.Platform
   private readonly arch: string
   private readonly activationProblems: Diagnostic[]
@@ -107,6 +111,7 @@ export class Bridge {
   private disposed = false
   private tunnelStartup: AbortController | undefined
   private tunnelStartupTask: Promise<void> | undefined
+  private provisionInFlight: Promise<RuntimeState> | undefined
   private provisionAccount: TunnelAccount | undefined
   private provisionNode: TunnelNodeInfo | undefined
   private provisionTunnelInfo: TunnelInfo | undefined
@@ -137,6 +142,7 @@ export class Bridge {
       platform: this.platform,
       arch: this.arch,
     }))
+    this.latencyProbe = options.latencyProbe ?? createTcpLatencyProbe()
     this.activationProblems = this.store.problems().map(message => ({ code: 'config-unreadable', message }))
   }
 
@@ -209,14 +215,34 @@ export class Bridge {
    * Validate the access key, then create or reuse a SakuraFrp TCP tunnel, align
    * the public origin, and start frpc.
    *
-   * The submitted fields are persisted before the first API call so a retry can
-   * reuse the same access key; a failed attempt keeps the previous tunnel
-   * settings and only records the steps it reached.
+   * Only one provision runs at a time: a concurrent or repeated request joins
+   * the attempt in flight instead of creating a second tunnel. The submitted
+   * fields are persisted before the first API call so a retry can reuse the same
+   * access key; a failed attempt keeps the previous tunnel settings and only
+   * records the steps it reached.
    * @param candidate - optional fields from the page, overriding saved settings.
    * @returns the snapshot after the attempt, including the provision steps.
    * @throws {ConfigValidationError} when a submitted field has the wrong type.
    */
   async provisionTunnel(candidate: unknown): Promise<RuntimeState> {
+    const inFlight = this.provisionInFlight
+    if (inFlight !== undefined) return inFlight
+    const task = this.runProvision(candidate)
+    this.provisionInFlight = task
+    try {
+      return await task
+    } finally {
+      if (this.provisionInFlight === task) this.provisionInFlight = undefined
+    }
+  }
+
+  /**
+   * One provision attempt; {@link provisionTunnel} guarantees it never overlaps
+   * another attempt.
+   * @param candidate - optional fields from the page.
+   * @returns the snapshot after the attempt.
+   */
+  private async runProvision(candidate: unknown): Promise<RuntimeState> {
     const request = readProvisionRequest(candidate)
     this.cachedRead = undefined
     const current = this.store.current()
@@ -258,12 +284,34 @@ export class Bridge {
     request: ReturnType<typeof readProvisionRequest>,
   ): Promise<{ readonly steps: readonly ProvisionStep[]; readonly error?: Diagnostic }> {
     try {
+      const explicitNodeId = request.nodeId !== undefined && request.nodeId !== null && request.nodeId > 0
+        ? request.nodeId
+        : undefined
       const result = await provisionSakuraFrpTunnel(tunnel, {
         api: this.sakurafrpApi(token),
         localPort: this.store.current().host.port,
         ...(request.reuseExisting === undefined ? {} : { reuseExisting: request.reuseExisting }),
+        ...(explicitNodeId === undefined ? {} : { explicitNodeId }),
+        probeLatency: targets => this.latencyProbe(targets),
         resolveFrpcPath: () => this.frpcPathFor(this.store.current().tunnel),
         downloadFrpc: () => this.downloadFrpcDependency(this.dataDir),
+        // Persist the resolved tunnel id before the remaining steps can fail, so
+        // a retry reuses it even after a rename and never leaves an orphan.
+        onTunnelResolved: async resolved => {
+          const saved = this.store.current()
+          await this.store.save({
+            ...saved,
+            tunnel: {
+              ...saved.tunnel,
+              provider: 'sakurafrp',
+              autoProvision: true,
+              tunnelId: resolved.id,
+              nodeId: resolved.nodeId,
+              tunnelIds: String(resolved.id),
+            },
+          })
+          this.logger.info('device-interconnect: provisioned SakuraFrp tunnel %s persisted', String(resolved.id))
+        },
       })
       this.provisionAccount = result.account
       this.provisionNode = result.node

@@ -74,6 +74,10 @@ With just the access key the plugin can do the whole setup through the [SakuraFr
 
 The automatic mode consumes one tunnel from the account quota. The access key stays write-only: the page never displays it again.
 
+The one-click setup also guards against duplicates. Only one provision runs at a time, so a repeated click or a second request joins the attempt already in flight instead of creating another tunnel. As soon as the tunnel is known, its id and node are persisted before the remaining steps run: a later failure (public address, frpc, start) keeps that id, so a retry reuses the same tunnel, even after the user renamed it. The next attempt first reuses the saved id, then an existing TCP tunnel with the same name; `reuseExisting: false` is the only way to ask for a new tunnel. Nothing is ever deleted or migrated automatically.
+
+Node selection aims for the nearest reachable node and respects the account's VIP level. The account group level (`user/info` → `group.level`, 0 when absent) caps each node's VIP requirement (`vip <= level`), so an ordinary account never picks a VIP-only node. In automatic mode the plugin measures a plain TCP connect to every usable node's frps port 7000 (1.2 s timeout, at most 32 at a time, no external service), then picks the lowest latency; on a tie ordinary nodes win, then the lower node id. Unreachable nodes rank last; if every probe fails it falls back to the persisted node, else the first usable node in service order, and says so in the step. An explicitly requested node id (`nodeId` in the one-click request) is honored without probing, and the persisted `nodeId` is never treated as a lock, so moving to another city re-picks the nearest node. A reused tunnel stays on its node: when that node is at least 150 ms farther than the nearest usable node (or unreachable), the steps add a non-blocking note suggesting a manual recreate — the plugin neither migrates nor deletes existing tunnels.
+
 #### Manual mode (advanced)
 
 Turn **Create the tunnel automatically** off to manage the tunnel yourself:

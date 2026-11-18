@@ -130,6 +130,14 @@ describe('SakuraFrp API client', () => {
     }
   })
 
+  it('reads the account VIP group level', () => {
+    expect(parseUserInfo({ id: 7, name: 'alice', group: { name: '青铜VIP', level: 3 } }))
+      .toMatchObject({ group: { name: '青铜VIP', level: 3 } })
+    expect(parseUserInfo({ id: 7, name: 'alice', group: {} })?.group).toBeUndefined()
+    expect(parseUserInfo({ id: 7, name: 'alice', group: { level: 2 } }))
+      .toMatchObject({ group: { level: 2 } })
+  })
+
   it('does not log requests itself', () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {})
     expect(log).not.toHaveBeenCalled()

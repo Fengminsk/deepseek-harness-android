@@ -1089,6 +1089,13 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
 
 ## 9. 变更日志（append-only，最新在最上面）
 
+### 2026-11-18 12:15 · lead（SakuraFrp 去重审计 + 就近/VIP 节点选择 + 并发实测）
+
+- 去重审计：常规重试不会重复（先 saved tunnelId、再 type=tcp+同名复用；实测连续 provision 隧道数 12 不变、#29890068 复用）。修复两个缺口：①`Bridge.provisionTunnel` 增加 single-flight，并发/连点不会各建一条；②provision 确定 tunnelId 后通过 `onTunnelResolved` **立即**持久化 tunnelId/nodeId/tunnelIds，创建后后续步骤失败（甚至改名重试）仍复用、不留孤儿。
+- 就近/VIP：解析 `user/info.group.level`（jackWei=3 青铜VIP）作为 VIP 上限；节点可用条件加 `node.vip <= maxVip`；新增 `node-latency.ts`（TCP connect host:7000，超时 1.2s、并发 32、可注入）按实测延迟选最近可达节点，自动模式重新测速（不再被持久化 nodeId 锁死），显式 nodeId 才强制；steps 显示节点/VIP/延迟；复用旧隧道节点更远时只给 `node-distance` 提示，不自动迁移/删除。
+- 真机实测：provision 选中 长沙电信PLUS2（普通节点 84–120ms），复用 #29890068；两个并发 provision 请求均返回同一隧道 #29890068，SakuraFrp 隧道数前后均为 12（未重复）；当前隧道保持在天津联通PLUS1（约 83ms），未受扰动。
+- 门禁：插件 13 文件 **258 tests**、双 face tsc、typecheck 5/5、build:check 2/2、bundle、i18n/README/translation-pairing 绿。
+- **提交**：见本次 commit。
 ### 2026-11-18 11:35 · lead（SakuraFrp 公网链路端到端验证 + 桥接错误码修正）
 
 - 用当前 SakuraFrp 公网配对链接跑 `apps/remote-host/scripts/e2e-remote-host.ts --pair-url wss://frp-act.com:35530/...`：**22/22 PASS**——解析配对链接、GET /ca.cer CA 指纹、POST /pair 单次令牌、wss 固定 CA 校验、protocol.hello（93 methods）、sessions.list/session.readWindow、workspace.files、terminal 全流程、附件 prepare/read、session.send + follow 流、host-local native 方法、清理；证明经 SakuraFrp TCP 隧道 + 自有 CA 的远端 DSH 手机链路可用。

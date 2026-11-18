@@ -44,6 +44,14 @@ export class SakuraFrpApiError extends Error {
   }
 }
 
+/** The account's VIP group, as reported under `user/info` `group`. */
+export interface SakuraFrpUserGroup {
+  /** Group display name, for example `青铜VIP`. */
+  readonly name?: string
+  /** Highest node VIP level the account may use; absent means 0. */
+  readonly level?: number
+}
+
 /** The account facts the provision needs from `GET /user/info`. */
 export interface SakuraFrpUserInfo {
   /** Account id. */
@@ -58,6 +66,8 @@ export interface SakuraFrpUserInfo {
   readonly realname?: boolean | number | string
   /** Traffic tuple: `[consumed today, remaining total]` in the provider's unit. */
   readonly traffic?: readonly number[]
+  /** VIP group, whose level caps the node VIP requirement. */
+  readonly group?: SakuraFrpUserGroup
   /** Whether the account is frozen. */
   readonly frozen: boolean
   /** Why the account is frozen, when it is. */
@@ -72,7 +82,7 @@ export interface SakuraFrpNode {
   readonly name: string
   /** Node domain used in public addresses. */
   readonly host: string
-  /** 1 for a VIP-only node. */
+  /** Account VIP level required to create tunnels on this node; 0 is ordinary. */
   readonly vip: number
   /** Capability bit field. */
   readonly flag: number
@@ -279,6 +289,7 @@ export function parseUserInfo(value: unknown): SakuraFrpUserInfo | undefined {
   const tunnels = readNumber(value['tunnels'])
   const realname = readRealname(value['realname'])
   const traffic = readNumberArray(value['traffic'])
+  const group = readUserGroup(value['group'])
   const frozenReason = frozen ? banReason(ban) : undefined
   return {
     id,
@@ -288,7 +299,24 @@ export function parseUserInfo(value: unknown): SakuraFrpUserInfo | undefined {
     ...(tunnels === undefined ? {} : { tunnels }),
     ...(realname === undefined ? {} : { realname }),
     ...(traffic === undefined ? {} : { traffic }),
+    ...(group === undefined ? {} : { group }),
     ...(frozenReason === undefined ? {} : { frozenReason }),
+  }
+}
+
+/**
+ * Read the account VIP group, tolerating a missing or partial object.
+ * @param value - the `group` member of one `user/info` body.
+ * @returns the group facts, or undefined when none are usable.
+ */
+function readUserGroup(value: unknown): SakuraFrpUserGroup | undefined {
+  if (!isRecord(value)) return undefined
+  const name = typeof value['name'] === 'string' && value['name'].trim() !== '' ? value['name'].trim() : undefined
+  const level = readNumber(value['level'])
+  if (name === undefined && level === undefined) return undefined
+  return {
+    ...(name === undefined ? {} : { name }),
+    ...(level === undefined ? {} : { level }),
   }
 }
 

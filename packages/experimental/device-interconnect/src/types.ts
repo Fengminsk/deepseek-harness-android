@@ -337,6 +337,8 @@ export interface TunnelNodeInfo {
   readonly name?: string
   /** Node host the public address uses. */
   readonly host?: string
+  /** Measured TCP latency of the node, in milliseconds. */
+  readonly latencyMs?: number
 }
 
 /** The tunnel the automatic provision created or reused. */
