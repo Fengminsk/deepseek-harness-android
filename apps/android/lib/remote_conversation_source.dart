@@ -86,6 +86,12 @@ const String remoteTasksSessionMethod = 'tasks.session';
 /// 删除一条可取消的排队消息（仅 `cancellable == true` 的行可用）。
 const String remoteTasksRemoveQueuedMethod = 'tasks.removeQueued';
 
+/// 编辑一条排队消息（参数 `{sessionId, itemId, text}`，纯文本）。
+const String remoteTasksEditQueuedMethod = 'tasks.editQueued';
+
+/// 把一条排队消息作为插话立即送进运行中的回合（参数 `{sessionId, itemId}`）。
+const String remoteTasksSteerQueuedMethod = 'tasks.steerQueued';
+
 /// 取消一次在途变更读取的门面方法（`workspaceChanges.cancel`）。
 const String remoteWorkspaceChangesCancelMethod = 'workspaceChanges.cancel';
 

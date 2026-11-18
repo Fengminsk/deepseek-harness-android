@@ -28,6 +28,7 @@ flutter:
   shaders:
     - shaders/liquid_glass.frag
   assets:
+    - assets/icons/dsh/
     - licenses/FlClash-GPL-3.0.txt
     - licenses/flclash-source.json
     - licenses/require-builtin-MIT.txt

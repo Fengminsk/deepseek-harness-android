@@ -26,6 +26,7 @@ import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/runtime_transport.dart';
 import 'package:dsh_android/ui.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
@@ -2859,6 +2860,102 @@ void main() {
       expect(find.byKey(const ValueKey('remote-transcript')), findsOneWidget);
     });
 
+    testWidgets('可编辑排队消息行内保存调用 tasks.editQueued，空文本不提交', (tester) async {
+      final fixture = _tasksFixture(
+        pending: <Map<String, dynamic>>[
+          _queuedItem('q-1', prompt: '旧内容'),
+        ],
+      );
+      await tester.pumpWidget(_host(fixture.source));
+      await _flushTasks(tester);
+
+      await tester.tap(find.byKey(const ValueKey('remote-queue-edit-q-1')));
+      await tester.pump();
+      final field = find.byKey(const ValueKey('remote-queue-edit-field-q-1'));
+      expect(field, findsOneWidget);
+      expect(tester.widget<TextField>(field).controller?.text, '旧内容');
+
+      await tester.enterText(field, '   ');
+      await tester.tap(find.byKey(const ValueKey('remote-queue-edit-save-q-1')));
+      await tester.pump();
+      expect(fixture.edits, isEmpty, reason: '空文本不能保存');
+
+      await tester.enterText(field, '新内容');
+      await tester.tap(find.byKey(const ValueKey('remote-queue-edit-save-q-1')));
+      await _flushTasks(tester);
+      expect(fixture.edits.single, <String, dynamic>{
+        'sessionId': fixture.source.sessionId,
+        'itemId': 'q-1',
+        'text': '新内容',
+      });
+      expect(find.textContaining('已保存排队消息'), findsOneWidget);
+      expect(find.textContaining('新内容'), findsWidgets);
+    });
+
+    testWidgets('不可编辑与不可插话的排队消息置灰并给出原因', (tester) async {
+      final fixture = _tasksFixture(
+        pending: <Map<String, dynamic>>[
+          _queuedItem('q-1', editable: false, steerable: false),
+        ],
+      );
+      await tester.pumpWidget(_host(fixture.source));
+      await _flushTasks(tester);
+
+      final edit = tester.widget<IconButton>(
+        find.byKey(const ValueKey('remote-queue-edit-q-1')),
+      );
+      expect(edit.onPressed, isNull);
+      expect(
+        find.byTooltip('包含非文本内容，暂不支持编辑'),
+        findsOneWidget,
+      );
+      final steer = tester.widget<IconButton>(
+        find.byKey(const ValueKey('remote-queue-steer-q-1')),
+      );
+      expect(steer.onPressed, isNull);
+      expect(find.byTooltip('仅运行中可插话发送'), findsOneWidget);
+    });
+
+    testWidgets('运行中且 steerable 时可插话发送并刷新队列', (tester) async {
+      final fixture = _tasksFixture(
+        status: 'running',
+        pending: <Map<String, dynamic>>[
+          _queuedItem('q-1', steerable: true),
+        ],
+      );
+      await tester.pumpWidget(_host(fixture.source));
+      await _flushTasks(tester);
+
+      final steer = tester.widget<IconButton>(
+        find.byKey(const ValueKey('remote-queue-steer-q-1')),
+      );
+      expect(steer.onPressed, isNotNull);
+      await tester.tap(find.byKey(const ValueKey('remote-queue-steer-q-1')));
+      await _flushTasks(tester);
+      expect(fixture.steers.single, <String, dynamic>{
+        'sessionId': fixture.source.sessionId,
+        'itemId': 'q-1',
+      });
+      expect(find.textContaining('已插话发送'), findsOneWidget);
+    });
+
+    testWidgets('队列坞使用 DSH SVG 图标资产', (tester) async {
+      final fixture = _tasksFixture(
+        pending: <Map<String, dynamic>>[_queuedItem('q-1')],
+      );
+      await tester.pumpWidget(_host(fixture.source));
+      await _flushTasks(tester);
+
+      final assets = tester
+          .widgetList<SvgPicture>(find.byType(SvgPicture))
+          .map((widget) => widget.bytesLoader)
+          .whereType<SvgAssetLoader>()
+          .map((loader) => loader.assetName)
+          .toSet();
+      expect(assets, contains('assets/icons/dsh/queue.svg'));
+      expect(assets, contains('assets/icons/dsh/edit.svg'));
+      expect(assets, contains('assets/icons/dsh/trash.svg'));
+    });
     testWidgets('队列为空且空闲时不渲染任何面板', (tester) async {
       final fixture = _tasksFixture();
       await tester.pumpWidget(_host(fixture.source));
@@ -2878,6 +2975,8 @@ Map<String, dynamic> _queuedItem(
   String prompt = '排队内容',
   String status = 'queued',
   bool cancellable = true,
+  bool editable = true,
+  bool steerable = false,
 }) => <String, dynamic>{
   'id': 'queued:$itemId',
   'kind': 'queued',
@@ -2886,6 +2985,8 @@ Map<String, dynamic> _queuedItem(
   'prompt': prompt,
   'status': status,
   'cancellable': cancellable,
+  'editable': editable,
+  'steerable': steerable,
 };
 
 /// 带 `tasks.session` / `tasks.removeQueued` 应答的会话页假数据源。
@@ -2896,6 +2997,8 @@ Map<String, dynamic> _queuedItem(
   FakeRemoteConversationSource source,
   List<Map<String, dynamic>> queue,
   List<Map<String, dynamic>> removed,
+  List<Map<String, dynamic>> edits,
+  List<Map<String, dynamic>> steers,
 })
 _tasksFixture({
   String status = 'idle',
@@ -2905,6 +3008,8 @@ _tasksFixture({
 }) {
   final queue = <Map<String, dynamic>>[...pending];
   final removed = <Map<String, dynamic>>[];
+  final edits = <Map<String, dynamic>>[];
+  final steers = <Map<String, dynamic>>[];
   final source = FakeRemoteConversationSource(
     window: _window(conversationEvents()),
     supported: <String>{
@@ -2918,6 +3023,8 @@ _tasksFixture({
       remoteAttachmentPrepareMethod,
       if (supportsTasks) remoteTasksSessionMethod,
       if (supportsTasks) remoteTasksRemoveQueuedMethod,
+      if (supportsTasks) remoteTasksEditQueuedMethod,
+      if (supportsTasks) remoteTasksSteerQueuedMethod,
     },
   );
   if (supportsTasks) {
@@ -2939,8 +3046,32 @@ _tasksFixture({
           queue.removeWhere((item) => item['itemId'] == params['itemId']);
           return <String, dynamic>{'removed': true};
         };
+    source.answers[remoteTasksEditQueuedMethod] =
+        (Map<String, dynamic> params) {
+          edits.add(Map<String, dynamic>.of(params));
+          for (var index = 0; index < queue.length; index++) {
+            if (queue[index]['itemId'] != params['itemId']) continue;
+            queue[index] = <String, dynamic>{
+              ...queue[index],
+              'prompt': params['text'],
+            };
+          }
+          return <String, dynamic>{'edited': true};
+        };
+    source.answers[remoteTasksSteerQueuedMethod] =
+        (Map<String, dynamic> params) {
+          steers.add(Map<String, dynamic>.of(params));
+          queue.removeWhere((item) => item['itemId'] == params['itemId']);
+          return <String, dynamic>{'steered': true};
+        };
   }
-  return (source: source, queue: queue, removed: removed);
+  return (
+    source: source,
+    queue: queue,
+    removed: removed,
+    edits: edits,
+    steers: steers,
+  );
 }
 
 /// 推进一次异步读取：让假数据源应答落地并渲染一帧。

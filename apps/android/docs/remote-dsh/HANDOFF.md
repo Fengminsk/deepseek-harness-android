@@ -1101,6 +1101,14 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
 
 ## 9. 变更日志（append-only，最新在最上面）
 
+### 2026-11-18 14:48 · lead（队列消息编辑/删除/插话发送 + 复用 DSH 图标，APK 待安装）
+
+- 用户要求排队待执行消息与 PC 一致：可再次编辑、删除、插话发送（steer），图标复用 DSH。
+- 运行时：`tasks.session.pending` 增加 `editable`（live+active agent 且内容纯文本）/`steerable`（另需 agent running），`cancellable` 保持；新增 `tasks.editQueued {sessionId,itemId,text}` → updateQueue edit、`tasks.steerQueued {sessionId,itemId}` → updateQueue steer，加入方法表/dispatch/协议文档；非 live、非 running、空文本、非纯文本均给可读拒绝；Node 15/15 通过。
+- App：队列坞行内编辑（TextField 预填、保存/取消、空文本提示、失败保留）、删除保留、插话发送（仅 running+steerable 可点，失败提示）；>1 折叠/suspended/不插时间线等保持。图标从 `packages/client/ui-primitives/src/icons/artwork.ts` 提取 queue/edit/trash/send SVG 到 `apps/android/assets/icons/dsh/`，pubspec 注册，flutter_svg 渲染、跟随文字色（14/16px）。
+- 验证：flutter analyze 仅既有 11 条基线告警；会话页 90/90、新增队列能力 12/12 通过；debug APK 构建成功（14:46，847,221,359 bytes）。
+- **待安装**：手机 USB 再次断开（adb devices 为空）；待重连后安装最新 APK。插件 remote-host 需重启一次以加载新运行时方法（lead 将重载插件）。
+- **提交**：见本次 commit。
 ### 2026-11-18 14:36 · lead（大文件附件传输加固 + 插件托管高可用，APK 构建待安装）
 
 - 用户要求远程体验等同原生、PC 会话高可用；几十~上百 MB 附件发 PC DSH 不能掉链子。

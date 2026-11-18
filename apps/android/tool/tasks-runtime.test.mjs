@@ -267,3 +267,50 @@ test('original plugin operation snapshots and events update an independent packa
 })
 
 
+
+test('queued rows advertise live-text edit and running steer capabilities', async t => {
+  const h = await harness(t)
+  const a = agent(h.ctx.sessions.create(SessionId('caps')), 'running')
+  h.agents.set(a.id, a)
+  const snapshot = { asOfSeq: 1, values: {
+    inbox: { 'next-turn': [
+      { id: 'text', content: [{ type: 'text', text: 'hello' }] },
+      { id: 'rich', content: [{ type: 'text', text: 'see' }, { type: 'image', attachment: 'x' }] },
+    ] },
+  } }
+  const live = h.tasks.project('caps', snapshot, 'live').pending
+  assert.equal(live[0].editable, true)
+  assert.equal(live[0].steerable, true)
+  assert.equal(live[1].editable, false)
+  assert.equal(live[1].steerable, true)
+  const cached = h.tasks.project('caps', snapshot, 'cached').pending
+  assert.deepEqual(cached.map(row => [row.editable, row.steerable, row.cancellable]),
+    [[false, false, false], [false, false, false]])
+  a.status = 'idle'
+  assert.equal(h.tasks.project('caps', snapshot, 'live').pending[0].steerable, false)
+  assert.equal(h.tasks.project('caps', snapshot, 'live').pending[0].editable, true)
+})
+
+test('editQueued and steerQueued delegate to updateQueue with readable validation', async t => {
+  const h = await harness(t)
+  const a = agent(h.ctx.sessions.create(SessionId('queue-actions')))
+  a.inbox.nextTurn.push({ id: 'one' }, { id: 'two' })
+  h.agents.set(a.id, a)
+
+  await h.tasks.editQueued({ sessionId: 'queue-actions', itemId: 'one', text: '  new text  ' })
+  await h.tasks.steerQueued({ sessionId: 'queue-actions', itemId: 'two' })
+  assert.deepEqual(h.calls, [
+    ['updateQueue', { sessionId: 'queue-actions', itemId: 'one',
+      action: { kind: 'edit', content: [{ type: 'text', text: 'new text' }] } }],
+    ['updateQueue', { sessionId: 'queue-actions', itemId: 'two', action: { kind: 'steer' } }],
+  ])
+
+  assert.throws(() => h.tasks.editQueued({ sessionId: 'queue-actions', itemId: 'one', text: '   ' }), /不能为空/)
+  assert.throws(() => h.tasks.editQueued({ sessionId: 'queue-actions', itemId: 'one' }), /text must be a string/)
+  assert.throws(() => h.tasks.editQueued({ sessionId: 'missing', itemId: 'one', text: 'x' }), /not attached/)
+  a.status = 'idle'
+  assert.throws(() => h.tasks.steerQueued({ sessionId: 'queue-actions', itemId: 'two' }), /当前回合已结束/)
+  a.status = 'running'
+  assert.throws(() => h.tasks.steerQueued({ sessionId: 'queue-actions', itemId: '' }), /itemId must be a non-empty string/)
+  assert.throws(() => h.tasks.steerQueued({ sessionId: 'missing', itemId: 'two' }), /not attached/)
+})

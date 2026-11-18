@@ -90,6 +90,7 @@
 import 'dart:async';
 
 import 'package:flutter/services.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'approvals_draft.dart';
@@ -140,6 +141,8 @@ class RemoteQueuedMessage {
     required this.prompt,
     required this.status,
     required this.cancellable,
+    required this.editable,
+    required this.steerable,
   });
 
   /// 删除这条消息时传给 `tasks.removeQueued` 的标识。
@@ -159,6 +162,12 @@ class RemoteQueuedMessage {
 
   /// 是否允许删除（宿主有活动 Agent 且这条消息可撤回）。
   final bool cancellable;
+
+  /// 是否允许编辑（仅 live 且纯文本消息）。
+  final bool editable;
+
+  /// 是否允许插话发送（仅 live、纯文本且 Agent 正在运行）。
+  final bool steerable;
 
   /// 是否因宿主恢复执行而处于 suspended 状态。
   bool get suspended => status == 'suspended';
@@ -234,6 +243,8 @@ class RemoteSessionTasks {
                 ? row['status'] as String
                 : 'queued',
             cancellable: row['cancellable'] == true,
+            editable: row['editable'] == true,
+            steerable: row['steerable'] == true,
           ),
         );
       }
@@ -261,7 +272,9 @@ class RemoteSessionTasks {
           left.target != right.target ||
           left.prompt != right.prompt ||
           left.status != right.status ||
-          left.cancellable != right.cancellable) {
+          left.cancellable != right.cancellable ||
+          left.editable != right.editable ||
+          left.steerable != right.steerable) {
         return false;
       }
     }
@@ -404,6 +417,13 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
   /// 正在删除的排队消息 itemId；删除期间禁用那一行的删除按钮。
   String? _removingQueuedId;
 
+  /// 正在编辑的排队消息 itemId 与它的行内输入控制器。
+  String? _editingQueuedId;
+  TextEditingController? _queuedEditController;
+
+  /// 正在保存编辑/插话发送的排队消息 itemId；期间禁用该行操作。
+  String? _queueBusyId;
+
   /// 应用是否在前台；退后台停止轮询，回前台立即刷新。
   bool _appActive = true;
 
@@ -545,6 +565,8 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     _sessionTasksTimer = null;
     _cacheWriteTimer?.cancel();
     _cacheWriteTimer = null;
+    _queuedEditController?.dispose();
+    _queuedEditController = null;
     // 页面销毁时尽力把最后一次窗口写回缓存；不 await，避免阻塞路由退出。
     if (_pendingCacheWindow != null || _events.isNotEmpty) {
       unawaited(_flushConversationCache());
@@ -855,6 +877,82 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
       if (mounted) _showStatus('删除排队消息失败：$error');
     } finally {
       if (mounted) setState(() => _removingQueuedId = null);
+    }
+  }
+
+  /// 进入一条排队消息的行内编辑；不可编辑的行不响应。
+  void _beginQueuedEdit(RemoteQueuedMessage message) {
+    if (!message.editable || _queueBusyId != null) return;
+    _queuedEditController?.dispose();
+    final controller = TextEditingController(text: message.prompt);
+    setState(() {
+      _editingQueuedId = message.itemId;
+      _queuedEditController = controller;
+    });
+  }
+
+  /// 退出行内编辑并丢弃未保存的文本。
+  void _cancelQueuedEdit() {
+    final controller = _queuedEditController;
+    if (mounted) {
+      setState(() {
+        _editingQueuedId = null;
+        _queuedEditController = null;
+      });
+    } else {
+      _editingQueuedId = null;
+      _queuedEditController = null;
+    }
+    controller?.dispose();
+  }
+
+  /// 保存排队消息的新文本；失败保留编辑态与输入内容。
+  Future<void> _saveQueuedEdit(RemoteQueuedMessage message) async {
+    final controller = _queuedEditController;
+    if (controller == null || _queueBusyId != null) return;
+    final text = controller.text.trim();
+    if (text.isEmpty) {
+      _showStatus('排队消息内容不能为空');
+      return;
+    }
+    setState(() => _queueBusyId = message.itemId);
+    try {
+      await _source.request(remoteTasksEditQueuedMethod, {
+        'sessionId': _source.sessionId,
+        'itemId': message.itemId,
+        'text': text,
+      });
+      if (!mounted) return;
+      _cancelQueuedEdit();
+      await _refreshSessionTasks();
+      if (mounted) _showStatus('已保存排队消息');
+    } on RuntimeTransportFailure catch (failure) {
+      if (mounted) _showStatus('保存排队消息失败：${failure.message}');
+    } on Object catch (error) {
+      if (mounted) _showStatus('保存排队消息失败：$error');
+    } finally {
+      if (mounted) setState(() => _queueBusyId = null);
+    }
+  }
+
+  /// 把一条可插话的排队消息立即送进运行中的回合；失败给出可读原因。
+  Future<void> _steerQueuedMessage(RemoteQueuedMessage message) async {
+    if (!message.steerable || _queueBusyId != null) return;
+    setState(() => _queueBusyId = message.itemId);
+    try {
+      await _source.request(remoteTasksSteerQueuedMethod, {
+        'sessionId': _source.sessionId,
+        'itemId': message.itemId,
+      });
+      if (!mounted) return;
+      await _refreshSessionTasks();
+      if (mounted) _showStatus('已插话发送');
+    } on RuntimeTransportFailure catch (failure) {
+      if (mounted) _showStatus('插话发送失败：${failure.message}');
+    } on Object catch (error) {
+      if (mounted) _showStatus('插话发送失败：$error');
+    } finally {
+      if (mounted) setState(() => _queueBusyId = null);
     }
   }
 
@@ -1657,6 +1755,19 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     );
   }
 
+  /// DSH 产品图标（`apps/android/assets/icons/dsh` 取自仓库
+  /// `packages/client/ui-primitives/src/icons/artwork.ts`）；颜色跟随当前文字色。
+  Widget _dshIcon(
+    String fileName, {
+    double size = 16,
+    required Color color,
+  }) => SvgPicture.asset(
+    'assets/icons/dsh/$fileName',
+    width: size,
+    height: size,
+    colorFilter: ColorFilter.mode(color, BlendMode.srcIn),
+  );
+
   /// 队列坞：1 条直出；>1 条默认收起成「N 条排队消息」，点开看每一条。
   Widget _queueDock(
     BuildContext context,
@@ -1684,11 +1795,7 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
                 padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
                 child: Row(
                   children: [
-                    Icon(
-                      Icons.inbox_rounded,
-                      size: 16,
-                      color: colors.onSurfaceVariant,
-                    ),
+                    _dshIcon('queue.svg', size: 16, color: colors.onSurfaceVariant),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
@@ -1716,82 +1823,197 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     );
   }
 
-  /// 队列坞里的一行：目标标签 + 文本预览 + suspended 标记 + 删除按钮。
+  /// 队列坞里的一行：DSH 图标 lead + 目标标签 + 文本预览 + 编辑/删除/插话发送。
   Widget _queueRow(BuildContext context, RemoteQueuedMessage item) {
     final colors = Theme.of(context).colorScheme;
+    final editing = _editingQueuedId == item.itemId;
     final removing = _removingQueuedId == item.itemId;
+    final busy = removing || _queueBusyId == item.itemId;
+    final iconColor = colors.onSurfaceVariant;
+    final disabledColor = iconColor.withValues(alpha: .38);
+    final editReason = item.editable
+        ? '编辑排队消息'
+        : item.suspended
+        ? '离线记录，暂不支持编辑'
+        : '包含非文本内容，暂不支持编辑';
+    final steerEnabled = item.steerable && _running;
+    final steerReason = item.steerable && _running
+        ? '插话发送'
+        : '仅运行中可插话发送';
     return Padding(
       key: ValueKey('remote-queue-item-${item.itemId}'),
       padding: const EdgeInsets.fromLTRB(12, 4, 8, 8),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-            decoration: BoxDecoration(
-              color: colors.primary.withValues(alpha: .12),
-              borderRadius: BorderRadius.circular(6),
-            ),
-            child: Text(
-              item.nextStep ? '插话 · 待发送' : '排队 · 待执行',
-              style: TextStyle(
-                fontSize: 11,
-                height: 1.5,
-                fontWeight: FontWeight.w600,
-                color: colors.primary,
-              ),
-            ),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Column(
+      child: editing
+          ? _queuedEditRow(context, item)
+          : Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  item.prompt.trim().isEmpty ? '附件或系统输入' : item.prompt.trim(),
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: AppTextStyle.footnote.of(context),
+                Padding(
+                  padding: const EdgeInsets.only(top: 3),
+                  child: _dshIcon('queue.svg', size: 14, color: iconColor),
                 ),
-                if (item.suspended)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 2),
-                    child: Text(
-                      '未恢复执行',
-                      style: AppTextStyle.footnote
-                          .of(context)
-                          .copyWith(color: colors.error),
+                const SizedBox(width: 6),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: colors.primary.withValues(alpha: .12),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    item.nextStep ? '插话 · 待发送' : '排队 · 待执行',
+                    style: TextStyle(
+                      fontSize: 11,
+                      height: 1.5,
+                      fontWeight: FontWeight.w600,
+                      color: colors.primary,
                     ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        item.prompt.trim().isEmpty ? '附件或系统输入' : item.prompt.trim(),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: AppTextStyle.footnote.of(context),
+                      ),
+                      if (item.suspended)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 2),
+                          child: Text(
+                            '未恢复执行',
+                            style: AppTextStyle.footnote
+                                .of(context)
+                                .copyWith(color: colors.error),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                _queueIconAction(
+                  key: ValueKey('remote-queue-edit-${item.itemId}'),
+                  tooltip: editReason,
+                  asset: 'edit.svg',
+                  color: item.editable ? iconColor : disabledColor,
+                  onPressed: item.editable && !busy
+                      ? () => _beginQueuedEdit(item)
+                      : null,
+                ),
+                _queueIconAction(
+                  key: ValueKey('remote-queue-steer-${item.itemId}'),
+                  tooltip: steerReason,
+                  asset: 'send.svg',
+                  color: steerEnabled ? colors.primary : disabledColor,
+                  onPressed: steerEnabled && !busy
+                      ? () => unawaited(_steerQueuedMessage(item))
+                      : null,
+                ),
+                if (item.cancellable)
+                  SizedBox(
+                    width: 30,
+                    height: 30,
+                    child: removing
+                        ? const Padding(
+                            padding: EdgeInsets.all(7),
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : IconButton(
+                            key: ValueKey('remote-queue-remove-${item.itemId}'),
+                            padding: EdgeInsets.zero,
+                            visualDensity: VisualDensity.compact,
+                            tooltip: '删除排队消息',
+                            onPressed: busy
+                                ? null
+                                : () => unawaited(_removeQueuedMessage(item)),
+                            icon: _dshIcon(
+                              'trash.svg',
+                              size: 16,
+                              color: iconColor,
+                            ),
+                          ),
                   ),
               ],
             ),
-          ),
-          if (item.cancellable)
-            SizedBox(
-              width: 32,
-              height: 32,
-              child: removing
-                  ? const Padding(
-                      padding: EdgeInsets.all(8),
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : IconButton(
-                      key: ValueKey('remote-queue-remove-${item.itemId}'),
-                      padding: EdgeInsets.zero,
-                      tooltip: '删除排队消息',
-                      onPressed: () => unawaited(_removeQueuedMessage(item)),
-                      icon: Icon(
-                        Icons.close_rounded,
-                        size: 18,
-                        color: colors.onSurfaceVariant,
-                      ),
-                    ),
-            ),
-        ],
-      ),
     );
   }
 
+  /// 队列行内的紧凑图标按钮；禁用时保留置灰图标与 tooltip 原因。
+  Widget _queueIconAction({
+    required Key key,
+    required String tooltip,
+    required String asset,
+    required Color color,
+    VoidCallback? onPressed,
+  }) => SizedBox(
+    width: 30,
+    height: 30,
+    child: IconButton(
+      key: key,
+      padding: EdgeInsets.zero,
+      visualDensity: VisualDensity.compact,
+      tooltip: tooltip,
+      onPressed: onPressed,
+      icon: _dshIcon(asset, size: 16, color: color),
+    ),
+  );
+
+  /// 行内编辑：预填原文、自动聚焦，保存/取消在行尾；空文本不能保存。
+  Widget _queuedEditRow(BuildContext context, RemoteQueuedMessage item) {
+    final controller = _queuedEditController;
+    if (controller == null) return const SizedBox.shrink();
+    final colors = Theme.of(context).colorScheme;
+    final busy = _queueBusyId == item.itemId || _removingQueuedId == item.itemId;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        Expanded(
+          child: TextField(
+            key: ValueKey('remote-queue-edit-field-${item.itemId}'),
+            controller: controller,
+            autofocus: true,
+            minLines: 1,
+            maxLines: 2,
+            style: AppTextStyle.footnote.of(context),
+            decoration: InputDecoration(
+              isDense: true,
+              hintText: '编辑排队消息',
+              hintStyle: AppTextStyle.footnote
+                  .of(context)
+                  .copyWith(color: colors.onSurfaceVariant),
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 8,
+                vertical: 6,
+              ),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+            ),
+          ),
+        ),
+        TextButton(
+          key: ValueKey('remote-queue-edit-cancel-${item.itemId}'),
+          onPressed: busy ? null : _cancelQueuedEdit,
+          style: TextButton.styleFrom(
+            visualDensity: VisualDensity.compact,
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+          ),
+          child: const Text('取消'),
+        ),
+        TextButton(
+          key: ValueKey('remote-queue-edit-save-${item.itemId}'),
+          onPressed: busy ? null : () => unawaited(_saveQueuedEdit(item)),
+          style: TextButton.styleFrom(
+            visualDensity: VisualDensity.compact,
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+          ),
+          child: const Text('保存'),
+        ),
+      ],
+    );
+  }
   /// 附件 rail 作为悬浮卡上方的插槽；没有草稿也不在选文件时返回 null。
   Widget? _attachmentRailSlot(BuildContext context, AttachmentDrafts? drafts) {
     if (drafts == null) return null;

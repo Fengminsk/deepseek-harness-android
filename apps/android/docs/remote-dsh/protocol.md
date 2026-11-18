@@ -290,7 +290,7 @@ CSRF 保护的是「浏览器自动携带的环境凭证」：cookie 由浏览�
 | `workspace.files.` | `info`、`list`、`read`、`search` | 随宿主 | 读 PC 工作区文件 |
 | `document.` | `mediaPolicy`、`call`、`bytes`、`cancel`、`release` | 随宿主；渲染端在设备侧 | Office/PDF 预览的字节源在 PC |
 | `terminal.` | `list`、`shells`、`create`、`read`、`write`、`resize`、`rename`、`close` | 随宿主 | 远程 profile 启用真实 `terminal-controller` |
-| `tasks.` | `summary`、`list`、`session`、`cancel`、`killUnownedJob`、`removeQueued` | 随宿主 | |
+| `tasks.` | `summary`、`list`、`session`、`cancel`、`killUnownedJob`、`removeQueued`、`editQueued`、`steerQueued` | 随宿主 | |
 | `interactions.` | `list`、`reply`、`dismiss`、`wait` | 随宿主 | 审批与提问 |
 | `settings.` | `describe`、`mutate` | 随宿主 | |
 | `library.` | `catalog`、`directoryList`、`directoryCreate`、`workspaceCreate`、`workspaceRename`、`workspaceReorder`、`sessionCreate`、`sessionRename`、`sessionPin`、`sessionArchive`、`sessionReorder`、`sessionFork` | 随宿主 | 侧栏/项目/会话列表的写入口 |

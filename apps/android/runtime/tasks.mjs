@@ -200,12 +200,21 @@ export class AppTasks {
           ?? (observation === 'cached' ? 'unverified' : 'unconfirmed'),
         error: job.detail, cancellable: false }
     })
-    const pending = Object.entries(values.inbox ?? {}).flatMap(([target, messages]) => messages.map(message => ({
-      id: `queued:${message.id}`, kind: 'queued', itemId: message.id, target,
-      prompt: preview(message.content), status: agent ? 'queued' : 'suspended',
-      // A stale cache never authorizes an inbox mutation.
-      cancellable: !!agent && observation === 'live',
-    })))
+    const pending = Object.entries(values.inbox ?? {}).flatMap(([target, messages]) => messages.map(message => {
+      // Live-only capabilities: a stale checkpoint/cache never authorizes queue mutations,
+      // and a steer needs the agent to be running (same rule as the Web QueueDock).
+      const live = observation === 'live' && !!agent
+      const textOnly = Array.isArray(message.content)
+        ? message.content.every(part => part?.type === 'text')
+        : false
+      return {
+        id: `queued:${message.id}`, kind: 'queued', itemId: message.id, target,
+        prompt: preview(message.content), status: agent ? 'queued' : 'suspended',
+        cancellable: live,
+        editable: live && textOnly,
+        steerable: live && agent.status === 'running',
+      }
+    }))
     return { sessionId, title: values.title ?? sessionId, observation,
       ...(header?.origin === 'subagent' ? { subagent: subagentAddressFromHeader(header) } : {}),
       asOfSeq: snapshot?.asOfSeq ?? null, historyAvailable: tasks !== undefined,
@@ -271,6 +280,36 @@ export class AppTasks {
     // Do not restore a dormant Agent as a side effect of a stale queue row.
     if (!this.ctx.agents.get(sessionId)) throw new Error('The queue is not attached; reopen the conversation before changing it')
     return this.ctx.sessionController.updateQueue({ sessionId, itemId: params.itemId, action: { kind: 'remove' } })
+  }
+
+  /** Replace one queued message's text; only live agents accept queue edits. */
+  editQueued(params) {
+    const sessionId = identity(params.sessionId)
+    if (typeof params.itemId !== 'string' || !params.itemId) throw new TypeError('itemId must be a non-empty string')
+    if (typeof params.text !== 'string') throw new TypeError('text must be a string')
+    const text = params.text.trim()
+    if (!text) throw new Error('排队消息内容不能为空')
+    const agent = this.ctx.agents.get(sessionId)
+    if (!agent) throw new Error('The queue is not attached; reopen the conversation before changing it')
+    return this.ctx.sessionController.updateQueue({
+      sessionId,
+      itemId: params.itemId,
+      action: { kind: 'edit', content: [{ type: 'text', text }] },
+    })
+  }
+
+  /** Deliver one queued message into the running turn as an interjection. */
+  steerQueued(params) {
+    const sessionId = identity(params.sessionId)
+    if (typeof params.itemId !== 'string' || !params.itemId) throw new TypeError('itemId must be a non-empty string')
+    const agent = this.ctx.agents.get(sessionId)
+    if (!agent) throw new Error('The queue is not attached; reopen the conversation before changing it')
+    if (agent.status !== 'running') throw new Error('当前回合已结束，无法插话发送')
+    return this.ctx.sessionController.updateQueue({
+      sessionId,
+      itemId: params.itemId,
+      action: { kind: 'steer' },
+    })
   }
 
   close() {

@@ -377,6 +377,8 @@ const FACADE_METHODS = Object.freeze([
   'tasks.cancel',
   'tasks.killUnownedJob',
   'tasks.removeQueued',
+  'tasks.editQueued',
+  'tasks.steerQueued',
   'interactions.list',
   'interactions.reply',
   'interactions.dismiss',
@@ -978,6 +980,8 @@ export function apply(ctx, config) {
       case 'tasks.cancel': return tasks.cancel(params)
       case 'tasks.killUnownedJob': return tasks.killUnownedJob(params)
       case 'tasks.removeQueued': return tasks.removeQueued(params)
+      case 'tasks.editQueued': return tasks.editQueued(params)
+      case 'tasks.steerQueued': return tasks.steerQueued(params)
       case 'subagents.catalog': return subagents.call('catalog', params)
       case 'subagents.inspect': return subagents.call('inspect', params)
       case 'subagents.page': return subagents.call('page', params)
