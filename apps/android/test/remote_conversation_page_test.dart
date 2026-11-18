@@ -33,15 +33,17 @@ import 'package:material_ui/material_ui.dart';
 import 'chat_projection_test.dart' as fixture;
 import 'support/remote_conversation_fakes.dart';
 
-Widget _host(RemoteConversationSource source) => MaterialApp(
-  theme: pocketTheme(Brightness.light),
-  home: RemoteDshConversationPage(
-    source: source,
-    deviceName: '客厅的电脑',
-    projectName: 'Pocket',
-    title: '修复登录',
-  ),
-);
+Widget _host(RemoteConversationSource source, {DateTime Function()? now}) =>
+    MaterialApp(
+      theme: pocketTheme(Brightness.light),
+      home: RemoteDshConversationPage(
+        source: source,
+        deviceName: '客厅的电脑',
+        projectName: 'Pocket',
+        title: '修复登录',
+        now: now,
+      ),
+    );
 
 /// 展开输入卡。
 ///
@@ -2924,11 +2926,14 @@ FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
 
     testWidgets('补偿轮询读到 tool result 与 turn/end 后状态条消失并停止轮询', (tester) async {
       final source = noLiveSource(toolRunEvents());
-      await tester.pumpWidget(_host(source));
+      var now = DateTime(2026, 1, 1, 12);
+      await tester.pumpWidget(_host(source, now: () => now));
       await settle(tester);
       expect(find.textContaining('正在调用工具 wait_agent'), findsOneWidget);
 
       source.window = _window(toolRunEvents(withResult: true, ended: true));
+      // 推送优先：先让推送窗口过期，才允许整窗兜底。
+      now = now.add(const Duration(seconds: 9));
       await tester.pump(const Duration(milliseconds: 2700));
       await settle(tester);
       expect(source.reloads, greaterThan(0));
@@ -3034,7 +3039,8 @@ FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
       final source = FakeRemoteConversationSource(
         window: _window(toolRunEvents()),
       );
-      await tester.pumpWidget(_host(source));
+      var now = DateTime(2026, 1, 1, 12);
+      await tester.pumpWidget(_host(source, now: () => now));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
       expect(find.textContaining('正在调用工具 wait_agent'), findsOneWidget);
@@ -3042,6 +3048,7 @@ FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
 
       // 增量窗口故意把已见过的 1–3 再带回一次，只应合并 4、5。
       source.nextNewerWindow = _window(toolRunEvents(withResult: true, ended: true));
+      now = now.add(const Duration(seconds: 9));
       await tester.pump(const Duration(milliseconds: 2700));
       await tester.pump(const Duration(milliseconds: 300));
 
@@ -3049,6 +3056,79 @@ FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
       expect(source.readNewerCalls, greaterThan(0));
       expect(find.byKey(const ValueKey('remote-work-status')), findsNothing);
       expect(find.textContaining('回复已中断'), findsNothing);
+    });
+
+    testWidgets('推送活跃时 2.5s 定时器跳过 readNewer 兜底', (tester) async {
+      var now = DateTime(2026, 1, 1, 12);
+      final source = FakeRemoteConversationSource(
+        window: _window(toolRunEvents()),
+      );
+      await tester.pumpWidget(_host(source, now: () => now));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.textContaining('正在调用工具 wait_agent'), findsOneWidget);
+
+      source.emit(
+        RemoteConversationEvents(<Map<String, dynamic>>[
+          fixture.event(4, 'session/title', <String, dynamic>{'title': '推送活跃'}),
+        ]),
+      );
+      await tester.pump();
+      now = now.add(const Duration(seconds: 3));
+      await tester.pump(const Duration(milliseconds: 2700));
+
+      expect(
+        source.readNewerCalls,
+        0,
+        reason: '8s 内收到推送，不应发起 readNewer 兜底',
+      );
+    });
+
+    testWidgets('无推送超过 8s 才兜底一次并重置窗口', (tester) async {
+      var now = DateTime(2026, 1, 1, 12);
+      final source = FakeRemoteConversationSource(
+        window: _window(toolRunEvents()),
+      );
+      await tester.pumpWidget(_host(source, now: () => now));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      now = now.add(const Duration(seconds: 9));
+      await tester.pump(const Duration(milliseconds: 2700));
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(source.readNewerCalls, 1, reason: '静默超 8s 后兜底一次');
+
+      now = now.add(const Duration(seconds: 2));
+      await tester.pump(const Duration(milliseconds: 2700));
+      expect(
+        source.readNewerCalls,
+        1,
+        reason: '兜底后重置窗口，8s 内不重复请求',
+      );
+    });
+
+    testWidgets('兜底增量合并 turn/end 后停止轮询', (tester) async {
+      var now = DateTime(2026, 1, 1, 12);
+      final source = FakeRemoteConversationSource(
+        window: _window(toolRunEvents()),
+      );
+      await tester.pumpWidget(_host(source, now: () => now));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      source.nextNewerWindow = _window(
+        toolRunEvents(withResult: true, ended: true),
+      );
+      now = now.add(const Duration(seconds: 9));
+      await tester.pump(const Duration(milliseconds: 2700));
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(source.readNewerCalls, 1);
+      expect(find.byKey(const ValueKey('remote-work-status')), findsNothing);
+
+      final calls = source.readNewerCalls;
+      now = now.add(const Duration(seconds: 20));
+      await tester.pump(const Duration(seconds: 5));
+      expect(source.readNewerCalls, calls, reason: 'turn/end 后停止轮询');
     });
 
     test('历史保留上限裁剪最旧事件', () {

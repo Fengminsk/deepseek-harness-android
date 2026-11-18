@@ -409,6 +409,7 @@ class RemoteDshConversationPage extends StatefulWidget {
     this.terminalConnection,
     this.deviceId,
     this.conversationCache,
+    this.now,
   });
 
   /// 会话目的地标识的前缀。
@@ -445,6 +446,9 @@ class RemoteDshConversationPage extends StatefulWidget {
 
   /// 会话本地缓存；为 null 时用 `dsh/runtime` 的默认通道。测试可注入假缓存。
   final RemoteConversationCache? conversationCache;
+
+  /// 页面时钟；默认 `DateTime.now`。测试注入可推进的时钟验证推送优先窗口。
+  final DateTime Function()? now;
 
   @override
   State<RemoteDshConversationPage> createState() =>
@@ -490,6 +494,15 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
   /// inferredRunning 期间补偿拉取窗口的定时器（1.5s）。
   Timer? _inferredRefreshTimer;
   bool _inferredRefreshInFlight = false;
+
+  /// 最近一次收到该会话实时推送（snapshot/event/live/status）的时间。
+  ///
+  /// 推送活跃时 inferred 轮询只保留定时器但不发请求；超过
+  /// [_pushActiveWindow] 没有任何推送才做一次增量兜底。
+  DateTime? _lastRemotePushAt;
+
+  /// 推送活跃窗口：8s 内有推送就跳过 readNewer 兜底。
+  static const Duration _pushActiveWindow = Duration(seconds: 8);
 
   /// 是否还有更早历史可加载（窗口 `hasMore`），以及当前是否在加载。
   bool _hasOlder = false;
@@ -1022,6 +1035,12 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
         _source.phase != RemoteConnectionPhase.ready) {
       return;
     }
+    // 推送优先：8s 内收到过该会话的任何实时推送就跳过本次兜底。
+    final now = _now();
+    final lastPush = _lastRemotePushAt;
+    if (lastPush != null && now.difference(lastPush) < _pushActiveWindow) {
+      return;
+    }
     _inferredRefreshInFlight = true;
     try {
       final newer = await _source.readNewer(_windowThroughSeq);
@@ -1035,7 +1054,17 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
       // 补偿刷新失败：保留时间线，下一轮再试；错误不显示给用户。
     } finally {
       _inferredRefreshInFlight = false;
+      // 兜底拉取后重置推送窗口：没有新推送时下一次兜底至少再等 8s。
+      _lastRemotePushAt = _now();
     }
+  }
+
+  /// 页面时钟（测试可注入）。
+  DateTime _now() => widget.now?.call() ?? DateTime.now();
+
+  /// 记录一次实时推送，重置 inferred 轮询的兜底窗口。
+  void _noteRemotePush() {
+    _lastRemotePushAt = _now();
   }
 
   /// 合并一次增量读到的较新窗口：按 seq 去重升序，只有真正新增才重建。
@@ -1335,6 +1364,7 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     if (!mounted) return;
     switch (update) {
       case RemoteConversationSnapshot(:final window):
+        _noteRemotePush();
         setState(() {
           _loading = false;
           _loadError = null;
@@ -1351,6 +1381,8 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
         _scheduleConversationCacheWrite();
         _scheduleScrollToEnd();
       case RemoteConversationEvents(:final events):
+        // 推送本身（即使与已有 seq 重复）也视为推送活跃，重置兜底窗口。
+        _noteRemotePush();
         final added = <Json>[];
         for (final event in events) {
           final seq = event['seq'];
@@ -1367,9 +1399,11 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
         _scheduleConversationCacheWrite();
         _scheduleScrollToEnd();
       case RemoteConversationLive(:final value):
+        _noteRemotePush();
         setState(() => _live = _liveMessage(value));
         _scheduleScrollToEnd();
       case RemoteConversationRunning(:final running):
+        _noteRemotePush();
         if (_runningFromEvents == running) return;
         setState(() => _runningFromEvents = running);
         // 状态切换后尽快同步队列与 live.status，不必等下一轮 2s 轮询。

@@ -1101,6 +1101,12 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
 
 ## 9. 变更日志（append-only，最新在最上面）
 
+### 2026-11-18 17:52 · lead（推送优先：长连接有推送时不再轮询，已装真机）
+
+- 用户问「不是长连接推送吗」：确认手机↔remote-host 是持久 WSS；desktop 事件经本机 relay 到 remote-host 后立即经 WSS 页面线推送，App 收到 session.event/status 立即 setState（无节流）。
+- 优化：会话页记录最近实时推送时间（snapshot/events/live/running），inferred 2.5s 定时器在 8s 内有推送时直接跳过 readNewer；静默超 8s 才兜底增量拉一次并在完成后重置窗口（静默期最多每 8s 一次，非 2.5s）；turn/end 后停止；退后台/dispose 不变。
+- 测试：增量分页 6/6、相关回归 166/166、analyze 仅既有 11 条基线告警；APK 17:50 构建并安装到 3B162D00E1K00000（lastUpdate 17:50）。
+- **提交**：见本次 commit。
 ### 2026-11-18 17:38 · lead（增量分页 + desktop 实时事件中继 + App 去缓存提示/错误脱敏/统计折叠持久化，已装真机）
 
 - 用户反馈：卡顿/未响应、接收要分段、同步不即时、首页看不到哪些会话在工作、不要「已显示本地缓存」、不要显示 `session "session-..."` 原始错误、统计 bar 收起后要保持。
