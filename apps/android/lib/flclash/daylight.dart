@@ -4,6 +4,11 @@ import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart';
 import 'package:material_ui/material_ui.dart';
 
+/// Wash shaders survive a painter rebuild: the ambient loop paints every frame,
+/// and a repaint must not allocate a gradient per wash.
+final Map<int, ui.Shader> _washShaders = <int, ui.Shader>{};
+const int _washShaderLimit = 96;
+
 /// Diffuse, overlapping light fields with sparse distant particles.
 /// Static atmosphere and moving light have separate paint boundaries.
 class DaylightBackdrop extends StatefulWidget {
@@ -211,23 +216,33 @@ class _RipplePainter extends CustomPainter {
     canvas.translate(center.dx, center.dy);
     canvas.rotate(angle);
     canvas.scale(spread.dx, spread.dy);
-    canvas.drawCircle(
+    canvas.drawCircle(Offset.zero, 1, Paint()..shader = _washShader(color, opacity));
+    canvas.restore();
+  }
+
+  /// The unit radial gradient of a wash, cached by paint color and alpha.
+  ///
+  /// A wash moves by transform, so its shader depends only on these two. The
+  /// opacity sweeps continuously; caching on its 8-bit value keeps one shader
+  /// for many frames instead of allocating three every frame.
+  ui.Shader _washShader(Color color, double opacity) {
+    final alpha = (opacity.clamp(0.0, 1.0) * 255).round();
+    final key = (color.toARGB32() << 8) | alpha;
+    final cached = _washShaders[key];
+    if (cached != null) return cached;
+    if (_washShaders.length > _washShaderLimit) _washShaders.clear();
+    final base = color.withValues(alpha: alpha / 255);
+    return _washShaders[key] = ui.Gradient.radial(
       Offset.zero,
       1,
-      Paint()
-        ..shader = ui.Gradient.radial(
-          Offset.zero,
-          1,
-          [
-            color.withValues(alpha: opacity),
-            color.withValues(alpha: opacity * .6),
-            color.withValues(alpha: opacity * .15),
-            color.withValues(alpha: 0),
-          ],
-          const [0, .35, .72, 1],
-        ),
+      [
+        base,
+        base.withValues(alpha: base.a * .6),
+        base.withValues(alpha: base.a * .15),
+        base.withValues(alpha: 0),
+      ],
+      const [0, .35, .72, 1],
     );
-    canvas.restore();
   }
 
   @override
