@@ -14,11 +14,11 @@ import 'flclash/color.dart';
 import 'flclash/elastic_press.dart';
 import 'flclash/button.dart';
 import 'flclash/input.dart';
-import 'flclash/switch.dart';
 import 'flclash/dashboard_card.dart';
 import 'flclash/daylight.dart';
 import 'flclash/floating_header.dart';
 import 'entry_motion.dart';
+import 'prism_bridge.dart';
 
 export 'flclash/liquid_glass.dart';
 export 'flclash/shape.dart';
@@ -1630,7 +1630,7 @@ class PocketSwitchRow extends StatelessWidget {
     subtitle: subtitle,
     contentPadding: contentPadding,
     onTap: onChanged == null ? null : () => onChanged!(!value),
-    trailing: DashboardSwitch(value: value, onChanged: onChanged),
+    trailing: PocketSwitch(value: value, onChanged: onChanged),
   );
 }
 

@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/widgets.dart';
 import 'package:material_ui/material_ui.dart' as material;
+import 'package:prism_ui/switch.dart' as prism_switch;
 import 'package:prism_ui/theme_data.dart' as prism;
 
 
@@ -75,6 +76,44 @@ class PocketPrismScope extends StatelessWidget {
       child: child,
     );
   }
+}
+
+/// A prism switch sized like the FlClash component it replaces.
+///
+/// The track is a fixed box and the lifted thumb is allowed to overflow it, so
+/// a switch never grows the row it sits in — the same rule the adapted copy
+/// followed before this moved to prism_ui.
+class PocketSwitch extends StatelessWidget {
+  const PocketSwitch({
+    super.key,
+    required this.value,
+    required this.onChanged,
+    this.semanticLabel,
+  });
+
+  final bool value;
+  final ValueChanged<bool>? onChanged;
+  final String? semanticLabel;
+
+  static const double trackWidth = prism_switch.Switch.trackWidth;
+  static const double trackHeight = prism_switch.Switch.trackHeight;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    width: trackWidth,
+    height: trackHeight,
+    child: PocketPrismScope(
+      child: OverflowBox(
+        maxWidth: double.infinity,
+        maxHeight: double.infinity,
+        child: prism_switch.Switch(
+          value: value,
+          onChanged: onChanged,
+          semanticLabel: semanticLabel,
+        ),
+      ),
+    ),
+  );
 }
 
 /// A prism theme built from the app's own generator, for tests and for widgets

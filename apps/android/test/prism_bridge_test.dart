@@ -75,4 +75,31 @@ void main() {
     expect(find.byType(prism.Surface), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('the switch keeps its track box and reports a toggle', (
+    tester,
+  ) async {
+    final changes = <bool>[];
+    await tester.pumpWidget(
+      material.Theme(
+        data: pocketTheme(Brightness.light),
+        child: Directionality(
+          textDirection: TextDirection.ltr,
+          child: Center(
+            child: PocketSwitch(
+              value: false,
+              onChanged: changes.add,
+              semanticLabel: '启用',
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(tester.getSize(find.byType(PocketSwitch)), const Size(52, 32));
+    await tester.tap(find.byType(PocketSwitch));
+    await tester.pumpAndSettle();
+    expect(changes, [true]);
+    expect(tester.takeException(), isNull);
+  });
 }

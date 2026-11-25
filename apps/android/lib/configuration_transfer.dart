@@ -7,7 +7,7 @@ import 'package:material_ui/material_ui.dart';
 import 'configuration_editor.dart' show configurationNamespaceTitle;
 import 'confirmation.dart';
 import 'metadata_artwork.dart';
-import 'flclash/switch.dart';
+import 'prism_bridge.dart';
 import 'runtime.dart';
 import 'text_document_page.dart';
 import 'ui.dart';
@@ -447,10 +447,10 @@ class _ConfigurationTransferPageState extends State<ConfigurationTransferPage> {
         // the surrounding disclosure when a user aims for the switch.
         onTap: () => change(!selected.contains(id)),
         child: SizedBox(
-          width: DashboardSwitch.trackWidth,
+          width: PocketSwitch.trackWidth,
           height: 48,
           child: Center(
-            child: DashboardSwitch(
+            child: PocketSwitch(
               key: ValueKey('configuration-transfer-$id'),
               value: selected.contains(id),
               onChanged: enabled ? change : null,
