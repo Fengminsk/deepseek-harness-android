@@ -1,7 +1,7 @@
 /** DeepSeek account service; browser approval never bypasses local cancellation. */
 import { randomBytes, randomUUID, createHash, timingSafeEqual } from 'node:crypto'
 import type { ServerResponse } from 'node:http'
-import type {} from '@deepseek-ai/dsh-host-webserver'
+import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import { arch, platform, release } from 'node:os'
 import { promises as streamPromises } from 'node:stream'
 import { Context, Service } from '@deepseek-ai/cordis'
@@ -21,7 +21,10 @@ import { AccountUnauthorizedError, PlatformAuthError, platformHeaders, platformO
 export type * from './types.ts'
 
 declare module '@deepseek-ai/cordis' {
-  interface Context { deepseekAccount: DeepSeekAccount }
+  interface Context {
+    deepseekAccount: DeepSeekAccount
+    accountCallback: AccountCallback
+  }
   interface Events {
     /** Local grant removal has completed.
      * @mode emit
@@ -35,6 +38,21 @@ const KEY = credentialKey('deepseek-account-platform', 'default')
 const DEVICE = credentialKey('deepseek-account-platform', 'device')
 const grant = z.object({ version: z.literal(1), token: z.string().min(1), issuer: z.url() })
 const device = z.object({ id: z.uuid() })
+
+/** Optional host carrier for account callbacks; the account provider retains the complete PKCE lifecycle. */
+export abstract class AccountCallback extends Service {
+  constructor(ctx: Context) {
+    super(ctx, 'accountCallback')
+  }
+
+  /**
+   * Register the provider-owned callback route at the requested browser origin.
+   * @param origin - validated callback origin of this account attempt.
+   * @param route - route whose handler validates state and settles the account grant.
+   * @returns removal of this attempt's route and carrier resources.
+   */
+  abstract register(origin: string, route: WebRoute): () => void | Promise<void>
+}
 
 /** Deployment-specific platform and request deadlines. */
 export interface Config {
@@ -681,8 +699,12 @@ export class DeepSeekAccount extends TypertRemoteService {
   }
 
   private async run(session: AuthorizationSession, attempt: Attempt): Promise<void> {
+    const carrier = this.ctx.get('accountCallback')
     const webServer = this.ctx.get('webServer')
-    if (webServer === undefined) throw new PlatformAuthError('protocol')
+    let registerCallback: ((route: WebRoute) => () => void | Promise<void>) | undefined
+    if (carrier !== undefined) registerCallback = route => carrier.register(attempt.origin, route)
+    else if (webServer !== undefined) registerCallback = route => webServer.register(route)
+    if (registerCallback === undefined) throw new PlatformAuthError('protocol')
     const verifier = randomBytes(32).toString('base64url')
     const state = randomBytes(32).toString('base64url')
     const challenge = createHash('sha256').update(verifier).digest('base64url')
@@ -697,7 +719,7 @@ export class DeepSeekAccount extends TypertRemoteService {
     const abort = (): void => { code.reject(new PlatformAuthError('expired')) }
     signal.addEventListener('abort', abort, { once: true })
     try {
-      attempt.disposeCallback = this.ctx.effect(() => webServer.register({
+      const route: WebRoute = {
         kind: 'exact', path: '/oauth/callback', handler: (req, res) => {
           let url: URL
           try { url = new URL(req.url ?? '/', 'http://127.0.0.1') }
@@ -716,7 +738,11 @@ export class DeepSeekAccount extends TypertRemoteService {
           attempt.callback = res
           code.resolve(receivedCode)
         },
-      }), 'account: browser callback')
+      }
+      attempt.disposeCallback = this.ctx.effect(
+        () => registerCallback(route),
+        'account: browser callback',
+      )
       signal.throwIfAborted()
       const redirectUri = `${attempt.origin}/oauth/callback`
       const init = initialization.safeParse(await this.request('auth_init', {

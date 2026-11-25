@@ -507,11 +507,11 @@ const SERVICE_ROLES: ServiceRole[] = [
   },
   {
     key: 'accountCallback',
-    pkg: 'deepseek-account-platform',
+    pkg: 'deepseek-account',
     title: 'Account callback carrier',
     mode: 'seam',
     implementations: [],
-    consumers: ['deepseek-account-platform'],
+    consumers: ['deepseek-account'],
     note: 'An optional Host carrier registers the account-owned callback at its browser origin; the provider retains PKCE validation, grant storage, and cancellation.',
   },
   {

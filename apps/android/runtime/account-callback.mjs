@@ -1,5 +1,5 @@
 import { createServer } from 'node:http'
-import { AccountCallback } from '@deepseek-ai/dsh-deepseek-account-platform'
+import { AccountCallback } from '@deepseek-ai/dsh-deepseek-account'
 
 const activePhases = new Set(['initializing', 'waiting-browser', 'exchanging', 'committing'])
 

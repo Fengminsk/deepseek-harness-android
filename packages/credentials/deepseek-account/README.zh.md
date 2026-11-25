@@ -48,7 +48,7 @@ getProfile / getBalance 将保存的授权 token 通过 x-dsh-auth-token 请求�
 
 getNotifications 读取 `GET /api/v0/users/notifications/list`；getNotificationContent 读取 `GET /api/v0/users/notifications/content?id=<id>`，支持已消费通知。列表还会校验必填的正数 `next_poll_after` 不超出浏览器计时范围，并投影为 `nextPollAfterSeconds`。二者都通过 x-client-locale 指定语言。列表外层要求有效的轮询间隔和通知数组。每条通知单独解码；字段格式错误或操作不受支持时，记录诊断并跳过该条，保留其他有效通知及服务端顺序。被跳过的通知不会展示或上报。单条内容响应格式错误时仍拒绝请求，让客户端保留当前内容。reportNotificationEvent 向 `POST /api/v0/users/notifications/events` 发送 notification_id 和 type displayed、cta_clicked 或 dismissed。有效的 acked 响应表示服务端消费决策，不会关闭本地卡片。每项操作都捕获当前授权和取消生命周期，不前置查询当前用户；凭据变化会取消旧生命周期并丢弃迟到的响应，token 始终只留在 Host。其他 HTTP、业务和响应校验失败均拒绝；HTTP 401 或响应码 40003 仅使当前授权失效，并返回未登录结果。
 
-余额请求使用 balanceTimeoutMs（默认 30,000ms）；超时返回失败结果，不清除账号，也不制造零余额。在插件行配置 platformOrigin、allowLoopbackHttp、requestTimeoutMs、balanceTimeoutMs 和 attemptTimeoutMs。HTTP 仅用于显式启用的本机开发。服务先在现有 Host webServer 注册 /oauth/callback，再调用 auth_init；校验 state、使用 S256 PKCE 授权码兑换一次，并在跳转 auth_exchange.biz_data.authorized_url 前提交授权记录。浏览器地址默认要求匹配配置的平台来源，并始终要求固定的 /dsh/authorize 或 /dsh/authorized 路径。完成页地址将 `login_source` 设为发起登录的客户端类型（`web` 或 `desktop`），并保留平台返回的其他查询参数。设备标识是独立的随机 UUID 记录，由使用同一凭证存储的进程共享；device_model 报告操作系统和架构。
+余额请求使用 balanceTimeoutMs（默认 30,000ms）；超时返回失败结果，不清除账号，也不制造零余额。在插件行配置 platformOrigin、allowLoopbackHttp、requestTimeoutMs、balanceTimeoutMs 和 attemptTimeoutMs。HTTP 仅用于显式启用的本机开发。服务先通过可选的 Host `accountCallback` 载体注册 /oauth/callback，没有该载体时使用现有 Host webServer，再调用 auth_init；校验 state、使用 S256 PKCE 授权码兑换一次，并在跳转 auth_exchange.biz_data.authorized_url 前提交授权记录。浏览器地址默认要求匹配配置的平台来源，并始终要求固定的 /dsh/authorize 或 /dsh/authorized 路径。完成页地址将 `login_source` 设为发起登录的客户端类型（`web` 或 `desktop`），并保留平台返回的其他查询参数。设备标识是独立的随机 UUID 记录，由使用同一凭证存储的进程共享；device_model 报告操作系统和架构。
 
 platformOrigin 默认为 `https://platform.deepseek.com`，用于登录、资料、余额、退出登录、外部导航和原生内嵌页面。harnessOrigin 默认为 `https://harness.deepseek.com`，仅用于通知 list、content 和 events 接口。私有部署需显式设置 harnessOrigin。二者均接受 HTTPS；启用 allowLoopbackHttp 后也接受回环 HTTP。模型和文件 token 目标使用 inferenceOrigin。
 
@@ -78,7 +78,7 @@ inferenceOrigin 默认为 `https://api.deepseek.com`。私有部署 patch 可将
 <a id="understand-the-implementation"></a>
 ## 理解实现
 
-账号是否存在直接读取凭证存储，尝试状态直接投影私有状态。异步取消和提交由行为测试验证。
+账号是否存在直接读取凭证存储，尝试状态直接投影私有状态。可选的 `accountCallback` 服务负责回调路由的传输与清理；账号服务继续负责 state 和 PKCE 校验、授权持久化及取消，因此 Host 可以提供临时的专用回调监听，无需开启 Web 界面。异步取消和提交由行为测试验证。
 
 <a id="further-exploration"></a>
 ## 深入探索
@@ -102,7 +102,7 @@ attemptTimeoutMs 包含初始化、等待浏览器和兑换的耗时。初始化
 
 <a id="known-limitations-and-deferred-work"></a>
 
-- 浏览器登录需要 Host webServer，仅支持通过带显式端口的 HTTP localhost、127.0.0.1 或 [::1] 本机访问及 SSH 本地转发，不支持非本机域名的反向代理。账号 token 没有过期或刷新流程；用户主动在 DSH 退出登录时，先删除本地授权，再在后台调用 POST /auth-api/v0/users/logout。远程失败不会恢复本地登录态。默认仅针对捕获的旧 token 最多额外重试五次，指数退避间隔为 1、2、4、8、16 秒；logoutMaxRetries（0–5）和 logoutRetryDelayMs 可配置该策略。每次请求使用 requestTimeoutMs。服务关闭时取消请求和等待，不持久化待撤销任务。本地凭证删除失败仍向调用者报错。签发 token 前的授权尝试仍有有效期。初始化后的取消或超时会在后台发送一次 POST /auth-api/v0/dsh/auth_cancel，携带 auth_init.biz_data 中的 authorize_id 和原始 code_verifier，不附带账号授权。本地取消不等待该请求，也不会因失败而恢复；requestTimeoutMs 限制请求时间，服务关闭时中止请求。TODO(product-error-ui)：产品需定义已给定 biz code 的本地化文案和交互表现。在此之前，业务失败沿用现有“操作失败，请重试”兜底；其他 code 和 HTTP 错误也使用该兜底。开发授权不能认证生产请求。
+- 浏览器登录需要 Host `accountCallback` 载体或 webServer，仅支持通过带显式端口的 HTTP localhost、127.0.0.1 或 [::1] 本机访问及 SSH 本地转发，不支持非本机域名的反向代理。账号 token 没有过期或刷新流程；用户主动在 DSH 退出登录时，先删除本地授权，再在后台调用 POST /auth-api/v0/users/logout。远程失败不会恢复本地登录态。默认仅针对捕获的旧 token 最多额外重试五次，指数退避间隔为 1、2、4、8、16 秒；logoutMaxRetries（0–5）和 logoutRetryDelayMs 可配置该策略。每次请求使用 requestTimeoutMs。服务关闭时取消请求和等待，不持久化待撤销任务。本地凭证删除失败仍向调用者报错。签发 token 前的授权尝试仍有有效期。初始化后的取消或超时会在后台发送一次 POST /auth-api/v0/dsh/auth_cancel，携带 auth_init.biz_data 中的 authorize_id 和原始 code_verifier，不附带账号授权。本地取消不等待该请求，也不会因失败而恢复；requestTimeoutMs 限制请求时间，服务关闭时中止请求。TODO(product-error-ui)：产品需定义已给定 biz code 的本地化文案和交互表现。在此之前，业务失败沿用现有“操作失败，请重试”兜底；其他 code 和 HTTP 错误也使用该兜底。开发授权不能认证生产请求。
 
 <a id="dev-note"></a>
 ### 开发备注
