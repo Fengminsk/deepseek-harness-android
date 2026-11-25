@@ -12,7 +12,7 @@ import 'package:material_ui/material_ui.dart';
 
 part 'liquid_glass_capture.dart';
 
-const _shaderAsset = 'shaders/liquid_glass.frag';
+const _shaderAsset = 'packages/prism_ui/shaders/liquid_glass.frag';
 const _glowIn = Duration(milliseconds: 120);
 const _glowOut = Duration(milliseconds: 360);
 const double _glowSpread = 3;
