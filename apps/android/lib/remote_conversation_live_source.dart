@@ -256,7 +256,11 @@ class RemoteConversationLiveSource extends RemoteConversationSource {
   ({String key, String requestId})? _pendingAttachmentSend;
 
   /// 最近一次已知的会话事件，只用于推导发送参数（模型路由）与定位变更快照。
-  List<Json> _events = const [];
+  ///
+  /// 事件按 `seq` 升序追加：新事件通常落在末尾，乱序时才二分插入，避免每来
+  /// 一个事件就复制并重排整段历史。`_eventSeqs` 与之同步，供去重查询。
+  final List<Json> _events = <Json>[];
+  final Set<int> _eventSeqs = <int>{};
 
   /// 最近一次窗口读取的日志切点；变更快照的 seq 从它向下找。
   int _throughSeq = 0;
@@ -725,13 +729,43 @@ class RemoteConversationLiveSource extends RemoteConversationSource {
   }
 
   void _applyWindow(RemoteConversationWindow window) {
-    _events = List<Json>.of(window.events);
+    _events
+      ..clear()
+      ..addAll(window.events);
+    _eventSeqs
+      ..clear()
+      ..addAll(_events.map((event) => event['seq'] as int? ?? 0));
     _throughSeq = window.throughSeq;
     // 窗口是权威状态：重读后本地待生效的选择交给投影重建。
     _selectedOverride = null;
     _modelProjection.reconcile(_events);
     _emitModelSelection();
     _emit(RemoteConversationSnapshot(window));
+  }
+
+  /// 按 `seq` 插入一个事件，并回答它是不是新的。
+  ///
+  /// 协议允许乱序到达：落在末尾的事件直接追加，其它位置二分插入，代价与新增
+  /// 事件数成正比，不再复制并重排整段历史。
+  bool _appendEvent(Json event) {
+    final seq = event['seq'] as int;
+    if (!_eventSeqs.add(seq)) return false;
+    if (_events.isEmpty || _bySeq(_events.last, event) <= 0) {
+      _events.add(event);
+      return true;
+    }
+    var low = 0;
+    var high = _events.length;
+    while (low < high) {
+      final middle = (low + high) >> 1;
+      if (_bySeq(_events[middle], event) < 0) {
+        low = middle + 1;
+      } else {
+        high = middle;
+      }
+    }
+    _events.insert(low, event);
+    return true;
   }
 
   /// 增量读取 `seq > afterSeq` 的较新事件；不触碰时间线，由页面合并去重。
@@ -950,9 +984,7 @@ class RemoteConversationLiveSource extends RemoteConversationSource {
     if (params['sessionId'] != sessionId) return;
     final event = params['event'];
     if (event is! Json || event['seq'] is! int) return;
-    final seq = event['seq'] as int;
-    if (_events.any((known) => known['seq'] == seq)) return;
-    _events = [..._events, event]..sort(_bySeq);
+    if (!_appendEvent(event)) return;
     _acceptModelEvent(event);
     _modelProjection.reconcile(_events);
     _emitModelSelection();
@@ -992,9 +1024,7 @@ class RemoteConversationLiveSource extends RemoteConversationSource {
       case 'event':
         final event = value['event'];
         if (event is! Json || event['seq'] is! int) return;
-        final seq = event['seq'] as int;
-        if (_events.any((known) => known['seq'] == seq)) return;
-        _events = [..._events, event]..sort(_bySeq);
+        if (!_appendEvent(event)) return;
         _acceptModelEvent(event);
         _modelProjection.reconcile(_events);
         _emitModelSelection();

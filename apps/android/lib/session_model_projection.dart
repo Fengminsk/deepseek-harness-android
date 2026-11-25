@@ -25,9 +25,14 @@ class SessionModelProjection {
   Json? get next => _state.next;
 
   void reconcile(List<Json> events) {
-    if (!identical(_source, events) ||
-        events.length < _count ||
-        (_count > 0 && !identical(events[_count - 1], _last))) {
+    // Callers hand over a fresh list per update, so list identity cannot decide
+    // this: the prefix staying the same — same element objects, same order —
+    // is what makes a window an append rather than a replacement.
+    final continues =
+        _source != null &&
+        events.length >= _count &&
+        (_count == 0 || identical(events[_count - 1], _last));
+    if (!continues) {
       _state = _ModelSelectionState();
       _count = 0;
     }
