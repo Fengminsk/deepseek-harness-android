@@ -16,7 +16,8 @@ Track FlClash's UI library from `chen08209/prism_ui` at `6c47901` (the revision 
 - `apps/android/packages/prism_ui` holds the 94-file transitive closure (77 libraries and 17 part files) plus both shaders, `LICENSE` and `NOTICE`; it analyzes clean under the app's rules.
 - The package keeps the upstream package name, so the glass shader loads as `packages/prism_ui/shaders/liquid_glass.frag`. `test/prism_package_test.dart` loads that shader and builds `LiquidGlass` inside a prism `Theme`.
 - Provenance: `licenses/prism-source.json` records revision, seeds, file list and tree hash; `tool/runtime-lock.json` describes both sources (`flclash` corrected to the v0.9.2 revision actually in use, plus `prismUi`). Refresh steps live in `packages/prism_ui/README.md`.
-- Phase 2 started: `PocketSwitch` draws prism_ui's `Switch` at the same 52 x 32 track, so the row that contains it keeps its height. The adapted `lib/flclash/switch.dart` and its manifest entry are gone.
+- Consumers moved so far: `PocketSwitch` draws prism_ui's `Switch` at the same 52 x 32 track; `popup.dart` and `segmented_control.dart` import prism_ui's `motion.dart` and `goo.dart`, whose helpers match the adapted copies; the app-owned glass context adapter moved to `lib/design_context.dart`. `lib/flclash` is down to 16 files from 20.
+- Verification loop for the visual migrations: a debug APK builds with `ANDROID_HOME` and `GRADLE_USER_HOME` set (see `tool/runtime-lock.json` for the SDK expectations) and installs on a device. Screenshots need the phone unlocked — the capture is black while the notification shade holds focus.
 
 ## Integration facts
 
