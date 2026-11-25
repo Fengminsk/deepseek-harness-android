@@ -9,7 +9,7 @@ import 'package:material_ui/material_ui.dart';
 
 import 'context.dart';
 import 'liquid_glass.dart';
-import 'motion.dart';
+import 'package:prism_ui/motion.dart';
 import 'shape.dart';
 import 'surface.dart';
 import 'typography.dart';

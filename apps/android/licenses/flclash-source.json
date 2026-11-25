@@ -13,7 +13,6 @@
     "lib/ui/surface.dart",
     "lib/ui/page_transition.dart",
     "lib/ui/popup.dart",
-    "lib/ui/motion.dart",
     "lib/ui/drag_back.dart",
     "lib/ui/navigation_dock.dart",
     "lib/ui/button.dart",
@@ -46,6 +45,7 @@
     "Drag-back routes restore the focus they held before the gesture instead of answering currentResult through a pageResult callback.",
     "DSH daylight surfaces add fixed micrograin and directional highlights to dashboard cards; regular and pill glass use softer saturation and thicker frost. Press glow also renders in the software fallback with glow-aware picture caching.",
     "Regular glass keeps its reduced dark tint alpha while taking FlClash's tint lifted from the card tone.",
-    "Switch is no longer adapted: PocketSwitch draws prism_ui's Switch, sized to the same 52 x 32 track."
+    "Switch is no longer adapted: PocketSwitch draws prism_ui's Switch, sized to the same 52 x 32 track.",
+    "Motion primitives come from prism_ui's motion.dart, which holds the same constants and curves plus a frame interval and a simulation that lands exactly."
   ]
 }

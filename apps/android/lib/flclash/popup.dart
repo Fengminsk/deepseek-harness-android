@@ -7,7 +7,7 @@ import 'dart:ui' show ImageFilter, lerpDouble;
 import 'color.dart';
 import 'context.dart';
 
-import 'motion.dart';
+import 'package:prism_ui/motion.dart';
 import 'shape.dart';
 import 'surface.dart';
 import 'typography.dart';
