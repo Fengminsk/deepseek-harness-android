@@ -76,7 +76,12 @@ interface DesktopSession {
   readonly id: unknown
 }
 
-/** Strip markup/control characters from a short completion preview. */
+/**
+ * Strip markup/control characters from a short completion preview.
+ * @param content - a message `content` value; only text parts contribute.
+ * @returns the first sentence, at most 100 characters, or undefined when the
+ * value carries no text.
+ */
 export function completionPreview(content: unknown): string | undefined {
   if (!Array.isArray(content)) return undefined
   const first = content

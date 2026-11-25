@@ -20,6 +20,13 @@ interface PendingInteraction {
   sending: boolean
 }
 
+/**
+ * Approval and question requests the paired phone may answer.
+ *
+ * Pending requests live in memory only: a restart drops them, and the desktop
+ * UI remains an equal answerer for every request. The first accepted answer
+ * settles the request; stale and in-flight answers are refused.
+ */
 export class DesktopInteractions {
   private readonly records = new Map<string, PendingInteraction>()
   private readonly lifetime = new AbortController()
@@ -34,6 +41,7 @@ export class DesktopInteractions {
   private ready = false
   private lastError: string | undefined
 
+  /** @param options - desktop context, notification sink, and warning sink. */
   constructor(options: {
     ctx: Context
     post: (notifications: readonly RelayNotification[]) => Promise<void>
@@ -44,12 +52,18 @@ export class DesktopInteractions {
     this.warn = options.warn
   }
 
+  /** Open the stream of answerable desktop requests, retrying after a broken stream; idempotent. */
   start(): void {
     if (this.started) return
     this.started = true
     void this.run()
   }
 
+  /**
+   * Observer availability for the Settings page and the phone.
+   * @returns readiness, the recorded stream failure when one exists, and the
+   * pending request count.
+   */
   diagnostics(): { ready: boolean; error?: string; pending: number } {
     return {
       ready: this.ready,
@@ -58,6 +72,10 @@ export class DesktopInteractions {
     }
   }
 
+  /**
+   * Close the stream and drop every pending request; idempotent. Dropped
+   * requests stay answerable only from the desktop UI.
+   */
   async stop(): Promise<void> {
     this.lifetime.abort()
     this.ready = false
@@ -87,6 +105,13 @@ export class DesktopInteractions {
     }
   }
 
+  /**
+   * Pending requests of one session, as `interactions.list` and
+   * `interactions.changed` publish them.
+   * @param sessionId - desktop session whose pending requests are read.
+   * @returns the session id, the snapshot revision, and that session's pending
+   * requests.
+   */
   snapshot(sessionId: string): RecordValue {
     return {
       sessionId,
@@ -97,6 +122,13 @@ export class DesktopInteractions {
     }
   }
 
+  /**
+   * Submit one answer for a pending request.
+   * @param params - `id`, `version`, `sessionId`, and `response`: an approval
+   * `'allowed-once'`/`'rejected'` or a question `{ answers }` value.
+   * @returns `accepted`, plus `requestStillPending` and a readable `message`
+   * on refusal; it throws when the desktop channel cannot deliver the answer.
+   */
   async reply(params: RecordValue): Promise<RecordValue> {
     const id = params['id']
     const version = params['version']

@@ -6,20 +6,40 @@ const MAX_SCAN_PAGES = 20
 interface EventRecord { readonly event: Record<string, unknown> & { readonly seq: number } }
 interface Page { readonly records: readonly EventRecord[]; readonly hasMore: boolean }
 interface Projection { readonly kind: string; readonly asOfSeq?: number; readonly values?: { readonly turnOutline?: unknown } }
+/**
+ * Desktop-owned Session controller the relay reads through.
+ *
+ * A sequenced projection supplies the newest readable sequence number; a page
+ * returns retained events ending at or before a requested sequence number.
+ */
 export interface DesktopSessionController {
+  /** Turn outline plus `asOfSeq` for one session. */
   projections(request: { sessionId: string }, signal: AbortSignal): Promise<Projection>
+  /** One page of retained events up to `throughSeq`, and before `beforeSeq`. */
   page(request: {
     address: { kind: 'session'; sessionId: string }; throughSeq: number; beforeSeq?: number
     maxMessages: number; turnWindow: { minMessages: number; minTurns: number }
   }, signal: AbortSignal): Promise<Page>
 }
 
+/**
+ * Cursor and budget of one Session event window.
+ *
+ * `afterSeq` streams forward and cannot be combined with another cursor;
+ * `beforeSeq` reads backward and requires `throughSeq`.
+ */
 export interface WindowRequest {
+  /** Session whose events are read. */
   readonly sessionId: string
+  /** Return events after this sequence number; a forward read. */
   readonly afterSeq?: number
+  /** Return events before this sequence number; requires `throughSeq`. */
   readonly beforeSeq?: number
+  /** Newest sequence number the window may include; defaults to the projection's `asOfSeq`. */
   readonly throughSeq?: number
+  /** Event cap; defaults to 500 for a backward read and 120 for a forward read. */
   readonly maxEvents?: number
+  /** Byte cap over serialized events; defaults to 4 MiB backward and 1 MiB forward. */
   readonly maxBytes?: number
 }
 
@@ -40,7 +60,17 @@ function turnsOf(snapshot: Projection): unknown[] {
   return Array.isArray(turns) ? turns : []
 }
 
-/** The same cursor and byte-budget semantics as the Android facade's readWindow. */
+/**
+ * The same cursor and byte-budget semantics as the Android facade's readWindow.
+ *
+ * Invalid cursors, budgets, or an event over the byte cap reject the read.
+ * @param controller - controller that owns the desktop Session.
+ * @param request - cursor and budget of the window to read.
+ * @returns the window's events with `throughSeq` and `firstSeq`; a forward
+ * read also reports `hasMore` and `truncated`, or `resetRequired` when the gap
+ * from `afterSeq` exceeds the page scan limit, while a backward read adds the
+ * session's `turns`.
+ */
 export async function readDesktopSessionWindow(controller: DesktopSessionController, request: WindowRequest): Promise<unknown> {
   if (typeof request.sessionId !== 'string' || request.sessionId.trim() === '') throw new Error('sessionId is required')
   for (const cursor of [request.afterSeq, request.beforeSeq, request.throughSeq]) {

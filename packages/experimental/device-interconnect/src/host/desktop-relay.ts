@@ -168,7 +168,11 @@ export class DesktopRelay {
     this.options = options
   }
 
-  /** Current availability for the bridge state; never exposes the token. */
+  /**
+   * Current availability for the bridge state; never exposes the token.
+   * @returns listening state, the loopback base URL while listening, and the
+   * last failure reason once one was recorded.
+   */
   status(): DesktopRelayStatus {
     return {
       available: this.server !== undefined && this.url !== undefined,
@@ -227,7 +231,10 @@ export class DesktopRelay {
     }
   }
 
-  /** Absolute descriptor path inside the bundle data directory. */
+  /**
+   * Absolute descriptor path inside the bundle data directory.
+   * @returns the `relay.json` path the child reads to find the running relay.
+   */
   descriptorPath(): string {
     return join(this.options.dataDir, RELAY_FILE_NAME)
   }
@@ -455,7 +462,12 @@ export class DesktopRelay {
   }
 }
 
-/** Parse `POST /relay/session/send`; attachment sends are explicitly rejected. */
+/**
+ * Parse `POST /relay/session/send`; attachment sends are explicitly rejected.
+ * @param body - decoded JSON request body.
+ * @returns the validated send request, or a stable error code with a readable
+ * reason for the phone.
+ */
 export function parseSendRequest(body: Record<string, unknown>):
   | { readonly value: DesktopRelaySendRequest }
   | { readonly error: { readonly code: string; readonly message: string } } {
@@ -504,7 +516,11 @@ function relayError(code: string, message: string, status: number): RelayRespons
   return { status, body: { ok: false, error: { code, message } } }
 }
 
-/** Only 127.0.0.1/::1 shapes count as loopback peers. */
+/**
+ * Only 127.0.0.1/::1 shapes count as loopback peers.
+ * @param address - peer address reported by the accepted socket, or undefined.
+ * @returns true for the IPv4, IPv6, and IPv4-mapped loopback forms.
+ */
 export function isLoopback(address: string | undefined): boolean {
   if (address === undefined) return false
   return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1'
@@ -520,6 +536,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * with `ctx.get`. Missing services disable the affected operation; the rest of
  * the plugin keeps loading.
  * @param ctx - plugin context in the desktop Host process.
+ * @param interactions - answerable desktop interactions; absent makes the
+ * approval operations fail with `relay/service-unavailable`.
  * @returns the executor used by {@link DesktopRelay}.
  */
 export function createDesktopRelayExecutor(ctx: Context, interactions?: DesktopInteractions): DesktopRelayExecutor {

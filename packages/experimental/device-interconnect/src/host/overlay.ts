@@ -18,6 +18,8 @@ import { OVERLAY_FILE_NAME } from './config.ts'
  * Values are emitted as JSON scalars, which are valid YAML, so a host name
  * containing `:` or `#` cannot change the document structure.
  * @param config - configuration the child must apply.
+ * @param relayFile - desktop relay descriptor path; `''` disables relaying in
+ * the child.
  * @returns the overlay document, newline-terminated.
  */
 export function renderOverlay(config: DeviceInterconnectConfig, relayFile = ''): string {
@@ -65,6 +67,8 @@ export function overlayPath(dataDir: string): string {
  * Write the overlay atomically.
  * @param file - target overlay path.
  * @param config - configuration the child must apply.
+ * @param relayFile - desktop relay descriptor path; `''` disables relaying in
+ * the child.
  * @returns completion once the rename finished.
  */
 export async function writeOverlay(file: string, config: DeviceInterconnectConfig, relayFile = ''): Promise<void> {
