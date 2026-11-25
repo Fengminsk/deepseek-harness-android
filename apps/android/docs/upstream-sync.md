@@ -3,7 +3,7 @@
 状态：**已执行（2026-11-25）**。合并与迁移完成，结果见 §11；真机验收与 Build 122 待做。
 范围：`apps/android`（App + 内嵌运行时）、`apps/remote-host`、`packages/experimental/device-interconnect`
 依赖的上游核心；不含 `apps/desktop`、CUA、Forge、Connector 等与 Android 无关的表面。
-基线：本地 `android` @ `bb4363383c`；上次同步合并 `493fb02c87`（上游 `fcc0ad4621` = `dsh-v0.2.2-rc.1`）。
+基线：本地 `android` 分支头；上次同步合并对应上游 `dsh-v0.2.2-rc.1`（2026-11-04）。
 取证：只读 git（`rev-list` / `merge-tree --write-tree` / `diff` / `show`）；执行阶段的分支与提交见 §11。
 
 ---
@@ -33,15 +33,15 @@
 
 | 项 | 值 |
 | --- | --- |
-| 本地同步点 | `493fb02c87`（fork）→ 上游 `fcc0ad4621`，`dsh-v0.2.2-rc.1`，2026-11-04 |
-| 本地新增提交 | `493fb02c87..HEAD` 首个父链 112 个；`fcc0ad4621..android` 共 236 个（含重放的上游提交） |
-| 上游候选 1 | `dsh-v0.2.2-rc.5` = `9c2670d3bc`，2026-11-18，距同步点 **776** 个提交 |
-| 上游候选 2 | `dsh-v0.2.3-alpha.2` = `4b399c39a6`，2026-11-22，距同步点 **3124** 个提交 |
+| 本地同步点 | fork 的 `merge: sync upstream master … (0.2.2-rc.1)` → 上游 `dsh-v0.2.2-rc.1`，2026-11-04 |
+| 本地新增提交 | 上次同步合并以来首个父链 112 个；上游同步点以来共 236 个（含重放的上游提交） |
+| 上游候选 1 | `dsh-v0.2.2-rc.5`，2026-11-18，距同步点 **776** 个提交 |
+| 上游候选 2 | `dsh-v0.2.3-alpha.2`，2026-11-22，距同步点 **3124** 个提交 |
 | 上游版本串 | `0.2.2-rc.1` → `rc.2`(11-11) → `rc.3`(11-13) → `rc.4`(11-17) → `rc.5`(11-18) → `0.2.3-alpha.1/.2`(11-22) |
 | 0.2.2 是否有正式版 | 否。rc.5 是 0.2.2 线目前最新的 tag |
 
 > **注意**：`docs/upgrade-guide/v<版本>/` 的目录名**不代表**改动落点。区间内该目录被大规模回填，
-> 例如 `connection-page-peer`（连接鉴权）挂在 `v0.2.2-rc.2/`，但其提交 `71753fdf91` 实测在
+> 例如 `connection-page-peer`（连接鉴权）挂在 `v0.2.2-rc.2/`，但其提交实测在
 > **rc.5 之后**。本计划所有"落在哪个版本"的判断都以 `git merge-base --is-ancestor` 实测为准。
 
 ---
@@ -53,16 +53,16 @@
 
 ### 2.1 与嵌入式 Android 宿主直接相关（必须处理）
 
-| 改动 | 代表提交 | 对我们的影响 | 必须做什么 |
+| 改动 | 上游提交（`git log --grep` 可搜） | 对我们的影响 | 必须做什么 |
 | --- | --- | --- | --- |
-| Office 合并：`office-to-pdf` + engine-resolver → `office-kit`，新增 `tool-office` | `a220e017b5`、`50ba635949`、`edd38f1d66`、`78da437976` | 我们 patch 的 `office-to-pdf/{src/index.ts,src/subprocess.ts}` **整包消失** | 把 subprocess 转换 + `/system/fonts` 迁进 `office-kit`；命名空间 `officeToPdf`→`officeKit`；kit 0.2.0→0.2.3 |
-| 账号统一：`deepseek-account-platform` → `deepseek-account`，删 `api/account-controller` | `d51d623bfc` | 我们的 `accountCallback` seam 挂在被删包上；`account-callback.mjs` 直接 import | 包迁移 + seam 重放（rc.5 仍用 `webServer.register`，改动很小） |
-| 错误码体系化：fs / jobs / attachment / shell / llm | `4e4b4eb9b6`、`a0766d7573`、`7d6b1197dd`、`1b2cac01e4`、`eee5c94a41`、`0fe47c32ba` | 工具失败结构变成 `HarnessError` + code；`JOB_BACKGROUND_DISABLED` 删除、`IMAGE_UNSUPPORTED_MODEL`→`MODEL_DOES_NOT_SUPPORT_IMAGES` | 手机端工具卡片/错误分支对齐；`tool-fs*` 补丁与上游同区域 |
-| Session 批量 append | `b5969f9e8d`、`b3d570cdf8`、`9d18b68095` | 序列分配时机变化，撞在我们的 jsonl publication 风险区 | jsonl 持久化包本版本只改 1 文件 5/2 行，补丁基本可留 |
-| `plugin-manager` 支持从 Discover 更新 Git 安装插件 | `d2bed0238e` 等 6 个 | 与我们的 `protectModules` 同文件 | 直接重放，按上游结构调整 |
-| DeepSeek 内容审查 + 拒答码改名 | `15762ffc03`、`f250e23202`、`e68c033493` | `MALFORMED_RESPONSE`→`CONTENT_REFUSED`；默认请求 safetyCheck | 手机端拒答 UI 判定串对齐；评估 Android 出网成本 |
+| Office 合并：`office-to-pdf` + engine-resolver → `office-kit`，新增 `tool-office` | `refactor(office): 合并为 office-kit…` 等 4 个 | 我们 patch 的 `office-to-pdf/{src/index.ts,src/subprocess.ts}` **整包消失** | 把 subprocess 转换 + `/system/fonts` 迁进 `office-kit`；命名空间 `officeToPdf`→`officeKit`；kit 0.2.0→0.2.3 |
+| 账号统一：`deepseek-account-platform` → `deepseek-account`，删 `api/account-controller` | `feat(account): 接入通用通知接口并统一账号服务` | 我们的 `accountCallback` seam 挂在被删包上；`account-callback.mjs` 直接 import | 包迁移 + seam 重放（rc.5 仍用 `webServer.register`，改动很小） |
+| 错误码体系化：fs / jobs / attachment / shell / llm | `feat(fs)…`、`feat(jobs)…`、`feat(attachment)…` 等 6 个 | 工具失败结构变成 `HarnessError` + code；`JOB_BACKGROUND_DISABLED` 删除、`IMAGE_UNSUPPORTED_MODEL`→`MODEL_DOES_NOT_SUPPORT_IMAGES` | 手机端工具卡片/错误分支对齐；`tool-fs*` 补丁与上游同区域 |
+| Session 批量 append | `feat(session): accept multiple events through append` 等 3 个 | 序列分配时机变化，撞在我们的 jsonl publication 风险区 | jsonl 持久化包本版本只改 1 文件 5/2 行，补丁基本可留 |
+| `plugin-manager` 支持从 Discover 更新 Git 安装插件 | `feat(plugins): update Git-installed plugins from Discover` 等 6 个 | 与我们的 `protectModules` 同文件 | 直接重放，按上游结构调整 |
+| DeepSeek 内容审查 + 拒答码改名 | `feat(llm-deepseek): …safetyCheck` 等 3 个 | `MALFORMED_RESPONSE`→`CONTENT_REFUSED`；默认请求 safetyCheck | 手机端拒答 UI 判定串对齐；评估 Android 出网成本 |
 | 预设表新增 `tool-office`、`skill-filesystem.customSkillDirs`、`tool-subagent-control.interrupt:false` | `packages/bundle/web-app/presets/standard.patch.yml` +7 行 | `stage-preset.mjs` 按固定 id 清单抄条目，不会自动带上；`!!js` 表达式引用了 `baseUrl` | 决定是否纳入 `tool-office`；验证 `!!js` 在 Android 组合能否求值；决定 `interrupt:false` |
-| libreoffice-kit `0.2.0` → `0.2.3` | `ee06bf3f9b` | 我们固定在 0.2.0 | 跟随 0.2.3，并重跑 WASM 引擎 staging 校验 |
+| libreoffice-kit `0.2.0` → `0.2.3` | `fix(office): 升级 LibreOffice Kit 到 0.2.3` | 我们固定在 0.2.0 | 跟随 0.2.3，并重跑 WASM 引擎 staging 校验 |
 
 ### 2.2 可以缓（不阻断，但不能长期悬空）
 
@@ -98,7 +98,7 @@ CUA 全家（6 条 guide）、Forge 全家、`packages/connector/*`（0.2.3 才�
 | 文本冲突（实测 `merge-tree`） | **28** | 41 | +13 处 |
 | Node 下限 | `>=24.9`（不变） | `^24.22.3 \|\| >=26.13.1` | 内嵌 `libnode` 是 `24.22.0-0`（`tool/runtime-lock.json`），需换 nodejs-mobile 构建，**该版本是否存在未核实** |
 | vendor cordis | 4.1.0（与同步点相同，仅 README 变动） | 4.2.0-alpha.1（家族 9 包同时跃迁） | 框架层整体 alpha 化 |
-| `client/connection` | 仅 `package.json` | 鉴权整体重写（`71753fdf91`），`browser-auth.ts` 迁出到 `host/authentication-token` | 我们的 rotate 补丁从"零成本保留"变成"重写" |
+| `client/connection` | 仅 `package.json` | 鉴权整体重写（connection auth provider），`browser-auth.ts` 迁出到 `host/authentication-token` | 我们的 rotate 补丁从"零成本保留"变成"重写" |
 | `session-persistence-jsonl` | 5/2 行 | +173/−57，新增 SQLite 后端 | publication 补丁从"保留"变成"重写" |
 | Cordis Loader | 不变 | rc.9 + YAML 1.2 严格化 | `cordis.patch.yml` 的 `!!js` 可能加载失败 |
 | 远程连接 | 不变 | 新增 `client/remote-connection`（QR + 浏览器配对） | 与我们自建配对职责重叠，需重新做归属决策 |
@@ -353,31 +353,31 @@ Loader rc.9 严格化、Client 拆包/改名与 `session-panel` 入口迁移、�
 
 | 事实 | 证据 |
 | --- | --- |
-| 同步点与规模 | `git rev-list --count fcc0ad4621..dsh-v0.2.2-rc.5` = 776；`..upstream/master` = 3124 |
+| 同步点与规模 | `git rev-list --count dsh-v0.2.2-rc.1..dsh-v0.2.2-rc.5` = 776（自同步点起）；`..upstream/master` = 3124 |
 | 冲突数 | `git merge-tree --write-tree --name-only android <ref>`：rc.5 = 28，alpha.2 = 41 |
-| 包删除 | `a220e017b5`（office-kit）、`d51d623bfc`（account 统一） |
-| 删除锚点清单 | `git diff --name-status fcc0ad4621..dsh-v0.2.2-rc.5` 的 `D` 行：11 个，属 2 个包 |
-| 版本落点 | `git merge-base --is-ancestor <commit> dsh-v0.2.2-rc.5`（鉴权 `71753fdf91`、SQLite `a3c870e3e4`、cordis `1511a6ed44` 均在 rc.5 之后） |
+| 包删除 | `refactor(office): 合并为 office-kit`、`feat(account): 接入通用通知接口并统一账号服务` |
+| 删除锚点清单 | `git diff --name-status dsh-v0.2.2-rc.1..dsh-v0.2.2-rc.5` 的 `D` 行：11 个，属 2 个包 |
+| 版本落点 | `git merge-base --is-ancestor <commit> dsh-v0.2.2-rc.5`：连接鉴权、SQLite 持久化、cordis 框架升级三项均在 rc.5 之后 |
 | 数据面 | `packages/core/session/src/types.ts` 的 `SESSION_FORMAT_VERSION` 在 rc.5 = 4；`known-event-types` 64 → 66 发生在 alpha.1 |
 | 内嵌 Node | `apps/android/tool/runtime-lock.json` `node.mobileVersion = 24.22.0-0` |
-| 预设变化 | `git diff fcc0ad4621..dsh-v0.2.2-rc.5 -- packages/bundle/web-app/presets/standard.patch.yml`（+7 行） |
+| 预设变化 | `git diff dsh-v0.2.2-rc.1..dsh-v0.2.2-rc.5 -- packages/bundle/web-app/presets/standard.patch.yml`（+7 行） |
 | kit 版本 | `packages/bundle/web-app/package.json`：同步点 `^0.1.5`、fork `0.2.0`、rc.5/master `0.2.3` |
 
 ---
 
 ## 11. 执行结果（2026-11-25）
 
-**分支**：`sync/upstream-0.2.2-rc.5`（自 `android` @ `b345a64cff`，已打 tag `pre-sync-0.2.2-rc.5`
+**分支**：`sync/upstream-0.2.2-rc.5`（自 `android` 分支头切出，预先打了 tag `pre-sync-0.2.2-rc.5`
 并落一份完整仓库 bundle 备份在 `.tmp/backup/android-pre-sync-rc5.bundle`）。
 
-| 提交 | 内容 |
-| --- | --- |
-| `94d8ce2edb` | `merge: sync upstream dsh-v0.2.2-rc.5`：28 处冲突全部解析；两个被删包接受删除；生成物取上游版本 |
-| `7ca677384c` | Office 迁移：`office-kit` 承载子进程转换与 `/system/fonts`，命名空间 `officeKit`，kit 0.2.3，禁用 `skill-office` |
-| `ef45cfa063` | 账号迁移：`accountCallback` 载体接到 `deepseek-account`，凭据记录名不变 |
-| `2c9e939616` | 生成物与台账：config/Cordis/subsystem/doc-graph 目录、lockfile、parity 台账（325 条声明） |
-| `461562d933` | 4 个文件的行尾空行规范化 |
-| `8d7d202f96` | 删除无引用的 `plugin-manager/src/protection.ts` |
+| 顺序 | 提交标题 | 内容 |
+| --- | --- | --- |
+| 1 | `merge: sync upstream dsh-v0.2.2-rc.5` | 28 处冲突全部解析；两个被删包接受删除；生成物取上游版本 |
+| 2 | `refactor(document)!: run the Android Office path on office-kit` | `office-kit` 承载子进程转换与 `/system/fonts`，命名空间 `officeKit`，kit 0.2.3，禁用 `skill-office` |
+| 3 | `refactor(credentials)!: carry account callbacks through deepseek-account` | `accountCallback` 载体接到 `deepseek-account`，凭据记录名不变 |
+| 4 | `chore(sync): record the 0.2.2-rc.5 catalogs, lockfile, and parity ledger` | config/Cordis/subsystem/doc-graph 目录、lockfile、parity 台账（325 条声明） |
+| 5 | `style: keep one trailing newline where the rc.5 merge added another` | 4 个文件的行尾空行规范化 |
+| 6 | `refactor(plugin-manager): remove the unreferenced protection module` | 删除无引用的 `plugin-manager/src/protection.ts` |
 
 ### 与计划的差异
 

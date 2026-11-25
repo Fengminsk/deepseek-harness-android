@@ -852,10 +852,6 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export type RegisterFactoryOptions<F extends keyof SlotFactoryMap & string> = {\n    name: F;\n    scope: FactoryDefOf<F>[\'scope\'];\n} & FactoryField<F, \'children\', FactoryChildrenOf<F>> & FactoryField<F, \'store\', FactoryStoreOf<F> | (() => FactoryStoreOf<F>)> & FactoryField<F, \'inject\', (...args: FactoryInjectParams<F>) => FactoryInjectOf<F>> & FactoryField<F, \'locale\', FactoryLocaleOf<F>> & FactoryField<F, \'slots\', RuntimeFactorySlots<F>> & FactoryCollisionCheck<F> & FactoryChildrenCheck<F>;',
   },
   {
-    name: 'RemoteHostFacts',
-    declaration: 'export interface RemoteHostFacts {\n    readonly home: string | undefined;\n    readonly isLoopback: boolean;\n}',
-  },
-  {
     name: 'RemoteStream',
     declaration: 'export class RemoteStream<Item> implements AsyncIterable<RemoteStreamItem<Item>> {\n    constructor(private readonly connection: Pick<ConnectionHandle, \'generation\'>, private readonly options: RemoteStreamOptions<Item>);\n    get signal(): AbortSignal;\n    restart(): void;\n    dispose(): Promise<void>;\n    [Symbol.asyncIterator](): AsyncIterator<RemoteStreamItem<Item>>;\n}',
   },
