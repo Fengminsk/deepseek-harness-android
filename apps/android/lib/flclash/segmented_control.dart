@@ -445,7 +445,7 @@ class _SelectionThumb extends StatelessWidget {
         ),
         if (glass && lift > 0)
           LiquidGlass(
-            style: LiquidGlassStyle.lens(colors).scale(lift),
+            style: PocketGlass.lens(colors).scale(lift),
             shadows: [
               BoxShadow(
                 color: colors.shadow.withValues(alpha: .1 * lift),

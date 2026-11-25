@@ -57,7 +57,7 @@ void main() {
           hairline: dark ? 0 : .34,
           hairlineSide: dark ? .73 : .5,
         );
-        final next = LiquidGlassStyle.tinted(scheme, scheme.primary);
+        final next = PocketGlass.tinted(scheme, scheme.primary);
         await tester.pumpWidget(
           RepaintBoundary(
             key: boundary,
@@ -155,8 +155,8 @@ void main() {
           expect(
             pane.style.tint,
             enabled
-                ? LiquidGlassStyle.tinted(colors, colors.primary).tint
-                : LiquidGlassStyle.regular(colors).tint,
+                ? PocketGlass.tinted(colors, colors.primary).tint
+                : PocketGlass.regular(colors).tint,
           );
           expect(pane.style.tint.a, inExclusiveRange(0, 1));
           expect(pane.style.rim, greaterThan(0));
@@ -199,8 +199,8 @@ void main() {
             final colors = Theme.of(context).colorScheme;
             final pane = tester.widget<LiquidGlass>(find.byType(LiquidGlass));
             final expected = !tonal && enabled
-                ? LiquidGlassStyle.tinted(colors, colors.primary)
-                : LiquidGlassStyle.regular(colors);
+                ? PocketGlass.tinted(colors, colors.primary)
+                : PocketGlass.regular(colors);
             expect(pane.style.tint, expected.tint);
             expect(pane.style.tint.a, inExclusiveRange(0, 1));
             final states = enabled ? <WidgetState>{} : {WidgetState.disabled};

@@ -355,9 +355,9 @@ class CommonPopupRoute<T> extends PopupRoute<T> {
               shadows: menuShadows(colorScheme),
               glass: glass
                   ? (
-                      from: LiquidGlassStyle.regular(colorScheme),
-                      to: LiquidGlassStyle.menu(colorScheme),
-                      rim: LiquidGlassRim.menu(colorScheme),
+                      from: PocketGlass.regular(colorScheme),
+                      to: PocketGlass.menu(colorScheme),
+                      rim: PocketGlass.rimMenu(colorScheme),
                       coarse:
                           LiquidGlassScope.qualityOf(context) ==
                           LiquidGlassQuality.standard,
@@ -2492,9 +2492,9 @@ class _CommonPopupMenuState extends State<CommonPopupMenu>
     final step = receding ? null : level.step;
     final colorScheme = context.colorScheme;
     final glass = LiquidGlassScope.of(context)
-        ? LiquidGlassStyle.menu(colorScheme)
+        ? PocketGlass.menu(colorScheme)
         : null;
-    final rim = glass == null ? null : LiquidGlassRim.menu(colorScheme);
+    final rim = glass == null ? null : PocketGlass.rimMenu(colorScheme);
     final fill = SurfaceLevel.floatingOf(colorScheme).colorOf(colorScheme);
     // A card behind a sub menu takes a tap as one outside that sub menu.
     return GestureDetector(

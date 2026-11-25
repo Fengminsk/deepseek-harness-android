@@ -1090,7 +1090,8 @@ class _RenderLiquidGlass extends RenderProxyBox {
                   size.height /
                   math.sqrt2 *
                   (1 + (_fading ? _glowSpread * (1 - _press) : 0)),
-              strength: _press * 0.16,
+              // This app's press glow is stronger than the library default.
+              strength: _press * 0.23,
             ),
       );
     }
@@ -1355,7 +1356,8 @@ class _LiquidGlassLayer extends Layer {
   _Placement? _heldHaze;
 
   ui.Picture? _frost;
-  (Rect, BorderRadius, Path?, LiquidGlassStyle, LiquidGlassRim?)? _frostKey;
+  (Rect, BorderRadius, Path?, LiquidGlassStyle, LiquidGlassRim?, LiquidGlassGlow)?
+  _frostKey;
 
   int _capturedPass = -1;
   ui.Picture? _captured;
@@ -1433,7 +1435,7 @@ class _LiquidGlassLayer extends Layer {
   ];
 
   void _addFrost(ui.SceneBuilder builder) {
-    final key = (rect, corners, outline, style, rim);
+    final key = (rect, corners, outline, style, rim, glow);
     if (_frost == null || key != _frostKey) {
       _frost?.dispose();
       _frost = _paintFrost();
@@ -1622,6 +1624,27 @@ class _LiquidGlassLayer extends Layer {
           hairline..strokeWidth = _hairlineWidth,
         );
       this.rim?._paintShine(canvas, rect, corners.topLeft.x);
+    }
+    // Keep the local press response when shader filters are unavailable.
+    // Callers already clip to the pane; text and icons are painted afterwards.
+    if (!overCapture && glow.strength > 0) {
+      double alpha(double falloff) =>
+          (glow.strength * (glow.wash + (1 - glow.wash) * falloff)).clamp(0, 1);
+      canvas.drawRect(
+        rect,
+        Paint()
+          ..blendMode = BlendMode.plus
+          ..shader = ui.Gradient.radial(
+            rect.topLeft + glow.center,
+            math.max(glow.reach, 1) * 2,
+            [
+              Colors.white.withValues(alpha: alpha(1)),
+              Colors.white.withValues(alpha: alpha(math.exp(-1))),
+              Colors.white.withValues(alpha: alpha(math.exp(-4))),
+            ],
+            const [0, .5, 1],
+          ),
+      );
     }
   }
 }

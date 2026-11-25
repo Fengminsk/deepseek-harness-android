@@ -1491,7 +1491,7 @@ class _RemoteCircleButton extends StatelessWidget {
             ).copyWith(
               backgroundBuilder: glass
                   ? (context, states, child) => LiquidGlass(
-                      style: LiquidGlassStyle.regular(colors),
+                      style: PocketGlass.regular(colors),
                       pressed: states.contains(WidgetState.pressed),
                       borderRadius: AppRadius.full,
                       child: child,

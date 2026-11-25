@@ -159,8 +159,11 @@ class PocketConfirmation extends StatelessWidget {
                               child: PocketReveal(
                                 child: LiquidGlassScope.of(context)
                                     ? LiquidGlass(
-                                        style: LiquidGlassStyle.alert(colors)
-                                            .copyWith(rim: .18, hairline: .25),
+                                        style: glassStyleWith(
+                                          PocketGlass.alert(colors),
+                                          rim: .18,
+                                          hairline: .25,
+                                        ),
                                         borderRadius: BorderRadius.circular(30),
                                         child: panel,
                                       )

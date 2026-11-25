@@ -5,8 +5,6 @@
   "tag": "v0.9.2",
   "license": "GPL-3.0-only",
   "files": [
-    "lib/ui/liquid_glass.dart",
-    "lib/ui/liquid_glass_capture.dart",
     "lib/ui/shape.dart",
     "lib/ui/typography.dart",
     "lib/ui/color.dart",
@@ -47,6 +45,7 @@
     "Motion primitives come from prism_ui's motion.dart, which holds the same constants and curves plus a frame interval and a simulation that lands exactly.",
     "Goo geometry comes from prism_ui's goo.dart, which carries the same gooPairOutline and gooPairDepth helpers plus the GooSurface widget.",
     "FloatingHeader comes from prism_ui's sheet_header.dart; only the bottom-capable FloatingEdgeScrim stays adapted.",
-    "The glass shader is prism_ui's packaged copy at packages/prism_ui/shaders/liquid_glass.frag; the app no longer bundles its own."
+    "The glass shader is prism_ui's packaged copy at packages/prism_ui/shaders/liquid_glass.frag; the app no longer bundles its own.",
+    "The pane, its capture host and its styles come from prism_ui.liquid_glass; this app's style numbers live in lib/pocket_glass.dart, and its press glow, which the library feeds only to the shader, is painted by the vendored copy when no shader is available."
   ]
 }

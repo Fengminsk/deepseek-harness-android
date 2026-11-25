@@ -138,7 +138,7 @@ class GlassSurface extends StatelessWidget {
           child: child,
         )
       : LiquidGlass(
-          style: LiquidGlassStyle.regular(Theme.of(context).colorScheme),
+          style: PocketGlass.regular(Theme.of(context).colorScheme),
           borderRadius: BorderRadius.circular(radius),
           child: CustomPaint(
             painter: DaylightFinish(
@@ -204,8 +204,8 @@ class GlassButton extends StatelessWidget {
                   backgroundBuilder: glass
                       ? (context, states, child) => LiquidGlass(
                           style: solid && !states.contains(WidgetState.disabled)
-                              ? LiquidGlassStyle.tinted(colors, colors.primary)
-                              : LiquidGlassStyle.regular(colors),
+                              ? PocketGlass.tinted(colors, colors.primary)
+                              : PocketGlass.regular(colors),
                           pressed:
                               !states.contains(WidgetState.disabled) &&
                               states.contains(WidgetState.pressed),
