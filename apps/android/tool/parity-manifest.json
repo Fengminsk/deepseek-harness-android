@@ -2312,6 +2312,27 @@
       "capability": "files"
     },
     {
+      "key": "androidDisabled/skill-office",
+      "plugin": null,
+      "sourceDigest": "f126d1bf01982a5233f4d13807be30ad5afcf4f8ce315e30847148cffd0c4e18",
+      "sources": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "status": "not-migrated",
+      "android": [
+        "apps/android/runtime/cordis.patch.yml",
+        "apps/android/tool/stage-preset.mjs"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Android previews Office through office-kit directly; the authoring skill and its office_* tools stay out of the preset.",
+      "capability": "office"
+    },
+    {
       "key": "androidDisabled/directory-picker",
       "plugin": null,
       "sourceDigest": "718412e881879ee7062947bf3c4c4ba8e3f201cbd919956b5aa20147673f247c",
@@ -9308,7 +9329,7 @@
     },
     {
       "path": "apps/android/runtime/cordis.patch.yml",
-      "sha256": "e3c45b940bd29e1301fd2ab94ff06c8108f999ecada65bf456430e0a054b7660"
+      "sha256": "6bba304a66fd249464ab519dccd17f685de713df8854cba876a6e8d7ff987d7f"
     },
     {
       "path": "apps/android/tool/stage-preset.mjs",
