@@ -42,12 +42,13 @@ What the app already gets right: the remote page batches live frames (120 ms) an
 
 Consequence: a streaming reply now rebuilds the page at most ~11 times a second instead of once per token, without changing what the transcript shows.
 
+`lib/runtime.dart`, `lib/chat_messages.dart`, `lib/main.dart`: the chat page's selection now carries `liveStructureOf(sessionId)` — attempt, turn, step and flags — instead of the whole live frame, so growing text no longer rebuilds the page's header, drawer, glass chrome or composer. The timeline subscribes to `liveOf(sessionId)`, which publishes on the same 90 ms tick, and rebuilds itself; its `onLiveUpdate` callback keeps the scroll-follow behaviour that used to ride on the page rebuild.
+
 ## Next, in order
 
-1. Keep streaming text out of the page-level selection: a per-session `ValueListenable` consumed by the live row, so a token rebuilds one row (the audit's F7 fix builds on this).
-2. Append-only live event list with a `seen` set and a bounded source history (F2, F5).
-3. Cache the ambient and progress shaders per size instead of allocating per frame (F8, F9); default `ambientMotion: false` while a reply streams.
-4. Tail-only reveal and the remote page's plain-text streaming path on the local page (F4).
-5. As consumers move to prism_ui, take its structures with them: snapshot the outgoing route, put the body and dock under repaint+relayout boundaries, and give menus and alerts a `hold` rectangle.
+1. Cap the source's event list the way the page caps its own, and decode large `session.live` payloads off the UI isolate (F2 remainder).
+2. Cache the progress label's shader instead of allocating a gradient per frame (F9), and default `ambientMotion: false` while a reply streams (F8 remainder).
+3. Tail-only reveal and the remote page's plain-text streaming path on the local page (F4).
+4. As consumers move to prism_ui, take its structures with them: snapshot the outgoing route, put the body and dock under repaint+relayout boundaries, and give menus and alerts a `hold` rectangle.
 
 Frame measurement already has a harness: `lib/main_perf.dart` with `tool/device-frame-profile.mjs` (profile build, `DSH_FRAME` FrameTiming summaries, 16.667 ms budget). It drives a paired remote host, so it measures the remote page rather than the local chat page; adding a local scenario would price these changes on a device.

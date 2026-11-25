@@ -146,6 +146,14 @@ class RuntimeController extends ChangeNotifier
   /// instead of as fast as the model emits.
   static const Duration liveNotifyWindow = Duration(milliseconds: 90);
   Timer? _liveNotify;
+
+  /// Sessions whose live text changed inside the current window.
+  final Set<String> _liveDirty = <String>{};
+
+  /// One live-text listenable per Session, so a page can leave the streaming
+  /// content out of its selection and let only the timeline rebuild.
+  final Map<String, ValueNotifier<Json?>> _liveNotifiers =
+      <String, ValueNotifier<Json?>>{};
   bool _bindingDisconnected = false;
   int _statusRevision = 0;
   @override
@@ -474,7 +482,9 @@ class RuntimeController extends ChangeNotifier
     if (_liveNotify != null || _disposed) return;
     _liveNotify = Timer(liveNotifyWindow, () {
       _liveNotify = null;
-      if (!_disposed) notifyListeners();
+      if (_disposed) return;
+      _publishLiveText();
+      notifyListeners();
     });
   }
 
@@ -482,7 +492,60 @@ class RuntimeController extends ChangeNotifier
   void _flushLiveNotification() {
     _liveNotify?.cancel();
     _liveNotify = null;
+    _publishLiveText();
     notifyListeners();
+  }
+
+  /// The live frame of one Session, published once per notification window.
+  ///
+  /// A page that leaves [liveMessages] out of its selection rebuilds only when
+  /// the message's structure changes; whoever renders the text listens here
+  /// instead.
+  ///
+  /// @param sessionId The Session whose live text to follow.
+  /// @returns A listenable holding the current `session.live` value, or null
+  ///   when the Session streams nothing.
+  ValueListenable<Json?> liveOf(String sessionId) =>
+      _liveNotifiers.putIfAbsent(
+        sessionId,
+        () => ValueNotifier<Json?>(liveMessages[sessionId]),
+      );
+
+  /// The part of a live frame that changes what a timeline lays out, as a value
+  /// a selection tuple can compare.
+  ///
+  /// @param sessionId The Session to read.
+  /// @returns The attempt, turn, step and flags, or null without live text.
+  ({Object? attempt, Object? turn, Object? step, bool interrupted, bool unconfirmed})?
+  liveStructureOf(String sessionId) {
+    final value = liveMessages[sessionId];
+    if (value == null) return null;
+    return (
+      attempt: value['attemptId'],
+      turn: value['turn'],
+      step: value['step'],
+      interrupted: value['interrupted'] == true,
+      unconfirmed: value['unconfirmed'] == true,
+    );
+  }
+
+  /// Publishes coalesced live values to their listeners without notifying the
+  /// whole runtime a second time.
+  void _publishLiveText() {
+    if (_liveDirty.isEmpty) return;
+    for (final sessionId in _liveDirty) {
+      final notifier = _liveNotifiers[sessionId];
+      if (notifier != null) notifier.value = liveMessages[sessionId];
+    }
+    _liveDirty.clear();
+  }
+
+  /// Drops every live value when the native process that owned them goes away.
+  void _clearLiveText() {
+    _liveDirty.clear();
+    for (final notifier in _liveNotifiers.values) {
+      notifier.value = null;
+    }
   }
 
   void _acceptStatus(Json data) {
@@ -510,6 +573,7 @@ class RuntimeController extends ChangeNotifier
       taskState = {};
       taskJobs = null;
       liveMessages.clear();
+      _clearLiveText();
       statuses.clear();
       streaming.clear();
     }
@@ -909,6 +973,7 @@ class RuntimeController extends ChangeNotifier
       } else {
         liveMessages[id] = value;
       }
+      _liveDirty.add(id);
       return;
     }
     if (method == 'session.status') {
@@ -1227,6 +1292,11 @@ class RuntimeController extends ChangeNotifier
     _disposed = true;
     _liveNotify?.cancel();
     _liveNotify = null;
+    _liveDirty.clear();
+    for (final notifier in _liveNotifiers.values) {
+      notifier.dispose();
+    }
+    _liveNotifiers.clear();
     _cancelResume();
     _advanceConnectionGeneration();
     _plugins?.dispose();

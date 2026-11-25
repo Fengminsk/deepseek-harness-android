@@ -1535,7 +1535,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       runtime.sessions,
       runtime.timelines[sessionId],
       runtime.timelines[sessionId]?.length,
-      runtime.liveMessages[sessionId],
+      runtime.liveStructureOf(sessionId),
       runtime.streaming[sessionId],
       runtime.statuses[sessionId],
       runtime.sessionErrors[sessionId],
@@ -1792,6 +1792,16 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                     submittedAfterSeq: submittedAfterSeq,
                     followSubmittedMessage: followSubmittedMessage,
                     live: live,
+                    liveListenable: runtime.liveOf(sessionId),
+                    onLiveUpdate: () {
+                      final value = runtime.liveMessages[sessionId];
+                      followReply(
+                        runtime.timelines[sessionId]?.length ?? 0,
+                        value == null
+                            ? null
+                            : (value['attemptId'], value['revision']),
+                      );
+                    },
                     running: running,
                     onOpenSkill: (name) =>
                         openSkillReference(viewedSessionId, name),

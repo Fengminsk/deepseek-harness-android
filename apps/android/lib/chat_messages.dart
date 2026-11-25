@@ -134,6 +134,22 @@ class ChatLiveMessage {
     this.interrupted = false,
     this.unconfirmed = false,
   });
+
+  /// The live message a `session.live` value describes.
+  ///
+  /// @param value The frame's value, or null when the Session streams nothing.
+  /// @returns The message to render, or null for an empty value.
+  static ChatLiveMessage? of(Json? value) => value == null
+      ? null
+      : ChatLiveMessage(
+          identity: value['attemptId'] as String,
+          content: value['content'] as List<dynamic>,
+          turn: value['turn'] as int,
+          step: value['step'] as int,
+          interrupted: value['interrupted'] == true,
+          unconfirmed: value['unconfirmed'] == true,
+        );
+
   final String identity;
   final List<dynamic> content;
   final int turn, step;
@@ -163,6 +179,8 @@ class ChatTimeline extends StatefulWidget {
     this.showTurnNavigation = true,
     this.compactTurns = false,
     this.animateRows = true,
+    this.liveListenable,
+    this.onLiveUpdate,
     this.historyHeader,
     this.submittedAfterSeq,
     this.followSubmittedMessage = true,
@@ -180,6 +198,16 @@ class ChatTimeline extends StatefulWidget {
   /// Original loaded Session window, including log-only todo/present events.
   final List<Json> events;
   final ChatLiveMessage? live;
+
+  /// Streaming text this timeline renders without its page rebuilding.
+  ///
+  /// When present it wins over [live], which then carries only the structural
+  /// fields the page selects on.
+  final ValueListenable<Json?>? liveListenable;
+
+  /// Called before each rebuild this timeline takes from [liveListenable], so
+  /// the page can follow the transcript without rebuilding for the text.
+  final VoidCallback? onLiveUpdate;
   final bool showTurnNavigation;
 
   /// Tighter process and answer rhythm used by the remote conversation page.
@@ -231,11 +259,29 @@ class _ChatTimelineState extends State<ChatTimeline>
   bool _loadingEarlier = false;
   String? _olderError;
   String? _submittedKey;
+  ValueListenable<Json?>? _liveAttached;
 
   @override
   void initState() {
     super.initState();
     _attachChanges();
+    _attachLive();
+  }
+
+  /// Follows the Session's live text so its page does not rebuild for it.
+  void _attachLive() {
+    _liveAttached = widget.liveListenable;
+    _liveAttached?.addListener(_onLiveText);
+  }
+
+  void _detachLive() {
+    _liveAttached?.removeListener(_onLiveText);
+    _liveAttached = null;
+  }
+
+  void _onLiveText() {
+    widget.onLiveUpdate?.call();
+    if (mounted) setState(() {});
   }
 
   Future<void> _readEarlier() async {
@@ -295,6 +341,10 @@ class _ChatTimelineState extends State<ChatTimeline>
   @override
   void didUpdateWidget(ChatTimeline oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.liveListenable, widget.liveListenable)) {
+      _detachLive();
+      _attachLive();
+    }
     if (oldWidget.submittedAfterSeq != widget.submittedAfterSeq ||
         oldWidget.sessionId != widget.sessionId) {
       _submittedKey = null;
@@ -344,6 +394,7 @@ class _ChatTimelineState extends State<ChatTimeline>
 
   @override
   void dispose() {
+    _detachLive();
     _listAnchor.dispose();
     _generation++;
     _detachChanges();
@@ -686,7 +737,10 @@ class _ChatTimelineState extends State<ChatTimeline>
       }
     }
     final rows = _display;
-    final stream = widget.live;
+    final liveListenable = widget.liveListenable;
+    final stream = liveListenable == null
+        ? widget.live
+        : ChatLiveMessage.of(liveListenable.value);
     final sessionId = widget.sessionId;
     final footer = widget.footer;
     final activeTurn = widget.running ? _activeProgressTurn() : null;
