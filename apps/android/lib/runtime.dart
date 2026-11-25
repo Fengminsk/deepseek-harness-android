@@ -139,6 +139,13 @@ class RuntimeController extends ChangeNotifier
   Timer? _resumeTimer;
   Completer<void>? _resumeWake;
   int _resumeEpoch = 0;
+  /// Live text arrives once per model token, far faster than a page can usefully
+  /// rebuild. Notifying per frame rebuilt the whole chat page — drawer, header,
+  /// timeline and composer — dozens of times a second while a reply streamed.
+  /// One notification per window keeps the transcript moving at a steady rate
+  /// instead of as fast as the model emits.
+  static const Duration liveNotifyWindow = Duration(milliseconds: 90);
+  Timer? _liveNotify;
   bool _bindingDisconnected = false;
   int _statusRevision = 0;
   @override
@@ -357,6 +364,7 @@ class RuntimeController extends ChangeNotifier
     _eventSubscription ??= transport.events.listen(
       (Json frame) {
         final data = (frame['params'] as Json?) ?? {};
+        var live = false;
         switch (frame['method']) {
           case 'runtime.status':
             _acceptStatus(data);
@@ -386,8 +394,10 @@ class RuntimeController extends ChangeNotifier
             if (event['type'] == 'assistant/message') streaming.remove(id);
           case 'session.stream':
             _receiveLive('session.stream', data);
+            live = true;
           case 'session.live':
             _receiveLive('session.live', data);
+            live = true;
           case 'session.status':
             _receiveLive('session.status', data);
           case 'session.error':
@@ -428,7 +438,11 @@ class RuntimeController extends ChangeNotifier
           case 'api.event':
             _remoteEvents.add(data);
         }
-        notifyListeners();
+        if (live) {
+          _scheduleLiveNotification();
+        } else {
+          _flushLiveNotification();
+        }
       },
       onError: (Object exception) {
         if (!_disposed) fail(exception);
@@ -449,6 +463,26 @@ class RuntimeController extends ChangeNotifier
       // 账号观察依赖本地应用元数据与服务侧账号监听，只有本地服务有这一段。
       _prepareAccount();
     }
+  }
+
+  /// Defers a live-text notification to the end of the current window.
+  ///
+  /// State is already updated when this runs; only the listeners that rebuild
+  /// the chat page wait. A pending notification is flushed at once by any
+  /// non-live frame, so status, errors and interactions stay immediate.
+  void _scheduleLiveNotification() {
+    if (_liveNotify != null || _disposed) return;
+    _liveNotify = Timer(liveNotifyWindow, () {
+      _liveNotify = null;
+      if (!_disposed) notifyListeners();
+    });
+  }
+
+  /// Notifies immediately, folding in any deferred live-text update.
+  void _flushLiveNotification() {
+    _liveNotify?.cancel();
+    _liveNotify = null;
+    notifyListeners();
   }
 
   void _acceptStatus(Json data) {
@@ -1191,6 +1225,8 @@ class RuntimeController extends ChangeNotifier
   @override
   void dispose() {
     _disposed = true;
+    _liveNotify?.cancel();
+    _liveNotify = null;
     _cancelResume();
     _advanceConnectionGeneration();
     _plugins?.dispose();
