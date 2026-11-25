@@ -3,10 +3,10 @@ import 'dart:math' as math;
 
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/rendering.dart';
+import 'package:prism_ui/drag_back.dart';
+import 'package:prism_ui/page_transition.dart';
 
-import 'flclash/drag_back.dart';
 import 'flclash/liquid_glass.dart';
-import 'flclash/page_transition.dart';
 import 'flclash/shape.dart';
 import 'flclash/surface.dart';
 import 'flclash/typography.dart';
@@ -42,9 +42,13 @@ ThemeData pocketTheme(
   ).toPureBlack(pureBlack),
 ).withAppShapes.withAppSurfaces.withAppTypography;
 
-/// The imported FlClash page motion, including interactive drag back.
+/// The prism_ui card page motion, including interactive drag back.
+///
+/// Every push in this app goes through this route, so the transition, the
+/// covered-page snapshot and the edge gesture come from the library while the
+/// page itself stays ours.
 class PocketRoute<T> extends PageRoute<T>
-    with DragBackRouteMixin<T>, SharedXPageRouteMixin<T> {
+    with CardRouteMixin<T>, DragBackRouteMixin<T> {
   PocketRoute({required this.builder, this.dragBack = true, super.settings});
   final WidgetBuilder builder;
 
@@ -52,21 +56,9 @@ class PocketRoute<T> extends PageRoute<T>
   final bool dragBack;
 
   @override
-  bool get dragBackAllowed => dragBack;
-  @override
-  bool sharesMotionWith(Route<dynamic>? route) =>
-      route is PocketRoute || route is MaterialPageRoute;
-  @override
-  Color backdropOf(Color surface, {required bool dragging}) => surface;
-  @override
-  Widget buildTransitions(
-    BuildContext context,
-    Animation<double> animation,
-    Animation<double> secondaryAnimation,
-    Widget child,
-  ) => MediaQuery.disableAnimationsOf(context)
-      ? child
-      : super.buildTransitions(context, animation, secondaryAnimation, child);
+  Widget dragBackDetector(Widget child) =>
+      dragBack ? super.dragBackDetector(child) : child;
+
   @override
   Widget buildPage(
     BuildContext context,
