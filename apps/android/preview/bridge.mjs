@@ -1,6 +1,6 @@
 /** Document-only transport. The native host owns the session and every file capability. */
 export const BYTE_CHUNK = 256 * 1024;
-const METHODS = { workspaceFiles: new Set(['stat', 'read', 'readBytes', 'list']), officeToPdf: new Set(['render', 'generation']) };
+const METHODS = { workspaceFiles: new Set(['stat', 'read', 'readBytes', 'list']), officeKit: new Set(['render', 'generation']) };
 
 const aborted = () => new DOMException('Document preview closed', 'AbortError');
 const remoteFailure = error => Object.assign(new Error(error?.message ?? 'Document request failed'), error ?? {});
@@ -144,9 +144,9 @@ export function createDocumentRemote(bridge, sessionId, supervise) {
       list: (id, path, signal) => invoke('workspaceFiles', 'list', id, { path }, signal),
       changes: (id, path, signal) => { check(id); return bridge.changes(path, signal); },
     },
-    officeToPdf: {
-      render: (id, path, priority, signal) => invoke('officeToPdf', 'render', id, { path, priority }, signal),
-      generation: signal => bridge.call('officeToPdf', 'generation', {}, signal),
+    officeKit: {
+      render: (id, path, priority, signal) => invoke('officeKit', 'render', id, { path, priority }, signal),
+      generation: signal => bridge.call('officeKit', 'generation', {}, signal),
     },
   };
 }

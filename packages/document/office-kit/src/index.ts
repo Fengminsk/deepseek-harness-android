@@ -22,6 +22,7 @@ import type {
 import { readOutput, readPdf, readPng } from './output.ts'
 import { OutputStore } from './outputs.ts'
 import { ConversionQueue, type OfficeOperation, type OfficeOperationOutput, type QueueRequest } from './queue.ts'
+import { convertInSubprocess } from './subprocess.ts'
 
 export * from './errors.ts'
 export * from './identity.ts'
@@ -80,6 +81,11 @@ export interface Config {
   maxFontFileBytes: number
   /** Maximum original font bytes loaded for a conversion. */
   maxLoadedFontBytes: number
+  /**
+   * Run each PDF conversion in a child Node process so its WASM heap leaves the Host when the child exits; image
+   * rendering and format conversion keep the in-process converter. It does not lower a conversion's peak memory.
+   */
+  subprocessConversions: boolean
 }
 
 /** Deployment defaults resolved before provider construction. */
@@ -106,6 +112,7 @@ export const Config: z<Partial<Config>, Config> = z.object({
   maxFontFiles: z.natural().min(1).max(Number.MAX_SAFE_INTEGER).default(20_000),
   maxFontFileBytes: z.natural().min(1).max(Number.MAX_SAFE_INTEGER).default(256 * 1024 * 1024),
   maxLoadedFontBytes: z.natural().min(1).max(Number.MAX_SAFE_INTEGER).default(512 * 1024 * 1024),
+  subprocessConversions: z.boolean().default(false),
 })
 
 /** Kit operations loaded from the provider's Kit entry. */
@@ -148,8 +155,11 @@ export class OfficeKit extends TypertRemoteService {
     if (config.fontDirectories?.some(path => !isAbsolute(path))) throw new Error('fontDirectories must contain absolute paths.')
     if (config.maxSourceBytes < config.maxInputBytes) throw new Error('maxSourceBytes must be at least maxInputBytes.')
     if (!isAbsolute(config.outputDirectory)) throw new Error('outputDirectory must be an absolute path.')
-    const { fontDirectories, fontFallbacks, timeoutMs, maxInputBytes, maxOutputBytes, maxImageResolution,
+    const { fontFallbacks, timeoutMs, maxInputBytes, maxOutputBytes, maxImageResolution,
       maxArchiveEntries, maxUncompressedBytes, maxFontFiles, maxFontFileBytes, maxLoadedFontBytes } = config
+    // The kit's generic Unix search excludes Android's system font root.
+    // Keep desktop discovery unchanged and the absolute path out of deployment YAML.
+    const fontDirectories = config.fontDirectories ?? (process.platform === 'android' ? ['/system/fonts'] : undefined)
     this.options = { timeoutMs, maxInputBytes, maxOutputBytes, maxImageResolution,
       maxArchiveEntries, maxUncompressedBytes, maxFontFiles, maxFontFileBytes, maxLoadedFontBytes,
       ...(fontDirectories === undefined ? {} : { fontDirectories }),
@@ -366,6 +376,19 @@ export class OfficeKit extends TypertRemoteService {
     return error
   }
 
+  /** Reuse a slot's converter, importing Kit only on that slot's first in-process operation. */
+  private converter(slot: Slot): Promise<Converter> {
+    const existing = slot.converter
+    if (existing !== undefined) return existing
+    const loading = this.loadKit().then(({ createConverter, resolveEnginePackage }) =>
+      createConverter({ ...this.options, resolveEnginePackage })).catch((error: unknown) => {
+      delete slot.converter
+      throw error
+    })
+    slot.converter = loading
+    return loading
+  }
+
   private async runOperation(
     bytes: Uint8Array, request: Pick<QueueRequest, 'extension' | 'operation'>, signal: AbortSignal,
   ): Promise<OfficeOperationOutput> {
@@ -375,20 +398,13 @@ export class OfficeKit extends TypertRemoteService {
     slot.busy = true
     let directory: string | undefined
     try {
-      if (slot.converter === undefined) {
-        slot.converter = this.loadKit().then(({ createConverter, resolveEnginePackage }) =>
-          createConverter({ ...this.options, resolveEnginePackage })).catch((error: unknown) => {
-          delete slot.converter
-          throw error
-        })
-      }
-      const converter = await slot.converter
-      signal.throwIfAborted()
       directory = await mkdtemp(join(tmpdir(), 'dsh-office-kit-'))
       const inputPath = join(directory, `source.${request.extension}`)
       await writeFile(inputPath, bytes, { flag: 'wx', mode: 0o600, signal })
       signal.throwIfAborted()
-      const output = await this.runEngine(converter, inputPath, directory, request.operation, signal)
+      const output = this.config.subprocessConversions && request.operation.kind === 'pdf'
+        ? await this.renderIsolatedPdf(inputPath, directory, signal)
+        : await this.runEngine(await this.converter(slot), inputPath, directory, request.operation, signal)
       signal.throwIfAborted()
       return output
     } catch (cause) {
@@ -406,6 +422,21 @@ export class OfficeKit extends TypertRemoteService {
       try { if (directory !== undefined) await rm(directory, { recursive: true, force: true }) }
       finally { slot.busy = false }
     }
+  }
+
+  /**
+   * Run one PDF conversion through the kit CLI and read its complete output.
+   * @param inputPath - private authorized source file in the scratch directory.
+   * @param directory - scratch directory holding the output.
+   * @param signal - conversion lifetime; abort kills and joins the child.
+   * @returns the PDF bytes with the child's missing-font report.
+   */
+  private async renderIsolatedPdf(
+    inputPath: string, directory: string, signal: AbortSignal,
+  ): Promise<OfficeOperationOutput> {
+    const outputPath = join(directory, 'converted.pdf')
+    const result = await convertInSubprocess(inputPath, outputPath, this.options, signal)
+    return { kind: 'pdf', pdf: await this.readFile(outputPath, 'pdf', signal), missingFonts: result.missingFonts }
   }
 
   /** Run one engine operation in a private scratch directory and read its complete, bounded output. */

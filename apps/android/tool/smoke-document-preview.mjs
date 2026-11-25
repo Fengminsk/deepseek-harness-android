@@ -249,7 +249,7 @@ async function scenario() {
     sessionId: 'pocket-private-workspace', namespace: 'workspaceFiles', method: 'stat',
     args: { path: 'a/image.bin' } }), 'gateway/bad-request')
   const privateOffice = value(await privateCall('render', { path: 'a/document.docx', priority: 'foreground' },
-    { namespace: 'officeToPdf' }))
+    { namespace: 'officeKit' }))
   assert.ok(privateOffice.bytes > 1000)
   const privatePdf = value(await runtime.request('document.bytes', { owner: privateOwner,
     id: privateOffice.data.id, offset: 0, length: 128 }))
@@ -277,10 +277,10 @@ async function scenario() {
   assert.equal(ready.value.kind, 'ready')
   await runtime.request('api.ack', { owner: streamOwner, subscriptionId, generation: subscription.generation, sequence: ready.sequence })
   await runtime.request('api.unsubscribe', { owner: streamOwner, subscriptionId, generation: subscription.generation })
-  const office = await call('generation', {}, { owner: 'new-owner', namespace: 'officeToPdf' })
+  const office = await call('generation', {}, { owner: 'new-owner', namespace: 'officeKit' })
   assert.ok(typeof value(office) === 'string')
   const rendered = value(await call('render', { path: 'document.docx', priority: 'foreground' },
-    { owner: 'new-owner', namespace: 'officeToPdf' }))
+    { owner: 'new-owner', namespace: 'officeKit' }))
   assert.ok(rendered.bytes > 1000)
   const pdf = value(await runtime.request('document.bytes', { owner: 'new-owner', id: rendered.data.id,
     offset: 0, length: 256 }))
@@ -288,7 +288,7 @@ async function scenario() {
   assert.deepEqual(value(await runtime.request('document.release', { owner: 'new-owner', id: rendered.data.id })),
     { released: true })
   rejected(await call('render', { path: 'same.txt', priority: 'foreground' },
-    { owner: 'new-owner', namespace: 'officeToPdf' }), 'document-render/failed')
+    { owner: 'new-owner', namespace: 'officeKit' }), 'document-render/failed')
   await assertCold(runtime)
   assert.deepEqual(await snapshotLogs(), before, 'preview must not change original history')
   await runtime.close()

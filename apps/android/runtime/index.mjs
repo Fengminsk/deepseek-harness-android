@@ -786,16 +786,16 @@ export function apply(ctx, config) {
         maxWindowBytes: config.workspacePreviewWindowBytes.get(),
       })
     }
-    if (namespace === 'officeToPdf' && method === 'generation') {
-      const service = ctx.get('officeToPdf')
+    if (namespace === 'officeKit' && method === 'generation') {
+      const service = ctx.get('officeKit')
       if (!service) throw new Error('Office renderer is unavailable')
       return service.getGeneration(signal)
     }
-    if (namespace === 'officeToPdf' && method === 'render') {
+    if (namespace === 'officeKit' && method === 'render') {
       const source = await workspaceFiles.document('stat', { path: args.path }, signal, {
         maxFileBytes: config.workspacePreviewMaxFileBytes.get(), maxWindowBytes: config.workspacePreviewWindowBytes.get(),
       })
-      const service = ctx.get('officeToPdf')
+      const service = ctx.get('officeKit')
       if (!service) throw new Error('Office renderer is unavailable')
       const extension = args.path.split('.').at(-1)?.toLowerCase()
       if (!['doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'].includes(extension)) {

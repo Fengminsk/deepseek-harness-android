@@ -221,7 +221,7 @@ App 直接实现 `POST /api/<ns>/<method>` 与 `WS /api/remote.mux`。
 | 需要重指向的门面方法 | **0** | **~30 个无 Web 对应物** | 0 |
 | 会话历史窗口 `session.readWindow` | 直接可用 | **无 Remote 等价物**（使用进程内 `ctx.sessionController`） | 可用 |
 | 终端 | 可用（桌面 `terminal-controller` 反而更完整） | 需逐个对齐 | 可用 |
-| Office/PDF 预览 | 可用（`officeToPdf` 走宿主） | 需迁移 | 可用 |
+| Office/PDF 预览 | 可用（`officeKit` 走宿主） | 需迁移 | 可用 |
 | 协议数量 | 1 套 | 2 套（本地门面 + Web 协议），永久双维护 | 1 套 |
 | 依赖 DSH 内部实现 | 是（本仓库就是上游，可控） | 是，且更深（typert 生成物 + React 侧的推导逻辑） | — |
 | 原生体验 | 是 | 是 | **否** |

@@ -136,15 +136,15 @@ test('Office render uses the same Session lookup and lease; generation alone is 
     calls.push(args)
     return args[1] === 'generation' ? 'engine-1' : bytes(Buffer.from('%PDF'), { missingFonts: ['Missing'], generation: 'engine-1' })
   })
-  const rendered = value(await bridge.call('call', input({ namespace: 'officeToPdf', method: 'render', args: { path: 'a.docx' } })))
+  const rendered = value(await bridge.call('call', input({ namespace: 'officeKit', method: 'render', args: { path: 'a.docx' } })))
   assert.equal(rendered.data.encoding, 'android-byte-lease')
   assert.deepEqual(rendered.missingFonts, ['Missing'])
   assert.equal(rendered.generation, 'engine-1')
-  assert.deepEqual(calls[0].slice(0, 3), ['officeToPdf', 'render',
+  assert.deepEqual(calls[0].slice(0, 3), ['officeKit', 'render',
     { path: 'a.docx', priority: 'foreground', workspaceFileScopeId: 'cold-session' }])
-  assert.equal(value(await bridge.call('call', input({ namespace: 'officeToPdf', method: 'generation', args: {} }))), 'engine-1')
-  assert.deepEqual(calls[1].slice(0, 3), ['officeToPdf', 'generation', {}])
-  rejected(await bridge.call('call', input({ namespace: 'officeToPdf', method: 'convert' })), 'gateway/bad-request')
+  assert.equal(value(await bridge.call('call', input({ namespace: 'officeKit', method: 'generation', args: {} }))), 'engine-1')
+  assert.deepEqual(calls[1].slice(0, 3), ['officeKit', 'generation', {}])
+  rejected(await bridge.call('call', input({ namespace: 'officeKit', method: 'convert' })), 'gateway/bad-request')
 })
 
 test('preserves original typed failure and reports unexpected errors without serializing internals', async t => {

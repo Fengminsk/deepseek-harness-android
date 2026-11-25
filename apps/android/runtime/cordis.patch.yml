@@ -39,11 +39,13 @@
   disabled: true
 - id: ui-open-in-app
   disabled: true
-- id: office-to-pdf
+- id: office-kit
+  name: '@deepseek-ai/dsh-office-kit'
   config:
     # A separate Node process releases LibreOffice WASM memory after each render.
     # It does not lower conversion peak RSS or guarantee survival under the OS LMK.
     subprocessConversions: true
+    outputDirectory: !!js dshHomePath('office-kit', 'outputs')
     maxConcurrentConversions: 1
     maxQueuedJobs: 2
     maxReaders: 4
@@ -61,6 +63,9 @@
     maxFontFiles: 1024
     maxFontFileBytes: 16777216
     maxLoadedFontBytes: 67108864
+# Android previews Office through the kit directly; the authoring skill and its tools stay out of the preset.
+- id: skill-office
+  disabled: true
 - id: directory-picker
   disabled: true
 - id: sandbox-policy

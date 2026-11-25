@@ -1,10 +1,10 @@
-/** Isolate one kit CLI conversion so its WASM heap leaves the Host on exit. */
+/** Isolate one PDF conversion in the kit CLI so its WASM heap leaves the Host on exit. */
 import { spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { dirname, posix } from 'node:path'
 import type { ConverterOptions } from '@deepseek-ai/libreoffice-kit'
-import { OfficeToPdfError } from './errors.ts'
-import type { OfficeToPdfErrorCode } from './types.ts'
+import { OfficeKitError } from './errors.ts'
+import type { OfficeKitErrorCode } from './types.ts'
 
 const maxDiagnosticBytes = 64 * 1024
 const allowedEnvironment = [
@@ -12,12 +12,19 @@ const allowedEnvironment = [
   'ANDROID_ROOT', 'ANDROID_DATA', 'ANDROID_RUNTIME_ROOT', 'SYSTEMROOT', 'WINDIR',
   'LOCALAPPDATA', 'USERPROFILE',
 ] as const
-const codes = new Set<OfficeToPdfErrorCode>([
+const codes: ReadonlySet<string> = new Set([
   'input-too-large', 'output-too-large', 'invalid-document', 'unsupported-format',
   'invalid-output', 'timeout', 'unavailable', 'failed',
-])
+] satisfies OfficeKitErrorCode[])
 
-function kitArguments(inputPath: string, outputPath: string, options: ConverterOptions): string[] {
+/** Whether a child's reported category is one this provider publishes. */
+function isFailureCode(value: string): value is OfficeKitErrorCode {
+  return codes.has(value)
+}
+
+function kitArguments(
+  inputPath: string, outputPath: string, options: Omit<ConverterOptions, 'resolveEnginePackage'>,
+): string[] {
   const args = ['convert', '--input', inputPath, '--output', outputPath]
   const numeric: ReadonlyArray<readonly [string, number | undefined]> = [
     ['timeout-ms', options.timeoutMs], ['max-input-bytes', options.maxInputBytes],
@@ -42,33 +49,36 @@ function nodeLauncher(env: NodeJS.ProcessEnv): string {
   if (process.platform !== 'android') return process.execPath
   const directory = process.env.DSH_ANDROID_NATIVE_LIBRARY_DIR
   if (directory === undefined || !posix.isAbsolute(directory)) {
-    throw new OfficeToPdfError('unavailable', 'Android Node CLI launcher directory is unavailable.')
+    throw new OfficeKitError('unavailable', 'Android Node CLI launcher directory is unavailable.')
   }
   env.LD_LIBRARY_PATH = [directory, env.LD_LIBRARY_PATH].filter(Boolean).join(':')
   return posix.join(directory, 'libpocket_node_cli.so')
 }
 
-function codeFromFailure(stderr: string): OfficeToPdfErrorCode {
+function codeFromFailure(stderr: string): OfficeKitErrorCode {
   try {
     const parsed: unknown = JSON.parse(stderr.trim())
-    if (typeof parsed === 'object' && parsed !== null && 'code' in parsed
-      && typeof parsed.code === 'string' && codes.has(parsed.code as OfficeToPdfErrorCode)) {
-      return parsed.code as OfficeToPdfErrorCode
+    if (typeof parsed === 'object' && parsed !== null && 'code' in parsed && typeof parsed.code === 'string') {
+      const code = parsed.code
+      if (isFailureCode(code)) return code
     }
   } catch { /* Child may be killed before it can write structured diagnostics. */ }
   return 'failed'
 }
 
 /**
- * Run the pinned kit's CLI with the provider's same rendering options.
+ * Run the pinned kit's CLI with the provider's same rendering options. The child resolves its own engine package;
+ * the provider's engine resolver stays in this process.
  * @param inputPath - private authorized source file.
  * @param outputPath - fresh exclusive PDF path.
- * @param options - resolved kit limits and font roots.
+ * @param options - resolved kit limits and font roots, without the engine resolver.
  * @param signal - conversion lifetime; abort kills and joins the whole child.
  * @returns original kit missing-font report after a clean child exit.
+ * @throws {OfficeKitError} The child's published category when it fails, `unavailable` when it cannot start.
  */
 export async function convertInSubprocess(
-  inputPath: string, outputPath: string, options: ConverterOptions, signal: AbortSignal,
+  inputPath: string, outputPath: string, options: Omit<ConverterOptions, 'resolveEnginePackage'>,
+  signal: AbortSignal,
 ): Promise<{ readonly missingFonts: string[] }> {
   signal.throwIfAborted()
   const cli = createRequire(import.meta.url).resolve('@deepseek-ai/libreoffice-kit/cli')
@@ -100,7 +110,7 @@ export async function convertInSubprocess(
   let exitCode: number | null
   let exitSignal: NodeJS.Signals | null
   try {
-    [exitCode, exitSignal] = await new Promise((resolve) => {
+    [exitCode, exitSignal] = await new Promise<[number | null, NodeJS.Signals | null]>((resolve) => {
       child.once('close', (code, signalName) => { resolve([code, signalName]) })
     })
   } finally {
@@ -111,20 +121,20 @@ export async function convertInSubprocess(
   const stderr = Buffer.concat(stderrChunks).toString('utf8')
   signal.throwIfAborted()
   // oxlint-disable-next-line typescript/no-unnecessary-condition -- the deadline timer sets it while the child is awaited.
-  if (timedOut) throw new OfficeToPdfError('timeout', 'LibreOffice conversion timed out.')
-  if (spawnError !== undefined) throw new OfficeToPdfError('unavailable', 'LibreOffice child could not start.', { cause: spawnError })
+  if (timedOut) throw new OfficeKitError('timeout', 'LibreOffice conversion timed out.')
+  if (spawnError !== undefined) throw new OfficeKitError('unavailable', 'LibreOffice child could not start.', { cause: spawnError })
   // oxlint-disable-next-line typescript/no-unnecessary-condition -- the stdout/stderr listeners set it while the child is awaited.
-  if (overflow) throw new OfficeToPdfError('failed', 'LibreOffice child exceeded its diagnostic limit.')
+  if (overflow) throw new OfficeKitError('failed', 'LibreOffice child exceeded its diagnostic limit.')
   if (exitCode !== 0 || exitSignal !== null) {
-    throw new OfficeToPdfError(codeFromFailure(stderr), 'LibreOffice child conversion failed.', { cause: new Error(stderr || `exit ${exitCode ?? exitSignal}`) })
+    throw new OfficeKitError(codeFromFailure(stderr), 'LibreOffice child conversion failed.', { cause: new Error(stderr || `exit ${exitCode ?? exitSignal}`) })
   }
   let result: unknown
   try { result = JSON.parse(stdout.trim()) }
-  catch (cause) { throw new OfficeToPdfError('failed', 'LibreOffice child returned invalid metadata.', { cause }) }
+  catch (cause) { throw new OfficeKitError('failed', 'LibreOffice child returned invalid metadata.', { cause }) }
   if (typeof result !== 'object' || result === null || !('outputPath' in result) || result.outputPath !== outputPath
     || !('missingFonts' in result) || !Array.isArray(result.missingFonts)
     || !result.missingFonts.every(font => typeof font === 'string')) {
-    throw new OfficeToPdfError('failed', 'LibreOffice child returned invalid metadata.')
+    throw new OfficeKitError('failed', 'LibreOffice child returned invalid metadata.')
   }
   return { missingFonts: result.missingFonts }
 }

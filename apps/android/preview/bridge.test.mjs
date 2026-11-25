@@ -92,12 +92,12 @@ test('facade maps original positional contracts and refuses cross-session calls'
   const signal = new AbortController().signal;
   await remote.workspaceFiles.read('session-one', 'hello.txt', { offset: 2 }, signal);
   await remote.workspaceFiles.readBytes('session-one', 'photo.png', { baseFile: 'index.html' }, signal);
-  await remote.officeToPdf.render('session-one', 'report.docx', 'foreground', signal);
-  await remote.officeToPdf.generation(signal);
+  await remote.officeKit.render('session-one', 'report.docx', 'foreground', signal);
+  await remote.officeKit.generation(signal);
   assert.deepEqual(calls.map(args => args.slice(0, 3)), [
     ['workspaceFiles', 'read', { path: 'hello.txt', range: { offset: 2 } }],
     ['workspaceFiles', 'readBytes', { path: 'photo.png', options: { baseFile: 'index.html' } }],
-    ['officeToPdf', 'render', { path: 'report.docx', priority: 'foreground' }], ['officeToPdf', 'generation', {}],
+    ['officeKit', 'render', { path: 'report.docx', priority: 'foreground' }], ['officeKit', 'generation', {}],
   ]);
   assert.throws(() => remote.workspaceFiles.stat('other-session', 'secret.txt', signal), /session mismatch/);
   const h = harness();

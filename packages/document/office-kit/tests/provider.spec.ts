@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import type { Converter, ConverterOptions } from '@deepseek-ai/libreoffice-kit'
 import { afterEach, beforeEach, expect, it, onTestFinished, vi } from 'vitest'
-import OfficeKit, { Config, OfficeSourceKey, type OfficeKitRequest } from '../src/index.ts'
+import OfficeKit, { Config, OfficeKitError, OfficeSourceKey, type OfficeKitRequest } from '../src/index.ts'
 import { resolveKitModule, type KitModuleResolution } from '../src/locate.ts'
 import { expectDefaultOutputsUntouched } from './default-outputs.ts'
 
@@ -28,6 +28,11 @@ vi.mock('../src/locate.ts', async (original) => {
 const kit = vi.hoisted(() => ({ create: vi.fn<(options?: ConverterOptions) => Promise<Converter>>() }))
 vi.mock('@deepseek-ai/libreoffice-kit', () => ({ createConverter: kit.create }))
 
+type SubprocessConvert = (inputPath: string, outputPath: string,
+  options: Omit<ConverterOptions, 'resolveEnginePackage'>, signal: AbortSignal) => Promise<{ readonly missingFonts: string[] }>
+const subprocess = vi.hoisted(() => ({ convertInSubprocess: vi.fn<SubprocessConvert>() }))
+vi.mock('../src/subprocess.ts', () => ({ convertInSubprocess: subprocess.convertInSubprocess }))
+
 const absentKit = Object.assign(new Error('Cannot find package'), { code: 'ERR_MODULE_NOT_FOUND' })
 const pdf = Buffer.from('%PDF-1.7\npreview\n%%EOF\n')
 const input = new Uint8Array([80, 75, 3, 4])
@@ -46,6 +51,7 @@ let converter: Converter
 
 beforeEach(() => {
   vi.mocked(resolveKitModule).mockClear()
+  subprocess.convertInSubprocess.mockReset()
   ctx = new Context()
   render = vi.fn<Converter['render']>().mockImplementation(async ({ outputPath }) => {
     await writeFile(outputPath, pdf)
@@ -157,6 +163,14 @@ it.each([
   expect(kit.create).not.toHaveBeenCalled()
 })
 
+it('adds the Android system font root only when font directories are omitted', async () => {
+  const platform = Object.getOwnPropertyDescriptor(process, 'platform')!
+  Object.defineProperty(process, 'platform', { ...platform, value: 'android' })
+  const provider = await mount().finally(() => { Object.defineProperty(process, 'platform', platform) })
+  await provider.convert(request)
+  expect(kit.create.mock.calls[0]?.[0]?.fontDirectories).toEqual(['/system/fonts'])
+})
+
 it('passes configured limits to the kit, reuses the converter, and removes all scratch files', async () => {
   const config = Config({ maxConcurrentConversions: 1, maxInputBytes: 4, maxOutputBytes: pdf.length,
     maxImageResolution: 144, maxArchiveEntries: 32, maxUncompressedBytes: 4096,
@@ -181,7 +195,7 @@ it('passes configured limits to the kit, reuses the converter, and removes all s
   const { maxConcurrentConversions: _count, maxQueuedJobs: _queued, maxReaders: _readers, maxSourceBytes: _source,
     maxBackgroundConversions: _background, maxCachedEntries: _entries, maxCachedBytes: _cached,
     maxSourceEntries: _aliases, outputDirectory: _outputs, outputRetentionMs: _retention, maxOutputStoreBytes: _stored,
-    ...options } = config
+    subprocessConversions: _subprocess, ...options } = config
   expect(kit.create).toHaveBeenCalledExactlyOnceWith({ ...options, resolveEnginePackage: resolvedKit().resolveEnginePackage })
   await ctx.fiber.dispose()
   expect(dispose).toHaveBeenCalledOnce()
@@ -192,6 +206,47 @@ it('refuses an oversized input before allocating a converter', async () => {
   const provider = await mount({ maxInputBytes: 3 })
   await expect(provider.convert(request)).rejects.toMatchObject({ code: 'input-too-large' })
   expect(kit.create).not.toHaveBeenCalled()
+})
+
+it('runs an isolated PDF conversion through the kit CLI without importing Kit', async () => {
+  const provider = await mount({ subprocessConversions: true, timeoutMs: 321 })
+  let scratch = ''
+  subprocess.convertInSubprocess.mockImplementation(async (inputPath, outputPath, _options, _signal) => {
+    scratch = dirname(inputPath)
+    expect(await readFile(inputPath)).toEqual(Buffer.from(input))
+    await writeFile(outputPath, pdf)
+    return { missingFonts: ['Missing Serif'] }
+  })
+  const result = await provider.convert(request)
+  expect(result).toMatchObject({ pdf: Uint8Array.from(pdf), missingFonts: ['Missing Serif'] })
+  expect(subprocess.convertInSubprocess).toHaveBeenCalledExactlyOnceWith(expect.any(String), expect.any(String),
+    expect.objectContaining({ timeoutMs: 321 }), expect.any(AbortSignal))
+  expect(subprocess.convertInSubprocess.mock.calls[0]?.[1]).toMatch(/converted\.pdf$/)
+  expect(kit.create).not.toHaveBeenCalled()
+  expect(resolveKitModule).not.toHaveBeenCalled()
+  await expect(access(scratch)).rejects.toMatchObject({ code: 'ENOENT' })
+})
+
+it('preserves an isolated PDF failure for the document consumer', async () => {
+  const provider = await mount({ subprocessConversions: true })
+  const failure = new OfficeKitError('timeout', 'LibreOffice conversion timed out.')
+  subprocess.convertInSubprocess.mockRejectedValueOnce(failure)
+  await expect(provider.convert(request)).rejects.toMatchObject({ name: 'OfficeKitError', code: 'timeout', cause: failure })
+})
+
+it('keeps the in-process converter for non-PDF operations when isolation is enabled', async () => {
+  const provider = await mount({ subprocessConversions: true })
+  const csv = Buffer.from('name,total\nrow,1\n')
+  const convert = vi.fn<Converter['convert']>().mockImplementation(async ({ outputPath }) => {
+    await writeFile(outputPath, csv)
+    return { backend: 'wasm', missingFonts: [] }
+  })
+  kit.create.mockImplementation(async () => ({ ...converter, convert }))
+  const saved = await provider.convertTo({ extension: 'xlsx', format: 'csv', source: request.source,
+    output: { owner: 'session-1', name: 'sheet.csv' } })
+  expect(saved).toMatchObject({ bytes: csv.byteLength, missingFonts: [] })
+  expect(kit.create).toHaveBeenCalledOnce()
+  expect(subprocess.convertInSubprocess).not.toHaveBeenCalled()
 })
 
 it.each(['missing', 'directory', 'not-pdf', 'incomplete', 'too-large'] as const)('rejects %s kit output and removes its directory', async (kind) => {

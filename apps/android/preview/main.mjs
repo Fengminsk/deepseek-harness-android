@@ -117,7 +117,7 @@ async function boot() {
     installThemeStyles(owner);
     owner.reflect.provide('remote', remote);
     owner.reflect.provide('remote.workspaceFiles', remote.workspaceFiles);
-    owner.reflect.provide('remote.officeToPdf', remote.officeToPdf);
+    owner.reflect.provide('remote.officeKit', remote.officeKit);
     owner.reflect.provide('sidebarRightTabs', new SidebarRightTabRegistry(owner));
     // The native host relays only the accepted ui-settings.enabled preference.
     // A document cannot modify settings or acquire another Session.

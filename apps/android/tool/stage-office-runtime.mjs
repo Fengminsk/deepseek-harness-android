@@ -87,7 +87,7 @@ export async function stageOfficeRuntime({ repositoryRoot, staging,
   cacheDirectory = join(repositoryRoot, '.cache/android/office-archives') }) {
   const modules = resolve(staging, 'node_modules')
   if ((await realpath(modules)) !== modules) throw new Error('Office modules directory must not be a link')
-  const source = JSON.parse(await readFile(join(repositoryRoot, 'packages/document/office-to-pdf/package.json'), 'utf8'))
+  const source = JSON.parse(await readFile(join(repositoryRoot, 'packages/document/office-kit/package.json'), 'utf8'))
   const version = source.dependencies?.[names[0]]
   const lock = load(await readFile(join(repositoryRoot, 'pnpm-lock.yaml'), 'utf8'))
   const packages = officeRuntimePackages(lock, version)

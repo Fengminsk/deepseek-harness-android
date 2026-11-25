@@ -15,7 +15,7 @@ const wasm = join(modules, '@deepseek-ai/libreoffice-kit-wasm')
 const fixture = join(root, 'packages/bundle/web-app/tests/fixtures/document-conversion.docx')
 const workbook = join(root, 'packages/client/ui-sidebar-documentpreview/tests/fixtures/excel-xml/rich.xlsx')
 if (!existsSync(kit) || !existsSync(fixture)) throw new Error('Stage Android runtime and build original Office fixture first')
-await verifyOfficeEngine(wasm, '0.2.0')
+await verifyOfficeEngine(wasm, '0.2.3')
 
 // The package uses process.platform/arch to dispatch. This validates the
 // Android decision path on the host; it is not presented as phone evidence.

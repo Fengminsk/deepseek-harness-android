@@ -6,7 +6,7 @@ const MAX_CHUNK_BYTES = 256 * 1024
 export const PRIVATE_WORKSPACE_SCOPE = 'pocket-private-workspace'
 const METHODS = {
   workspaceFiles: { stat: ['path'], list: ['path'], read: ['path', 'range'], readBytes: ['path', 'options'] },
-  officeToPdf: { render: ['path', 'priority'], generation: [] },
+  officeKit: { render: ['path', 'priority'], generation: [] },
 }
 
 function failure(code, message, details = {}) {
@@ -118,7 +118,7 @@ export class AppDocumentPreview {
     if (namespace === 'workspaceFiles' || method === 'render') args.workspaceFileScopeId = sessionId
     if (namespace === 'workspaceFiles' && method === 'read' && args.range === undefined) args.range = {}
     if (namespace === 'workspaceFiles' && method === 'readBytes' && args.options === undefined) args.options = {}
-    if (namespace === 'officeToPdf' && method === 'render' && args.priority === undefined) args.priority = 'foreground'
+    if (namespace === 'officeKit' && method === 'render' && args.priority === undefined) args.priority = 'foreground'
     if (params.privateWorkspace === true && sessionId !== PRIVATE_WORKSPACE_SCOPE) {
       throw failure('gateway/bad-request', 'Private workspace document scope is invalid.')
     }
@@ -158,7 +158,7 @@ export class AppDocumentPreview {
       controller.signal.throwIfAborted()
       if (this.#closed || this.#closedOwners.has(owner)) throw failure('gateway/cancelled', 'The document preview owner has disconnected.')
       if ((request.namespace === 'workspaceFiles' && request.method === 'readBytes')
-        || (request.namespace === 'officeToPdf' && request.method === 'render')) {
+        || (request.namespace === 'officeKit' && request.method === 'render')) {
         if (!(value?.data instanceof Uint8Array)) throw new Error('Document service returned invalid binary data')
         return { ...value, data: this.#lease(record, value.data) }
       }
@@ -174,13 +174,13 @@ export class AppDocumentPreview {
   async #privateRead(request, signal) {
     if (!this.privateWorkspace) throw failure('gateway/invocation-unavailable', 'Private workspace reader is unavailable.')
     if (!(request.namespace === 'workspaceFiles' && ['stat', 'readBytes'].includes(request.method))
-      && !(request.namespace === 'officeToPdf' && ['render', 'generation'].includes(request.method))) {
+      && !(request.namespace === 'officeKit' && ['render', 'generation'].includes(request.method))) {
       throw failure('gateway/invocation-unavailable', 'This private workspace document method is unavailable.')
     }
     try { return await this.privateWorkspace(request.namespace, request.method, request.args, signal) }
     catch (error) {
       if (error?.code?.startsWith('workspace-files/')) throw failure(error.code, error.message)
-      if (error?.name === 'OfficeToPdfError' && typeof error.code === 'string') {
+      if (error?.name === 'OfficeKitError' && typeof error.code === 'string') {
         throw failure('document-render/failed', 'Office conversion failed.', { reason: error.code })
       }
       throw error

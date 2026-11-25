@@ -100,7 +100,7 @@ async function checkDocuments(t, mode) {
       }
       if (message.kind === 'call') {
         assert.ok(!('sessionId' in message.args));
-        if (message.namespace === 'officeToPdf') return reply({ result: fail('gateway/service-unavailable', 'Office conversion is not available') });
+        if (message.namespace === 'officeKit') return reply({ result: fail('gateway/service-unavailable', 'Office conversion is not available') });
         if (message.method === 'stat') return reply({ result: ok(metadata()) });
         if (message.method === 'read') {
           const offset = message.args.range?.offset ?? 1; const lines = content.toString('utf8').split('\n');

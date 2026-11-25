@@ -55,6 +55,7 @@ Kit 缺失时提供方照常注册，例如未下载 Office sidecar 就启动的
 | `maxOutputStoreBytes` | `536870912` | 保留输出的最大总字节数。 |
 | `maxImageResolution` | `192` | PDF 导出中图像的 DPI；覆盖 kit 的默认值 `144`。`renderImages()` 改用每个请求的 `dpi`。 |
 | `fontFallbacks` | kit 默认值 | 有序字体族优先组；每组至少包含两个含非空白字符的名称。 |
+| `subprocessConversions` | `false` | 每次 PDF 转换在子 Node 进程中执行，使 WASM 堆随子进程退出离开宿主；图像渲染与格式转换仍使用进程内转换器。 |
 
 [配置目录](../../../docs/config-catalog.zh.md#deepseek-aidsh-office-kit)定义全部字体、归档和图像设置。`fontDirectories` 接受绝对目录；省略时使用 kit 的平台默认值。显式 `fontFallbacks` 替换 kit 的默认分组。已安装的请求字体仍优先使用，缺失字形仍可由其他系统字体提供。原生引擎可能在应用这些优先规则前选中已安装的度量兼容字体。
 

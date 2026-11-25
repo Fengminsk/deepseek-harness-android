@@ -21,7 +21,7 @@ public final class DocumentPreviewPolicyTest {
             "https://example.com/document/index.html", "blob:" + origin + "/document/index.html",
         }) check(!DocumentPreviewPolicy.asset(value), "untrusted asset: " + value);
         check(DocumentPreviewPolicy.callable("workspaceFiles", "readBytes"), "binary read");
-        check(DocumentPreviewPolicy.callable("officeToPdf", "render"), "original conversion");
+        check(DocumentPreviewPolicy.callable("officeKit", "render"), "original conversion");
         for (String namespace : new String[]{"session", "commands", "settings", "credentials", "pluginManager"}) {
             check(!DocumentPreviewPolicy.callable(namespace, "execute"), "no arbitrary namespace");
         }
