@@ -2,7 +2,7 @@
 import 'package:flutter/gestures.dart';
 import 'package:material_ui/material_ui.dart';
 
-import 'context.dart';
+import '../design_context.dart';
 import 'shape.dart';
 import 'surface.dart';
 import 'liquid_glass.dart';

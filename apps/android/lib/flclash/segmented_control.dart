@@ -7,7 +7,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
-import 'context.dart';
+import '../design_context.dart';
 import 'liquid_glass.dart';
 import 'package:prism_ui/motion.dart';
 import 'shape.dart';

@@ -5,7 +5,7 @@ import 'dart:ui' as ui show Image;
 import 'dart:ui' show ImageFilter, lerpDouble;
 
 import 'color.dart';
-import 'context.dart';
+import '../design_context.dart';
 
 import 'package:prism_ui/motion.dart';
 import 'shape.dart';

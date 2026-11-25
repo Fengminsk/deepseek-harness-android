@@ -4,7 +4,7 @@ import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:dsh_android/flclash/color.dart';
-import 'package:dsh_android/flclash/context.dart';
+import 'package:dsh_android/design_context.dart';
 import 'package:dsh_android/flclash/shape.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/rendering.dart';

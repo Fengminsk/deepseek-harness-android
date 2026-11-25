@@ -1,7 +1,7 @@
 // Extracted from FlClash v0.9.2; see licenses/flclash-source.json.
 import 'package:material_ui/material_ui.dart';
 
-import 'context.dart';
+import '../design_context.dart';
 import 'shape.dart';
 import 'surface.dart';
 
