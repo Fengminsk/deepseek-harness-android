@@ -442,5 +442,3 @@ export function applyWebSearchTool(
   ctx.effect(() => () => firstPartySearchDefinitions.delete(definition))
   ctx.tools.register(definition, { when: ({ modelSelection }) => ctx.web.searchReady(modelSelection.provider) })
 }
-
-
