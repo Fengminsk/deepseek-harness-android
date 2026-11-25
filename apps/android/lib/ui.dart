@@ -445,7 +445,10 @@ class _PocketScaffoldState extends State<PocketScaffold>
                     }
                     return false;
                   },
-                  child: widget.body,
+                  // The glass chrome above this stack repaints on every press,
+                  // capture and scrim fade; the page body belongs to its own
+                  // layer so none of that repaints the transcript.
+                  child: RepaintBoundary(child: widget.body),
                 ),
                 Positioned(
                   top: 0,
@@ -504,14 +507,16 @@ class _PocketScaffoldState extends State<PocketScaffold>
                 ),
                 if (widget.bottom case final bottom?)
                   Positioned.fill(
-                    child: _PocketBottomDock(
-                      bottom: bottom,
-                      height: bottomHeight,
-                      top: top,
-                      safeBottom: safe.bottom,
-                      color: color,
-                      keyboardOverlay: widget.keyboardOverlay,
-                      onSizeChanged: _onBottomSizeChanged,
+                    child: RepaintBoundary(
+                      child: _PocketBottomDock(
+                        bottom: bottom,
+                        height: bottomHeight,
+                        top: top,
+                        safeBottom: safe.bottom,
+                        color: color,
+                        keyboardOverlay: widget.keyboardOverlay,
+                        onSizeChanged: _onBottomSizeChanged,
+                      ),
                     ),
                   ),
               ],
