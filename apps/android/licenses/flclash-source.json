@@ -17,13 +17,13 @@
     "lib/ui/navigation_dock.dart",
     "lib/ui/button.dart",
     "lib/ui/segmented_control.dart",
-    "lib/ui/sheet_header.dart",
+    "lib/ui/sheet_header.dart (FloatingEdgeScrim's eased edge surface fade)",
     "lib/ui/input.dart",
     "shaders/liquid_glass.frag",
     "lib/ui/navigation_dock.dart (ElasticPress and spring/paint helpers)",
     "lib/ui/button.dart (TonalButtonTheme and TonalButtonGroup)",
     "lib/ui/segmented_control.dart",
-    "lib/ui/sheet_header.dart (FloatingHeader and eased edge surface fade)",
+    "lib/ui/sheet_header.dart (FloatingEdgeScrim's eased edge surface fade)",
     "lib/ui/input.dart (FilledInputTheme)",
     "lib/views/dashboard/widgets/card.dart (DashboardSwitch and mobile DashboardCard)",
     "lib/views/dashboard/style.dart (DashboardShadows and mobile card metrics)"
@@ -46,6 +46,7 @@
     "Regular glass keeps its reduced dark tint alpha while taking FlClash's tint lifted from the card tone.",
     "Switch is no longer adapted: PocketSwitch draws prism_ui's Switch, sized to the same 52 x 32 track.",
     "Motion primitives come from prism_ui's motion.dart, which holds the same constants and curves plus a frame interval and a simulation that lands exactly.",
-    "Goo geometry comes from prism_ui's goo.dart, which carries the same gooPairOutline and gooPairDepth helpers plus the GooSurface widget."
+    "Goo geometry comes from prism_ui's goo.dart, which carries the same gooPairOutline and gooPairDepth helpers plus the GooSurface widget.",
+    "FloatingHeader comes from prism_ui's sheet_header.dart; only the bottom-capable FloatingEdgeScrim stays adapted."
   ]
 }

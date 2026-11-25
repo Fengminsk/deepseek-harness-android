@@ -38,7 +38,8 @@
   "deviations": [
     "Trailing whitespace is stripped so the repository's staged whitespace gate passes.",
     "pubspec.yaml sets publish_to: none and keeps only the dependencies this closure imports (freezed_annotation, path_parsing).",
-    "Files outside the closure are not vendored; extend seeds or widen resolution to add a component."
+    "Files outside the closure are not vendored; extend seeds or widen resolution to add a component.",
+    "sheet_header.dart guards a zero-height header so its fade gradient is not built from a division by zero."
   ],
   "files": [
     "lib/bar_item_presence.dart",

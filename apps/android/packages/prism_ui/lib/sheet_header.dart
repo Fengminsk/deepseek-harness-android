@@ -86,6 +86,18 @@ class FloatingHeader extends StatelessWidget {
   final Widget child;
 
   Gradient _scrimOf(double height) {
+    // A header collapsed to nothing still builds: dividing by its height would
+    // make every stop a NaN and the gradient unusable.
+    if (height <= 0) {
+      return LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [
+          backgroundColor.withValues(alpha: _alpha),
+          backgroundColor.withValues(alpha: 0),
+        ],
+      );
+    }
     final start = (height - overhang) * fadeStart / height;
     final stops = <double>[0];
     final colors = <Color>[backgroundColor.withValues(alpha: _alpha)];

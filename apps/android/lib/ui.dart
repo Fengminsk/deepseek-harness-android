@@ -26,6 +26,7 @@ export 'flclash/elastic_press.dart';
 export 'flclash/button.dart';
 export 'flclash/segmented_control.dart';
 export 'flclash/floating_header.dart';
+export 'package:prism_ui/sheet_header.dart' show FloatingHeader;
 
 ThemeData pocketTheme(
   Brightness brightness, {

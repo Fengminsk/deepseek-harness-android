@@ -266,7 +266,9 @@ void main() {
     _listState(tester).position.jumpTo(32);
     await tester.pumpAndSettle();
     expect(find.byType(FloatingHeader), findsOneWidget);
-    expect(find.byType(FloatingEdgeScrim), findsNWidgets(2));
+    // prism_ui's header paints its own fade, so the page's edge scrim is the
+    // only FloatingEdgeScrim left.
+    expect(find.byType(FloatingEdgeScrim), findsOneWidget);
     expect(tester.takeException(), isNull);
     if (capture) {
       await tester.runAsync(() async {
