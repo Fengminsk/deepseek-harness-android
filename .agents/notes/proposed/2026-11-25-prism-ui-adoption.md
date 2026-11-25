@@ -59,11 +59,10 @@ The v0.9.2 adoption recorded 16 local changes in `licenses/flclash-source.json`.
 | File | Delta that blocks a straight swap |
 | --- | --- |
 | `elastic_press.dart` | `preserveAspectRatio` keeps round controls circular under a drag; prism's `ElasticPress` has no such parameter |
-| `surface.dart` | `ElevatedColorScheme` |
+| `surface.dart` | prism's surface layer reads prism's `ThemeData.elevatedColorScheme`; ours is an `ElevatedColorScheme` theme extension on Material's theme, and 17 call sites pass Material's scheme to `SurfaceLevel.colorOf` |
 | `popup.dart` | row content, in-place retry actions, released-pointer handling |
 | `segmented_control.dart` | controlled drag previews, keyboard and semantic actions |
 | `page_transition.dart`, `drag_back.dart` | the app's route classes and backdrop rule |
-| `surface.dart` | `ElevatedColorScheme` |
 | `button.dart` | `filledTonal` and the circular-control clipper |
 | `shape.dart`, `typography.dart`, `input.dart` | app theme extensions and the input border's label gaps |
 | `dashboard_card.dart`, `daylight.dart`, `floating_header.dart` | this app's own look: micrograin, shadow scale, bottom-edge scrim |
