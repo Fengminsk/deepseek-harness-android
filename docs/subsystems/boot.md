@@ -231,6 +231,15 @@ Manage profile files and apply their declared reload lifecycle.
  */
 @Remote setVersionExemption(packageVersion: string, runtimeVersion: string, enabled: boolean, acceptRisk?: boolean): Promise<ChangeResult>
 
+/**
+ * Reserve platform-owned loader module names before serving clients.
+ * Reservations are additive for this manager's lifetime; a reserved module
+ * lists as management-required and cannot be removed through a package
+ * operation. Not Remote: the embedding host calls it during boot.
+ * @param modules - exact loader module names, including platform-controlled disabled entries.
+ */
+protectModules(modules: readonly string[]): void
+
 /** Read current plugins, including why a row cannot be changed through the profile patch.
  * @returns Current runtime entries with persistent patch targets.
  */

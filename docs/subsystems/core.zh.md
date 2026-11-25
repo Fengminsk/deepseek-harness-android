@@ -818,12 +818,14 @@ register(agent: Agent): ReturnType<Context['effect']>
  * returned detach closure into its pre-installed composite teardown before
  * calling {@link announce}. Ordinary callers use {@link register}.
  * @param agent - the prepared, unpublished agent.
+ * @param owner - live parent agent for runtime ownership; omitted derives it from
+ *   the ambient initiator, so a top-level creation stays a runtime root.
  * @returns an idempotent closure that removes this exact entry and emits
  *   `agent/disposed` with listener failures contained. When called from a
  *   `agent/created` listener, removal and disposal wait until the serial
  *   creation dispatch settles.
  */
-enter(agent: Agent): () => void
+enter(agent: Agent, owner?: Agent): () => void
 
 /**
  * Announce an agent previously inserted with {@link enter}.
@@ -849,6 +851,24 @@ get(id: SessionId): Agent | undefined
  * @returns a fresh array; mutating it does not affect the registry.
  */
 list(): Agent[]
+
+/**
+ * Whether a live agent was registered under this exact owner agent's
+ * initiator run. Runtime ownership is independent of durable session lineage
+ * and stays unambiguous when unrelated providers reuse an id.
+ * @param id - the candidate child agent's shared agent/session id.
+ * @param owner - the expected runtime creator agent.
+ * @returns true only while the exact child entry is live under that owner.
+ */
+isOwnedBy(id: SessionId, owner: Agent): boolean
+
+/**
+ * All live top-level agents in registration order. A top-level agent was
+ * registered outside an agent initiator run; durable session lineage does not
+ * affect this runtime relation, so a resumed fork may still be a root.
+ * @returns a fresh array; mutating it does not affect the registry.
+ */
+roots(): Agent[]
 ```
 
 Types: [Session](session.zh.md)

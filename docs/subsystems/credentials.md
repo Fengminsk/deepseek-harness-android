@@ -89,7 +89,7 @@ abstract register(origin: string, route: WebRoute): () => void | Promise<void>
 
 Types: [WebRoute](web-server.md)
 
-Source: [`packages/credentials/deepseek-account-platform/src/index.ts`](../../packages/credentials/deepseek-account-platform/src/index.ts)
+Source: [`packages/credentials/deepseek-account/src/index.ts`](../../packages/credentials/deepseek-account/src/index.ts)
 
 <a id="ctxauthorization--authorizationservice"></a>
 

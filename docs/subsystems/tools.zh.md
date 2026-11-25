@@ -683,6 +683,40 @@ restrict(filter: ToolRestriction): () => void
 get(name: string, scope?: ScopeKey, toolSet?: ResolvedToolSet): ToolDefinition | undefined
 
 /**
+ * Return an opaque identity for the registration one scope resolves.
+ * Re-registering even the same definition object yields a new identity;
+ * restriction, shadowing, or disposal makes the former identity absent.
+ * This is a same-process comparison token, not authority to execute a tool:
+ * callers revalidate it at their own dispatch boundary.
+ * @param name - the tool name as registered.
+ * @param scope - the viewing scope; omitted selects the global view.
+ * @returns the identity of the visible registration, or undefined when none is visible.
+ */
+registrationIdentity(name: string, scope?: ScopeKey): object | undefined
+
+/**
+ * Record that an execution entered its tool body. Pipeline-internal: callers
+ * outside the execution pipeline must not mint body activity.
+ * @param exec - the accepted execution about to run its tool body.
+ */
+beginExecution(exec: ToolExecution): void
+
+/**
+ * Record that an execution left its tool body. Pipeline-internal.
+ * @param exec - the settled execution.
+ */
+endExecution(exec: ToolExecution): void
+
+/**
+ * Whether this registry is currently awaiting the body of this exact execution.
+ * Approval, workflow, and isolated-run dispatchers revalidate a live caller
+ * with this before starting work on its behalf.
+ * @param exec - the exact run context handed to a tool body.
+ * @returns whether that execution's tool body is still running.
+ */
+isActiveExecution(exec: ToolRunContext): boolean
+
+/**
  * Resolve the definition a call may execute. With a step's admitted set, the
  * set decides; without one, conditional registrations are unavailable.
  * @param name - the tool name as registered.

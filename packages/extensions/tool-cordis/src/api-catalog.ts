@@ -82,6 +82,19 @@ export interface TypeApiEntry {
 /** Every harness `ctx.<key>` service, sorted by key. */
 export const SERVICE_API: readonly ServiceApiEntry[] = [
   {
+    key: 'accountCallback',
+    summary: 'Optional host carrier for account callbacks; the account provider retains the complete PKCE lifecycle.',
+    description: 'Optional host carrier for account callbacks; the account provider retains the complete PKCE lifecycle.',
+    methods: [
+      {
+        signature: 'abstract register(origin: string, route: WebRoute): () => void | Promise<void>',
+        description: 'Register the provider-owned callback route at the requested browser origin.',
+        parameters: [{ name: 'origin', description: 'validated callback origin of this account attempt.' }, { name: 'route', description: 'route whose handler validates state and settles the account grant.' }],
+        returns: 'removal of this attempt\'s route and carrier resources.',
+      },
+    ],
+  },
+  {
     key: 'actionCards',
     summary: 'Card tool, kind registry, Session projection, user actions and status notices.',
     description: 'Card tool, kind registry, Session projection, user actions and status notices.',
@@ -323,9 +336,9 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'the awaitable Cordis effect disposer (single-shot; a repeat call returns undefined without awaiting an in-flight teardown). Exact identity is load-bearing: a composite (generator) effect that owns a teardown ORDER — the agent factory\'s lifecycle chain — must yield THIS function so Cordis nests the unregistration at that yield position; yielding a wrapper would leave it disposing as a concurrent sibling on owner unload, unregistering the agent (and emitting `agent/disposed`) while its final turn is still draining.',
       },
       {
-        signature: 'enter(agent: Agent): () => void',
+        signature: 'enter(agent: Agent, owner?: Agent): () => void',
         description: 'Insert an already-constructed agent without announcing it. This is the advanced ordered-lifecycle primitive used by the async agent factory: it first completes setup while the agent is unpublished, then assigns the returned detach closure into its pre-installed composite teardown before calling announce. Ordinary callers use register.',
-        parameters: [{ name: 'agent', description: 'the prepared, unpublished agent.' }],
+        parameters: [{ name: 'agent', description: 'the prepared, unpublished agent.' }, { name: 'owner', description: 'live parent agent for runtime ownership; omitted derives it from the ambient initiator, so a top-level creation stays a runtime root.' }],
         returns: 'an idempotent closure that removes this exact entry and emits `agent/disposed` with listener failures contained. When called from a `agent/created` listener, removal and disposal wait until the serial creation dispatch settles.',
       },
       {
@@ -344,6 +357,18 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
       {
         signature: 'list(): Agent[]',
         description: 'All live agents, in registration order.',
+        parameters: [],
+        returns: 'a fresh array; mutating it does not affect the registry.',
+      },
+      {
+        signature: 'isOwnedBy(id: SessionId, owner: Agent): boolean',
+        description: 'Whether a live agent was registered under this exact owner agent\'s initiator run. Runtime ownership is independent of durable session lineage and stays unambiguous when unrelated providers reuse an id.',
+        parameters: [{ name: 'id', description: 'the candidate child agent\'s shared agent/session id.' }, { name: 'owner', description: 'the expected runtime creator agent.' }],
+        returns: 'true only while the exact child entry is live under that owner.',
+      },
+      {
+        signature: 'roots(): Agent[]',
+        description: 'All live top-level agents in registration order. A top-level agent was registered outside an agent initiator run; durable session lineage does not affect this runtime relation, so a resumed fork may still be a root.',
         parameters: [],
         returns: 'a fresh array; mutating it does not affect the registry.',
       },
@@ -809,6 +834,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         description: 'Add the fresh process token to an ordinary Web application URL.',
         parameters: [{ name: 'baseUrl', description: 'clean application URL whose authority and mount are preserved.' }],
         returns: 'tokenized URL for initial login; a mount proxy strips its prefix before {@link authorizeIndex}.',
+      },
+      {
+        signature: 'rotateBrowserCredentials(): Promise<void>',
+        description: 'Revoke issued browser tokens and cookies after closing the listener\'s sockets.',
+        parameters: [],
+        returns: 'completion after disposable API peers have been released.',
       },
     ],
   },
@@ -1975,6 +2006,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'fresh projections.',
       },
       {
+        signature: 'abstract snapshot(): JobView[]',
+        description: 'Read every registered job for a trusted in-process host observer. This synchronous baseline includes all owners and unowned jobs, preserves registration order, and returns detached projections without consuming output. Subscribe with `{ owners: \'all\' }` before reading to observe subsequent commits. Remote and model callers must keep using the caller-fenced `list` operation.',
+        parameters: [],
+        returns: 'Fresh projections of every currently registered job.',
+      },
+      {
         signature: 'abstract get(id: JobId, caller?: SessionId): JobView',
         description: 'Project one job without changing its cursor. Throws for an unknown or foreign job.',
         parameters: [{ name: 'id', description: 'job to look up.' }, { name: 'caller', description: 'reading session checked against the owner.' }],
@@ -2470,6 +2507,11 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         description: 'Grant or revoke one exact plugin/runtime exemption and reevaluate live plugins.',
         parameters: [{ name: 'packageVersion', description: 'Exact manifest package name followed by @ and its version; never an installation spec or alias.' }, { name: 'runtimeVersion', description: 'Exact current DSH version for grants; revocation may name a previous runtime.' }, { name: 'enabled', description: 'Whether to grant rather than revoke the exemption.' }, { name: 'acceptRisk', description: 'Required true for grants after the user accepts possible crashes and data loss.' }],
         returns: 'Saved and runtime outcomes. Startup-only profiles require restart.',
+      },
+      {
+        signature: 'protectModules(modules: readonly string[]): void',
+        description: 'Reserve platform-owned loader module names before serving clients. Reservations are additive for this manager\'s lifetime; a reserved module lists as management-required and cannot be removed through a package operation. Not Remote: the embedding host calls it during boot.',
+        parameters: [{ name: 'modules', description: 'exact loader module names, including platform-controlled disabled entries.' }],
       },
       {
         signature: '@Remote async listPlugins(): Promise<PluginInfo[]>',
@@ -4345,6 +4387,28 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         description: 'Look up a tool as one scope sees it (scoped shadows global; a restricted-away global reads as absent). Presenters pass the calling agent so the rendered card matches the definition that actually executed.',
         parameters: [{ name: 'name', description: 'the tool name as registered.' }, { name: 'scope', description: 'the viewing scope (the agent); omitted = the global view.' }, { name: 'toolSet', description: 'step admission; omit only to inspect registered definitions.' }],
         returns: 'the definition the scope resolves, or undefined when none is visible.',
+      },
+      {
+        signature: 'registrationIdentity(name: string, scope?: ScopeKey): object | undefined',
+        description: 'Return an opaque identity for the registration one scope resolves. Re-registering even the same definition object yields a new identity; restriction, shadowing, or disposal makes the former identity absent. This is a same-process comparison token, not authority to execute a tool: callers revalidate it at their own dispatch boundary.',
+        parameters: [{ name: 'name', description: 'the tool name as registered.' }, { name: 'scope', description: 'the viewing scope; omitted selects the global view.' }],
+        returns: 'the identity of the visible registration, or undefined when none is visible.',
+      },
+      {
+        signature: 'beginExecution(exec: ToolExecution): void',
+        description: 'Record that an execution entered its tool body. Pipeline-internal: callers outside the execution pipeline must not mint body activity.',
+        parameters: [{ name: 'exec', description: 'the accepted execution about to run its tool body.' }],
+      },
+      {
+        signature: 'endExecution(exec: ToolExecution): void',
+        description: 'Record that an execution left its tool body. Pipeline-internal.',
+        parameters: [{ name: 'exec', description: 'the settled execution.' }],
+      },
+      {
+        signature: 'isActiveExecution(exec: ToolRunContext): boolean',
+        description: 'Whether this registry is currently awaiting the body of this exact execution. Approval, workflow, and isolated-run dispatchers revalidate a live caller with this before starting work on its behalf.',
+        parameters: [{ name: 'exec', description: 'the exact run context handed to a tool body.' }],
+        returns: 'whether that execution\'s tool body is still running.',
       },
       {
         signature: 'executable(name: string, scope?: ScopeKey, toolSet?: ResolvedToolSet): ToolDefinition | undefined',
@@ -10250,7 +10314,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ToolsService',
-    declaration: 'export class ToolsService extends Service {\n    static inject;\n    static Config;\n    constructor(ctx: Context);\n    register(definition: ToolDefinition, options: ToolRegistrationOptions = {}): () => void;\n    restrict(filter: ToolRestriction): () => void;\n    get(name: string, scope?: ScopeKey, toolSet?: ResolvedToolSet): ToolDefinition | undefined;\n    executable(name: string, scope?: ScopeKey, toolSet?: ResolvedToolSet): ToolDefinition | undefined;\n    async resolve(context: ToolActivationContext): Promise<ResolvedToolSet>;\n    definitions(scope?: ScopeKey, toolSet?: ResolvedToolSet): readonly ToolDefinition[];\n    schemas(scope?: ScopeKey, toolSet?: ResolvedToolSet): ToolSchema[];\n    setExecutor(executor: ToolExecutor): () => void;\n    async execute(input: ToolBatchInput): Promise<ToolBatchResult>;\n    guard(guard: ToolGuard): () => void;\n    checkGuards(exec: ToolExecution): ToolGuardDenial | undefined;\n}',
+    declaration: 'export class ToolsService extends Service {\n    static inject;\n    static Config;\n    constructor(ctx: Context);\n    register(definition: ToolDefinition, options: ToolRegistrationOptions = {}): () => void;\n    restrict(filter: ToolRestriction): () => void;\n    get(name: string, scope?: ScopeKey, toolSet?: ResolvedToolSet): ToolDefinition | undefined;\n    registrationIdentity(name: string, scope?: ScopeKey): object | undefined;\n    beginExecution(exec: ToolExecution): void;\n    endExecution(exec: ToolExecution): void;\n    isActiveExecution(exec: ToolRunContext): boolean;\n    executable(name: string, scope?: ScopeKey, toolSet?: ResolvedToolSet): ToolDefinition | undefined;\n    async resolve(context: ToolActivationContext): Promise<ResolvedToolSet>;\n    definitions(scope?: ScopeKey, toolSet?: ResolvedToolSet): readonly ToolDefinition[];\n    schemas(scope?: ScopeKey, toolSet?: ResolvedToolSet): ToolSchema[];\n    setExecutor(executor: ToolExecutor): () => void;\n    async execute(input: ToolBatchInput): Promise<ToolBatchResult>;\n    guard(guard: ToolGuard): () => void;\n    checkGuards(exec: ToolExecution): ToolGuardDenial | undefined;\n}',
   },
   {
     name: 'ToolUpdate',

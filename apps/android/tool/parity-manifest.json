@@ -54,6 +54,24 @@
       "capability": "models-account"
     },
     {
+      "key": "webUi/ui-account-notifications",
+      "plugin": "@deepseek-ai/dsh-client-ui-account-notifications",
+      "sourceDigest": "b61e9b0d892182c0b750872bbb81b49aea3fdafb38dbd0c17abd2064e6b761be",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml"
+      ],
+      "status": "not-migrated",
+      "android": [],
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Web-only account notification cards; the Android App renders account state in its own pages.",
+      "capability": "models-account"
+    },
+    {
       "key": "webUi/ui-theme",
       "plugin": "@deepseek-ai/dsh-client-ui-theme",
       "sourceDigest": "e12b976a69c6f31a781c3996cd767ec1ca3100f05dd92d5a3d6e288249ebf41f",
@@ -1531,7 +1549,7 @@
     {
       "key": "standardPreset/skill-filesystem",
       "plugin": "@deepseek-ai/dsh-skill-filesystem",
-      "sourceDigest": "89f9f3f141e23ab0c56a24c94fd514ac527d4e486aedf5b43c62a4bf7ccf9ed1",
+      "sourceDigest": "33247e0f90aee6851e10e5b09e837d2cef3178cc3483fcb6f5bbe6159a7b2efe",
       "sources": [
         "packages/bundle/web-app/presets/standard.patch.yml"
       ],
@@ -1683,7 +1701,7 @@
     {
       "key": "standardPreset/delegation",
       "plugin": "cordis:group",
-      "sourceDigest": "3ece7c9100aa6bafa42fdaf178a6506c99c94549dd94cfdb55ee9147d95fae4d",
+      "sourceDigest": "12a52d7ff2b841a0e917de7c2afae64fb7ed33a1de8c87e475e6d5bb528c82b4",
       "sources": [
         "packages/bundle/web-app/presets/standard.patch.yml"
       ],
@@ -1807,6 +1825,27 @@
       "capability": "files"
     },
     {
+      "key": "standardPreset/tool-office",
+      "plugin": "@deepseek-ai/dsh-tool-office",
+      "sourceDigest": "01ecd19979458685a06e87a412269ac9494b0f66230e857feaddb932534daf23",
+      "sources": [
+        "packages/bundle/web-app/presets/standard.patch.yml"
+      ],
+      "status": "not-migrated",
+      "android": [
+        "apps/android/tool/stage-preset.mjs",
+        "apps/android/runtime/index.mjs"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Android does not add tool-office to its preset; document preview calls office-kit through the private document facade.",
+      "capability": "office"
+    },
+    {
       "key": "standardPreset/tool-plugin-manager",
       "plugin": "@deepseek-ai/dsh-plugin-manager/tools",
       "sourceDigest": "101950f70e1889951d0af8fc4d1387e14985b53d1636e9a1e8d74007c7b5052e",
@@ -1849,7 +1888,7 @@
     {
       "key": "standardDelegation/tool-subagent-control",
       "plugin": "@deepseek-ai/dsh-tool-subagent-control",
-      "sourceDigest": "8832739314a82ed24959d41a5d2f12f8f7e9428263196a4d124d73686ddad7d0",
+      "sourceDigest": "8e64c9813fd13ecc8967d8c190f12e20223561c3c03d612600e334154d0fac00",
       "sources": [
         "packages/bundle/web-app/presets/standard.patch.yml"
       ],
@@ -3016,27 +3055,6 @@
       "capability": "background"
     },
     {
-      "key": "webService/account-controller",
-      "plugin": "@deepseek-ai/dsh-api-account-controller",
-      "sourceDigest": "c74289b08ab888ffa46d68173f625967fc5cebd66e254d63944f56c5e7c98499",
-      "sources": [
-        "packages/bundle/web-app/cordis.patch.yml"
-      ],
-      "status": "partial",
-      "android": [
-        "apps/android/runtime/bootstrap.mjs",
-        "apps/android/lib/account.dart"
-      ],
-      "evidence": {
-        "core": "partial",
-        "ui": "unverified",
-        "behavior": "unverified",
-        "device": "unverified"
-      },
-      "note": "The original account controller is inherited and native account pages call it; token restore and device authentication need acceptance.",
-      "capability": "models-account"
-    },
-    {
       "key": "webService/settings-controller",
       "plugin": "@deepseek-ai/dsh-api-settings-controller",
       "sourceDigest": "6f5e085b80007619b20cb86773066573fb54ba2edbd364fd70075224d6001a22",
@@ -3389,9 +3407,9 @@
       "capability": "office"
     },
     {
-      "key": "webService/office-to-pdf",
-      "plugin": "@deepseek-ai/dsh-office-to-pdf",
-      "sourceDigest": "cdb95afe841b5834f43422b06553cc2d539edc6ce3af36efeed478a5bfea0a41",
+      "key": "webService/office-kit",
+      "plugin": "@deepseek-ai/dsh-office-kit",
+      "sourceDigest": "a63d26c6127dd696b10afe2b3f894a626e6badc22f34ef70947b2d0ac60395dc",
       "sources": [
         "packages/bundle/web-app/cordis.patch.yml"
       ],
@@ -3407,8 +3425,47 @@
         "behavior": "unverified",
         "device": "unverified"
       },
-      "note": "The original Office converter is retained with bounded Android child-process settings; device memory and document parity remain unverified.",
+      "note": "The Office kit converter is retained with bounded Android child-process settings; device memory and document parity remain unverified.",
       "capability": "office"
+    },
+    {
+      "key": "webService/skill-office",
+      "plugin": "@deepseek-ai/dsh-skill-office",
+      "sourceDigest": "255bb7e9f1d13bc772961fc7a47db3948ea48a07f1485d0c81fc063e8ec661a8",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml"
+      ],
+      "status": "not-migrated",
+      "android": [
+        "apps/android/runtime/cordis.patch.yml"
+      ],
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Android previews Office through office-kit directly; the authoring skill row is disabled in the Android overlay and tool-office stays out of the preset.",
+      "capability": "office"
+    },
+    {
+      "key": "webService/workspace-dependencies",
+      "plugin": "@deepseek-ai/dsh-tool-workspace-dependencies",
+      "sourceDigest": "2c5f1005d0129bec437c5f08a4382fb571332c09d85736c1b802b161ccf9a7d9",
+      "sources": [
+        "packages/bundle/web-app/cordis.patch.yml"
+      ],
+      "status": "not-applicable",
+      "android": [],
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "Disabled outside the Desktop profile; the Android profile never selects it.",
+      "capability": "office",
+      "notApplicableReason": "The declaration is disabled outside the Desktop profile, so no Android profile selects it; its workspace dependency runtime has no native Android entrypoint. Office delivery remains tracked by the office-kit and tool-office rows."
     },
     {
       "key": "webService/workspace-changes",
@@ -4242,8 +4299,8 @@
     },
     {
       "key": "optionalBundle/base/insert/deepseek-account",
-      "plugin": "@deepseek-ai/dsh-deepseek-account-platform",
-      "sourceDigest": "a44acae304f0bb9f28656641bddacef000a827df014a134710188dce0d31eb9e",
+      "plugin": "@deepseek-ai/dsh-deepseek-account",
+      "sourceDigest": "6875399ef489e9f810ede703b504c5dd0e926d9421209d8445ce852597812a7b",
       "sources": [
         "packages/bundle/base/cordis.patch.yml",
         "packages/bundle/web-app/cordis.patch.yml",
@@ -5818,7 +5875,7 @@
     {
       "key": "optionalBundle/base/insert/tool-subagent-control",
       "plugin": "@deepseek-ai/dsh-tool-subagent-control",
-      "sourceDigest": "8832739314a82ed24959d41a5d2f12f8f7e9428263196a4d124d73686ddad7d0",
+      "sourceDigest": "8e64c9813fd13ecc8967d8c190f12e20223561c3c03d612600e334154d0fac00",
       "sources": [
         "packages/bundle/base/cordis.patch.yml",
         "packages/bundle/web-app/cordis.patch.yml",
@@ -6368,7 +6425,7 @@
     {
       "key": "optionalBundle/base/insert/web",
       "plugin": "@deepseek-ai/dsh-web",
-      "sourceDigest": "bffac4207bead18b5db1b055c5777f2fa8f87068e802381bb45ce419ce0edf85",
+      "sourceDigest": "faf68974c08f5bcbce9d94cced0d49eaaab7c927caa537f545c1514302ea66e2",
       "sources": [
         "packages/bundle/base/cordis.patch.yml",
         "packages/bundle/web-app/cordis.patch.yml",
@@ -8077,9 +8134,61 @@
       "notApplicableReason": "Android starts the native carrier over base and web-app, not sdk-app; this declaration's alternative launch configuration is outside the native entrypoint contract."
     },
     {
+      "key": "optionalBundle/sdk-app/insert/office-kit",
+      "plugin": "@deepseek-ai/dsh-office-kit",
+      "sourceDigest": "a63d26c6127dd696b10afe2b3f894a626e6badc22f34ef70947b2d0ac60395dc",
+      "sources": [
+        "packages/bundle/sdk-app/cordis.patch.yml"
+      ],
+      "status": "not-applicable",
+      "android": [],
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "SDK application bundle row; the Android runtime composes the Web and base bundles only.",
+      "capability": "office",
+      "assessment": {
+        "composition": "alternate-profile",
+        "entryPoint": "none",
+        "relatedDeclarations": [
+          "webService/office-kit"
+        ]
+      },
+      "notApplicableReason": "Android starts the native carrier over base and web-app, not sdk-app; this Office kit entry is outside the native entrypoint contract. Android previews Office through its own office-kit row."
+    },
+    {
+      "key": "optionalBundle/sdk-app/insert/tool-office",
+      "plugin": "@deepseek-ai/dsh-tool-office",
+      "sourceDigest": "01ecd19979458685a06e87a412269ac9494b0f66230e857feaddb932534daf23",
+      "sources": [
+        "packages/bundle/sdk-app/cordis.patch.yml"
+      ],
+      "status": "not-applicable",
+      "android": [],
+      "evidence": {
+        "core": "unverified",
+        "ui": "unverified",
+        "behavior": "unverified",
+        "device": "unverified"
+      },
+      "note": "SDK application bundle row; the Android runtime composes the Web and base bundles only.",
+      "capability": "office",
+      "assessment": {
+        "composition": "alternate-profile",
+        "entryPoint": "none",
+        "relatedDeclarations": [
+          "standardPreset/tool-office"
+        ]
+      },
+      "notApplicableReason": "Android starts the native carrier over base and web-app, not sdk-app; this tool-office entry is outside the native entrypoint contract. The Android preset keeps tool-office out."
+    },
+    {
       "key": "optionalBundle/sdk-app/insert/workspace-dependencies",
       "plugin": "@deepseek-ai/dsh-tool-workspace-dependencies",
-      "sourceDigest": "ee007b71e49efd00dda353d33a4541c0f152cea892bacda976880b768f40bd84",
+      "sourceDigest": "88e351b95d064afe68753fdbc45102eda654dbba6b16e8ce84a33219d4b714ef",
       "sources": [
         "packages/bundle/sdk-app/cordis.patch.yml",
         "packages/bundle/web-app/cordis.patch.yml",
@@ -8104,7 +8213,7 @@
     {
       "key": "optionalBundle/sdk-app/insert/skill-office",
       "plugin": "@deepseek-ai/dsh-skill-office",
-      "sourceDigest": "6c7dd418769064be935552178ae5b28e34061f7f491a4a12ac55c1843a43d43d",
+      "sourceDigest": "4b6175afbd344f65f0cda02a3b36c2834e3acd10994a96578d3599fa7861a2e0",
       "sources": [
         "packages/bundle/sdk-app/cordis.patch.yml",
         "packages/bundle/web-app/cordis.patch.yml",
@@ -9195,7 +9304,7 @@
     },
     {
       "path": "apps/android/runtime/index.mjs",
-      "sha256": "6dea0c76af75bf21070dafe328eed0124c8f61d97d127aad32f7916baa96897b"
+      "sha256": "5ceefbf61d85026e02230df26a90a965cf8c237faf455717e709dc77ef31d768"
     },
     {
       "path": "apps/android/runtime/cordis.patch.yml",
@@ -9207,7 +9316,7 @@
     },
     {
       "path": "packages/bundle/web-app/cordis.patch.yml",
-      "sha256": "746394470e99f57ecb22a95f445d7cdaae1297ce17b8e4799a6c573e93677927"
+      "sha256": "58dffac57b73cd06b84fb81e6adcfcf3ba7175952e607c0753b5535712388afe"
     }
   ]
 }
