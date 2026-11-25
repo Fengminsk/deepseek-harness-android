@@ -11,7 +11,7 @@ import 'package:material_ui/material_ui.dart';
 
 import 'composer_commands.dart';
 import 'flclash/daylight.dart';
-import 'flclash/surface.dart';
+import 'pocket_surfaces.dart';
 import 'flclash/typography.dart';
 import 'pocket_composer.dart';
 import 'remote_permissions.dart';
@@ -1358,7 +1358,7 @@ class RemoteSheet extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    final level = SurfaceLevel.floatingOf(colors);
+    final level = pocketFloatingOf(colors);
     final shape = AppShape.top(AppCorner.xxl);
     return Semantics(
       container: true,
@@ -1370,7 +1370,7 @@ class RemoteSheet extends StatelessWidget {
         ),
         child: DaylightSurface(
           shape: shape,
-          color: level.colorOf(colors),
+          color: level.colorOfMaterial(colors),
           enabled: LiquidGlassScope.of(context),
           child: Material(
             type: MaterialType.transparency,

@@ -3,7 +3,7 @@ import 'package:material_ui/material_ui.dart';
 
 import '../design_context.dart';
 import 'shape.dart';
-import 'surface.dart';
+import '../pocket_surfaces.dart';
 
 class FilledInputTheme extends StatelessWidget {
   const FilledInputTheme({
@@ -29,7 +29,7 @@ class FilledInputTheme extends StatelessWidget {
     return InputDecorationTheme(
       data: InputDecorationTheme.of(context).copyWith(
         filled: true,
-        fillColor: fillColor ?? context.raisedSurfaceLevel.colorOf(colorScheme),
+        fillColor: fillColor ?? context.raisedSurfaceLevel.colorOfMaterial(colorScheme),
         hoverColor: Colors.transparent,
         floatingLabelBehavior: FloatingLabelBehavior.never,
         contentPadding: contentPadding,

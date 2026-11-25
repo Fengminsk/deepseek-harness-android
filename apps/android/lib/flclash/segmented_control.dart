@@ -11,7 +11,7 @@ import '../design_context.dart';
 import 'liquid_glass.dart';
 import 'package:prism_ui/motion.dart';
 import 'shape.dart';
-import 'surface.dart';
+import '../pocket_surfaces.dart';
 import 'typography.dart';
 
 final _selectionCurve = SpringCurve(

@@ -4,7 +4,7 @@ import 'package:material_ui/material_ui.dart';
 
 import '../design_context.dart';
 import 'shape.dart';
-import 'surface.dart';
+import '../pocket_surfaces.dart';
 import 'liquid_glass.dart';
 import 'elastic_press.dart';
 
@@ -82,7 +82,7 @@ class _TonalButtonGroupState extends State<TonalButtonGroup> {
             )
           : DecoratedBox(
               decoration: ShapeDecoration(
-                color: context.raisedSurfaceLevel.colorOf(colorScheme),
+                color: context.raisedSurfaceLevel.colorOfMaterial(colorScheme),
                 shape: AppShape.full,
               ),
               child: buttons,
@@ -123,7 +123,7 @@ class TonalButtonTheme extends StatelessWidget {
     final paned = glass && !grouped;
     final fill = grouped || paned
         ? Colors.transparent
-        : context.raisedSurfaceLevel.colorOf(colorScheme);
+        : context.raisedSurfaceLevel.colorOfMaterial(colorScheme);
     final foreground = colorScheme.onSurface;
     final disabledForeground = foreground.withValues(alpha: 0.38);
     ButtonStyle? paneOf(bool Function(Set<WidgetState> states) tinted) {

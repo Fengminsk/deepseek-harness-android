@@ -8,7 +8,7 @@ import 'package:prism_ui/page_transition.dart';
 
 import 'flclash/liquid_glass.dart';
 import 'flclash/shape.dart';
-import 'flclash/surface.dart';
+import 'pocket_surfaces.dart';
 import 'flclash/typography.dart';
 import 'flclash/color.dart';
 import 'flclash/elastic_press.dart';
@@ -125,7 +125,7 @@ class GlassSurface extends StatelessWidget {
   @override
   Widget build(BuildContext context) => !LiquidGlassScope.of(context)
       ? Material(
-          color: SurfaceLevel.card.colorOf(Theme.of(context).colorScheme),
+          color: SurfaceLevel.card.colorOfMaterial(Theme.of(context).colorScheme),
           shape: AppShape.all(radius),
           child: child,
         )

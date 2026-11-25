@@ -27,7 +27,7 @@ import 'dart:math' as math;
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
-import 'flclash/surface.dart';
+import 'pocket_surfaces.dart';
 import 'flclash/popup.dart';
 import 'flclash/typography.dart';
 import 'ui.dart';
@@ -984,7 +984,7 @@ class _ReasoningEffortSliderState extends State<ReasoningEffortSlider> {
     ValueChanged<String>? onSelected,
   ) {
     final colors = Theme.of(context).colorScheme;
-    final track = SurfaceLevel.inset.colorOf(colors);
+    final track = SurfaceLevel.inset.colorOfMaterial(colors);
     final accent = colors.primary;
     final dotColor = colors.onSurfaceVariant.withValues(alpha: .45);
     final activeDotColor = colors.onPrimary.withValues(alpha: .7);

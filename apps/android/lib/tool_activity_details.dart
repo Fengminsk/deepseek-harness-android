@@ -4,7 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'entry_motion.dart';
-import 'flclash/surface.dart';
+import 'pocket_surfaces.dart';
 import 'flclash/typography.dart';
 import 'tool_activity_data.dart';
 import 'tool_activity_presentation.dart';
@@ -647,7 +647,7 @@ class _ToolDetailsSheetState extends State<_ToolDetailsSheet> {
     final activity = trail.last;
     final presentation = ToolActivityPresentation.from(activity);
     final colors = Theme.of(context).colorScheme;
-    final surface = SurfaceLevel.floatingOf(colors).colorOf(colors);
+    final surface = pocketFloatingOf(colors).colorOfMaterial(colors);
     final toolbarHeight = (MediaQuery.textScalerOf(context).scale(20) * 1.4)
         .clamp(48.0, 88.0);
     final headerHeight = 28 + toolbarHeight + 10;
@@ -678,7 +678,7 @@ class _ToolDetailsSheetState extends State<_ToolDetailsSheet> {
                   ),
                   clipBehavior: Clip.antiAlias,
                   child: SurfaceScope(
-                    level: SurfaceLevel.floatingOf(colors),
+                    level: pocketFloatingOf(colors),
                     child: Stack(
                       children: [
                         Positioned.fill(

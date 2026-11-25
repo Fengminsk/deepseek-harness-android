@@ -5,7 +5,7 @@ import '../design_context.dart';
 import 'daylight.dart';
 import 'liquid_glass.dart';
 import 'shape.dart';
-import 'surface.dart';
+import '../pocket_surfaces.dart';
 
 /// Values are the design's CSS shadows. A CSS blur is twice its sigma while
 /// Flutter turns a blur radius r into a sigma of 0.577 r + 0.5, so each one
@@ -65,7 +65,7 @@ class DashboardCard extends StatelessWidget {
     final shape = AppShape.all(34);
     final content = Padding(padding: padding, child: child);
     return DaylightSurface(
-      color: SurfaceLevel.card.colorOf(context.colorScheme),
+      color: SurfaceLevel.card.colorOfMaterial(context.colorScheme),
       shape: shape,
       shadows: DashboardShadows.e1(context),
       enabled: LiquidGlassScope.of(context),

@@ -3,7 +3,7 @@ import 'dart:math' as math;
 import 'package:material_ui/material_ui.dart';
 
 import 'flclash/popup.dart';
-import 'flclash/surface.dart';
+import 'pocket_surfaces.dart';
 import 'flclash/typography.dart';
 import 'flclash/daylight.dart';
 import 'entry_motion.dart';

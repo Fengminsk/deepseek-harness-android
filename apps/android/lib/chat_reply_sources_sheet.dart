@@ -3,7 +3,7 @@ import 'package:material_ui/material_ui.dart';
 import 'chat_reply_sources.dart';
 import 'chat_source_identity.dart';
 import 'entry_motion.dart';
-import 'flclash/surface.dart';
+import 'pocket_surfaces.dart';
 import 'ui.dart';
 
 /// A route is returned to the owning reply row so changing/removing that row
@@ -126,7 +126,7 @@ class _ReplySourcesSheetState extends State<_ReplySourcesSheet> {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    final surface = SurfaceLevel.floatingOf(colors).colorOf(colors);
+    final surface = pocketFloatingOf(colors).colorOfMaterial(colors);
     final ordered = widget.sources.forAnswer(widget.answerLinks);
     final cited = ordered
         .where((source) => widget.answerLinks.contains(source.url))
@@ -165,7 +165,7 @@ class _ReplySourcesSheetState extends State<_ReplySourcesSheet> {
                   ),
                   clipBehavior: Clip.antiAlias,
                   child: SurfaceScope(
-                    level: SurfaceLevel.floatingOf(colors),
+                    level: pocketFloatingOf(colors),
                     child: Stack(
                       children: [
                         Positioned.fill(

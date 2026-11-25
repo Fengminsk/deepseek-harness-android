@@ -8,7 +8,6 @@
     "lib/ui/shape.dart",
     "lib/ui/typography.dart",
     "lib/ui/color.dart",
-    "lib/ui/surface.dart",
     "lib/ui/popup.dart",
     "lib/ui/navigation_dock.dart",
     "lib/ui/button.dart",
@@ -45,6 +44,7 @@
     "FloatingHeader comes from prism_ui's sheet_header.dart; only the bottom-capable FloatingEdgeScrim stays adapted.",
     "The glass shader is prism_ui's packaged copy at packages/prism_ui/shaders/liquid_glass.frag; the app no longer bundles its own.",
     "The pane, its capture host and its styles come from prism_ui.liquid_glass; this app's style numbers live in lib/pocket_glass.dart, and its press glow, which the library feeds only to the shader, is painted by the vendored copy when no shader is available.",
-    "Page motion and the edge drag back come from prism_ui's CardRouteMixin and DragBackRouteMixin; PocketRoute opts a home-level page out by not wrapping it in the drag detector."
+    "Page motion and the edge drag back come from prism_ui's CardRouteMixin and DragBackRouteMixin; PocketRoute opts a home-level page out by not wrapping it in the drag detector.",
+    "Surface levels and their widgets come from prism_ui's surface.dart; lib/pocket_surfaces.dart bridges its scheme to this app's Material one and keeps the Material theme wiring and focus ring."
   ]
 }

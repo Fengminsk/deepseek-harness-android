@@ -9,7 +9,7 @@ import '../design_context.dart';
 
 import 'package:prism_ui/motion.dart';
 import 'shape.dart';
-import 'surface.dart';
+import '../pocket_surfaces.dart';
 import 'typography.dart';
 
 import 'package:flutter/foundation.dart' show ValueListenable, listEquals;
@@ -295,7 +295,7 @@ class CommonPopupRoute<T> extends PopupRoute<T> {
     Animation<double> secondaryAnimation,
   ) {
     return SurfaceScope(
-      level: SurfaceLevel.floatingOf(context.colorScheme),
+      level: pocketFloatingOf(context.colorScheme),
       child: _PopupScope(
         platter: _platter,
         press: _press,
@@ -350,8 +350,8 @@ class CommonPopupRoute<T> extends PopupRoute<T> {
               surface: _surface,
               sourceColor: sourceColor,
               sourceImage: sourceImage,
-              surfaceColor: SurfaceLevel.floatingOf(colorScheme)
-                  .colorOf(colorScheme),
+              surfaceColor: pocketFloatingOf(colorScheme)
+                  .colorOfMaterial(colorScheme),
               shadows: menuShadows(colorScheme),
               glass: glass
                   ? (
@@ -1393,7 +1393,7 @@ class _CommonPopupBoxState extends State<CommonPopupBox> {
       return Colors.transparent;
     }
     final colorScheme = context.colorScheme;
-    return SurfaceLevel.floatingOf(colorScheme).colorOf(colorScheme);
+    return pocketFloatingOf(colorScheme).colorOfMaterial(colorScheme);
   }
 
   void _captureSource(
@@ -2495,7 +2495,7 @@ class _CommonPopupMenuState extends State<CommonPopupMenu>
         ? PocketGlass.menu(colorScheme)
         : null;
     final rim = glass == null ? null : PocketGlass.rimMenu(colorScheme);
-    final fill = SurfaceLevel.floatingOf(colorScheme).colorOf(colorScheme);
+    final fill = pocketFloatingOf(colorScheme).colorOfMaterial(colorScheme);
     // A card behind a sub menu takes a tap as one outside that sub menu.
     return GestureDetector(
       excludeFromSemantics: true,
