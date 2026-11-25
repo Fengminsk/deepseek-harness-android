@@ -16,7 +16,7 @@ Track FlClash's UI library from `chen08209/prism_ui` at `6c47901` (the revision 
 - `apps/android/packages/prism_ui` holds the 94-file transitive closure (77 libraries and 17 part files) plus both shaders, `LICENSE` and `NOTICE`; it analyzes clean under the app's rules.
 - The package keeps the upstream package name, so the glass shader loads as `packages/prism_ui/shaders/liquid_glass.frag`. `test/prism_package_test.dart` loads that shader and builds `LiquidGlass` inside a prism `Theme`.
 - Provenance: `licenses/prism-source.json` records revision, seeds, file list and tree hash; `tool/runtime-lock.json` describes both sources (`flclash` corrected to the v0.9.2 revision actually in use, plus `prismUi`). Refresh steps live in `packages/prism_ui/README.md`.
-- Consumers moved so far: `PocketSwitch` draws prism_ui's `Switch` at the same 52 x 32 track; `popup.dart` and `segmented_control.dart` import prism_ui's `motion.dart` and `goo.dart`, whose helpers match the adapted copies; `FloatingHeader` comes from prism_ui's `sheet_header.dart`; the app-owned glass context adapter moved to `lib/design_context.dart`. `lib/flclash` is down to 16 files from 20, with the header file reduced to the bottom-capable scrim.
+- Consumers moved so far: `PocketSwitch` draws prism_ui's `Switch` at the same 52 x 32 track; `popup.dart` and `segmented_control.dart` import prism_ui's `motion.dart` and `goo.dart`, whose helpers match the adapted copies; - `FloatingHeader` comes from prism_ui's `sheet_header.dart`; the app-owned glass context adapter moved to `lib/design_context.dart`; the glass shader is loaded from `packages/prism_ui/shaders/liquid_glass.frag` and the app's copy is gone. `lib/flclash` is down to 16 files from 20, with the header file reduced to the bottom-capable scrim.
 - Verification loop for the visual migrations: a debug APK builds with `ANDROID_HOME` and `GRADLE_USER_HOME` set (see `tool/runtime-lock.json` for the SDK expectations) and installs on a device. Screenshots need the phone unlocked — the capture is black while the notification shade holds focus.
 - `test/ui_glass_capture_test.dart` writes light and dark glass previews when `POCKET_CAPTURE_DIR` is set. Widget tests render Skia, so `LiquidGlass` falls back to its frost rather than running the shader: these previews check layout, tint and geometry, not the shader image.
 - The glass migration itself is blocked on theming: prism's `liquid_glass.dart` builds styles from prism's own `ColorScheme`, while our call sites pass `material_ui`'s. Moving glass means moving the widgets that build its styles onto the bridged prism scheme first.
@@ -52,7 +52,21 @@ The v0.9.2 adoption recorded 16 local changes in `licenses/flclash-source.json`.
 2. **First consumers.** Replace the menus and controls already built on the popup and button copies (`composer_commands.dart`, `chat_message_actions.dart`, `files.dart`, `workspace_files.dart`, `network_proxy_settings.dart`) with the package's widgets.
 3. **Glass.** Move `LiquidGlass`, `LiquidGlassCapture`, `SurfaceScope` and `Surface` to the package with a style preset that keeps the current look; compare screenshots against the `.cache/ui-*` baselines.
 4. **Routes.** Replace `SharedXPageTransition`/`SharedXPageRouteMixin` with `CardRouteMixin`/`HomeRoute`, including the drag-back integration and the route class in `lib/ui.dart`.
-5. **Retire.** Delete `lib/flclash`, drop `flclash-source.json` and the `flclash` lock entry, and update the Android READMEs.
+5. **Retire or reclassify.** Every file still under `lib/flclash` carries a delta this app needs, so "delete the directory" only holds for the files upstream now covers. The rest move to a first-party `lib/design/` directory, and `flclash-source.json` shrinks to whichever files still rest on an upstream revision.
+
+## What still blocks each remaining file
+
+| File | Delta that blocks a straight swap |
+| --- | --- |
+| `elastic_press.dart` | `preserveAspectRatio` keeps round controls circular under a drag; prism's `ElasticPress` has no such parameter |
+| `liquid_glass.dart`, `liquid_glass_capture.dart` | style numbers (blur 8, saturation 1.25/1.35, tint alpha 0.58) and styles built from `material_ui`'s `ColorScheme` where prism builds from its own |
+| `popup.dart` | row content, in-place retry actions, released-pointer handling |
+| `segmented_control.dart` | controlled drag previews, keyboard and semantic actions |
+| `page_transition.dart`, `drag_back.dart` | the app's route classes and backdrop rule |
+| `surface.dart` | `ElevatedColorScheme` |
+| `button.dart` | `filledTonal` and the circular-control clipper |
+| `shape.dart`, `typography.dart`, `input.dart` | app theme extensions and the input border's label gaps |
+| `dashboard_card.dart`, `daylight.dart`, `floating_header.dart` | this app's own look: micrograin, shadow scale, bottom-edge scrim |
 
 ## Verification per phase
 
