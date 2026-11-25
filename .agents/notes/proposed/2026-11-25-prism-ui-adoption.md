@@ -77,3 +77,12 @@ The v0.9.2 adoption recorded 16 local changes in `licenses/flclash-source.json`.
 - Two theme systems in one tree until `material_ui` is dropped; prism's `Theme` and Material's must nest correctly.
 - Popup and drag behaviour are DSH-specific and interact with the package's gesture handling.
 - The closure is hand-resolved; a new consumer may pull a file we did not vendor, which fails at analysis time.
+## Status
+
+Landed. What the app uses now comes from prism_ui at the pinned revision: switches, floating headers, the glass pane with its capture host and shader, surface levels and their widgets, page motion and drag back, and the motion and goo helpers the popup and segmented control share. `lib/flclash` no longer exists; the eleven files that still carry this app's deltas live in `lib/design/`, and both manifests record that.
+
+Alongside the move, the app's frame work changed as recorded in the performance note: live frames fold into 90 ms windows, live text stays out of the page's rebuild, live events append in order, the model projection stays incremental, a mid-stream reveal is shown outright, the ambient wash shaders are cached, and the page body and dock paint in their own layers.
+
+Verification at close: `flutter analyze` reports the same eleven pre-existing infos and no errors, `flutter test` passes 2210 tests, `flutter build apk --debug` succeeds, and the light and dark glass captures are byte-identical to the pre-migration baseline.
+
+Residual work, none of it blocking: `popup.dart` still carries this app's menu rows; `segmented_control.dart`, `elastic_press.dart` and `button.dart` keep parameters prism_ui does not expose (a nullable `onChanged`, `preserveAspectRatio`, `filledTonal`); and the shader-level glass still needs one device screenshot, since widget tests render Skia and take the frost fallback.
