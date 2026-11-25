@@ -25,7 +25,6 @@
     "lib/ui/segmented_control.dart",
     "lib/ui/sheet_header.dart (FloatingHeader and eased edge surface fade)",
     "lib/ui/input.dart (FilledInputTheme)",
-    "lib/ui/goo.dart (gooPairOutline, gooPairDepth and their geometry helpers)",
     "lib/views/dashboard/widgets/card.dart (DashboardSwitch and mobile DashboardCard)",
     "lib/views/dashboard/style.dart (DashboardShadows and mobile card metrics)"
   ],
@@ -46,6 +45,7 @@
     "DSH daylight surfaces add fixed micrograin and directional highlights to dashboard cards; regular and pill glass use softer saturation and thicker frost. Press glow also renders in the software fallback with glow-aware picture caching.",
     "Regular glass keeps its reduced dark tint alpha while taking FlClash's tint lifted from the card tone.",
     "Switch is no longer adapted: PocketSwitch draws prism_ui's Switch, sized to the same 52 x 32 track.",
-    "Motion primitives come from prism_ui's motion.dart, which holds the same constants and curves plus a frame interval and a simulation that lands exactly."
+    "Motion primitives come from prism_ui's motion.dart, which holds the same constants and curves plus a frame interval and a simulation that lands exactly.",
+    "Goo geometry comes from prism_ui's goo.dart, which carries the same gooPairOutline and gooPairDepth helpers plus the GooSurface widget."
   ]
 }

@@ -19,7 +19,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart' show HapticFeedback;
 import 'package:material_ui/material_ui.dart';
 
-import 'goo.dart';
+import 'package:prism_ui/goo.dart';
 import 'liquid_glass.dart';
 import 'elastic_press.dart' show ElasticPress, ElasticPressHandle;
 
