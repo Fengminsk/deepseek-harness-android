@@ -534,10 +534,20 @@ class RuntimeController extends ChangeNotifier
   void _publishLiveText() {
     if (_liveDirty.isEmpty) return;
     for (final sessionId in _liveDirty) {
-      final notifier = _liveNotifiers[sessionId];
-      if (notifier != null) notifier.value = liveMessages[sessionId];
+      publishLiveText(sessionId);
     }
     _liveDirty.clear();
+  }
+
+  /// Publishes one Session's current live value to its listeners.
+  ///
+  /// The frame path folds this into the coalescing window. A fixture that sets
+  /// [liveMessages] directly calls it so observers see the same sequence.
+  ///
+  /// @param sessionId The Session whose listeners to update.
+  @protected
+  void publishLiveText(String sessionId) {
+    _liveNotifiers[sessionId]?.value = liveMessages[sessionId];
   }
 
   /// Drops every live value when the native process that owned them goes away.

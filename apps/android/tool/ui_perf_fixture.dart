@@ -136,6 +136,9 @@ class UiPerfRuntime extends RuntimeController {
         {'type': 'text', 'text': '正在检查本地文件，进度 $revision。'},
       ],
     };
+    // The frame path publishes inside the coalescing window; a direct write
+    // must do the same or the timeline would never see the new text.
+    publishLiveText(session);
     notifyListeners();
   }
 
