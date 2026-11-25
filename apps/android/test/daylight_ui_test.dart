@@ -1,7 +1,7 @@
 import 'dart:io';
 import 'dart:ui' as ui;
 
-import 'package:dsh_android/flclash/daylight.dart';
+import 'package:dsh_android/design/daylight.dart';
 import 'package:dsh_android/appearance.dart';
 import 'package:dsh_android/main.dart';
 import 'package:dsh_android/runtime.dart';

@@ -10,7 +10,7 @@ import 'chat_reply_sources.dart';
 import 'chat_reply_sources_sheet.dart';
 import 'chat_source_identity.dart';
 import 'entry_motion.dart';
-import 'flclash/popup.dart';
+import 'design/popup.dart';
 import 'ui.dart';
 
 enum _ReplyAction { select, branch, positive, negative, inspect }

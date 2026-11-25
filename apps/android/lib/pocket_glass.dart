@@ -1,7 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 import 'package:prism_ui/liquid_glass.dart';
 
-import 'flclash/color.dart';
+import 'design/color.dart';
 
 /// This app's glass looks, expressed on prism_ui's style type.
 ///

@@ -10,9 +10,9 @@
 import 'package:material_ui/material_ui.dart';
 
 import 'composer_commands.dart';
-import 'flclash/daylight.dart';
+import 'design/daylight.dart';
 import 'pocket_surfaces.dart';
-import 'flclash/typography.dart';
+import 'design/typography.dart';
 import 'pocket_composer.dart';
 import 'remote_permissions.dart';
 import 'ui.dart';

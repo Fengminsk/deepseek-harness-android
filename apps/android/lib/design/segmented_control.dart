@@ -8,7 +8,9 @@ import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../design_context.dart';
-import 'liquid_glass.dart';
+import 'package:prism_ui/liquid_glass.dart';
+
+import '../pocket_glass.dart';
 import 'package:prism_ui/motion.dart';
 import 'shape.dart';
 import '../pocket_surfaces.dart';

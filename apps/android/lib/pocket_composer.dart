@@ -28,8 +28,8 @@ import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'pocket_surfaces.dart';
-import 'flclash/popup.dart';
-import 'flclash/typography.dart';
+import 'design/popup.dart';
+import 'design/typography.dart';
 import 'ui.dart';
 
 /// 输入卡的三种状态。

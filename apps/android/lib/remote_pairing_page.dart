@@ -25,7 +25,7 @@ import 'dart:convert';
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
-import 'flclash/typography.dart';
+import 'design/typography.dart';
 import 'remote_device_store.dart';
 import 'remote_discovery.dart';
 import 'remote_pairing.dart';

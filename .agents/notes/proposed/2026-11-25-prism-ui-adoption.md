@@ -53,7 +53,7 @@ The v0.9.2 adoption recorded 16 local changes in `licenses/flclash-source.json`.
 2. **First consumers.** Replace the menus and controls already built on the popup and button copies (`composer_commands.dart`, `chat_message_actions.dart`, `files.dart`, `workspace_files.dart`, `network_proxy_settings.dart`) with the package's widgets.
 3. **Glass.** Move `LiquidGlass`, `LiquidGlassCapture`, `SurfaceScope` and `Surface` to the package with a style preset that keeps the current look; compare screenshots against the `.cache/ui-*` baselines.
 4. **Routes.** Done: `PocketRoute` mixes in prism_ui's `CardRouteMixin` and `DragBackRouteMixin`, the router keeps its `dragBack` opt-out by skipping the detector, and the adapted `page_transition.dart` and `drag_back.dart` are deleted.
-5. **Retire or reclassify.** Every file still under `lib/flclash` carries a delta this app needs, so "delete the directory" only holds for the files upstream now covers. The rest move to a first-party `lib/design/` directory, and `flclash-source.json` shrinks to whichever files still rest on an upstream revision.
+5. **Retire or reclassify.** Done: `lib/flclash` no longer exists. The files upstream now covers were deleted; the eleven that carry a delta this app needs live in `lib/design/`, `tool/runtime-lock.json` records that path, and `flclash-source.json` keeps their upstream origin and line in the `changes` list. The directory now means "this app's design layer", not "copies awaiting a replacement".
 
 ## What still blocks each remaining file
 

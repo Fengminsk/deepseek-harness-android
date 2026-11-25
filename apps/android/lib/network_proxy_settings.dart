@@ -6,7 +6,7 @@ import 'package:material_ui/material_ui.dart';
 
 import 'network_proxy.dart';
 import 'network_proxy_tool_icon.dart';
-import 'flclash/popup.dart';
+import 'design/popup.dart';
 import 'runtime.dart';
 import 'ui.dart';
 

@@ -5,7 +5,9 @@ import 'package:material_ui/material_ui.dart';
 import '../design_context.dart';
 import 'shape.dart';
 import '../pocket_surfaces.dart';
-import 'liquid_glass.dart';
+import 'package:prism_ui/liquid_glass.dart';
+
+import '../pocket_glass.dart';
 import 'elastic_press.dart';
 
 enum TonalButtonSize {

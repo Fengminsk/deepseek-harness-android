@@ -4,7 +4,7 @@ import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:dsh_android/appearance.dart';
-import 'package:dsh_android/flclash/color.dart';
+import 'package:dsh_android/design/color.dart';
 import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/ui.dart';
 import 'package:flutter/rendering.dart';

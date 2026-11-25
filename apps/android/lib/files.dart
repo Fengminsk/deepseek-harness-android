@@ -8,7 +8,7 @@ import 'ui.dart';
 import 'confirmation.dart';
 import 'document_search.dart';
 import 'file_browser_chrome.dart';
-import 'flclash/popup.dart';
+import 'design/popup.dart';
 import 'workspace_files.dart';
 import 'external_file_action.dart';
 

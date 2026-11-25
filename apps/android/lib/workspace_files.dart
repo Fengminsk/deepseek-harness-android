@@ -9,7 +9,7 @@ import 'ui.dart';
 import 'file_browser_chrome.dart';
 import 'external_file_action.dart';
 import 'session_document.dart';
-import 'flclash/popup.dart';
+import 'design/popup.dart';
 
 String workspaceFileFailure(Object error) => error is PlatformException
     ? error.message ?? '读取未完成，请刷新后重试。错误：${error.code}'

@@ -14,7 +14,7 @@ import 'dart:math' as math;
 
 import 'package:material_ui/material_ui.dart';
 
-import 'flclash/typography.dart';
+import 'design/typography.dart';
 import 'remote_session_insights.dart';
 import 'ui.dart';
 

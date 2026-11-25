@@ -15,8 +15,8 @@ import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'file_browser_chrome.dart';
-import 'flclash/popup.dart';
-import 'flclash/typography.dart';
+import 'design/popup.dart';
+import 'design/typography.dart';
 import 'remote_dsh_live_source.dart';
 import 'ui.dart';
 

@@ -16,7 +16,7 @@ import 'dart:async';
 
 import 'package:material_ui/material_ui.dart';
 
-import 'flclash/typography.dart';
+import 'design/typography.dart';
 import 'remote_conversation_source.dart';
 import 'runtime_transport.dart';
 import 'ui.dart';

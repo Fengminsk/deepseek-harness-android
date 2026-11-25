@@ -5,7 +5,7 @@ import 'package:material_ui/material_ui.dart';
 import 'runtime.dart';
 import 'skills.dart';
 import 'ui.dart';
-import 'flclash/popup.dart';
+import 'design/popup.dart';
 
 const commandDefinitions = {
   'goal': '@deepseek-ai/dsh-command-goal',

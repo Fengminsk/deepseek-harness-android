@@ -11,7 +11,7 @@ import 'dart:io';
 import 'package:dsh_android/chat_plan.dart';
 import 'package:dsh_android/chat_execution_chain.dart';
 import 'package:dsh_android/chat_messages.dart';
-import 'package:dsh_android/flclash/popup.dart';
+import 'package:dsh_android/design/popup.dart';
 import 'package:dsh_android/pocket_composer.dart';
 import 'package:dsh_android/remote_attachments.dart';
 import 'package:dsh_android/remote_connection.dart';

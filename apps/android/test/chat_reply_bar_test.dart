@@ -4,7 +4,7 @@ import 'package:dsh_android/chat_feedback.dart';
 import 'package:dsh_android/chat_reply_bar.dart';
 import 'package:dsh_android/chat_reply_sources.dart';
 import 'package:dsh_android/chat_source_identity.dart';
-import 'package:dsh_android/flclash/popup.dart';
+import 'package:dsh_android/design/popup.dart';
 import 'package:dsh_android/ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';

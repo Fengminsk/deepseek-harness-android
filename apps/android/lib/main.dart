@@ -35,7 +35,7 @@ import 'model_reasoning.dart';
 import 'account.dart';
 import 'account_quota_notice.dart';
 import 'settings.dart';
-import 'flclash/popup.dart';
+import 'design/popup.dart';
 import 'pocket_composer.dart';
 import 'remote_dsh_widgets.dart';
 import 'automations.dart';

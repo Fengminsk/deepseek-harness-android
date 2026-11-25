@@ -4,7 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'file_browser_chrome.dart';
-import 'flclash/popup.dart';
+import 'design/popup.dart';
 import 'runtime.dart';
 import 'ui.dart';
 

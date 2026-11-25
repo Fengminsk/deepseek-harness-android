@@ -5,7 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'file_browser_chrome.dart';
-import 'flclash/popup.dart';
+import 'design/popup.dart';
 import 'session_document.dart';
 import 'ui.dart';
 import 'workspace_changes.dart';

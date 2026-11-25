@@ -39,8 +39,8 @@ import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'chat_sidebar.dart';
-import 'flclash/popup.dart';
-import 'flclash/typography.dart';
+import 'design/popup.dart';
+import 'design/typography.dart';
 import 'model_reasoning.dart';
 import 'pocket_composer.dart';
 import 'remote_connection.dart';

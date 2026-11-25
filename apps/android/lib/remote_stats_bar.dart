@@ -11,7 +11,7 @@
 
 import 'package:material_ui/material_ui.dart';
 
-import 'flclash/typography.dart';
+import 'design/typography.dart';
 import 'remote_dsh_widgets.dart';
 import 'remote_session_insights.dart';
 import 'ui.dart';

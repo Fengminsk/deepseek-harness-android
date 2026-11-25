@@ -5,7 +5,7 @@ import 'package:material_ui/material_ui.dart';
 
 import 'entry_motion.dart';
 import 'pocket_surfaces.dart';
-import 'flclash/typography.dart';
+import 'design/typography.dart';
 import 'tool_activity_data.dart';
 import 'tool_activity_presentation.dart';
 import 'ui.dart';

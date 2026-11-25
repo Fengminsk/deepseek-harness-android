@@ -6,26 +6,29 @@ import 'package:flutter/rendering.dart';
 import 'package:prism_ui/drag_back.dart';
 import 'package:prism_ui/page_transition.dart';
 
-import 'flclash/liquid_glass.dart';
-import 'flclash/shape.dart';
+import 'package:prism_ui/liquid_glass.dart';
+
+import 'pocket_glass.dart';
+import 'design/shape.dart';
 import 'pocket_surfaces.dart';
-import 'flclash/typography.dart';
-import 'flclash/color.dart';
-import 'flclash/elastic_press.dart';
-import 'flclash/button.dart';
-import 'flclash/input.dart';
-import 'flclash/dashboard_card.dart';
-import 'flclash/daylight.dart';
-import 'flclash/floating_header.dart';
+import 'design/typography.dart';
+import 'design/color.dart';
+import 'design/elastic_press.dart';
+import 'design/button.dart';
+import 'design/input.dart';
+import 'design/dashboard_card.dart';
+import 'design/daylight.dart';
+import 'design/floating_header.dart';
 import 'entry_motion.dart';
 import 'prism_bridge.dart';
 
-export 'flclash/liquid_glass.dart';
-export 'flclash/shape.dart';
-export 'flclash/elastic_press.dart';
-export 'flclash/button.dart';
-export 'flclash/segmented_control.dart';
-export 'flclash/floating_header.dart';
+export 'package:prism_ui/liquid_glass.dart' hide menuShadows;
+export 'pocket_glass.dart';
+export 'design/shape.dart';
+export 'design/elastic_press.dart';
+export 'design/button.dart';
+export 'design/segmented_control.dart';
+export 'design/floating_header.dart';
 export 'package:prism_ui/sheet_header.dart' show FloatingHeader;
 
 ThemeData pocketTheme(

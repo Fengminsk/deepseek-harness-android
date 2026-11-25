@@ -12,7 +12,7 @@ import 'dart:async';
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
-import 'flclash/typography.dart';
+import 'design/typography.dart';
 import 'ui.dart';
 
 /// 已归档任务页的数据来源。

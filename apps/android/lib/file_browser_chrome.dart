@@ -2,10 +2,10 @@ import 'dart:math' as math;
 
 import 'package:material_ui/material_ui.dart';
 
-import 'flclash/popup.dart';
+import 'design/popup.dart';
 import 'pocket_surfaces.dart';
-import 'flclash/typography.dart';
-import 'flclash/daylight.dart';
+import 'design/typography.dart';
+import 'design/daylight.dart';
 import 'entry_motion.dart';
 import 'ui.dart';
 

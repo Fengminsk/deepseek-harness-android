@@ -14,7 +14,7 @@ import 'dart:async';
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
-import 'flclash/typography.dart';
+import 'design/typography.dart';
 import 'model_reasoning.dart';
 import 'remote_dsh_live_source.dart';
 import 'ui.dart';

@@ -2,7 +2,7 @@ import 'dart:convert';
 
 import 'package:material_ui/material_ui.dart';
 
-import 'flclash/color.dart';
+import 'design/color.dart';
 import 'runtime.dart';
 import 'ui.dart';
 

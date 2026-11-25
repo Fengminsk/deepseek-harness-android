@@ -5,8 +5,8 @@ import 'dart:ui' as ui;
 
 import 'package:dsh_android/account_state.dart';
 import 'package:dsh_android/chat_sidebar.dart';
-import 'package:dsh_android/flclash/popup.dart';
-import 'package:dsh_android/flclash/daylight.dart';
+import 'package:dsh_android/design/popup.dart';
+import 'package:dsh_android/design/daylight.dart';
 import 'package:dsh_android/library.dart';
 import 'package:dsh_android/session_search.dart';
 import 'package:dsh_android/ui.dart';

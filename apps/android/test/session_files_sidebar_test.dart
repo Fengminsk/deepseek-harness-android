@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:dsh_android/flclash/popup.dart';
+import 'package:dsh_android/design/popup.dart';
 import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/session_document.dart';
 import 'package:dsh_android/session_files.dart';

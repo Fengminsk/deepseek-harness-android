@@ -14,7 +14,7 @@
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
-import 'flclash/typography.dart';
+import 'design/typography.dart';
 import 'remote_connection.dart';
 import 'runtime_transport.dart';
 import 'session_terminal.dart';

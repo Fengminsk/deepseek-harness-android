@@ -30,7 +30,7 @@
     "referenceVersion": "v0.9.2",
     "repository": "https://github.com/chen08209/FlClash",
     "revision": "7fd417fb9a9a277c6a9339a8ac87f907df7c25f7",
-    "componentPath": "lib/flclash",
+    "componentPath": "lib/design",
     "sourceManifest": "../licenses/flclash-source.json"
   },
   "prismUi": {

@@ -5,7 +5,7 @@ import 'dart:io';
 import 'package:dsh_android/network_proxy.dart';
 import 'package:dsh_android/network_proxy_settings.dart';
 import 'package:dsh_android/network_proxy_tool_icon.dart';
-import 'package:dsh_android/flclash/popup.dart';
+import 'package:dsh_android/design/popup.dart';
 import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/ui.dart';
 import 'package:flutter/services.dart';

@@ -3,7 +3,8 @@ import 'package:material_ui/material_ui.dart';
 
 import '../design_context.dart';
 import 'daylight.dart';
-import 'liquid_glass.dart';
+import 'package:prism_ui/liquid_glass.dart';
+
 import 'shape.dart';
 import '../pocket_surfaces.dart';
 
