@@ -19,6 +19,10 @@ dependencies:
   # CA 指纹 TOFU：配对时要用 SHA-256 比对 /ca.cer 与配对码里的 instance，
   # Dart 标准库没有摘要算法。用 dart-lang 官方包，不自己实现 DER/哈希。
   crypto: ^3.0.0
+  # FlClash 的 UI 库，按 FlClash v0.9.4 固定的修订版放在 packages/prism_ui；
+  # 保留包名 prism_ui，玻璃着色器按 packages/prism_ui/shaders 打包。
+  prism_ui:
+    path: packages/prism_ui
 dev_dependencies:
   flutter_test:
     sdk: flutter

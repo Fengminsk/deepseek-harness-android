@@ -1,0 +1,20 @@
+name: prism_ui
+description: Vendored copy of FlClash's UI library (prism_ui), pinned to the revision FlClash v0.9.4 uses.
+publish_to: 'none'
+version: 0.1.2
+repository: https://github.com/chen08209/prism_ui
+
+environment:
+  sdk: '>=3.10.0 <4.0.0'
+  flutter: '>=3.47.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  freezed_annotation: ^3.1.0
+  path_parsing: ^1.1.0
+
+flutter:
+  shaders:
+    - shaders/liquid_glass.frag
+    - shaders/ink_sparkle.frag

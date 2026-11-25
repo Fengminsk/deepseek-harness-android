@@ -27,11 +27,19 @@
     "sha256": "03ae4b2fa6c505020739f0c988e2d7b84c18bab409f6c9d171823be5f9058c9b"
   },
   "flclash": {
-    "referenceVersion": "v0.9.1",
+    "referenceVersion": "v0.9.2",
     "repository": "https://github.com/chen08209/FlClash",
-    "componentPackage": "material_ui",
-    "revision": "8d4f9744948751f1273fe871e1d05276fac09b0e",
+    "revision": "7fd417fb9a9a277c6a9339a8ac87f907df7c25f7",
+    "componentPath": "lib/flclash",
     "sourceManifest": "../licenses/flclash-source.json"
+  },
+  "prismUi": {
+    "referenceVersion": "FlClash v0.9.4",
+    "repository": "https://github.com/chen08209/prism_ui",
+    "revision": "6c47901cc80b5325bdb9650579ca2e000a60b39e",
+    "packageVersion": "0.1.2",
+    "componentPath": "packages/prism_ui",
+    "sourceManifest": "../licenses/prism-source.json"
   },
   "requireBuiltin": {
     "version": "0.1.9",

@@ -10,3 +10,7 @@
 .metadata
 !/lib/
 !/lib/**
+# The repository ignores TypeScript `lib/` build output; a Dart package keeps
+# its sources there, so the vendored UI package is tracked normally.
+!/packages/*/lib/
+!/packages/*/lib/**
