@@ -76,6 +76,30 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('a root builder hands prism colors to every route', (
+    tester,
+  ) async {
+    final theme = pocketTheme(Brightness.dark);
+    prism.ColorScheme? seen;
+    await tester.pumpWidget(
+      material.MaterialApp(
+        theme: theme,
+        builder: (context, child) => PocketPrismScope(child: child!),
+        home: Builder(
+          builder: (context) {
+            seen = prism.ColorScheme.of(context);
+            return const material.SizedBox.shrink();
+          },
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(seen, isNotNull);
+    expect(seen!.primary, theme.colorScheme.primary);
+    expect(seen!.surface, theme.colorScheme.surface);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('the switch keeps its track box and reports a toggle', (
     tester,
   ) async {

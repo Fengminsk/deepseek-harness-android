@@ -11,6 +11,7 @@ import 'remote_sync_service.dart';
 import 'runtime_selection.dart';
 import 'files.dart';
 import 'ui.dart';
+import 'prism_bridge.dart';
 import 'appearance.dart';
 import 'approvals.dart';
 import 'tasks.dart';
@@ -161,31 +162,33 @@ class _PocketHarnessAppState extends State<PocketHarnessApp>
             style: appearance.style,
             pureBlack: appearance.pureBlack,
           ),
-          builder: (context, child) => MediaQuery(
-            data: MediaQuery.of(context).copyWith(
-              disableAnimations:
-                  appearance.reduceMotion ||
-                  MediaQuery.disableAnimationsOf(context),
-              textScaler: appearance.textScale == 0
-                  ? MediaQuery.textScalerOf(context)
-                  : TextScaler.linear(appearance.textScale),
-            ),
-            child: LiquidGlassScope(
-              enabled: appearance.glassEnabled,
-              quality: appearance.quality,
-              child: LiquidGlassHost(
+          builder: (context, child) => PocketPrismScope(
+            child: MediaQuery(
+              data: MediaQuery.of(context).copyWith(
+                disableAnimations:
+                    appearance.reduceMotion ||
+                    MediaQuery.disableAnimationsOf(context),
+                textScaler: appearance.textScale == 0
+                    ? MediaQuery.textScalerOf(context)
+                    : TextScaler.linear(appearance.textScale),
+              ),
+              child: LiquidGlassScope(
                 enabled: appearance.glassEnabled,
-                child: AccountQuotaNoticeHost(
-                  runtime: runtime,
-                  notices: quotaNotices,
-                  openAccount: () {
-                    rootNavigator.currentState?.push<void>(
-                      PocketRoute<void>(
-                        builder: (_) => AccountPage(runtime: runtime),
-                      ),
-                    );
-                  },
-                  child: child!,
+                quality: appearance.quality,
+                child: LiquidGlassHost(
+                  enabled: appearance.glassEnabled,
+                  child: AccountQuotaNoticeHost(
+                    runtime: runtime,
+                    notices: quotaNotices,
+                    openAccount: () {
+                      rootNavigator.currentState?.push<void>(
+                        PocketRoute<void>(
+                          builder: (_) => AccountPage(runtime: runtime),
+                        ),
+                      );
+                    },
+                    child: child!,
+                  ),
                 ),
               ),
             ),
