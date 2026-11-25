@@ -7,8 +7,8 @@
  *
  * 覆盖：
  * 1. 写句柄冲突识别；附件/空文本不中继；
- * 2. 本地成功不调用中继；无关错误原样抛出；
- * 3. 写冲突才中继并返回同形结果；中继失败保留原错误（不重复发送）；
+ * 2. 桌面持有的会话直接中继；非桌面会话本地成功不调用中继；
+ * 3. 其余写冲突才中继并返回同形结果；中继失败不重复发送；
  * 4. DesktopRelayClient：无 descriptor / 错误 token / 超时 / 正常发送 / 状态读取；
  * 5. 中继请求头使用 descriptor token，且响应结构按 facade 结果透传。
  *
@@ -74,6 +74,7 @@ async function sessionRelayChecks(): Promise<void> {
   /** Read the relay counter through a call so assertion narrowing cannot over-narrow it. */
   const relayCalls = (): number => calls.relay
   const relay = {
+    async sessionStatus() { return { status: 'unknown' } },
     async send() {
       calls.relay += 1
       return { accepted: true, relayed: true }
@@ -86,6 +87,69 @@ async function sessionRelayChecks(): Promise<void> {
     relay: relay as never,
   })
   check((localOk as { local?: boolean }).local === true && relayCalls() === 0, '本地成功不中继')
+
+  // Desktop-owned session goes directly to the owner without touching the child writer.
+  const direct = await dispatchWithSessionRelay({
+    method: 'session.send', params: textParams,
+    local: () => { throw new SelfCheckFailure('child writer should not be called') },
+    relay: { ...relay, async sessionStatus() { return { status: 'idle' } } } as never,
+  })
+  check((direct as { relayed?: boolean }).relayed === true && relayCalls() === 1,
+    '桌面持有的会话应直接中继')
+  calls.relay = 0
+
+  // The + menu issues ensure and commands.list in sequence. Both must use
+  // the same owner, even for an idle desktop session.
+  for (const status of ['idle', 'unknown']) {
+    const menuRelay = {
+      async sessionStatus() { return { status } },
+      async commandCatalog(agentId: string) { return [{ name: 'file', agentId, owner: 'desktop' }] },
+    }
+    const ensure = await dispatchWithSessionRelay({
+      method: 'session.ensure', params: { sessionId: 's-1' }, relay: menuRelay as never,
+      local: () => ({ sessionId: 's-1', created: true }),
+    })
+    check((ensure as { created: boolean }).created === (status === 'unknown'), 'ensure 应尊重会话归属')
+    const rows = await dispatchWithSessionRelay({
+      method: 'api.call', params: { namespace: 'commands', method: 'list', args: { agentId: 's-1' } },
+      relay: menuRelay as never, local: () => [{ name: 'file', agentId: 's-1', owner: 'child' }],
+    })
+    check((rows as { owner: string }[])[0]?.owner === (status === 'idle' ? 'desktop' : 'child'),
+      '指令目录应由持有当前会话的进程提供')
+  }
+
+  const window = await dispatchWithSessionRelay({
+    method: 'session.readWindow', params: { sessionId: 's-1', afterSeq: 2 },
+    local: () => { throw new SelfCheckFailure('desktop window should not read through child') },
+    relay: { ...relay, async readWindow() { return { events: [{ seq: 3 }], throughSeq: 3 } } } as never,
+  })
+  check((window as { throughSeq?: number }).throughSeq === 3, '桌面会话窗口应从桌面读取')
+
+  const projections = await dispatchWithSessionRelay({
+    method: 'api.call',
+    params: { namespace: 'session', method: 'projections', args: { request: { sessionId: 's-1' } } },
+    local: () => { throw new SelfCheckFailure('desktop projections should not read through child') },
+    relay: { ...relay, async projections() { return { kind: 'sequenced', values: { plan: { enabled: true } } } } } as never,
+  })
+  check((projections as { kind?: string }).kind === 'sequenced', '计划投影应从桌面读取')
+
+  for (const [namespace, method, kind] of [
+    ['session', 'modelCatalog', 'model'],
+    ['permissionPresets', 'catalog', 'permission'],
+  ] as const) {
+    const catalog = await dispatchWithSessionRelay({
+      method: 'api.call', params: { namespace, method, args: {} },
+      local: () => { throw new SelfCheckFailure('global catalog should read through desktop') },
+      relay: { ...relay, async catalog(actual: string) { return { source: 'desktop', kind: actual } } } as never,
+    })
+    check((catalog as { kind?: string }).kind === kind, '全局目录应从桌面读取')
+  }
+  const catalogFallback = await dispatchWithSessionRelay({
+    method: 'api.call', params: { namespace: 'session', method: 'modelCatalog', args: {} },
+    local: () => ({ source: 'child' }),
+    relay: { ...relay, async catalog() { throw new DesktopRelayUnavailableError('unreachable', 'relay unavailable') } } as never,
+  })
+  check((catalogFallback as { source?: string }).source === 'child', '桌面目录不可用时应回退子进程')
 
   // 写冲突：relay 一次并返回同形结果。
   const relayed = await dispatchWithSessionRelay({
@@ -131,7 +195,7 @@ async function sessionRelayChecks(): Promise<void> {
     await dispatchWithSessionRelay({
       method: 'session.send', params: textParams,
       local: () => { throw writeConflict() },
-      relay: { async send() { throw new DesktopRelayUnavailableError('timeout', '桌面中继请求超时。') } } as never,
+      relay: { async sessionStatus() { return { status: 'unknown' } }, async send() { throw new DesktopRelayUnavailableError('timeout', '桌面中继请求超时。') } } as never,
     })
   } catch (error) {
     relayFailure = error

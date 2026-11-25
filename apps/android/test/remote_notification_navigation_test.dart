@@ -51,6 +51,13 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   group('解析', () {
+    test('常驻同步通知进入远程首页', () {
+      final launch = RemoteNotificationLaunch.parse(<String, Object?>{
+        'route': 'remote-home',
+      });
+      expect(launch?.isHome, isTrue);
+      expect(launch?.sessionId, isEmpty);
+    });
     test('合法深链保留全部字段', () {
       final launch = RemoteNotificationLaunch.parse(
         jsonDecode(_payload()) as Map<String, dynamic>,

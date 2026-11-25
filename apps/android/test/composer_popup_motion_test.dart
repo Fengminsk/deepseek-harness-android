@@ -212,7 +212,7 @@ void main() {
           .pixels;
       await _openMenu(tester);
       expect(find.byType(ComposerCommands), findsOneWidget);
-      expect(find.text('添加与指令'), findsOneWidget, reason: '弹层标题');
+      expect(find.byKey(const ValueKey('remote-commands-popup')), findsOneWidget);
 
       await tester.binding.handlePopRoute();
       await settleUi(tester);

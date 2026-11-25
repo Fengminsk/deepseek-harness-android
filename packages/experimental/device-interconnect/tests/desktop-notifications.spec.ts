@@ -94,6 +94,30 @@ describe('DesktopNotifications', () => {
     desktop.stop()
   })
 
+  it('uses the completed log event when the projection is missing and Session wrappers differ', async () => {
+    const posts: RelayNotification[][] = []
+    const harness = context()
+    const desktop = new DesktopNotifications({
+      ctx: harness.ctx,
+      post: async notifications => { posts.push([...notifications]) },
+      logger: { info: vi.fn(), warn: vi.fn() },
+    })
+    desktop.start()
+    const desktopAgent = agent('s-1')
+    harness.emit('agent/status', { agent: desktopAgent, status: 'running' })
+    const otherSessionWrapper = { id: 's-1' }
+    harness.emit('session/event', otherSessionWrapper, { seq: 11, type: 'turn/start', data: { turn: 2 } })
+    harness.emit('session/event', otherSessionWrapper, { seq: 12, type: 'step/start', data: { turn: 2 } })
+    harness.emit('session/event', otherSessionWrapper, {
+      seq: 14, type: 'turn/end', data: { turn: 2, reason: { kind: 'completed' } },
+    })
+    harness.emit('agent/status', { agent: desktopAgent, status: 'idle' })
+    await vi.waitFor(() => { expect(posts).toEqual([[
+      { method: 'task.completed', params: { sessionId: 's-1', turn: 2, endSeq: 14 } },
+    ]]) })
+    desktop.stop()
+  })
+
   it('does not post incomplete turns or subagent sessions', async () => {
     const posts: RelayNotification[][] = []
     const harness = context({ sessionProjections: { snapshot: () => ({ values: {} }) } })
@@ -115,7 +139,7 @@ describe('DesktopNotifications', () => {
     desktop.stop()
   })
 
-  it('maps desktop approvals once and dedupes repeated events', async () => {
+  it('leaves desktop approvals to the answerable Gateway observer', async () => {
     const posts: RelayNotification[][] = []
     const harness = context()
     const desktop = new DesktopNotifications({
@@ -131,16 +155,8 @@ describe('DesktopNotifications', () => {
     }
     harness.emit('session/event', { id: 's-1', header: {} }, approval)
     harness.emit('session/event', { id: 's-1', header: {} }, approval)
-    await vi.waitFor(() => { expect(posts.length).toBe(1) })
-    expect(posts[0]).toEqual([{
-      method: 'interactions.changed',
-      params: {
-        requests: [{
-          id: 'i-1', sessionId: 's-1', kind: 'approval',
-          toolName: 'shell', reason: '需要执行命令',
-        }],
-      },
-    }])
+    await new Promise(resolve => setTimeout(resolve, 10))
+    expect(posts).toEqual([])
     desktop.stop()
   })
 
@@ -153,9 +169,18 @@ describe('DesktopNotifications', () => {
       logger: { info: vi.fn(), warn },
     })
     desktop.start()
-    harness.emit('session/event', { id: 's-1' }, {
-      seq: 1, type: 'approval/asked', data: { id: 'i-2', toolName: 'shell' },
+    const desktopAgent = agent('s-1')
+    harness.emit('agent/status', { agent: desktopAgent, status: 'running' })
+    harness.emit('session/event', desktopAgent.session, {
+      seq: 1, type: 'turn/start', data: { turn: 1 },
     })
+    harness.emit('session/event', desktopAgent.session, {
+      seq: 2, type: 'step/start', data: { turn: 1, step: 1 },
+    })
+    harness.emit('session/event', desktopAgent.session, {
+      seq: 3, type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } },
+    })
+    harness.emit('agent/status', { agent: desktopAgent, status: 'idle' })
     await vi.waitFor(() => { expect(warn).toHaveBeenCalled() })
     desktop.stop()
     // No throw reached this point.

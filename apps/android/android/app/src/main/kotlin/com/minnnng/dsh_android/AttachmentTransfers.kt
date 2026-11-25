@@ -217,6 +217,8 @@ class AttachmentTransfers(private val activity: Activity) : AutoCloseable {
             }
             unpublished.add(file)
             unpublished.add(metadata)
+            // Only the in-process picker result needs the private draft for rendering.
+            if (source.mediaType.startsWith("image/")) item.put("previewPath", file.absolutePath)
             return item
         } catch (failure: Exception) {
             if (fileOwned) file.delete()

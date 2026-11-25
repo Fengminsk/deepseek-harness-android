@@ -195,7 +195,7 @@ export class DesktopAppAttachments {
    * @param {number} params.bytes App 声明的字节数
    * @returns {Promise<object>} App 看到的草稿信息
    */
-  prepare({ sessionId, id, name, mediaType, bytes } = {}) {
+  prepare({ sessionId, id, name, mediaType, bytes } = {}, desktopUpload) {
     requireId(id)
     if (this.closed) throw new Error('Attachment service is closed')
     if (typeof sessionId !== 'string' || sessionId.length === 0) throw new TypeError('Attachment Session is required')
@@ -204,7 +204,7 @@ export class DesktopAppAttachments {
     if (record && record.sessionId !== sessionId) throw new Error('Attachment draft belongs to another conversation')
     if (record?.releasing) throw new Error('Attachment is being removed')
     if (record?.state === 'preparing') return record.done
-    if (record?.state === 'ready' && this.receiptValid(record)) return record.done
+    if (!desktopUpload && !record?.desktopReceipt && record?.state === 'ready' && this.receiptValid(record)) return record.done
     if (!record) {
       record = { id, sessionId, reads: new Set() }
       this.records.set(id, record)
@@ -214,7 +214,8 @@ export class DesktopAppAttachments {
     record.lifetime?.abort(attachmentFailure('gateway/cancelled', '附件准备已重新开始。'))
     record.state = 'preparing'
     record.lifetime = new AbortController()
-    record.done = this.upload(record)
+    record.desktopReceipt = undefined
+    record.done = this.upload(record, desktopUpload)
     return record.done
   }
 
@@ -223,11 +224,30 @@ export class DesktopAppAttachments {
    * @param {object} record 草稿记录
    * @returns {Promise<object>} App 看到的草稿信息
    */
-  async upload(record) {
+  async upload(record, desktopUpload) {
     const signal = record.lifetime.signal
     try {
       const item = record.item
       record.kind = item.mediaType.startsWith('image/') ? 'image' : 'file'
+      if (desktopUpload) {
+        if (item.bytes > this.fileLimit()) throw new Error('附件超过这台电脑允许的大小上限。')
+        if (record.kind === 'image') this.checkImage(item)
+        const digest = createHash('sha256')
+        const source = this.pull(record)
+        async function* chunks() {
+          for await (const chunk of source) {
+            digest.update(chunk)
+            yield chunk
+          }
+        }
+        const receipt = await desktopUpload({ ...item, sessionId: record.sessionId }, chunks(), signal)
+        signal.throwIfAborted()
+        if (typeof receipt?.receiptId !== 'string' || !receipt.receiptId) throw new Error('桌面未确认附件上传，请重试。')
+        record.desktopReceipt = receipt.receiptId
+        record.imageDigest = digest.digest('hex')
+        record.state = 'ready'
+        return { ...item, kind: record.kind, receiptId: receipt.receiptId }
+      }
       if (record.kind === 'image') {
         this.checkImage(item)
         const imageStore = this.ctx.attachments
@@ -446,6 +466,7 @@ export class DesktopAppAttachments {
    * @returns {boolean} 是否仍可直接发送
    */
   receiptValid(record) {
+    if (record.desktopReceipt) return true
     const agent = this.ctx.agents.get(record.sessionId)
     if (record.kind === 'image') return agent !== undefined && agent === record.agent
       && record.imageDigest !== undefined && this.ctx.attachments?.imageLimits === record.imagePolicy
@@ -584,7 +605,17 @@ export class DesktopAppAttachments {
    */
   async content(sessionId, ids) {
     const records = this.readyRecords(sessionId, ids)
+    if (records.some(({ record }) => record.desktopReceipt)) throw new Error('请通过所属电脑会话发送此附件。')
     return this.trackReads(records, this.buildContent(records))
+  }
+
+  desktopReceipts(sessionId, ids) {
+    const records = this.readyRecords(sessionId, ids)
+    if (!records.some(({ record }) => record.desktopReceipt)) return undefined
+    return records.map(({ record }) => {
+      if (!record.desktopReceipt) throw new Error('会话归属已改变，请重新准备附件。')
+      return record.desktopReceipt
+    })
   }
 
   /** Both original command and prompt endpoints admit the same image/file wire shapes. */

@@ -41,6 +41,22 @@ class MainActivity : FlutterActivity() {
         super.onCreate(savedInstanceState)
         uiAlive = true
     }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        val display = window.decorView.display ?: return
+        val rate = if (hasFocus) {
+            val current = display.mode
+            display.supportedModes
+                .filter { it.physicalWidth == current.physicalWidth && it.physicalHeight == current.physicalHeight }
+                .maxOfOrNull { it.refreshRate } ?: current.refreshRate
+        } else 0f
+        val attributes = window.attributes
+        if (attributes.preferredRefreshRate != rate) {
+            attributes.preferredRefreshRate = rate
+            window.attributes = attributes
+        }
+    }
     private var service: Messenger? = null
     private var events: EventChannel.EventSink? = null
     private var documentPreviews: DocumentPreviewFactory? = null

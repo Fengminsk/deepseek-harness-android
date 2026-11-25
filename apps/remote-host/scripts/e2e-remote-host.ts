@@ -1927,6 +1927,7 @@ type CheckId =
   | 'terminal-create-write-read'
   | 'terminal-resize-list-rename-close'
   | 'attachments-prepare-file'
+  | 'attachments-prepare-image'
   | 'attachments-error-not-found'
   | 'attachments-send'
   | 'subscribe'
@@ -3288,6 +3289,33 @@ function buildChecks(state: RunState): CheckDefinition[] {
         + `list after close=${afterClose.length} row(s) without ${id}`
     },
   }
+  const attachmentsPrepareImage: CheckDefinition = {
+    id: 'attachments-prepare-image',
+    name: 'image draft through the loaded facade and Cordis attachment service',
+    requires: ['read-window'],
+    run: async () => {
+      const client = requireState(state.client, 'open connection')
+      const sessionId = requireState(state.sessionId, 'session id')
+      const id = randomUUID()
+      const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADElEQVQImWNgZGIGAAAOAAeCcsnOAAAAAElFTkSuQmCC'
+      const bytes = Buffer.from(png, 'base64')
+      attachmentFixture.register(id, bytes)
+      try {
+        const draft = requireObject(unwrapPocketError(await client.request('attachments.prepare', {
+          sessionId, id, name: 'pixel.png', mediaType: 'image/png', bytes: bytes.length,
+        }, ATTACHMENT_REQUEST_CAP_MS), 'image prepare'), 'image draft')
+        if (draft['id'] !== id || draft['kind'] !== 'image') throw new Error('image draft not prepared')
+        const preview = requireObject(unwrapPocketError(await client.request('attachments.preview', {
+          sessionId, id,
+        }, ATTACHMENT_REQUEST_CAP_MS), 'image preview'), 'image preview')
+        if (preview['data'] !== png) throw new Error('image preview differs from selected bytes')
+        return 'PNG prepared and preview bytes matched'
+      } finally {
+        attachmentFixture.unregister(id)
+        await releaseHostAttachment(client, sessionId, id, ATTACHMENT_REQUEST_CAP_MS)
+      }
+    },
+  }
   const attachmentsPrepareFile: CheckDefinition = {
     id: 'attachments-prepare-file',
     name: 'attachments.prepare file receipt + paged native.attachments.read',
@@ -3725,6 +3753,7 @@ function buildChecks(state: RunState): CheckDefinition[] {
     terminalErrorTranslation,
     terminalCreateWriteRead,
     terminalResizeListRenameClose,
+    attachmentsPrepareImage,
     attachmentsPrepareFile,
     attachmentsErrorNotFound,
     attachmentsSend,

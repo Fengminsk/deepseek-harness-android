@@ -32,8 +32,9 @@
  * `desktop-notifications.ts` also listens to `session/event` and `agent/status`;
  * the duplication is bounded on purpose because each module owns a different
  * output (page-line §8 notifications versus the raw event relay). Neither module
- * re-registers `interactions.changed`: approvals already travel through the
- * notification relay, and relaying them twice would duplicate phone actions.
+ * re-registers `interactions.changed`: answerable approvals travel through
+ * the dedicated Gateway observer, and relaying them twice would duplicate
+ * phone actions.
  * @module @deepseek-ai/dsh-device-interconnect/host/desktop-session-events
  */
 

@@ -156,8 +156,10 @@ void main() {
               (state) =>
                   axisDirectionToAxis(state.axisDirection) == Axis.horizontal,
             ),
-        isNotEmpty,
+        isEmpty,
+        reason: '代码块按 DSH 排版自动换行，不再提供横向滚动',
       );
+      expect(find.textContaining('retained_code'), findsOneWidget);
       final original = await harness.pixels(tester);
       final oldBoxes = harness.boxes(tester, 'Tail old', 0, 8);
       final retainedCode = harness.boxes(tester, 'retained_code', 0, 13);
@@ -243,16 +245,9 @@ void main() {
       await tester.tap(find.text('Documentation', findRichText: true));
       await tester.pump();
       expect(opened, [Uri.parse('https://example.com/docs')]);
-      final horizontal = tester
-          .stateList<ScrollableState>(find.byType(Scrollable))
-          .singleWhere(
-            (state) =>
-                axisDirectionToAxis(state.axisDirection) == Axis.horizontal,
-          );
-      expect(horizontal.position.maxScrollExtent, greaterThan(0));
-      await tester.drag(find.byType(Scrollable).first, const Offset(-150, 0));
-      await tester.pumpAndSettle();
-      expect(horizontal.position.pixels, greaterThan(0));
+      // DSH mobile markdown wraps long code instead of forcing a horizontal drag.
+      expect(find.textContaining('0123456789'), findsOneWidget);
+      expect(find.text('preserved', findRichText: true), findsOneWidget);
       expect(tester.takeException(), isNull);
       semantics.dispose();
     },

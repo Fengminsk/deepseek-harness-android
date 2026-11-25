@@ -172,6 +172,35 @@ _attachSource(
 }
 
 void main() {
+  test('同一电脑连接里的不同会话复用模型目录读取', () async {
+    var calls = 0;
+    final transport = FakeRemoteTransport();
+    transport.answers['api.call'] = (params) {
+      if (params['method'] == 'modelCatalog') {
+        calls++;
+        return _catalogPayload();
+      }
+      return <String, dynamic>{};
+    };
+    final connection = _interactionConnection(transport);
+    final events = StreamController<Map<String, dynamic>>.broadcast(sync: true);
+    addTearDown(events.close);
+    final first = RemoteConversationLiveSource(
+      connection: connection,
+      sessionId: 's-1',
+      events: events.stream,
+    );
+    final second = RemoteConversationLiveSource(
+      connection: connection,
+      sessionId: 's-2',
+      events: events.stream,
+    );
+    addTearDown(first.dispose);
+    addTearDown(second.dispose);
+    await Future.wait([first.fetchModelCatalog(), second.fetchModelCatalog()]);
+    expect(calls, 1);
+  });
+
   test('增量读与加载更早使用 afterSeq/beforeSeq 和小页参数', () async {
     final transport = FakeRemoteTransport();
     transport.answers['session.readWindow'] = (params) => {
@@ -321,6 +350,17 @@ void main() {
     expect(sent['selectModel'], false);
     expect(sent['requestId'], isA<String>());
     expect((sent['requestId'] as String).startsWith('app-'), isTrue);
+
+    transport.answers['session.send'] = (_) => throw const RuntimeTransportFailure(
+      code: 'gateway/timeout', message: 'acknowledgement lost',
+    );
+    await expectLater(source.send('', attachmentIds: ['a']), throwsA(isA<RuntimeTransportFailure>()));
+    final original = transport.paramsOf('session.send').last['requestId'];
+    transport.answers['session.send'] = (_) => {'accepted': true};
+    await source.send('', attachmentIds: ['a']);
+    expect(transport.paramsOf('session.send').last['requestId'], original);
+    await source.send('', attachmentIds: ['a']);
+    expect(transport.paramsOf('session.send').last['requestId'], isNot(original));
 
     source.dispose();
     await pumpEventQueue();
@@ -602,6 +642,7 @@ void main() {
     expect(allowed.accepted, isTrue);
     expect(allowed.requestStillPending, isFalse);
     expect(transport.paramsOf('interactions.reply').last, {
+      'sessionId': 's-1',
       'id': 'i-1',
       'version': 7,
       'response': 'allowed-once',

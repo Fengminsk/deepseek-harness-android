@@ -81,7 +81,7 @@ import {
   type RemotePairOutcome,
   type RemotePairRequest,
 } from './server.ts'
-import { dispatchWithSessionRelay } from './session-relay.ts'
+import { dispatchWithSessionRelay, isWriteHandleConflict, relaySendRequest } from './session-relay.ts'
 import {
   desktopStatusEntries,
   SessionEventBroadcaster,
@@ -488,6 +488,8 @@ interface AppRuntimeFacade {
    * @returns JSON-RPC `result`，可以是同步值或 Promise；抛错由传输层转成 `-32603`。
    */
   dispatch(method: string, params: Record<string, unknown>, owner?: string): unknown
+  prepareDesktopAttachment?(params: Record<string, unknown>, upload: DesktopRelayClient['upload']): Promise<unknown>
+  desktopReceipts?(sessionId: string, ids: unknown[]): string[] | undefined
 
   /**
    * 把一条连接安装成门面的转发端。
@@ -722,6 +724,31 @@ async function startRemoteHost(
       binding = { connection, sink, notifications }
       facade.bind(sink, owner)
       connection.onRequest(async (method, params) => {
+        const sessionId = params['sessionId']
+        if (desktopRelay && typeof sessionId === 'string') {
+          if (method === 'attachments.prepare' && facade.prepareDesktopAttachment) {
+            // A slow status lookup can report unknown even when the desktop holds the writer.
+            if ((await desktopRelay.sessionStatus(sessionId)).status === 'unknown') {
+              const result = await facade.dispatch(method, params, owner)
+              const failure = (result as { _pocket_error?: { message?: string } } | null)?._pocket_error
+              if (!failure || !(isWriteHandleConflict(failure.message) || isWriteHandleConflict(failure))) return result
+            }
+            return facade.prepareDesktopAttachment(params, desktopRelay.upload.bind(desktopRelay))
+          }
+          const ids = params['attachmentIds']
+          if ((method === 'session.send' || method === 'session.command') && Array.isArray(ids) && ids.length) {
+            const receiptIds = facade.desktopReceipts?.(sessionId, ids)
+            if (receiptIds) {
+              if (method === 'session.command') {
+                if (typeof params['line'] !== 'string') throw new Error('缺少会话指令。')
+                return desktopRelay.command(sessionId, params['line'], receiptIds)
+              }
+              const request = relaySendRequest(params, receiptIds)
+              if (!request) throw new Error('附件消息格式无效。')
+              return desktopRelay.send(request)
+            }
+          }
+        }
         const result = await dispatchWithSessionRelay({
           method,
           params,
@@ -955,7 +982,14 @@ async function startRemoteHost(
       relayNotifications: notifications => {
         const current = binding
         if (current === undefined) return
-        for (const notification of notifications) current.notifications.observe(notification.method, notification.params)
+        for (const notification of notifications) {
+          // The phone renders approval cards from the page-line snapshot. The
+          // remote.* observer only produces a system notification, so forwarding
+          // that observer alone leaves an already-open conversation without its
+          // approval controls.
+          current.connection.notify(notification.method, notification.params)
+          current.notifications.observe(notification.method, notification.params)
+        }
       },
       relaySessionEvents: (input) => {
         const current = binding

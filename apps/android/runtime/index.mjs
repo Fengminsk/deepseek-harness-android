@@ -652,7 +652,7 @@ export function apply(ctx, config) {
     }
   })
   // Connection needs the Keystore provider before the shared Session controller can activate.
-  const facadeDependencies = ['sessionController', 'typertGateway', 'connection', 'accountCallback', 'fileUploads',
+  const facadeDependencies = ['sessionController', 'typertGateway', 'connection', 'accountCallback', 'fileUploads', 'attachments',
     'pluginManager', 'jobs', 'sessionProjections', 'subagents', 'workspaceRegistry']
   ctx.inject(facadeDependencies, ctx => {
   try {
@@ -1170,6 +1170,16 @@ export function apply(ctx, config) {
   // 一个点击即失败的入口。getter 让每次握手都重新读取当前服务状态。
   const terminalSupported = () => android || ctx.get('terminalController') !== undefined
   ctx.provide('appRuntimeFacade', {
+    ...(!android && {
+      prepareDesktopAttachment: async (params, upload) => {
+        try {
+          return await packageOperations.runWork(() => attachments.prepare(params, upload))
+        } catch (error) {
+          return remoteFailure(error)
+        }
+      },
+      desktopReceipts: (sessionId, ids) => attachments.desktopReceipts(sessionId, ids),
+    }),
     ...createRemoteFacadeService({
       dispatch: facadeDispatch,
       owners: connectionOwners,

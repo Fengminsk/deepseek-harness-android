@@ -4,6 +4,85 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:dsh_android/api_streams.dart';
 
 void main() {
+  test('page cancellation retires stream after readiness was cleared', () async {
+    final calls = <String>[];
+    final streams = AppApiStreams((method, params) async {
+      calls.add(method);
+      if (method == 'api.subscribe') return {'generation': 'first'};
+      return {'closed': true};
+    })..setReady(true);
+    final listener = streams.watch('session', 'follow').listen((_) {});
+    await pumpEventQueue();
+    streams.setReady(false);
+    await listener.cancel();
+    expect(calls.where((method) => method == 'api.unsubscribe'), hasLength(1));
+    await streams.close();
+  });
+
+  test('late stream admission is retired after the page cancels', () async {
+    final admitted = Completer<ApiJson>();
+    final subscribed = Completer<ApiJson>();
+    final calls = <({String method, ApiJson params})>[];
+    final streams = AppApiStreams((method, params) async {
+      calls.add((method: method, params: params));
+      if (method == 'api.subscribe') {
+        subscribed.complete(params);
+        return admitted.future;
+      }
+      return {'closed': true};
+    })..setReady(true);
+    final listener = streams.watch('session', 'control').listen((_) {});
+    final request = await subscribed.future;
+    await listener.cancel();
+    admitted.complete({'generation': 'late-generation'});
+    await pumpEventQueue();
+    final retired = calls.where((call) => call.method == 'api.unsubscribe');
+    expect(retired, hasLength(2));
+    expect(retired.last.params['streamId'], request['streamId']);
+    expect(retired.last.params['generation'], 'late-generation');
+    await streams.close();
+  });
+
+  test(
+    'late admission on reconnect retires old stream and opens a replacement',
+    () async {
+      final firstAdmission = Completer<ApiJson>();
+      final calls = <({String method, ApiJson params})>[];
+      final streams = AppApiStreams((method, params) async {
+        calls.add((method: method, params: params));
+        if (method == 'api.subscribe') {
+          if (calls.where((call) => call.method == method).length == 1) {
+            return firstAdmission.future;
+          }
+          return {'generation': 'replacement'};
+        }
+        return {'closed': true};
+      })..setReady(true);
+      final listener = streams.watch('session', 'control').listen((_) {});
+      await pumpEventQueue();
+      final original = calls.first.params['streamId'];
+      streams.setReady(false);
+      streams.setReady(true);
+      firstAdmission.complete({'generation': 'original'});
+      await pumpEventQueue();
+      final subscriptions = calls
+          .where((call) => call.method == 'api.subscribe')
+          .toList();
+      expect(subscriptions, hasLength(2));
+      expect(subscriptions.last.params['streamId'], isNot(original));
+      expect(
+        calls.where(
+          (call) =>
+              call.method == 'api.unsubscribe' &&
+              call.params['generation'] == 'original',
+        ),
+        hasLength(1),
+      );
+      await listener.cancel();
+      await streams.close();
+    },
+  );
+
   testWidgets(
     'foreground unsubscribe failure retains identity and recovers the same observer',
     (tester) async {

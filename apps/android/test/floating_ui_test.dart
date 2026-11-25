@@ -301,6 +301,76 @@ void main() {
     },
   );
 
+  testWidgets(
+    'bottom height animation updates transcript inset once after settling',
+    (tester) async {
+      var expanded = false;
+      late StateSetter changeHeight;
+      await tester.pumpWidget(
+        host(
+          PocketScaffold(
+            title: const Text('Title'),
+            bottomHeightDebounce: const Duration(milliseconds: 80),
+            bottom: StatefulBuilder(
+              builder: (context, setState) {
+                changeHeight = setState;
+                return AnimatedContainer(
+                  duration: const Duration(milliseconds: 200),
+                  height: expanded ? 160 : 60,
+                );
+              },
+            ),
+          body: PocketList(children: const [Text('Message')]),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+    double bottomInset() => tester
+        .widget<ListView>(find.byType(ListView))
+        .padding!
+        .resolve(TextDirection.ltr)
+        .bottom;
+    final initialInset = bottomInset();
+      changeHeight(() => expanded = true);
+      await tester.pump();
+      for (var frame = 0; frame < 4; frame++) {
+        await tester.pump(const Duration(milliseconds: 40));
+      expect(bottomInset(), initialInset);
+      }
+      await tester.pumpAndSettle();
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pump();
+    expect(bottomInset(), greaterThan(initialInset));
+    },
+  );
+
+  testWidgets('keyboard overlay lifts the dock without resizing the transcript', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetViewInsets);
+    await tester.pumpWidget(
+      host(
+        const PocketScaffold(
+          title: Text('Title'),
+          keyboardOverlay: true,
+          bottom: SizedBox(key: Key('dock'), height: 60),
+          body: PocketList(children: [Text('Message')]),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final viewport = tester.getRect(find.byType(ListView));
+    final dockBottom = tester.getRect(find.byKey(const Key('dock'))).bottom;
+    tester.view.viewInsets = const FakeViewPadding(bottom: 300);
+    await tester.pump();
+    expect(tester.getRect(find.byType(ListView)), viewport);
+    expect(tester.getRect(find.byKey(const Key('dock'))).bottom, dockBottom - 300);
+  });
+
   testWidgets('header title stays at screen center with unequal side actions', (
     tester,
   ) async {

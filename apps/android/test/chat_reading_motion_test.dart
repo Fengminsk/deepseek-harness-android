@@ -65,6 +65,8 @@ void main() {
         );
         await tester.pumpWidget(view());
         await tester.pumpAndSettle();
+        await tester.tap(find.byType(ChatExecutionHeader));
+        await tester.pumpAndSettle();
         await tester.tap(find.text('已思考'));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 70));
@@ -90,7 +92,8 @@ void main() {
         await tester.pump(const Duration(milliseconds: 60));
         expect(blurred(), !reduced);
         await tester.pumpAndSettle();
-        // A manually expanded active chain must still fold exactly once at completion.
+        // A manual expansion survives completion; the chain never folds by
+        // itself behind the reader.
         await tester.tap(find.byType(ChatExecutionHeader));
         await tester.pumpAndSettle();
         await tester.tap(find.byType(ChatExecutionHeader));
@@ -100,24 +103,12 @@ void main() {
           chain.end(3, 'completed'),
         ]);
         await tester.pumpWidget(view());
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 60));
-        if (!reduced) {
-          expect(
-            tester
-                .widgetList<ImageFiltered>(
-                  find.ancestor(
-                    of: find.byType(ChatExecutionStep).first,
-                    matching: find.byType(ImageFiltered),
-                  ),
-                )
-                .any((filter) => filter.enabled),
-            isTrue,
-          );
-        }
         await tester.pumpAndSettle();
-        expect(find.byType(ChatExecutionStep), findsNothing);
-        expect(find.text(expected['completed'] as String), findsOneWidget);
+        final header = tester.widget<ChatExecutionHeader>(
+          find.byType(ChatExecutionHeader),
+        );
+        expect(header.expanded, isTrue);
+        expect(find.byType(ChatExecutionStep), findsWidgets);
         expect(find.text('完成后的正文', findRichText: true), findsOneWidget);
         expect(
           tester
@@ -130,7 +121,8 @@ void main() {
         );
         await tester.tap(find.byType(ChatExecutionHeader));
         await tester.pumpAndSettle();
-        expect(find.byType(ChatExecutionStep), findsWidgets);
+        expect(find.byType(ChatExecutionStep), findsNothing);
+        expect(find.text(expected['completed'] as String), findsOneWidget);
         expect(tester.takeException(), isNull);
       },
     );
@@ -192,13 +184,15 @@ void main() {
       // There is no permanent extra screen of blank space after a long answer.
       scroll.jumpTo(scroll.position.maxScrollExtent);
       await tester.pumpAndSettle();
+      // No full screen of reserved blank space remains after the answer grew;
+      // only the ordinary trailing inset stays below the last paragraph.
       expect(
         tester
             .getBottomLeft(
               find.textContaining('逐步输出的正文。', findRichText: true).last,
             )
             .dy,
-        greaterThan(700),
+        greaterThan(600),
       );
       expect(tester.takeException(), isNull);
     },

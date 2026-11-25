@@ -104,6 +104,10 @@ void main() {
       // fabricate a second activity label beside the chain.
       expect(find.text('正在读取文件'), findsNothing);
       expect(header().chain.active, isTrue);
+      expect(header().expanded, isFalse);
+      expect(find.byType(ChatExecutionStep), findsNothing);
+      await tester.tap(find.byType(ChatExecutionHeader));
+      await tester.pumpAndSettle();
       expect(header().expanded, isTrue);
       final step = find.byType(ChatExecutionStep);
       expect(step, findsOneWidget);

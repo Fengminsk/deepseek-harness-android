@@ -3,8 +3,9 @@
  *
  * It watches desktop-process events that the remote-host child cannot see
  * (sessions owned by the desktop DSH) and posts the same page-line notifications
- * the child would have observed (`task.completed`, `interactions.changed` for
- * approvals). The remote-host child maps them through its existing §8 pipeline,
+ * the child would have observed (`task.completed`). The answerable approval
+ * stream is handled by desktop-interactions.ts. The remote-host child maps
+ * notifications through its existing §8 pipeline,
  * so payload shaping, limits, and per-connection dedupe stay in one owner.
  *
  * Observer failures are contained: every callback is wrapped, and a failing
@@ -59,6 +60,7 @@ interface RunningTask {
   startSeq: number | undefined
   hasStep: boolean
   preview: string | undefined
+  completedEndSeq: number | undefined
 }
 
 /** The subset of one session event this observer reads. */
@@ -92,11 +94,10 @@ export function completionPreview(content: unknown): string | undefined {
   return sentence.trim() || undefined
 }
 
-/** Observe desktop task completions and approvals, posting page-line notifications. */
+/** Observe desktop task completions, posting page-line notifications. */
 export class DesktopNotifications {
   private readonly options: DesktopNotificationsOptions
   private readonly running = new Map<string, RunningTask>()
-  private readonly notifiedApprovals = new Set<string>()
   private readonly disposers: (() => void)[] = []
   private started = false
   private closed = false
@@ -132,7 +133,6 @@ export class DesktopNotifications {
       }
     }
     this.running.clear()
-    this.notifiedApprovals.clear()
   }
 
   /** Drop one agent's running record. */
@@ -152,7 +152,7 @@ export class DesktopNotifications {
       if (sessionId === undefined) return
       if (value.status === 'running') {
         if (this.running.get(sessionId)?.agent !== agent) {
-          this.running.set(sessionId, { agent, hasStep: false, turn: undefined, startSeq: undefined, preview: undefined })
+          this.running.set(sessionId, { agent, hasStep: false, turn: undefined, startSeq: undefined, preview: undefined, completedEndSeq: undefined })
         }
         return
       }
@@ -174,11 +174,22 @@ export class DesktopNotifications {
       const projections = getOptional<{
         snapshot(session: unknown, keys: readonly string[]): { values?: { pocketTasks?: { turns?: readonly ProjectedTurn[] } } }
       }>(this.options.ctx, 'sessionProjections')
-      if (projections === undefined) return
-      const snapshot = projections.snapshot(record.agent.session, ['pocketTasks'])
-      const turn = snapshot.values?.pocketTasks?.turns?.at(-1)
-      if (turn === undefined || turn.turn !== record.turn || turn.seq !== record.startSeq) return
-      if (turn.reason?.kind !== 'completed' || !Number.isSafeInteger(turn.endSeq)) return
+      // The durable turn/end event is already observed on this desktop owner.
+      // A missing or late pocketTasks projection must not suppress the notice.
+      let endSeq = record.completedEndSeq
+      if (endSeq === undefined && projections !== undefined) {
+        try {
+          const snapshot = projections.snapshot(record.agent.session, ['pocketTasks'])
+          const turn = snapshot.values?.pocketTasks?.turns?.at(-1)
+          if (turn !== undefined && turn.turn === record.turn && turn.seq === record.startSeq
+            && turn.reason?.kind === 'completed' && Number.isSafeInteger(turn.endSeq)) {
+            endSeq = turn.endSeq
+          }
+        } catch {
+          // The observed completed event remains authoritative.
+        }
+      }
+      if (!Number.isSafeInteger(endSeq)) return
       const goals = getOptional<{ get(agent: unknown): { phase?: string } | undefined }>(this.options.ctx, 'goals')
       const goal = goals?.get(record.agent)
       if (goal !== undefined && goal.phase !== 'complete') return
@@ -186,8 +197,8 @@ export class DesktopNotifications {
         method: 'task.completed',
         params: {
           sessionId: agentId(record.agent),
-          turn: turn.turn,
-          endSeq: turn.endSeq,
+          turn: record.turn,
+          endSeq,
           ...(record.preview === undefined ? {} : { preview: record.preview }),
         },
       }])
@@ -202,28 +213,17 @@ export class DesktopNotifications {
     try {
       const sessionId = typeof session.id === 'string' ? session.id : String(session.id)
       const data = event.data
-      if (event.type === 'approval/asked' && data !== undefined) {
-        const id = typeof data['id'] === 'string' ? data['id'] : undefined
-        if (id !== undefined && !this.notifiedApprovals.has(id)) {
-          this.notifiedApprovals.add(id)
-          const request = {
-            id,
-            sessionId,
-            kind: 'approval',
-            ...(typeof data['toolName'] === 'string' ? { toolName: data['toolName'] } : {}),
-            ...(typeof data['reason'] === 'string' ? { reason: data['reason'] } : {}),
-          }
-          void this.publish([{ method: 'interactions.changed', params: { requests: [request] } }])
-        }
-        return
-      }
+      // Gateway waterfall owns answerable approval snapshots. Session events
+      // lack the version and event id required to answer the original request.
+      if (event.type === 'approval/asked') return
       const record = this.running.get(sessionId)
-      if (record === undefined || record.agent.session !== session) return
+      if (record === undefined || agentId(record.agent) !== sessionId) return
       if (event.type === 'turn/start') {
         record.turn = typeof data?.['turn'] === 'number' ? data['turn'] : undefined
         record.startSeq = event.seq
         record.hasStep = false
         record.preview = undefined
+        record.completedEndSeq = undefined
       } else if (event.type === 'step/start' && record.turn === data?.['turn']) {
         record.hasStep = true
       } else if (event.type === 'assistant/message' && record.turn === data?.['turn']) {
@@ -232,6 +232,11 @@ export class DesktopNotifications {
           ? (message as { content?: unknown }).content
           : undefined
         record.preview = completionPreview(content) ?? record.preview
+      } else if (event.type === 'turn/end' && record.turn === data?.['turn']
+        && data?.['reason'] !== undefined
+        && typeof data['reason'] === 'object'
+        && (data['reason'] as { kind?: unknown }).kind === 'completed') {
+        record.completedEndSeq = event.seq
       }
     } catch (error) {
       this.warn('session event observer failed', error)

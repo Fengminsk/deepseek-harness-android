@@ -89,7 +89,7 @@ void main() {
       expect(streams.diagnostics.single['sequence'], 0);
       await subscription.cancel();
       expect(streams.diagnostics, isEmpty);
-      expect(calls, ['api.subscribe', 'api.ack']);
+      expect(calls, ['api.subscribe', 'api.ack', 'api.unsubscribe']);
       await streams.close();
     },
   );

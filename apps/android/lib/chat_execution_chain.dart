@@ -35,7 +35,9 @@ class ChatExecutionHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    final ink = chain.needsAttention ? colors.error : colors.onSurfaceVariant;
+    final ink = compact || !chain.needsAttention
+        ? colors.onSurfaceVariant
+        : colors.error;
     final duration = chain.duration;
     final title = compact && duration != null
         ? '用时 ${duration.replaceAll('m ', ' 分钟 ').replaceAll('s', ' 秒')}'

@@ -184,6 +184,11 @@ class RemoteNotifications(private val context: Context) {
          * 本地通知的 route 值不在这里处理，仍由 MainActivity 的 `deliverNavigation` 分发。
          */
         fun takeLaunch(intent: Intent?): RemoteNotificationLaunch? {
+            if (intent?.action == RemoteSyncService.OPEN_HOME_ACTION &&
+                intent.getStringExtra(ROUTE_EXTRA) == "remote-home") {
+                intent.removeExtra(ROUTE_EXTRA)
+                return RemoteNotificationLaunch("", "home", null, home = true)
+            }
             if (intent == null || intent.action != OPEN_ACTION) return null
             if (intent.getStringExtra(ROUTE_EXTRA) != ROUTE_REMOTE) return null
             val sessionId = normalize(intent.getStringExtra(SESSION_EXTRA).orEmpty(), MAX_SESSION_CHARS)
@@ -225,10 +230,10 @@ class RemoteNotifications(private val context: Context) {
  * Dart 侧 `remote_notification_navigation.dart` 只认这些字段：`route` 固定 `remote`，
  * `sessionId` 决定打开哪个会话，`kind` / `tag` 保留协议 id 供排障与后续细粒度路由。
  */
-data class RemoteNotificationLaunch(val sessionId: String, val kind: String, val tag: String?) {
+data class RemoteNotificationLaunch(val sessionId: String, val kind: String, val tag: String?, val home: Boolean = false) {
     /** 交给 `dsh/runtime` 返回值的 JSON 文本；没有 tag 时为 null。 */
     fun toJson(): String = JSONObject()
-        .put("route", RemoteNotifications.ROUTE_REMOTE)
+        .put("route", if (home) "remote-home" else RemoteNotifications.ROUTE_REMOTE)
         .put("sessionId", sessionId)
         .put("kind", kind)
         .put("tag", tag ?: JSONObject.NULL)

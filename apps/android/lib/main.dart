@@ -524,7 +524,10 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     Navigator.of(context)
         .popUntil((route) => route == chatRoute || route.isFirst);
     navigate(
-      RemoteDshPage(runtime: runtime, notificationLaunch: launch),
+      RemoteDshPage(
+        runtime: runtime,
+        notificationLaunch: launch.isHome ? null : launch,
+      ),
       destination: RemoteDshPage.routeDestination,
     );
   }

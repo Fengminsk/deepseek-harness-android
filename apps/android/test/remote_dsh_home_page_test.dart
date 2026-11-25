@@ -37,6 +37,7 @@ class _HomeSource
         RemoteDshArchiveSource {
   _HomeSource({
     required this.projects,
+    this.connectionState = RemoteDshConnectionState.connected,
     this.projectsAfterCreate,
     this.archived = const <RemoteDshArchivedSession>[],
     this.createGate,
@@ -53,6 +54,7 @@ class _HomeSource
 
   /// 当前项目列表。
   List<RemoteDshProject> projects;
+  final RemoteDshConnectionState connectionState;
 
   /// 新建会话后 [listProjects] 返回的列表；为 null 时不变。
   final List<RemoteDshProject>? projectsAfterCreate;
@@ -76,7 +78,7 @@ class _HomeSource
   final List<String> restored = <String>[];
 
   @override
-  RemoteDshConnectionState get connection => RemoteDshConnectionState.connected;
+  RemoteDshConnectionState get connection => connectionState;
 
   @override
   String? get hostName => '客厅的电脑';
@@ -1401,6 +1403,17 @@ void main() {
     });
   });
 
+  testWidgets('未连接时仍可打开已有会话', (tester) async {
+    final source = _HomeSource(
+      projects: _projects(),
+      connectionState: RemoteDshConnectionState.notConnected,
+    );
+    await _show(tester, source);
+    await tester.tap(find.byKey(const ValueKey('remote-session-device-1-s-1')));
+    await tester.pumpAndSettle();
+    expect(find.byType(RemoteDshConversationPage), findsOneWidget);
+  });
+
   group('已归档任务入口', () {
     testWidgets('菜单项打开带稳定目的地标识的归档页', (tester) async {
       final source = _HomeSource(
@@ -1525,11 +1538,11 @@ void main() {
       await tester.tap(find.byTooltip('添加与指令'));
       await tester.pumpAndSettle();
 
-      expect(find.text('添加与指令'), findsOneWidget, reason: '弹层标题与按钮同名');
+      expect(find.byKey(const ValueKey('remote-commands-popup')), findsOneWidget);
       expect(find.text('进入会话后可添加文件与指令'), findsOneWidget);
       expect(find.textContaining('添加附件、执行会话指令'), findsOneWidget);
 
-      await tester.tap(find.byTooltip('关闭添加菜单'));
+      await tester.binding.handlePopRoute();
       await tester.pumpAndSettle();
 
       await tester.pumpWidget(const SizedBox());

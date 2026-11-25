@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter/foundation.dart';
@@ -155,11 +156,13 @@ class ChatTimeline extends StatefulWidget {
     this.onOpenFile,
     this.onOpenAttachment,
     this.onOpenImage,
+    this.messageImage,
     this.onBranch,
     this.onOpenWorkflowChild,
     this.onQuote,
     this.showTurnNavigation = true,
     this.compactTurns = false,
+    this.animateRows = true,
     this.historyHeader,
     this.submittedAfterSeq,
     this.followSubmittedMessage = true,
@@ -181,12 +184,14 @@ class ChatTimeline extends StatefulWidget {
 
   /// Tighter process and answer rhythm used by the remote conversation page.
   final bool compactTurns;
+  final bool animateRows;
   final Widget? historyHeader;
   final Widget? footer;
   final ChatOpenLink? onOpenLink;
   final ChatOpenFile? onOpenFile;
   final ChatOpenAttachment? onOpenAttachment;
   final ChatOpenAttachment? onOpenImage;
+  final PocketImageSource Function(Json)? messageImage;
   final Future<String?> Function(int atSeq)? onBranch;
   final Future<void> Function(SubagentAddress address, String label)?
   onOpenWorkflowChild;
@@ -510,19 +515,6 @@ class _ChatTimelineState extends State<ChatTimeline>
         )?.readState(context, identifier: '${widget.sessionId}:${group.key}');
         if (saved is bool) _expanded[group.key] = saved;
       }
-      final previous = previousChains[group.key];
-      if (previous != null && !previous.completed && group.completed) {
-        _expanded[group.key] = false;
-        PageStorage.maybeOf(context)?.writeState(
-          context,
-          false,
-          identifier: '${widget.sessionId}:${group.key}',
-        );
-      } else if (previous?.active == true && !group.active) {
-        // An ended Turn can still contain unresolved or failed calls. Keep its
-        // current visibility until confirmed completion or an explicit toggle.
-        _expanded.putIfAbsent(group.key, () => previousExpanded[group.key]!);
-      }
       final wasExpanded = previousExpanded[group.key];
       final nowExpanded = _isExpanded(group);
       if (wasExpanded != null && wasExpanded != nowExpanded) {
@@ -632,8 +624,7 @@ class _ChatTimelineState extends State<ChatTimeline>
     }
   }
 
-  bool _isExpanded(ChatExecutionChain chain) =>
-      _expanded[chain.key] ?? chain.active;
+  bool _isExpanded(ChatExecutionChain chain) => _expanded[chain.key] ?? false;
 
   AnimationController _chainMotion(String key, bool wasExpanded) =>
       _motions.putIfAbsent(key, () {
@@ -736,6 +727,7 @@ class _ChatTimelineState extends State<ChatTimeline>
     final showNavigation = historyWindow != null;
     final headerCount = showNavigation || widget.historyHeader != null ? 1 : 0;
     return PocketList.builder(
+      animateItems: widget.animateRows,
       controller: widget.controller,
       anchorController: _listAnchor,
       reserveEndSpace: true,
@@ -930,6 +922,7 @@ class _ChatTimelineState extends State<ChatTimeline>
             onOpenFile: widget.onOpenFile,
             onOpenAttachment: widget.onOpenAttachment,
             onOpenImage: widget.onOpenImage,
+            messageImage: widget.messageImage,
             onOpenSkill: widget.onOpenSkill,
             skillNames: _references.namesFor(row.seq),
             sessionLabels: _references.sessionLabelsFor(row.seq),
@@ -956,6 +949,7 @@ class _ChatTimelineState extends State<ChatTimeline>
                     ChatContent(
                       content: reply,
                       streaming: true,
+                      plainStreaming: widget.compactTurns,
                       sessionId: sessionId,
                       storageId: '$sessionId:$liveKey',
                       onOpenLink: widget.onOpenLink,
@@ -963,15 +957,9 @@ class _ChatTimelineState extends State<ChatTimeline>
                       onOpenImage: widget.onOpenImage,
                     ),
                   if (stream.unconfirmed)
-                    Text(
-                      '回复状态待确认',
-                      style: chatAuxiliaryTextStyle(context),
-                    )
+                    Text('回复状态待确认', style: chatAuxiliaryTextStyle(context))
                   else if (stream.interrupted)
-                    Text(
-                      '回复已中断',
-                      style: chatAuxiliaryTextStyle(context),
-                    ),
+                    Text('回复已中断', style: chatAuxiliaryTextStyle(context)),
                 ],
               ),
             ),
@@ -1012,6 +1000,7 @@ class ChatMessage extends StatelessWidget {
     this.onOpenAttachment,
     this.onOpenImage,
     this.activitySource,
+    this.messageImage,
     this.onOpenSkill,
     this.skillNames = const [],
     this.sessionLabels = const [],
@@ -1030,6 +1019,7 @@ class ChatMessage extends StatelessWidget {
   final ChatOpenAttachment? onOpenAttachment;
   final ChatOpenAttachment? onOpenImage;
   final ValueListenable<ToolActivity?>? activitySource;
+  final PocketImageSource Function(Json)? messageImage;
   final Future<void> Function(String name)? onOpenSkill;
   final List<String> skillNames, sessionLabels;
   final ValueChanged<String>? onQuote;
@@ -1116,9 +1106,23 @@ class ChatMessage extends StatelessWidget {
       case ChatEntryKind.user:
       case ChatEntryKind.assistant:
         final user = entry.kind == ChatEntryKind.user;
-        final reply = user
-            ? entry.content
-            : _assistantReplyBlocks(entry.content);
+        final photos = <Json>[];
+        final body = <dynamic>[];
+        if (user) {
+          final canReadImages =
+              messageImage != null || (runtime != null && sessionId != null);
+          for (final part in entry.content) {
+            final ref = part is Json && part['type'] == 'image'
+                ? part['attachment']
+                : null;
+            if (canReadImages && ref is Json && ref['attachmentId'] is String) {
+              photos.add(ref);
+            } else {
+              body.add(part);
+            }
+          }
+        }
+        final reply = user ? body : _assistantReplyBlocks(entry.content);
         final answer = Align(
           alignment: user ? Alignment.centerRight : Alignment.centerLeft,
           child: Container(
@@ -1153,10 +1157,13 @@ class ChatMessage extends StatelessWidget {
               onQuote: onQuote,
               child: Column(
                 mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
+                crossAxisAlignment: photos.isEmpty
+                    ? CrossAxisAlignment.stretch
+                    : CrossAxisAlignment.start,
                 children: [
                   ChatContent(
                     content: reply,
+                    shrinkWrap: photos.isNotEmpty,
                     runtime: runtime,
                     sessionId: sessionId,
                     storageId: storageId,
@@ -1172,10 +1179,7 @@ class ChatMessage extends StatelessWidget {
                     onOpenImage: onOpenImage,
                   ),
                   if (entry.interrupted)
-                    Text(
-                      '回复已中断',
-                      style: chatAuxiliaryTextStyle(context),
-                    ),
+                    Text('回复已中断', style: chatAuxiliaryTextStyle(context)),
                 ],
               ),
             ),
@@ -1185,7 +1189,15 @@ class ChatMessage extends StatelessWidget {
           return Column(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
-              answer,
+              if (photos.isNotEmpty)
+                _UserPhotos(
+                  photos: photos,
+                  sourceFor:
+                      messageImage ??
+                      (ref) =>
+                          PocketImageSource.session(runtime!, sessionId!, ref),
+                ),
+              if (reply.isNotEmpty) answer,
               ChatUserMessageActions(
                 text: chatMessageText(reply),
                 time: entry.event['time'] is int
@@ -1429,6 +1441,47 @@ class _AssistantReasoningRow extends StatelessWidget {
   );
 }
 
+class _UserPhotos extends StatelessWidget {
+  const _UserPhotos({required this.photos, required this.sourceFor});
+
+  final List<Json> photos;
+  final PocketImageSource Function(Json) sourceFor;
+
+  @override
+  Widget build(BuildContext context) {
+    final maxWidth =
+        MediaQuery.sizeOf(context).width * chatUserBubbleMaxWidthFactor;
+    const spacing = 5.0;
+    final tile = math.min(92.0, (maxWidth - 2 * spacing) / 3);
+    var size = Size.square(tile);
+    if (photos.length == 1) {
+      final ref = photos.single;
+      final width = ref['width'];
+      final height = ref['height'];
+      final ratio = width is num && height is num && width > 0 && height > 0
+          ? (width / height).clamp(.25, 4.0)
+          : 1.0;
+      final side = math.min(186.0, maxWidth);
+      size = Size(side * math.min(1.0, ratio), side / math.max(1.0, ratio));
+    }
+    return Padding(
+      padding: const EdgeInsets.only(top: 8, bottom: 4),
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxWidth: maxWidth),
+        child: Wrap(
+          alignment: WrapAlignment.end,
+          spacing: spacing,
+          runSpacing: spacing,
+          children: [
+            for (final ref in photos)
+              PocketInlineImage(source: sourceFor(ref), thumbnailSize: size),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 /// Blocks stay in authored order; unsupported blocks remain inspectable.
 class ChatContent extends StatelessWidget {
   const ChatContent({
@@ -1437,9 +1490,11 @@ class ChatContent extends StatelessWidget {
     this.runtime,
     this.sessionId,
     this.opaqueText = false,
+    this.shrinkWrap = false,
     this.selectable = true,
     this.userReferences = false,
     this.streaming = false,
+    this.plainStreaming = false,
     this.onOpenSkill,
     this.skillNames = const [],
     this.sessionLabels = const [],
@@ -1454,9 +1509,11 @@ class ChatContent extends StatelessWidget {
   final String storageId;
   final String? sessionId;
   final bool opaqueText;
+  final bool shrinkWrap;
   final bool selectable;
   final bool userReferences;
   final bool streaming;
+  final bool plainStreaming;
   final Future<void> Function(String name)? onOpenSkill;
   final List<String> skillNames, sessionLabels;
   final ChatOpenLink? onOpenLink;
@@ -1467,7 +1524,9 @@ class ChatContent extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Column(
     mainAxisSize: MainAxisSize.min,
-    crossAxisAlignment: CrossAxisAlignment.stretch,
+    crossAxisAlignment: shrinkWrap
+        ? CrossAxisAlignment.start
+        : CrossAxisAlignment.stretch,
     children: [
       for (var index = 0; index < content.length; index++)
         _block(context, content[index], index),
@@ -1507,6 +1566,11 @@ class ChatContent extends StatelessWidget {
                         text,
                         style: const TextStyle(fontSize: 14, height: 24 / 14),
                       )
+              : streaming && plainStreaming
+              ? Text(
+                  text,
+                  style: pocketMarkdownStyleSheet(context, compact: true).p,
+                )
               : streaming
               ? ChatStreamReveal(
                   revision: text,
@@ -1645,10 +1709,7 @@ MarkdownStyleSheet pocketMarkdownStyleSheet(
     tableHead: body.copyWith(fontWeight: FontWeight.w600),
     tableBody: body,
     tableBorder: TableBorder.all(color: colors.outlineVariant, width: .5),
-    tableCellsPadding: const EdgeInsets.symmetric(
-      horizontal: 16,
-      vertical: 10,
-    ),
+    tableCellsPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
     tableHeadCellsDecoration: BoxDecoration(
       color: colors.surfaceContainerHighest.withValues(alpha: .5),
     ),

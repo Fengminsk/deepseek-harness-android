@@ -101,7 +101,11 @@ class RemoteGoalPlanController extends ChangeNotifier
   }
 
   void _subscribeControl() {
-    if (_disposed || _control != null || source.phase != RemoteConnectionPhase.ready) return;
+    if (_disposed ||
+        _control != null ||
+        source.phase != RemoteConnectionPhase.ready) {
+      return;
+    }
     _control = source.watchSessionControl().listen(
       _onControl,
       onError: _onControlError,
@@ -357,6 +361,14 @@ class RemoteGoalPlanController extends ChangeNotifier
   /// 计划状态的错误提示；其它失败（例如协议帧错误）说明状态不再可信。
   void _onControlError(Object failure) {
     if (_disposed) return;
+    if (failure is RuntimeTransportFailure &&
+        failure.code == 'gateway/internal' &&
+        failure.message.contains('App stream limit reached')) {
+      // Control observation admission failed, not the authoritative plan read.
+      // Keep the last confirmed projection and ask the desktop for a fresh one.
+      unawaited(refresh());
+      return;
+    }
     if (failure is RuntimeTransportFailure &&
         const <String>{
           'unsupported-method',

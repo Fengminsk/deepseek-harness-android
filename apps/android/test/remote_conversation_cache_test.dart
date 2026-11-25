@@ -14,15 +14,18 @@ void main() {
 
   late Map<String, String> stored;
   var saves = 0;
+  var reads = 0;
 
   setUp(() {
     stored = <String, String>{};
     saves = 0;
+    reads = 0;
     messenger.setMockMethodCallHandler(channel, (call) async {
       final arguments = call.arguments as Map<Object?, Object?>;
       final deviceId = arguments['deviceId'] as String;
       switch (call.method) {
         case 'remote.conversation.read':
+          reads++;
           return stored[deviceId];
         case 'remote.conversation.save':
           stored[deviceId] = arguments['value'] as String;
@@ -36,18 +39,20 @@ void main() {
 
   tearDown(() => messenger.setMockMethodCallHandler(channel, null));
 
-  RemoteConversationWindow window(
-    List<int> seqs, {
-    bool hasMore = false,
-  }) => RemoteConversationWindow(
-    events: <Map<String, dynamic>>[
-      for (final seq in seqs)
-        <String, dynamic>{'seq': seq, 'kind': 'message', 'text': 'event-$seq'},
-    ],
-    throughSeq: seqs.isEmpty ? 0 : seqs.last,
-    firstSeq: seqs.isEmpty ? null : seqs.first,
-    hasMore: hasMore,
-  );
+  RemoteConversationWindow window(List<int> seqs, {bool hasMore = false}) =>
+      RemoteConversationWindow(
+        events: <Map<String, dynamic>>[
+          for (final seq in seqs)
+            <String, dynamic>{
+              'seq': seq,
+              'kind': 'message',
+              'text': 'event-$seq',
+            },
+        ],
+        throughSeq: seqs.isEmpty ? 0 : seqs.last,
+        firstSeq: seqs.isEmpty ? null : seqs.first,
+        hasMore: hasMore,
+      );
 
   test('caches and restores one conversation window per device', () async {
     const cache = RemoteConversationCache(channel: channel);
@@ -73,6 +78,25 @@ void main() {
     expect(other!.window.events.single['seq'], 10);
   });
 
+  test('one cache read restores conversation and stats preference', () async {
+    const cache = RemoteConversationCache(channel: channel);
+    await cache.save(
+      deviceId: 'pc-1',
+      sessionId: 's-1',
+      window: window(<int>[1, 2]),
+    );
+    await cache.saveStatsExpanded(
+      deviceId: 'pc-1',
+      sessionId: 's-1',
+      expanded: false,
+    );
+    reads = 0;
+    final state = await cache.readState('pc-1', 's-1');
+    expect(reads, 1);
+    expect(state.entry?.window.events, hasLength(2));
+    expect(state.statsExpanded, isFalse);
+  });
+
   test('keeps devices isolated', () async {
     const cache = RemoteConversationCache(channel: channel);
     await cache.save(
@@ -95,23 +119,32 @@ void main() {
     expect(await cache.read('pc-1', 's-1'), isNull);
   });
 
-  test('evicts least recently saved sessions beyond the per-device limit', () async {
-    const cache = RemoteConversationCache(channel: channel);
-    for (var index = 0; index < RemoteConversationCache.maxSessionsPerDevice + 1; index++) {
-      await cache.save(
-        deviceId: 'pc-1',
-        sessionId: 's-$index',
-        window: window(<int>[index]),
-      );
-    }
-    expect(await cache.read('pc-1', 's-0'), isNull, reason: '最早的会话被淘汰');
-    for (var index = 1;
+  test(
+    'evicts least recently saved sessions beyond the per-device limit',
+    () async {
+      const cache = RemoteConversationCache(channel: channel);
+      for (
+        var index = 0;
+        index < RemoteConversationCache.maxSessionsPerDevice + 1;
+        index++
+      ) {
+        await cache.save(
+          deviceId: 'pc-1',
+          sessionId: 's-$index',
+          window: window(<int>[index]),
+        );
+      }
+      expect(await cache.read('pc-1', 's-0'), isNull, reason: '最早的会话被淘汰');
+      for (
+        var index = 1;
         index <= RemoteConversationCache.maxSessionsPerDevice;
-        index++) {
-      expect(await cache.read('pc-1', 's-$index'), isNotNull);
-    }
-    expect(saves, RemoteConversationCache.maxSessionsPerDevice + 1);
-  });
+        index++
+      ) {
+        expect(await cache.read('pc-1', 's-$index'), isNotNull);
+      }
+      expect(saves, RemoteConversationCache.maxSessionsPerDevice + 1);
+    },
+  );
 
   test('trims oversized windows to the newest events that still fit', () async {
     const cache = RemoteConversationCache(channel: channel);
@@ -127,10 +160,50 @@ void main() {
     final restored = await cache.read('pc-1', 's-1');
     expect(restored, isNotNull);
     expect(restored!.window.events.map((event) => event['seq']), <int>[2]);
-    expect(utf8.encode(stored['pc-1']!).length, lessThanOrEqualTo(
-      RemoteConversationCache.maxDeviceBytes,
-    ));
+    expect(
+      utf8.encode(stored['pc-1']!).length,
+      lessThanOrEqualTo(RemoteConversationCache.maxDeviceBytes),
+    );
   });
+  test(
+    'keeps a contiguous newest suffix under the session byte limit',
+    () async {
+      const cache = RemoteConversationCache(channel: channel);
+      final events = <Map<String, dynamic>>[
+        for (var seq = 1; seq <= 400; seq++)
+          <String, dynamic>{'seq': seq, 'text': '消息' * 400},
+      ];
+      await cache.save(
+        deviceId: 'pc-1',
+        sessionId: 'long-session',
+        window: RemoteConversationWindow(
+          events: events,
+          throughSeq: 400,
+          firstSeq: 1,
+        ),
+      );
+      final item =
+          (jsonDecode(stored['pc-1']!) as Map<String, dynamic>)['sessions']
+              as List<dynamic>;
+      final encoded = item.single as Map<String, dynamic>;
+      expect(
+        utf8.encode(jsonEncode(encoded)).length,
+        lessThanOrEqualTo(RemoteConversationCache.maxSessionBytes),
+      );
+      final restored = await cache.read('pc-1', 'long-session');
+      final kept = restored!.window.events;
+      expect(kept.length, lessThan(events.length));
+      expect(kept.last['seq'], 400);
+      expect(kept.first['seq'], restored.window.firstSeq);
+      expect(
+        kept.map((event) => event['seq']),
+        List<int>.generate(
+          kept.length,
+          (index) => (kept.first['seq'] as int) + index,
+        ),
+      );
+    },
+  );
   test('统计条展开偏好按设备+会话持久化，并在事件写回后保留', () async {
     const cache = RemoteConversationCache(channel: channel);
     await cache.saveStatsExpanded(

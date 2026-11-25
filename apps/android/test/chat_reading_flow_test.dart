@@ -246,9 +246,17 @@ void main() {
       final header = tester.widget<ChatExecutionHeader>(
         find.byType(ChatExecutionHeader),
       );
-      expect(header.expanded, isTrue);
+      expect(header.expanded, isFalse);
       expect(header.chain.active, isTrue);
       expect(header.chain.completed, isFalse);
+      await tester.tap(find.byType(ChatExecutionHeader));
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<ChatExecutionHeader>(find.byType(ChatExecutionHeader))
+            .expanded,
+        isTrue,
+      );
       final step = find.byType(ChatExecutionStep);
       expect(step, findsOneWidget);
       expect(

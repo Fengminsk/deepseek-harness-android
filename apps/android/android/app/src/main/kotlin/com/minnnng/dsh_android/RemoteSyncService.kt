@@ -253,7 +253,9 @@ class RemoteSyncService : Service() {
             this,
             0,
             Intent(this, MainActivity::class.java)
-                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+                .setAction(OPEN_HOME_ACTION)
+                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                .putExtra("pocket.route", "remote-home"),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         val builder = Notification.Builder(this, CHANNEL_ID)
@@ -292,6 +294,7 @@ class RemoteSyncService : Service() {
     }
 
     companion object {
+        const val OPEN_HOME_ACTION = "com.minnnng.dsh_android.OPEN_REMOTE_HOME"
         /** 通知渠道 id；与 Dart 侧没有耦合，只用于系统通知栏分组。 */
         const val CHANNEL_ID = "remote-sync"
 

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:dsh_android/chat_messages.dart';
+import 'package:dsh_android/chat_projection.dart';
 import 'package:dsh_android/image_preview.dart';
 import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/ui.dart';
@@ -71,6 +72,56 @@ Future<void> settleImage(WidgetTester tester) async {
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  testWidgets(
+    'remote photos stay ordered above their caption and reuse the downloaded image on tap',
+    (tester) async {
+      final reads = <String>[];
+      await tester.pumpWidget(
+        app(
+          Scaffold(
+            body: ChatMessage(
+              storageId: 'thread',
+              entry: ChatEntry(
+                key: 'message',
+                seq: 1,
+                kind: ChatEntryKind.user,
+                event: const {},
+                content: [
+                  {'type': 'text', 'text': '相册'},
+                  for (final id in ['first', 'second', 'third'])
+                    {'type': 'image', 'attachment': reference(id)},
+                ],
+              ),
+              messageImage: (ref) => PocketImageSource(
+                name: ref['attachmentId'] as String,
+                load: () async {
+                  reads.add(ref['attachmentId'] as String);
+                  return payload();
+                },
+              ),
+            ),
+          ),
+        ),
+      );
+      await settleImage(tester);
+      final tiles = find.byType(PocketInlineImage);
+      expect(tiles, findsNWidgets(3));
+      final caption = find.text('相册', findRichText: true).first;
+      expect(
+        tester.getBottomRight(tiles.first).dy,
+        lessThan(tester.getTopLeft(caption).dy),
+      );
+      expect(
+        tester.getTopLeft(tiles.first).dx,
+        lessThan(tester.getTopLeft(tiles.last).dx),
+      );
+      await tester.tap(tiles.first);
+      await tester.pumpAndSettle();
+      expect(find.byType(PocketImagePreview), findsOneWidget);
+      expect(reads, ['first', 'second', 'third']);
+    },
+  );
+
   test('history loader uses original session-authorized attachment endpoint exclusively', () async {
     final runtime = _Runtime();
     final value = await PocketImageSource.session(runtime, 'chat-one', {
@@ -84,7 +135,7 @@ void main() {
       'namespace': 'session',
       'method': 'attachment',
       'args': {
-        'request': {'sessionId': 'chat-one', 'attachmentId': 'durable-image'},
+        'request': {'sessionId': 'chat-one', 'attachment': reference()},
       },
     });
   });

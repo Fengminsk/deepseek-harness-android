@@ -320,7 +320,7 @@ void main() {
       await controller.loadCatalog();
       expect(controller.catalogError, isNull);
       expect(controller.catalog?.defaultPreset, 'workspace-write');
-      expect(source.ensureCalls, 2, reason: '每次读目录都先恢复会话');
+      expect(source.ensureCalls, 0, reason: '全局目录读取无需等待会话恢复');
       final calls = source.requests
           .where(
             (request) =>

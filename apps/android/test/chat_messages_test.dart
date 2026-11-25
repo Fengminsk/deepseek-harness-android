@@ -6,6 +6,7 @@ import 'package:dsh_android/chat_message_actions.dart';
 import 'package:dsh_android/chat_projection.dart';
 import 'package:dsh_android/chat_reading.dart';
 import 'package:dsh_android/chat_execution_chain.dart';
+import 'package:dsh_android/chat_execution_data.dart';
 import 'package:dsh_android/runtime.dart';
 import 'package:dsh_android/ui.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
@@ -30,6 +31,62 @@ Widget host(Widget body, {double scale = 1, double keyboard = 0}) =>
     );
 
 void main() {
+  testWidgets('compact process duration stays neutral on an error', (
+    tester,
+  ) async {
+    final chain = ChatExecutionChain(
+      1,
+      active: false,
+      start: <String, dynamic>{'time': 0},
+      end: <String, dynamic>{
+        'time': 1000,
+        'data': <String, dynamic>{
+          'reason': <String, dynamic>{'kind': 'error'},
+        },
+      },
+    );
+    await tester.pumpWidget(
+      host(
+        ChatExecutionHeader(
+          chain: chain,
+          expanded: false,
+          compact: true,
+          onToggle: () {},
+        ),
+      ),
+    );
+    final label = tester.widget<Text>(find.text('用时 1 秒'));
+    final context = tester.element(find.byType(ChatExecutionHeader));
+    expect(label.style?.color, Theme.of(context).colorScheme.onSurfaceVariant);
+  });
+
+  testWidgets('active process details stay folded until tapped', (
+    tester,
+  ) async {
+    final events = <Json>[tool_fixture.callEvent(0, id: 'active-call')];
+    final projection = ChatProjection()..reconcile(events);
+    final scroll = ScrollController();
+    addTearDown(scroll.dispose);
+    await tester.pumpWidget(
+      host(
+        ChatTimeline(
+          sessionId: 'fold-active',
+          projection: projection,
+          controller: scroll,
+          events: events,
+          running: true,
+          compactTurns: true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byType(ChatExecutionHeader), findsOneWidget);
+    expect(find.byType(ChatExecutionStep), findsNothing);
+    await tester.tap(find.byType(ChatExecutionHeader));
+    await tester.pumpAndSettle();
+    expect(find.byType(ChatExecutionStep), findsOneWidget);
+  });
+
   test('external links preserve HTTPS and refuse implicit filesystem or active scheme navigation', () {
     expect(
       chatExternalUri('https://example.com/path?q=%E4%B8%AD#part')?.host,
@@ -237,6 +294,34 @@ void main() {
       expect(find.byType(MarkdownBody), findsNWidgets(2));
     },
   );
+
+  testWidgets('remote live reply renders plain text until settlement', (
+    tester,
+  ) async {
+    final scroll = ScrollController();
+    addTearDown(scroll.dispose);
+    final projection = ChatProjection()..reconcile([]);
+    await tester.pumpWidget(
+      host(
+        ChatTimeline(
+          sessionId: 'a',
+          projection: projection,
+          controller: scroll,
+          compactTurns: true,
+          live: const ChatLiveMessage(
+            identity: 'live',
+            turn: 1,
+            step: 1,
+            content: <Map<String, dynamic>>[
+              <String, dynamic>{'type': 'text', 'text': '**正在生成**'},
+            ],
+          ),
+        ),
+      ),
+    );
+    expect(find.text('**正在生成**'), findsOneWidget);
+    expect(find.byType(MarkdownBody), findsNothing);
+  });
 
   testWidgets(
     'disconnected stream retains its text as unconfirmed without declaring the Agent stopped',
@@ -598,6 +683,10 @@ void main() {
         {'type': 'reasoning', 'text': 'private live detail'},
       ]),
     );
+    expect(find.text('正在思考'), findsNothing);
+    expect(find.text('private live detail'), findsNothing);
+    await tester.tap(find.byType(ChatExecutionHeader));
+    await tester.pumpAndSettle();
     expect(find.text('正在思考'), findsOneWidget);
     expect(find.text('private live detail'), findsOneWidget);
     await tester.pumpWidget(
@@ -812,8 +901,7 @@ void main() {
     await tester.pumpWidget(
       host(
         const PocketMarkdown(
-          data:
-              '# 一级\n\n## 二级\n\n### 三级\n\n#### 四级\n\n正文段落。\n\n- 列表项\n\n> 引用\n\n`inline`\n\n```\ncode\n```',
+          data: '# 一级\n\n## 二级\n\n### 三级\n\n#### 四级\n\n正文段落。\n\n- 列表项\n\n> 引用\n\n`inline`\n\n```\ncode\n```',
         ),
       ),
     );
@@ -846,7 +934,10 @@ void main() {
     final quoteBorder = quote.border! as Border;
     expect(quoteBorder.left.width, 2);
     expect(style.blockquotePadding, const EdgeInsets.fromLTRB(14, 0, 0, 0));
-    expect(style.tableCellsPadding, const EdgeInsets.symmetric(horizontal: 16, vertical: 10));
+    expect(
+      style.tableCellsPadding,
+      const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+    );
     expect(style.tableHead!.fontWeight, FontWeight.w600);
     expect(style.a!.fontWeight, FontWeight.w500);
     expect(chatMessageGutter, 16);
@@ -898,9 +989,7 @@ void main() {
         home: MediaQuery(
           data: const MediaQueryData(size: Size(320, 640)),
           child: Scaffold(
-            body: SingleChildScrollView(
-              child: PocketMarkdown(data: table),
-            ),
+            body: SingleChildScrollView(child: PocketMarkdown(data: table)),
           ),
         ),
       ),

@@ -20,6 +20,7 @@ import {
 import { createControlPlane } from './control-plane.ts'
 import { DesktopNotifications, type RelayNotification } from './desktop-notifications.ts'
 import { createDesktopRelayExecutor, DesktopRelay } from './desktop-relay.ts'
+import { DesktopInteractions } from './desktop-interactions.ts'
 import { DesktopSessionEvents, type DesktopSessionEventsBatch } from './desktop-session-events.ts'
 import { createApiHandler } from './routes.ts'
 import { ChildSupervisor } from './supervisor.ts'
@@ -56,11 +57,6 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
   const tunnelSupervisor = new ChildSupervisor({ logger, label: 'frpc 隧道' })
   // Plan-B desktop relay: loopback-only HTTP for the remote-host child. A start
   // failure disables the relay and leaves the child host untouched.
-  const relay = new DesktopRelay({
-    dataDir,
-    executor: createDesktopRelayExecutor(ctx),
-    logger,
-  })
   /**
    * Forward desktop page-line notifications to the remote-host control API.
    * @param notifications - mapped page-line notifications.
@@ -77,6 +73,16 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
     })
     if (!response.ok) throw new Error(`桌面通知中继返回 HTTP ${String(response.status)}`)
   }
+  const desktopInteractions = new DesktopInteractions({
+    ctx,
+    post: postRelayNotifications,
+    warn: (message, error) => logger.warn('%s: %s', message, error),
+  })
+  const relay = new DesktopRelay({
+    dataDir,
+    executor: createDesktopRelayExecutor(ctx, desktopInteractions),
+    logger,
+  })
   const desktopNotifications = new DesktopNotifications({
     ctx,
     post: postRelayNotifications,
@@ -140,11 +146,13 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
   // subscribes only while the child runs, so a disabled remote host costs nothing.
   ctx.effect(() => {
     void relay.start()
+    desktopInteractions.start()
     desktopNotifications.start()
     desktopSessionEvents.start()
     return async () => {
       desktopSessionEvents.stop()
       desktopNotifications.stop()
+      await desktopInteractions.stop()
       await relay.stop()
     }
   }, 'device-interconnect: desktop relay')

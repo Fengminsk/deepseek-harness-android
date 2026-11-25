@@ -6,8 +6,8 @@
  * {@link DesktopRelayUnavailableError}. Callers then keep their existing child
  * behaviour, so the relay is an additive path only.
  *
- * The token is never logged. Bodies are bounded in `desktop-relay.ts`; this
- * client only sends validated text sends.
+ * The token is never logged. Attachment bytes use a streamed upload, while
+ * message and command requests carry only the desktop-issued receipt IDs.
  * @module @deepseek-ai/dsh-remote-host/desktop-relay-client
  */
 
@@ -22,6 +22,7 @@ export const DESKTOP_RELAY_TIMEOUT_MS = 4_000
  * response by the full action timeout.
  */
 export const DESKTOP_RELAY_STATUS_TIMEOUT_MS = 800
+export const DESKTOP_RELAY_READ_TIMEOUT_MS = 10_000
 
 /** Descriptor published by the desktop plugin. */
 export interface DesktopRelayDescriptor {
@@ -35,8 +36,9 @@ export interface DesktopRelayDescriptor {
   readonly createdAt?: number
 }
 
-/** Text send accepted by `POST /relay/session/send`. */
+/** Desktop prompt with optional receipts from uploads to the same session. */
 export interface DesktopRelaySendRequest {
+  readonly receiptIds?: readonly string[]
   /** Target desktop session. */
   readonly sessionId: string
   /** App request id. */
@@ -109,6 +111,42 @@ export class DesktopRelayClient {
     this.options = options
   }
 
+  async upload(meta: { sessionId: string; name: string; mediaType: string; bytes: number },
+    data: AsyncIterable<Uint8Array>, signal: AbortSignal): Promise<unknown> {
+    const descriptor = await this.descriptor()
+    const url = new URL('/relay/attachments/upload', descriptor.url)
+    if (meta.bytes === 0) {
+      for await (const chunk of data) {
+        if (chunk.length) throw new Error('空文件大小校验失败。')
+      }
+    }
+    url.search = new URLSearchParams({ sessionId: meta.sessionId, name: meta.name, mediaType: meta.mediaType }).toString()
+    const iterator = data[Symbol.asyncIterator]()
+    const stream = meta.bytes === 0 ? undefined : new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        const next = await iterator.next()
+        if (next.done) controller.close()
+        else controller.enqueue(next.value)
+      },
+      async cancel() { await iterator.return?.() },
+    })
+    const init = {
+      method: 'POST', headers: { 'x-dsh-desktop-relay': descriptor.token, 'content-length': String(meta.bytes) },
+      duplex: 'half', ...(stream ? { body: stream } : {}),
+      signal: AbortSignal.any([signal, AbortSignal.timeout(2 * 60 * 60_000)]),
+    } as const
+    const response = await (this.options.fetch ?? fetch)(url, init)
+    const value = await response.json() as RelayEnvelope
+    if (!response.ok || !value.ok) throw new Error(String(value.error?.message ?? '桌面附件上传失败。'))
+    return value.result
+  }
+
+  async command(sessionId: string, line: string, receiptIds: readonly string[]): Promise<unknown> {
+    const response = await this.post('/relay/session/command-attachments', { sessionId, line, receiptIds })
+    if (response.ok) return response.result
+    throw new Error(String(response.error?.message ?? '附件指令未被桌面受理。'))
+  }
+
   /** @returns whether a descriptor file currently exists and parses. */
   async available(): Promise<boolean> {
     try {
@@ -120,17 +158,78 @@ export class DesktopRelayClient {
   }
 
   /**
-   * Relay one text send to the desktop process.
-   * @param request - validated text send.
+   * Relay one prompt to the desktop process.
+   * @param request - validated text and any prepared desktop receipts.
    * @returns the desktop facade's `session.send` result.
    * @throws {DesktopRelayUnavailableError} when the relay cannot execute it.
    */
   async send(request: DesktopRelaySendRequest): Promise<unknown> {
-    const envelope = await this.post('/relay/session/send', request)
+    const envelope = await this.post(request.receiptIds?.length ? '/relay/session/send-attachments' : '/relay/session/send', request)
     if (envelope.ok === true) return envelope.result
     throw new DesktopRelayUnavailableError(
       typeof envelope.error?.code === 'string' ? envelope.error.code : 'relay/error',
       typeof envelope.error?.message === 'string' ? envelope.error.message : '桌面中继没有执行这次发送。',
+    )
+  }
+
+  /** Read one bounded window through the desktop process that owns the Session. */
+  async readWindow(request: Record<string, unknown>): Promise<unknown> {
+    const envelope = await this.request('/relay/session/read-window', {
+      method: 'POST', body: JSON.stringify(request),
+    }, DESKTOP_RELAY_READ_TIMEOUT_MS)
+    if (envelope.ok === true) return envelope.result
+    throw new DesktopRelayUnavailableError(
+      typeof envelope.error?.code === 'string' ? envelope.error.code : 'relay/read-failed',
+      typeof envelope.error?.message === 'string' ? envelope.error.message : '桌面会话读取失败。',
+    )
+  }
+
+  /** Read the desktop owner's authoritative Session projections. */
+  async projections(sessionId: string): Promise<unknown> {
+    const envelope = await this.request('/relay/session/projections', {
+      method: 'POST', body: JSON.stringify({ sessionId }),
+    }, DESKTOP_RELAY_READ_TIMEOUT_MS)
+    if (envelope.ok === true) return envelope.result
+    throw new DesktopRelayUnavailableError(
+      typeof envelope.error?.code === 'string' ? envelope.error.code : 'relay/read-failed',
+      typeof envelope.error?.message === 'string' ? envelope.error.message : '桌面投影读取失败。',
+    )
+  }
+
+  /** Read a global catalog from the already running desktop process. */
+  async commandCatalog(agentId: string): Promise<unknown> {
+    const value = await this.get('/relay/catalog/commands?agentId=' + encodeURIComponent(agentId), DESKTOP_RELAY_READ_TIMEOUT_MS)
+    if (value.ok) return value.result
+    throw new Error(String(value.error?.message ?? '无法读取桌面会话指令。'))
+  }
+
+  async catalog(kind: 'model' | 'permission'): Promise<unknown> {
+    const envelope = await this.get(`/relay/catalog/${kind}`, DESKTOP_RELAY_READ_TIMEOUT_MS)
+    if (envelope.ok === true) return envelope.result
+    throw new DesktopRelayUnavailableError(
+      typeof envelope.error?.code === 'string' ? envelope.error.code : 'relay/read-failed',
+      typeof envelope.error?.message === 'string' ? envelope.error.message : '桌面目录读取失败。',
+    )
+  }
+  async interactionsList(sessionId: string): Promise<unknown> {
+    const envelope = await this.request('/relay/interactions/list', {
+      method: 'POST', body: JSON.stringify({ sessionId }),
+    }, DESKTOP_RELAY_READ_TIMEOUT_MS)
+    if (envelope.ok === true) return envelope.result
+    throw new DesktopRelayUnavailableError(
+      typeof envelope.error?.code === 'string' ? envelope.error.code : 'relay/read-failed',
+      typeof envelope.error?.message === 'string' ? envelope.error.message : '桌面审批读取失败。',
+    )
+  }
+
+  async interactionsReply(params: Record<string, unknown>): Promise<unknown> {
+    const envelope = await this.request('/relay/interactions/reply', {
+      method: 'POST', body: JSON.stringify(params),
+    })
+    if (envelope.ok === true) return envelope.result
+    throw new DesktopRelayUnavailableError(
+      typeof envelope.error?.code === 'string' ? envelope.error.code : 'relay/reply-failed',
+      typeof envelope.error?.message === 'string' ? envelope.error.message : '桌面审批答复失败。',
     )
   }
 

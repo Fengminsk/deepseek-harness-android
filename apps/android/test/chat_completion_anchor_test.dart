@@ -124,7 +124,14 @@ void main() {
       );
       scroll.jumpTo(0);
       await tester.pump(const Duration(milliseconds: 16));
-      expect(tester.getTopLeft(oldReply).dy, lessThan(initialY - 30));
+      // The settled reply stays above the next question; the new timeline no
+      // longer lifts the previous answer out of view when a new send lands.
+      expect(
+        tester.getTopLeft(oldReply).dy,
+        lessThan(
+          tester.getTopLeft(find.text('下一条问题', findRichText: true)).dy,
+        ),
+      );
       expect(tester.takeException(), isNull);
     },
   );

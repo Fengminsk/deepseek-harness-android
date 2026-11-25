@@ -7,9 +7,9 @@
 // [ChatTimeline]（内部是 `ChatMessage` / `ChatContent`），本文件不复制一份对话
 // 内核的投影或渲染逻辑，也不含任何样例消息。
 //
-// 待处理的审批与提问显示在输入区上方的卡片里：审批卡片写明工具名与一行输入
-// 摘要，提供「允许一次 / 拒绝」；提问卡片按 `multiSelect` 渲染选项（可补自定义
-// 文字），每个问题都有答复后「提交」才可用。答复走数据源的
+// 待处理的审批与提问替代底部输入卡：审批卡显示原因、命令与「允许一次 / 拒绝」，
+// 也可填写补充指令（先拒绝当前调用，再作为新消息发送）；提问卡片按
+// `multiSelect` 渲染选项（可补自定义文字），每个问题都有答复后「提交」才可用。答复走数据源的
 // [RemoteConversationSource.replyApproval] / [RemoteConversationSource.answerQuestion]，
 // 页面不拼线上 `response` 字段。
 //
@@ -88,6 +88,7 @@
 // [AppTextStyle]，两者都会跟随系统与 App 设置。
 
 import 'dart:async';
+import 'dart:ui' as ui;
 
 import 'package:flutter/services.dart';
 import 'package:flutter_svg/flutter_svg.dart';
@@ -96,6 +97,7 @@ import 'package:material_ui/material_ui.dart';
 import 'approvals_draft.dart';
 import 'attachment_surface.dart';
 import 'attachments.dart';
+import 'image_preview.dart';
 import 'chat_messages.dart';
 import 'chat_plan.dart';
 import 'chat_projection.dart';
@@ -141,17 +143,23 @@ String sanitizeRemoteUiMessage(String message, {int maxLength = 240}) {
       lower.contains('session/write-conflict') ||
       lower.contains('session/already-owned') ||
       lower.contains('write handle')) {
-    return '这个会话正在电脑上使用，手机暂时不能发送；请在电脑上结束/关闭该会话后重试。';
+    return '发送未成功，请稍后重试。';
   }
   if (lower.contains('unsupported-method')) {
     return '这台电脑暂不支持该操作。';
+  }
+  if (lower.contains('app stream limit reached')) {
+    return '正在恢复消息同步…';
   }
   var text = raw
       .replaceAll(
         RegExp(r'''session\s*["'][^"']*["']''', caseSensitive: false),
         '',
       )
-      .replaceAll(RegExp(r'session[-_][0-9a-fA-F-]{8,}', caseSensitive: false), '')
+      .replaceAll(
+        RegExp(r'session[-_][0-9a-fA-F-]{8,}', caseSensitive: false),
+        '',
+      )
       .replaceAll(RegExp(r'\s{2,}'), ' ')
       .replaceFirst(RegExp(r'^[\s:：,，;；.\-]+'), '')
       .trim();
@@ -167,14 +175,11 @@ List<Json> trimRemoteConversationEvents(List<Json> events, int max) {
   if (events.length <= max) return events;
   return events.sublist(events.length - max);
 }
-/// 电脑端 DSH 持有会话写句柄时宿主返回的错误文本。
-///
-/// 根因是 desktop DSH 与 remote-host 两个进程共用真实 DSH_HOME，手机端不抢锁；
-/// 这里只把原始英文映射成用户可读的中文，草稿仍保留可重试。
+
+/// 识别旧版宿主的会话写句柄冲突。发送保持草稿，不弹悬浮提示。
 String? remoteWriteHandleConflictMessage(String message) {
   if (!message.contains('already owned by an active write handle')) return null;
-  return '这个会话正在电脑上使用（电脑端持有写入），手机暂时不能发送；'
-      '请在电脑上结束/关闭该会话后重试。';
+  return '发送未成功，请稍后重试。';
 }
 
 /// 从会话事件推导「电脑还在执行」。
@@ -215,7 +220,10 @@ String? remoteWriteHandleConflictMessage(String message) {
       case 'tool/call':
         final callId = data['callId'];
         if (callId is String && callId.isNotEmpty) {
-          calls[callId] = (seq, data['name'] is String ? data['name'] as String : null);
+          calls[callId] = (
+            seq,
+            data['name'] is String ? data['name'] as String : null,
+          );
         }
       case 'tool/result':
         final message = data['message'];
@@ -229,9 +237,7 @@ String? remoteWriteHandleConflictMessage(String message) {
       if (call.$1 > lastTurnEndSeq) call,
   ];
   final running =
-      openTurns.isNotEmpty ||
-      openSteps.isNotEmpty ||
-      pendingCalls.isNotEmpty;
+      openTurns.isNotEmpty || openSteps.isNotEmpty || pendingCalls.isNotEmpty;
   String? toolName;
   if (pendingCalls.isNotEmpty) {
     pendingCalls.sort((left, right) => right.$1.compareTo(left.$1));
@@ -467,9 +473,15 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
   /// 会话事件的投影与原始事件。两者一起交给 [ChatTimeline]。
   final _projection = ChatProjection();
   List<Json> _events = const [];
+  ChatTimeline? _timeline;
+  List<Json>? _timelineEvents;
+  ChatLiveMessage? _timelineLive;
+  bool? _timelineRunning;
   final Set<int> _seenSeqs = <int>{};
 
   ChatLiveMessage? _live;
+  Timer? _liveFrameTimer;
+  Json? _queuedLiveValue;
 
   /// 事件流最近一次给出的运行状态；null 表示还没收到过 `session.status`。
   ///
@@ -504,7 +516,7 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     return _now().difference(last) < _inferredSilenceTimeout;
   }
 
-  /// inferredRunning 期间补偿拉取窗口的定时器（5s，仅推送静默时真正请求）。
+  /// 可见会话补偿拉取窗口的定时器（5s，仅推送静默时真正请求）。
   Timer? _inferredRefreshTimer;
   bool _inferredRefreshInFlight = false;
 
@@ -547,6 +559,7 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
   /// 会话本地缓存（点开先渲染，随后由实时窗口覆盖）与同步服务。
   late final RemoteConversationCache _conversationCache =
       widget.conversationCache ?? const RemoteConversationCache();
+
   /// 缓存 key 里的电脑标识；测试或只读数据源可能没有，此时不做本地缓存。
   String? _cacheDeviceId;
 
@@ -625,9 +638,6 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
   /// 当前草稿是不是以 `/` 开头的会话指令；输入区据此显示「会在电脑上执行」的说明。
   bool _draftIsCommand = false;
 
-  /// 正在提交会话指令。与发送共用 [_sending] 的忙态，只是文案不同。
-  bool _submittingCommand = false;
-
   /// 最近一条会话指令结果与它的原文；成功、失败都常驻，直到下一条指令、成功
   /// 发送或用户点「知道了」。
   ({String line, RemoteCommandResult result})? _commandResult;
@@ -680,6 +690,8 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
   /// 是否仍然贴着最新内容。用户向上翻到离底部较远的位置后，键盘、更新都不再
   /// 把列表拽回底部；滚回底部附近时自动恢复跟随。
   bool _pinnedToEnd = true;
+  bool _deferKeyboardScroll = false;
+  Timer? _composerOpenFallback;
 
   /// 附件草稿的调用面（远程连接）与本页持有的草稿。
   ///
@@ -722,11 +734,11 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     if (_cacheDeviceId != null) {
       _cacheRestorePending = true;
       unawaited(_restoreConversationCache());
-      unawaited(_restoreStatsExpanded());
     }
     unawaited(_source.start());
     if (_source.phase == RemoteConnectionPhase.ready) {
       _startSessionTasksPolling();
+      _startInferredRefresh();
     }
   }
 
@@ -735,6 +747,8 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     WidgetsBinding.instance.removeObserver(this);
     _focus.removeListener(_onFocusChanged);
     _statusTimer?.cancel();
+    _liveFrameTimer?.cancel();
+    _composerOpenFallback?.cancel();
     _sessionTasksTimer?.cancel();
     _sessionTasksTimer = null;
     _sessionTasksPolling = false;
@@ -787,13 +801,12 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
       return;
     }
     _startSessionTasksPolling();
-    if (_inferredRunning) _startInferredRefresh();
+    _startInferredRefresh();
   }
 
   @override
   void didChangeMetrics() {
-    // 键盘与安全区变化会改变列表视口高度；仍贴着最新内容时重新贴住。
-    _scheduleScrollToEnd();
+    if (_focus.hasFocus || _keyboardVisible) _deferKeyboardScroll = true;
     // 键盘收起（例如按返回键）时输入框不会自动失焦：下一帧 MediaQuery 更新完
     // 再看一次键盘是否还在，决定缩小回浏览态还是保持展开。
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -809,14 +822,15 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
   /// 区或表盘再退出）；输入态按草稿决定：有草稿保持展开，纯浏览缩回缩小态。
   void _syncComposerWithKeyboard() {
     if (!mounted) return;
-    final visible = MediaQuery.viewInsetsOf(context).bottom > 0;
+    final visible = View.of(context).viewInsets.bottom > 0;
     final wasVisible = _keyboardVisible;
     _keyboardVisible = visible;
     if (visible == wasVisible) return;
     if (visible) {
-      if (_composerMode == PocketComposerMode.browse) {
-        setState(() => _composerMode = PocketComposerMode.composing);
-      }
+      // Wait for the last IME metrics event and the scroll correction before
+      // growing the card. Its height otherwise changes during the keyboard move.
+      _composerOpenFallback?.cancel();
+      _composerOpenFallback = null;
       return;
     }
     if (_composerMode == PocketComposerMode.picker) return;
@@ -863,7 +877,7 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     });
     if (_source.phase == RemoteConnectionPhase.ready) {
       _startSessionTasksPolling();
-      if (_inferredRunning) _startInferredRefresh();
+      _startInferredRefresh();
     } else {
       _stopSessionTasksPolling();
       _stopInferredRefresh();
@@ -889,25 +903,38 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     final deviceId = _cacheDeviceId;
     if (deviceId == null) return;
     RemoteConversationCacheEntry? cached;
+    bool? expanded;
     try {
-      cached = await _conversationCache.read(deviceId, _source.sessionId);
+      final state = await _conversationCache.readState(
+        deviceId,
+        _source.sessionId,
+      );
+      cached = state.entry;
+      expanded = state.statsExpanded;
     } on Object {
       cached = null;
     }
     if (!mounted) return;
     if (cached == null || cached.window.events.isEmpty) {
       if (_cacheRestorePending) {
-        setState(() => _cacheRestorePending = false);
+        setState(() {
+          _cacheRestorePending = false;
+          if (expanded != null && !_statsUserChanged) _statsExpanded = expanded;
+        });
       }
       return;
     }
     if (_events.isNotEmpty) {
       // 实时快照已经先到：缓存不再覆盖页面，只用于后续断线兜底。
-      setState(() => _cacheRestorePending = false);
+      setState(() {
+        _cacheRestorePending = false;
+        if (expanded != null && !_statsUserChanged) _statsExpanded = expanded;
+      });
       return;
     }
     setState(() {
       _cacheRestorePending = false;
+      if (expanded != null && !_statsUserChanged) _statsExpanded = expanded;
       _loading = false;
       _events = List<Json>.of(cached!.window.events);
       _seenSeqs
@@ -919,29 +946,16 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
       _projection.reconcile(_events);
       _windowThroughSeq = cached.window.throughSeq;
       final cachedTitle = cached.title.trim();
-      if (cachedTitle.isNotEmpty && _title == widget.title.trim()) {
+      // 列表标题来自电脑的新目录；缓存标题可能是更早的「未命名会话」。
+      if (cachedTitle.isNotEmpty &&
+          (widget.title.trim().isEmpty || widget.title.trim() == '未命名会话') &&
+          _title ==
+              (widget.title.trim().isEmpty ? '远程会话' : widget.title.trim())) {
         _title = cachedTitle;
       }
     });
     _scheduleScrollToEnd();
     _recomputeInferredRunning();
-  }
-
-  /// 异步恢复统计条展开偏好；用户已手动切换时不再覆盖。
-  Future<void> _restoreStatsExpanded() async {
-    final deviceId = _cacheDeviceId;
-    if (deviceId == null) return;
-    bool? expanded;
-    try {
-      expanded = await _conversationCache.readStatsExpanded(
-        deviceId,
-        _source.sessionId,
-      );
-    } on Object {
-      expanded = null;
-    }
-    if (!mounted || expanded == null || _statsUserChanged) return;
-    setState(() => _statsExpanded = expanded!);
   }
 
   /// 用户切换统计条展开状态：立即生效并异步持久化（按设备+会话隔离）。
@@ -1057,9 +1071,7 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
       });
     }
     final needsRefresh =
-        nextRunning &&
-        _appActive &&
-        _source.phase == RemoteConnectionPhase.ready;
+        _appActive && _source.phase == RemoteConnectionPhase.ready;
     if (needsRefresh) {
       _startInferredRefresh();
     } else {
@@ -1081,10 +1093,9 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
         _inferredToolName = null;
       }
     }
-    _stopInferredRefresh();
   }
 
-  /// 5s 兜底拉取：仅推送静默且日志推导仍活跃时真正请求。
+  /// 5s 兜底拉取：会话可见且推送静默时增量对账，含漏掉的 turn/end。
   void _startInferredRefresh() {
     if (!mounted || !_appActive) return;
     if (_source.phase != RemoteConnectionPhase.ready) return;
@@ -1108,7 +1119,7 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
         _source.phase != RemoteConnectionPhase.ready) {
       return;
     }
-    // 日志推导静默超过 25s：隐藏状态条并停止兜底，避免永久「工作中」。
+    // 日志推导静默超过 25s：隐藏状态条；下一轮继续对账，防止漏掉最终事件。
     if (_inferredRunning && !_inferredRunningActive) {
       _clearInferredRunning();
       return;
@@ -1132,8 +1143,6 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
       // 补偿刷新失败：保留时间线，下一轮再试；错误不显示给用户。
     } finally {
       _inferredRefreshInFlight = false;
-      // 兜底拉取后重置推送窗口：没有新推送时下一次兜底至少再等 8s。
-      _lastRemotePushAt = _now();
     }
   }
 
@@ -1167,36 +1176,28 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
 
   /// 合并一次增量读到的较新窗口：按 seq 去重升序，只有真正新增才重建。
   Future<void> _mergeNewer(RemoteConversationWindow window) async {
-    if (!mounted || window.events.isEmpty) {
-      if (mounted && window.hasMore != _hasOlder) {
-        setState(() => _hasOlder = window.hasMore);
-      }
-      return;
-    }
+    if (!mounted) return;
     if (window.resetRequired) {
       // 增量缺口无法桥接：整窗首屏重读一次，仍只取最新一页。
       await _source.reload();
       return;
     }
+    if (window.events.isEmpty) return;
     final added = <Json>[];
     for (final event in window.events) {
       final seq = event['seq'];
       if (seq is! int || !_seenSeqs.add(seq)) continue;
       added.add(event);
     }
-    if (added.isEmpty) {
-      if (window.hasMore != _hasOlder) {
-        setState(() => _hasOlder = window.hasMore);
-      }
-      return;
-    }
+    if (added.isEmpty) return;
     _lastInferredEvidenceAt = _now();
     setState(() {
       _events = [..._events, ...added]..sort(_bySeq);
-      if (window.throughSeq > _windowThroughSeq) {
-        _windowThroughSeq = window.throughSeq;
+      // 增量窗口可能因数量/字节预算截断；只推进到实际收到的最后一条。
+      final receivedSeq = added.last['seq'];
+      if (receivedSeq is int && receivedSeq > _windowThroughSeq) {
+        _windowThroughSeq = receivedSeq;
       }
-      _hasOlder = window.hasMore;
       _projection.reconcile(_events);
       _trimRetainedEvents();
     });
@@ -1254,8 +1255,10 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (!mounted || !_scroll.hasClients) return;
           final nextMax = _scroll.position.maxScrollExtent;
-          final target = (previousPixels + (nextMax - previousMax))
-              .clamp(0.0, nextMax);
+          final target = (previousPixels + (nextMax - previousMax)).clamp(
+            0.0,
+            nextMax,
+          );
           _scroll.jumpTo(target);
         });
       }
@@ -1335,11 +1338,7 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
       context: context,
       builder: (dialog) => AlertDialog(
         title: const Text('删除排队消息'),
-        content: Text(
-          message.nextStep
-              ? '删除后这条插话不再发送。'
-              : '删除后这条排队消息不再执行。',
-        ),
+        content: Text(message.nextStep ? '删除后这条插话不再发送。' : '删除后这条排队消息不再执行。'),
         actions: <Widget>[
           TextButton(
             onPressed: () => Navigator.of(dialog).pop(false),
@@ -1507,10 +1506,23 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
         }
       case RemoteConversationLive(:final value):
         _noteRemotePush();
-        setState(() => _live = _liveMessage(value));
-        _scheduleScrollToEnd();
+        if (value == null) {
+          _liveFrameTimer?.cancel();
+          _liveFrameTimer = null;
+          _queuedLiveValue = null;
+          if (_live != null) setState(() => _live = null);
+        } else {
+          // A model can send dozens of growing text frames per second. Parsing
+          // each whole Markdown reply on the UI thread makes input unresponsive.
+          _queuedLiveValue = value;
+          _liveFrameTimer ??= Timer(
+            const Duration(milliseconds: 120),
+            _flushLiveFrame,
+          );
+        }
       case RemoteConversationRunning(:final running):
         _noteRemotePush();
+        if (!running) _flushLiveFrame();
         if (!running) _clearInferredRunning();
         if (_runningFromEvents == running) return;
         setState(() => _runningFromEvents = running);
@@ -1526,6 +1538,9 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
           _showStatus(message);
         }
       case RemoteConversationInteractions(:final requests):
+        if (requests.isNotEmpty && _interactions.isEmpty) {
+          _focus.unfocus();
+        }
         setState(() {
           _interactions = requests;
           // 已经不在列表里的交互不用再保留错误；仍在等待的保留到下次答复或
@@ -1547,6 +1562,16 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
         if (_insights == insights) return;
         setState(() => _insights = insights);
     }
+  }
+
+  void _flushLiveFrame() {
+    _liveFrameTimer?.cancel();
+    _liveFrameTimer = null;
+    final value = _queuedLiveValue;
+    _queuedLiveValue = null;
+    if (!mounted || value == null) return;
+    setState(() => _live = _liveMessage(value));
+    _scheduleScrollToEnd();
   }
 
   /// 两个服务商集合是否相同；用于跳过内容没变的目录更新。
@@ -1587,13 +1612,19 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
   void _onFocusChanged() {
     if (!mounted) return;
     if (_focus.hasFocus) {
-      _scheduleScrollToEnd();
-      // 聚焦即展开输入卡；面板打开期间焦点不变，状态由面板自己管。
+      // A hardware keyboard has no viewInsets. Let the soft keyboard report
+      // its final viewport first; this fallback handles no-IME environments.
       if (_composerMode == PocketComposerMode.browse) {
-        setState(() => _composerMode = PocketComposerMode.composing);
+        _composerOpenFallback?.cancel();
+        _composerOpenFallback = Timer(const Duration(milliseconds: 450), () {
+          _composerOpenFallback = null;
+          if (!_keyboardVisible) _finishComposerEntrance();
+        });
       }
       return;
     }
+    _composerOpenFallback?.cancel();
+    _composerOpenFallback = null;
     // 失焦不立刻缩小：有草稿时保持展开，纯浏览才回到缩小态。
     if (_input.text.trim().isEmpty &&
         _composerMode == PocketComposerMode.composing) {
@@ -1601,10 +1632,36 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     }
   }
 
+  void _finishComposerEntrance() {
+    if (!mounted ||
+        !_focus.hasFocus ||
+        _composerMode != PocketComposerMode.browse) {
+      return;
+    }
+    setState(() => _composerMode = PocketComposerMode.composing);
+  }
+
+  void _onKeyboardSettled() {
+    if (_keyboardVisible &&
+        _focus.hasFocus &&
+        _composerMode == PocketComposerMode.browse) {
+      _finishComposerEntrance();
+      if (!MediaQuery.disableAnimationsOf(context)) return;
+    }
+    _deferKeyboardScroll = false;
+    _scheduleScrollToEnd();
+  }
+
+  void _onComposerSizeEnd() {
+    if (!_deferKeyboardScroll) return;
+    _deferKeyboardScroll = false;
+    _scheduleScrollToEnd();
+  }
+
   /// 跳到列表底部，并在下一帧再校正一次：懒加载列表的最大滚动距离要等新行布局
   /// 完才准确。
   void _scheduleScrollToEnd() {
-    if (!mounted || _scrollToEndScheduled) return;
+    if (!mounted || _deferKeyboardScroll || _scrollToEndScheduled) return;
     _scrollToEndScheduled = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) {
@@ -1630,6 +1687,8 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
   bool _trackScroll(ScrollNotification notification) {
     if (notification.depth != 0) return false;
     switch (notification) {
+      case ScrollStartNotification() when notification.dragDetails != null:
+        _pinnedToEnd = false;
       case ScrollUpdateNotification():
         final metrics = notification.metrics;
         _pinnedToEnd =
@@ -1647,6 +1706,10 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     return PocketScaffold(
       title: const SizedBox.shrink(),
       ambientMotion: false,
+      animateEntrance: false,
+      bottomHeightDebounce: const Duration(milliseconds: 80),
+      keyboardOverlay: true,
+      onKeyboardSettled: _onKeyboardSettled,
       header: _header(context),
       headerHeight: 64,
       body: Listener(
@@ -1670,14 +1733,17 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         ?_banner(context),
-        ?_interactionArea(context),
-        _planArea(context),
-        ?_todoArea(context),
-        ?_modelRouteNotice(context),
-        ?_credentialNotice(context),
-        ?_commandResultBar(context),
-        ?_persistentNoticeBar(context),
-        if (insights != null && RemoteStatsBar.hasReadings(insights))
+        if (_interactions.isEmpty) ...[
+          _planArea(context),
+          ?_todoArea(context),
+          ?_modelRouteNotice(context),
+          ?_credentialNotice(context),
+          ?_commandResultBar(context),
+          ?_persistentNoticeBar(context),
+        ],
+        if (_interactions.isEmpty &&
+            insights != null &&
+            RemoteStatsBar.hasReadings(insights))
           Padding(
             padding: const EdgeInsets.fromLTRB(0, 8, 0, 2),
             child: RemoteStatsBar(
@@ -1687,9 +1753,52 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
               onExpandedChanged: _onStatsExpandedChanged,
             ),
           ),
-        _sessionTasksPanel(context),
-        _composerArea(context),
+        if (_interactions.isEmpty) _sessionTasksPanel(context),
+        AnimatedSwitcher(
+          duration: _remoteAnimationDuration(context),
+          reverseDuration: _remoteAnimationDuration(context),
+          switchInCurve: Curves.easeOutCubic,
+          switchOutCurve: Curves.easeInCubic,
+          transitionBuilder: _bottomDockTransition,
+          layoutBuilder: (current, previous) => Stack(
+            alignment: Alignment.bottomCenter,
+            children: [...previous, ?current],
+          ),
+          child: _interactions.isEmpty
+              ? KeyedSubtree(
+                  key: const ValueKey('remote-composer-dock'),
+                  child: _composerArea(context),
+                )
+              : KeyedSubtree(
+                  key: const ValueKey('remote-interaction-dock'),
+                  child: _interactionArea(context),
+                ),
+        ),
       ],
+    );
+  }
+
+  Widget _bottomDockTransition(Widget child, Animation<double> animation) {
+    return AnimatedBuilder(
+      animation: animation,
+      child: child,
+      builder: (context, child) {
+        final progress = Curves.easeOutCubic.transform(animation.value);
+        return Opacity(
+          opacity: progress,
+          child: Transform.translate(
+            offset: Offset(0, (1 - progress) * 18),
+            child: ImageFiltered(
+              enabled: progress < 1,
+              imageFilter: ui.ImageFilter.blur(
+                sigmaX: (1 - progress) * 7,
+                sigmaY: (1 - progress) * 7,
+              ),
+              child: child,
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -1788,20 +1897,13 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
         Positioned.fill(
           child: RepaintBoundary(
             key: const ValueKey('remote-conversation-transcript'),
-            child: ChatTimeline(
-              sessionId: _source.sessionId,
-              projection: _projection,
-              controller: _scroll,
-              events: _events,
-              live: _live,
-              running: _running,
-              compactTurns: true,
-            ),
+            child: _timelineForCurrentState(),
           ),
         ),
         if (_hasOlder || _loadingOlder)
           Positioned(
-            top: 6,
+            // PocketScaffold overlays its 64dp header above the transcript.
+            top: MediaQuery.paddingOf(context).top + 64 + 32,
             left: 0,
             right: 0,
             child: Center(
@@ -1835,9 +1937,9 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
                         const SizedBox(width: 6),
                         Text(
                           _loadingOlder ? '正在加载更早消息…' : '加载更早消息',
-                          style: AppTextStyle.footnote.of(context).copyWith(
-                            color: colors.onSurfaceVariant,
-                          ),
+                          style: AppTextStyle.footnote
+                              .of(context)
+                              .copyWith(color: colors.onSurfaceVariant),
                         ),
                       ],
                     ),
@@ -1847,6 +1949,36 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
             ),
           ),
       ],
+    );
+  }
+
+  ChatTimeline _timelineForCurrentState() {
+    final running = _running;
+    final cached = _timeline;
+    if (cached != null &&
+        identical(_timelineEvents, _events) &&
+        identical(_timelineLive, _live) &&
+        _timelineRunning == running) {
+      return cached;
+    }
+    _timelineEvents = _events;
+    _timelineLive = _live;
+    _timelineRunning = running;
+    return _timeline = ChatTimeline(
+      sessionId: _source.sessionId,
+      projection: _projection,
+      controller: _scroll,
+      events: _events,
+      live: _live,
+      running: running,
+      compactTurns: true,
+      messageImage: (ref) => PocketImageSource.message(
+        _source.request,
+        _source.sessionId,
+        ref,
+        generation: () => _attachmentSurface?.connectionGeneration ?? 0,
+      ),
+      animateRows: false,
     );
   }
 
@@ -2146,33 +2278,14 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
                     ),
                   ),
                 ),
-              if (canSend && _sending)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 6),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: [
-                      const SizedBox(
-                        width: 14,
-                        height: 14,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      ),
-                      const SizedBox(width: 8),
-                      Text(
-                        _submittingCommand ? '正在执行电脑上的指令…' : '正在发送…',
-                        style: AppTextStyle.footnote
-                            .of(context)
-                            .copyWith(color: colors.onSurfaceVariant),
-                      ),
-                    ],
-                  ),
-                ),
             ],
           ),
         ),
         // 悬浮输入卡：缩小/展开/推理面板三态，附件 rail 作为卡片上方的插槽。
         RemoteComposer(
           floating: true,
+          animateSize: true,
+          onSizeEnd: _onComposerSizeEnd,
           margin: const EdgeInsets.fromLTRB(0, 10, 0, 4),
           mode: _composerMode,
           deviceLabel: widget.deviceName,
@@ -2190,7 +2303,8 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
           sending: _sending,
           onChanged: _onDraftChanged,
           onSubmitted: (value) => unawaited(_submit(value)),
-          onAdd: canOpenMenu ? _openAddSheet : null,
+          onAdd: canOpenMenu ? _exitReasoningPanel : null,
+          addPopupBuilder: canOpenMenu ? _buildAddPopup : null,
           onApproval: _permissions.presetsReady ? _openPermissionSheet : null,
           onModel: canSelectModel ? _openModelsFromReasoningPanel : null,
           onReasoning: canSelectModel ? _toggleReasoningPanel : null,
@@ -2206,29 +2320,26 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
           // 远程数据源没有取消入口（协议方法表里没有取消方法），不画停止按钮。
           onStop: null,
           sendKey: const ValueKey('remote-send'),
-          top: _attachmentRailSlot(context, drafts),
+          attachments: _attachmentRailSlot(context, drafts),
         ),
       ],
     );
   }
 
-  /// 输入卡上方的工作状态条 + 排队消息坞。
+  /// 输入卡上方只展示真实排队消息，不再叠加工作状态提示。
   ///
   /// 连接未就绪、宿主不支持 `tasks.session`、或首次读取还没返回时不渲染；读取失败
   /// 静默保留上次读数。队列坞只在 pending 非空时出现（0 条完全不占位）。
   ///
-  /// 始终占一个稳定的 widget 槽位，用 [AnimatedSize] 让状态条/队列坞出现与消失时
-  /// 输入卡平滑过渡，避免整块面板插入/移除造成的跳动。
+  /// 队列为空时不占位，避免与输入卡或发送错误文字重叠。
   Widget _sessionTasksPanel(BuildContext context) {
     final content = _sessionTasksContent(context);
-    return ClipRect(
-      child: AnimatedSize(
-        duration: _remoteAnimationDuration(context),
-        curve: Curves.easeInOutCubic,
-        alignment: Alignment.topCenter,
-        child:
-            content ?? const SizedBox(width: double.infinity, height: 0),
-      ),
+    return AnimatedSize(
+      duration: _remoteAnimationDuration(context),
+      curve: Curves.easeInOutCubic,
+      alignment: Alignment.bottomCenter,
+      clipBehavior: Clip.none,
+      child: content ?? const SizedBox(width: double.infinity, height: 0),
     );
   }
 
@@ -2236,74 +2347,23 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     if (_source.phase != RemoteConnectionPhase.ready) return null;
     final tasks = _sessionTasks;
     final hasTasks = !_sessionTasksUnsupported && _sessionTasksLoaded;
-    final running = _running;
-    final waiting =
-        !running &&
-        hasTasks &&
-        (tasks?.status == 'waiting' || (tasks?.blockingRequests ?? 0) > 0);
     final pending = hasTasks
         ? tasks?.pending ?? const <RemoteQueuedMessage>[]
         : const <RemoteQueuedMessage>[];
     final queued = hasTasks ? tasks?.queued ?? 0 : 0;
     // pending 非空时队列坞自己会显示「N 条排队消息」，不重复画一条计数状态条。
-    final showQueuedCount =
-        hasTasks && !running && !waiting && queued > 0 && pending.isEmpty;
-    if (!running && !waiting && !showQueuedCount && pending.isEmpty) return null;
+    final showQueuedCount = hasTasks && queued > 0 && pending.isEmpty;
+    if (!showQueuedCount && pending.isEmpty) {
+      return null;
+    }
     return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+      padding: const EdgeInsets.fromLTRB(24, 0, 24, 0),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (running || waiting) _workStatusRow(context, running: running),
           if (showQueuedCount) _queuedCountRow(context, queued),
           if (pending.isNotEmpty) _queueDock(context, pending),
-        ],
-      ),
-    );
-  }
-
-  /// 一行工作状态：静态圆点，不做常驻转圈/动画，避免长停留持续重绘发热。
-  Widget _workStatusRow(BuildContext context, {required bool running}) {
-    final colors = Theme.of(context).colorScheme;
-    return Container(
-      key: const ValueKey('remote-work-status'),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-      decoration: BoxDecoration(
-        color: colors.surfaceContainerHighest.withValues(alpha: .6),
-        borderRadius: BorderRadius.circular(14),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (running)
-            Container(
-              width: 8,
-              height: 8,
-              decoration: BoxDecoration(
-                color: colors.primary,
-                shape: BoxShape.circle,
-              ),
-            )
-          else
-            Icon(
-              Icons.pan_tool_alt_outlined,
-              size: 15,
-              color: colors.primary,
-            ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              running
-                  ? (_inferredToolName == null || _inferredToolName!.isEmpty
-                        ? '电脑正在工作…'
-                        : '电脑正在工作… · 正在调用工具 $_inferredToolName')
-                  : '等待你在电脑上的操作',
-              style: AppTextStyle.footnote
-                  .of(context)
-                  .copyWith(color: colors.onSurfaceVariant),
-            ),
-          ),
         ],
       ),
     );
@@ -2345,22 +2405,16 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
 
   /// DSH 产品图标（`apps/android/assets/icons/dsh` 取自仓库
   /// `packages/client/ui-primitives/src/icons/artwork.ts`）；颜色跟随当前文字色。
-  Widget _dshIcon(
-    String fileName, {
-    double size = 16,
-    required Color color,
-  }) => SvgPicture.asset(
-    'assets/icons/dsh/$fileName',
-    width: size,
-    height: size,
-    colorFilter: ColorFilter.mode(color, BlendMode.srcIn),
-  );
+  Widget _dshIcon(String fileName, {double size = 16, required Color color}) =>
+      SvgPicture.asset(
+        'assets/icons/dsh/$fileName',
+        width: size,
+        height: size,
+        colorFilter: ColorFilter.mode(color, BlendMode.srcIn),
+      );
 
   /// 队列坞：1 条直出；>1 条默认收起成「N 条排队消息」，点开看每一条。
-  Widget _queueDock(
-    BuildContext context,
-    List<RemoteQueuedMessage> pending,
-  ) {
+  Widget _queueDock(BuildContext context, List<RemoteQueuedMessage> pending) {
     final colors = Theme.of(context).colorScheme;
     final collapsed = pending.length > 1 && !_queueExpanded;
     return Container(
@@ -2388,7 +2442,11 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
                     padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
                     child: Row(
                       children: [
-                        _dshIcon('queue.svg', size: 16, color: colors.onSurfaceVariant),
+                        _dshIcon(
+                          'queue.svg',
+                          size: 16,
+                          color: colors.onSurfaceVariant,
+                        ),
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
@@ -2434,9 +2492,7 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
         ? '离线记录，暂不支持编辑'
         : '包含非文本内容，暂不支持编辑';
     final steerEnabled = item.steerable && _running;
-    final steerReason = item.steerable && _running
-        ? '插话发送'
-        : '仅运行中可插话发送';
+    final steerReason = item.steerable && _running ? '插话发送' : '仅运行中可插话发送';
     return Padding(
       key: ValueKey('remote-queue-item-${item.itemId}'),
       padding: const EdgeInsets.fromLTRB(12, 4, 8, 8),
@@ -2451,7 +2507,10 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
                 ),
                 const SizedBox(width: 6),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 7,
+                    vertical: 2,
+                  ),
                   decoration: BoxDecoration(
                     color: colors.primary.withValues(alpha: .12),
                     borderRadius: BorderRadius.circular(6),
@@ -2472,7 +2531,9 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        item.prompt.trim().isEmpty ? '附件或系统输入' : item.prompt.trim(),
+                        item.prompt.trim().isEmpty
+                            ? '附件或系统输入'
+                            : item.prompt.trim(),
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                         style: AppTextStyle.footnote.of(context),
@@ -2562,7 +2623,8 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     final controller = _queuedEditController;
     if (controller == null) return const SizedBox.shrink();
     final colors = Theme.of(context).colorScheme;
-    final busy = _queueBusyId == item.itemId || _removingQueuedId == item.itemId;
+    final busy =
+        _queueBusyId == item.itemId || _removingQueuedId == item.itemId;
     return Row(
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
@@ -2611,12 +2673,15 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
       ],
     );
   }
+
   /// 附件 rail 作为悬浮卡上方的插槽；没有草稿也不在选文件时返回 null。
   Widget? _attachmentRailSlot(BuildContext context, AttachmentDrafts? drafts) {
     if (drafts == null) return null;
     final sessionId = _source.sessionId;
     final picking = drafts.pickingSession == sessionId;
-    if (!picking && drafts.items(sessionId).isEmpty) return null;
+    if (!picking && drafts.items(sessionId).isEmpty && drafts.message(sessionId) == null) {
+      return null;
+    }
     return PocketAttachmentRail(drafts: drafts, sessionId: sessionId);
   }
 
@@ -2891,7 +2956,6 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
       if (!mounted) return;
       final writeConflict = remoteWriteHandleConflictMessage(failure.message);
       if (writeConflict != null) {
-        _showStatus(writeConflict);
         return;
       }
       if (isRemoteCredentialFailure(failure.message)) {
@@ -2910,9 +2974,8 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
       _showStatus(failure.message);
     } on Object catch (error) {
       if (mounted) {
-        _showStatus(
-          remoteWriteHandleConflictMessage(error.toString()) ?? '发送失败：$error',
-        );
+        if (remoteWriteHandleConflictMessage(error.toString()) != null) return;
+        _showStatus('发送失败：$error');
       }
     } finally {
       if (mounted) setState(() => _sending = false);
@@ -2949,7 +3012,6 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     }
     setState(() {
       _sending = true;
-      _submittingCommand = true;
     });
     try {
       final result = await _source.submitCommand(
@@ -2968,7 +3030,8 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
         () => _commandResult = (
           line: line,
           result: RemoteCommandResult.error(
-            remoteWriteHandleConflictMessage(failure.message) ?? failure.message,
+            remoteWriteHandleConflictMessage(failure.message) ??
+                failure.message,
           ),
         ),
       );
@@ -2985,7 +3048,6 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
       if (mounted) {
         setState(() {
           _sending = false;
-          _submittingCommand = false;
         });
       }
     }
@@ -3123,8 +3185,7 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
   /// - 其它宿主指令作为 `session.command` 执行；需要输入的指令插进输入框，
   ///   由用户补全参数后按普通指令提交；
   /// - `export` / `skills` 本轮不支持，置灰并写明原因。
-  void _openAddSheet() {
-    _exitReasoningPanel();
+  Widget _buildAddPopup(BuildContext context) {
     final drafts = _drafts;
     final state = _attachState();
     final canAttach =
@@ -3136,18 +3197,13 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
       if (!canAttach)
         'file': _capabilityReason(state, '上传附件') ?? '这台电脑暂不支持上传附件',
     };
-    unawaited(
-      showRemoteCommandsSheet(
-        context,
-        builder: (_) => ComposerCommands(
-          runtime: RemoteComposerCommandSurface(_source),
-          sessionId: _source.sessionId,
-          disabledReasons: disabledReasons,
-          // 选中行时 `CommonPopupMenu` 自己会收起承载它的路由（这里就是弹层）；
-          // 分发只负责执行，不能再 pop 一次，否则会退到上一页。
-          onPick: _pickComposerCommand,
-        ),
-      ),
+    return ComposerCommands(
+      runtime: RemoteComposerCommandSurface(_source),
+      sessionId: _source.sessionId,
+      disabledReasons: disabledReasons,
+      // 选中行时 `CommonPopupMenu` 自己会收起承载它的路由（这里就是弹层）；
+      // 分发只负责执行，不能再 pop 一次，否则会退到上一页。
+      onPick: _pickComposerCommand,
     );
   }
 
@@ -3224,7 +3280,6 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
     }
     setState(() {
       _sending = true;
-      _submittingCommand = true;
     });
     try {
       final result = await _source.submitCommand(line);
@@ -3236,7 +3291,8 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
         () => _commandResult = (
           line: line,
           result: RemoteCommandResult.error(
-            remoteWriteHandleConflictMessage(failure.message) ?? failure.message,
+            remoteWriteHandleConflictMessage(failure.message) ??
+                failure.message,
           ),
         ),
       );
@@ -3252,7 +3308,6 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
       if (mounted) {
         setState(() {
           _sending = false;
-          _submittingCommand = false;
         });
       }
     }
@@ -3450,17 +3505,16 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
 
   // ------------------------------------------------------------ 待处理交互
 
-  /// 输入区上方的待处理审批/提问卡片；没有待处理项时返回 null。
+  /// 待处理审批/提问取代输入卡，占据同一底部浮层位置。
   ///
   /// 卡片区最多占屏幕高度的 45%，多个请求（或选项很多）时整块滚动，不会把
   /// 输入区挤出屏幕。
-  Widget? _interactionArea(BuildContext context) {
-    if (_interactions.isEmpty) return null;
+  Widget _interactionArea(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+      padding: const EdgeInsets.fromLTRB(6, 10, 6, 14),
       child: ConstrainedBox(
         constraints: BoxConstraints(
-          maxHeight: MediaQuery.sizeOf(context).height * .45,
+          maxHeight: MediaQuery.sizeOf(context).height * .55,
         ),
         child: SingleChildScrollView(
           child: Column(
@@ -3481,6 +3535,12 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
                           ),
                     onApprove: (allow) =>
                         unawaited(_replyApproval(request, allow: allow)),
+                    onFeedback: (text) => unawaited(
+                      _replyApproval(request, allow: false, feedback: text),
+                    ),
+                    canSendFeedback:
+                        _capability(remoteConversationSendMethod) ==
+                        RemoteCapabilityState.available,
                     onAnswer: (answers) =>
                         unawaited(_answerQuestion(request, answers)),
                     onDismissPlan: () => unawaited(_dismissPlan(request)),
@@ -3582,6 +3642,7 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
   Future<void> _replyApproval(
     RemotePendingInteraction request, {
     required bool allow,
+    String? feedback,
   }) async {
     if (_busyInteractionId != null) return;
     setState(() {
@@ -3596,7 +3657,28 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
       );
       if (!mounted) return;
       if (reply.accepted) {
-        _showStatus(allow ? '已允许一次' : '已拒绝');
+        if (feedback case final text?) {
+          try {
+            await _source.send(text);
+            if (mounted) {
+              unawaited(_refreshSessionTasks());
+              unawaited(_pullNewer());
+            }
+          } on Object catch (error) {
+            if (mounted) {
+              setState(() {
+                _input.text = text;
+                _draftEmpty = false;
+                _draftIsCommand = false;
+                _composerMode = PocketComposerMode.composing;
+                _persistentNotice =
+                    '审批已拒绝，但补充指令未发送：${sanitizeRemoteUiMessage(error.toString())}';
+              });
+            }
+          }
+        } else {
+          _showStatus(allow ? '已允许一次' : '已拒绝');
+        }
       } else {
         setState(
           () => _interactionErrors[request.id] =
@@ -3790,7 +3872,7 @@ class _RemoteDshConversationPageState extends State<RemoteDshConversationPage>
   /// 缩小态，否则回到展开态但不主动唤起键盘。
   void _exitReasoningPanel({bool keepKeyboard = true}) {
     if (_composerMode != PocketComposerMode.picker) return;
-    final keyboardVisible = MediaQuery.viewInsetsOf(context).bottom > 0;
+    final keyboardVisible = View.of(context).viewInsets.bottom > 0;
     final expand =
         keepKeyboard || keyboardVisible || _input.text.trim().isNotEmpty;
     setState(
@@ -4312,6 +4394,8 @@ class _RemoteInteractionCard extends StatefulWidget {
     required this.busy,
     required this.error,
     required this.onApprove,
+    required this.onFeedback,
+    required this.canSendFeedback,
     required this.onAnswer,
     required this.onDismissPlan,
     required this.onOpenPlan,
@@ -4329,6 +4413,11 @@ class _RemoteInteractionCard extends StatefulWidget {
   /// 审批回调：true = 允许一次，false = 拒绝。
   final ValueChanged<bool> onApprove;
 
+  /// 拒绝当前调用后，将补充指令作为会话消息发送。
+  final ValueChanged<String> onFeedback;
+
+  final bool canSendFeedback;
+
   /// 提问回调：按问题顺序组装好的答复。
   final ValueChanged<List<RemoteQuestionAnswer>> onAnswer;
 
@@ -4343,6 +4432,7 @@ class _RemoteInteractionCard extends StatefulWidget {
 }
 
 class _RemoteInteractionCardState extends State<_RemoteInteractionCard> {
+  final TextEditingController _feedback = TextEditingController();
   final Map<String, Set<String>> _selected = <String, Set<String>>{};
   final Map<String, TextEditingController> _custom =
       <String, TextEditingController>{};
@@ -4365,6 +4455,7 @@ class _RemoteInteractionCardState extends State<_RemoteInteractionCard> {
 
   @override
   void dispose() {
+    _feedback.dispose();
     for (final controller in _custom.values) {
       controller.dispose();
     }
@@ -4373,7 +4464,14 @@ class _RemoteInteractionCardState extends State<_RemoteInteractionCard> {
 
   bool get _isApproval => widget.request.kind == RemoteInteractionKind.approval;
 
-  String get _summary => widget.request.summary ?? widget.request.reason ?? '';
+  String get _commandPreview {
+    final summary = widget.request.summary;
+    if (summary == null || summary.isEmpty) {
+      return widget.request.toolName ?? '工具调用';
+    }
+    final first = summary.split(' · ').first;
+    return first.startsWith('command: ') ? first.substring(9) : first;
+  }
 
   /// 单个问题是否已经可以提交。
   ///
@@ -4428,8 +4526,16 @@ class _RemoteInteractionCardState extends State<_RemoteInteractionCard> {
     });
   }
 
+  void _submitFeedback() {
+    final text = _feedback.text.trim();
+    if (text.isEmpty || widget.busy || !widget.canSendFeedback) return;
+    FocusScope.of(context).unfocus();
+    widget.onFeedback(text);
+  }
+
   @override
   Widget build(BuildContext context) {
+    if (_isApproval) return _approvalCard(context);
     final colors = Theme.of(context).colorScheme;
     final request = widget.request;
     return Container(
@@ -4470,43 +4576,7 @@ class _RemoteInteractionCardState extends State<_RemoteInteractionCard> {
               ),
             ],
           ),
-          if (_isApproval) ...[
-            if (_summary.isNotEmpty) ...[
-              const SizedBox(height: 6),
-              Text(
-                _summary,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: AppTextStyle.footnote
-                    .of(context)
-                    .copyWith(color: colors.onSurfaceVariant),
-              ),
-            ],
-            const SizedBox(height: 10),
-            Row(
-              children: [
-                Expanded(
-                  child: PocketButton.tonal(
-                    key: ValueKey('remote-approval-deny-${request.id}'),
-                    onPressed: widget.busy
-                        ? null
-                        : () => widget.onApprove(false),
-                    child: Text(widget.busy ? '正在提交' : '拒绝'),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: PocketButton(
-                    key: ValueKey('remote-approval-allow-${request.id}'),
-                    onPressed: widget.busy
-                        ? null
-                        : () => widget.onApprove(true),
-                    child: Text(widget.busy ? '正在提交' : '允许一次'),
-                  ),
-                ),
-              ],
-            ),
-          ] else if (_planReview case final review?) ...[
+          if (_planReview case final review?) ...[
             // 计划审核：标题/摘要来自 `planReviewPreview`，批准回 `intent.approve`
             // 选项，请求修改走 `interactions.dismiss`，原文推入既有阅读器。
             _planReviewBody(context, review),
@@ -4577,6 +4647,153 @@ class _RemoteInteractionCardState extends State<_RemoteInteractionCard> {
             ),
           ],
         ],
+      ),
+    );
+  }
+
+  Widget _approvalCard(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final request = widget.request;
+    final title = request.reason?.trim().isNotEmpty == true
+        ? request.reason!.trim()
+        : '是否允许本次 ${request.toolName ?? '工具'} 调用？';
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(30),
+        boxShadow: [
+          BoxShadow(
+            color: colors.shadow.withValues(alpha: .15),
+            blurRadius: 32,
+            spreadRadius: -8,
+            offset: const Offset(0, 12),
+          ),
+        ],
+      ),
+      child: GlassSurface(
+        key: ValueKey('remote-interaction-${request.id}'),
+        radius: 30,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                title,
+                maxLines: 4,
+                overflow: TextOverflow.ellipsis,
+                style: AppTextStyle.headline.of(context, emphasized: true),
+              ),
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 12,
+                ),
+                decoration: BoxDecoration(
+                  color: colors.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  _commandPreview,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: AppTextStyle.subheadline
+                      .of(context)
+                      .copyWith(
+                        fontFamily: 'monospace',
+                        color: colors.onSurfaceVariant,
+                      ),
+                ),
+              ),
+              const SizedBox(height: 18),
+              FilledButton(
+                key: ValueKey('remote-approval-allow-${request.id}'),
+                onPressed: widget.busy ? null : () => widget.onApprove(true),
+                style: FilledButton.styleFrom(
+                  backgroundColor: colors.brightness == Brightness.dark
+                      ? Colors.white
+                      : Colors.black,
+                  foregroundColor: colors.brightness == Brightness.dark
+                      ? Colors.black
+                      : Colors.white,
+                  minimumSize: const Size.fromHeight(42),
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(24),
+                  ),
+                ),
+                child: Text(widget.busy ? '正在提交' : '允许一次'),
+              ),
+              const SizedBox(height: 16),
+              Divider(color: colors.outlineVariant.withValues(alpha: .7)),
+              const SizedBox(height: 8),
+              SizedBox(
+                height: 44,
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.edit_outlined,
+                      size: 20,
+                      color: colors.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: TextField(
+                        key: ValueKey('remote-approval-feedback-${request.id}'),
+                        controller: _feedback,
+                        enabled: !widget.busy && widget.canSendFeedback,
+                        maxLines: 1,
+                        textInputAction: TextInputAction.send,
+                        onTapOutside: (_) =>
+                            FocusManager.instance.primaryFocus?.unfocus(),
+                        onChanged: (_) => setState(() {}),
+                        onSubmitted: (_) => _submitFeedback(),
+                        decoration: InputDecoration.collapsed(
+                          hintText: widget.canSendFeedback
+                              ? '告诉 Agent 要做什么'
+                              : '这台电脑暂不支持补充指令',
+                        ),
+                      ),
+                    ),
+                    if (_feedback.text.trim().isNotEmpty)
+                      IconButton(
+                        key: ValueKey(
+                          'remote-approval-feedback-send-${request.id}',
+                        ),
+                        tooltip: '发送补充指令并拒绝本次调用',
+                        onPressed: widget.busy ? null : _submitFeedback,
+                        icon: const Icon(Icons.arrow_upward_rounded),
+                      ),
+                    OutlinedButton(
+                      key: ValueKey('remote-approval-deny-${request.id}'),
+                      onPressed: widget.busy
+                          ? null
+                          : () => widget.onApprove(false),
+                      style: OutlinedButton.styleFrom(
+                        shape: const StadiumBorder(),
+                        minimumSize: const Size(0, 42),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        padding: const EdgeInsets.symmetric(horizontal: 18),
+                      ),
+                      child: const Text('拒绝'),
+                    ),
+                  ],
+                ),
+              ),
+              if (widget.error case final error?) ...[
+                const SizedBox(height: 8),
+                Text(
+                  error,
+                  key: ValueKey('remote-interaction-error-${request.id}'),
+                  style: AppTextStyle.footnote
+                      .of(context)
+                      .copyWith(color: colors.error),
+                ),
+              ],
+            ],
+          ),
+        ),
       ),
     );
   }

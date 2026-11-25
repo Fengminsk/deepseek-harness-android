@@ -1101,6 +1101,15 @@ V4-Pro 改成 V4.1-Flash 验证写入链路。剩下的产品决定只剩「桌�
 
 ## 9. 变更日志（append-only，最新在最上面）
 
+### 2026-11-25 13:18 · lead（桌面托管会话全能力中继 + App 原生会话体验批次，已完成验证并装入新手机）
+
+- 背景：工作区有一批 11-19 完成但未提交、未收尾的改动（上一个会话中断）；本轮由 lead 收尾：宿主/插件侧单测 307/307、6 个 remote-host selfcheck 全绿、App 全量 2196/2196、analyze 11 条基线、typecheck 5/5、build:check 2/2，debug APK 13:13 构建并安装。
+- **桌面托管会话全能力中继**：desktop 插件新增 `desktop-session-window.ts`（桌面 owner 的 bounded readWindow）、`desktop-interactions.ts`（读取/答复桌面审批与提问）；`desktop-relay.ts` 扩展为 `/relay/session/{read-window,projections,send,command,status}`、`/relay/attachments/upload`、`/relay/catalog/{commands,model,permission}`、`/relay/interactions/{list,reply,status}`（loopback+token，请求超时 2h 仅用于上传流）；remote-host `session-relay.ts` 让 desktop 持有的会话优先走 relay（send/command/readWindow/projections/会话开关/附件上传/interactions），本地成功不重复，child 仅作非桌面会话回退；`session.ensure` 对桌面会话不再创建子进程副本。
+- **App 会话体验**：待处理审批/提问改为底部卡片取代输入卡（原因/命令预览、允许一次/拒绝、拒绝后可附补充指令；多选/自定义回答提问）；图片消息本地缩略图/大图查看与远程 attachment metadata 读取；`+` 弹层改为数据驱动紧凑浮层（文件/模型/方案/指令，导出/技能置灰说明）；composer IME/高度过渡与加号锚定浮层；执行链默认折叠、手动选择不被完成态覆盖；队列坞只显示真实排队、不再叠加工作提示；api stream 取消补 `api.unsubscribe` 防泄漏。
+- **测试适配**：21 个失败全部判定为测试未跟上上述重构（执行链折叠、DSH 排版 14/24、代码块换行、`+` 浮层无标题、图片读取 metadata、unsubscribe 语义），已更新测试与 fixture；App 全量 **2196 全绿**，analyze 回到 11 条基线。
+- 真机：Xiaomi 2410DPN6CC（Android 17）安装成功并可启动；旧 BAH3（Android 10）因签名不一致未能覆盖安装（不影响主用机）。宿主侧 relay/child/tunnel 正常，desktop 未加载 runtime。
+- 说明：工作区另有 `apps/android/packages/prism_ui/`、`pubspec.yaml/lock` 的 prism_ui 路径依赖与 `apps/android/docs/upstream-sync.md` 上游同步计划，为并行准备项，**未纳入本次提交**。
+- **提交**：见本次 commit。
 ### 2026-11-18 18:34 · lead（会话页 ANR 降耗 + 应用级后台同步，已装真机）
 
 - **ANR 取证**：adb `dumpsys activity exit-info` 显示 17:58:12 进程因 `Input dispatching timed out ... MainActivity is not responding … FocusEvent ≥5s` 被杀，当时 PSS≈512MB；这才是「后台没消息、点开 App 重新开」的直接原因（电池优化白名单本来已包含 App）。「电脑正在工作」的常驻转圈 + 每事件 setState/全量 projection + 长工具输出整段布局是主线程/内存热点。

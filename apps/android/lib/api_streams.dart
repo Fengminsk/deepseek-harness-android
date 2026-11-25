@@ -180,6 +180,7 @@ class _Observation {
   bool paused = false;
   bool cancelled = false;
   bool opening = false;
+  int _openingAttempt = 0;
   ApiJson? _closingSubscription;
   bool _reconnecting = false;
   Timer? _reconnectRetry;
@@ -193,6 +194,7 @@ class _Observation {
     }
     opening = true;
     final attempt = ++epoch;
+    _openingAttempt = attempt;
     final subscriptionId = '$id-$attempt';
     deliveryId = subscriptionId;
     sequence = 0;
@@ -208,8 +210,17 @@ class _Observation {
         'method': method,
         'args': resumeArgs(),
       }) as ApiJson;
-      if (cancelled || attempt != epoch) return;
       final admitted = response['generation'] as String;
+      if (cancelled || attempt != epoch) {
+        // Cancellation can overtake admission. The earlier unsubscribe may
+        // have reached the service before this stream existed there.
+        await owner.call('api.unsubscribe', {
+          'subscriptionId': subscriptionId,
+          'streamId': subscriptionId,
+          'generation': admitted,
+        });
+        return;
+      }
       if (generation != null && generation != admitted) {
         throw const FormatException('Stream admission changed its generation');
       }
@@ -221,7 +232,19 @@ class _Observation {
         unawaited(controller.close());
       }
     } finally {
-      if (attempt == epoch) opening = false;
+      if (_openingAttempt == attempt) opening = false;
+      if (attempt != epoch && !cancelled && owner._ready) {
+        scheduleMicrotask(() {
+          if (!cancelled &&
+              owner._ready &&
+              !_reconnecting &&
+              _reconnectRetry == null &&
+              !opening &&
+              generation == null) {
+            unawaited(reconnect());
+          }
+        });
+      }
     }
   }
 
@@ -431,7 +454,7 @@ class _Observation {
       // readiness event cannot be lost merely because this attempt was busy.
       if (!cancelled &&
           owner._ready &&
-          attempt != epoch &&
+          _reconnectRetry == null &&
           !opening &&
           generation == null) {
         scheduleMicrotask(() => unawaited(reconnect()));
@@ -451,11 +474,11 @@ class _Observation {
     cancelled = true;
     owner._active.remove(id);
     disconnected();
-    if (!owner._ready) return;
     try {
       await _closeRetiredSubscription();
     } catch (error) {
-      // Binder teardown also releases every stream of this Activity.
+      // A closed transport releases its owner. A still-live transport must
+      // receive unsubscribe even if this page was marked disconnected first.
     }
   }
 }

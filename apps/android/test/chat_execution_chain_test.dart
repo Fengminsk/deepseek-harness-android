@@ -194,7 +194,7 @@ void main() {
   );
 
   testWidgets(
-    'active defaults open, completion folds, and a manual choice survives updates',
+    'active chain stays folded until tapped; a manual choice survives updates',
     (tester) async {
       final events = <Json>[
         fixture.event(0, 'turn/start', {'turn': 1}),
@@ -214,13 +214,14 @@ void main() {
       );
       await tester.pumpWidget(view());
       await tester.pumpAndSettle();
+      expect(find.byType(ChatExecutionHeader), findsOneWidget);
+      expect(find.byType(ChatExecutionStep), findsNothing);
+      await tester.tap(find.byType(ChatExecutionHeader));
+      await tester.pumpAndSettle();
       expect(find.byType(ChatExecutionStep), findsOneWidget);
       events.addAll([tool.resultEvent(2), end(3, 'completed')]);
       projection.reconcile(events);
       await tester.pumpWidget(view());
-      await tester.pumpAndSettle();
-      expect(find.byType(ChatExecutionStep), findsNothing);
-      await tester.tap(find.byType(ChatExecutionHeader));
       await tester.pumpAndSettle();
       expect(find.byType(ChatExecutionStep), findsNWidgets(2));
       events.add(fixture.assistant(4, '后续正文'));
@@ -234,7 +235,7 @@ void main() {
 
   for (final manuallyFolded in [false, true]) {
     testWidgets(
-      'unconfirmed calls retain the visible chain until resolved (manual=$manuallyFolded)',
+      'unconfirmed calls keep the chain available until resolved (manual=$manuallyFolded)',
       (tester) async {
         final events = <Json>[
           fixture.event(0, 'turn/start', {'turn': 1}),
@@ -259,22 +260,24 @@ void main() {
 
         await tester.pumpWidget(view());
         await tester.pumpAndSettle();
+        expect(header().expanded, isFalse);
+        expect(find.byType(ChatExecutionStep), findsNothing);
+        await tester.tap(find.byType(ChatExecutionHeader));
+        await tester.pumpAndSettle();
         expect(header().expanded, isTrue);
         expect(find.byType(ChatExecutionStep), findsOneWidget);
         if (manuallyFolded) {
           await tester.tap(find.byType(ChatExecutionHeader));
           await tester.pumpAndSettle();
         }
+        final visibleSteps = manuallyFolded ? findsNothing : findsWidgets;
 
         events.add(end(3, 'completed'));
         await tester.pumpWidget(view());
         await tester.pumpAndSettle();
         expect(header().chain.completed, isFalse);
         expect(header().expanded, !manuallyFolded);
-        expect(
-          find.byType(ChatExecutionStep),
-          manuallyFolded ? findsNothing : findsOneWidget,
-        );
+        expect(find.byType(ChatExecutionStep), visibleSteps);
         expect(find.text('已完成'), findsNothing);
         expect(find.text('回复仍然可见', findRichText: true), findsOneWidget);
 
@@ -282,9 +285,10 @@ void main() {
         await tester.pumpWidget(view());
         await tester.pumpAndSettle();
         expect(header().chain.completed, isTrue);
-        expect(header().expanded, isFalse);
-        expect(find.byType(ChatExecutionStep), findsNothing);
-        expect(find.text('已完成'), findsOneWidget);
+        // A manual choice survives completion; the chain never auto-opens or
+        // auto-folds behind the reader.
+        expect(header().expanded, !manuallyFolded);
+        expect(find.byType(ChatExecutionStep), visibleSteps);
         expect(find.text('回复仍然可见', findRichText: true), findsOneWidget);
         expect(tester.takeException(), isNull);
       },
@@ -358,6 +362,9 @@ void main() {
         ),
       );
       await tester.pumpWidget(view());
+      await tester.pumpAndSettle();
+      expect(find.byType(ChatExecutionStep), findsNothing);
+      await tester.tap(find.byType(ChatExecutionHeader));
       await tester.pumpAndSettle();
       expect(find.byType(ChatExecutionStep), findsOneWidget);
       await tester.tap(find.text('已思考'));

@@ -59,29 +59,57 @@ class PocketImageSource {
     RuntimeController runtime,
     String sessionId,
     Json attachment,
-  ) {
+  ) => PocketImageSource.message(
+    runtime.call,
+    sessionId,
+    attachment,
+    generation: () => runtime.connectionGeneration,
+    canCopy: true,
+  );
+
+  factory PocketImageSource.message(
+    Future<dynamic> Function(String, Json) call,
+    String sessionId,
+    Json attachment, {
+    int Function()? generation,
+    bool canCopy = false,
+  }) {
     final attachmentId = attachment['attachmentId'];
     final name = attachment['name'] is String
         ? attachment['name'] as String
         : '图片附件';
     return PocketImageSource(
       name: name,
-      attachmentId: attachmentId is String ? attachmentId : null,
+      identity: '$sessionId:$attachmentId',
+      attachmentId: canCopy && attachmentId is String ? attachmentId : null,
       load: () async {
         if (sessionId.isEmpty ||
             attachmentId is! String ||
             attachmentId.isEmpty) {
           throw const FormatException('这张图片缺少有效的会话引用。');
         }
-        final generation = runtime.connectionGeneration;
-        final value = await runtime.call('api.call', {
+        final started = generation?.call();
+        final value = await call('api.call', {
           'namespace': 'session',
           'method': 'attachment',
           'args': {
-            'request': {'sessionId': sessionId, 'attachmentId': attachmentId},
+            'request': {
+              'sessionId': sessionId,
+              'attachment': {
+                for (final key in [
+                  'attachmentId',
+                  'mediaType',
+                  'width',
+                  'height',
+                  'bytes',
+                  'name',
+                ])
+                  if (attachment.containsKey(key)) key: attachment[key],
+              },
+            },
           },
         });
-        if (generation != runtime.connectionGeneration) {
+        if (started != generation?.call()) {
           throw StateError('服务连接已变化，请重试读取图片。');
         }
         if (value is! Json || value['attachment'] is! Json) {
@@ -97,7 +125,7 @@ class PocketImageSource {
           name,
           dimensionsRequired: true,
         );
-        if (generation != runtime.connectionGeneration) {
+        if (started != generation?.call()) {
           throw StateError('服务连接已变化，请重试读取图片。');
         }
         return payload;
@@ -228,8 +256,14 @@ class _PreparedImage {
 /// The compact Chat image owns one visible row. List eviction releases its
 /// decoder; the full-screen viewer performs a fresh Session-authorized read.
 class PocketInlineImage extends StatefulWidget {
-  const PocketInlineImage({super.key, required this.source, this.onOpenFile});
+  const PocketInlineImage({
+    super.key,
+    required this.source,
+    this.onOpenFile,
+    this.thumbnailSize,
+  });
   final PocketImageSource source;
+  final Size? thumbnailSize;
   final Future<void> Function()? onOpenFile;
 
   @override
@@ -264,7 +298,12 @@ class _PocketInlineImageState extends State<PocketInlineImage> {
     try {
       final payload = await widget.source.load();
       if (!mounted || request != generation) return;
-      final prepared = await _prepareImage(payload);
+      final prepared = await _prepareImage(
+        payload,
+        pixelBudget: widget.thumbnailSize == null
+            ? _decodedPixelBudget
+            : 512 * 512,
+      );
       if (!mounted || request != generation) {
         unawaited(prepared.provider.evict());
         return;
@@ -286,6 +325,49 @@ class _PocketInlineImageState extends State<PocketInlineImage> {
   @override
   Widget build(BuildContext context) {
     final loaded = image;
+    final size = widget.thumbnailSize;
+    if (size != null) {
+      return Semantics(
+        button: true,
+        label: '打开图片：${widget.source.name}',
+        child: SizedBox.fromSize(
+          size: size,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(16),
+            child: Material(
+              color: Theme.of(context).colorScheme.surfaceContainerHighest,
+              child: InkWell(
+                onTap: loaded == null
+                    ? (error == null ? null : load)
+                    : () {
+                        final source = PocketImageSource(
+                          name: widget.source.name,
+                          attachmentId: widget.source.attachmentId,
+                          load: () async => loaded.payload,
+                        );
+                        Navigator.of(context).push<void>(
+                          PocketRoute<void>(
+                            builder: (_) => PocketImagePreview(source: source),
+                          ),
+                        );
+                      },
+                child: loaded == null
+                    ? Icon(
+                        error == null
+                            ? Icons.image_outlined
+                            : Icons.refresh_rounded,
+                      )
+                    : Image(
+                        image: loaded.provider,
+                        fit: BoxFit.cover,
+                        semanticLabel: widget.source.name,
+                      ),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
     if (loaded == null) {
       return PocketTile(
         leading: Icon(
@@ -332,7 +414,10 @@ class _PocketInlineImageState extends State<PocketInlineImage> {
   }
 }
 
-Future<_PreparedImage> _prepareImage(PocketImagePayload payload) async {
+Future<_PreparedImage> _prepareImage(
+  PocketImagePayload payload, {
+  int pixelBudget = _decodedPixelBudget,
+}) async {
   if (payload.bytes.isEmpty ||
       payload.bytes.length > pocketPreviewMaxBytes ||
       !pocketImageMediaTypes.contains(payload.mediaType)) {
@@ -350,7 +435,7 @@ Future<_PreparedImage> _prepareImage(PocketImagePayload payload) async {
     }
     final scale = math.min(
       1.0,
-      math.sqrt(_decodedPixelBudget / (width * height)),
+      math.sqrt(pixelBudget / (width * height)),
     );
     final provider = ResizeImage.resizeIfNeeded(
       math.max(1, (width * scale).floor()),

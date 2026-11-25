@@ -356,7 +356,16 @@ void main() {
         'namespace': 'session',
         'method': 'attachment',
         'args': {
-          'request': {'sessionId': 'saved', 'attachmentId': 'image-a'},
+          'request': {
+            'sessionId': 'saved',
+            'attachment': {
+              'attachmentId': 'image-a',
+              'mediaType': 'image/png',
+              'width': 1,
+              'height': 1,
+              'bytes': 68,
+            },
+          },
         },
       });
       await tester.tap(find.text('图片 1'));
@@ -461,7 +470,17 @@ void main() {
       (call) => call.method == 'api.call',
     );
     expect(request.params['args'], {
-      'request': {'sessionId': 'saved', 'attachmentId': 'tool-image'},
+      'request': {
+        'sessionId': 'saved',
+        'attachment': {
+          'attachmentId': 'tool-image',
+          'mediaType': 'image/png',
+          'width': 1,
+          'height': 1,
+          'bytes': 68,
+          'name': 'result.png',
+        },
+      },
     });
   });
 
@@ -520,7 +539,11 @@ void main() {
       expect(reads, hasLength(3));
       final third = (reads.last.params['args'] as Json)['request'] as Json;
       expect(
-        int.parse((third['attachmentId'] as String).substring(6)),
+        int.parse(
+          ((third['attachment'] as Json)['attachmentId'] as String).substring(
+            6,
+          ),
+        ),
         greaterThanOrEqualTo(20),
       );
     },

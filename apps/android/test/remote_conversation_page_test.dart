@@ -6,9 +6,12 @@
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:dsh_android/chat_plan.dart';
 import 'package:dsh_android/chat_execution_chain.dart';
+import 'package:dsh_android/chat_messages.dart';
+import 'package:dsh_android/flclash/popup.dart';
 import 'package:dsh_android/pocket_composer.dart';
 import 'package:dsh_android/remote_attachments.dart';
 import 'package:dsh_android/remote_connection.dart';
@@ -51,6 +54,7 @@ Widget _host(RemoteConversationSource source, {DateTime Function()? now}) =>
 /// `remote-permission-label` / `remote-model-label` 之前先调用它。
 Future<void> _expandComposer(WidgetTester tester) async {
   await tester.tap(find.byKey(PocketComposer.inputKey));
+  await tester.pump(const Duration(milliseconds: 500));
   await tester.pumpAndSettle();
 }
 
@@ -170,14 +174,14 @@ const RemoteModelChoice _v4ProHigh = RemoteModelChoice(
 const String _attachmentId = '3f0b2f1c-6a1e-4b8e-9c2d-1a2b3c4d5e6f';
 
 /// 模拟 `attachment.pick` 原生通道：返回一条固定选中项。
-void _mockAttachmentPicker(WidgetTester tester) {
+void _mockAttachmentPicker(WidgetTester tester, {Map<String, dynamic>? item}) {
   tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
     RuntimeController.channel,
     (call) async => call.method == 'attachment.pick'
         ? jsonEncode(<String, dynamic>{
             'cancelled': false,
             'items': <Map<String, dynamic>>[
-              <String, dynamic>{
+              item ?? <String, dynamic>{
                 'id': _attachmentId,
                 'name': '季度报告.txt',
                 'bytes': 12,
@@ -736,7 +740,7 @@ void main() {
     );
   });
 
-  testWidgets('待处理审批显示工具名与输入摘要，允许一次后卡片消失', (tester) async {
+  testWidgets('待处理审批替代输入卡，允许一次后输入卡恢复', (tester) async {
     final source = FakeRemoteConversationSource(
       window: _window(conversationEvents()),
       interactions: [_approvalInteraction()],
@@ -748,8 +752,9 @@ void main() {
       find.byKey(const ValueKey('remote-interaction-i-1')),
       findsOneWidget,
     );
-    expect(find.textContaining('需要授权：android_shell'), findsOneWidget);
+    expect(find.text('需要运行命令'), findsOneWidget);
     expect(find.textContaining('rm -rf build'), findsOneWidget);
+    expect(find.byType(RemoteComposer), findsNothing);
 
     await tester.tap(find.byKey(const ValueKey('remote-approval-allow-i-1')));
     await tester.pumpAndSettle();
@@ -763,6 +768,34 @@ void main() {
       findsNothing,
       reason: '宿主受理后推的快照把卡片移除',
     );
+    expect(find.byType(RemoteComposer), findsOneWidget);
+  });
+
+  testWidgets('会话打开后新审批到达与结束都会切换底部浮层', (tester) async {
+    final source = FakeRemoteConversationSource(
+      window: _window(conversationEvents()),
+    );
+    await tester.pumpWidget(_host(source));
+    await tester.pumpAndSettle();
+    expect(find.byType(RemoteComposer), findsOneWidget);
+
+    source.emit(RemoteConversationInteractions([_approvalInteraction()]));
+    await tester.pump();
+    expect(
+      find.byKey(const ValueKey('remote-interaction-dock')),
+      findsOneWidget,
+    );
+    await tester.pumpAndSettle();
+    expect(find.byType(RemoteComposer), findsNothing);
+    expect(
+      find.byKey(const ValueKey('remote-interaction-i-1')),
+      findsOneWidget,
+    );
+
+    source.emit(const RemoteConversationInteractions([]));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('remote-interaction-i-1')), findsNothing);
+    expect(find.byType(RemoteComposer), findsOneWidget);
   });
 
   testWidgets('拒绝按钮回 rejected 语义', (tester) async {
@@ -777,6 +810,83 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(source.approvalReplies.single.allow, isFalse);
+  });
+
+  testWidgets('审批卡补充指令先拒绝调用再发送给同一会话', (tester) async {
+    final source = FakeRemoteConversationSource(
+      window: _window(conversationEvents()),
+      interactions: [_approvalInteraction()],
+    );
+    await tester.pumpWidget(_host(source));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(
+      find.byKey(const ValueKey('remote-approval-feedback-i-1')),
+      '先检查权限再继续',
+    );
+    await tester.pump();
+    await tester.tap(
+      find.byKey(const ValueKey('remote-approval-feedback-send-i-1')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(source.approvalReplies.single.allow, isFalse);
+    expect(source.sent, contains('先检查权限再继续'));
+    expect(find.byType(RemoteComposer), findsOneWidget);
+  });
+
+  testWidgets('审批已拒绝但补充指令发送失败时保留草稿', (tester) async {
+    final source =
+        FakeRemoteConversationSource(
+            window: _window(conversationEvents()),
+            interactions: [_approvalInteraction()],
+          )
+          ..sendFailure = const RuntimeTransportFailure(
+            code: 'gateway/unavailable',
+            message: '电脑暂时不可用',
+          );
+    await tester.pumpWidget(_host(source));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(
+      find.byKey(const ValueKey('remote-approval-feedback-i-1')),
+      '先检查权限再继续',
+    );
+    await tester.pump();
+    await tester.tap(
+      find.byKey(const ValueKey('remote-approval-feedback-send-i-1')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(source.approvalReplies.single.allow, isFalse);
+    expect(source.sent, isEmpty);
+    expect(
+      tester
+          .widget<TextField>(find.byKey(PocketComposer.inputKey))
+          .controller
+          ?.text,
+      '先检查权限再继续',
+    );
+    expect(find.textContaining('补充指令未发送'), findsOneWidget);
+  });
+
+  testWidgets('审批补充输入框点外部空白可失焦', (tester) async {
+    final source = FakeRemoteConversationSource(
+      window: _window(conversationEvents()),
+      interactions: [_approvalInteraction()],
+    );
+    await tester.pumpWidget(_host(source));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const ValueKey('remote-approval-feedback-i-1')),
+    );
+    await tester.pump();
+    final editor = tester.widget<EditableText>(find.byType(EditableText));
+    expect(editor.focusNode.hasFocus, isTrue);
+
+    await tester.tapAt(const Offset(20, 330));
+    await tester.pump();
+    expect(editor.focusNode.hasFocus, isFalse);
   });
 
   testWidgets('答复被拒绝时显示宿主 message 并刷新交互快照', (tester) async {
@@ -1351,7 +1461,7 @@ void main() {
     expect(source.sent, isEmpty);
   });
 
-  testWidgets('电脑端写句柄占用时映射成可读中文并保留草稿', (tester) async {
+  testWidgets('旧版写句柄冲突时不弹提示且保留草稿', (tester) async {
     final source =
         FakeRemoteConversationSource(
             window: _window(conversationEvents()),
@@ -1359,8 +1469,7 @@ void main() {
           )
           ..sendFailure = const RuntimeTransportFailure(
             code: 'gateway/internal',
-            message:
-                'session "s-1" is already owned by an active write handle',
+            message: 'session "s-1" is already owned by an active write handle',
           );
     await tester.pumpWidget(_host(source));
     await tester.pumpAndSettle();
@@ -1371,7 +1480,8 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(source.sendCalls, 1);
-    expect(find.textContaining('这个会话正在电脑上使用'), findsOneWidget);
+    expect(find.textContaining('这个会话正在电脑上使用'), findsNothing);
+    expect(find.textContaining('发送未成功'), findsNothing);
     expect(
       tester.widget<TextField>(find.byType(TextField)).controller?.text,
       '写了一半的草稿',
@@ -1575,7 +1685,11 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('remote-send')));
     await tester.pump();
 
-    expect(find.text('正在执行电脑上的指令…'), findsOneWidget);
+    expect(find.text('正在执行电脑上的指令…'), findsNothing);
+    expect(
+      tester.widget<RemoteComposer>(find.byType(RemoteComposer)).sending,
+      isTrue,
+    );
     expect(
       tester.widget<RemoteComposer>(find.byType(RemoteComposer)).enabled,
       isFalse,
@@ -1804,13 +1918,18 @@ void main() {
 
     await tester.tap(find.byTooltip('添加与指令'));
     await tester.pumpAndSettle();
-    expect(find.text('添加与指令'), findsOneWidget, reason: '弹层标题');
+    expect(find.byType(CommonPopupMenu), findsOneWidget);
+    expect(find.byType(RemoteSheet), findsNothing, reason: '菜单不是底部抽屉');
     expect(find.text('文件  file'), findsOneWidget);
     expect(find.text('这台电脑不支持上传附件'), findsOneWidget, reason: '置灰项写原因，不是静默消失');
 
     await tester.tap(find.text('文件  file'), warnIfMissed: false);
     await tester.pumpAndSettle();
-    expect(find.text('添加与指令'), findsOneWidget, reason: '置灰项不回调，弹层保持打开');
+    expect(
+      find.byType(CommonPopupMenu),
+      findsOneWidget,
+      reason: '置灰项不回调，悬浮菜单保持打开',
+    );
     expect(tester.takeException(), isNull);
   });
 
@@ -1847,7 +1966,11 @@ void main() {
 
     await tester.tap(find.text('目标  goal'), warnIfMissed: false);
     await tester.pumpAndSettle();
-    expect(find.text('添加与指令'), findsOneWidget, reason: '置灰行不回调，弹层保持打开');
+    expect(
+      find.byType(CommonPopupMenu),
+      findsOneWidget,
+      reason: '置灰行不回调，悬浮菜单保持打开',
+    );
     expect(source.commands, isEmpty, reason: 'goal 行不执行任何宿主指令');
     expect(
       tester
@@ -2253,37 +2376,108 @@ void main() {
     );
   });
 
-  testWidgets('权限预设与一次性审批卡片共存，预设只影响新请求', (tester) async {
+  testWidgets('审批期间隐藏输入卡，处理后权限预设可用', (tester) async {
     final source = _permissionSource(interactions: [_approvalInteraction()]);
     await tester.pumpWidget(_host(source));
     await tester.pumpAndSettle();
-    await _expandComposer(tester);
+    expect(
+      find.byKey(const ValueKey('remote-interaction-i-1')),
+      findsOneWidget,
+    );
+    expect(find.byType(RemoteComposer), findsNothing);
+    expect(find.text('需要运行命令'), findsOneWidget);
 
+    await tester.tap(find.byKey(const ValueKey('remote-approval-deny-i-1')));
+    await tester.pumpAndSettle();
+    expect(source.approvalReplies.single.allow, isFalse);
+    expect(find.byType(RemoteComposer), findsOneWidget);
+    await _expandComposer(tester);
     expect(
       find.byKey(const ValueKey('remote-permission-label')),
       findsOneWidget,
     );
-    expect(
-      find.byKey(const ValueKey('remote-interaction-i-1')),
-      findsOneWidget,
-      reason: '预设入口不影响已挂起的审批卡片',
-    );
-    expect(find.textContaining('需要授权：android_shell'), findsOneWidget);
 
     await tester.tap(find.byKey(const ValueKey('remote-permission-label')));
     await tester.pumpAndSettle();
     await tester.tap(find.text('仅可查看'));
     await tester.pumpAndSettle();
 
-    expect(
-      find.byKey(const ValueKey('remote-interaction-i-1')),
-      findsOneWidget,
-      reason: '切换预设不会自动通过已挂起的请求',
-    );
-    expect(source.approvalReplies, isEmpty);
+    expect(find.byKey(const ValueKey('remote-interaction-i-1')), findsNothing);
+    expect(source.approvalReplies, hasLength(1));
   });
 
   // -------------------------------------------------- 输入区三态（悬浮输入卡）
+
+  testWidgets('输入框聚焦不重建未变化的消息时间线', (tester) async {
+    final source = FakeRemoteConversationSource(
+      window: _window(conversationEvents()),
+    );
+    await tester.pumpWidget(_host(source));
+    await tester.pumpAndSettle();
+    final timeline = tester.widget<ChatTimeline>(find.byType(ChatTimeline));
+
+    await tester.tap(find.byKey(PocketComposer.inputKey));
+    await tester.pump(const Duration(milliseconds: 500));
+    await tester.pumpAndSettle();
+
+    expect(
+      tester.widget<ChatTimeline>(find.byType(ChatTimeline)),
+      same(timeline),
+    );
+  });
+
+  testWidgets('密集流式帧合并到最新一帧再渲染', (tester) async {
+    final source = FakeRemoteConversationSource(
+      window: _window(conversationEvents()),
+    );
+    await tester.pumpWidget(_host(source));
+    await tester.pumpAndSettle();
+    final before = tester.widget<ChatTimeline>(find.byType(ChatTimeline));
+    for (var index = 1; index <= 20; index++) {
+      source.emit(
+        RemoteConversationLive(<String, dynamic>{
+          'attemptId': 'live-1',
+          'turn': 5,
+          'step': 1,
+          'content': <Map<String, dynamic>>[
+            <String, dynamic>{'type': 'text', 'text': 'token-$index'},
+          ],
+        }),
+      );
+    }
+    await tester.pump();
+    expect(
+      tester.widget<ChatTimeline>(find.byType(ChatTimeline)),
+      same(before),
+    );
+    await tester.pump(const Duration(milliseconds: 120));
+    final latest = tester.widget<ChatTimeline>(find.byType(ChatTimeline));
+    expect(latest.live?.content.first['text'], 'token-20');
+  });
+
+  testWidgets('加载更早消息入口显示在悬浮标题栏下方', (tester) async {
+    final source = FakeRemoteConversationSource(
+      window: RemoteConversationWindow(
+        events: conversationEvents(),
+        throughSeq: conversationEvents().last['seq'] as int,
+        firstSeq: conversationEvents().first['seq'] as int,
+        hasMore: true,
+      ),
+    );
+    await tester.pumpWidget(_host(source));
+    await tester.pumpAndSettle();
+    final older = tester.getTopLeft(
+      find.byKey(const ValueKey('remote-load-older')),
+    );
+    final title = tester.getBottomLeft(find.text('修复登录'));
+    expect(older.dy, greaterThan(title.dy));
+    expect(
+      older.dy,
+      lessThan(
+        tester.view.physicalSize.height / tester.view.devicePixelRatio / 3,
+      ),
+    );
+  });
 
   testWidgets('输入区默认缩小态，聚焦展开，失焦后由草稿决定是否收起', (tester) async {
     final source = FakeRemoteConversationSource(
@@ -2305,6 +2499,7 @@ void main() {
 
     // 点输入框：卡片展开成「输入区 + 工具条一行」，权限/模型回显行随之出现。
     await tester.tap(find.byKey(PocketComposer.inputKey));
+    await tester.pump(const Duration(milliseconds: 500));
     await tester.pumpAndSettle();
     expect(find.byTooltip('推理强度'), findsOneWidget);
     expect(find.byKey(const ValueKey('remote-model-label')), findsOneWidget);
@@ -2326,6 +2521,36 @@ void main() {
     FocusManager.instance.primaryFocus?.unfocus();
     await tester.pumpAndSettle();
     expect(find.byTooltip('推理强度'), findsNothing, reason: '纯浏览时回到缩小态');
+  });
+
+  testWidgets('键盘视口稳定且列表校正后才展开输入卡', (tester) async {
+    final source = FakeRemoteConversationSource(
+      window: _window(conversationEvents()),
+      modelChoice: _v4ProHigh,
+    );
+    addTearDown(tester.view.resetViewInsets);
+    await tester.pumpWidget(_host(source));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(PocketComposer.inputKey));
+    await tester.pump();
+    expect(find.byTooltip('推理强度'), findsNothing);
+
+    tester.view.viewInsets = const FakeViewPadding(bottom: 300);
+    await tester.pump();
+    tester.view.viewInsets = const FakeViewPadding(bottom: 600);
+    await tester.pump(const Duration(milliseconds: 40));
+    expect(find.byTooltip('推理强度'), findsNothing, reason: '键盘仍在移动时保持缩小态');
+
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pump();
+    await tester.pump();
+    await tester.pump();
+    expect(find.byTooltip('推理强度'), findsOneWidget);
+    expect(
+      tester.widget<RemoteComposer>(find.byType(RemoteComposer)).animateSize,
+      isTrue,
+    );
   });
 
   testWidgets('缩小态不显示权限/模型回显行，展开后出现且可点', (tester) async {
@@ -2398,6 +2623,7 @@ void main() {
     await tester.pumpAndSettle();
 
     await tester.tap(find.byKey(PocketComposer.inputKey));
+    await tester.pump(const Duration(milliseconds: 500));
     await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('推理强度'));
     await tester.pumpAndSettle();
@@ -2444,6 +2670,7 @@ void main() {
 
     // 点聊天区也收起面板，回到输入态（参照图「点别处」）。
     await tester.tap(find.byKey(PocketComposer.inputKey));
+    await tester.pump(const Duration(milliseconds: 500));
     await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('推理强度'));
     await tester.pumpAndSettle();
@@ -2470,6 +2697,7 @@ void main() {
     await tester.pumpAndSettle();
 
     await tester.tap(find.byKey(PocketComposer.inputKey));
+    await tester.pump(const Duration(milliseconds: 500));
     await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('推理强度'));
     await tester.pumpAndSettle();
@@ -2491,6 +2719,7 @@ void main() {
     await tester.pumpAndSettle();
 
     await tester.tap(find.byKey(PocketComposer.inputKey));
+    await tester.pump(const Duration(milliseconds: 500));
     await tester.pumpAndSettle();
     expect(find.byTooltip('添加与指令'), findsOneWidget);
     expect(find.byTooltip('权限预设：工作区内修改'), findsOneWidget);
@@ -2513,7 +2742,40 @@ void main() {
     );
   });
 
-  testWidgets('展开态下附件 rail 是输入卡上方的插槽，发送带上附件', (tester) async {
+  testWidgets('远程图片草稿在输入框内使用设备缩略图，可逐张移除', (tester) async {
+    final dir = Directory.systemTemp.createTempSync('pocket-draft-test-');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    final file = File('${dir.path}/fixture.png')..writeAsBytesSync(base64Decode(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==',
+    ));
+    final surface = FakeAttachmentSurface()
+      ..prepared = {'kind': 'image', 'mediaType': 'image/png', 'id': _attachmentId};
+    final source = FakeRemoteConversationSource(window: _window(conversationEvents()))
+      ..attachmentSurface = surface;
+    _mockAttachmentPicker(tester, item: {
+      'id': _attachmentId, 'name': 'fixture.png', 'mediaType': 'image/png',
+      'bytes': file.lengthSync(), 'previewPath': file.path,
+    });
+    await tester.pumpWidget(_host(source));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('添加与指令'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('文件  file'));
+    await tester.pumpAndSettle();
+
+    final card = find.byKey(PocketComposer.cardKey);
+    final tile = find.descendant(of: card, matching: find.byType(Image)).first;
+    final image = tester.widget<Image>(tile).image as ResizeImage;
+    expect((image.imageProvider as FileImage).file.path, file.path);
+    expect(surface.calls.firstWhere((c) => c.method == 'attachments.prepare').params,
+      isNot(contains('previewPath')));
+    await tester.tap(find.byTooltip('移除 fixture.png'));
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('移除 fixture.png'), findsNothing);
+    expect(surface.releases, 1);
+  });
+
+  testWidgets('展开时附件位于输入卡内，发送带上附件', (tester) async {
     final surface = FakeAttachmentSurface();
     final source = FakeRemoteConversationSource(
       window: _window(conversationEvents()),
@@ -2523,6 +2785,7 @@ void main() {
     await tester.pumpAndSettle();
 
     await tester.tap(find.byKey(PocketComposer.inputKey));
+    await tester.pump(const Duration(milliseconds: 500));
     await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('添加与指令'));
     await tester.pumpAndSettle();
@@ -2532,11 +2795,8 @@ void main() {
     expect(find.text('季度报告.txt'), findsOneWidget);
     final rail = tester.getRect(find.text('季度报告.txt'));
     final card = tester.getRect(find.byKey(PocketComposer.cardKey));
-    expect(
-      rail.bottom,
-      lessThanOrEqualTo(card.top),
-      reason: '附件 rail 渲染在卡片上方的插槽里',
-    );
+    expect(card.contains(rail.topLeft), isTrue);
+    expect(card.contains(rail.bottomRight), isTrue);
     expect(find.byKey(const ValueKey('remote-send')), findsOneWidget);
 
     await tester.tap(find.byKey(const ValueKey('remote-send')));
@@ -2555,6 +2815,7 @@ void main() {
     await tester.pumpAndSettle();
 
     await tester.tap(find.byKey(PocketComposer.inputKey));
+    await tester.pump(const Duration(milliseconds: 500));
     await tester.pumpAndSettle();
     expect(find.byTooltip('推理强度'), findsOneWidget);
 
@@ -2587,6 +2848,7 @@ void main() {
     await tester.pumpAndSettle();
 
     await tester.tap(find.byKey(PocketComposer.inputKey));
+    await tester.pump(const Duration(milliseconds: 500));
     await tester.pumpAndSettle();
     expect(find.byTooltip('推理强度'), findsOneWidget);
 
@@ -2620,6 +2882,7 @@ void main() {
     // 有时没反应」的兜底入口）。
     final card = tester.getRect(find.byKey(PocketComposer.cardKey));
     await tester.tapAt(Offset(card.center.dx, card.bottom - 4));
+    await tester.pump(const Duration(milliseconds: 500));
     await tester.pumpAndSettle();
 
     expect(
@@ -2639,6 +2902,7 @@ void main() {
     await tester.pumpAndSettle();
 
     await tester.tap(find.byKey(PocketComposer.inputKey));
+    await tester.pump(const Duration(milliseconds: 500));
     await tester.pumpAndSettle();
     tester.view.viewInsets = const FakeViewPadding(bottom: 600);
     await tester.pumpAndSettle();
@@ -2687,7 +2951,7 @@ void main() {
       final writeHandle = sanitizeRemoteUiMessage(
         'session "session-123e4567-e89b-42d3-a456-426614174000" is already owned by an active write handle',
       );
-      expect(writeHandle, contains('这个会话正在电脑上使用'));
+      expect(writeHandle, '发送未成功，请稍后重试。');
       expect(writeHandle, isNot(contains('session-')));
       expect(writeHandle, isNot(contains('already owned')));
 
@@ -2697,24 +2961,22 @@ void main() {
       expect(bare, isNot(contains('session-')));
       expect(bare, contains('不存在'));
 
-      expect(
-        sanitizeRemoteUiMessage('与电脑的连接已断开，正在重连…'),
-        '与电脑的连接已断开，正在重连…',
-      );
+      expect(sanitizeRemoteUiMessage('与电脑的连接已断开，正在重连…'), '与电脑的连接已断开，正在重连…');
       final long = sanitizeRemoteUiMessage('长' * 400);
       expect(long.length, lessThanOrEqualTo(241));
       expect(long, endsWith('…'));
     });
 
-    testWidgets('写句柄原始错误在页面上显示中文且不出现原始 session ID', (tester) async {
-      final source = FakeRemoteConversationSource(
-        window: _window(conversationEvents()),
-        modelChoice: _flash,
-      )..sendFailure = const RuntimeTransportFailure(
-          code: 'gateway/internal',
-          message:
-              'session "session-123e4567-e89b-42d3-a456-426614174000" is already owned by an active write handle',
-        );
+    testWidgets('写句柄原始错误不在页面上弹出', (tester) async {
+      final source =
+          FakeRemoteConversationSource(
+              window: _window(conversationEvents()),
+              modelChoice: _flash,
+            )
+            ..sendFailure = const RuntimeTransportFailure(
+              code: 'gateway/internal',
+              message: 'session "session-123e4567-e89b-42d3-a456-426614174000" is already owned by an active write handle',
+            );
       await tester.pumpWidget(_host(source));
       await tester.pumpAndSettle();
       await tester.enterText(find.byType(TextField), '写了一半的草稿');
@@ -2722,7 +2984,8 @@ void main() {
       await tester.tap(find.byKey(const ValueKey('remote-send')));
       await tester.pumpAndSettle();
 
-      expect(find.textContaining('这个会话正在电脑上使用'), findsOneWidget);
+      expect(find.textContaining('这个会话正在电脑上使用'), findsNothing);
+      expect(find.textContaining('发送未成功'), findsNothing);
       expect(find.textContaining('session-'), findsNothing);
       expect(find.textContaining('already owned'), findsNothing);
     });
@@ -2740,11 +3003,7 @@ void main() {
           insights: insights(),
         );
         await tester.pumpWidget(
-          _hostWithCache(
-            source,
-            deviceId: 'pc-1',
-            cache: cache.cache,
-          ),
+          _hostWithCache(source, deviceId: 'pc-1', cache: cache.cache),
         );
         await _settleCache(tester);
       }
@@ -2800,16 +3059,14 @@ void main() {
       final cache = _PageCacheFixture(warm: true);
       final source = FakeRemoteConversationSource(window: null);
       await tester.pumpWidget(
-        _hostWithCache(
-          source,
-          deviceId: 'pc-1',
-          cache: cache.cache,
-        ),
+        _hostWithCache(source, deviceId: 'pc-1', cache: cache.cache),
       );
       await _settleCache(tester);
 
       expect(find.text('正在读取会话'), findsNothing);
       expect(find.textContaining('你好'), findsWidgets);
+      expect(find.text('修复登录'), findsOneWidget, reason: '电脑列表的新标题不能被旧缓存覆盖');
+      expect(find.text('缓存标题'), findsNothing);
       expect(
         find.byKey(const ValueKey('remote-conversation-cache-syncing')),
         findsNothing,
@@ -2822,11 +3079,7 @@ void main() {
       final cache = _PageCacheFixture();
       final source = FakeRemoteConversationSource(window: null);
       await tester.pumpWidget(
-        _hostWithCache(
-          source,
-          deviceId: 'pc-1',
-          cache: cache.cache,
-        ),
+        _hostWithCache(source, deviceId: 'pc-1', cache: cache.cache),
       );
       await _settleCache(tester);
 
@@ -2837,11 +3090,7 @@ void main() {
       final cache = _PageCacheFixture();
       final source = FakeRemoteConversationSource(window: null);
       await tester.pumpWidget(
-        _hostWithCache(
-          source,
-          deviceId: 'pc-1',
-          cache: cache.cache,
-        ),
+        _hostWithCache(source, deviceId: 'pc-1', cache: cache.cache),
       );
       await _settleCache(tester);
       expect(cache.saves, 0);
@@ -2857,57 +3106,63 @@ void main() {
       await tester.pump();
       expect(cache.saves, greaterThan(0));
     });
-
   });
 
-/// 一个未结算的 turn + 工具调用窗口；[withResult]/[ended] 用来推进到结算态。
-///
-/// 工具名用 `wait_agent`，与 PC 上「正在调用工具 · wait_agent」的真实事件一致。
-List<Map<String, dynamic>> toolRunEvents({
-  bool withResult = false,
-  bool ended = false,
-  String reason = 'completed',
-  String tool = 'wait_agent',
-}) {
-  final events = <Map<String, dynamic>>[
-    fixture.event(1, 'turn/start', <String, dynamic>{'turn': 1}),
-    fixture.event(2, 'step/start', <String, dynamic>{'turn': 1, 'step': 1}),
-    fixture.event(3, 'tool/call', <String, dynamic>{
-      'callId': 'call-1',
-      'name': tool,
-      'turn': 1,
-      'step': 1,
-      'arguments': '{}',
-    }),
-  ];
-  var seq = 3;
-  if (withResult) {
-    events.add(fixture.event(++seq, 'tool/result', <String, dynamic>{
-      'turn': 1,
-      'step': 1,
-      'message': <String, dynamic>{
-        'source': <String, dynamic>{'callId': 'call-1'},
-      },
-    }));
+  /// 一个未结算的 turn + 工具调用窗口；[withResult]/[ended] 用来推进到结算态。
+  ///
+  /// 工具名用 `wait_agent`，与 PC 上「正在调用工具 · wait_agent」的真实事件一致。
+  List<Map<String, dynamic>> toolRunEvents({
+    bool withResult = false,
+    bool ended = false,
+    String reason = 'completed',
+    String tool = 'wait_agent',
+  }) {
+    final events = <Map<String, dynamic>>[
+      fixture.event(1, 'turn/start', <String, dynamic>{'turn': 1}),
+      fixture.event(2, 'step/start', <String, dynamic>{'turn': 1, 'step': 1}),
+      fixture.event(3, 'tool/call', <String, dynamic>{
+        'callId': 'call-1',
+        'name': tool,
+        'turn': 1,
+        'step': 1,
+        'arguments': '{}',
+      }),
+    ];
+    var seq = 3;
+    if (withResult) {
+      events.add(
+        fixture.event(++seq, 'tool/result', <String, dynamic>{
+          'turn': 1,
+          'step': 1,
+          'message': <String, dynamic>{
+            'source': <String, dynamic>{'callId': 'call-1'},
+          },
+        }),
+      );
+    }
+    if (ended) {
+      events.add(
+        fixture.event(++seq, 'step/end', <String, dynamic>{
+          'turn': 1,
+          'step': 1,
+        }),
+      );
+      events.add(
+        fixture.event(++seq, 'turn/end', <String, dynamic>{
+          'turn': 1,
+          'reason': <String, dynamic>{'kind': reason},
+        }),
+      );
+    }
+    return events;
   }
-  if (ended) {
-    events.add(fixture.event(++seq, 'step/end', <String, dynamic>{
-      'turn': 1,
-      'step': 1,
-    }));
-    events.add(fixture.event(++seq, 'turn/end', <String, dynamic>{
-      'turn': 1,
-      'reason': <String, dynamic>{'kind': reason},
-    }));
-  }
-  return events;
-}
 
-/// 桌面进程在跑、remote-host 没有 live 的会话页假数据源。
-FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
-    FakeRemoteConversationSource(window: _window(events));
+  /// 桌面进程在跑、remote-host 没有 live 的会话页假数据源。
+  FakeRemoteConversationSource noLiveSource(
+    List<Map<String, dynamic>> events,
+  ) => FakeRemoteConversationSource(window: _window(events));
 
-/// 未结算工具事件推导出的运行态。
+  /// 未结算工具事件推导出的运行态。
   group('事件推导运行态', () {
     Future<void> settle(WidgetTester tester) async {
       await tester.pump();
@@ -2919,8 +3174,8 @@ FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
       await tester.pumpWidget(_host(source));
       await settle(tester);
 
-      expect(find.textContaining('电脑正在工作'), findsOneWidget);
-      expect(find.textContaining('正在调用工具 wait_agent'), findsOneWidget);
+      expect(find.textContaining('电脑正在工作'), findsNothing);
+      expect(find.textContaining('正在调用工具 wait_agent'), findsNothing);
       expect(find.textContaining('回复已中断'), findsNothing);
       expect(find.textContaining('工作异常结束'), findsNothing);
       expect(find.textContaining('异常结束'), findsNothing);
@@ -2931,7 +3186,7 @@ FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
       var now = DateTime(2026, 1, 1, 12);
       await tester.pumpWidget(_host(source, now: () => now));
       await settle(tester);
-      expect(find.textContaining('正在调用工具 wait_agent'), findsOneWidget);
+      expect(find.textContaining('正在调用工具 wait_agent'), findsNothing);
 
       source.window = _window(toolRunEvents(withResult: true, ended: true));
       // 推送优先：先让推送窗口过期，才允许整窗兜底。
@@ -2962,8 +3217,11 @@ FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
       await settle(tester);
 
       expect(find.byKey(const ValueKey('remote-work-status')), findsNothing);
-      expect(find.textContaining('本轮任务未完成'), findsOneWidget,
-          reason: '明确 interrupted 的 turn/end 仍按中断文案展示');
+      expect(
+        find.textContaining('本轮任务未完成'),
+        findsOneWidget,
+        reason: '明确 interrupted 的 turn/end 仍按中断文案展示',
+      );
       expect(find.textContaining('电脑正在工作'), findsNothing);
     });
 
@@ -2989,8 +3247,8 @@ FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
       await tester.pumpWidget(_host(source));
       await settle(tester);
 
-      expect(find.byKey(const ValueKey('remote-work-status')), findsOneWidget);
-      expect(find.textContaining('电脑正在工作'), findsOneWidget);
+      expect(find.byKey(const ValueKey('remote-work-status')), findsNothing);
+      expect(find.textContaining('电脑正在工作'), findsNothing);
       final reloads = source.reloads;
       await tester.pump(const Duration(seconds: 4));
       expect(source.reloads, reloads, reason: '宿主有 live running 时不补偿轮询');
@@ -3045,11 +3303,13 @@ FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
       await tester.pumpWidget(_host(source, now: () => now));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
-      expect(find.textContaining('正在调用工具 wait_agent'), findsOneWidget);
+      expect(find.textContaining('正在调用工具 wait_agent'), findsNothing);
       final baseline = source.window!.throughSeq;
 
       // 增量窗口故意把已见过的 1–3 再带回一次，只应合并 4、5。
-      source.nextNewerWindow = _window(toolRunEvents(withResult: true, ended: true));
+      source.nextNewerWindow = _window(
+        toolRunEvents(withResult: true, ended: true),
+      );
       now = now.add(const Duration(seconds: 9));
       await tester.pump(const Duration(milliseconds: 5200));
       await tester.pump(const Duration(milliseconds: 300));
@@ -3060,6 +3320,35 @@ FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
       expect(find.textContaining('回复已中断'), findsNothing);
     });
 
+    testWidgets('截断的增量窗口只推进收到的 seq，并保留更早分页', (tester) async {
+      var now = DateTime(2026, 1, 1, 12);
+      final source = FakeRemoteConversationSource(
+        window: RemoteConversationWindow(
+          events: <Map<String, dynamic>>[fixture.input(10, '当前消息')],
+          throughSeq: 10,
+          firstSeq: 10,
+          hasMore: true,
+        ),
+      );
+      await tester.pumpWidget(_host(source, now: () => now));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      source.nextNewerWindow = RemoteConversationWindow(
+        events: <Map<String, dynamic>>[fixture.input(11, '增量消息')],
+        throughSeq: 20,
+        firstSeq: 11,
+        hasMore: false,
+      );
+      now = now.add(const Duration(seconds: 9));
+      await tester.pump(const Duration(milliseconds: 5200));
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.textContaining('增量消息'), findsOneWidget);
+      expect(find.byKey(const ValueKey('remote-load-older')), findsOneWidget);
+      now = now.add(const Duration(seconds: 9));
+      await tester.pump(const Duration(milliseconds: 5200));
+      expect(source.readNewerAfterSeqs.last, 11);
+    });
+
     testWidgets('推送活跃时 2.5s 定时器跳过 readNewer 兜底', (tester) async {
       var now = DateTime(2026, 1, 1, 12);
       final source = FakeRemoteConversationSource(
@@ -3068,7 +3357,7 @@ FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
       await tester.pumpWidget(_host(source, now: () => now));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
-      expect(find.textContaining('正在调用工具 wait_agent'), findsOneWidget);
+      expect(find.textContaining('正在调用工具 wait_agent'), findsNothing);
 
       source.emit(
         RemoteConversationEvents(<Map<String, dynamic>>[
@@ -3079,14 +3368,10 @@ FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
       now = now.add(const Duration(seconds: 3));
       await tester.pump(const Duration(milliseconds: 5200));
 
-      expect(
-        source.readNewerCalls,
-        0,
-        reason: '8s 内收到推送，不应发起 readNewer 兜底',
-      );
+      expect(source.readNewerCalls, 0, reason: '8s 内收到推送，不应发起 readNewer 兜底');
     });
 
-    testWidgets('无推送超过 8s 才兜底一次并重置窗口', (tester) async {
+    testWidgets('无推送时持续增量对账', (tester) async {
       var now = DateTime(2026, 1, 1, 12);
       final source = FakeRemoteConversationSource(
         window: _window(toolRunEvents()),
@@ -3100,16 +3385,12 @@ FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
       await tester.pump(const Duration(milliseconds: 300));
       expect(source.readNewerCalls, 1, reason: '静默超 8s 后兜底一次');
 
-      now = now.add(const Duration(seconds: 2));
+      now = now.add(const Duration(seconds: 9));
       await tester.pump(const Duration(milliseconds: 5200));
-      expect(
-        source.readNewerCalls,
-        1,
-        reason: '兜底后重置窗口，8s 内不重复请求',
-      );
+      expect(source.readNewerCalls, greaterThan(1), reason: '可见会话要持续检查漏掉的消息');
     });
 
-    testWidgets('兜底增量合并 turn/end 后停止轮询', (tester) async {
+    testWidgets('兜底增量合并 turn/end 后继续轮询', (tester) async {
       var now = DateTime(2026, 1, 1, 12);
       final source = FakeRemoteConversationSource(
         window: _window(toolRunEvents()),
@@ -3130,7 +3411,7 @@ FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
       final calls = source.readNewerCalls;
       now = now.add(const Duration(seconds: 20));
       await tester.pump(const Duration(seconds: 5));
-      expect(source.readNewerCalls, calls, reason: 'turn/end 后停止轮询');
+      expect(source.readNewerCalls, greaterThan(calls), reason: '下一轮消息仍需补拉');
     });
 
     test('历史保留上限裁剪最旧事件', () {
@@ -3141,7 +3422,10 @@ FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
       expect(trimmed.length, 1200);
       expect(trimmed.first['seq'], 100);
       expect(trimmed.last['seq'], 1299);
-      expect(identical(trimRemoteConversationEvents(events, 2000), events), isTrue);
+      expect(
+        identical(trimRemoteConversationEvents(events, 2000), events),
+        isTrue,
+      );
     });
   });
   group('工作状态与排队消息', () {
@@ -3150,8 +3434,8 @@ FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
       await tester.pumpWidget(_host(fixture.source));
       await _flushTasks(tester);
 
-      expect(find.byKey(const ValueKey('remote-work-status')), findsOneWidget);
-      expect(find.text('电脑正在工作…'), findsOneWidget);
+      expect(find.byKey(const ValueKey('remote-work-status')), findsNothing);
+      expect(find.text('电脑正在工作…'), findsNothing);
       final reads = fixture.source.requests
           .where((request) => request.method == remoteTasksSessionMethod)
           .toList();
@@ -3164,7 +3448,7 @@ FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
       await tester.pumpWidget(_host(fixture.source));
       await _flushTasks(tester);
 
-      expect(find.text('等待你在电脑上的操作'), findsOneWidget);
+      expect(find.text('等待你在电脑上的操作'), findsNothing);
     });
 
     testWidgets('单条排队消息直接显示一行，不折叠', (tester) async {
@@ -3210,8 +3494,14 @@ FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
 
       await tester.tap(find.byKey(const ValueKey('remote-queue-toggle')));
       await tester.pumpAndSettle();
-      expect(find.byKey(const ValueKey('remote-queue-item-q-1')), findsOneWidget);
-      expect(find.byKey(const ValueKey('remote-queue-item-q-2')), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('remote-queue-item-q-1')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('remote-queue-item-q-2')),
+        findsOneWidget,
+      );
       expect(find.text('排队 · 待执行'), findsOneWidget);
       expect(find.text('插话 · 待发送'), findsOneWidget);
       expect(find.text('未恢复执行'), findsOneWidget);
@@ -3226,11 +3516,15 @@ FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
       await tester.pumpWidget(_host(fixture.source));
       await _flushTasks(tester);
 
-      await tester.tap(find.byKey(const ValueKey('remote-queue-remove-q-remove')));
+      await tester.tap(
+        find.byKey(const ValueKey('remote-queue-remove-q-remove')),
+      );
       await tester.pumpAndSettle();
       expect(find.text('删除后这条排队消息不再执行。'), findsOneWidget);
 
-      await tester.tap(find.byKey(const ValueKey('remote-queue-remove-confirm')));
+      await tester.tap(
+        find.byKey(const ValueKey('remote-queue-remove-confirm')),
+      );
       await tester.pumpAndSettle();
       await _flushTasks(tester);
 
@@ -3252,7 +3546,7 @@ FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
       );
       await tester.pumpWidget(_host(fixture.source));
       await _flushTasks(tester);
-      expect(find.byKey(const ValueKey('remote-work-status')), findsOneWidget);
+      expect(find.byKey(const ValueKey('remote-work-status')), findsNothing);
       expect(find.byKey(const ValueKey('remote-queue-dock')), findsOneWidget);
 
       fixture.source.setPhase(RemoteConnectionPhase.reconnecting);
@@ -3268,7 +3562,7 @@ FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
       fixture.source.setPhase(RemoteConnectionPhase.ready);
       await tester.pump();
       await _flushTasks(tester);
-      expect(find.byKey(const ValueKey('remote-work-status')), findsOneWidget);
+      expect(find.byKey(const ValueKey('remote-work-status')), findsNothing);
       expect(find.byKey(const ValueKey('remote-queue-dock')), findsOneWidget);
     });
 
@@ -3280,8 +3574,9 @@ FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
       expect(find.byKey(const ValueKey('remote-work-status')), findsNothing);
       expect(find.byKey(const ValueKey('remote-queue-dock')), findsNothing);
       expect(
-        fixture.source.requests
-            .where((request) => request.method == remoteTasksSessionMethod),
+        fixture.source.requests.where(
+          (request) => request.method == remoteTasksSessionMethod,
+        ),
         isEmpty,
       );
       expect(find.byKey(const ValueKey('remote-transcript')), findsOneWidget);
@@ -3289,9 +3584,7 @@ FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
 
     testWidgets('可编辑排队消息行内保存调用 tasks.editQueued，空文本不提交', (tester) async {
       final fixture = _tasksFixture(
-        pending: <Map<String, dynamic>>[
-          _queuedItem('q-1', prompt: '旧内容'),
-        ],
+        pending: <Map<String, dynamic>>[_queuedItem('q-1', prompt: '旧内容')],
       );
       await tester.pumpWidget(_host(fixture.source));
       await _flushTasks(tester);
@@ -3303,12 +3596,16 @@ FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
       expect(tester.widget<TextField>(field).controller?.text, '旧内容');
 
       await tester.enterText(field, '   ');
-      await tester.tap(find.byKey(const ValueKey('remote-queue-edit-save-q-1')));
+      await tester.tap(
+        find.byKey(const ValueKey('remote-queue-edit-save-q-1')),
+      );
       await tester.pump();
       expect(fixture.edits, isEmpty, reason: '空文本不能保存');
 
       await tester.enterText(field, '新内容');
-      await tester.tap(find.byKey(const ValueKey('remote-queue-edit-save-q-1')));
+      await tester.tap(
+        find.byKey(const ValueKey('remote-queue-edit-save-q-1')),
+      );
       await _flushTasks(tester);
       expect(fixture.edits.single, <String, dynamic>{
         'sessionId': fixture.source.sessionId,
@@ -3332,10 +3629,7 @@ FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
         find.byKey(const ValueKey('remote-queue-edit-q-1')),
       );
       expect(edit.onPressed, isNull);
-      expect(
-        find.byTooltip('包含非文本内容，暂不支持编辑'),
-        findsOneWidget,
-      );
+      expect(find.byTooltip('包含非文本内容，暂不支持编辑'), findsOneWidget);
       final steer = tester.widget<IconButton>(
         find.byKey(const ValueKey('remote-queue-steer-q-1')),
       );
@@ -3346,9 +3640,7 @@ FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
     testWidgets('运行中且 steerable 时可插话发送并刷新队列', (tester) async {
       final fixture = _tasksFixture(
         status: 'running',
-        pending: <Map<String, dynamic>>[
-          _queuedItem('q-1', steerable: true),
-        ],
+        pending: <Map<String, dynamic>>[_queuedItem('q-1', steerable: true)],
       );
       await tester.pumpWidget(_host(fixture.source));
       await _flushTasks(tester);
@@ -3397,9 +3689,15 @@ FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
 
       await tester.tap(find.byKey(const ValueKey('remote-queue-toggle')));
       await tester.pump(const Duration(milliseconds: 60));
-      expect(find.byKey(const ValueKey('remote-queue-item-q-1')), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('remote-queue-item-q-1')),
+        findsOneWidget,
+      );
       await tester.pumpAndSettle();
-      expect(find.byKey(const ValueKey('remote-queue-item-q-2')), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('remote-queue-item-q-2')),
+        findsOneWidget,
+      );
 
       await tester.tap(find.byKey(const ValueKey('remote-queue-toggle')));
       await tester.pumpAndSettle();
@@ -3439,19 +3737,13 @@ FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
       return source;
     }
 
-    testWidgets('运行状态条是静态圆点，不常驻转圈', (tester) async {
+    testWidgets('运行中不出现额外工作状态条', (tester) async {
       final source = runningSource();
       await tester.pumpWidget(_host(source));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
-      expect(find.byKey(const ValueKey('remote-work-status')), findsOneWidget);
-      expect(
-        find.descendant(
-          of: find.byKey(const ValueKey('remote-work-status')),
-          matching: find.byType(CircularProgressIndicator),
-        ),
-        findsNothing,
-      );
+      expect(find.byKey(const ValueKey('remote-work-status')), findsNothing);
+      expect(find.byType(RemoteComposer), findsOneWidget);
       await tester.pump(const Duration(seconds: 3));
       expect(tester.takeException(), isNull);
     });
@@ -3461,7 +3753,7 @@ FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
       await tester.pumpWidget(_host(source));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
-      expect(find.byKey(const ValueKey('remote-work-status')), findsOneWidget);
+      expect(find.byKey(const ValueKey('remote-work-status')), findsNothing);
 
       await tester.enterText(find.byType(TextField), '运行中也能发送');
       await tester.pump();
@@ -3470,7 +3762,7 @@ FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
       expect(source.sent, contains('运行中也能发送'));
     });
 
-    testWidgets('日志推导静默 25s 后隐藏状态条并停止兜底', (tester) async {
+    testWidgets('日志推导静默 25s 后隐藏状态条并继续兜底', (tester) async {
       var now = DateTime(2026, 1, 1, 12);
       final source = FakeRemoteConversationSource(
         window: _window(toolRunEvents()),
@@ -3478,7 +3770,7 @@ FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
       await tester.pumpWidget(_host(source, now: () => now));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
-      expect(find.byKey(const ValueKey('remote-work-status')), findsOneWidget);
+      expect(find.byKey(const ValueKey('remote-work-status')), findsNothing);
 
       now = now.add(const Duration(seconds: 30));
       await tester.pump(const Duration(seconds: 5));
@@ -3486,7 +3778,7 @@ FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
       expect(find.byKey(const ValueKey('remote-work-status')), findsNothing);
       final calls = source.readNewerCalls;
       await tester.pump(const Duration(seconds: 10));
-      expect(source.readNewerCalls, calls, reason: '静默超时后停止兜底轮询');
+      expect(source.readNewerCalls, greaterThan(calls), reason: '静默后仍需检查最终回复');
     });
 
     testWidgets('短时间多个 session.event 合并为一次刷新，关键 turn/end 立即生效', (tester) async {
@@ -3520,7 +3812,7 @@ FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
       await tester.pumpWidget(_host(source));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
-      expect(find.byKey(const ValueKey('remote-work-status')), findsOneWidget);
+      expect(find.byKey(const ValueKey('remote-work-status')), findsNothing);
 
       source.emit(
         RemoteConversationEvents(
@@ -3562,7 +3854,6 @@ FakeRemoteConversationSource noLiveSource(List<Map<String, dynamic>> events) =>
       expect(taskReads(), initial + 1, reason: '空闲约 6s 拉一次');
     });
   });
-
 }
 
 /// 一条 `tasks.session.pending` 排队消息的宿主形状。
@@ -3625,8 +3916,8 @@ _tasksFixture({
     },
   );
   if (supportsTasks) {
-    source.answers[remoteTasksSessionMethod] =
-        (Map<String, dynamic> params) => <String, dynamic>{
+    source.answers[remoteTasksSessionMethod] = (Map<String, dynamic> params) =>
+        <String, dynamic>{
           'sessionId': source.sessionId,
           'live': <String, dynamic>{
             'status': status,

@@ -179,6 +179,47 @@ async function fixture(run, options = {}) {
   }
 }
 
+test('desktop owner: streamed file, image, empty file, retry and session-scoped receipts', async () => {
+  await fixture(async ({ bridge, state, agents }) => {
+    const parts = [Buffer.alloc(PAGE * 3 + 11, 27), Buffer.from([0, 1, 2]), Buffer.alloc(0)]
+    const ids = parts.map(() => randomUUID())
+    const receipts = ids.map(id => `desktop-${id}`)
+    let drop = true
+    for (const [i, bytes] of parts.entries()) {
+      state.responder = serveBytes(bytes)
+      const meta = (i === 1 ? imageMeta : fileMeta)(ids[i], bytes)
+      const stage = async (item, data) => {
+        assert.equal(item.sessionId, SESSION)
+        const chunks = []
+        for await (const chunk of data) {
+          chunks.push(chunk)
+          if (drop) {
+            drop = false
+            throw new Error('disconnected')
+          }
+        }
+        assert.deepEqual(Buffer.concat(chunks), bytes)
+        return { receiptId: receipts[i] }
+      }
+      if (i === 0) {
+        await assert.rejects(bridge.prepare(meta, stage), /disconnected/)
+        assert.throws(() => bridge.desktopReceipts(SESSION, [ids[i]]), /未就绪/)
+      }
+      await bridge.prepare(meta, stage)
+    }
+    assert.equal(agents.size, 0, 'child must never acquire the desktop writer')
+    const reads = state.reads.length
+    assert.deepEqual(bridge.desktopReceipts(SESSION, ids), receipts)
+    assert.equal(state.reads.length, reads)
+    assert.throws(() => bridge.desktopReceipts('another-session', ids), /未就绪/)
+    await assert.rejects(bridge.content(SESSION, ids), /所属电脑会话/)
+    state.responder = serveBytes(parts[1])
+    assert.equal((await bridge.preview({ sessionId: SESSION, id: ids[1] })).data, parts[1].toString('base64'))
+    await bridge.release({ sessionId: SESSION, id: ids[0] })
+    assert.throws(() => bridge.desktopReceipts(SESSION, ids), /未就绪/)
+  })
+})
+
 test('file: one page becomes a DSH receipt; content reuses it without phone traffic', async () => {
   await fixture(async ({ bridge, state }) => {
     const id = randomUUID()

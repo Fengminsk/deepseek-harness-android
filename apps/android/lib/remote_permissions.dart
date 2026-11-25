@@ -280,8 +280,8 @@ class RemotePermissionController extends ChangeNotifier {
 
   /// 重新确认能力与当前值：页面重连、手动重试或切换预设后调用。
   Future<void> refresh() async {
-    await _probe();
-    await _readCurrent();
+    // 两项只读请求互不依赖；并行后当前预设无需等待能力探测往返。
+    await Future.wait<void>([_probe(), _readCurrent()]);
   }
 
   /// 读取权限预设目录。
@@ -301,8 +301,9 @@ class RemotePermissionController extends ChangeNotifier {
     _catalogError = null;
     _publish();
     try {
-      await _surface.ensureSession(source.sessionId);
-      if (_stale(epoch: epoch, token: _catalogEpoch)) return;
+      // The catalog is global to the desktop runtime. Resolving a session here
+      // serializes this read behind any work on that session, which can add
+      // many seconds without changing the catalog result.
       final raw = await _surface.call(remoteConversationApiCallMethod, {
         'namespace': remotePermissionPresetsNamespace,
         'method': remotePermissionPresetsCatalogMethod,

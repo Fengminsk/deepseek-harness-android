@@ -112,7 +112,7 @@ void main() {
     await _openMenu(tester);
 
     expect(source.ensureCalls, 1);
-    expect(find.text('添加与指令'), findsOneWidget, reason: '弹层标题');
+    expect(find.byType(ComposerCommands), findsOneWidget);
     // 分组与本地一致：客户端动作与宿主指令都在「添加 / 指令」里。
     expect(find.text('添加'), findsOneWidget);
     expect(find.text('指令'), findsOneWidget);
@@ -192,7 +192,7 @@ void main() {
 
     await tester.tap(find.text('下载日志  export'));
     await tester.pumpAndSettle();
-    expect(find.text('添加与指令'), findsOneWidget, reason: '置灰项不回调，弹层不收起');
+    expect(find.byType(ComposerCommands), findsOneWidget);
     expect(source.commands, isEmpty);
     expect(tester.takeException(), isNull);
   });

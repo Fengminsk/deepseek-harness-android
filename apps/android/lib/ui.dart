@@ -293,6 +293,11 @@ class PocketScaffold extends StatefulWidget {
     this.trailing,
     this.header,
     this.headerHeight,
+    this.ambientMotion = true,
+    this.animateEntrance = true,
+    this.bottomHeightDebounce = Duration.zero,
+    this.keyboardOverlay = false,
+    this.onKeyboardSettled,
     this.bottom,
     this.drawer,
     this.onDrawerChanged,
@@ -303,22 +308,88 @@ class PocketScaffold extends StatefulWidget {
 
   /// Height of a custom floating header; defaults to the standard title row.
   final double? headerHeight;
+
+  /// Keep the ambient backdrop static on pages with frequent live updates.
+  final bool ambientMotion;
+  final bool animateEntrance;
+
+  /// Delays transcript inset changes while the bottom widget animates its height.
+  final Duration bottomHeightDebounce;
+
+  /// Keeps the transcript viewport fixed while the system keyboard moves.
+  final bool keyboardOverlay;
+  final VoidCallback? onKeyboardSettled;
   final ValueChanged<bool>? onDrawerChanged;
   final GlobalKey<ScaffoldState>? scaffoldKey;
   @override
   State<PocketScaffold> createState() => _PocketScaffoldState();
 }
 
-class _PocketScaffoldState extends State<PocketScaffold> {
+class _PocketScaffoldState extends State<PocketScaffold>
+    with WidgetsBindingObserver {
   double bottomHeight = 0;
+  Timer? _bottomHeightTimer;
+  Timer? _keyboardInsetTimer;
+  double _settledKeyboardInset = 0;
   final _suspendAmbient = ValueNotifier(false);
   bool _bodyScrolling = false, _drawerOpen = false;
-  void _updateAmbient() =>
-      _suspendAmbient.value = _bodyScrolling || _drawerOpen;
+  void _updateAmbient() => _suspendAmbient.value =
+      !widget.ambientMotion || _bodyScrolling || _drawerOpen;
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _updateAmbient();
+  }
+
+  @override
+  void didChangeMetrics() {
+    if (!widget.keyboardOverlay) return;
+    _keyboardInsetTimer?.cancel();
+    _keyboardInsetTimer = Timer(const Duration(milliseconds: 80), () {
+      _keyboardInsetTimer = null;
+      if (!mounted) return;
+      final view = View.of(context);
+      final inset = view.viewInsets.bottom / view.devicePixelRatio;
+      if ((_settledKeyboardInset - inset).abs() >= .5) {
+        setState(() => _settledKeyboardInset = inset);
+      }
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) widget.onKeyboardSettled?.call();
+      });
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant PocketScaffold oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.ambientMotion != widget.ambientMotion) _updateAmbient();
+  }
+
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _bottomHeightTimer?.cancel();
+    _keyboardInsetTimer?.cancel();
     _suspendAmbient.dispose();
     super.dispose();
+  }
+
+  void _onBottomSizeChanged(Size size) {
+    final nextHeight = size.height;
+    if ((bottomHeight - nextHeight).abs() <= .5) {
+      _bottomHeightTimer?.cancel();
+      return;
+    }
+    _bottomHeightTimer?.cancel();
+    if (bottomHeight == 0 || widget.bottomHeightDebounce == Duration.zero) {
+      setState(() => bottomHeight = nextHeight);
+      return;
+    }
+    _bottomHeightTimer = Timer(widget.bottomHeightDebounce, () {
+      _bottomHeightTimer = null;
+      if (mounted) setState(() => bottomHeight = nextHeight);
+    });
   }
 
   @override
@@ -330,6 +401,7 @@ class _PocketScaffoldState extends State<PocketScaffold> {
         (MediaQuery.textScalerOf(context).scale(17) * 2.4).clamp(52.0, 120.0);
     final top = safe.top + headerHeight + 20;
     return PocketReveal(
+      animate: widget.animateEntrance,
       child: Scaffold(
         key: widget.scaffoldKey,
         onDrawerChanged: (open) {
@@ -343,7 +415,7 @@ class _PocketScaffoldState extends State<PocketScaffold> {
                 borderRadius: AppRadius.xl,
                 child: widget.drawer!,
               ),
-        resizeToAvoidBottomInset: true,
+        resizeToAvoidBottomInset: !widget.keyboardOverlay,
         body: FilledInputTheme(
           borderRadius: AppRadius.xl,
           contentPadding: const EdgeInsets.symmetric(
@@ -354,7 +426,7 @@ class _PocketScaffoldState extends State<PocketScaffold> {
             top: top + 12,
             bottom: widget.bottom == null
                 ? safe.bottom + 28
-                : bottomHeight + 20,
+                : bottomHeight + _settledKeyboardInset + 20,
             child: Stack(
               fit: StackFit.expand,
               children: [
@@ -430,61 +502,87 @@ class _PocketScaffoldState extends State<PocketScaffold> {
                         ),
                   ),
                 ),
-                if (widget.bottom != null) ...[
-                  Positioned(
-                    bottom: 0,
-                    left: 0,
-                    right: 0,
-                    height: bottomHeight + 28,
-                    child: FloatingEdgeScrim(
-                      backgroundColor: color,
-                      overhang: 28,
-                      bottom: true,
+                if (widget.bottom case final bottom?)
+                  Positioned.fill(
+                    child: _PocketBottomDock(
+                      bottom: bottom,
+                      height: bottomHeight,
+                      top: top,
+                      safeBottom: safe.bottom,
+                      color: color,
+                      keyboardOverlay: widget.keyboardOverlay,
+                      onSizeChanged: _onBottomSizeChanged,
                     ),
                   ),
-                  Positioned(
-                    bottom: 0,
-                    left: 0,
-                    right: 0,
-                    child: _MeasureSize(
-                      onChange: (size) {
-                        if (mounted &&
-                            (bottomHeight - size.height).abs() > .5) {
-                          setState(() => bottomHeight = size.height);
-                        }
-                      },
-                      child: Padding(
-                        padding: EdgeInsets.fromLTRB(
-                          16,
-                          10,
-                          16,
-                          safe.bottom + 8,
-                        ),
-                        child: ConstrainedBox(
-                          constraints: BoxConstraints(
-                            maxHeight:
-                                (MediaQuery.sizeOf(context).height -
-                                        MediaQuery.viewInsetsOf(context)
-                                            .bottom -
-                                        top -
-                                        safe.bottom -
-                                        30)
-                                    .clamp(80.0, double.infinity),
-                          ),
-                          child: SingleChildScrollView(
-                            reverse: true,
-                            child: widget.bottom,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
               ],
             ),
           ),
         ),
       ),
+    );
+  }
+}
+
+class _PocketBottomDock extends StatelessWidget {
+  const _PocketBottomDock({
+    required this.bottom,
+    required this.height,
+    required this.top,
+    required this.safeBottom,
+    required this.color,
+    required this.keyboardOverlay,
+    required this.onSizeChanged,
+  });
+
+  final Widget bottom;
+  final double height, top, safeBottom;
+  final Color color;
+  final bool keyboardOverlay;
+  final ValueChanged<Size> onSizeChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final keyboardInset = keyboardOverlay
+        ? MediaQuery.viewInsetsOf(context).bottom
+        : 0.0;
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        Positioned(
+          bottom: keyboardInset,
+          left: 0,
+          right: 0,
+          height: height + 28,
+          child: FloatingEdgeScrim(
+            backgroundColor: color,
+            overhang: 28,
+            bottom: true,
+          ),
+        ),
+        Positioned(
+          bottom: keyboardInset,
+          left: 0,
+          right: 0,
+          child: _MeasureSize(
+            onChange: onSizeChanged,
+            child: Padding(
+              padding: EdgeInsets.fromLTRB(16, 10, 16, safeBottom + 8),
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxHeight:
+                      (MediaQuery.sizeOf(context).height -
+                              MediaQuery.viewInsetsOf(context).bottom -
+                              top -
+                              safeBottom -
+                              30)
+                          .clamp(80.0, double.infinity),
+                ),
+                child: SingleChildScrollView(reverse: true, child: bottom),
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }
@@ -652,6 +750,7 @@ class PocketList extends StatefulWidget {
     this.anchorController,
     this.endAnchorKey,
     this.reserveEndSpace = false,
+    this.animateItems = true,
   }) : itemBuilder = null,
        itemCount = null,
        findChildIndexCallback = null;
@@ -665,6 +764,7 @@ class PocketList extends StatefulWidget {
     this.anchorController,
     this.endAnchorKey,
     this.reserveEndSpace = false,
+    this.animateItems = true,
   }) : children = null;
   final List<Widget>? children;
   final IndexedWidgetBuilder? itemBuilder;
@@ -678,6 +778,7 @@ class PocketList extends StatefulWidget {
   /// space shrinks to zero as later rows grow; ordinary lists add no space.
   final Key? endAnchorKey;
   final bool reserveEndSpace;
+  final bool animateItems;
   @override
   State<PocketList> createState() => _PocketListState();
 }
@@ -999,6 +1100,7 @@ class _PocketListState extends State<PocketList> {
     return _PocketListItem(
       key: _PocketListItemKey(identity),
       presented: _presented,
+      animate: widget.animateItems,
       identity: identity,
       index: index,
       owner: widget.anchorController == null ? null : this,
@@ -1061,12 +1163,14 @@ class _PocketListItem extends StatefulWidget {
   const _PocketListItem({
     super.key,
     required this.presented,
+    required this.animate,
     required this.identity,
     required this.index,
     required this.owner,
     required this.child,
   });
   final Set<(Type, Object)> presented;
+  final bool animate;
   final (Type, Object) identity;
   final int index;
   final _PocketListState? owner;
@@ -1115,7 +1219,9 @@ class _PocketListItemState extends State<_PocketListItem> {
 
   @override
   Widget build(BuildContext context) {
-    final child = PocketReveal(animate: animate, child: widget.child);
+    final child = widget.animate
+        ? PocketReveal(animate: animate, child: widget.child)
+        : widget.child;
     if (widget.owner?.widget.reserveEndSpace != true) return child;
     return _PocketReadingInset(
       inset:

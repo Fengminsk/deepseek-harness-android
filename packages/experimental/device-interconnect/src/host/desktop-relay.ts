@@ -20,6 +20,8 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { mkdir, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
+import { readDesktopSessionWindow, type DesktopSessionController, type WindowRequest } from './desktop-session-window.ts'
+import type { DesktopInteractions } from './desktop-interactions.ts'
 
 /** Descriptor file name inside the bundle data directory. */
 export const RELAY_FILE_NAME = 'relay.json'
@@ -45,6 +47,7 @@ export interface DesktopRelaySessionStatus {
 
 /** Request body of `POST /relay/session/send`. */
 export interface DesktopRelaySendRequest {
+  readonly receiptIds?: readonly string[]
   /** Session the phone is writing to. */
   readonly sessionId: string
   /** App request id used for dedupe/route confirmation. */
@@ -63,6 +66,19 @@ export interface DesktopRelaySendRequest {
 
 /** Desktop-side work the relay can perform. */
 export interface DesktopRelayExecutor {
+  upload?(request: DesktopUpload): Promise<unknown>
+  command?(sessionId: string, line: string, receiptIds: readonly string[]): Promise<unknown>
+  /** Read a bounded window from the desktop-owned Session controller. */
+  readWindow(request: WindowRequest): Promise<unknown>
+  /** Read desktop-owned Session projections for plan and permission state. */
+  projections(sessionId: string): Promise<unknown>
+  /** Read the desktop process's already initialized global catalogs. */
+  modelCatalog(): Promise<unknown>
+  commandCatalog(agentId: string): Promise<unknown>
+  permissionCatalog(): Promise<unknown>
+  interactionsList(sessionId: string): Promise<unknown>
+  interactionsReply(params: Record<string, unknown>): Promise<unknown>
+  interactionsStatus(): { ready: boolean; error?: string; pending: number }
   /**
    * Send one text message into a desktop-owned session.
    * @param request - validated send request.
@@ -82,6 +98,13 @@ export interface DesktopRelayExecutor {
    * @returns session id to status map.
    */
   sessions(): Promise<Readonly<Record<string, DesktopRelaySessionStatus>>>
+}
+
+interface DesktopUpload {
+  sessionId: string
+  name: string
+  mediaType: string
+  data: AsyncIterable<Uint8Array>
 }
 
 /** A structured relay failure returned as JSON, never thrown to the HTTP layer. */
@@ -162,7 +185,7 @@ export class DesktopRelay {
   async start(): Promise<DesktopRelayStatus> {
     if (this.server !== undefined) return this.status()
     try {
-      const server = createServer((request, response) => {
+      const server = createServer({ requestTimeout: 2 * 60 * 60_000 }, (request, response) => {
         void this.handle(request, response)
       })
       this.server = server
@@ -254,9 +277,44 @@ export class DesktopRelay {
     if (request.method === 'GET' && url.pathname === '/relay/health') {
       return { status: 200, body: { ok: true } }
     }
-    if (request.method === 'POST' && url.pathname === '/relay/session/send') {
+    if (request.method === 'GET' && url.pathname === '/relay/interactions/status') {
+      return { status: 200, body: { ok: true, ...this.options.executor.interactionsStatus() } }
+    }
+    if (request.method === 'POST' && url.pathname === '/relay/attachments/upload') {
+      const sessionId = url.searchParams.get('sessionId')
+      const name = url.searchParams.get('name')
+      const mediaType = url.searchParams.get('mediaType')
+      const size = Number(request.headers['content-length'])
+      if (!sessionId || sessionId.length > 512 || !name || Buffer.byteLength(name) > 255 ||
+          /[\\/\x00-\x1f]/u.test(name) || !mediaType || mediaType.length > 255 ||
+          !Number.isSafeInteger(size) || size < 0 || size > 2 ** 31) {
+        return relayError('relay/bad-request', '附件声明无效。', 400)
+      }
+      if (!this.options.executor.upload) return relayError('relay/unavailable', '桌面附件服务不可用。', 503)
+      try {
+        const result = await this.options.executor.upload({ sessionId, name, mediaType, data: request })
+        return { status: 200, body: { ok: true, result } }
+      } catch (error) {
+        return relayError('relay/upload-failed', error instanceof Error ? error.message : '附件上传失败。', 400)
+      }
+    }
+    if (request.method === 'POST' && url.pathname === '/relay/session/command-attachments') {
+      const body = await this.readJson(request)
+      const line = body?.['line']
+      if (!body || typeof line !== 'string' || !line.trim() || !this.options.executor.command) {
+        return relayError('relay/bad-request', '桌面无法执行附件指令。', 400)
+      }
+      const parsed = parseSendRequest({ ...body, text: '' })
+      if ('error' in parsed || !parsed.value.receiptIds?.length) return relayError('relay/bad-request', '附件指令无效。', 400)
+      const result = await this.options.executor.command(parsed.value.sessionId, line, parsed.value.receiptIds)
+      return { status: 200, body: { ok: true, result } }
+    }
+    if (request.method === 'POST' && (url.pathname === '/relay/session/send' || url.pathname === '/relay/session/send-attachments')) {
       const body = await this.readJson(request)
       if (body === undefined) return relayError('relay/bad-request', '请求体必须是合法 JSON 对象。', 400)
+      if (url.pathname.endsWith('send-attachments') && !(Array.isArray(body['receiptIds']) && body['receiptIds'].length)) {
+        return relayError('relay/bad-request', '缺少附件收据。', 400)
+      }
       const parsed = parseSendRequest(body)
       if ('error' in parsed) return relayError(parsed.error.code, parsed.error.message, 400)
       try {
@@ -268,6 +326,72 @@ export class DesktopRelay {
           error instanceof Error ? error.message : '桌面发送失败。',
           500,
         )
+      }
+    }
+    if (request.method === 'POST' && url.pathname === '/relay/session/read-window') {
+      const body = await this.readJson(request)
+      if (body === undefined || typeof body['sessionId'] !== 'string') {
+        return relayError('relay/bad-request', 'sessionId 必须是非空字符串。', 400)
+      }
+      try {
+        return { status: 200, body: { ok: true, result: await this.options.executor.readWindow(body as unknown as WindowRequest) } }
+      } catch (error) {
+        return relayError('relay/read-failed', error instanceof Error ? error.message : '桌面会话读取失败。', 500)
+      }
+    }
+    if (request.method === 'POST' && url.pathname === '/relay/session/projections') {
+      const body = await this.readJson(request)
+      const sessionId = body?.['sessionId']
+      if (typeof sessionId !== 'string' || sessionId.trim() === '' || sessionId.length > 512) {
+        return relayError('relay/bad-request', 'sessionId 必须是非空字符串。', 400)
+      }
+      try {
+        return { status: 200, body: { ok: true, result: await this.options.executor.projections(sessionId) } }
+      } catch (error) {
+        return relayError('relay/read-failed', error instanceof Error ? error.message : '桌面投影读取失败。', 500)
+      }
+    }
+    if (request.method === 'GET' && url.pathname === '/relay/catalog/commands') {
+      const agentId = url.searchParams.get('agentId')
+      if (!agentId?.trim() || agentId.length > 512) return relayError('relay/bad-request', '缺少有效会话。', 400)
+      return { status: 200, body: { ok: true, result: await this.options.executor.commandCatalog(agentId) } }
+    }
+    if (request.method === 'GET' && url.pathname === '/relay/catalog/model') {
+      try {
+        return { status: 200, body: { ok: true, result: await this.options.executor.modelCatalog() } }
+      } catch (error) {
+        return relayError('relay/read-failed', error instanceof Error ? error.message : '桌面模型目录读取失败。', 500)
+      }
+    }
+    if (request.method === 'GET' && url.pathname === '/relay/catalog/permission') {
+      try {
+        return { status: 200, body: { ok: true, result: await this.options.executor.permissionCatalog() } }
+      } catch (error) {
+        return relayError('relay/read-failed', error instanceof Error ? error.message : '桌面权限目录读取失败。', 500)
+      }
+    }
+    if (request.method === 'POST' && url.pathname === '/relay/interactions/list') {
+      const body = await this.readJson(request)
+      const sessionId = body?.['sessionId']
+      if (typeof sessionId !== 'string' || sessionId.length === 0 || sessionId.length > 512) {
+        return relayError('relay/bad-request', 'sessionId 无效。', 400)
+      }
+      try {
+        return { status: 200, body: { ok: true, result: await this.options.executor.interactionsList(sessionId) } }
+      } catch (error) {
+        return relayError('relay/read-failed', error instanceof Error ? error.message : '桌面交互读取失败。', 500)
+      }
+    }
+    if (request.method === 'POST' && url.pathname === '/relay/interactions/reply') {
+      const body = await this.readJson(request)
+      if (body === undefined || typeof body['sessionId'] !== 'string' || typeof body['id'] !== 'string'
+        || !Number.isSafeInteger(body['version'])) {
+        return relayError('relay/bad-request', '交互答复参数无效。', 400)
+      }
+      try {
+        return { status: 200, body: { ok: true, result: await this.options.executor.interactionsReply(body) } }
+      } catch (error) {
+        return relayError('relay/reply-failed', error instanceof Error ? error.message : '桌面交互答复失败。', 500)
       }
     }
     if (request.method === 'GET' && url.pathname === '/relay/session/status') {
@@ -340,7 +464,12 @@ export function parseSendRequest(body: Record<string, unknown>):
   if (typeof sessionId !== 'string' || sessionId.trim() === '' || sessionId.length > 512) {
     return { error: { code: 'relay/bad-request', message: 'sessionId 必须是非空字符串。' } }
   }
-  if (typeof text !== 'string' || text.trim() === '') {
+  const receipts = body['receiptIds']
+  if (receipts !== undefined && (!Array.isArray(receipts) || receipts.length > 256 ||
+      !receipts.every(id => typeof id === 'string' && id.length > 0 && id.length <= 512))) {
+    return { error: { code: 'relay/bad-request', message: '附件收据无效。' } }
+  }
+  if (typeof text !== 'string' || (text.trim() === '' && !receipts?.length)) {
     return { error: { code: 'relay/bad-request', message: 'text 必须是非空字符串。' } }
   }
   if (text.length > MAXIMUM_RELAY_TEXT_LENGTH) {
@@ -359,6 +488,7 @@ export function parseSendRequest(body: Record<string, unknown>):
   const model = optional('model')
   return {
     value: {
+      ...(receipts?.length ? { receiptIds: receipts } : {}),
       sessionId,
       text,
       ...(requestId === undefined ? {} : { requestId }),
@@ -392,7 +522,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * @param ctx - plugin context in the desktop Host process.
  * @returns the executor used by {@link DesktopRelay}.
  */
-export function createDesktopRelayExecutor(ctx: Context): DesktopRelayExecutor {
+export function createDesktopRelayExecutor(ctx: Context, interactions?: DesktopInteractions): DesktopRelayExecutor {
   const get = <T>(name: string): T | undefined => {
     try {
       return ctx.get(name, false) as T | undefined
@@ -422,25 +552,75 @@ export function createDesktopRelayExecutor(ctx: Context): DesktopRelayExecutor {
     get(id: unknown): AgentRow | undefined
   }
   let peer: unknown
-  const invoke = (namespace: string, method: string, request: Record<string, unknown>): Promise<unknown> => {
+  const invokeArgs = (namespace: string, method: string, args: Record<string, unknown>): Promise<unknown> => {
     const gateway = get<Gateway>('typertGateway')
     if (gateway === undefined) throw new DesktopRelayError('relay/service-unavailable', '桌面 DSH 的 typertGateway 服务不可用。')
     const connection = get<PeerFactory>('connection')
     if (connection === undefined) throw new DesktopRelayError('relay/service-unavailable', '桌面 DSH 的 connection 服务不可用。')
     peer ??= connection.createPeer({ principal: { kind: 'owner' }, interactions: 'none' })
-    return gateway.invoke({ namespace, method, args: { request }, peer })
+    return gateway.invoke({ namespace, method, args, peer })
   }
+  const invoke = (namespace: string, method: string, request: Record<string, unknown>) => invokeArgs(namespace, method, { request })
   const agents = (): AgentList | undefined => get<AgentList>('agents')
   const statusOf = (agent: AgentRow | undefined): DesktopRelaySessionStatus => {
     if (agent === undefined) return { status: 'unknown' }
     const nextTurn = agent.inbox?.nextTurn?.length ?? 0
     const nextStep = agent.inbox?.nextStep?.length ?? 0
     if (agent.status === 'running') return { status: 'running', ...(nextTurn + nextStep > 0 ? { queued: nextTurn + nextStep } : {}) }
+    if (agent.status === 'waiting') return { status: 'waiting' }
     if (nextTurn + nextStep > 0) return { status: 'queued', queued: nextTurn + nextStep }
     if (agent.status === 'idle') return { status: 'idle' }
-    return { status: 'unknown' }
+    // The Agent exists in this desktop process even if its newer status name
+    // is unknown to the mobile relay; ownership is still authoritative.
+    return { status: 'idle' }
   }
   return {
+    interactionsStatus() {
+      return interactions?.diagnostics() ?? { ready: false, error: '桌面审批服务未配置', pending: 0 }
+    },
+    async command(agentId, line, receiptIds) {
+      const submittedAttachments = receiptIds.map(receiptId => ({ type: 'file', receiptId }))
+      return await invokeArgs('commands', 'execute', { agentId, line, submittedAttachments }) ?? null
+    },
+    async upload(request) {
+      const uploads = get<{
+        uploadStream(input: DesktopUpload): Promise<unknown>
+        uploadImageStream(input: DesktopUpload): Promise<unknown>
+      }>('fileUploads')
+      if (!uploads) throw new DesktopRelayError('relay/service-unavailable', '桌面文件上传服务不可用。')
+      return request.mediaType.startsWith('image/') ? uploads.uploadImageStream(request) : uploads.uploadStream(request)
+    },
+    async interactionsList(sessionId) {
+      if (interactions === undefined) throw new DesktopRelayError('relay/service-unavailable', '桌面审批服务不可用。')
+      return interactions.snapshot(sessionId)
+    },
+    async interactionsReply(params) {
+      if (interactions === undefined) throw new DesktopRelayError('relay/service-unavailable', '桌面审批服务不可用。')
+      return interactions.reply(params)
+    },
+    commandCatalog(agentId) {
+      return invokeArgs('commands', 'list', { agentId })
+    },
+    async modelCatalog() {
+      const controller = get<{ modelCatalog(): Promise<unknown> }>('sessionController')
+      if (controller === undefined) throw new DesktopRelayError('relay/service-unavailable', '桌面模型目录不可用。')
+      return controller.modelCatalog()
+    },
+    async permissionCatalog() {
+      const presets = get<{ catalog(): unknown }>('permissionPresets')
+      if (presets === undefined) throw new DesktopRelayError('relay/service-unavailable', '桌面权限目录不可用。')
+      return presets.catalog()
+    },
+    async projections(sessionId) {
+      const controller = get<DesktopSessionController>('sessionController')
+      if (controller === undefined) throw new DesktopRelayError('relay/service-unavailable', '桌面会话控制器不可用。')
+      return controller.projections({ sessionId }, new AbortController().signal)
+    },
+    async readWindow(request) {
+      const controller = get<DesktopSessionController>('sessionController')
+      if (controller === undefined) throw new DesktopRelayError('relay/service-unavailable', '桌面会话控制器不可用。')
+      return readDesktopSessionWindow(controller, request)
+    },
     async send(request) {
       if (request.selectModel === true && request.provider !== undefined && request.model !== undefined) {
         await invoke('session', 'selectModel', {
@@ -453,7 +633,10 @@ export function createDesktopRelayExecutor(ctx: Context): DesktopRelayExecutor {
         sessionId: request.sessionId,
         ...(request.requestId === undefined ? {} : { requestId: request.requestId }),
         mode: 'queue',
-        content: [{ type: 'text', text: request.text }],
+        content: [
+          ...(request.text.trim() ? [{ type: 'text', text: request.text }] : []),
+          ...(request.receiptIds ?? []).map(receiptId => ({ type: 'file', receiptId })),
+        ],
       })
     },
     async status(sessionId) {

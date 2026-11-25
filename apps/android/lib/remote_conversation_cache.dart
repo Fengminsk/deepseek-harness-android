@@ -74,7 +74,9 @@ class RemoteConversationCache {
     if (deviceId.trim().isEmpty || sessionId.trim().isEmpty) return;
     try {
       final sessions = await _loadSessions(deviceId);
-      final index = sessions.indexWhere((item) => item['sessionId'] == sessionId);
+      final index = sessions.indexWhere(
+        (item) => item['sessionId'] == sessionId,
+      );
       final now = DateTime.now().millisecondsSinceEpoch;
       final base = index >= 0
           ? Map<String, dynamic>.from(sessions[index])
@@ -133,6 +135,24 @@ class RemoteConversationCache {
       return _entryOf(item);
     }
     return null;
+  }
+
+  /// Load the window and its UI preference from one native document read.
+  Future<({RemoteConversationCacheEntry? entry, bool? statsExpanded})>
+  readState(String deviceId, String sessionId) async {
+    if (deviceId.trim().isEmpty || sessionId.trim().isEmpty) {
+      return (entry: null, statsExpanded: null);
+    }
+    final sessions = await _loadSessions(deviceId);
+    for (final item in sessions) {
+      if (item['sessionId'] != sessionId) continue;
+      final stats = item[_statsExpandedKey];
+      return (
+        entry: _entryOf(item),
+        statsExpanded: stats is bool ? stats : null,
+      );
+    }
+    return (entry: null, statsExpanded: null);
   }
 
   /// Saves [window] for [sessionId], evicting the least recently used entries.
@@ -200,26 +220,40 @@ class RemoteConversationCache {
       for (final event in window.events) Map<String, dynamic>.of(event),
     ];
     if (events.isEmpty) return null;
-    var encoded = <String, dynamic>{
+    final encoded = <String, dynamic>{
       'sessionId': sessionId,
       'title': title,
       'throughSeq': window.throughSeq,
-      'firstSeq': window.firstSeq,
+      'firstSeq': null,
       'hasMore': window.hasMore,
       'updatedAt': DateTime.now().millisecondsSinceEpoch,
-      'events': events,
+      'events': <Map<String, dynamic>>[],
     };
-    // Keep the newest events when one session entry exceeds the per-session cap.
-    while (events.isNotEmpty &&
-        utf8.encode(jsonEncode(encoded)).length > maxSessionBytes) {
-      events.removeAt(0);
-      encoded = <String, dynamic>{
-        ...encoded,
-        'firstSeq': events.isEmpty ? null : events.first['seq'],
-        'events': events,
-      };
+    // Measure each event once. Re-encoding the entire shrinking window after
+    // every removal stalls the UI thread when a long session receives a reply.
+    final baseBytes = utf8.encode(jsonEncode(encoded)).length;
+    var eventsBytes = 0;
+    var first = events.length;
+    for (var index = events.length - 1; index >= 0; index--) {
+      final candidateFirst = index == 0
+          ? window.firstSeq
+          : events[index]['seq'];
+      final firstSeqBytes = utf8.encode(jsonEncode(candidateFirst)).length;
+      final eventBytes = utf8.encode(jsonEncode(events[index])).length;
+      final candidateEventsBytes =
+          eventsBytes + eventBytes + (first == events.length ? 0 : 1);
+      // The empty entry already includes the four bytes of `null`.
+      if (baseBytes + candidateEventsBytes + firstSeqBytes - 4 >
+          maxSessionBytes) {
+        break;
+      }
+      eventsBytes = candidateEventsBytes;
+      first = index;
     }
-    return events.isEmpty ? null : encoded;
+    if (first == events.length) return null;
+    encoded['firstSeq'] = first == 0 ? window.firstSeq : events[first]['seq'];
+    encoded['events'] = events.sublist(first);
+    return encoded;
   }
 
   /// Least-recently-used + byte-budget trimming for one device document.
@@ -235,12 +269,14 @@ class RemoteConversationCache {
     });
     final bounded = sessions.take(maxSessionsPerDevice).toList();
     while (bounded.length > 1 &&
-        utf8.encode(
-              jsonEncode(<String, dynamic>{
-                'version': _version,
-                'sessions': bounded,
-              }),
-            ).length >
+        utf8
+                .encode(
+                  jsonEncode(<String, dynamic>{
+                    'version': _version,
+                    'sessions': bounded,
+                  }),
+                )
+                .length >
             maxDeviceBytes) {
       bounded.removeLast();
     }

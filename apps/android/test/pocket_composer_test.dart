@@ -205,6 +205,33 @@ const PocketReasoningStop _medium = PocketReasoningStop(
 const PocketReasoningStop _high = PocketReasoningStop(id: 'high', label: '高');
 
 void main() {
+  testWidgets('推理滑杆整条轨道可点选，也可拖动到目标档', (tester) async {
+    final selected = <String>[];
+    await tester.pumpWidget(MaterialApp(
+      home: Center(
+        child: SizedBox(
+          width: 300,
+          child: ReasoningEffortSlider(
+            stops: const <PocketReasoningStop>[
+              PocketReasoningStop(id: 'low', label: '低'),
+              PocketReasoningStop(id: 'medium', label: '中'),
+              PocketReasoningStop(id: 'high', label: '高'),
+            ],
+            onSelected: selected.add,
+          ),
+        ),
+      ),
+    ));
+    final track = tester.getRect(find.byType(ReasoningEffortSlider));
+    await tester.tapAt(Offset(track.left + track.width * .8, track.center.dy));
+    expect(selected, <String>['high']);
+    await tester.dragFrom(
+      Offset(track.left + 24, track.center.dy),
+      Offset(track.width * .5, 0),
+    );
+    await tester.pump();
+    expect(selected.last, 'medium');
+  });
   testWidgets('缩小态是一行悬浮卡：加号、占位与发送圆钮，没有权限与工具条动作', (tester) async {
     await _pump(tester);
 

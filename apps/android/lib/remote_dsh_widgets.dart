@@ -387,10 +387,7 @@ class _RunningDot extends StatelessWidget {
         width: 8,
         height: 8,
         margin: const EdgeInsets.only(top: 7),
-        decoration: const BoxDecoration(
-          color: color,
-          shape: BoxShape.circle,
-        ),
+        decoration: const BoxDecoration(color: color, shape: BoxShape.circle),
       ),
     );
   }
@@ -738,6 +735,7 @@ class RemoteComposer extends StatefulWidget {
     this.onChanged,
     this.onSubmitted,
     this.onAdd,
+    this.addPopupBuilder,
     this.onApproval,
     this.onModel,
     this.floating = false,
@@ -752,7 +750,10 @@ class RemoteComposer extends StatefulWidget {
     this.sendKey,
     this.stopKey,
     this.top,
+    this.attachments,
     this.margin,
+    this.animateSize = false,
+    this.onSizeEnd,
   });
 
   /// 目标设备显示名，用于默认占位文案。
@@ -790,6 +791,8 @@ class RemoteComposer extends StatefulWidget {
 
   /// 点按加号：展开数据驱动的会话指令菜单（添加 / 指令 / 技能）。
   final VoidCallback? onAdd;
+  /// 加号旁的组件库悬浮菜单内容。
+  final WidgetBuilder? addPopupBuilder;
 
   /// 点按盾牌：展开权限预设列表。
   final VoidCallback? onApproval;
@@ -805,6 +808,10 @@ class RemoteComposer extends StatefulWidget {
 
   /// 悬浮卡的当前状态；[floating] 为 false 时忽略。
   final PocketComposerMode mode;
+
+  /// Animate the floating card after the parent has settled its viewport.
+  final bool animateSize;
+  final VoidCallback? onSizeEnd;
 
   /// 悬浮卡的发送回调；为 null 时发送圆钮永远置灰。
   final VoidCallback? onSend;
@@ -838,6 +845,7 @@ class RemoteComposer extends StatefulWidget {
 
   /// 悬浮卡上方的插槽（附件 rail、命令 chip 等）。
   final Widget? top;
+  final Widget? attachments;
 
   /// Outer inset of the floating composer when its parent already provides one.
   final EdgeInsetsGeometry? margin;
@@ -880,6 +888,8 @@ class _RemoteComposerState extends State<RemoteComposer> {
 
   /// 会话页的悬浮三态卡。
   Widget _floating(BuildContext context) => PocketComposer(
+    animateSize: widget.animateSize,
+    onSizeEnd: widget.onSizeEnd,
     mode: widget.mode,
     controller: _controller,
     focusNode: widget.focusNode,
@@ -888,6 +898,7 @@ class _RemoteComposerState extends State<RemoteComposer> {
     onChanged: widget.onChanged,
     onSubmitted: widget.onSubmitted,
     onAdd: widget.onAdd,
+    addPopupBuilder: widget.addPopupBuilder,
     onPermissions: widget.onApproval,
     permissionsLabel: _permissionsLabel,
     onReasoning: widget.onReasoning,
@@ -903,6 +914,7 @@ class _RemoteComposerState extends State<RemoteComposer> {
         ? widget.reasoning
         : null,
     top: widget.top,
+    attachments: widget.attachments,
     margin: widget.margin,
   );
 
@@ -1275,32 +1287,51 @@ Future<void> showRemotePermissionSheet(
   builder: builder,
 );
 
-/// 打开「+」的会话指令菜单弹层。
-///
-/// 菜单本体由调用方给出（远程会话页放本地那套数据驱动的 `ComposerCommands`），
-/// 这里只提供与权限预设弹层同一套外壳：超椭圆顶角、标题、关闭按钮、可滚动
-/// 内容与减少动态效果。收起规则与 [showRemotePermissionSheet] 相同：遮罩、返回
-/// 手势与关闭按钮都不回调，选中某一项由菜单自己的回调处理。
+/// Show the + menu in a compact floating surface above the composer.
 Future<void> showRemoteCommandsSheet(
   BuildContext context, {
   required WidgetBuilder builder,
-}) => showModalBottomSheet<void>(
+}) => showGeneralDialog<void>(
   context: context,
-  isScrollControlled: true,
-  backgroundColor: Colors.transparent,
-  barrierColor: Theme.of(context).colorScheme.scrim.withValues(alpha: .4),
-  sheetAnimationStyle: MediaQuery.disableAnimationsOf(context)
-      ? AnimationStyle.noAnimation
-      : null,
-  builder: (sheetContext) => RemoteSheet(
-    title: '添加与指令',
-    closeLabel: '关闭添加菜单',
-    children: [
-      Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 8),
-        child: builder(sheetContext),
+  barrierDismissible: true,
+  barrierLabel: '关闭添加菜单',
+  barrierColor: Theme.of(context).colorScheme.scrim.withValues(alpha: .24),
+  transitionDuration: MediaQuery.disableAnimationsOf(context)
+      ? Duration.zero
+      : const Duration(milliseconds: 180),
+  pageBuilder: (popupContext, _, _) {
+    final media = MediaQuery.of(popupContext);
+    final bottom = media.viewInsets.bottom + media.padding.bottom + 92;
+    final maxHeight = (media.size.height - bottom - media.padding.top - 24)
+        .clamp(120.0, 420.0);
+    return Align(
+      alignment: Alignment.bottomLeft,
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(12, 0, 12, bottom),
+        child: Material(
+          key: const ValueKey('remote-commands-popup'),
+          color: Theme.of(popupContext).colorScheme.surface,
+          elevation: 16,
+          borderRadius: BorderRadius.circular(24),
+          clipBehavior: Clip.antiAlias,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxWidth: 320, maxHeight: maxHeight),
+            child: builder(popupContext),
+          ),
+        ),
       ),
-    ],
+    );
+  },
+  transitionBuilder: (context, animation, _, child) => FadeTransition(
+    opacity: animation,
+    child: ScaleTransition(
+      scale: Tween<double>(
+        begin: .94,
+        end: 1,
+      ).animate(CurvedAnimation(parent: animation, curve: Curves.easeOutCubic)),
+      alignment: Alignment.bottomLeft,
+      child: child,
+    ),
   ),
 );
 

@@ -851,12 +851,14 @@ class _RemoteDshPageState extends State<RemoteDshPage>
       _maybeAutoConnect();
       // 这次读取针对的设备：优先当前选中的胶囊，其次活动连接，最后是设备表
       // 第一台（注入数据源的测试与只读替身没有连接控制器，仍能判断首屏加载）。
-      final contentDeviceId = _selectedDeviceId ??
+      final contentDeviceId =
+          _selectedDeviceId ??
           _connection.activeDevice?.id ??
           (devices.isEmpty ? null : devices.first.id);
       final projects = await _source.listProjects();
       if (!mounted || generation != _loadGeneration) return;
-      if (_source.connection == RemoteDshConnectionState.connected) {
+      if (_source.connection == RemoteDshConnectionState.connected ||
+          projects.isNotEmpty) {
         final deviceId = _connection.activeDevice?.id;
         if (deviceId != null) _recentByDevice[deviceId] = projects;
         for (final id in projects.map((project) => project.deviceId).toSet()) {
@@ -864,7 +866,9 @@ class _RemoteDshPageState extends State<RemoteDshPage>
               .where((project) => project.deviceId == id)
               .toList();
         }
-        if (widget.source == null && widget.connection == null) {
+        if (_source.connection == RemoteDshConnectionState.connected &&
+            widget.source == null &&
+            widget.connection == null) {
           unawaited(_persistRecent());
         }
       }
@@ -1711,7 +1715,9 @@ class _RemoteDshPageState extends State<RemoteDshPage>
       // 先断开：移除后阶段机回到 idle，界面与「没有当前电脑」保持一致。
       await _connection.disconnect();
       final host = _backgroundHost;
-      if (host is RemoteBackgroundSync) host.recordDisconnectReason('已移除「$name」');
+      if (host is RemoteBackgroundSync) {
+        host.recordDisconnectReason('已移除「$name」');
+      }
       if (!mounted) return;
     }
     try {
@@ -1751,6 +1757,7 @@ class _RemoteDshPageState extends State<RemoteDshPage>
         sessionId: session.id,
         title: session.title,
         projectName: project.name,
+        deviceId: project.deviceId,
       ),
     );
   }
@@ -1760,6 +1767,10 @@ class _RemoteDshPageState extends State<RemoteDshPage>
     RemoteDshProject project, [
     RemoteDshSession? session,
   ]) {
+    if (session != null) {
+      _openSession(project, session);
+      return;
+    }
     if (_source.connection == RemoteDshConnectionState.connected &&
         (widget.source != null ||
             _connection.activeDevice?.id == project.deviceId)) {
@@ -1821,8 +1832,11 @@ class _RemoteDshPageState extends State<RemoteDshPage>
     required String sessionId,
     required String title,
     required String projectName,
+    String? deviceId,
   }) async {
-    final deviceName = _conversationDeviceName();
+    final deviceName = deviceId == null
+        ? _conversationDeviceName()
+        : _deviceName(_view, deviceId);
     await openDestination<String>(
       context,
       destination: RemoteDshConversationPage.destinationFor(sessionId),
@@ -1836,6 +1850,7 @@ class _RemoteDshPageState extends State<RemoteDshPage>
         deviceName: deviceName,
         projectName: projectName,
         title: title,
+        deviceId: deviceId,
         terminalConnection: RemoteControllerTerminalConnection(_connection),
       ),
     );

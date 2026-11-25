@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:material_ui/material_ui.dart';
 
@@ -14,9 +15,11 @@ class AttachmentDraft {
     required this.name,
     required this.bytes,
     required this.mediaType,
+    this.previewPath,
   });
 
   final String id, mediaType;
+  final String? previewPath;
   String name;
   int bytes;
   String status = 'uploading';
@@ -47,9 +50,7 @@ class AttachmentDrafts extends ChangeNotifier {
   int _generation;
   bool _ready;
 
-  /// 本地运行时（只有本地模式有）：图片预览复用既有的 `attachments.preview`
-  /// 读取链。远程模式没有本地运行时，rail 因此不提供「查看图片」入口——远程
-  /// 预览需要按远端上限单独实现，见设计文档 §3.4.4、§3.6。
+  /// 旧草稿缺少设备缓存路径时，本地会话仍可向运行时读取图片。
   RuntimeController? get localRuntime =>
       surface is RuntimeController ? surface as RuntimeController : null;
 
@@ -106,6 +107,7 @@ class AttachmentDrafts extends ChangeNotifier {
               name: item['name'] as String,
               bytes: (item['bytes'] as num).toInt(),
               mediaType: item['mediaType'] as String,
+              previewPath: item['previewPath'] as String?,
             ),
           )
           .toList();
@@ -283,13 +285,11 @@ class PocketAttachmentRail extends StatelessWidget {
     listenable: drafts,
     builder: (context, _) {
       final items = drafts.items(sessionId);
-      // 图片预览复用本地 `attachments.preview` 链路；远程模式没有本地运行时，
-      // 因此不提供这个入口（远程预览上限与缩略图见设计文档 §3.4.4）。
       final previewRuntime = drafts.localRuntime;
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (drafts.pickingSession == sessionId)
+          if (drafts.pickingSession == sessionId && items.isEmpty)
             const Padding(
               padding: EdgeInsets.all(8),
               child: Text('正在选择并导入附件…'),
@@ -303,79 +303,88 @@ class PocketAttachmentRail extends StatelessWidget {
                     .map(
                       (item) => Padding(
                         padding: const EdgeInsets.only(right: 8, bottom: 8),
-                        child: SizedBox(
-                          width: 250,
-                          child: PocketCard(
-                            padding: const EdgeInsets.all(12),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Row(
-                                  children: [
-                                    Icon(
-                                      item.isImage
-                                          ? Icons.image_outlined
-                                          : Icons.insert_drive_file_outlined,
-                                    ),
-                                    const SizedBox(width: 8),
-                                    Expanded(
-                                      child: Text(
-                                        item.name,
-                                        maxLines: 2,
-                                        overflow: TextOverflow.ellipsis,
-                                      ),
-                                    ),
-                                    GlassButton(
-                                      onPressed: item.removing
-                                          ? null
-                                          : () => drafts.remove(
-                                              sessionId,
-                                              item.id,
+                        child: item.isImage && item.previewPath != null
+                            ? _DraftThumbnail(
+                                item: item,
+                                drafts: drafts,
+                                sessionId: sessionId,
+                              )
+                            : SizedBox(
+                                width: 250,
+                                child: PocketCard(
+                                  padding: const EdgeInsets.all(12),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        children: [
+                                          Icon(
+                                            item.isImage
+                                                ? Icons.image_outlined
+                                                : Icons
+                                                      .insert_drive_file_outlined,
+                                          ),
+                                          const SizedBox(width: 8),
+                                          Expanded(
+                                            child: Text(
+                                              item.name,
+                                              maxLines: 2,
+                                              overflow: TextOverflow.ellipsis,
                                             ),
-                                      icon: Icons.close,
-                                      label: '移除 ${item.name}',
-                                    ),
-                                  ],
+                                          ),
+                                          GlassButton(
+                                            onPressed: item.removing
+                                                ? null
+                                                : () => drafts.remove(
+                                                    sessionId,
+                                                    item.id,
+                                                  ),
+                                            icon: Icons.close,
+                                            label: '移除 ${item.name}',
+                                          ),
+                                        ],
+                                      ),
+                                      Text(
+                                        '${item.bytes} B · ${item.removing
+                                            ? '正在移除'
+                                            : item.status == 'ready'
+                                            ? '已就绪'
+                                            : item.status == 'uploading'
+                                            ? '正在上传'
+                                            : '上传失败'}',
+                                      ),
+                                      if (item.error != null)
+                                        Text(
+                                          item.error!,
+                                          maxLines: 4,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      if (item.isImage &&
+                                          item.status == 'ready' &&
+                                          !item.removing &&
+                                          previewRuntime != null)
+                                        PocketButton.tonal(
+                                          onPressed: () => showPocketDraftImage(
+                                            context,
+                                            previewRuntime,
+                                            sessionId,
+                                            item.id,
+                                            item.name,
+                                          ),
+                                          child: const Text('查看图片'),
+                                        ),
+                                      if (item.status == 'error' &&
+                                          !item.removing)
+                                        PocketButton.tonal(
+                                          onPressed: () =>
+                                              drafts.retry(sessionId, item.id),
+                                          child: const Text('重试上传'),
+                                        ),
+                                    ],
+                                  ),
                                 ),
-                                Text(
-                                  '${item.bytes} B · ${item.removing
-                                      ? '正在移除'
-                                      : item.status == 'ready'
-                                      ? '已就绪'
-                                      : item.status == 'uploading'
-                                      ? '正在上传'
-                                      : '上传失败'}',
-                                ),
-                                if (item.error != null)
-                                  Text(
-                                    item.error!,
-                                    maxLines: 4,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                if (item.isImage &&
-                                    item.status == 'ready' &&
-                                    !item.removing &&
-                                    previewRuntime != null)
-                                  PocketButton.tonal(
-                                    onPressed: () => showPocketDraftImage(
-                                      context,
-                                      previewRuntime,
-                                      sessionId,
-                                      item.id,
-                                      item.name,
-                                    ),
-                                    child: const Text('查看图片'),
-                                  ),
-                                if (item.status == 'error' && !item.removing)
-                                  PocketButton.tonal(
-                                    onPressed: () =>
-                                        drafts.retry(sessionId, item.id),
-                                    child: const Text('重试上传'),
-                                  ),
-                              ],
-                            ),
-                          ),
-                        ),
+                              ),
                       ),
                     )
                     .toList(),
@@ -387,4 +396,114 @@ class PocketAttachmentRail extends StatelessWidget {
       );
     },
   );
+}
+
+class _DraftThumbnail extends StatelessWidget {
+  const _DraftThumbnail({
+    required this.item,
+    required this.drafts,
+    required this.sessionId,
+  });
+  final AttachmentDraft item;
+  final AttachmentDrafts drafts;
+  final String sessionId;
+
+  @override
+  Widget build(BuildContext context) {
+    final file = File(item.previewPath!);
+    final source = PocketImageSource(
+      name: item.name,
+      load: () async {
+        if (await file.length() > pocketPreviewMaxBytes) {
+          throw const FormatException('图片超过预览大小上限。');
+        }
+        return PocketImagePayload(
+          bytes: await file.readAsBytes(),
+          mediaType: item.mediaType,
+          name: item.name,
+        );
+      },
+    );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox.square(
+          dimension: 94,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              Semantics(
+                button: true,
+                label: '预览 ${item.name}',
+                child: InkWell(
+                  onTap: () => Navigator.of(context).push<void>(
+                    PocketRoute<void>(
+                      builder: (_) => PocketImagePreview(source: source),
+                    ),
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(16),
+                    child: Image(
+                      image: ResizeImage(
+                        FileImage(file),
+                        width: 300,
+                        height: 300,
+                        policy: ResizeImagePolicy.fit,
+                      ),
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, _, _) =>
+                          const Icon(Icons.broken_image_outlined),
+                    ),
+                  ),
+                ),
+              ),
+              Positioned(
+                top: 2,
+                right: 2,
+                child: IconButton(
+                  tooltip: '移除 ${item.name}',
+                  onPressed: item.removing
+                      ? null
+                      : () => drafts.remove(sessionId, item.id),
+                  style: IconButton.styleFrom(
+                    backgroundColor: Colors.black54,
+                    foregroundColor: Colors.white,
+                    minimumSize: const Size(32, 32),
+                    padding: EdgeInsets.zero,
+                  ),
+                  icon: const Icon(Icons.close, size: 18),
+                ),
+              ),
+              if (item.status == 'uploading')
+                const Positioned(
+                  left: 8,
+                  bottom: 8,
+                  child: SizedBox.square(
+                    dimension: 15,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                ),
+            ],
+          ),
+        ),
+        if (item.status == 'error')
+          SizedBox(
+            width: 155,
+            child: Column(
+              children: [
+                Text(
+                  item.error ?? '上传失败',
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                TextButton(
+                  onPressed: () => drafts.retry(sessionId, item.id),
+                  child: const Text('重试上传'),
+                ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
 }

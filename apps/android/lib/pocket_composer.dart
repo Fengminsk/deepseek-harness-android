@@ -28,6 +28,7 @@ import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'flclash/surface.dart';
+import 'flclash/popup.dart';
 import 'flclash/typography.dart';
 import 'ui.dart';
 
@@ -160,6 +161,7 @@ class PocketComposer extends StatelessWidget {
     this.onChanged,
     this.onSubmitted,
     this.onAdd,
+    this.addPopupBuilder,
     this.addLabel = '添加与指令',
     this.onPermissions,
     this.permissionsLabel,
@@ -178,7 +180,10 @@ class PocketComposer extends StatelessWidget {
     this.stopKey,
     this.reasoning,
     this.top,
+    this.attachments,
     this.margin,
+    this.animateSize = true,
+    this.onSizeEnd,
   });
 
   /// 组件根节点的稳定标识（测试与无障碍定位用）。
@@ -244,6 +249,9 @@ class PocketComposer extends StatelessWidget {
   /// 加号回调：展开添加/指令菜单。
   final VoidCallback? onAdd;
 
+  /// 与右上角菜单共用的锚定弹窗；提供后由加号直接打开。
+  final WidgetBuilder? addPopupBuilder;
+
   /// 加号的无障碍文案。
   final String addLabel;
 
@@ -300,12 +308,17 @@ class PocketComposer extends StatelessWidget {
 
   /// 卡片上方的插槽（附件 rail、命令 chip 等）；为 null 时不占高度。
   final Widget? top;
+  final Widget? attachments;
 
   /// 卡片外边距；为 null 时用默认值（左右 16、上下 12）。
   ///
   /// 页面自己已经让出水平边距时（例如本地聊天页的 `PocketScaffold.bottom` 自带
   /// 左右 16），传更小的值可以避免两处边距叠加；远程会话页不传，保持默认外观。
   final EdgeInsetsGeometry? margin;
+
+  /// Disable height tweening when an IME resize would relayout a long timeline.
+  final bool animateSize;
+  final VoidCallback? onSizeEnd;
 
   @override
   Widget build(BuildContext context) {
@@ -324,11 +337,12 @@ class PocketComposer extends StatelessWidget {
           // 减少动态效果时不挂 AnimatedSize：框架在「零时长 + 同一帧尺寸变化」
           // 下会断言（RenderAnimatedSize 在 layout 里重入），且此时本来就不该有
           // 过渡动画。
-          if (reduceMotion)
+          if (reduceMotion || !animateSize)
             card
           else
             AnimatedSize(
               duration: const Duration(milliseconds: 200),
+              onEnd: onSizeEnd,
               curve: Curves.easeInOutCubic,
               alignment: Alignment.bottomCenter,
               // 阴影画在卡片外面，过渡期间不能被裁剪掉。
@@ -371,6 +385,7 @@ class PocketComposer extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
+                ?attachments,
                 Stack(
                   alignment: Alignment.topCenter,
                   clipBehavior: Clip.none,
@@ -444,12 +459,7 @@ class PocketComposer extends StatelessWidget {
           child: browse
               ? Align(
                   alignment: Alignment.centerLeft,
-                  child: _compactIconButton(
-                    context,
-                    icon: Icons.add_rounded,
-                    label: addLabel,
-                    onPressed: onAdd,
-                  ),
+                  child: _addButton(context),
                 )
               : null,
         ),
@@ -473,34 +483,40 @@ class PocketComposer extends StatelessWidget {
     final browse = mode == PocketComposerMode.browse;
     return SizedBox(
       height: browse ? 44 : null,
-      child: TextField(
-        key: inputKey,
-        controller: controller,
-        focusNode: focusNode,
-        enabled: enabled,
-        minLines: 1,
-        maxLines: browse ? 1 : 4,
-        textInputAction: TextInputAction.newline,
-        textAlign: TextAlign.start,
-        textAlignVertical: TextAlignVertical.center,
-        style: AppTextStyle.subheadline.of(context),
-        onChanged: onChanged,
-        onSubmitted: onSubmitted,
-        decoration: InputDecoration(
-          hintText: placeholder,
-          hintMaxLines: 1,
-          hintStyle: AppTextStyle.subheadline
-              .of(context)
-              .copyWith(color: colors.onSurfaceVariant),
-          filled: false,
-          border: InputBorder.none,
-          enabledBorder: InputBorder.none,
-          focusedBorder: InputBorder.none,
-          disabledBorder: InputBorder.none,
-          isDense: browse,
-          contentPadding: EdgeInsets.symmetric(
-            horizontal: 2,
-            vertical: browse ? 0 : 10,
+      // The TextField's decoration has its own intrinsic line height. Give it
+      // loose vertical constraints and center that line, rather than stretching
+      // the InputDecorator to 44dp (which leaves the hint above the + icon).
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: TextField(
+          key: inputKey,
+          controller: controller,
+          focusNode: focusNode,
+          enabled: enabled,
+          minLines: 1,
+          maxLines: browse ? 1 : 4,
+          textInputAction: TextInputAction.newline,
+          textAlign: TextAlign.start,
+          textAlignVertical: TextAlignVertical.center,
+          style: AppTextStyle.subheadline.of(context),
+          onChanged: onChanged,
+          onSubmitted: onSubmitted,
+          decoration: InputDecoration(
+            hintText: placeholder,
+            hintMaxLines: 1,
+            hintStyle: AppTextStyle.subheadline
+                .of(context)
+                .copyWith(color: colors.onSurfaceVariant),
+            filled: false,
+            border: InputBorder.none,
+            enabledBorder: InputBorder.none,
+            focusedBorder: InputBorder.none,
+            disabledBorder: InputBorder.none,
+            isDense: browse,
+            contentPadding: EdgeInsets.symmetric(
+              horizontal: 2,
+              vertical: browse ? 0 : 10,
+            ),
           ),
         ),
       ),
@@ -534,12 +550,7 @@ class PocketComposer extends StatelessWidget {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
-        _compactIconButton(
-          context,
-          icon: Icons.add_rounded,
-          label: addLabel,
-          onPressed: onAdd,
-        ),
+        _addButton(context),
         if (showPermissions) ...[
           const SizedBox(width: 6),
           _compactIconButton(
@@ -609,6 +620,29 @@ class PocketComposer extends StatelessWidget {
   ///
   /// [active] 为 true 时（例如推理面板已展开）加一层很淡的强调色底并换用强调色
   /// 图标，用于标示当前面板；按压时只有一层极淡的 onSurfaceVariant。
+  Widget _addButton(BuildContext context) {
+    final popup = addPopupBuilder;
+    if (popup == null) {
+      return _compactIconButton(
+        context,
+        icon: Icons.add_rounded,
+        label: addLabel,
+        onPressed: onAdd,
+      );
+    }
+    return CommonPopupBox(
+      placement: PopupPlacement.overAnchorStart,
+      onOpen: onAdd,
+      popupBuilder: popup,
+      targetBuilder: (open) => _compactIconButton(
+        context,
+        icon: Icons.add_rounded,
+        label: addLabel,
+        onPressed: enabled ? open : null,
+      ),
+    );
+  }
+
   Widget _compactIconButton(
     BuildContext context, {
     required IconData icon,
@@ -819,7 +853,7 @@ class PocketComposer extends StatelessWidget {
 /// 显示名来自 [stops]，当前档位来自 [selectedId]。没有档位时由调用方不渲染本
 /// 组件（面板只显示模型名）；[busy] 为 true 时忽略点击，避免一次切换未完成时
 /// 重复提交。
-class ReasoningEffortSlider extends StatelessWidget {
+class ReasoningEffortSlider extends StatefulWidget {
   const ReasoningEffortSlider({
     super.key,
     required this.stops,
@@ -840,22 +874,40 @@ class ReasoningEffortSlider extends StatelessWidget {
   /// 是否正在提交上一次切换；为 true 时不可点。
   final bool busy;
 
+  @override
+  State<ReasoningEffortSlider> createState() => _ReasoningEffortSliderState();
+}
+
+class _ReasoningEffortSliderState extends State<ReasoningEffortSlider> {
+  String? _previewId;
+  int? _pointer;
+
   /// 滑杆高度。
-  static const double height = 44;
+  static const double height = 50;
 
   /// 滑钮直径。
-  static const double _knob = 26;
+  static const double _knob = 36;
 
   /// 档位圆点直径。
-  static const double _dot = 6;
+  static const double _dot = 7;
 
   /// 单档触摸宽度；档位中心之间的留白之外的点击落到最近的档。
   static const double _hitWidth = 44;
 
   @override
+  void didUpdateWidget(ReasoningEffortSlider oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 宿主确认后退出预览；失败时 busy 结束也回到真实选择。
+    if (widget.selectedId != oldWidget.selectedId ||
+        (oldWidget.busy && !widget.busy)) {
+      _previewId = null;
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    if (stops.isEmpty) return const SizedBox.shrink();
-    final onSelected = busy ? null : this.onSelected;
+    if (widget.stops.isEmpty) return const SizedBox.shrink();
+    final onSelected = widget.busy ? null : widget.onSelected;
     final selected = _selectedIndex();
     return Semantics(
       container: true,
@@ -866,19 +918,33 @@ class ReasoningEffortSlider extends StatelessWidget {
         child: LayoutBuilder(
           builder: (context, constraints) {
             final centers = _centers(constraints.maxWidth);
-            return GestureDetector(
+            return Listener(
               behavior: HitTestBehavior.opaque,
-              // 档位之间的空白落到最近的一档：整条滑杆都是可点区域。单档的
-              // 触摸区压在它上面，精确点某一档时优先命中那一档。
-              onTapUp: onSelected == null
+              // 直接跟随原始触点，避免被输入卡的手势或档位语义节点抢走。
+              onPointerDown: onSelected == null
                   ? null
-                  : (details) {
-                      final nearest = _nearest(
-                        centers,
-                        details.localPosition.dx,
-                      );
-                      onSelected(stops[nearest].id);
+                  : (event) {
+                      if (_pointer != null) return;
+                      _pointer = event.pointer;
+                      _previewAt(centers, event.localPosition.dx);
                     },
+              onPointerMove: onSelected == null
+                  ? null
+                  : (event) {
+                      if (_pointer == event.pointer) {
+                        _previewAt(centers, event.localPosition.dx);
+                      }
+                    },
+              onPointerUp: onSelected == null
+                  ? null
+                  : (event) {
+                      if (_pointer != event.pointer) return;
+                      _pointer = null;
+                      _previewAt(centers, event.localPosition.dx);
+                      final id = _previewId;
+                      if (id != null && id != widget.selectedId) onSelected(id);
+                    },
+              onPointerCancel: (_) => _pointer = null,
               child: _track(context, centers, selected, onSelected),
             );
           },
@@ -888,19 +954,26 @@ class ReasoningEffortSlider extends StatelessWidget {
   }
 
   int _selectedIndex() {
-    if (stops.isEmpty) return 0;
-    final index = stops.indexWhere((stop) => stop.id == selectedId);
+    if (widget.stops.isEmpty) return 0;
+    final index = widget.stops.indexWhere(
+      (stop) => stop.id == (_previewId ?? widget.selectedId),
+    );
     return index < 0 ? 0 : index;
+  }
+
+  void _previewAt(List<double> centers, double x) {
+    final id = widget.stops[_nearest(centers, x)].id;
+    if (_previewId != id) setState(() => _previewId = id);
   }
 
   /// 每一档圆点的水平中心；首尾各留半个触摸宽度，避免触摸区越界。
   List<double> _centers(double width) {
-    if (stops.length == 1) return <double>[width / 2];
+    if (widget.stops.length == 1) return <double>[width / 2];
     final inset = math.min(_hitWidth / 2, width / 2);
     final usable = math.max(0.0, width - inset * 2);
     return <double>[
-      for (var index = 0; index < stops.length; index++)
-        inset + usable * index / (stops.length - 1),
+      for (var index = 0; index < widget.stops.length; index++)
+        inset + usable * index / (widget.stops.length - 1),
     ];
   }
 
@@ -918,23 +991,35 @@ class ReasoningEffortSlider extends StatelessWidget {
     final knobColor = colors.onPrimary;
     final knobShadow = colors.shadow.withValues(alpha: .18);
     final knobX = centers.isEmpty ? 0.0 : centers[selected];
-    final stopCount = stops.length;
+    final stopCount = widget.stops.length;
     return Stack(
       clipBehavior: Clip.none,
       children: [
         Positioned.fill(
           child: DecoratedBox(
             decoration: BoxDecoration(
-              color: track,
+              color: colors.surface,
               borderRadius: AppRadius.full,
+              border: Border.all(color: colors.outlineVariant, width: .8),
+            ),
+          ),
+        ),
+        Positioned.fill(
+          child: Padding(
+            padding: const EdgeInsets.all(4),
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: track,
+                borderRadius: AppRadius.full,
+              ),
             ),
           ),
         ),
         Positioned(
-          left: 0,
-          top: 0,
-          bottom: 0,
-          width: knobX,
+          left: 4,
+          top: 4,
+          bottom: 4,
+          width: math.max(0, knobX + _knob / 2 - 4),
           child: DecoratedBox(
             decoration: BoxDecoration(
               color: accent,
@@ -981,7 +1066,7 @@ class ReasoningEffortSlider extends StatelessWidget {
         // 每一档一个 44dp 宽的透明触摸区：无障碍上是一组可选中按钮。
         for (var index = 0; index < stopCount; index++)
           Positioned(
-            key: PocketComposer.stopKeyFor(stops[index].id),
+            key: PocketComposer.stopKeyFor(widget.stops[index].id),
             left: math.max(0.0, centers[index] - _hitWidth / 2),
             top: 0,
             width: _hitWidth,
@@ -989,16 +1074,13 @@ class ReasoningEffortSlider extends StatelessWidget {
             child: Semantics(
               button: onSelected != null,
               selected: index == selected,
-              label: stops[index].label,
-              child: Tooltip(
-                message: stops[index].label,
-                waitDuration: const Duration(milliseconds: 500),
-                child: GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTap: onSelected == null
-                      ? null
-                      : () => onSelected(stops[index].id),
-                ),
+              label: widget.stops[index].label,
+              onTap: onSelected == null
+                  ? null
+                  : () => onSelected(widget.stops[index].id),
+              child: const ColoredBox(
+                color: Colors.transparent,
+                child: SizedBox.expand(),
               ),
             ),
           ),

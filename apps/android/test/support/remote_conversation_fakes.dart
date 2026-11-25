@@ -422,6 +422,10 @@ class FakeRemoteConversationSource extends RemoteConversationSource {
     if (!_control.isClosed) _control.add(frame);
   }
 
+  void emitControlError(Object failure) {
+    if (!_control.isClosed) _control.addError(failure);
+  }
+
   /// 结束控制流：模拟连接重建时宿主/传输退役旧订阅。
   Future<void> closeControl() async {
     if (!_control.isClosed) await _control.close();

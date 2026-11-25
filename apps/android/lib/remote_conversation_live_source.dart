@@ -126,6 +126,13 @@ String remoteUuidV4({Random? random}) {
       '${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}';
 }
 
+class _SharedModelCatalog {
+  const _SharedModelCatalog({required this.read, required this.expiresAt});
+
+  final Future<RemoteModelCatalog> read;
+  final DateTime expiresAt;
+}
+
 final Random _secureRandom = Random.secure();
 
 /// 触发一次会话洞察重读的会话事件类型。
@@ -205,6 +212,9 @@ class RemoteControllerConnection implements RemoteConversationConnection {
 /// 由调用方从 `RemoteConnectionController` 取得；本类只过滤自己关心的方法，
 /// 不改写也不重放。
 class RemoteConversationLiveSource extends RemoteConversationSource {
+  static final Expando<_SharedModelCatalog> _catalogByTransport =
+      Expando<_SharedModelCatalog>('remote model catalog');
+
   /// 绑定连接、会话与入站帧流。
   ///
   /// [events] 是单订阅还是广播由连接层决定；本类只订阅一次，并在 [dispose]
@@ -243,6 +253,7 @@ class RemoteConversationLiveSource extends RemoteConversationSource {
   StreamSubscription<ApiJson>? _follow;
   Future<void>? _started;
   Future<void>? _rebuilding;
+  ({String key, String requestId})? _pendingAttachmentSend;
 
   /// 最近一次已知的会话事件，只用于推导发送参数（模型路由）与定位变更快照。
   List<Json> _events = const [];
@@ -276,6 +287,7 @@ class RemoteConversationLiveSource extends RemoteConversationSource {
   /// null 表示本周期还没读过目录；读取失败时缓存一个结果为 null 的 future，
   /// 同一周期不会反复重试。
   Future<RemoteModelCatalog?>? _availabilityRead;
+  Future<RemoteModelCatalog>? _catalogRead;
 
   /// 上一次做过可用性判定的路由；同一条路由不重复判定。
   RemoteModelChoice? _availabilityRoute;
@@ -334,9 +346,17 @@ class RemoteConversationLiveSource extends RemoteConversationSource {
     List<String> attachmentIds = const <String>[],
   }) async {
     final route = await _modelRoute();
+    // The desktop can accept a message before its acknowledgement reaches the
+    // phone. Keep its identity while the same attachment draft is retried.
+    final key = attachmentIds.isEmpty ? null : jsonEncode([text, attachmentIds]);
+    final pending = _pendingAttachmentSend;
+    final requestId = pending != null && pending.key == key
+        ? pending.requestId
+        : _nextRequestId();
+    _pendingAttachmentSend = key == null ? null : (key: key, requestId: requestId);
     await _request(remoteConversationSendMethod, {
       'sessionId': sessionId,
-      'requestId': _nextRequestId(),
+      'requestId': requestId,
       'text': text,
       'provider': route.provider,
       'model': route.model,
@@ -347,6 +367,7 @@ class RemoteConversationLiveSource extends RemoteConversationSource {
       if (attachmentIds.isNotEmpty)
         'attachmentIds': List<String>.of(attachmentIds),
     });
+    if (_pendingAttachmentSend?.requestId == requestId) _pendingAttachmentSend = null;
   }
 
   @override
@@ -423,6 +444,7 @@ class RemoteConversationLiveSource extends RemoteConversationSource {
     int version,
   ) async {
     final result = await _request('interactions.dismiss', {
+      'sessionId': sessionId,
       'id': id,
       'version': version,
     });
@@ -455,6 +477,7 @@ class RemoteConversationLiveSource extends RemoteConversationSource {
     required bool allow,
   }) async {
     final result = await _request(remoteConversationInteractionsReplyMethod, {
+      'sessionId': sessionId,
       'id': id,
       'version': version,
       'response': allow ? 'allowed-once' : 'rejected',
@@ -469,6 +492,7 @@ class RemoteConversationLiveSource extends RemoteConversationSource {
     List<RemoteQuestionAnswer> answers,
   ) async {
     final result = await _request(remoteConversationInteractionsReplyMethod, {
+      'sessionId': sessionId,
       'id': id,
       'version': version,
       'response': <String, dynamic>{
@@ -479,7 +503,37 @@ class RemoteConversationLiveSource extends RemoteConversationSource {
   }
 
   @override
-  Future<RemoteModelCatalog> fetchModelCatalog() async {
+  Future<RemoteModelCatalog> fetchModelCatalog() =>
+      _catalogRead ??= _fetchSharedModelCatalog().catchError((Object error) {
+        _catalogRead = null;
+        throw error;
+      });
+
+  Future<RemoteModelCatalog> _fetchSharedModelCatalog() {
+    final transport = connection.transport;
+    if (transport == null) return _fetchModelCatalog();
+    final cached = _catalogByTransport[transport];
+    if (cached != null && DateTime.now().isBefore(cached.expiresAt)) {
+      return cached.read;
+    }
+    final read = _fetchModelCatalog();
+    final entry = _SharedModelCatalog(
+      read: read,
+      expiresAt: DateTime.now().add(const Duration(minutes: 1)),
+    );
+    _catalogByTransport[transport] = entry;
+    read.then<void>(
+      (_) {},
+      onError: (Object _) {
+        if (identical(_catalogByTransport[transport], entry)) {
+          _catalogByTransport[transport] = null;
+        }
+      },
+    );
+    return read;
+  }
+
+  Future<RemoteModelCatalog> _fetchModelCatalog() async {
     final result = await _request(remoteConversationApiCallMethod, {
       'namespace': remoteConversationModelNamespace,
       'method': remoteConversationModelCatalogMethod,
@@ -587,19 +641,17 @@ class RemoteConversationLiveSource extends RemoteConversationSource {
     _resetModelAvailability();
     await _readWindow(_readGeneration);
     if (_disposed) return;
-    await _loadInteractions();
-    if (_disposed) return;
-    // 首屏洞察：窗口与交互之后读一次权威投影；失败保留空读数，不阻塞首屏。
-    await _refreshInsights();
-    if (_disposed) return;
     _ready = connection.phase == RemoteConnectionPhase.ready;
     // 协议 §6.4：双方都声明 window-ack 才切窗口模式；本类只跑远程链路，
     // 本地链路的观察层仍是逐条模式。
     _streams.setWindowAck(connection.windowAck);
     _streams.setReady(_ready);
-    // 先让流与输入区就绪，再做一次模型目录预读：预读结果只影响发送前的提示，
-    // 失败不升级成页面错误，也不阻塞发送。
-    await _checkModelAvailability();
+    // 交互、洞察和目录互不依赖；窗口一到就恢复实时流与发送入口。
+    await Future.wait<void>([
+      _loadInteractions(),
+      _refreshInsights(),
+      _checkModelAvailability(),
+    ]);
   }
 
   /// 连接阶段变化：离开 `ready` 先让流观察进入断开态；重新 `ready` 时按
@@ -612,6 +664,8 @@ class RemoteConversationLiveSource extends RemoteConversationSource {
       if (ready) {
         unawaited(_rebuild());
       } else {
+        final transport = connection.transport;
+        if (transport != null) _catalogByTransport[transport] = null;
         _streams.setReady(false);
       }
     }
@@ -634,17 +688,14 @@ class RemoteConversationLiveSource extends RemoteConversationSource {
     _resetModelAvailability();
     await _readWindow(generation);
     if (_disposed || generation != _readGeneration) return;
-    // 协议 §7.2：重新 ready 后除重读窗口外还要重读一次待处理交互，断线期间
-    // 被丢掉的 interactions.changed 通知因此补齐。
-    await _loadInteractions(generation);
-    if (_disposed || generation != _readGeneration) return;
     _streams.setWindowAck(connection.windowAck);
     _streams.setReady(true);
-    // 重连后洞察跟着窗口与交互一起重建；放在流恢复之后，与目录预读同序，不让
-    // 附加读数拖慢重连。失败保留上一次读数。
-    await _refreshInsights();
-    if (_disposed || generation != _readGeneration) return;
-    await _checkModelAvailability();
+    // 重连后补齐交互、洞察和模型目录；三项同时读，不挡实时流。
+    await Future.wait<void>([
+      _loadInteractions(generation),
+      _refreshInsights(),
+      _checkModelAvailability(),
+    ]);
   }
 
   Future<void> _readWindow(int generation) async {
@@ -722,7 +773,9 @@ class RemoteConversationLiveSource extends RemoteConversationSource {
     final readGeneration = generation ?? _readGeneration;
     if (!connection.supports(remoteConversationInteractionsListMethod)) return;
     try {
-      final result = await _request(remoteConversationInteractionsListMethod);
+      final result = await _request(remoteConversationInteractionsListMethod, {
+        'sessionId': sessionId,
+      });
       if (_disposed || readGeneration != _readGeneration) return;
       _applyInteractionsSnapshot(result);
     } on Object catch (error) {
@@ -741,6 +794,8 @@ class RemoteConversationLiveSource extends RemoteConversationSource {
   /// 都不带外层字段；快照是全量替换，按 `revision` 丢弃迟到的旧帧。
   void _applyInteractionsSnapshot(Object? snapshot) {
     if (_disposed || snapshot is! Json) return;
+    final snapshotSessionId = snapshot['sessionId'];
+    if (snapshotSessionId is String && snapshotSessionId != sessionId) return;
     final revision = snapshot['revision'];
     if (revision is int) {
       if (revision < _interactionsRevision) return;
@@ -954,6 +1009,11 @@ class RemoteConversationLiveSource extends RemoteConversationSource {
   void _onFollowError(Object error) {
     if (_disposed) return;
     final failure = _failureOf(error);
+    if (failure.message.contains('App stream limit reached')) {
+      // The page still receives session.event notifications; capacity errors
+      // are transport diagnostics, not chat content.
+      return;
+    }
     // 取消与断线由阶段机负责；其余失败说明这条订阅开不起来，页面继续用
     // session.event 通知增量，并给出一条可见说明。
     if (_isDisconnected(failure) || failure.code == 'unsupported-method') {
@@ -1020,6 +1080,7 @@ class RemoteConversationLiveSource extends RemoteConversationSource {
     _availabilityGeneration++;
     _availabilityRoute = null;
     _availabilityRead = null;
+    _catalogRead = null;
     // 上一轮的在途判定不再合并进这一轮；它的迟到结果由代次丢弃。
     _availabilityCheck = null;
   }

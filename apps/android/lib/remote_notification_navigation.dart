@@ -45,7 +45,13 @@ class RemoteNotificationLaunch {
     required this.sessionId,
     required this.kind,
     this.tag,
-  });
+  }) : isHome = false;
+
+  const RemoteNotificationLaunch.home()
+    : sessionId = '',
+      kind = null,
+      tag = null,
+      isHome = true;
 
   /// 点击 Intent 里 `pocket.route` 的唯一合法取值。
   static const String route = 'remote';
@@ -60,7 +66,10 @@ class RemoteNotificationLaunch {
   final String sessionId;
 
   /// 通知种类：任务完成或审批待处理。
-  final RemoteNotificationKind kind;
+  final RemoteNotificationKind? kind;
+
+  /// The persistent sync notification opens the remote home, without a chat.
+  final bool isHome;
 
   /// 协议 id（任务 `taskId` / 审批 `interactionId`）；原生没有给出时为 null。
   ///
@@ -77,6 +86,9 @@ class RemoteNotificationLaunch {
   /// @returns 合法深链；否则为 null。
   static RemoteNotificationLaunch? parse(Object? raw) {
     if (raw is! Map) return null;
+    if (raw['route'] == 'remote-home') {
+      return const RemoteNotificationLaunch.home();
+    }
     if (raw['route'] != route) return null;
 
     final rawSessionId = raw['sessionId'];

@@ -8,9 +8,11 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { DesktopRelayClient } from '../../../../apps/remote-host/src/desktop-relay-client.ts'
 import {
   DesktopRelay,
   DesktopRelayError,
+  createDesktopRelayExecutor,
   MAXIMUM_RELAY_BODY_BYTES,
   parseSendRequest,
   RELAY_FILE_NAME,
@@ -28,6 +30,30 @@ function executor(): DesktopRelayExecutor & {
   const fake = {
     sent,
     fail: undefined as Error | undefined,
+    async readWindow(request: { sessionId: string }) {
+      return { events: [{ seq: 3, type: 'assistant/message' }], throughSeq: 3, sessionId: request.sessionId }
+    },
+    async projections(sessionId: string) {
+      return { kind: 'sequenced', asOfSeq: 3, values: { plan: { enabled: true } }, sessionId }
+    },
+    async commandCatalog(agentId: string) {
+      return [{ name: 'file', agentId }]
+    },
+    async modelCatalog() {
+      return { providers: [{ id: 'cached-model-provider' }] }
+    },
+    async permissionCatalog() {
+      return { options: [{ value: 'workspace-write' }] }
+    },
+    async interactionsList(sessionId: string) {
+      return { sessionId, revision: 100, requests: [] }
+    },
+    interactionsStatus() {
+      return { ready: true, pending: 0 }
+    },
+    async interactionsReply(params: Record<string, unknown>) {
+      return { accepted: params['response'] === 'allowed-once', requestStillPending: false }
+    },
     async send(request: DesktopRelaySendRequest) {
       sent.push(request)
       if (fake.fail !== undefined) throw fake.fail
@@ -85,6 +111,82 @@ async function post(url: string, token: string, path: string, body: unknown): Pr
 }
 
 describe('DesktopRelay', () => {
+  it('streams files and images into the desktop services, then submits their receipts together', async () => {
+    const stored: Buffer[] = []
+    async function store(request: { sessionId: string; data: AsyncIterable<Uint8Array> }) {
+      expect(request.sessionId).toBe('session-1')
+      const chunks = []
+      for await (const chunk of request.data) chunks.push(chunk)
+      stored.push(Buffer.concat(chunks))
+      return { receiptId: `receipt-${stored.length}` }
+    }
+    const uploads = { uploadStream: vi.fn(store), uploadImageStream: vi.fn(store) }
+    const gateway = { invoke: vi.fn(async () => ({ accepted: true })) }
+    const services: Record<string, unknown> = {
+      fileUploads: uploads, typertGateway: gateway, connection: { createPeer: () => ({}) },
+    }
+    relay = new DesktopRelay({ dataDir: directory, logger: { info: vi.fn(), warn: vi.fn() },
+      executor: createDesktopRelayExecutor({ get: (name: string) => services[name] } as never) })
+    expect((await relay.start()).available).toBe(true)
+    const client = new DesktopRelayClient({ file: join(directory, RELAY_FILE_NAME) })
+    const files = [Buffer.alloc(768 * 1024 + 1, 11), Buffer.from([0, 255, 1]), Buffer.alloc(0)]
+    for (const [index, file] of files.entries()) {
+      async function* data() {
+        for (let i = 0; i < file.length; i += 16384) yield file.subarray(i, i + 16384)
+      }
+      const meta = { sessionId: 'session-1', name: '测试 附件', bytes: file.length,
+        mediaType: index === 1 ? 'image/png' : 'application/octet-stream' }
+      expect(await client.upload(meta, data(), new AbortController().signal)).toEqual({ receiptId: `receipt-${index + 1}` })
+    }
+    expect(stored).toEqual(files)
+    expect(uploads.uploadStream).toHaveBeenCalledTimes(2)
+    expect(uploads.uploadImageStream).toHaveBeenCalledTimes(1)
+    const receiptIds = ['receipt-3', 'receipt-1', 'receipt-2']
+    const parts = receiptIds.map(receiptId => ({ type: 'file', receiptId }))
+    for (const text of ['', '检查附件']) {
+      await client.send({ sessionId: 'session-1', text, requestId: 'r', receiptIds })
+      expect(gateway.invoke).toHaveBeenLastCalledWith(expect.objectContaining({ method: 'prompt', args: { request: {
+        sessionId: 'session-1', requestId: 'r', mode: 'queue', content: text ? [{ type: 'text', text }, ...parts] : parts,
+      } } }))
+    }
+    await client.command('session-1', '/example', receiptIds)
+    expect(gateway.invoke).toHaveBeenLastCalledWith(expect.objectContaining({ namespace: 'commands', args: {
+      line: '/example', agentId: 'session-1', submittedAttachments: parts,
+    } }))
+  })
+
+  it('serves only authenticated global catalogs from the desktop executor', async () => {
+    const { url, token } = await start()
+    const headers = { [RELAY_HEADER]: token }
+    const model = await fetch(`${url}/relay/catalog/model`, { headers })
+    const commands = await fetch(`${url}/relay/catalog/commands?agentId=s-1`, { headers })
+    expect(await commands.json()).toEqual({ ok: true, result: [{ name: 'file', agentId: 's-1' }] })
+    expect(await model.json()).toEqual({ ok: true, result: { providers: [{ id: 'cached-model-provider' }] } })
+    const permission = await fetch(`${url}/relay/catalog/permission`, { headers })
+    expect(await permission.json()).toEqual({ ok: true, result: { options: [{ value: 'workspace-write' }] } })
+    expect((await fetch(`${url}/relay/catalog/model`)).status).toBe(403)
+    expect((await fetch(`${url}/relay/catalog/other`, { headers })).status).toBe(404)
+  })
+
+  it('reads and answers desktop interactions only with the relay token', async () => {
+    const { url, token } = await start()
+    const headers = { [RELAY_HEADER]: token, 'content-type': 'application/json' }
+    const status = await fetch(`${url}/relay/interactions/status`, { headers })
+    expect(await status.json()).toEqual({ ok: true, ready: true, pending: 0 })
+    const list = await fetch(`${url}/relay/interactions/list`, {
+      method: 'POST', headers, body: JSON.stringify({ sessionId: 's-1' }),
+    })
+    expect((await list.json()).result).toEqual({ sessionId: 's-1', revision: 100, requests: [] })
+    const reply = await fetch(`${url}/relay/interactions/reply`, {
+      method: 'POST', headers, body: JSON.stringify({ sessionId: 's-1', id: 'i-1', version: 1, response: 'allowed-once' }),
+    })
+    expect((await reply.json()).result).toEqual({ accepted: true, requestStillPending: false })
+    const unauthenticated = await fetch(`${url}/relay/interactions/reply`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId: 's-1', id: 'i-1', version: 1, response: 'allowed-once' }),
+    })
+    expect(unauthenticated.status).toBe(403)
+  })
   it('rejects missing and wrong tokens', async () => {
     const { url } = await start()
     expect((await fetch(`${url}/relay/health`)).status).toBe(403)
@@ -102,6 +204,24 @@ describe('DesktopRelay', () => {
     })
     expect(email.status).toBe(200)
     expect(await email.json()).toEqual({ ok: true, result: { accepted: true, requestId: 'r-1' } })
+  })
+
+  it('serves a desktop-owned Session window through the authenticated relay', async () => {
+    const { url, token } = await start()
+    const response = await post(url, token, '/relay/session/read-window', { sessionId: 's-1', afterSeq: 2 })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ ok: true, result: {
+      events: [{ seq: 3, type: 'assistant/message' }], throughSeq: 3, sessionId: 's-1',
+    } })
+  })
+
+  it('serves plan and permission projections from the desktop owner', async () => {
+    const { url, token } = await start()
+    const response = await post(url, token, '/relay/session/projections', { sessionId: 's-1' })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ ok: true, result: {
+      kind: 'sequenced', asOfSeq: 3, values: { plan: { enabled: true } }, sessionId: 's-1',
+    } })
   })
 
   it('rejects attachments, empty text, and oversized bodies', async () => {

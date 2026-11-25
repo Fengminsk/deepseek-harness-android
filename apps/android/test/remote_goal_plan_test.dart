@@ -197,6 +197,31 @@ void main() {
     expect(controller.plan?.target, isTrue);
   });
 
+  test('控制流订阅满额时以投影重读确认计划状态', () async {
+    final source = _source(
+      projections: _projections(plan: _plan(active: true, pending: false)),
+    );
+    final controller = _controller(source);
+    await controller.start();
+    expect(controller.fresh, isTrue);
+    source.projections = _projections(
+      plan: _plan(active: false, pending: true),
+      asOfSeq: 2,
+    );
+    source.emitControlError(
+      const RuntimeTransportFailure(
+        code: 'gateway/internal',
+        message:
+            'App stream limit reached; close an unused page before subscribing',
+      ),
+    );
+    await pumpEventQueue();
+    expect(source.projectionReads, 2);
+    expect(controller.error, isNull);
+    expect(controller.fresh, isTrue);
+    expect(controller.plan?.pending, isTrue);
+  });
+
   test('setPlan 写 /plan 与 /plan off 并重读权威状态', () async {
     final source = _source(
       projections: _projections(plan: _plan(active: false, pending: false)),
@@ -704,6 +729,7 @@ void main() {
     expect(reply.accepted, isTrue);
     expect(reply.requestStillPending, isTrue);
     expect(transport.paramsOf('interactions.dismiss').single, {
+      'sessionId': 's-1',
       'id': 'i-q',
       'version': 2,
     });
