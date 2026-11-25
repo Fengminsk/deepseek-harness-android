@@ -29,6 +29,8 @@ class _ChatStreamRevealState extends State<ChatStreamReveal>
   );
   bool _enabled = true;
   bool _mountedWithMotion = false;
+  DateTime? _lastRevisionAt;
+  bool _skipping = false;
 
   @override
   void didChangeDependencies() {
@@ -45,7 +47,22 @@ class _ChatStreamRevealState extends State<ChatStreamReveal>
   @override
   void didUpdateWidget(ChatStreamReveal oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (_enabled && widget.revision != oldWidget.revision) {
+    if (!_enabled || widget.revision == oldWidget.revision) return;
+    // Text that keeps arriving inside one reveal never finishes it: the fade
+    // would restart on every revision and hold the whole reply partly
+    // transparent, under a shader mask, for the length of the stream. Show this
+    // revision outright and let a later quiet one animate instead.
+    final now = DateTime.now();
+    final rapid =
+        _lastRevisionAt != null &&
+        now.difference(_lastRevisionAt!) < PocketEntryMotion.duration;
+    _lastRevisionAt = now;
+    _skipping = rapid;
+    if (rapid) {
+      _motion
+        ..stop()
+        ..value = 1;
+    } else {
       _motion.forward(from: 0);
     }
   }
@@ -60,7 +77,7 @@ class _ChatStreamRevealState extends State<ChatStreamReveal>
   Widget build(BuildContext context) => _StreamPaint(
     motion: _motion,
     revision: widget.revision,
-    enabled: _enabled,
+    enabled: _enabled && !_skipping,
     child: widget.child,
   );
 }

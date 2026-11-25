@@ -129,6 +129,31 @@ void main() {
     },
   );
 
+  testWidgets('text arriving inside one reveal finishes it at once', (
+    tester,
+  ) async {
+    final harness = _Harness();
+    await tester.pumpWidget(harness.view('first words'));
+    await tester.pumpAndSettle();
+    await tester.pumpWidget(harness.view('first words and more'));
+    expect(tester.layers.whereType<ShaderMaskLayer>(), hasLength(1));
+
+    // A second revision inside the reveal window finishes it rather than
+    // restarting the fade under a live stream.
+    await tester.pump(const Duration(milliseconds: 40));
+    await tester.pumpWidget(harness.view('first words and more still'));
+    await tester.pump();
+    expect(
+      tester.layers.whereType<ShaderMaskLayer>(),
+      isEmpty,
+      reason: 'a revision that arrives mid-reveal is shown outright',
+    );
+    final settled = await harness.pixels(tester);
+    await tester.pump(PocketEntryMotion.duration);
+    expect(await harness.pixels(tester), orderedEquals(settled));
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('first live text respects reduced motion', (tester) async {
     final harness = _Harness();
     await tester.pumpWidget(harness.view(null, reduced: true));
